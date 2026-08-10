@@ -11,7 +11,10 @@ test('a ready user submits work, sees validation, and reviews the real project c
   await composer.press('Enter');
 
   await expect(page.getByText('Created verified-result.txt. Validation passed (1/1).')).toBeVisible();
-  await page.getByRole('button', { name: /Validate verified result/ }).click();
+  await page
+    .locator('[data-slot="chat-tool-call-row"]')
+    .filter({ hasText: 'Validate verified result' })
+    .click();
   await expect(page.getByText(/validation: 1 passed, 0 failed/)).toBeVisible();
 
   await page.getByRole('button', { name: 'Open workbar tab' }).click();
