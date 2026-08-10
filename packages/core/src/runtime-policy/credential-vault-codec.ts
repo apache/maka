@@ -23,7 +23,7 @@ export function decodeCredentialLocator(value: unknown): CredentialLocator {
   const base = exactRecord(
     value,
     'credential locator',
-    ['scope', 'connectionId', 'provider', 'kind'],
+    ['scope', 'connectionId', 'provider', 'profileId', 'kind'],
     ['scope', 'kind'],
   );
   if (base.scope === 'connection') {
@@ -38,6 +38,26 @@ export function decodeCredentialLocator(value: unknown): CredentialLocator {
     return {
       scope: 'connection',
       connectionId: entityIdValue(item.connectionId, 'connection id'),
+      kind: item.kind,
+    };
+  }
+  if (base.scope === 'connection_profile') {
+    const item = exactRecord(value, 'connection profile credential locator', [
+      'scope',
+      'connectionId',
+      'profileId',
+      'kind',
+    ]);
+    if (item.kind !== 'api_key' && item.kind !== 'oauth_token') {
+      throw domainError('connection profile credential kind is invalid');
+    }
+    if (item.profileId === item.connectionId) {
+      throw domainError('connection profile credential locator must use a secondary profile');
+    }
+    return {
+      scope: 'connection_profile',
+      connectionId: entityIdValue(item.connectionId, 'connection id'),
+      profileId: entityIdValue(item.profileId, 'profile id'),
       kind: item.kind,
     };
   }

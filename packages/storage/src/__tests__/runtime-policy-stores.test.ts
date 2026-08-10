@@ -2676,6 +2676,473 @@ describe('runtime policy stores', () => {
       await assert.rejects(() => reader.connectionCatalog.getSnapshot(), isInvalidLease);
     });
   });
+
+  test('declares Credential Profile CRUD with fail-closed lifecycle semantics', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('profiles', 'openai', 'Profiles'),
+      );
+      // Adding the first secondary Profile materializes the implicit primary
+      // (profileId === connectionId) and keeps mode=legacy_primary.
+      const created = await stores.operations.createCredentialProfile({
+        expected: connectionBasis(connection),
+        label: 'backup',
+        weight: 1,
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      const afterCreate = created.snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      );
+      assert.ok(afterCreate?.credentialRouting);
+      const routing = afterCreate!.credentialRouting!;
+      assert.equal(routing.mode, 'legacy_primary');
+      assert.equal(routing.strategy, 'smooth_weighted_round_robin');
+      assert.equal(routing.profiles.length, 2);
+      const primary = routing.profiles.find(
+        (profile) => profile.profileId === connection.connectionId,
+      );
+      assert.deepEqual(
+        { label: primary?.label, enabled: primary?.enabled, weight: primary?.weight },
+        { label: 'primary', enabled: true, weight: 1 },
+      );
+      const secondary = routing.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      );
+      assert.ok(secondary);
+      assert.equal(secondary.enabled, false, 'a new Profile is created disabled');
+      assert.equal(secondary.label, 'backup');
+      assert.equal(secondary.weight, 1);
+
+      // Label conflict is case-insensitive.
+      const conflict = await stores.operations.createCredentialProfile({
+        expected: { connectionId: connection.connectionId, revision: afterCreate!.revision },
+        label: 'BACKUP',
+        weight: 2,
+      });
+      assert.equal(conflict.kind, 'profile_label_conflict');
+
+      // Updating label and weight bumps only the target Profile.
+      const updated = await stores.operations.updateCredentialProfile({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: afterCreate!.revision,
+          profileId: secondary.profileId,
+          profileRevision: secondary.revision,
+        },
+        label: 'backup-2',
+        weight: 2,
+      });
+      assert.equal(updated.kind, 'committed');
+      if (updated.kind !== 'committed') return;
+      const updatedRouting = updated.snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!.credentialRouting!;
+      const updatedSecondary = updatedRouting.profiles.find(
+        (profile) => profile.profileId === secondary.profileId,
+      )!;
+      assert.equal(updatedSecondary.label, 'backup-2');
+      assert.equal(updatedSecondary.weight, 2);
+      assert.equal(updatedSecondary.revision, secondary.revision + 1);
+
+      // Stale profile basis is rejected (current connection revision, stale
+      // profile revision).
+      const stale = await stores.operations.updateCredentialProfile({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: updated.snapshot.revision,
+          profileId: secondary.profileId,
+          profileRevision: secondary.revision,
+        },
+        weight: 3,
+      });
+      assert.equal(stale.kind, 'profile_stale');
+
+      // Enabling a Profile is an explicit step.
+      const enabled = await stores.operations.setCredentialProfileEnabled({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: updated.snapshot.revision,
+          profileId: secondary.profileId,
+          profileRevision: updatedSecondary.revision,
+        },
+        enabled: true,
+      });
+      assert.equal(enabled.kind, 'committed');
+
+      // Removing the primary is forbidden; the reserved identity survives.
+      const removePrimary = await stores.operations.removeCredentialProfile({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: enabled.snapshot.revision,
+          profileId: connection.connectionId,
+          profileRevision: 1,
+        },
+      });
+      assert.equal(removePrimary.kind, 'primary_not_removable');
+    });
+  });
+
+  test('rejects profile creation for providers without profile-capable auth', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const provider = (
+        Object.keys(PROVIDER_DEFAULTS) as Array<keyof typeof PROVIDER_DEFAULTS>
+      ).find((candidate) => PROVIDER_DEFAULTS[candidate].authKind === 'none');
+      assert.ok(provider, 'fixture expects at least one authKind=none provider');
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('no-auth', provider, 'No auth'),
+      );
+      const result = await stores.operations.createCredentialProfile({
+        expected: connectionBasis(connection),
+        label: 'backup',
+        weight: 1,
+      });
+      assert.equal(result.kind, 'auth_not_supported');
+    });
+  });
+
+  test('balanced activation requires configured credentials and preserves primary', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('balanced', 'openai', 'Balanced'),
+      );
+      const created = await stores.operations.createCredentialProfile({
+        expected: connectionBasis(connection),
+        label: 'backup',
+        weight: 1,
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      let snapshot = created.snapshot;
+      let routing = snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!.credentialRouting!;
+      const secondary = routing.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      )!;
+
+      // Balanced activation is rejected while credentials are unconfigured.
+      const rejected = await stores.operations.setCredentialRoutingMode({
+        expected: { connectionId: connection.connectionId, revision: snapshot.revision },
+        mode: 'balanced',
+      });
+      assert.equal(rejected.kind, 'balanced_activation_rejected');
+
+      // Configure the primary credential only.
+      await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'api_key'),
+        expected: null,
+        secret: '[redacted]',
+      });
+      const stillRejected = await stores.operations.setCredentialRoutingMode({
+        expected: { connectionId: connection.connectionId, revision: snapshot.revision },
+        mode: 'balanced',
+      });
+      assert.equal(stillRejected.kind, 'balanced_activation_rejected');
+
+      // Configure the secondary credential too.
+      await stores.credentialVault.set({
+        locator: {
+          scope: 'connection_profile',
+          connectionId: connection.connectionId,
+          profileId: secondary.profileId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret: '[redacted]',
+      });
+      const enabled = await stores.operations.setCredentialProfileEnabled({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: snapshot.revision,
+          profileId: secondary.profileId,
+          profileRevision: secondary.revision,
+        },
+        enabled: true,
+      });
+      assert.equal(enabled.kind, 'committed');
+      if (enabled.kind !== 'committed') return;
+      snapshot = enabled.snapshot;
+      routing = snapshot.connections.find((item) => item.connectionId === connection.connectionId)!
+        .credentialRouting!;
+
+      const activated = await stores.operations.setCredentialRoutingMode({
+        expected: { connectionId: connection.connectionId, revision: snapshot.revision },
+        mode: 'balanced',
+      });
+      assert.equal(activated.kind, 'committed');
+      if (activated.kind !== 'committed') return;
+      assert.equal(
+        activated.snapshot.connections.find(
+          (item) => item.connectionId === connection.connectionId,
+        )!.credentialRouting!.mode,
+        'balanced',
+      );
+
+      // Switching back to legacy_primary is a plain CAS write.
+      const back = await stores.operations.setCredentialRoutingMode({
+        expected: { connectionId: connection.connectionId, revision: activated.snapshot.revision },
+        mode: 'legacy_primary',
+      });
+      assert.equal(back.kind, 'committed');
+    });
+  });
+
+  test('removing a secondary profile deletes its vault credential and never the primary', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('remove-profile', 'openai', 'Remove profile'),
+      );
+      const created = await stores.operations.createCredentialProfile({
+        expected: connectionBasis(connection),
+        label: 'backup',
+        weight: 1,
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      const routing = created.snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!.credentialRouting!;
+      const secondary = routing.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      )!;
+      const locator = {
+        scope: 'connection_profile' as const,
+        connectionId: connection.connectionId,
+        profileId: secondary.profileId,
+        kind: 'api_key' as const,
+      };
+      await stores.credentialVault.set({ locator, expected: null, secret: '[redacted]' });
+
+      const removed = await stores.operations.removeCredentialProfile({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: created.snapshot.revision,
+          profileId: secondary.profileId,
+          profileRevision: secondary.revision,
+        },
+      });
+      assert.equal(removed.kind, 'committed');
+      if (removed.kind !== 'committed') return;
+      const afterRemove = removed.snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!;
+      assert.ok(afterRemove.credentialRouting);
+      assert.equal(afterRemove.credentialRouting.profiles.length, 1);
+      assert.equal(afterRemove.credentialRouting.profiles[0]!.profileId, connection.connectionId);
+      const status = await getCredentialStatus(stores.credentialVault, locator);
+      assert.equal(
+        status.configured,
+        false,
+        'secondary vault credential is deleted on profile removal',
+      );
+    });
+  });
+
+  test('connection removal cleans up primary and secondary profile credentials', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('cleanup', 'openai', 'Cleanup'),
+      );
+      const created = await stores.operations.createCredentialProfile({
+        expected: connectionBasis(connection),
+        label: 'backup',
+        weight: 1,
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      const routing = created.snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!.credentialRouting!;
+      const secondary = routing.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      )!;
+      await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'api_key'),
+        expected: null,
+        secret: '[redacted]',
+      });
+      await stores.credentialVault.set({
+        locator: {
+          scope: 'connection_profile',
+          connectionId: connection.connectionId,
+          profileId: secondary.profileId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret: '[redacted]',
+      });
+      assert.equal(
+        (await stores.credentialVault.getSnapshot()).entries.length,
+        2,
+        'both locators are configured before removal',
+      );
+
+      const current = created.snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!;
+      const removed = await stores.connectionCatalog.remove({
+        expected: connectionBasis(current),
+      });
+      assert.equal(removed.kind, 'committed');
+      assert.equal(
+        (await stores.credentialVault.getSnapshot()).entries.length,
+        0,
+        'connection removal deletes primary and profile credentials',
+      );
+    });
+  });
+
+  test('lazy-migrates catalog v1 to v2 only on the first profile mutation', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const connection = await createConnection(
+          stores,
+          0,
+          connectionDraft('lazy-v1', 'openai', 'Lazy v1'),
+        );
+        const catalogPath = join(root, 'connection-catalog.json');
+        const vaultPath = join(root, 'credential-vault.json');
+        const catalogV1 = JSON.parse(await readFile(catalogPath, 'utf8'));
+        assert.equal(catalogV1.schemaVersion, 1, 'legacy connection stays v1');
+        await assert.rejects(
+          readFile(vaultPath, 'utf8'),
+          /ENOENT/,
+          'an empty vault is not persisted until the first credential write',
+        );
+
+        // A profile mutation forces catalog v2; the vault stays v1 until a
+        // secondary locator mutation.
+        const created = await stores.operations.createCredentialProfile({
+          expected: connectionBasis(connection),
+          label: 'backup',
+          weight: 1,
+        });
+        assert.equal(created.kind, 'committed');
+        const catalogV2 = JSON.parse(await readFile(catalogPath, 'utf8')) as {
+          schemaVersion: number;
+          connections: readonly ConnectionCatalogEntry[];
+        };
+        assert.equal(
+          catalogV2.schemaVersion,
+          2,
+          'catalog is persisted as v2 after profile mutation',
+        );
+        await assert.rejects(
+          readFile(vaultPath, 'utf8'),
+          /ENOENT/,
+          'catalog v2 alone does not force vault persistence',
+        );
+
+        const routing = catalogV2.connections[0]!.credentialRouting!;
+        assert.equal(routing.profiles.length, 2);
+
+        // The secondary locator mutation forces vault v2.
+        const secondary = routing.profiles.find(
+          (profile) => profile.profileId !== connection.connectionId,
+        );
+        assert.ok(secondary);
+        await stores.credentialVault.set({
+          locator: {
+            scope: 'connection_profile',
+            connectionId: connection.connectionId,
+            profileId: secondary.profileId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: '[redacted]',
+        });
+        const vaultV2 = JSON.parse(await readFile(vaultPath, 'utf8'));
+        assert.equal(
+          vaultV2.schemaVersion,
+          2,
+          'vault is persisted as v2 after secondary locator mutation',
+        );
+      } finally {
+        if (!owner.closed) await owner.close();
+      }
+    });
+  });
+
+  test('reads v1 catalog documents as implicit primary without rewriting', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      // Hand-write a v1 catalog + v1 vault to simulate a legacy install.
+      const connectionId = '00000000-0000-4000-8000-000000000001';
+      await writeFile(
+        join(root, 'connection-catalog.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          revision: 1,
+          defaultTarget: { connectionId, modelId: 'gpt-5' },
+          connections: [
+            {
+              connectionId,
+              revision: 1,
+              slug: 'legacy',
+              name: 'Legacy',
+              providerType: 'openai',
+              enabled: true,
+              enabledModelIds: ['gpt-5'],
+              models: [],
+            },
+          ],
+        }),
+        'utf8',
+      );
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const snapshot = await stores.connectionCatalog.getSnapshot();
+        assert.equal(snapshot.connections.length, 1);
+        assert.equal(
+          snapshot.connections[0]!.credentialRouting,
+          undefined,
+          'v1 is implicit primary',
+        );
+        const raw = JSON.parse(await readFile(join(root, 'connection-catalog.json'), 'utf8'));
+        assert.equal(raw.schemaVersion, 1, 'recovery must not rewrite a v1 catalog');
+      } finally {
+        if (!owner.closed) await owner.close();
+      }
+    });
+  });
+
+  test('rejects unknown v1/v2 future document schema versions fail-closed', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      await writeFile(
+        join(root, 'connection-catalog.json'),
+        JSON.stringify({ schemaVersion: 99, revision: 0, defaultTarget: null, connections: [] }),
+        'utf8',
+      );
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        await assert.rejects(
+          openInteractiveRuntimePolicyStoresForWrite(owner.lease),
+          isStoreError('invalid_document'),
+        );
+      } finally {
+        if (!owner.closed) await owner.close();
+      }
+    });
+  });
 });
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;

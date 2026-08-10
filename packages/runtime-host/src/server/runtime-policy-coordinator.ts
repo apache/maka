@@ -3,6 +3,7 @@ import type {
   ConnectionCatalogSnapshot,
   ConnectionVersionBasis,
   CredentialLocator,
+  CredentialProfileMutationResult,
   CredentialStatus,
   MutateRuntimePolicyResult,
   RuntimePolicySnapshot,
@@ -29,8 +30,18 @@ import {
   type CredentialVaultDeleteInput,
   type CredentialVaultQueryInput,
   type CredentialVaultSetInput,
+  type CredentialProfileCreateInput,
+  type CredentialProfileRemoveInput,
+  type CredentialProfileSetEnabledInput,
+  type CredentialProfileSetRoutingModeInput,
+  type CredentialProfileUpdateInput,
+  type CreateCredentialProfileResult,
   type OperationOutcome,
+  type RemoveCredentialProfileResult,
   type RuntimePolicyMutateInput,
+  type SetCredentialProfileEnabledResult,
+  type SetCredentialRoutingModeResult,
+  type UpdateCredentialProfileResult,
 } from '../protocol/index.js';
 import type { RuntimePolicyOperationHandlerMap } from './operation-dispatcher.js';
 import { buildHostAgentSettingsTools } from './agent-settings-tools.js';
@@ -80,6 +91,11 @@ export class HostRuntimePolicyCoordinator {
     'credential.vault.query': (input) => this.#queryCredential(input),
     'credential.vault.set': (input) => this.#setCredential(input),
     'credential.vault.delete': (input) => this.#deleteCredential(input),
+    'credential.profile.create': (input) => this.#createCredentialProfile(input),
+    'credential.profile.update': (input) => this.#updateCredentialProfile(input),
+    'credential.profile.set-enabled': (input) => this.#setCredentialProfileEnabled(input),
+    'credential.profile.remove': (input) => this.#removeCredentialProfile(input),
+    'credential.profile.set-routing-mode': (input) => this.#setCredentialRoutingMode(input),
     'connection.request-headers.query': (input) => this.#queryConnectionRequestHeaders(input),
     'connection.request-headers.replace': (input) => this.#replaceConnectionRequestHeaders(input),
   };
@@ -234,6 +250,71 @@ export class HostRuntimePolicyCoordinator {
         vaultRevision: result.snapshot.revision,
         status: unconfiguredStatus(input.expected.locator),
       };
+    });
+  }
+
+  async #createCredentialProfile(
+    input: CredentialProfileCreateInput,
+  ): Promise<OperationOutcome<'credential.profile.create'>> {
+    return this.#storeMutation(async () => {
+      const result = await this.#stores.operations.createCredentialProfile(input);
+      return projectCredentialProfileMutation(
+        result,
+        input.expected.connectionId,
+        'credential profile create',
+      ) as CreateCredentialProfileResult;
+    });
+  }
+
+  async #updateCredentialProfile(
+    input: CredentialProfileUpdateInput,
+  ): Promise<OperationOutcome<'credential.profile.update'>> {
+    return this.#storeMutation(async () => {
+      const result = await this.#stores.operations.updateCredentialProfile(input);
+      return projectCredentialProfileMutation(
+        result,
+        input.expected.connectionId,
+        'credential profile update',
+      ) as UpdateCredentialProfileResult;
+    });
+  }
+
+  async #setCredentialProfileEnabled(
+    input: CredentialProfileSetEnabledInput,
+  ): Promise<OperationOutcome<'credential.profile.set-enabled'>> {
+    return this.#storeMutation(async () => {
+      const result = await this.#stores.operations.setCredentialProfileEnabled(input);
+      return projectCredentialProfileMutation(
+        result,
+        input.expected.connectionId,
+        'credential profile set enabled',
+      ) as SetCredentialProfileEnabledResult;
+    });
+  }
+
+  async #removeCredentialProfile(
+    input: CredentialProfileRemoveInput,
+  ): Promise<OperationOutcome<'credential.profile.remove'>> {
+    return this.#storeMutation(async () => {
+      const result = await this.#stores.operations.removeCredentialProfile(input);
+      return projectCredentialProfileMutation(
+        result,
+        input.expected.connectionId,
+        'credential profile remove',
+      ) as RemoveCredentialProfileResult;
+    });
+  }
+
+  async #setCredentialRoutingMode(
+    input: CredentialProfileSetRoutingModeInput,
+  ): Promise<OperationOutcome<'credential.profile.set-routing-mode'>> {
+    return this.#storeMutation(async () => {
+      const result = await this.#stores.operations.setCredentialRoutingMode(input);
+      return projectCredentialProfileMutation(
+        result,
+        input.expected.connectionId,
+        'credential profile set routing mode',
+      ) as SetCredentialRoutingModeResult;
     });
   }
 
@@ -398,6 +479,69 @@ function committedConnection(
   };
 }
 
+type CredentialProfileProtocolResult =
+  | CreateCredentialProfileResult
+  | UpdateCredentialProfileResult
+  | SetCredentialProfileEnabledResult
+  | RemoveCredentialProfileResult
+  | SetCredentialRoutingModeResult;
+
+/**
+ * Project a storage-level CredentialProfileMutationResult to the wire-safe
+ * protocol projection: committed carries only the catalog revision and
+ * connection basis (never the full snapshot), and `profile_not_found` drops
+ * the internal expected basis.
+ */
+function projectCredentialProfileMutation(
+  result: CredentialProfileMutationResult,
+  connectionId: string,
+  label: string,
+): CredentialProfileProtocolResult {
+  switch (result.kind) {
+    case 'committed': {
+      const connection = result.snapshot.connections.find(
+        (candidate) => candidate.connectionId === connectionId,
+      );
+      if (!connection) {
+        throw invariantFailure(`Committed ${label} omitted its connection basis`);
+      }
+      return {
+        kind: 'committed',
+        catalogRevision: result.snapshot.revision,
+        connection: connectionBasis(connection),
+      };
+    }
+    case 'connection_not_found':
+      return { kind: 'connection_not_found' };
+    case 'connection_stale':
+      return {
+        kind: 'connection_stale',
+        expected: result.expected,
+        actual: result.actual,
+      };
+    case 'profile_not_found':
+      return { kind: 'profile_not_found' };
+    case 'profile_stale':
+      return {
+        kind: 'profile_stale',
+        expected: result.expected,
+        actual: result.actual,
+      };
+    case 'profile_label_conflict':
+      return { kind: 'profile_label_conflict', label: result.label };
+    case 'capacity_limit':
+      return { kind: 'capacity_limit', max: result.max };
+    case 'primary_not_removable':
+      return { kind: 'primary_not_removable' };
+    case 'auth_not_supported':
+      return { kind: 'auth_not_supported', providerType: result.providerType };
+    case 'balanced_activation_rejected':
+      return { kind: 'balanced_activation_rejected', reason: result.reason };
+    default:
+      throw invariantFailure(`Unknown ${label} result kind`);
+  }
+}
+
 function connectionBasis(connection: ConnectionCatalogEntry): ConnectionVersionBasis {
   return { connectionId: connection.connectionId, revision: connection.revision };
 }
@@ -520,6 +664,12 @@ function sameLocator(left: CredentialLocator, right: CredentialLocator): boolean
   switch (left.scope) {
     case 'connection':
       return right.scope === 'connection' && left.connectionId === right.connectionId;
+    case 'connection_profile':
+      return (
+        right.scope === 'connection_profile' &&
+        left.connectionId === right.connectionId &&
+        left.profileId === right.profileId
+      );
     case 'web_search':
       return right.scope === 'web_search' && left.provider === right.provider;
     case 'network_proxy':

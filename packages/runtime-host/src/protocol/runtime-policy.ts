@@ -13,18 +13,24 @@ import {
   decodeConnectionVersionBasis,
   decodeRuntimePolicyEntityId,
   decodeCredentialLocator,
+  decodeCredentialProfileVersionBasis,
   decodeCredentialStatus,
   decodeCredentialVersionBasis,
   decodeProviderType,
   normalizeCreateCatalogConnectionInput,
+  normalizeCreateCredentialProfileInput,
   normalizeDeleteCredentialInput,
   normalizeRemoveCatalogConnectionInput,
+  normalizeRemoveCredentialProfileInput,
   normalizeOptionalRequestBodyOverlay,
   normalizeRequestHeaderUpdates,
   normalizeRuntimePolicyMutation,
   normalizeSetCredentialInput,
+  normalizeSetCredentialProfileEnabledInput,
+  normalizeSetCredentialRoutingModeInput,
   normalizeSetDefaultConnectionTargetInput,
   normalizeUpdateCatalogConnectionInput,
+  normalizeUpdateCredentialProfileInput,
   REQUEST_HEADERS_MAX_BYTES,
   RequestCustomizationValidationError,
   RuntimePolicyDomainDecodeError,
@@ -33,18 +39,24 @@ import {
   type ConnectionTarget,
   type ConnectionVersionBasis,
   type CreateCatalogConnectionInput,
+  type CreateCredentialProfileInput,
   type CredentialLocator,
+  type CredentialProfileVersionBasis,
   type CredentialStatus,
   type CredentialVersionBasis,
   type DeleteCredentialInput,
   type MutateRuntimePolicyInput,
   type RemoveCatalogConnectionInput,
+  type RemoveCredentialProfileInput,
   type RequestHeaderUpdate,
   type RevisionConflict,
   type RuntimePolicySnapshot,
   type SetCredentialInput,
+  type SetCredentialProfileEnabledInput,
+  type SetCredentialRoutingModeInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
+  type UpdateCredentialProfileInput,
 } from '@maka/core/runtime-policy';
 import { normalizeRelayModelProfiles, type RelayModelProfile } from '@maka/core/model-thinking';
 // The client subgraph cannot import core subpaths directly (dependency
@@ -199,6 +211,54 @@ export type DeleteCredentialResult =
   | CredentialStale;
 export type CredentialVaultSetInput = SetCredentialInput;
 export type CredentialVaultDeleteInput = DeleteCredentialInput;
+
+interface CredentialProfileCommitted {
+  readonly kind: 'committed';
+  readonly catalogRevision: number;
+  readonly connection: ConnectionVersionBasis;
+}
+
+interface ProfileStale {
+  readonly kind: 'profile_stale';
+  readonly expected: CredentialProfileVersionBasis;
+  readonly actual: CredentialProfileVersionBasis | null;
+}
+
+export type CreateCredentialProfileResult =
+  | CredentialProfileCommitted
+  | { readonly kind: 'connection_not_found' }
+  | ConnectionStale
+  | { readonly kind: 'profile_label_conflict'; readonly label: string }
+  | { readonly kind: 'capacity_limit'; readonly max: number }
+  | { readonly kind: 'auth_not_supported'; readonly providerType: string };
+export type UpdateCredentialProfileResult =
+  | CredentialProfileCommitted
+  | ConnectionStale
+  | { readonly kind: 'profile_not_found' }
+  | ProfileStale
+  | { readonly kind: 'profile_label_conflict'; readonly label: string };
+export type SetCredentialProfileEnabledResult =
+  | CredentialProfileCommitted
+  | ConnectionStale
+  | { readonly kind: 'profile_not_found' }
+  | ProfileStale;
+export type RemoveCredentialProfileResult =
+  | CredentialProfileCommitted
+  | ConnectionStale
+  | { readonly kind: 'profile_not_found' }
+  | ProfileStale
+  | { readonly kind: 'primary_not_removable' };
+export type SetCredentialRoutingModeResult =
+  | CredentialProfileCommitted
+  | ConnectionStale
+  | { readonly kind: 'auth_not_supported'; readonly providerType: string }
+  | { readonly kind: 'balanced_activation_rejected'; readonly reason: string };
+
+export type CredentialProfileCreateInput = CreateCredentialProfileInput;
+export type CredentialProfileUpdateInput = UpdateCredentialProfileInput;
+export type CredentialProfileSetEnabledInput = SetCredentialProfileEnabledInput;
+export type CredentialProfileRemoveInput = RemoveCredentialProfileInput;
+export type CredentialProfileSetRoutingModeInput = SetCredentialRoutingModeInput;
 
 export interface ConnectionRequestHeadersQueryInput {
   readonly connectionId: string;
@@ -361,6 +421,61 @@ export const RUNTIME_POLICY_OPERATION_SPECS = {
     errors: MUTATION_ERRORS,
     decodeInput: decodeConnectionRequestHeadersReplaceInput,
     decodeOutput: decodeConnectionRequestHeadersReplaceResult,
+  }),
+  'credential.profile.create': defineOperation<
+    CredentialProfileCreateInput,
+    CreateCredentialProfileResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeCredentialProfileCreateInput,
+    decodeOutput: decodeCredentialProfileCreateResult,
+  }),
+  'credential.profile.update': defineOperation<
+    CredentialProfileUpdateInput,
+    UpdateCredentialProfileResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeCredentialProfileUpdateInput,
+    decodeOutput: decodeCredentialProfileUpdateResult,
+  }),
+  'credential.profile.set-enabled': defineOperation<
+    CredentialProfileSetEnabledInput,
+    SetCredentialProfileEnabledResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeCredentialProfileSetEnabledInput,
+    decodeOutput: decodeCredentialProfileSetEnabledResult,
+  }),
+  'credential.profile.remove': defineOperation<
+    CredentialProfileRemoveInput,
+    RemoveCredentialProfileResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeCredentialProfileRemoveInput,
+    decodeOutput: decodeCredentialProfileRemoveResult,
+  }),
+  'credential.profile.set-routing-mode': defineOperation<
+    CredentialProfileSetRoutingModeInput,
+    SetCredentialRoutingModeResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeCredentialProfileSetRoutingModeInput,
+    decodeOutput: decodeCredentialProfileSetRoutingModeResult,
   }),
 } as const;
 
@@ -1073,4 +1188,184 @@ function decodeDomain<T>(decode: () => T): T {
     }
     throw error;
   }
+}
+
+function decodeCredentialProfileCreateInput(value: unknown): CreateCredentialProfileInput {
+  return decodeDomain(() => normalizeCreateCredentialProfileInput(value));
+}
+
+function decodeCredentialProfileUpdateInput(value: unknown): UpdateCredentialProfileInput {
+  return decodeDomain(() => normalizeUpdateCredentialProfileInput(value));
+}
+
+function decodeCredentialProfileSetEnabledInput(value: unknown): SetCredentialProfileEnabledInput {
+  return decodeDomain(() => normalizeSetCredentialProfileEnabledInput(value));
+}
+
+function decodeCredentialProfileRemoveInput(value: unknown): RemoveCredentialProfileInput {
+  return decodeDomain(() => normalizeRemoveCredentialProfileInput(value));
+}
+
+function decodeCredentialProfileSetRoutingModeInput(value: unknown): SetCredentialRoutingModeInput {
+  return decodeDomain(() => normalizeSetCredentialRoutingModeInput(value));
+}
+
+function decodeCredentialProfileCreateResult(value: unknown): CreateCredentialProfileResult {
+  const item = requireRecord(value, 'credential profile create result');
+  if (item.kind === 'committed') return credentialProfileCommitted(item);
+  if (item.kind === 'connection_not_found') {
+    requireExactRecord(item, 'credential profile connection not found result', ['kind']);
+    return { kind: 'connection_not_found' };
+  }
+  if (item.kind === 'connection_stale') return connectionStale(item);
+  if (item.kind === 'profile_label_conflict') {
+    const conflict = requireExactRecord(item, 'credential profile label conflict', [
+      'kind',
+      'label',
+    ]);
+    if (conflict.kind !== 'profile_label_conflict') {
+      throw invalidProtocolFrame('Invalid credential profile label conflict');
+    }
+    return { kind: 'profile_label_conflict', label: stringValue(conflict.label, 'profile label') };
+  }
+  if (item.kind === 'capacity_limit') {
+    const conflict = requireExactRecord(item, 'credential profile capacity limit', ['kind', 'max']);
+    if (conflict.kind !== 'capacity_limit') {
+      throw invalidProtocolFrame('Invalid credential profile capacity limit');
+    }
+    return { kind: 'capacity_limit', max: integer(conflict.max, 'capacity max', 0, 4096) };
+  }
+  if (item.kind === 'auth_not_supported') {
+    const conflict = requireExactRecord(item, 'credential profile auth not supported', [
+      'kind',
+      'providerType',
+    ]);
+    if (conflict.kind !== 'auth_not_supported') {
+      throw invalidProtocolFrame('Invalid credential profile auth not supported');
+    }
+    return {
+      kind: 'auth_not_supported',
+      providerType: stringValue(conflict.providerType, 'provider type'),
+    };
+  }
+  throw invalidProtocolFrame('Invalid credential profile create result');
+}
+
+function decodeCredentialProfileUpdateResult(value: unknown): UpdateCredentialProfileResult {
+  const item = requireRecord(value, 'credential profile update result');
+  if (item.kind === 'committed') return credentialProfileCommitted(item);
+  if (item.kind === 'connection_stale') return connectionStale(item);
+  if (item.kind === 'profile_not_found') return profileNotFound(item);
+  if (item.kind === 'profile_stale') return profileStale(item);
+  if (item.kind === 'profile_label_conflict') {
+    const conflict = requireExactRecord(item, 'credential profile label conflict', [
+      'kind',
+      'label',
+    ]);
+    if (conflict.kind !== 'profile_label_conflict') {
+      throw invalidProtocolFrame('Invalid credential profile label conflict');
+    }
+    return { kind: 'profile_label_conflict', label: stringValue(conflict.label, 'profile label') };
+  }
+  throw invalidProtocolFrame('Invalid credential profile update result');
+}
+
+function decodeCredentialProfileSetEnabledResult(
+  value: unknown,
+): SetCredentialProfileEnabledResult {
+  const item = requireRecord(value, 'credential profile set enabled result');
+  if (item.kind === 'committed') return credentialProfileCommitted(item);
+  if (item.kind === 'connection_stale') return connectionStale(item);
+  if (item.kind === 'profile_not_found') return profileNotFound(item);
+  if (item.kind === 'profile_stale') return profileStale(item);
+  throw invalidProtocolFrame('Invalid credential profile set enabled result');
+}
+
+function decodeCredentialProfileRemoveResult(value: unknown): RemoveCredentialProfileResult {
+  const item = requireRecord(value, 'credential profile remove result');
+  if (item.kind === 'committed') return credentialProfileCommitted(item);
+  if (item.kind === 'connection_stale') return connectionStale(item);
+  if (item.kind === 'profile_not_found') return profileNotFound(item);
+  if (item.kind === 'profile_stale') return profileStale(item);
+  if (item.kind === 'primary_not_removable') {
+    requireExactRecord(item, 'credential profile primary not removable result', ['kind']);
+    return { kind: 'primary_not_removable' };
+  }
+  throw invalidProtocolFrame('Invalid credential profile remove result');
+}
+
+function decodeCredentialProfileSetRoutingModeResult(
+  value: unknown,
+): SetCredentialRoutingModeResult {
+  const item = requireRecord(value, 'credential profile set routing mode result');
+  if (item.kind === 'committed') return credentialProfileCommitted(item);
+  if (item.kind === 'connection_stale') return connectionStale(item);
+  if (item.kind === 'auth_not_supported') {
+    const conflict = requireExactRecord(item, 'credential profile auth not supported', [
+      'kind',
+      'providerType',
+    ]);
+    if (conflict.kind !== 'auth_not_supported') {
+      throw invalidProtocolFrame('Invalid credential profile auth not supported');
+    }
+    return {
+      kind: 'auth_not_supported',
+      providerType: stringValue(conflict.providerType, 'provider type'),
+    };
+  }
+  if (item.kind === 'balanced_activation_rejected') {
+    const conflict = requireExactRecord(item, 'credential profile balanced activation rejected', [
+      'kind',
+      'reason',
+    ]);
+    if (conflict.kind !== 'balanced_activation_rejected') {
+      throw invalidProtocolFrame('Invalid credential profile balanced activation rejected');
+    }
+    return {
+      kind: 'balanced_activation_rejected',
+      reason: stringValue(conflict.reason, 'activation rejection reason'),
+    };
+  }
+  throw invalidProtocolFrame('Invalid credential profile set routing mode result');
+}
+
+function credentialProfileCommitted(value: unknown): CredentialProfileCommitted {
+  const item = requireExactRecord(value, 'credential profile committed result', [
+    'kind',
+    'catalogRevision',
+    'connection',
+  ]);
+  if (item.kind !== 'committed') {
+    throw invalidProtocolFrame('Invalid credential profile committed result');
+  }
+  return {
+    kind: 'committed',
+    catalogRevision: revision(item.catalogRevision, 'catalog revision'),
+    connection: decodeDomain(() => decodeConnectionVersionBasis(item.connection)),
+  };
+}
+
+function profileNotFound(value: unknown): { readonly kind: 'profile_not_found' } {
+  requireExactRecord(value, 'profile not found result', ['kind']);
+  return { kind: 'profile_not_found' };
+}
+
+function profileStale(value: unknown): ProfileStale {
+  const item = requireExactRecord(value, 'profile stale conflict', ['kind', 'expected', 'actual']);
+  if (item.kind !== 'profile_stale') throw invalidProtocolFrame('Invalid profile conflict');
+  return {
+    kind: 'profile_stale',
+    expected: decodeDomain(() => decodeCredentialProfileVersionBasis(item.expected)),
+    actual:
+      item.actual === null
+        ? null
+        : decodeDomain(() => decodeCredentialProfileVersionBasis(item.actual)),
+  };
+}
+
+function stringValue(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 4096) {
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  }
+  return value;
 }

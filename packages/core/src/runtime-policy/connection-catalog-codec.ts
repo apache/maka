@@ -9,15 +9,29 @@ import type {
   ConnectionCatalogEntry,
   ConnectionCatalogEntryDraft,
   ConnectionCatalogEntryUpdate,
+  ConnectionCredentialProfileEntry,
+  ConnectionCredentialRouting,
   ConnectionModel,
   ConnectionModelDiscoveryResult,
   ConnectionTarget,
   ConnectionTestSummary,
   ConnectionVersionBasis,
   CreateCatalogConnectionInput,
+  CreateCredentialProfileInput,
+  CredentialProfileVersionBasis,
   RemoveCatalogConnectionInput,
+  RemoveCredentialProfileInput,
+  SetCredentialProfileEnabledInput,
+  SetCredentialRoutingModeInput,
   SetDefaultConnectionTargetInput,
   UpdateCatalogConnectionInput,
+  UpdateCredentialProfileInput,
+} from '../runtime-policy.js';
+import {
+  CONNECTION_CREDENTIAL_PROFILE_LABEL_MAX_LENGTH,
+  CONNECTION_CREDENTIAL_PROFILE_MAX,
+  CONNECTION_CREDENTIAL_PROFILE_WEIGHT_MAX,
+  CONNECTION_CREDENTIAL_PROFILE_WEIGHT_MIN,
 } from '../runtime-policy.js';
 import {
   normalizeOptionalRequestBodyOverlay,
@@ -92,6 +106,147 @@ export function normalizeSetDefaultConnectionTargetInput(
     ),
     target: input.target === null ? null : decodeConnectionTarget(input.target),
   };
+}
+
+export function normalizeCreateCredentialProfileInput(
+  value: unknown,
+): CreateCredentialProfileInput {
+  const input = exactRecord(value, 'create credential profile input', [
+    'expected',
+    'label',
+    'weight',
+  ]);
+  return {
+    expected: decodeConnectionVersionBasis(input.expected),
+    label: decodeCredentialProfileLabel(input.label),
+    weight: decodeCredentialProfileWeight(input.weight),
+  };
+}
+
+export function normalizeUpdateCredentialProfileInput(
+  value: unknown,
+): UpdateCredentialProfileInput {
+  const input = exactRecord(
+    value,
+    'update credential profile input',
+    ['expected', 'label', 'weight'],
+    ['expected'],
+  );
+  return {
+    expected: decodeCredentialProfileVersionBasis(input.expected),
+    ...(input.label === undefined ? {} : { label: decodeCredentialProfileLabel(input.label) }),
+    ...(input.weight === undefined ? {} : { weight: decodeCredentialProfileWeight(input.weight) }),
+  };
+}
+
+export function normalizeSetCredentialProfileEnabledInput(
+  value: unknown,
+): SetCredentialProfileEnabledInput {
+  const input = exactRecord(value, 'set credential profile enabled input', ['expected', 'enabled']);
+  return {
+    expected: decodeCredentialProfileVersionBasis(input.expected),
+    enabled: booleanValue(input.enabled, 'credential profile enabled'),
+  };
+}
+
+export function normalizeRemoveCredentialProfileInput(
+  value: unknown,
+): RemoveCredentialProfileInput {
+  const input = exactRecord(value, 'remove credential profile input', ['expected']);
+  return { expected: decodeCredentialProfileVersionBasis(input.expected) };
+}
+
+export function normalizeSetCredentialRoutingModeInput(
+  value: unknown,
+): SetCredentialRoutingModeInput {
+  const input = exactRecord(value, 'set credential routing mode input', ['expected', 'mode']);
+  const mode = input.mode;
+  if (mode !== 'legacy_primary' && mode !== 'balanced') {
+    throw domainError('credential routing mode is invalid');
+  }
+  return {
+    expected: decodeConnectionVersionBasis(input.expected),
+    mode,
+  };
+}
+
+export function decodeCredentialProfileVersionBasis(value: unknown): CredentialProfileVersionBasis {
+  const item = exactRecord(value, 'credential profile basis', [
+    'connectionId',
+    'connectionRevision',
+    'profileId',
+    'profileRevision',
+  ]);
+  return {
+    connectionId: entityIdValue(item.connectionId, 'connection id'),
+    connectionRevision: positiveRevisionValue(item.connectionRevision, 'connection revision'),
+    profileId: entityIdValue(item.profileId, 'profile id'),
+    profileRevision: positiveRevisionValue(item.profileRevision, 'profile revision'),
+  };
+}
+
+export function decodeCredentialProfileLabel(value: unknown): string {
+  if (typeof value !== 'string') throw domainError('credential profile label must be a string');
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > CONNECTION_CREDENTIAL_PROFILE_LABEL_MAX_LENGTH) {
+    throw domainError('credential profile label must be 1 to 64 characters');
+  }
+  return trimmed;
+}
+
+export function decodeCredentialProfileWeight(value: unknown): number {
+  return integerValue(
+    value,
+    'credential profile weight',
+    CONNECTION_CREDENTIAL_PROFILE_WEIGHT_MIN,
+    CONNECTION_CREDENTIAL_PROFILE_WEIGHT_MAX,
+  );
+}
+
+export function decodeConnectionCredentialProfileEntry(
+  value: unknown,
+): ConnectionCredentialProfileEntry {
+  const item = exactRecord(value, 'connection credential profile entry', [
+    'profileId',
+    'revision',
+    'label',
+    'enabled',
+    'weight',
+  ]);
+  return {
+    profileId: entityIdValue(item.profileId, 'profile id'),
+    revision: positiveRevisionValue(item.revision, 'profile revision'),
+    label: decodeCredentialProfileLabel(item.label),
+    enabled: booleanValue(item.enabled, 'credential profile enabled'),
+    weight: decodeCredentialProfileWeight(item.weight),
+  };
+}
+
+export function decodeConnectionCredentialRouting(value: unknown): ConnectionCredentialRouting {
+  const item = exactRecord(value, 'connection credential routing', [
+    'mode',
+    'strategy',
+    'profiles',
+  ]);
+  if (item.mode !== 'legacy_primary' && item.mode !== 'balanced') {
+    throw domainError('credential routing mode is invalid');
+  }
+  if (item.strategy !== 'smooth_weighted_round_robin') {
+    throw domainError('credential routing strategy is invalid');
+  }
+  if (!Array.isArray(item.profiles) || item.profiles.length > CONNECTION_CREDENTIAL_PROFILE_MAX) {
+    throw domainError('credential routing profiles must be a bounded array');
+  }
+  const profiles = item.profiles.map((profile) => decodeConnectionCredentialProfileEntry(profile));
+  const ids = profiles.map((profile) => profile.profileId);
+  if (new Set(ids).size !== ids.length) {
+    throw domainError('credential routing profile ids must be unique');
+  }
+  const labels = profiles.map((profile) => profile.label.toLowerCase());
+  if (new Set(labels).size !== labels.length) {
+    throw domainError('credential routing profile labels must be unique per connection');
+  }
+  return { mode: item.mode, strategy: item.strategy, profiles };
 }
 
 export function normalizeConnectionCatalogEntryDraft(value: unknown): ConnectionCatalogEntryDraft {
@@ -318,6 +473,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       'enabledModelIds',
       'relayModelProfiles',
       'requestBodyOverlay',
+      'credentialRouting',
       'models',
       'modelSource',
       'modelsFetchedAt',
@@ -390,6 +546,9 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     ...(item.lastTest === undefined
       ? {}
       : { lastTest: decodeConnectionTestSummary(item.lastTest) }),
+    ...(item.credentialRouting === undefined
+      ? {}
+      : { credentialRouting: decodeConnectionCredentialRouting(item.credentialRouting) }),
   };
   assertCanonicalValue(value, decoded, 'connection catalog entry');
   return decoded;

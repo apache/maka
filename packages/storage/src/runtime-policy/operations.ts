@@ -5,7 +5,13 @@ import type {
   ConnectionTestSummary,
   CredentialMutationResult,
   CredentialLocator,
+  CredentialProfileMutationResult,
+  CreateCredentialProfileInput,
+  RemoveCredentialProfileInput,
   SetCredentialInput,
+  SetCredentialProfileEnabledInput,
+  SetCredentialRoutingModeInput,
+  UpdateCredentialProfileInput,
   CredentialStatus,
   CredentialVersionBasis,
   RuntimePolicy,
@@ -14,6 +20,15 @@ import type {
 } from '@maka/core/runtime-policy';
 import type { ProviderAuthActionAvailability } from '@maka/core/provider-auth';
 import type { ProviderDefaults } from '@maka/core/llm-connections';
+
+export type {
+  CreateCredentialProfileInput,
+  CredentialProfileMutationResult,
+  RemoveCredentialProfileInput,
+  SetCredentialProfileEnabledInput,
+  SetCredentialRoutingModeInput,
+  UpdateCredentialProfileInput,
+} from '@maka/core/runtime-policy';
 
 declare const operationTicketBrand: unique symbol;
 
@@ -245,6 +260,21 @@ export interface RuntimePolicyOperationCoordinator {
     input: CompareAndSetOAuthCredentialInput,
   ): Promise<CompareAndSetOAuthCredentialResult>;
   importConnectionCredential(input: SetCredentialInput): Promise<CredentialMutationResult>;
+  createCredentialProfile(
+    input: CreateCredentialProfileInput,
+  ): Promise<CredentialProfileMutationResult>;
+  updateCredentialProfile(
+    input: UpdateCredentialProfileInput,
+  ): Promise<CredentialProfileMutationResult>;
+  setCredentialProfileEnabled(
+    input: SetCredentialProfileEnabledInput,
+  ): Promise<CredentialProfileMutationResult>;
+  removeCredentialProfile(
+    input: RemoveCredentialProfileInput,
+  ): Promise<CredentialProfileMutationResult>;
+  setCredentialRoutingMode(
+    input: SetCredentialRoutingModeInput,
+  ): Promise<CredentialProfileMutationResult>;
   beginInteractiveOAuthLogin(connectionId: string): Promise<BeginInteractiveOAuthLoginResult>;
   completeInteractiveOAuthLogin(
     ticket: InteractiveOAuthLoginTicket,
@@ -278,6 +308,29 @@ export function connectionCredentialLocator(
       return { scope: 'connection', connectionId, kind: 'api_key' };
     case 'oauth_token':
       return { scope: 'connection', connectionId, kind: 'oauth_token' };
+    case 'none':
+      return null;
+  }
+}
+
+/**
+ * The Credential Vault locator for a secondary Profile. `authKind` must be a
+ * profile-capable kind (`api_key` | `optional_api_key` | `oauth_token`);
+ * the primary Profile keeps using `connectionCredentialLocator` with the
+ * `connection` scope, so this helper must never be called for the primary
+ * (`profileId === connectionId`).
+ */
+export function connectionProfileCredentialLocator(
+  connectionId: string,
+  profileId: string,
+  authKind: ProviderAuthKind,
+): Extract<CredentialLocator, { scope: 'connection_profile' }> | null {
+  switch (authKind) {
+    case 'api_key':
+    case 'optional_api_key':
+      return { scope: 'connection_profile', connectionId, profileId, kind: 'api_key' };
+    case 'oauth_token':
+      return { scope: 'connection_profile', connectionId, profileId, kind: 'oauth_token' };
     case 'none':
       return null;
   }

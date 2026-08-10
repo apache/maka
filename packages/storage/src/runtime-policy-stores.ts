@@ -4,6 +4,7 @@ import type {
   CreateCatalogConnectionInput,
   CredentialLocator,
   CredentialMutationResult,
+  CredentialProfileVersionBasis,
   CredentialVaultSnapshot,
   DeleteCredentialInput,
   MutateRuntimePolicyInput,
@@ -42,12 +43,15 @@ export type {
   CommitConnectionOnboardingResult,
   ConnectionEffectPreparationFailure,
   ConnectionTestTicket,
+  CreateCredentialProfileInput,
+  CredentialProfileMutationResult,
   InteractiveOAuthLoginCompletionResult,
   InteractiveOAuthLoginProvider,
   InteractiveOAuthLoginTicket,
   CredentialStatusQueryResult,
   ModelFetchTicket,
   ProviderAuthKind,
+  RemoveCredentialProfileInput,
   RuntimePolicyCredentialMaterial,
   RuntimePolicyOperationCoordinator,
   RuntimePolicyOperationSecretMaterial,
@@ -58,7 +62,10 @@ export type {
   ResolveWebSearchExecutionInput,
   ResolveWebSearchExecutionResult,
   ResolveWebFetchExecutionResult,
+  SetCredentialProfileEnabledInput,
+  SetCredentialRoutingModeInput,
   UnavailableProviderActionAvailability,
+  UpdateCredentialProfileInput,
 } from './runtime-policy/operations.js';
 
 const readerBrand: unique symbol = Symbol('RuntimePolicyStoresReader');
@@ -220,6 +227,11 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       resolveNetworkProxyExecution: (input) => coordinator.resolveNetworkProxyExecution(input),
       compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
       importConnectionCredential: (input) => coordinator.importConnectionCredential(input),
+      createCredentialProfile: (input) => coordinator.createCredentialProfile(input),
+      updateCredentialProfile: (input) => coordinator.updateCredentialProfile(input),
+      setCredentialProfileEnabled: (input) => coordinator.setCredentialProfileEnabled(input),
+      removeCredentialProfile: (input) => coordinator.removeCredentialProfile(input),
+      setCredentialRoutingMode: (input) => coordinator.setCredentialRoutingMode(input),
       beginInteractiveOAuthLogin: (connectionId) =>
         coordinator.beginInteractiveOAuthLogin(connectionId),
       completeInteractiveOAuthLogin: (ticket, secret) =>

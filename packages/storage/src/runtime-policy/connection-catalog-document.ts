@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
+  CONNECTION_CREDENTIAL_PROFILE_MAX,
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionTarget,
   decodeConnectionTestSummary,
@@ -11,20 +12,34 @@ import {
   normalizeConnectionCatalogEntryUpdateForProvider,
   normalizeConnectionModelDiscoveryResult,
   normalizeCreateCatalogConnectionInput,
+  normalizeCreateCredentialProfileInput,
   normalizeRemoveCatalogConnectionInput,
+  normalizeRemoveCredentialProfileInput,
+  normalizeSetCredentialProfileEnabledInput,
+  normalizeSetCredentialRoutingModeInput,
   normalizeSetDefaultConnectionTargetInput,
   normalizeUpdateCatalogConnectionInput,
+  normalizeUpdateCredentialProfileInput,
   type ConnectionCatalogEntry,
   type ConnectionCatalogMutationResult,
   type ConnectionCatalogSnapshot,
+  type ConnectionCredentialProfileEntry,
+  type ConnectionCredentialRouting,
   type ConnectionModelDiscoveryResult,
   type ConnectionTarget,
   type ConnectionTestSummary,
   type ConnectionVersionBasis,
   type CreateCatalogConnectionInput,
+  type CreateCredentialProfileInput,
+  type CredentialProfileMutationResult,
+  type CredentialProfileVersionBasis,
   type RemoveCatalogConnectionInput,
+  type RemoveCredentialProfileInput,
+  type SetCredentialProfileEnabledInput,
+  type SetCredentialRoutingModeInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
+  type UpdateCredentialProfileInput,
 } from '@maka/core/runtime-policy';
 import {
   deriveConnectionSlug,
@@ -46,12 +61,23 @@ import {
   serializeJsonDocument,
   writeJsonDocument,
 } from './document-io.js';
+import { connectionCredentialLocator, type ProviderAuthKind } from './operations.js';
 
 const FILE = 'connection-catalog.json';
-const SCHEMA_VERSION = 1 as const;
+export const CONNECTION_CATALOG_SCHEMA_VERSION_V1 = 1 as const;
+export const CONNECTION_CATALOG_SCHEMA_VERSION_V2 = 2 as const;
+export type ConnectionCatalogSchemaVersion =
+  | typeof CONNECTION_CATALOG_SCHEMA_VERSION_V1
+  | typeof CONNECTION_CATALOG_SCHEMA_VERSION_V2;
 
+/**
+ * Lazy-migrated catalog document. v1 connections are interpreted as implicit
+ * primary (no `credentialRouting`); the document is only persisted as v2 once
+ * the first Profile-related mutation touches it. Non-Profile mutations keep
+ * the current schema version so v1-only installations can downgrade.
+ */
 export interface ConnectionCatalogDocument {
-  readonly schemaVersion: typeof SCHEMA_VERSION;
+  readonly schemaVersion: ConnectionCatalogSchemaVersion;
   readonly revision: number;
   readonly defaultTarget: ConnectionTarget | null;
   readonly connections: readonly ConnectionCatalogEntry[];
@@ -76,7 +102,12 @@ export class ConnectionCatalogDocumentOwner {
   async read(root: string): Promise<ConnectionCatalogDocument> {
     const value = await readBoundedJsonDocument(root, FILE, CATALOG_DOCUMENT_MAX_BYTES);
     if (value === undefined) {
-      return { schemaVersion: SCHEMA_VERSION, revision: 0, defaultTarget: null, connections: [] };
+      return {
+        schemaVersion: CONNECTION_CATALOG_SCHEMA_VERSION_V1,
+        revision: 0,
+        defaultTarget: null,
+        connections: [],
+      };
     }
     const raw = record(value, FILE, 'invalid_document', [
       'schemaVersion',
@@ -84,7 +115,10 @@ export class ConnectionCatalogDocumentOwner {
       'defaultTarget',
       'connections',
     ]);
-    if (raw.schemaVersion !== SCHEMA_VERSION) {
+    if (
+      raw.schemaVersion !== CONNECTION_CATALOG_SCHEMA_VERSION_V1 &&
+      raw.schemaVersion !== CONNECTION_CATALOG_SCHEMA_VERSION_V2
+    ) {
       throw codecError('invalid_document', `${FILE} has an unsupported schema version`);
     }
     if (
@@ -106,6 +140,11 @@ export class ConnectionCatalogDocumentOwner {
       `${FILE} connection ids`,
       'invalid_document',
     );
+    if (raw.schemaVersion === CONNECTION_CATALOG_SCHEMA_VERSION_V2) {
+      for (const connection of connections) {
+        assertCanonicalCredentialRouting(connection, `${FILE} connection`);
+      }
+    }
     const defaultTarget =
       raw.defaultTarget === null
         ? null
@@ -114,7 +153,7 @@ export class ConnectionCatalogDocumentOwner {
       throw codecError('invalid_document', `${FILE} contains an invalid default target`);
     }
     return {
-      schemaVersion: SCHEMA_VERSION,
+      schemaVersion: raw.schemaVersion,
       revision: revision(raw.revision, `${FILE}.revision`, 'invalid_document'),
       defaultTarget,
       connections,
@@ -285,6 +324,319 @@ export class ConnectionCatalogDocumentOwner {
     };
     await this.write(root, next);
     return committed(next);
+  }
+
+  /**
+   * Create a secondary Credential Profile under a Connection. Fail-closed:
+   * the new Profile is always created with `enabled=false`, and the routing
+   * mode stays `legacy_primary` until the user explicitly activates
+   * `balanced`. Creating the first Profile materializes the implicit primary
+   * (`profileId === connectionId`, revision 1, enabled, weight 1).
+   */
+  async createCredentialProfile(
+    root: string,
+    rawInput: CreateCredentialProfileInput,
+  ): Promise<CredentialProfileMutationResult> {
+    const input = decodeConnectionInput(() => normalizeCreateCredentialProfileInput(rawInput));
+    const current = await this.read(root);
+    const index = findConnectionIndex(current, input.expected);
+    const previous = index < 0 ? undefined : current.connections[index];
+    if (!previous || previous.revision !== input.expected.revision) {
+      return connectionStale(input.expected, previous ? connectionBasis(previous) : null);
+    }
+    const authKind = PROVIDER_DEFAULTS[previous.providerType].authKind;
+    if (!profileCapableAuthKind(authKind)) {
+      return deepFreeze({
+        kind: 'auth_not_supported' as const,
+        providerType: previous.providerType,
+      });
+    }
+    const routing = previous.credentialRouting ?? implicitPrimaryRouting(previous.connectionId);
+    if (routing.profiles.length >= CONNECTION_CREDENTIAL_PROFILE_MAX) {
+      return deepFreeze({
+        kind: 'capacity_limit' as const,
+        max: CONNECTION_CREDENTIAL_PROFILE_MAX,
+      });
+    }
+    if (profileLabelTaken(routing, input.label, null)) {
+      return deepFreeze({ kind: 'profile_label_conflict' as const, label: input.label });
+    }
+    const profile: ConnectionCredentialProfileEntry = {
+      profileId: randomUUID(),
+      revision: 1,
+      label: input.label,
+      enabled: false,
+      weight: input.weight,
+    };
+    const nextRouting: ConnectionCredentialRouting = {
+      mode: 'legacy_primary',
+      strategy: 'smooth_weighted_round_robin',
+      profiles: [...routing.profiles, profile],
+    };
+    const connections = [...current.connections];
+    connections[index] = {
+      ...previous,
+      revision: nextRevision(previous.revision),
+      credentialRouting: nextRouting,
+    };
+    const next = {
+      ...current,
+      schemaVersion: CONNECTION_CATALOG_SCHEMA_VERSION_V2,
+      revision: nextRevision(current.revision),
+      connections,
+    };
+    assertDocumentCredentialRoutingInvariants(next, FILE);
+    await this.write(root, next);
+    return committedProfile(next);
+  }
+
+  async updateCredentialProfile(
+    root: string,
+    rawInput: UpdateCredentialProfileInput,
+  ): Promise<CredentialProfileMutationResult> {
+    const input = decodeConnectionInput(() => normalizeUpdateCredentialProfileInput(rawInput));
+    const current = await this.read(root);
+    const connection = findConnection(current, input.expected);
+    if (!connection || connection.revision !== input.expected.connectionRevision) {
+      return connectionStale(
+        { connectionId: input.expected.connectionId, revision: input.expected.connectionRevision },
+        connection ? connectionBasis(connection) : null,
+      );
+    }
+    const routing = connection.credentialRouting;
+    if (!routing) {
+      return profileNotFound(input.expected);
+    }
+    const profileIndex = routing.profiles.findIndex(
+      (profile) => profile.profileId === input.expected.profileId,
+    );
+    const previousProfile = routing.profiles[profileIndex];
+    if (!previousProfile) {
+      return profileNotFound(input.expected);
+    }
+    if (previousProfile.revision !== input.expected.profileRevision) {
+      return deepFreeze({
+        kind: 'profile_stale' as const,
+        expected: input.expected,
+        actual: {
+          connectionId: connection.connectionId,
+          connectionRevision: connection.revision,
+          profileId: previousProfile.profileId,
+          profileRevision: previousProfile.revision,
+        },
+      });
+    }
+    if (
+      input.label !== undefined &&
+      profileLabelTaken(routing, input.label, previousProfile.profileId)
+    ) {
+      return deepFreeze({ kind: 'profile_label_conflict' as const, label: input.label });
+    }
+    const profiles = [...routing.profiles];
+    profiles[profileIndex] = {
+      ...previousProfile,
+      ...(input.label === undefined ? {} : { label: input.label }),
+      ...(input.weight === undefined ? {} : { weight: input.weight }),
+      revision: nextRevision(previousProfile.revision),
+    };
+    const connections = [...current.connections];
+    const index = findConnectionIndex(current, connection);
+    connections[index] = {
+      ...connection,
+      revision: nextRevision(connection.revision),
+      credentialRouting: { ...routing, profiles },
+    };
+    const next = {
+      ...current,
+      schemaVersion: CONNECTION_CATALOG_SCHEMA_VERSION_V2,
+      revision: nextRevision(current.revision),
+      connections,
+    };
+    assertDocumentCredentialRoutingInvariants(next, FILE);
+    await this.write(root, next);
+    return committedProfile(next);
+  }
+
+  async setCredentialProfileEnabled(
+    root: string,
+    rawInput: SetCredentialProfileEnabledInput,
+  ): Promise<CredentialProfileMutationResult> {
+    const input = decodeConnectionInput(() => normalizeSetCredentialProfileEnabledInput(rawInput));
+    const current = await this.read(root);
+    const connection = findConnection(current, input.expected);
+    if (!connection || connection.revision !== input.expected.connectionRevision) {
+      return connectionStale(
+        { connectionId: input.expected.connectionId, revision: input.expected.connectionRevision },
+        connection ? connectionBasis(connection) : null,
+      );
+    }
+    const routing = connection.credentialRouting;
+    if (!routing) {
+      return profileNotFound(input.expected);
+    }
+    const profileIndex = routing.profiles.findIndex(
+      (profile) => profile.profileId === input.expected.profileId,
+    );
+    const previousProfile = routing.profiles[profileIndex];
+    if (!previousProfile) {
+      return profileNotFound(input.expected);
+    }
+    if (previousProfile.revision !== input.expected.profileRevision) {
+      return deepFreeze({
+        kind: 'profile_stale' as const,
+        expected: input.expected,
+        actual: {
+          connectionId: connection.connectionId,
+          connectionRevision: connection.revision,
+          profileId: previousProfile.profileId,
+          profileRevision: previousProfile.revision,
+        },
+      });
+    }
+    if (previousProfile.enabled === input.enabled) {
+      return committedProfile(current);
+    }
+    const profiles = [...routing.profiles];
+    profiles[profileIndex] = {
+      ...previousProfile,
+      enabled: input.enabled,
+      revision: nextRevision(previousProfile.revision),
+    };
+    const connections = [...current.connections];
+    const index = findConnectionIndex(current, connection);
+    connections[index] = {
+      ...connection,
+      revision: nextRevision(connection.revision),
+      credentialRouting: { ...routing, profiles },
+    };
+    const next = {
+      ...current,
+      schemaVersion: CONNECTION_CATALOG_SCHEMA_VERSION_V2,
+      revision: nextRevision(current.revision),
+      connections,
+    };
+    assertDocumentCredentialRoutingInvariants(next, FILE);
+    await this.write(root, next);
+    return committedProfile(next);
+  }
+
+  /**
+   * Remove a secondary Profile. The primary Profile's reserved identity is
+   * never removable. If the connection still has a `credentialRouting`, the
+   * routing mode is preserved: availability constraints must not silently
+   * rewrite the mode back to `legacy_primary`.
+   */
+  async removeCredentialProfile(
+    root: string,
+    rawInput: RemoveCredentialProfileInput,
+  ): Promise<CredentialProfileMutationResult> {
+    const input = decodeConnectionInput(() => normalizeRemoveCredentialProfileInput(rawInput));
+    const current = await this.read(root);
+    const connection = findConnection(current, input.expected);
+    if (!connection || connection.revision !== input.expected.connectionRevision) {
+      return connectionStale(
+        { connectionId: input.expected.connectionId, revision: input.expected.connectionRevision },
+        connection ? connectionBasis(connection) : null,
+      );
+    }
+    const routing = connection.credentialRouting;
+    if (!routing) {
+      return profileNotFound(input.expected);
+    }
+    if (input.expected.profileId === connection.connectionId) {
+      return deepFreeze({ kind: 'primary_not_removable' as const });
+    }
+    const profileIndex = routing.profiles.findIndex(
+      (profile) => profile.profileId === input.expected.profileId,
+    );
+    const previousProfile = routing.profiles[profileIndex];
+    if (!previousProfile) {
+      return profileNotFound(input.expected);
+    }
+    if (previousProfile.revision !== input.expected.profileRevision) {
+      return deepFreeze({
+        kind: 'profile_stale' as const,
+        expected: input.expected,
+        actual: {
+          connectionId: connection.connectionId,
+          connectionRevision: connection.revision,
+          profileId: previousProfile.profileId,
+          profileRevision: previousProfile.revision,
+        },
+      });
+    }
+    const connections = [...current.connections];
+    const index = findConnectionIndex(current, connection);
+    connections[index] = {
+      ...connection,
+      revision: nextRevision(connection.revision),
+      credentialRouting: {
+        ...routing,
+        profiles: routing.profiles.filter(
+          (profile) => profile.profileId !== input.expected.profileId,
+        ),
+      },
+    };
+    const next = {
+      ...current,
+      schemaVersion: CONNECTION_CATALOG_SCHEMA_VERSION_V2,
+      revision: nextRevision(current.revision),
+      connections,
+    };
+    assertDocumentCredentialRoutingInvariants(next, FILE);
+    await this.write(root, next);
+    return committedProfile(next);
+  }
+
+  /**
+   * Switch the routing mode. `legacy_primary` is a plain CAS write and can
+   * never be blocked by transient health. `balanced` requires the structural
+   * preconditions that the catalog can verify on its own; the credential and
+   * verification preconditions are enforced by the coordinator (which
+   * combines Catalog, Vault and, once available, the Verification Store).
+   */
+  async setCredentialRoutingMode(
+    root: string,
+    rawInput: SetCredentialRoutingModeInput,
+  ): Promise<CredentialProfileMutationResult> {
+    const input = decodeConnectionInput(() => normalizeSetCredentialRoutingModeInput(rawInput));
+    const current = await this.read(root);
+    const index = findConnectionIndex(current, input.expected);
+    const previous = index < 0 ? undefined : current.connections[index];
+    if (!previous || previous.revision !== input.expected.revision) {
+      return connectionStale(input.expected, previous ? connectionBasis(previous) : null);
+    }
+    if (input.mode === 'balanced') {
+      const routing = previous.credentialRouting;
+      if (!routing || routing.profiles.length < 2) {
+        return deepFreeze({
+          kind: 'balanced_activation_rejected' as const,
+          reason: 'balanced routing requires at least two configured profiles',
+        });
+      }
+      if (routing.profiles.filter((profile) => profile.enabled).length < 2) {
+        return deepFreeze({
+          kind: 'balanced_activation_rejected' as const,
+          reason: 'balanced routing requires at least two enabled profiles',
+        });
+      }
+    }
+    const connections = [...current.connections];
+    const routing = previous.credentialRouting;
+    connections[index] = {
+      ...previous,
+      revision: nextRevision(previous.revision),
+      ...(routing ? { credentialRouting: { ...routing, mode: input.mode } } : {}),
+    };
+    const next = {
+      ...current,
+      schemaVersion: CONNECTION_CATALOG_SCHEMA_VERSION_V2,
+      revision: nextRevision(current.revision),
+      connections,
+    };
+    assertDocumentCredentialRoutingInvariants(next, FILE);
+    await this.write(root, next);
+    return committedProfile(next);
   }
 
   async writeModelFetchResult(
@@ -675,4 +1027,94 @@ function connectionStale(expected: ConnectionVersionBasis, actual: ConnectionVer
 
 function committed(document: ConnectionCatalogDocument): ConnectionCatalogMutationResult {
   return deepFreeze({ kind: 'committed', snapshot: catalogSnapshot(document) });
+}
+
+function committedProfile(document: ConnectionCatalogDocument): CredentialProfileMutationResult {
+  return deepFreeze({ kind: 'committed', snapshot: catalogSnapshot(document) });
+}
+
+/**
+ * The implicit primary Profile: `profileId === connectionId`, revision 1,
+ * enabled, weight 1, per RFC section 4.2.
+ */
+function implicitPrimaryRouting(connectionId: string): ConnectionCredentialRouting {
+  return {
+    mode: 'legacy_primary',
+    strategy: 'smooth_weighted_round_robin',
+    profiles: [
+      {
+        profileId: connectionId,
+        revision: 1,
+        label: 'primary',
+        enabled: true,
+        weight: 1,
+      },
+    ],
+  };
+}
+
+function profileCapableAuthKind(authKind: ProviderAuthKind): boolean {
+  return authKind === 'api_key' || authKind === 'optional_api_key' || authKind === 'oauth_token';
+}
+
+/**
+ * Case-insensitive label uniqueness within a Connection, excluding the profile
+ * being updated (`excludeProfileId`).
+ */
+function profileLabelTaken(
+  routing: ConnectionCredentialRouting,
+  label: string,
+  excludeProfileId: string | null,
+): boolean {
+  const normalized = label.toLowerCase();
+  return routing.profiles.some(
+    (profile) =>
+      profile.profileId !== excludeProfileId && profile.label.toLowerCase() === normalized,
+  );
+}
+
+function profileNotFound(expected: CredentialProfileVersionBasis): CredentialProfileMutationResult {
+  return deepFreeze({ kind: 'profile_not_found' as const, expected });
+}
+
+/**
+ * Structural invariants for a document that carries `credentialRouting`:
+ * the primary Profile identity is reserved, profile ids and labels are
+ * unique, and the primary profile is always present.
+ */
+function assertCanonicalCredentialRouting(
+  connection: ConnectionCatalogEntry,
+  context: string,
+): void {
+  const routing = connection.credentialRouting;
+  if (!routing) return;
+  if (!routing.profiles.some((profile) => profile.profileId === connection.connectionId)) {
+    throw codecError(
+      'invalid_document',
+      `${context} credential routing must keep the primary profile identity`,
+    );
+  }
+  const ids = routing.profiles.map((profile) => profile.profileId);
+  if (new Set(ids).size !== ids.length) {
+    throw codecError(
+      'invalid_document',
+      `${context} credential routing profile ids must be unique`,
+    );
+  }
+  const labels = routing.profiles.map((profile) => profile.label.toLowerCase());
+  if (new Set(labels).size !== labels.length) {
+    throw codecError(
+      'invalid_document',
+      `${context} credential routing profile labels must be unique`,
+    );
+  }
+}
+
+function assertDocumentCredentialRoutingInvariants(
+  document: ConnectionCatalogDocument,
+  context: string,
+): void {
+  for (const connection of document.connections) {
+    assertCanonicalCredentialRouting(connection, context);
+  }
 }

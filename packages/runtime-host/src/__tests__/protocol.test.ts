@@ -47,7 +47,144 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(() => negotiateProtocol({ min: -1, max: 0 }, { min: 0, max: 0 }), isInvalidFrame);
   });
 
-  test('keeps the subscription queue Epoch correlated', () => {
+  test('keeps the experimental protocol at v0 with the declared authority operations', () => {
+    assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 13);
+    assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
+      'access.credential.issue',
+      'access.credential.revoke',
+      'agent.graph.operator.query',
+      'agent.graph.query',
+      'agent.graph.stop',
+      'artifact.delete',
+      'artifact.ingest',
+      'artifact.query',
+      'automation.mutate',
+      'automation.query',
+      'client.capability.replace',
+      'client.capability.unregister',
+      'configuration.credentials.export',
+      'connection.catalog.create',
+      'connection.catalog.query',
+      'connection.catalog.remove',
+      'connection.catalog.set-default-target',
+      'connection.catalog.update',
+      'connection.models.fetch',
+      'connection.onboarding.save',
+      'connection.onboarding.verify',
+      'connection.request-headers.query',
+      'connection.request-headers.replace',
+      'connection.test.run',
+      'context.compact',
+      'context.diagnostics.query',
+      'credential.profile.create',
+      'credential.profile.remove',
+      'credential.profile.set-enabled',
+      'credential.profile.set-routing-mode',
+      'credential.profile.update',
+      'credential.vault.delete',
+      'credential.vault.query',
+      'credential.vault.set',
+      'daily-review.mutate',
+      'daily-review.query',
+      'deep-research.query',
+      'execution.inspect.query',
+      'execution.inspect.resolve',
+      'external-session.catalog.query',
+      'external-session.import',
+      'external-session.source.query',
+      'goal.control',
+      'goal.query',
+      'host.diagnostics.query',
+      'host.status',
+      'interaction.answer',
+      'interaction.query',
+      'memory.mutate',
+      'memory.query',
+      'network-proxy.test',
+      'oauth.account.usage.fetch',
+      'oauth.login.cancel',
+      'oauth.login.query',
+      'oauth.login.start',
+      'plan.control',
+      'plan.query',
+      'plan.turn.start',
+      'pricing.mutate',
+      'pricing.query',
+      'project.catalog.mutate',
+      'project.catalog.query',
+      'queue.retract',
+      'runtime.policy.mutate',
+      'runtime.policy.query',
+      'runtime.resource.controller.acquire',
+      'runtime.resource.controller.control',
+      'runtime.resource.controller.release',
+      'runtime.resource.query',
+      'runtime.resource.start',
+      'runtime.resource.stop',
+      'session.branch.create',
+      'session.catalog.query',
+      'session.configuration.update',
+      'session.create',
+      'session.cwd.relocate',
+      'session.execution_boundary.query',
+      'session.lifecycle.set',
+      'session.metadata.update',
+      'session.read_marker.set',
+      'session.recap.generate',
+      'session.remove',
+      'session.revision.abandon',
+      'session.revision.create',
+      'session.transcript.query',
+      'skill.catalog.invocable.query',
+      'skill.catalog.mutate',
+      'skill.catalog.preview-update',
+      'skill.catalog.query',
+      'subscription.close',
+      'subscription.open',
+      'task.ledger.query',
+      'turn.interrupt',
+      'turn.message.submit',
+      'turn.query',
+      'turn.regenerate',
+      'turn.resume.query',
+      'turn.resume.start',
+      'turn.start',
+      'turn.stop',
+      'usage.query',
+      'web-search.execute',
+    ]);
+    const errors = [
+      'host_not_ready',
+      'host_draining',
+      'operation_unavailable',
+      'not_found',
+      'session_archived',
+      'session_busy',
+      'operation_conflict',
+      'outcome_unknown',
+      'internal_failure',
+    ];
+    assert.deepEqual(
+      Object.fromEntries(
+        (['turn.message.submit', 'queue.retract', 'turn.interrupt'] as const).map((operation) => [
+          operation,
+          {
+            mode: HOST_OPERATION_SPECS[operation].mode,
+            availability: HOST_OPERATION_SPECS[operation].availability,
+            errors: HOST_OPERATION_SPECS[operation].errors,
+          },
+        ]),
+      ),
+      {
+        'turn.message.submit': { mode: 'command', availability: 'ready', errors },
+        'queue.retract': { mode: 'command', availability: 'ready', errors },
+        'turn.interrupt': { mode: 'control', availability: 'ready', errors },
+      },
+    );
+  });
+
+  test('keeps subscription operations closed, ready-only, and queue Epoch correlated', () => {
     assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 3);
     const opened = {
       requestId: 'open-1',
@@ -368,6 +505,143 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
+  });
+
+  test('declares exactly the seventeen Runtime Policy operations in the current framework', () => {
+    const queries = [
+      'runtime.policy.query',
+      'connection.catalog.query',
+      'connection.request-headers.query',
+      'credential.vault.query',
+    ] as const;
+    const mutations = [
+      'runtime.policy.mutate',
+      'connection.catalog.create',
+      'connection.catalog.update',
+      'connection.catalog.remove',
+      'connection.catalog.set-default-target',
+      'connection.request-headers.replace',
+      'credential.vault.set',
+      'credential.vault.delete',
+      'credential.profile.create',
+      'credential.profile.update',
+      'credential.profile.set-enabled',
+      'credential.profile.remove',
+      'credential.profile.set-routing-mode',
+    ] as const;
+    assert.deepEqual(
+      Object.keys(RUNTIME_POLICY_OPERATION_SPECS).sort(),
+      [...queries, ...mutations].sort(),
+    );
+    for (const operation of queries) {
+      assert.equal(RUNTIME_POLICY_OPERATION_SPECS[operation].mode, 'query');
+      assert.equal(RUNTIME_POLICY_OPERATION_SPECS[operation].availability, 'ready');
+      assert.ok(RUNTIME_POLICY_OPERATION_SPECS[operation].errors.includes('persistence_failed'));
+      assert.ok(RUNTIME_POLICY_OPERATION_SPECS[operation].errors.includes('internal_failure'));
+    }
+    for (const operation of mutations) {
+      assert.equal(RUNTIME_POLICY_OPERATION_SPECS[operation].mode, 'command');
+      assert.equal(RUNTIME_POLICY_OPERATION_SPECS[operation].availability, 'ready');
+      assert.ok(RUNTIME_POLICY_OPERATION_SPECS[operation].errors.includes('invalid_request'));
+      assert.ok(RUNTIME_POLICY_OPERATION_SPECS[operation].errors.includes('persistence_failed'));
+      assert.ok(
+        RUNTIME_POLICY_OPERATION_SPECS[operation].errors.includes('commit_outcome_unknown'),
+      );
+      assert.ok(RUNTIME_POLICY_OPERATION_SPECS[operation].errors.includes('internal_failure'));
+    }
+  });
+
+  test('keeps Credential Profile request and response codecs exact', () => {
+    const connectionId = '00000000-0000-4000-8000-000000000001';
+    const profileId = '00000000-0000-4000-8000-00000000000a';
+    const connectionBasis = { connectionId, revision: 3 };
+    const profileBasis = {
+      connectionId,
+      connectionRevision: 3,
+      profileId,
+      profileRevision: 1,
+    };
+
+    const create = RUNTIME_POLICY_OPERATION_SPECS['credential.profile.create'];
+    assert.deepEqual(
+      create.decodeInput({ expected: connectionBasis, label: 'backup', weight: 1 }),
+      { expected: connectionBasis, label: 'backup', weight: 1 },
+    );
+    assert.throws(
+      () => create.decodeInput({ expected: connectionBasis, label: '  ', weight: 1 }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () => create.decodeInput({ expected: connectionBasis, label: 'backup', weight: 0 }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () => create.decodeInput({ expected: connectionBasis, label: 'backup', weight: 101 }),
+      isInvalidFrame,
+    );
+    assert.deepEqual(
+      create.decodeOutput({ kind: 'committed', catalogRevision: 4, connection: connectionBasis }),
+      { kind: 'committed', catalogRevision: 4, connection: connectionBasis },
+    );
+    assert.deepEqual(create.decodeOutput({ kind: 'profile_label_conflict', label: 'backup' }), {
+      kind: 'profile_label_conflict',
+      label: 'backup',
+    });
+    assert.deepEqual(create.decodeOutput({ kind: 'capacity_limit', max: 32 }), {
+      kind: 'capacity_limit',
+      max: 32,
+    });
+
+    const update = RUNTIME_POLICY_OPERATION_SPECS['credential.profile.update'];
+    assert.deepEqual(update.decodeInput({ expected: profileBasis, weight: 2 }), {
+      expected: profileBasis,
+      weight: 2,
+    });
+    assert.deepEqual(
+      update.decodeOutput({
+        kind: 'profile_stale',
+        expected: profileBasis,
+        actual: { ...profileBasis, profileRevision: 2 },
+      }),
+      {
+        kind: 'profile_stale',
+        expected: profileBasis,
+        actual: { ...profileBasis, profileRevision: 2 },
+      },
+    );
+
+    const setEnabled = RUNTIME_POLICY_OPERATION_SPECS['credential.profile.set-enabled'];
+    assert.deepEqual(setEnabled.decodeInput({ expected: profileBasis, enabled: true }), {
+      expected: profileBasis,
+      enabled: true,
+    });
+    assert.deepEqual(setEnabled.decodeOutput({ kind: 'profile_not_found' }), {
+      kind: 'profile_not_found',
+    });
+
+    const remove = RUNTIME_POLICY_OPERATION_SPECS['credential.profile.remove'];
+    assert.deepEqual(remove.decodeInput({ expected: profileBasis }), { expected: profileBasis });
+    assert.deepEqual(remove.decodeOutput({ kind: 'primary_not_removable' }), {
+      kind: 'primary_not_removable',
+    });
+
+    const setMode = RUNTIME_POLICY_OPERATION_SPECS['credential.profile.set-routing-mode'];
+    assert.deepEqual(setMode.decodeInput({ expected: connectionBasis, mode: 'balanced' }), {
+      expected: connectionBasis,
+      mode: 'balanced',
+    });
+    assert.throws(
+      () => setMode.decodeInput({ expected: connectionBasis, mode: 'random' }),
+      isInvalidFrame,
+    );
+    assert.deepEqual(
+      setMode.decodeOutput({ kind: 'balanced_activation_rejected', reason: 'no profiles' }),
+      { kind: 'balanced_activation_rejected', reason: 'no profiles' },
+    );
+    assert.deepEqual(setMode.decodeOutput({ kind: 'auth_not_supported', providerType: 'openai' }), {
+      kind: 'auth_not_supported',
+      providerType: 'openai',
+    });
   });
 
   test('allows larger credential frames only for validated custom request headers', () => {

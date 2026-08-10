@@ -28,7 +28,11 @@ import {
 import type { RuntimePolicyCredentialMaterial } from './operations.js';
 
 const FILE = 'credential-vault.json';
-const SCHEMA_VERSION = 1 as const;
+export const CREDENTIAL_VAULT_SCHEMA_VERSION_V1 = 1 as const;
+export const CREDENTIAL_VAULT_SCHEMA_VERSION_V2 = 2 as const;
+export type CredentialVaultSchemaVersion =
+  | typeof CREDENTIAL_VAULT_SCHEMA_VERSION_V1
+  | typeof CREDENTIAL_VAULT_SCHEMA_VERSION_V2;
 const MAX_SECRET_LENGTH = 64 * 1024;
 const MAX_VAULT_ENTRIES = 2_048;
 
@@ -37,8 +41,14 @@ export interface CredentialVaultEntry extends CredentialVersionBasis {
   readonly updatedAt: number;
 }
 
+/**
+ * Lazy-migrated vault document. v1 locators are preserved byte-for-byte; the
+ * document is only persisted as v2 once the first secondary
+ * (`connection_profile`) locator mutation touches it, so legacy-only
+ * installations never pay the migration cost.
+ */
 export interface CredentialVaultDocument {
-  readonly schemaVersion: typeof SCHEMA_VERSION;
+  readonly schemaVersion: CredentialVaultSchemaVersion;
   readonly revision: number;
   readonly entries: readonly CredentialVaultEntry[];
 }
@@ -57,9 +67,18 @@ interface PreparedCredentialDelete {
 export class CredentialVaultDocumentOwner {
   async read(root: string): Promise<CredentialVaultDocument> {
     const value = await readBoundedJsonDocument(root, FILE, VAULT_DOCUMENT_MAX_BYTES);
-    if (value === undefined) return { schemaVersion: SCHEMA_VERSION, revision: 0, entries: [] };
+    if (value === undefined) {
+      return {
+        schemaVersion: CREDENTIAL_VAULT_SCHEMA_VERSION_V1,
+        revision: 0,
+        entries: [],
+      };
+    }
     const raw = record(value, FILE, 'invalid_document', ['schemaVersion', 'revision', 'entries']);
-    if (raw.schemaVersion !== SCHEMA_VERSION) {
+    if (
+      raw.schemaVersion !== CREDENTIAL_VAULT_SCHEMA_VERSION_V1 &&
+      raw.schemaVersion !== CREDENTIAL_VAULT_SCHEMA_VERSION_V2
+    ) {
       throw codecError('invalid_document', `${FILE} has an unsupported schema version`);
     }
     if (!Array.isArray(raw.entries) || raw.entries.length > MAX_VAULT_ENTRIES) {
@@ -77,7 +96,7 @@ export class CredentialVaultDocumentOwner {
       'invalid_document',
     );
     return {
-      schemaVersion: SCHEMA_VERSION,
+      schemaVersion: raw.schemaVersion,
       revision: revision(raw.revision, `${FILE}.revision`, 'invalid_document'),
       entries,
     };
@@ -125,7 +144,7 @@ export class CredentialVaultDocumentOwner {
     if (index < 0) entries.push(entry);
     else entries[index] = entry;
     const next = {
-      schemaVersion: SCHEMA_VERSION,
+      schemaVersion: documentSchemaVersionForLocator(current, input.locator),
       revision: nextRevision(current.revision),
       entries,
     };
@@ -154,7 +173,7 @@ export class CredentialVaultDocumentOwner {
       return credentialStale(input.expected, previous ? credentialBasis(previous) : null);
     }
     const next = {
-      schemaVersion: SCHEMA_VERSION,
+      schemaVersion: documentSchemaVersionForLocator(current, input.expected.locator),
       revision: nextRevision(current.revision),
       entries: current.entries.filter((_entry, candidate) => candidate !== index),
     };
@@ -176,8 +195,7 @@ export class CredentialVaultDocumentOwner {
     connectionId: string,
   ): Promise<CredentialVaultSnapshot> {
     const entries = current.entries.filter(
-      (entry) =>
-        entry.locator.scope !== 'connection' || entry.locator.connectionId !== connectionId,
+      (entry) => !connectionLocatorForConnection(entry.locator, connectionId),
     );
     return this.replaceEntries(root, current, entries);
   }
@@ -189,7 +207,8 @@ export class CredentialVaultDocumentOwner {
   ): Promise<CredentialVaultSnapshot> {
     const entries = current.entries.filter(
       (entry) =>
-        entry.locator.scope !== 'connection' || liveConnectionIds.has(entry.locator.connectionId),
+        !isConnectionFamilyLocator(entry.locator) ||
+        liveConnectionIds.has(entry.locator.connectionId),
     );
     return this.replaceEntries(root, current, entries);
   }
@@ -201,7 +220,7 @@ export class CredentialVaultDocumentOwner {
   ): Promise<CredentialVaultSnapshot> {
     if (entries.length === current.entries.length) return vaultSnapshot(current);
     const next = {
-      schemaVersion: SCHEMA_VERSION,
+      schemaVersion: current.schemaVersion,
       revision: nextRevision(current.revision),
       entries,
     };
@@ -350,6 +369,9 @@ function sameLocator(left: CredentialLocator, right: CredentialLocator): boolean
   if (left.scope === 'connection' && right.scope === 'connection') {
     return left.connectionId === right.connectionId;
   }
+  if (left.scope === 'connection_profile' && right.scope === 'connection_profile') {
+    return left.connectionId === right.connectionId && left.profileId === right.profileId;
+  }
   if (left.scope === 'web_search' && right.scope === 'web_search') {
     return left.provider === right.provider;
   }
@@ -360,11 +382,39 @@ function locatorKey(locator: CredentialLocator): string {
   switch (locator.scope) {
     case 'connection':
       return `connection:${locator.connectionId}:${locator.kind}`;
+    case 'connection_profile':
+      return `connection_profile:${locator.connectionId}:${locator.profileId}:${locator.kind}`;
     case 'web_search':
       return `web_search:${locator.provider}:api_key`;
     case 'network_proxy':
       return 'network_proxy:password';
   }
+}
+
+function connectionLocatorForConnection(locator: CredentialLocator, connectionId: string): boolean {
+  return (
+    (locator.scope === 'connection' || locator.scope === 'connection_profile') &&
+    locator.connectionId === connectionId
+  );
+}
+
+function isConnectionFamilyLocator(
+  locator: CredentialLocator,
+): locator is Extract<CredentialLocator, { scope: 'connection' | 'connection_profile' }> {
+  return locator.scope === 'connection' || locator.scope === 'connection_profile';
+}
+
+/**
+ * A `connection_profile` (secondary Profile) locator mutation forces the v2
+ * schema; pure legacy primary/request-header/web-search/network-proxy
+ * mutations preserve the current version for lazy migration.
+ */
+function documentSchemaVersionForLocator(
+  current: CredentialVaultDocument,
+  locator: CredentialLocator,
+): CredentialVaultSchemaVersion {
+  if (locator.scope === 'connection_profile') return CREDENTIAL_VAULT_SCHEMA_VERSION_V2;
+  return current.schemaVersion;
 }
 
 function matchesExpectation(

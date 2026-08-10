@@ -55,6 +55,7 @@ export type RuntimePolicyOperationKey = Extract<
   | `connection.catalog.${string}`
   | `connection.request-headers.${string}`
   | `credential.vault.${string}`
+  | `credential.profile.${string}`
 >;
 export type ConnectionEffectOperationKey = Extract<
   OperationKey,

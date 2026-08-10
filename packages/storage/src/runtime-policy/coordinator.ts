@@ -6,9 +6,14 @@ import {
   decodeCredentialLocator,
   normalizeDeleteCredentialInput,
   normalizeRemoveCatalogConnectionInput,
+  normalizeRemoveCredentialProfileInput,
   normalizeRequestHeaderUpdates,
   normalizeRequestHeaders,
   normalizeSetCredentialInput,
+  normalizeSetCredentialProfileEnabledInput,
+  normalizeSetCredentialRoutingModeInput,
+  normalizeCreateCredentialProfileInput,
+  normalizeUpdateCredentialProfileInput,
   parseRequestHeaders,
   serializeRequestHeaders,
   RequestCustomizationValidationError,
@@ -19,18 +24,25 @@ import {
   type ConnectionModelDiscoveryResult,
   type ConnectionTestSummary,
   type CreateCatalogConnectionInput,
+  type CreateCredentialProfileInput,
   type CredentialLocator,
+  type CredentialProfileMutationResult,
+  type CredentialProfileVersionBasis,
   type CredentialStatus,
   type CredentialVersionBasis,
   type DeleteCredentialInput,
   type MutateRuntimePolicyInput,
   type RemoveCatalogConnectionInput,
+  type RemoveCredentialProfileInput,
   type RuntimePolicy,
   type RequestHeaderUpdate,
   type SavedRequestHeaders,
   type SetCredentialInput,
+  type SetCredentialProfileEnabledInput,
+  type SetCredentialRoutingModeInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
+  type UpdateCredentialProfileInput,
 } from '@maka/core/runtime-policy';
 import { deriveProviderAuthContract, type ProviderAuthAction } from '@maka/core/provider-auth';
 import {
@@ -69,6 +81,7 @@ import {
 } from './errors.js';
 import {
   connectionCredentialLocator,
+  connectionProfileCredentialLocator,
   connectionRequestHeadersLocator,
   type CredentialStatusQueryResult,
   type BeginConnectionTestResult,
@@ -84,6 +97,7 @@ import {
   type InteractiveOAuthLoginProvider,
   type InteractiveOAuthLoginTicket,
   type ModelFetchTicket,
+  type ProviderAuthKind,
   type RuntimePolicyCredentialMaterial,
   type RuntimePolicyOperationSecretMaterial,
   type ResolveExecutionConnectionResult,
@@ -293,6 +307,220 @@ export class RuntimePolicyCoordinator {
 
   setDefaultTarget(input: SetDefaultConnectionTargetInput) {
     return this.inLane((root) => this.catalog.setDefaultTarget(root, input));
+  }
+
+  createCredentialProfile(
+    input: CreateCredentialProfileInput,
+  ): Promise<CredentialProfileMutationResult> {
+    return this.inLane(async (root) => {
+      const decoded = decodeConnectionInput(() => normalizeCreateCredentialProfileInput(input));
+      return this.catalog.createCredentialProfile(root, decoded);
+    });
+  }
+
+  updateCredentialProfile(
+    input: UpdateCredentialProfileInput,
+  ): Promise<CredentialProfileMutationResult> {
+    return this.inLane(async (root) => {
+      const decoded = decodeConnectionInput(() => normalizeUpdateCredentialProfileInput(input));
+      return this.catalog.updateCredentialProfile(root, decoded);
+    });
+  }
+
+  setCredentialProfileEnabled(
+    input: SetCredentialProfileEnabledInput,
+  ): Promise<CredentialProfileMutationResult> {
+    return this.inLane(async (root) => {
+      const decoded = decodeConnectionInput(() => normalizeSetCredentialProfileEnabledInput(input));
+      return this.catalog.setCredentialProfileEnabled(root, decoded);
+    });
+  }
+
+  /**
+   * Fail-closed removal of a secondary Profile:
+   * 1. Catalog CAS disables the Profile (stops new execution);
+   * 2. Vault CAS deletes the Profile credential;
+   * 3. Catalog CAS removes the Profile metadata.
+   *
+   * Crash states are safe: after step 1 the Profile is disabled but still
+   * removable; after step 2 the metadata is unconfigured and cannot execute;
+   * after step 3 any residual health rows are unreachable.
+   */
+  removeCredentialProfile(
+    input: RemoveCredentialProfileInput,
+  ): Promise<CredentialProfileMutationResult> {
+    return this.inLane(async (root) => {
+      const decoded = decodeConnectionInput(() => normalizeRemoveCredentialProfileInput(input));
+      const catalog = await this.catalog.read(root);
+      const connection = findConnection(catalog, decoded.expected);
+      if (!connection || connection.revision !== decoded.expected.connectionRevision) {
+        return deepFreeze({
+          kind: 'connection_stale' as const,
+          expected: {
+            connectionId: decoded.expected.connectionId,
+            revision: decoded.expected.connectionRevision,
+          },
+          actual: connection ? connectionBasis(connection) : null,
+        });
+      }
+      const routing = connection.credentialRouting;
+      if (!routing) return profileNotFound(decoded.expected);
+      if (decoded.expected.profileId === connection.connectionId) {
+        return deepFreeze({ kind: 'primary_not_removable' as const });
+      }
+      const profile = routing.profiles.find(
+        (candidate) => candidate.profileId === decoded.expected.profileId,
+      );
+      if (!profile) return profileNotFound(decoded.expected);
+      if (profile.revision !== decoded.expected.profileRevision) {
+        return deepFreeze({
+          kind: 'profile_stale' as const,
+          expected: decoded.expected,
+          actual: {
+            connectionId: connection.connectionId,
+            connectionRevision: connection.revision,
+            profileId: profile.profileId,
+            profileRevision: profile.revision,
+          },
+        });
+      }
+
+      // Step 1: disable the Profile (CAS on the same profile basis).
+      const disabled = await this.catalog.setCredentialProfileEnabled(root, {
+        expected: decoded.expected,
+        enabled: false,
+      });
+      if (disabled.kind !== 'committed') return disabled;
+
+      // Step 2: delete the Profile credential from the Vault (best effort —
+      // an absent credential is the desired end state already).
+      const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+      const locator = connectionProfileCredentialLocator(
+        connection.connectionId,
+        decoded.expected.profileId,
+        authKind,
+      );
+      if (locator) {
+        const vault = await this.vault.read(root);
+        const entry = findCredential(vault, locator);
+        if (entry) {
+          try {
+            await this.vault.delete(root, { expected: credentialBasis(entry) });
+          } catch (error) {
+            throw commitOutcomeUnknown(
+              'Profile removal committed before credential deletion completed',
+              error,
+            );
+          }
+        }
+      }
+
+      // Step 3: remove the Profile metadata with fresh revisions.
+      const catalogAfterDisable = await this.catalog.read(root);
+      const current = findConnection(catalogAfterDisable, decoded.expected);
+      if (!current) {
+        throw codecError(
+          'invalid_document',
+          'Coordinator lost a connection during profile removal',
+        );
+      }
+      const currentProfile = current.credentialRouting?.profiles.find(
+        (candidate) => candidate.profileId === decoded.expected.profileId,
+      );
+      if (!currentProfile) {
+        // Already removed by a concurrent operation; report the committed
+        // disable state.
+        return deepFreeze({
+          kind: 'committed' as const,
+          snapshot: catalogSnapshot(catalogAfterDisable),
+        });
+      }
+      return this.catalog.removeCredentialProfile(root, {
+        expected: {
+          connectionId: current.connectionId,
+          connectionRevision: current.revision,
+          profileId: currentProfile.profileId,
+          profileRevision: currentProfile.revision,
+        },
+      });
+    });
+  }
+
+  /**
+   * Balanced activation is a coordinator-level operation that combines the
+   * Catalog structural preconditions with the Vault configuration check, so
+   * a raw IPC call can never activate routing over unconfigured Profiles.
+   * The Verification Store evidence check is layered in by the Runtime Host
+   * routing integration (PR 2); until then the vault-configured gate is the
+   * strongest check available without a routing authority.
+   */
+  setCredentialRoutingMode(
+    input: SetCredentialRoutingModeInput,
+  ): Promise<CredentialProfileMutationResult> {
+    return this.inLane(async (root) => {
+      const decoded = decodeConnectionInput(() => normalizeSetCredentialRoutingModeInput(input));
+      if (decoded.mode === 'legacy_primary') {
+        return this.catalog.setCredentialRoutingMode(root, decoded);
+      }
+      const catalog = await this.catalog.read(root);
+      const connection = findConnection(catalog, decoded.expected);
+      if (!connection || connection.revision !== decoded.expected.revision) {
+        return deepFreeze({
+          kind: 'connection_stale' as const,
+          expected: decoded.expected,
+          actual: connection ? connectionBasis(connection) : null,
+        });
+      }
+      const routing = connection.credentialRouting;
+      if (!routing || routing.profiles.length < 2) {
+        return deepFreeze({
+          kind: 'balanced_activation_rejected' as const,
+          reason: 'balanced routing requires at least two configured profiles',
+        });
+      }
+      const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+      if (!profileCapableAuthKind(authKind)) {
+        return deepFreeze({
+          kind: 'auth_not_supported' as const,
+          providerType: connection.providerType,
+        });
+      }
+      const vault = await this.vault.read(root);
+      const enabledProfiles = routing.profiles.filter((profile) => profile.enabled);
+      if (enabledProfiles.length < 2) {
+        return deepFreeze({
+          kind: 'balanced_activation_rejected' as const,
+          reason: 'balanced routing requires at least two enabled profiles',
+        });
+      }
+      const unconfigured = enabledProfiles.filter((profile) => {
+        const locator =
+          profile.profileId === connection.connectionId
+            ? connectionCredentialLocator(connection.connectionId, authKind)
+            : connectionProfileCredentialLocator(
+                connection.connectionId,
+                profile.profileId,
+                authKind,
+              );
+        if (!locator) return true;
+        return findCredential(vault, locator) === undefined;
+      });
+      if (unconfigured.length > 0) {
+        return deepFreeze({
+          kind: 'balanced_activation_rejected' as const,
+          reason: 'balanced routing requires every enabled profile to have a configured credential',
+        });
+      }
+      // Primary profile must keep its credential configured too.
+      const primaryLocator = connectionCredentialLocator(connection.connectionId, authKind);
+      if (primaryLocator && findCredential(vault, primaryLocator) === undefined) {
+        return deepFreeze({
+          kind: 'balanced_activation_rejected' as const,
+          reason: 'balanced routing requires the primary profile credential to be configured',
+        });
+      }
+      return this.catalog.setCredentialRoutingMode(root, decoded);
+    });
   }
 
   setCredential(rawInput: SetCredentialInput) {
@@ -1526,4 +1754,12 @@ function isInteractiveOAuthLoginProvider(
     providerType === 'openai-codex' ||
     providerType === 'xai-oauth'
   );
+}
+
+function profileNotFound(expected: CredentialProfileVersionBasis): CredentialProfileMutationResult {
+  return deepFreeze({ kind: 'profile_not_found' as const, expected });
+}
+
+function profileCapableAuthKind(authKind: ProviderAuthKind): boolean {
+  return authKind === 'api_key' || authKind === 'optional_api_key' || authKind === 'oauth_token';
 }
