@@ -190,6 +190,14 @@ export function useMessageSelectionQuote(
     }
 
     const gesture = createSelectionQuoteGestureBoundary({ hideAndCancel, scheduleSettle });
+    let captureOwner: Element | null = null;
+    let capturedPointerId: number | undefined;
+
+    function clearCaptureOwner(): void {
+      captureOwner?.removeEventListener('lostpointercapture', onLostPointerCapture);
+      captureOwner = null;
+      capturedPointerId = undefined;
+    }
 
     function onPointerDown(event: PointerEvent): void {
       const root = scrollRef.current;
@@ -215,10 +223,19 @@ export function useMessageSelectionQuote(
       }
       gesture.beginPointerSelection(event.pointerId);
       try {
+        // `lostpointercapture` belongs to the element that owns capture. Listen
+        // there instead of relying on it crossing the document boundary: in
+        // Electron, the owner receives this event even when a document-level
+        // capture listener does not. Keeping the listener on the owner also
+        // makes the capture lifetime and its cleanup one local responsibility.
+        captureOwner = turnOwner;
+        capturedPointerId = event.pointerId;
+        captureOwner.addEventListener('lostpointercapture', onLostPointerCapture);
         turnOwner.setPointerCapture(event.pointerId);
       } catch {
         // Capture can fail if Chromium has already retired the physical
         // pointer. Do not retain a gesture that can no longer deliver its end.
+        clearCaptureOwner();
         gesture.cancelPointerSelection(event.pointerId);
       }
     }
@@ -228,23 +245,29 @@ export function useMessageSelectionQuote(
     }
 
     function onPointerUp(event: PointerEvent): void {
+      if (event.pointerId === capturedPointerId) clearCaptureOwner();
       gesture.endPointerSelection(event.pointerId);
     }
 
     function onPointerCancel(event: PointerEvent): void {
+      if (event.pointerId === capturedPointerId) clearCaptureOwner();
       gesture.cancelPointerSelection(event.pointerId);
     }
 
-    function onLostPointerCapture(event: PointerEvent): void {
+    function onLostPointerCapture(event: Event): void {
       // Normal pointerup already settles first, making this a no-op. When the
       // owner loses capture without pointerup, this is the only trustworthy
       // end boundary left for the final selection.
-      gesture.endPointerSelection(event.pointerId);
+      const pointerId = (event as PointerEvent).pointerId;
+      if (pointerId !== capturedPointerId) return;
+      clearCaptureOwner();
+      gesture.endPointerSelection(pointerId);
     }
 
     function onWindowBlur(): void {
       // Releasing a mouse outside the window need not deliver pointerup back to
       // the document. Do not leave later keyboard selections behind that drag.
+      clearCaptureOwner();
       gesture.cancelActivePointerSelection();
     }
 
@@ -273,7 +296,6 @@ export function useMessageSelectionQuote(
     document.addEventListener('pointerdown', onPointerDown, { capture: true });
     document.addEventListener('pointerup', onPointerUp, { capture: true });
     document.addEventListener('pointercancel', onPointerCancel, { capture: true });
-    document.addEventListener('lostpointercapture', onLostPointerCapture, { capture: true });
     window.addEventListener('blur', onWindowBlur);
     // Capture-phase: scroll does not bubble.
     document.addEventListener('scroll', onScroll, { capture: true, passive: true });
@@ -283,7 +305,7 @@ export function useMessageSelectionQuote(
       document.removeEventListener('pointerdown', onPointerDown, { capture: true });
       document.removeEventListener('pointerup', onPointerUp, { capture: true });
       document.removeEventListener('pointercancel', onPointerCancel, { capture: true });
-      document.removeEventListener('lostpointercapture', onLostPointerCapture, { capture: true });
+      clearCaptureOwner();
       window.removeEventListener('blur', onWindowBlur);
       document.removeEventListener('scroll', onScroll, { capture: true });
     };
