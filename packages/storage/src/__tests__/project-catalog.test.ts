@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import {
   createProjectCatalog as createProjectCatalogBase,
   type ProjectCatalog,
+  ProjectUnavailableError,
   type ResolvedProjectLocation,
   resolveProjectLocation,
 } from '../project-catalog.js';
@@ -453,6 +454,24 @@ test('touching a project moves it to the front of the recent list', async () => 
     assert.deepEqual(
       (await catalog.list()).map((project) => project.id),
       [first.id, 'project-2'],
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('touch reports a Project that disappears before path resolution as unavailable', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-touch-missing-'));
+  try {
+    const path = join(base, 'project');
+    await mkdir(path);
+    const catalog = createProjectCatalog(join(base, 'storage'));
+    const project = await catalog.register(path);
+    await remove(path, { recursive: true });
+
+    await assert.rejects(
+      () => catalog.touch(project.id, path),
+      (error) => error instanceof ProjectUnavailableError && error.projectId === project.id,
     );
   } finally {
     await rm(base, { recursive: true, force: true });

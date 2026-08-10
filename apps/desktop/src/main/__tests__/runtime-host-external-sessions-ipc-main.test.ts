@@ -19,7 +19,7 @@ test('forwards bounded external Session requests and publishes imported Sessions
         listExternalSessions: async (input) => {
           requests.push(input);
           return {
-            sessions: [{ id: 'source-1', name: 'Source', cwd: '/external' }],
+            sessions: [{ id: 'source-1', name: 'Source', hostCwd: '/external' }],
             nextCursor: '16',
           };
         },
@@ -154,7 +154,10 @@ function session(id: string): SessionCatalogProjection {
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: 'Imported',

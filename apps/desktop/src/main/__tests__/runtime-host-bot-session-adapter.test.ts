@@ -27,7 +27,9 @@ test('creates an explore Session through the Host-owned default model route', as
   });
   const adapter = createRuntimeHostBotSessionAdapter({
     client,
-    resolveCreateTarget: async () => ({ cwd: '/workspace', projectId: 'project-1' }),
+    resolveCreateTarget: async () => ({
+      workspace: { kind: 'project', projectId: 'project-1' },
+    }),
     emitSessionsChanged: (reason, sessionId, extra) =>
       changes.push({ reason, sessionId, extra }),
     newId: () => 'bot-session-1',
@@ -42,8 +44,7 @@ test('creates an explore Session through the Host-owned default model route', as
   assert.deepEqual(creates, [
     {
       sessionId: 'bot-session-1',
-      cwd: '/workspace',
-      projectId: 'project-1',
+      workspace: { kind: 'project', projectId: 'project-1' },
       name: 'Telegram conversation',
       labels: ['bot', 'telegram'],
       modelTarget: { kind: 'default' },
@@ -66,7 +67,7 @@ test('prepares a bound Session without exposing Host configuration revisions to 
   });
   const adapter = createRuntimeHostBotSessionAdapter({
     client,
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
   });
 
@@ -77,7 +78,7 @@ test('prepares a bound Session without exposing Host configuration revisions to 
 
   const unavailable = createRuntimeHostBotSessionAdapter({
     client: botClient({ getSession: async () => null }),
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
   });
   await assert.rejects(
@@ -98,7 +99,7 @@ test('reconciles an uncertain Host Session create with its stable Session identi
       },
       getSession: async (sessionId) => session(sessionId, { permissionMode: 'explore' }),
     }),
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
     newId: () => 'stable-session-id',
   });
@@ -141,7 +142,7 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
   });
   const adapter = createRuntimeHostBotSessionAdapter({
     client,
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged: (reason, sessionId, extra) =>
       changes.push({ reason, sessionId, extra }),
   });
@@ -186,7 +187,7 @@ test('returns blocked Skill feedback without waiting for a Turn that was not cre
         },
       }),
     }),
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
   });
 
@@ -234,7 +235,7 @@ async function runProjectedTurn(rootTurn: TurnSnapshot) {
         return startedTurn(runningTurn(rootTurn.sessionId, rootTurn.turnId));
       },
     }),
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
   });
   return adapter.runTurn({
@@ -265,7 +266,10 @@ function session(
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: id,
@@ -284,6 +288,10 @@ function session(
     orchestrationMode: 'default',
     ...overrides,
   };
+}
+
+async function hostPathCreateTarget() {
+  return { workspace: { kind: 'host_path' as const, path: '/workspace' } };
 }
 
 function runningTurn(sessionId: string, turnId: string): TurnSnapshot {

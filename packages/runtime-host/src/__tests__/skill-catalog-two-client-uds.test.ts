@@ -1,7 +1,7 @@
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { test } from 'node:test';
@@ -82,7 +82,7 @@ Keep ${privateMarker} inside the lazy-loaded body.
 
     const query = {
       kind: 'start',
-      context: { projectRoot },
+      context: { workspace: { kind: 'host_path', path: projectRoot } },
       view: 'governance',
     } as const;
     const [desktopInitial, tuiInitial] = await Promise.all([
@@ -92,13 +92,22 @@ Keep ${privateMarker} inside the lazy-loaded body.
     const desktopPage = requirePage(desktopInitial);
     const tuiPage = requirePage(tuiInitial);
     assert.equal(desktopPage.revision, tuiPage.revision);
+    const canonicalProjectRoot = await realpath(projectRoot);
+    const expectedWorkspace = {
+      target: { kind: 'host_path' as const, path: canonicalProjectRoot },
+      hostCwd: canonicalProjectRoot,
+    };
+    assert.deepEqual(desktopPage.resolvedWorkspace, expectedWorkspace);
+    assert.deepEqual(tuiPage.resolvedWorkspace, expectedWorkspace);
     assert.ok(
       desktopPage.items.some(
         (item) => item.kind === 'skill' && item.ref === 'project:maka:private-project-skill',
       ),
     );
 
-    const wireJson = JSON.stringify([desktopInitial, tuiInitial]);
+    const { resolvedWorkspace: _desktopWorkspace, ...desktopMetadata } = desktopPage;
+    const { resolvedWorkspace: _tuiWorkspace, ...tuiMetadata } = tuiPage;
+    const wireJson = JSON.stringify([desktopMetadata, tuiMetadata]);
     for (const value of nestedStrings(JSON.parse(wireJson))) {
       assert.equal(isAbsolute(value), false, `wire projection leaked absolute path ${value}`);
     }
@@ -116,7 +125,7 @@ Keep ${privateMarker} inside the lazy-loaded body.
 
     const expectedRevision = desktopPage.revision;
     const mutation = {
-      context: { projectRoot },
+      context: { workspace: { kind: 'host_path', path: projectRoot } },
       expectedRevision,
       mutation: { kind: 'create_starter' },
     } as const;
@@ -155,13 +164,17 @@ Keep ${privateMarker} inside the lazy-loaded body.
     const blockedDelete = await desktop.request(
       'skill.catalog.mutate',
       {
-        context: { projectRoot },
+        context: { workspace: { kind: 'host_path', path: projectRoot } },
         expectedRevision: finalPage.revision,
         mutation: { kind: 'delete', ref: 'project:maka:private-project-skill' },
       },
       REQUEST_TIMEOUT_MS,
     );
-    assert.deepEqual(blockedDelete, { kind: 'rejected', reason: 'blocked_scope' });
+    assert.deepEqual(blockedDelete, {
+      kind: 'rejected',
+      reason: 'blocked_scope',
+      resolvedWorkspace: expectedWorkspace,
+    });
     assert.equal(await readFile(skillPath, 'utf8'), projectSkillBeforeDelete);
   } finally {
     const cleanupErrors: unknown[] = [];

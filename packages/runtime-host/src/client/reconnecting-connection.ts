@@ -24,7 +24,7 @@ import {
   type PlanTurnStartInput,
   type PlanTurnStartResult,
   type SessionCatalogChangedFrame,
-  type SessionCwdRelocateInput,
+  type SessionWorkspaceRelocateInput,
   type SessionRecapGenerateInput,
   type SessionRecapGenerateResult,
   type SessionUpdateResult,
@@ -203,11 +203,11 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
     return this.#request('context.compact', input, timeoutMs);
   }
 
-  relocateSessionCwd(
-    input: SessionCwdRelocateInput,
+  relocateSessionWorkspace(
+    input: SessionWorkspaceRelocateInput,
     timeoutMs?: number,
   ): Promise<SessionUpdateResult> {
-    return this.#request('session.cwd.relocate', input, timeoutMs);
+    return this.#request('session.workspace.relocate', input, timeoutMs);
   }
 
   generateSessionRecap(

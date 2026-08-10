@@ -81,8 +81,10 @@ test('two UDS clients converge on one Host-owned Project Catalog', {
       assert.ok(session);
       assert.equal(session && 'kind' in session, false);
       if (!session || 'kind' in session) continue;
-      assert.equal(session.projectId, seeded.originalProjectId);
-      assert.equal(session.cwd, seeded.destinationPath);
+      assert.deepEqual(session.workspace, {
+        target: { kind: 'project', projectId: seeded.originalProjectId },
+        hostCwd: seeded.destinationPath,
+      });
     }
   } finally {
     const cleanupErrors: unknown[] = [];

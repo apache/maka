@@ -333,10 +333,6 @@ function roundPromptHashEvidenceKey(
   return `${roundEvidenceKey(event)}\0${promptHash}`;
 }
 
-function sortedUnique(values: readonly string[]): string[] {
-  return [...new Set(values)].sort((a, b) => a.localeCompare(b));
-}
-
 function isQuarantineDecision(event: { reason: string; rewardHackScan?: unknown }): boolean {
   return (
     event.reason === PROMPT_REWARD_HACK_QUARANTINE_REASON ||

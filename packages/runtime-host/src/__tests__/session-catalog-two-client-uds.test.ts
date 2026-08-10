@@ -27,6 +27,7 @@ import {
   encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  RuntimeHostProtocolError,
   type ClientFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,
@@ -70,7 +71,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       });
       const createInput: SessionCreateInput = {
         sessionId: 'stable-session',
-        cwd: root,
+        workspace: { kind: 'host_path', path: root },
         name: 'Stable Session',
         labels: ['catalog'],
         modelTarget: { kind: 'default' },
@@ -172,14 +173,15 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       await assert.rejects(
         desktop.request('session.create', {
           sessionId: 'relative-session',
-          cwd: '.',
+          workspace: { kind: 'host_path', path: '.' },
           modelTarget: { kind: 'default' },
         }),
-        operationError('invalid_request'),
+        (error: unknown) =>
+          error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame',
       );
       const planSession = await desktop.request('session.create', {
         sessionId: 'plan-session',
-        cwd: root,
+        workspace: { kind: 'host_path', path: root },
         modelTarget: { kind: 'default' },
         collaborationMode: 'plan',
       });
@@ -188,7 +190,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       const researchSession = requireSessionProjection(
         await desktop.request('session.create', {
           sessionId: 'deep-research-session',
-          cwd: root,
+          workspace: { kind: 'host_path', path: root },
           mode: 'deep_research',
           name: 'Caller override',
           labels: ['customer-label'],
@@ -321,15 +323,15 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       const secondCwd = join(base, 'workspace-second');
       await Promise.all([mkdir(firstCwd), mkdir(secondCwd)]);
       const relocationOutcomes = await Promise.all([
-        desktop.relocateSessionCwd({
+        desktop.relocateSessionWorkspace({
           sessionId: narrowedSession.id,
           expectedRevision: narrowedSession.revision,
-          cwd: firstCwd,
+          workspace: { kind: 'host_path', path: firstCwd },
         }),
-        tui.relocateSessionCwd({
+        tui.relocateSessionWorkspace({
           sessionId: narrowedSession.id,
           expectedRevision: narrowedSession.revision,
-          cwd: secondCwd,
+          workspace: { kind: 'host_path', path: secondCwd },
         }),
       ]);
       assert.deepEqual(relocationOutcomes.map((outcome) => outcome.kind).sort(), [
@@ -341,8 +343,8 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       if (relocated?.kind !== 'committed') assert.fail('One Session relocation must commit');
       const relocatedSession = requireSessionProjection(relocated.session);
       assert.ok(
-        relocatedSession.cwd === (await realpath(firstCwd)) ||
-          relocatedSession.cwd === (await realpath(secondCwd)),
+        relocatedSession.workspace.hostCwd === (await realpath(firstCwd)) ||
+          relocatedSession.workspace.hostCwd === (await realpath(secondCwd)),
       );
       assert.deepEqual(await querySession(tui, narrowedSession.id), relocatedSession);
 
@@ -351,7 +353,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       await assert.rejects(
         desktop.request('session.create', {
           sessionId: rejectedSessionId,
-          cwd: root,
+          workspace: { kind: 'host_path', path: root },
           modelTarget: { kind: 'default' },
         }),
         operationError('invalid_request'),
@@ -403,7 +405,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
           Array.from({ length: 34 }, (_, index) =>
             desktop.request('session.create', {
               sessionId: `bulk-${String(index).padStart(2, '0')}`,
-              cwd: root,
+              workspace: { kind: 'host_path', path: root },
               labels: ['paged'],
               modelTarget: { kind: 'default' },
             }),
@@ -687,7 +689,7 @@ test('stable Session creation survives response loss and Host restart', {
     host = await startHost(root, capability.rootId);
     const input: SessionCreateInput = {
       sessionId: 'response-loss-session',
-      cwd: root,
+      workspace: { kind: 'host_path', path: root },
       name: 'Response Loss Session',
       labels: ['catalog'],
       modelTarget: { kind: 'default' },

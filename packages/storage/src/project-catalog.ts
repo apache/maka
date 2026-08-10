@@ -277,7 +277,12 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   async touch(projectId: string, path?: string): Promise<ProjectRecord> {
-    const resolved = path ? await resolveProjectLocation({ path }) : undefined;
+    let resolved: Awaited<ReturnType<typeof resolveProjectLocation>> | undefined;
+    try {
+      resolved = path ? await resolveProjectLocation({ path }) : undefined;
+    } catch {
+      throw new ProjectUnavailableError(projectId);
+    }
     const resolvedPath = resolved
       ? resolved.kind === 'git'
         ? resolved.git!.worktreeRoot

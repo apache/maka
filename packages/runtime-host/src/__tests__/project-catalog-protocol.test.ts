@@ -10,6 +10,7 @@ import {
 } from '../protocol/index.js';
 
 const projectPath = process.platform === 'win32' ? 'C:\\workspace' : '/workspace';
+const foreignHostPath = process.platform === 'win32' ? '/workspace' : 'C:\\workspace';
 const revision = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Project catalog protocol', () => {
@@ -37,9 +38,6 @@ describe('Project catalog protocol', () => {
   test('round-trips every closed mutation shape and correlates its result', () => {
     for (const input of [
       { kind: 'register', path: projectPath },
-      { kind: 'select', projectId: 'project-1' },
-      { kind: 'touch', projectId: 'project-1', path: null },
-      { kind: 'touch', projectId: 'project-1', path: projectPath },
       { kind: 'relink', projectId: 'project-1', path: projectPath },
       { kind: 'rename', projectId: 'project-1', name: 'Project' },
       { kind: 'archive', projectId: 'project-1' },
@@ -52,27 +50,89 @@ describe('Project catalog protocol', () => {
       };
       assert.deepEqual(decodeClientFrame(request), request);
     }
-    assert.deepEqual(
-      decodeHostFrame({
-        requestId: 'request-select',
-        operation: 'project.catalog.mutate',
-        ok: true,
-        result: { kind: 'selection', projectId: 'project-1', path: projectPath },
-      }),
-      {
-        requestId: 'request-select',
-        operation: 'project.catalog.mutate',
-        ok: true,
-        result: { kind: 'selection', projectId: 'project-1', path: projectPath },
+    const mutation = {
+      requestId: 'request-register',
+      operation: 'project.catalog.mutate' as const,
+      ok: true as const,
+      result: {
+        kind: 'project' as const,
+        project: {
+          id: 'project-1',
+          aliases: [],
+          name: 'Project',
+          locationCount: 1,
+          archivedAt: null,
+          available: true,
+        },
       },
+    };
+    assert.deepEqual(decodeHostFrame(mutation), mutation);
+    const location = {
+      requestId: 'request-location',
+      operation: 'project.catalog.query' as const,
+      ok: true as const,
+      result: {
+        kind: 'page' as const,
+        view: 'locations' as const,
+        revision,
+        projectCount: 1,
+        items: [
+          projectHeaderItem(),
+          {
+            kind: 'location' as const,
+            projectIndex: 0,
+            itemIndex: 0,
+            location: { path: projectPath, isWorktree: false },
+          },
+        ],
+        nextCursor: null,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(location), location);
+    const foreignLocation = {
+      ...location,
+      result: {
+        ...location.result,
+        items: [
+          projectHeaderItem(),
+          {
+            kind: 'location' as const,
+            projectIndex: 0,
+            itemIndex: 0,
+            location: { path: foreignHostPath, isWorktree: true },
+          },
+        ],
+      },
+    };
+    assert.deepEqual(decodeHostFrame(foreignLocation), foreignLocation);
+    assert.equal(
+      HOST_OPERATION_SPECS['project.catalog.query'].usesHostPaths?.({
+        kind: 'list_start',
+        view: 'summary',
+      }),
+      false,
     );
-    assert.throws(
-      () =>
-        HOST_OPERATION_SPECS['project.catalog.mutate'].assertOutputForInput?.(
-          { kind: 'select', projectId: 'project-1' },
-          { kind: 'project', projectId: 'project-1' },
-        ),
-      isProtocolError,
+    assert.equal(
+      HOST_OPERATION_SPECS['project.catalog.query'].usesHostPaths?.({
+        kind: 'list_start',
+        view: 'locations',
+      }),
+      true,
+    );
+    assert.equal(
+      HOST_OPERATION_SPECS['project.catalog.mutate'].usesHostPaths?.({
+        kind: 'rename',
+        projectId: 'project-1',
+        name: 'Renamed',
+      }),
+      false,
+    );
+    assert.equal(
+      HOST_OPERATION_SPECS['project.catalog.mutate'].usesHostPaths?.({
+        kind: 'register',
+        path: projectPath,
+      }),
+      true,
     );
   });
 
@@ -91,7 +151,7 @@ describe('Project catalog protocol', () => {
         decodeClientFrame({
           requestId: 'request-2',
           operation: 'project.catalog.query',
-          input: { kind: 'list_start', includeArchived: true },
+          input: { kind: 'list_start', view: 'summary', includeArchived: true },
         }),
       isProtocolError,
     );
@@ -99,6 +159,7 @@ describe('Project catalog protocol', () => {
       () =>
         decodeProjectCatalogQueryResult({
           kind: 'page',
+          view: 'summary',
           revision,
           projectCount: 1,
           items: Array.from({ length: PROJECT_CATALOG_PAGE_MAX_ITEMS + 1 }, projectHeaderItem),
@@ -110,9 +171,20 @@ describe('Project catalog protocol', () => {
       () =>
         decodeProjectCatalogQueryResult({
           kind: 'revision_changed',
+          view: 'summary',
           expected: revision,
           actual: revision,
           items: [],
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'request-stale-mutation',
+          operation: 'project.catalog.mutate',
+          ok: true,
+          result: { kind: 'project', projectId: 'project-1' },
         }),
       isProtocolError,
     );
@@ -127,9 +199,9 @@ function projectHeaderItem() {
     name: 'Project',
     aliasCount: 0,
     locationCount: 1,
+    preferredLocationIndex: 0,
     archivedAt: null,
     available: true,
-    preferredPath: projectPath,
   } as const;
 }
 

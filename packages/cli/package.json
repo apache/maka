@@ -14,7 +14,7 @@
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
     "build": "tsc -p tsconfig.json && node scripts/chmod-bin.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "pretest": "npm --workspace @maka/code-mode run build && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build",
+    "pretest": "npm --workspace @maka/code-mode run build && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/headless run build",
     "test": "npm run clean && npm run build && npm run test:dist",
     "test:dist": "node --test \"dist/**/*.test.js\""
   },

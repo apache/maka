@@ -33,6 +33,20 @@ describe('external Session protocol', () => {
         'external-session.import': { mode: 'command', availability: 'ready' },
       },
     );
+    assert.equal(
+      HOST_OPERATION_SPECS['external-session.catalog.query'].usesHostPaths?.({
+        adapterId: 'codex',
+        workspace: { kind: 'project', projectId: 'project-1' },
+      }),
+      false,
+    );
+    assert.equal(
+      HOST_OPERATION_SPECS['external-session.catalog.query'].usesHostPaths?.({
+        adapterId: 'codex',
+        workspace: { kind: 'host_path', path: '/workspace' },
+      }),
+      true,
+    );
   });
 
   test('round-trips exact source, catalog, and import inputs', () => {
@@ -55,7 +69,7 @@ describe('external Session protocol', () => {
         input: {
           adapterId: 'codex',
           includeArchived: true,
-          cwd: '/workspace',
+          workspace: { kind: 'project', projectId: 'project-1' },
           cursor: '16',
         },
       }),
@@ -65,7 +79,7 @@ describe('external Session protocol', () => {
         input: {
           adapterId: 'codex',
           includeArchived: true,
-          cwd: '/workspace',
+          workspace: { kind: 'project', projectId: 'project-1' },
           cursor: '16',
         },
       },
@@ -118,7 +132,7 @@ describe('external Session protocol', () => {
           sessions: Array.from({ length: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1 }, (_, index) => ({
             id: `source-${index}`,
             name: `Session ${index}`,
-            cwd: '/workspace',
+            hostCwd: '/workspace',
           })),
           nextCursor: null,
         }),

@@ -1072,6 +1072,7 @@ export {
 export type {
   CreatePlanReminderInput,
   PlanReminder,
+  PlanReminderAgentOrigin,
   PlanReminderBlockReason,
   PlanReminderBotDeliveryTarget,
   PlanReminderCronSchedule,
@@ -1113,6 +1114,15 @@ export {
   normalizePlanReminderTitle,
   normalizeUpdatePlanReminderInput,
 } from './plan-reminders.js';
+// agent-automation-projection.ts — agent Automation → scheduled-tasks list rows
+export type { AgentAutomationProjectionSource } from './agent-automation-projection.js';
+export {
+  agentAutomationReminderId,
+  isAgentAutomationPlanReminder,
+  mergePlanRemindersWithAgentAutomations,
+  parseAgentAutomationReminderId,
+  projectAgentAutomationAsPlanReminder,
+} from './agent-automation-projection.js';
 // foreign-session.ts (#1057) — untrusted Claude Code / Codex session
 // contracts + defensive parsing. Subpath @maka/core/foreign-session preferred.
 export type {

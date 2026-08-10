@@ -3,13 +3,14 @@ import { realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { hashSystemPrompt } from './fixed-prompt-controller.js';
-import type {
-  FixedPromptTaskWalEvent,
-  FixedPromptWalEvent,
-  PromptCandidateCommittedEvent,
-  PromptCandidateDecisionEvent,
+import {
+  heldInTaskSetHash,
+  type FixedPromptTaskWalEvent,
+  type FixedPromptWalEvent,
+  type PromptCandidateCommittedEvent,
+  type PromptCandidateDecisionEvent,
 } from './fixed-prompt-wal-types.js';
-import { hashCandidateRationale, hashHeldInTaskSet } from './prompt-candidate-loop.js';
+import { hashCandidateRationale } from './prompt-candidate-loop.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -71,8 +72,8 @@ export function assertCandidateMatchesStableTaskSet(
   stableHeldInTaskIds: readonly string[],
 ): void {
   assertCandidateEventSelfConsistent(candidate);
-  const actualHash = hashHeldInTaskSet(candidate.heldInTaskIds);
-  const expectedHash = hashHeldInTaskSet(stableHeldInTaskIds);
+  const actualHash = heldInTaskSetHash(candidate.heldInTaskIds);
+  const expectedHash = heldInTaskSetHash(stableHeldInTaskIds);
   if (candidate.heldInTaskSetHash !== actualHash || candidate.heldInTaskSetHash !== expectedHash) {
     throw new Error(`RSI WAL replay candidate task-set mismatch for ${candidate.roundId}`);
   }
@@ -258,7 +259,7 @@ function assertWalBelongsToRun(events: readonly FixedPromptWalEvent[], runId: st
 }
 
 function assertCandidateEventSelfConsistent(candidate: PromptCandidateCommittedEvent): void {
-  if (candidate.heldInTaskSetHash !== hashHeldInTaskSet(candidate.heldInTaskIds)) {
+  if (candidate.heldInTaskSetHash !== heldInTaskSetHash(candidate.heldInTaskIds)) {
     throw new Error(`RSI WAL replay candidate task-set mismatch for ${candidate.roundId}`);
   }
   if (candidate.candidateRationaleHash !== hashCandidateRationale(candidate.candidateRationale)) {

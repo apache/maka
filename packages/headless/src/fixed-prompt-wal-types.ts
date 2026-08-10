@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   HarborCellContextBudgetPolicySnapshot,
   HarborCellContextBudgetSummary,
@@ -302,3 +303,24 @@ export type FixedPromptTaskWalEvent =
   | FixedPromptTaskInfraFailedEvent
   | FixedPromptTaskBudgetExhaustedEvent
   | FixedPromptTaskPlumbingFailedEvent;
+
+/**
+ * Canonical codepoint comparison and dedupe helpers, plus the held-in task set
+ * hash built on them. These live here (rather than in rsi-round-analysis.ts) so
+ * that fixed-prompt-controller.ts — which sits upstream of rsi-round-analysis —
+ * can share the single source of truth for the hash used both when writing WAL
+ * events and when projecting legacy records on read.
+ */
+export function compareStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+export function sortedUnique(values: readonly string[]): string[] {
+  return [...new Set(values)].sort(compareStrings);
+}
+
+export function heldInTaskSetHash(taskIds: readonly string[]): string {
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify(sortedUnique(taskIds)))
+    .digest('hex')}`;
+}

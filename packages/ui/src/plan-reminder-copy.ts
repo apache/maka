@@ -141,6 +141,11 @@ export interface PlanReminderCopy {
     created: string;
     runs: string;
     noRuns: string;
+    /** Badge for rows projected from the agent Automation tool. */
+    agentSource: string;
+    agentSourceHint: string;
+    /** Delivery column when the task runs as an agent session. */
+    agentDelivery: string;
   };
 }
 
@@ -166,7 +171,18 @@ const PLAN_REMINDER_COPY = {
       title: '定时任务', refreshing: '正在刷新定时任务', refresh: '刷新定时任务', create: '新建定时任务', keepAwake: '保持系统唤醒', pageSettings: '定时任务页面设置', keepAwakeErrorTitle: '无法更新保持系统唤醒', keepAwakeErrorFallback: '更新保持系统唤醒设置失败，请稍后重试。', viewsAriaLabel: '计划提醒视图', tasks: '我的定时任务', runs: '执行记录', filtersAriaLabel: '计划提醒筛选', sort: '排序', sortOptions: [['created-desc', '按创建时间倒序'], ['next-run-asc', '按下次触发升序'], ['updated-desc', '按更新时间倒序']], searchLabel: '搜索计划提醒', searchPlaceholder: '搜索标题、备注、投递或执行记录…', state: '状态', filterOption: (label, count) => `${label} ${count}`, active: '进行中', all: '全部', range: '范围', rangeOptions: [['day', '今天'], ['week', '近 7 天'], ['month', '近 30 天'], ['all', '全部记录']], searchMatches: (count) => `找到 ${count} 个匹配提醒`, clearSearch: '清除搜索', noSearchTitle: '没有匹配的提醒', noFilterTitle: '当前筛选没有提醒', noSearchBody: '调整搜索词，或切换状态筛选查看其他提醒。', noFilterBody: '切换筛选查看其他状态，或创建新的计划提醒。', emptyTitle: '还没有定时任务', emptyBody: '创建一个提醒，让 Maka 在指定时间继续这项工作。', listAriaLabel: '计划提醒列表', inspectorOpened: (title) => `已打开「${title}」的任务详情`, edit: '编辑', duplicate: '复制', triggering: '触发中…', triggerNow: '立即触发', snoozing: '延后中…', snooze: '延后 10 分钟', clearing: '清空中…', clearRuns: '清空记录', deleting: '删除中…', delete: '删除', nextRun: (time) => `下次触发：${time}`, recentRun: (time) => `最近 ${time}`, unscheduled: '未安排', noRunsTitle: '暂无执行记录', noRunsBody: '提醒触发、手动执行或投递失败后，会在这里保留最近记录。', showAllTime: '显示全部时间', runsAriaLabel: '计划提醒执行记录', activeCount: (count) => `${count} 个进行中`,
     },
     detail: {
-      label: '任务详情', enabled: '启用', recurrence: '重复', nextRun: '下次触发', lastRun: '最近触发', delivery: '投递', created: '创建于', runs: '执行记录', noRuns: '这个任务还没有执行记录。',
+      label: '任务详情',
+      enabled: '启用',
+      recurrence: '重复',
+      nextRun: '下次触发',
+      lastRun: '最近触发',
+      delivery: '投递',
+      created: '创建于',
+      runs: '执行记录',
+      noRuns: '这个任务还没有执行记录。',
+      agentSource: 'Agent 定时任务',
+      agentSourceHint: '由对话里的 Automation 工具创建。到点会新开会话执行提示词；可暂停、恢复或删除，不可用提醒表单编辑。',
+      agentDelivery: 'Agent 会话执行',
     },
   },
   en: {
@@ -190,7 +206,19 @@ const PLAN_REMINDER_COPY = {
       title: 'Scheduled tasks', refreshing: 'Refreshing scheduled tasks', refresh: 'Refresh scheduled tasks', create: 'New scheduled task', keepAwake: 'Keep system awake', pageSettings: 'Scheduled task page settings', keepAwakeErrorTitle: 'Could not update Keep system awake', keepAwakeErrorFallback: 'Could not update the Keep system awake setting. Try again later.', viewsAriaLabel: 'Scheduled task views', tasks: 'My scheduled tasks', runs: 'Run history', filtersAriaLabel: 'Scheduled task filters', sort: 'Sort', sortOptions: [['created-desc', 'Newest created first'], ['next-run-asc', 'Next run first'], ['updated-desc', 'Recently updated first']], searchLabel: 'Search scheduled tasks', searchPlaceholder: 'Search titles, notes, delivery, or run history…', state: 'Status', filterOption: (label, count) => `${label} ${count}`, active: 'Active', all: 'All', range: 'Range', rangeOptions: [['day', 'Today'], ['week', 'Last 7 days'], ['month', 'Last 30 days'], ['all', 'All runs']], searchMatches: (count) => `${count} matching ${count === 1 ? 'reminder' : 'reminders'}`, clearSearch: 'Clear search', noSearchTitle: 'No matching reminders', noFilterTitle: 'No reminders in this filter', noSearchBody: 'Change the search terms or status filter to find other reminders.', noFilterBody: 'Change the filter or create a new scheduled task.', emptyTitle: 'No scheduled tasks yet', emptyBody: 'Create a reminder so Maka can continue this work at the right time.', listAriaLabel: 'Scheduled task list', inspectorOpened: (title) => `Opened the task details for ${title}`, edit: 'Edit', duplicate: 'Duplicate', triggering: 'Triggering…', triggerNow: 'Trigger now', snoozing: 'Snoozing…', snooze: 'Snooze 10 minutes', clearing: 'Clearing…', clearRuns: 'Clear history', deleting: 'Deleting…', delete: 'Delete', nextRun: (time) => `Next run: ${time}`, recentRun: (time) => `Last run ${time}`, unscheduled: 'Not scheduled', noRunsTitle: 'No run history', noRunsBody: 'Triggered reminders, manual runs, and delivery failures appear here.', showAllTime: 'All time', runsAriaLabel: 'Scheduled task run history', activeCount: (count) => `${count} active`,
     },
     detail: {
-      label: 'Task details', enabled: 'Enabled', recurrence: 'Repeats', nextRun: 'Next run', lastRun: 'Last run', delivery: 'Delivery', created: 'Created', runs: 'Run history', noRuns: 'This task has not run yet.',
+      label: 'Task details',
+      enabled: 'Enabled',
+      recurrence: 'Repeats',
+      nextRun: 'Next run',
+      lastRun: 'Last run',
+      delivery: 'Delivery',
+      created: 'Created',
+      runs: 'Run history',
+      noRuns: 'This task has not run yet.',
+      agentSource: 'Agent scheduled task',
+      agentSourceHint:
+        'Created by the Automation tool in a chat. When due, Maka starts a fresh session with the prompt. You can pause, resume, or delete it here — the reminder form cannot edit it.',
+      agentDelivery: 'Agent session run',
     },
   },
 } satisfies UiCatalog<PlanReminderCopy>;

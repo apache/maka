@@ -51,6 +51,28 @@ test('discovers detected adapters and pages bounded source summaries', async () 
   assert.equal(second.result.nextCursor, null);
 });
 
+test('resolves a Project filter before calling the Host adapter', async () => {
+  const adapter = adapterFixture();
+  const filters: unknown[] = [];
+  adapter.listSessions = async (input) => {
+    filters.push(input);
+    return [];
+  };
+  const fixture = coordinatorFixture([adapter]);
+
+  const result = await fixture.coordinator.handlers['external-session.catalog.query'](
+    {
+      adapterId: 'codex',
+      workspace: { kind: 'project', projectId: 'project-1' },
+      includeArchived: true,
+    },
+    context,
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(filters, [{ cwd: '/resolved-project', includeArchived: true }]);
+});
+
 test('stops catalog pages before the encoded result limit', async () => {
   const adapter = adapterFixture({ count: 20 });
   adapter.listSessions = async () =>
@@ -296,6 +318,23 @@ function coordinatorFixture(
       adapters: new ExternalSessionAdapterRegistry(adapters),
       admission,
       sessions: store,
+      workspaceResolver: {
+        resolve: async (target) =>
+          target.kind === 'host_path'
+            ? { target, cwd: target.path, projectId: null }
+            : {
+                target,
+                cwd: '/resolved-project',
+                projectId: target.projectId,
+                project: {
+                  id: target.projectId,
+                  name: 'Project',
+                  locations: [{ path: '/resolved-project', isWorktree: false }],
+                  available: true,
+                  preferredPath: '/resolved-project',
+                },
+              },
+      },
       resolveTarget: async () => ({
         backend: 'ai-sdk',
         llmConnectionSlug: 'default',

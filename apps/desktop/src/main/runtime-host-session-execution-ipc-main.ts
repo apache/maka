@@ -179,7 +179,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         });
         attachments = await resolveAttachmentRefs({
           files,
-          cwd: session.cwd,
+          cwd: session.workspace.hostCwd,
           sessionId,
           workspaceFiles: "snapshot",
           resizeImage: deps.resizeImage,

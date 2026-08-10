@@ -2,7 +2,14 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import type { FixedPromptTaskWalEvent } from './fixed-prompt-wal-types.js';
+import {
+  compareStrings,
+  sortedUnique,
+  heldInTaskSetHash,
+  type FixedPromptTaskWalEvent,
+} from './fixed-prompt-wal-types.js';
+
+export { compareStrings, sortedUnique, heldInTaskSetHash };
 
 const DEFAULT_MAX_TOOL_FAILURE_CLUSTERS = 10;
 const DEFAULT_MAX_TOOL_FAILURE_JSONL_BYTES = 1_000_000;
@@ -169,12 +176,6 @@ export async function analyzeRsiRound(input: AnalyzeRsiRoundInput): Promise<RsiR
       traceUnavailable: toolFailures.traceUnavailable,
     }),
   };
-}
-
-export function heldInTaskSetHash(taskIds: readonly string[]): string {
-  return `sha256:${createHash('sha256')
-    .update(JSON.stringify(sortedUnique(taskIds)))
-    .digest('hex')}`;
 }
 
 function taskTransitions(
@@ -567,10 +568,6 @@ function nonNegativeInt(value: number | undefined, fallback: number): number {
   return Math.max(0, Math.trunc(value));
 }
 
-function compareStrings(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 function promptSafeToken(value: string, fallback: string): string {
   if (/^[A-Za-z0-9_.:-]{1,64}$/.test(value)) return value;
   return fallback;
@@ -582,8 +579,4 @@ function isNotFound(error: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function sortedUnique(values: readonly string[]): string[] {
-  return [...new Set(values)].sort(compareStrings);
 }

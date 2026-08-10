@@ -146,7 +146,10 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
   return {
     id: 'session-1',
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: 'Session',

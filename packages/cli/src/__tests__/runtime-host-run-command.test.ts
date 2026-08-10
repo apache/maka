@@ -99,7 +99,10 @@ describe('Runtime Host maka run adapter', () => {
           sessions: [
             {
               ...sessionProjection('session-existing'),
-              cwd,
+              workspace: {
+                target: { kind: 'host_path', path: cwd },
+                hostCwd: cwd,
+              },
               lastUsedAt: 10,
               lastMessageAt: 10,
             },
@@ -1032,7 +1035,10 @@ function sessionProjection(id: string): SessionCatalogProjection {
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: 'Run once',

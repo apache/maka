@@ -36,6 +36,7 @@ export {
   RuntimeHostCatalogReadError,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
+  readRuntimeHostProjectDetails,
   readRuntimeHostResources,
   readRuntimeHostProjects,
   readRuntimeHostSessions,

@@ -4,6 +4,7 @@ import type { RuntimeHostConnection } from '../client/connection.js';
 import {
   RuntimeHostCatalogReadError,
   readRuntimeHostConnectionCatalog,
+  readRuntimeHostProjectDetails,
   readRuntimeHostProjects,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
@@ -51,11 +52,20 @@ test('rejects a repeated Skill catalog cursor instead of looping forever', async
       revision: 'sha256:skills',
       items: [],
       nextCursor: 'repeated',
+      resolvedWorkspace: {
+        target: { kind: 'host_path', path: '/repo' },
+        hostCwd: '/repo',
+      },
     };
   });
 
   await assert.rejects(
-    () => readRuntimeHostSkillCatalog(connection, { projectRoot: '/repo' }, 'governance'),
+    () =>
+      readRuntimeHostSkillCatalog(
+        connection,
+        { workspace: { kind: 'host_path', path: '/repo' } },
+        'governance',
+      ),
     (error) =>
       error instanceof RuntimeHostCatalogReadError &&
       error.catalog === 'skill' &&
@@ -102,13 +112,9 @@ test('reassembles per-item relay profiles into the connection profile table', as
   ]);
 });
 
-test('reassembles Project aliases and locations across bounded pages without truncation', async () => {
+test('reassembles Project aliases without exposing Host locations', async () => {
   const aliases = Array.from({ length: 300 }, (_, index) => `project-alias-${index}`);
-  const root = process.platform === 'win32' ? 'C:\\workspace' : '/workspace';
-  const locations = Array.from({ length: 70 }, (_, index) => ({
-    path: `${root}${process.platform === 'win32' ? '\\' : '/'}location-${index}`,
-    isWorktree: index > 0,
-  }));
+  const locationCount = 70;
   const items = [
     {
       kind: 'project' as const,
@@ -116,10 +122,10 @@ test('reassembles Project aliases and locations across bounded pages without tru
       id: 'project-1',
       name: 'Project',
       aliasCount: aliases.length,
-      locationCount: locations.length,
+      locationCount,
+      preferredLocationIndex: 0,
       archivedAt: null,
       available: true,
-      preferredPath: locations[0]!.path,
     },
     ...aliases.map((alias, itemIndex) => ({
       kind: 'alias' as const,
@@ -127,19 +133,15 @@ test('reassembles Project aliases and locations across bounded pages without tru
       itemIndex,
       alias,
     })),
-    ...locations.map((location, itemIndex) => ({
-      kind: 'location' as const,
-      projectIndex: 0,
-      itemIndex,
-      location,
-    })),
   ];
   const connection = fakeConnection(async (_operation, input) => {
+    assert.equal(input.view, 'summary');
     const offset = input.kind === 'list_start' ? 0 : Number(input.cursor);
     const page = items.slice(offset, offset + 64);
     const nextOffset = offset + page.length;
     return {
       kind: 'page',
+      view: 'summary',
       revision: `sha256:${'a'.repeat(64)}`,
       projectCount: 1,
       items: page,
@@ -152,10 +154,62 @@ test('reassembles Project aliases and locations across bounded pages without tru
       id: 'project-1',
       aliases,
       name: 'Project',
-      locations,
+      locationCount,
       archivedAt: null,
       available: true,
-      preferredPath: locations[0]!.path,
+    },
+  ]);
+});
+
+test('reassembles more Project locations than fit in one protocol page', async () => {
+  const locations = Array.from({ length: 70 }, (_, index) => ({
+    path: `/workspace/worktree-${index}`,
+    isWorktree: index !== 0,
+  }));
+  const items = [
+    {
+      kind: 'project' as const,
+      projectIndex: 0,
+      id: 'project-1',
+      name: 'Project',
+      aliasCount: 0,
+      locationCount: locations.length,
+      preferredLocationIndex: 0,
+      archivedAt: null,
+      available: true,
+    },
+    ...locations.map((location, itemIndex) => ({
+      kind: 'location' as const,
+      projectIndex: 0,
+      itemIndex,
+      location,
+    })),
+  ];
+  const connection = fakeConnection(async (_operation, input) => {
+    assert.equal(input.view, 'locations');
+    const offset = input.kind === 'list_start' ? 0 : Number(input.cursor);
+    const page = items.slice(offset, offset + 64);
+    const nextOffset = offset + page.length;
+    return {
+      kind: 'page',
+      view: 'locations',
+      revision: `sha256:${'b'.repeat(64)}`,
+      projectCount: 1,
+      items: page,
+      nextCursor: nextOffset < items.length ? String(nextOffset) : null,
+    };
+  });
+
+  assert.deepEqual(await readRuntimeHostProjectDetails(connection), [
+    {
+      id: 'project-1',
+      aliases: [],
+      name: 'Project',
+      locationCount: locations.length,
+      archivedAt: null,
+      available: true,
+      locations,
+      preferredPath: locations[0]?.path,
     },
   ]);
 });

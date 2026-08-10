@@ -14,6 +14,7 @@ import type {
   SessionCatalogFilter,
   SessionCatalogProjection,
   SessionCreateInput,
+  WorkspaceTarget,
   SessionModelTarget,
 } from '@maka/runtime-host/protocol';
 import { resolveCreateSessionRequest } from './create-session-input.js';
@@ -50,7 +51,7 @@ export interface RuntimeHostSessionCatalogIpcDeps {
   client: RuntimeHostSessionCatalogClient;
   resolveCreateProject: (
     input: Pick<CreateSessionRequestInput, 'cwd' | 'projectId'>,
-  ) => Promise<{ readonly cwd: string; readonly projectId?: string | null }>;
+  ) => Promise<WorkspaceTarget>;
   emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,
@@ -101,15 +102,14 @@ export function registerRuntimeHostSessionCatalogIpc(
       throw new Error('Unsupported Runtime Host Session backend');
     }
     const request = resolveCreateSessionRequest(input);
-    const project = await deps.resolveCreateProject({
+    const workspace = await deps.resolveCreateProject({
       ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input?.projectId === undefined ? {} : { projectId: input.projectId }),
     });
     const session = await deps.client.createSession({
       sessionId: newId(),
-      cwd: project.cwd,
+      workspace,
       ...(request.mode === undefined ? {} : { mode: request.mode }),
-      ...(project.projectId === undefined ? {} : { projectId: project.projectId }),
       ...(request.mode === undefined ? { name: request.name } : {}),
       ...(request.labels === undefined ? {} : { labels: request.labels }),
       modelTarget: normalizeModelTarget(input),
@@ -284,8 +284,10 @@ export function toDesktopHostSessionSummary(
 ): DesktopHostSessionSummary {
   return {
     id: session.id,
-    cwd: session.cwd,
-    ...(session.projectId === undefined ? {} : { projectId: session.projectId }),
+    cwd: session.workspace.hostCwd,
+    ...(session.workspace.target.kind === 'project'
+      ? { projectId: session.workspace.target.projectId }
+      : {}),
     name: session.name,
     isFlagged: session.isFlagged,
     isArchived: session.isArchived,

@@ -18,6 +18,7 @@ import {
   type MetaAgentPromptInput,
   type MetaAgentPromptResult,
 } from '../prompt-candidate-loop.js';
+import { heldInTaskSetHash } from '../rsi-round-analysis.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -126,6 +127,23 @@ describe('prompt candidate loop', () => {
     assert.equal(firstHash, secondHash);
     assert.notEqual(firstHash, differentHash);
     assert.equal(firstHash, expectedHeldInTaskSetHash(['task-a', 'task-b']));
+  });
+
+  test('writer commits a held-in task set hash in canonical codepoint order', async () => {
+    // Writer-contract test: drive the real runPromptCandidateRound writer (not a
+    // hand-constructed event) with ids whose codepoint and localeCompare orders
+    // diverge (mixed case: localeCompare folds case to ['apple','Banana',...],
+    // codepoint orders ['Banana','Date','apple','cherry']). The hash persisted
+    // to the WAL must equal the canonical codepoint heldInTaskSetHash; this
+    // fails if the writer regresses to localeCompare.
+    const heldInTaskIds = ['apple', 'Banana', 'cherry', 'Date'];
+    const writerHash = await runCandidateRoundHeldInTaskSetHash(heldInTaskIds);
+
+    assert.equal(writerHash, heldInTaskSetHash(heldInTaskIds));
+    assert.notEqual(
+      writerHash,
+      sha256Json([...new Set(heldInTaskIds)].sort((a, b) => a.localeCompare(b))),
+    );
   });
 
   test('filters results TSV by held-in tasks independently from trajectory digests', async () => {
@@ -2254,7 +2272,7 @@ async function runCandidateRoundHeldInTaskSetHash(
 }
 
 function expectedHeldInTaskSetHash(heldInTaskIds: readonly string[]): string {
-  return sha256Json([...new Set(heldInTaskIds)].sort((a, b) => a.localeCompare(b)));
+  return sha256Json([...new Set(heldInTaskIds)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 
 function expectedCandidateRationaleHash(candidateRationale: Record<string, unknown>): string {

@@ -24,7 +24,7 @@ test('leaves ordinary Session defaults to the Host while preserving product mode
   registerRuntimeHostSessionCatalogIpc(
     {
       client,
-      resolveCreateProject: async () => ({ cwd: '/project', projectId: 'project-1' }),
+      resolveCreateProject: async () => ({ kind: 'project', projectId: 'project-1' }),
       emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
       releaseSessionResources() {},
       sessionCopyCleanup: cleanupAuthority(),
@@ -44,8 +44,7 @@ test('leaves ordinary Session defaults to the Host while preserving product mode
   assert.deepEqual(creates, [
     {
       sessionId: 'session-1',
-      cwd: '/project',
-      projectId: 'project-1',
+      workspace: { kind: 'project', projectId: 'project-1' },
       name: DEFAULT_SESSION_NAME,
       modelTarget: { kind: 'default' },
       collaborationMode: 'agent',
@@ -53,8 +52,7 @@ test('leaves ordinary Session defaults to the Host while preserving product mode
     },
     {
       sessionId: 'session-2',
-      cwd: '/project',
-      projectId: 'project-1',
+      workspace: { kind: 'project', projectId: 'project-1' },
       mode: 'deep_research',
       labels: ['customer-label'],
       modelTarget: { kind: 'default' },
@@ -274,7 +272,8 @@ function cleanupAuthority(): RuntimeHostSessionCatalogIpcDeps['sessionCopyCleanu
 }
 
 const defaultCreateProject: RuntimeHostSessionCatalogIpcDeps['resolveCreateProject'] = async () => ({
-  cwd: '/workspace',
+  kind: 'host_path',
+  path: '/workspace',
 });
 
 function catalogClient(overrides: Partial<CatalogClient>): CatalogClient {
@@ -316,7 +315,10 @@ function session(
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: id,

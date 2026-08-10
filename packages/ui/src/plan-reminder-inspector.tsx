@@ -11,7 +11,7 @@
 // delete controls all live here, where they are plain buttons with room for
 // real labels instead of six entries behind a per-row overflow menu.
 
-import type { PlanReminder } from '@maka/core';
+import { isAgentAutomationPlanReminder, type PlanReminder } from '@maka/core';
 import {
   Button,
   Divider,
@@ -51,6 +51,7 @@ export function PlanReminderInspector(props: {
   const locale = useUiLocale();
   const copy = getPlanReminderCopy(locale);
   const { reminder } = props;
+  const isAgentAutomation = isAgentAutomationPlanReminder(reminder);
   const isCompleted = reminder.status === 'completed';
   const pending = Array.from(props.pendingActionKeys).some((key) => key.startsWith(`${reminder.id}:`));
   const key = (action: string) => props.pendingActionKeys.has(`${reminder.id}:${action}`);
@@ -66,9 +67,17 @@ export function PlanReminderInspector(props: {
           <Text type="supporting" color="secondary">
             {planReminderStatusLabel(reminder.status, locale)}
           </Text>
+          {isAgentAutomation ? (
+            <Text type="supporting" color="secondary">
+              · {copy.detail.agentSource}
+            </Text>
+          ) : null}
         </HStack>
         <Heading level={2}>{reminder.title}</Heading>
         {reminder.note ? <Text type="body" color="secondary">{reminder.note}</Text> : null}
+        {isAgentAutomation ? (
+          <Text type="supporting" color="secondary">{copy.detail.agentSourceHint}</Text>
+        ) : null}
       </VStack>
 
       {!isCompleted && (
@@ -84,26 +93,28 @@ export function PlanReminderInspector(props: {
         </HStack>
       )}
 
-      <HStack gap={2} wrap="wrap">
-        <Button
-          size="sm"
-          label={key('trigger') ? copy.page.triggering : copy.page.triggerNow}
-          isDisabled={pending || !reminder.enabled}
-          onClick={props.onTriggerNow}
-        />
-        <Button
-          size="sm"
-          variant="secondary"
-          label={key('snooze') ? copy.page.snoozing : copy.page.snooze}
-          isDisabled={
-            pending
-            || !reminder.enabled
-            || reminder.status !== 'scheduled'
-            || typeof reminder.nextRunAt !== 'number'
-          }
-          onClick={props.onSnooze}
-        />
-      </HStack>
+      {!isAgentAutomation ? (
+        <HStack gap={2} wrap="wrap">
+          <Button
+            size="sm"
+            label={key('trigger') ? copy.page.triggering : copy.page.triggerNow}
+            isDisabled={pending || !reminder.enabled}
+            onClick={props.onTriggerNow}
+          />
+          <Button
+            size="sm"
+            variant="secondary"
+            label={key('snooze') ? copy.page.snoozing : copy.page.snooze}
+            isDisabled={
+              pending
+              || !reminder.enabled
+              || reminder.status !== 'scheduled'
+              || typeof reminder.nextRunAt !== 'number'
+            }
+            onClick={props.onSnooze}
+          />
+        </HStack>
+      ) : null}
 
       <Divider />
 
@@ -122,7 +133,11 @@ export function PlanReminderInspector(props: {
           </MetadataListItem>
         ) : null}
         <MetadataListItem label={copy.detail.delivery}>
-          <Text type="body">{formatPlanReminderDeliveryTargetLabel(reminder.delivery, locale)}</Text>
+          <Text type="body">
+            {isAgentAutomation
+              ? copy.detail.agentDelivery
+              : formatPlanReminderDeliveryTargetLabel(reminder.delivery, locale)}
+          </Text>
         </MetadataListItem>
         <MetadataListItem label={copy.detail.created}>
           <Text type="body">{formatReminderTime(reminder.createdAt, locale)}</Text>
@@ -136,7 +151,7 @@ export function PlanReminderInspector(props: {
           <StackItem size="fill">
             <Text type="label" color="secondary">{copy.detail.runs}</Text>
           </StackItem>
-          {reminder.runs.length > 0 && !isCompleted ? (
+          {reminder.runs.length > 0 && !isCompleted && !isAgentAutomation ? (
             <Button
               size="sm"
               variant="ghost"
@@ -172,14 +187,24 @@ export function PlanReminderInspector(props: {
       <Divider />
 
       <HStack gap={2} wrap="wrap">
-        <Button
-          size="sm"
-          variant="secondary"
-          label={copy.page.edit}
-          isDisabled={pending || isCompleted}
-          onClick={props.onEdit}
-        />
-        <Button size="sm" variant="secondary" label={copy.page.duplicate} isDisabled={pending} onClick={props.onDuplicate} />
+        {!isAgentAutomation ? (
+          <>
+            <Button
+              size="sm"
+              variant="secondary"
+              label={copy.page.edit}
+              isDisabled={pending || isCompleted}
+              onClick={props.onEdit}
+            />
+            <Button
+              size="sm"
+              variant="secondary"
+              label={copy.page.duplicate}
+              isDisabled={pending}
+              onClick={props.onDuplicate}
+            />
+          </>
+        ) : null}
         <StackItem size="fill" />
         <Button
           size="sm"

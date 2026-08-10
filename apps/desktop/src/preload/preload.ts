@@ -433,7 +433,6 @@ const makaBridge = {
     list(input: {
       adapterId: string;
       includeArchived?: boolean;
-      cwd?: string;
       cursor?: string;
     }): Promise<{ sessions: ExternalSessionSummary[]; nextCursor: string | null }> {
       return ipcRenderer.invoke('external-sessions:list', input);

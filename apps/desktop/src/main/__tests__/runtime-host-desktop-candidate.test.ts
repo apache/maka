@@ -486,8 +486,10 @@ function deps(
     resizeImage: async (bytes) => bytes,
     nativeCapabilities,
     botRegistry: {} as BotRegistry,
-    resolveBotCreateTarget: async () => ({ cwd: '/workspace' }),
-    resolveSessionCreateProject: async () => ({ cwd: '/workspace' }),
+    resolveBotCreateTarget: async () => ({
+      workspace: { kind: 'host_path', path: '/workspace' },
+    }),
+    resolveSessionCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
     emitSessionsChanged() {},
     emitModeChanged() {},
     completeComputerUseTurn() {},
@@ -824,7 +826,10 @@ function session(id: string): SessionCatalogProjection {
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: id,

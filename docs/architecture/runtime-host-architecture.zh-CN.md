@@ -111,6 +111,24 @@ Run Composer 冻结一次 Run 的 model-visible 基线：base system prompt、to
 
 Composition 或 commit 失败时必须 fail closed。没有发生 dispatch 的 Run 不伪造 composition snapshot。
 
+### Runtime Host 解析 workspace
+
+Client 只使用一种 closed target 表达 workspace：
+
+```ts
+type WorkspaceTarget =
+  | { kind: "project"; projectId: string }
+  | { kind: "host_path"; path: string };
+```
+
+`project` 是可跨机器传递的形式。Runtime Host 通过自己的 Project Catalog 解析它，并返回包含 canonical target 与 `hostCwd` 的 projection。`host_path` 只供拥有明确 Host-path authority 的 Client 使用，例如从本地 checkout 启动的 CLI。
+
+Project Catalog 提供 revision-pinned、paginated 的 summary 与 location view。Summary 不包含 path；读取 location 必须拥有 Host-path authority。
+
+Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 将所选 Project 保存为按 root 隔离的 Client preference；选择 Project 不修改 Host 全局状态。没有 Host-path authority 的 Client 可以使用已注册 Project，但不能注册、relink、请求 Host 侧 reveal 或提交 Host path。
+
+Skill Catalog 管理属于 Host 文件系统操作。它要求 Host-path authority，并返回该操作实际解析出的 workspace。
+
 ## 生命周期
 
 | 阶段 | Contract |
@@ -135,6 +153,7 @@ Client disconnect 只释放 connection-scoped resources，不取消已经 admiss
 8. Provider dispatch 等待 Run Composition durable commit。
 9. Domain lifecycle 与 execution lifecycle 保持分离。
 10. 一个 owner 关闭失败时，shutdown 仍继续关闭其余 owner。
+11. 只有 Runtime Host 能把 `WorkspaceTarget` 解析为 canonical Host path。
 
 ## 失败如何收敛
 
@@ -162,6 +181,7 @@ Runtime Host 不承诺任意 external side effect 的 exactly-once。具体 Tool
 - [`host-kernel.ts`](../../packages/runtime-host/src/server/host-kernel.ts)：process ownership、listeners、connection lifecycle、drain 与 shutdown
 - [`host-composition.ts`](../../packages/runtime-host/src/server/host-composition.ts)：composition identity、Module contract、recovery 与 close order
 - [`hosted-execution-authority.ts`](../../packages/runtime-host/src/server/hosted-execution-authority.ts)：root execution contract
+- [`workspace-resolver.ts`](../../packages/runtime-host/src/server/workspace-resolver.ts)：Project 与 Host-path workspace resolution
 - [`run-composition.ts`](../../packages/core/src/run-composition.ts)：durable Run Composition schema
 - [`state-root-composition.ts`](../../packages/storage/src/state-root-composition.ts)：persistent Composition binding
 
@@ -175,6 +195,7 @@ Runtime Host 不承诺任意 external side effect 的 exactly-once。具体 Tool
 - Hosted Execution admission、stop、settlement 与 restart recovery；
 - immutable Run Composition commit 与 pre-dispatch fail-closed；
 - Client disconnect、drain 与 crash recovery 的端到端行为。
+- 无 Host-path authority 时使用 Project workspace，并拒绝未授权 Host path。
 
 跨越这些边界的改动仍须通过全仓 format、lint、typecheck 与 tests。
 

@@ -111,6 +111,24 @@ Before the first physical provider dispatch:
 
 A failed composition or commit fails closed. A Run that never dispatches does not invent a composition snapshot.
 
+### Runtime Host resolves workspaces
+
+Clients identify a workspace with one closed target:
+
+```ts
+type WorkspaceTarget =
+  | { kind: "project"; projectId: string }
+  | { kind: "host_path"; path: string };
+```
+
+`project` is the portable form. Runtime Host resolves it through its Project Catalog and returns a projection containing the canonical target and `hostCwd`. `host_path` is for a Client that has explicit Host-path authority, such as a local CLI started in a checkout.
+
+The Project Catalog has revision-pinned, paginated summary and location views. The summary is path-free; reading locations requires Host-path authority.
+
+Clients do not combine a path with a Project ID or resolve a Host path themselves. Desktop keeps its selected Project as a root-scoped Client preference; selecting a Project does not mutate global Host state. A Client without Host-path authority can use a registered Project, but cannot register, relink, request a Host-side reveal, or submit a Host path.
+
+Skill catalog management is a Host-filesystem operation. It requires Host-path authority and returns the workspace resolved by that operation.
+
 ## Lifecycle
 
 | Stage | Contract |
@@ -135,6 +153,7 @@ A Client disconnect releases only connection-scoped resources. It does not cance
 8. Provider dispatch waits for a durable Run Composition commit.
 9. Domain lifecycle and execution lifecycle remain separate.
 10. Shutdown continues closing other owners after one owner fails.
+11. Runtime Host is the only resolver from `WorkspaceTarget` to a canonical Host path.
 
 ## How failures converge
 
@@ -162,6 +181,7 @@ Runtime Host does not claim exactly-once behavior for arbitrary external side ef
 - [`host-kernel.ts`](../../packages/runtime-host/src/server/host-kernel.ts): process ownership, listeners, connection lifecycle, drain, and shutdown
 - [`host-composition.ts`](../../packages/runtime-host/src/server/host-composition.ts): composition identity, Module contract, recovery, and close order
 - [`hosted-execution-authority.ts`](../../packages/runtime-host/src/server/hosted-execution-authority.ts): root execution contract
+- [`workspace-resolver.ts`](../../packages/runtime-host/src/server/workspace-resolver.ts): Project and Host-path workspace resolution
 - [`run-composition.ts`](../../packages/core/src/run-composition.ts): durable Run Composition schema
 - [`state-root-composition.ts`](../../packages/storage/src/state-root-composition.ts): persistent Composition binding
 
@@ -175,6 +195,7 @@ Changes to these boundaries should preserve tests for:
 - Hosted Execution admission, stop, settlement, and restart recovery;
 - immutable Run Composition commit and pre-dispatch fail-closed behavior;
 - Client disconnect, drain, and crash recovery end to end.
+- Project-based workspace use without Host-path authority, and rejection of unauthorized Host paths.
 
 Repository-wide format, lint, typecheck, and test gates remain required for changes that cross these boundaries.
 

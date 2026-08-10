@@ -290,7 +290,7 @@ test('new Full Access Plan Skill previews use the mutating tool surface', async 
             kind: 'start',
             target: {
               kind: 'new_session',
-              context: { projectRoot: root },
+              context: { workspace: { kind: 'host_path', path: root } },
               collaborationMode: 'plan',
               permissionMode,
             },

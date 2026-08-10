@@ -386,7 +386,6 @@ export interface MakaBridge {
     list(input: {
       adapterId: string;
       includeArchived?: boolean;
-      cwd?: string;
       cursor?: string;
     }): Promise<{ sessions: ExternalSessionSummary[]; nextCursor: string | null }>;
     import(input: {

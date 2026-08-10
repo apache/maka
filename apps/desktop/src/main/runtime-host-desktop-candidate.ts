@@ -16,6 +16,7 @@ import {
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
 import {
@@ -58,13 +59,10 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly resizeImage: (bytes: Uint8Array) => Promise<Uint8Array>;
   readonly nativeCapabilities: DesktopNativeCapabilityProviderInput;
   readonly botRegistry: BotRegistry;
-  readonly resolveBotCreateTarget: () => Promise<{
-    readonly cwd: string;
-    readonly projectId?: string | null;
-  }>;
+  readonly resolveBotCreateTarget: () => Promise<{ readonly workspace: WorkspaceTarget }>;
   readonly resolveSessionCreateProject: (
     input: Pick<CreateSessionRequestInput, "cwd" | "projectId">,
-  ) => Promise<{ readonly cwd: string; readonly projectId?: string | null }>;
+  ) => Promise<WorkspaceTarget>;
   readonly emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,

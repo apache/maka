@@ -8,6 +8,7 @@ import type {
 } from './fixed-prompt-wal-types.js';
 import type { PromptAcceptanceResult } from './prompt-acceptance-policy.js';
 import type { RsiRoundAnalysis, RsiTaskOutcome, RsiTaskTransition } from './rsi-round-analysis.js';
+import { compareStrings, sortedUnique } from './rsi-round-analysis.js';
 
 export type {
   RsiPredictedFixOutcome,
@@ -271,10 +272,6 @@ function isErrorClassBackedFailurePattern(failurePattern: PromptCandidateFailure
   );
 }
 
-function sortedUnique(values: readonly string[]): string[] {
-  return [...new Set(values)].sort(compareStrings);
-}
-
 function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
   const sortedLeft = sortedUnique(left);
   const sortedRight = sortedUnique(right);
@@ -282,8 +279,4 @@ function sameStringSet(left: readonly string[], right: readonly string[]): boole
     sortedLeft.length === sortedRight.length &&
     sortedLeft.every((value, index) => value === sortedRight[index])
   );
-}
-
-function compareStrings(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
 }

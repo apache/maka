@@ -141,8 +141,10 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
           'session.create': async (input) => {
             assert.deepEqual(input.modelTarget, { kind: 'default' });
             assert.equal(input.permissionMode, undefined);
+            assert.equal(input.workspace.kind, 'host_path');
+            if (input.workspace.kind !== 'host_path') throw new Error('Expected Host path');
             projected = session(input.sessionId, {
-              cwd: input.cwd,
+              workspace: { target: input.workspace, hostCwd: input.workspace.path },
               name: input.name,
               connectionLocked: false,
             });
@@ -206,8 +208,10 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         releaseComputerUseSession() {},
       },
       botRegistry: {} as BotRegistry,
-      resolveBotCreateTarget: async () => ({ cwd: base }),
-      resolveSessionCreateProject: async () => ({ cwd: base }),
+      resolveBotCreateTarget: async () => ({
+        workspace: { kind: 'host_path', path: base },
+      }),
+      resolveSessionCreateProject: async () => ({ kind: 'host_path', path: base }),
       emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
       emitModeChanged() {},
       completeComputerUseTurn() {},
@@ -523,7 +527,10 @@ function session(
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: 'Desktop Host Session',

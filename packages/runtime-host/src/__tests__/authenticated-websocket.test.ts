@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -51,6 +51,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         'client.capability.replace',
         'project.catalog.query',
         'project.catalog.mutate',
+        'skill.catalog.query',
       ],
       canPublishClientCapabilities: false,
       canUseHostPaths: false,
@@ -124,23 +125,60 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       (error: unknown) =>
         error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
     );
-    await assert.rejects(
-      remote.request('project.catalog.query', { kind: 'list_start' }),
-      (error: unknown) =>
-        error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
-    );
+    const remoteProjects = await remote.request('project.catalog.query', {
+      kind: 'list_start',
+      view: 'summary',
+    });
+    assert.equal(remoteProjects.kind, 'page');
     await assert.rejects(
       remote.request('project.catalog.mutate', {
-        kind: 'select',
-        projectId: 'project-1',
+        kind: 'register',
+        path: root,
       }),
       (error: unknown) =>
         error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
     );
 
+    const registered = await local.request('project.catalog.mutate', {
+      kind: 'register',
+      path: root,
+    });
+    assert.equal(registered.kind, 'project');
+    if (registered.kind !== 'project') assert.fail('Project registration did not commit');
+    const registeredProjectId = registered.project.id;
+    const canonicalRoot = await realpath(root);
+    await assert.rejects(
+      remote.request('project.catalog.query', { kind: 'list_start', view: 'locations' }),
+      (error: unknown) =>
+        error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
+    );
+    await assert.rejects(
+      remote.request('skill.catalog.query', {
+        kind: 'start',
+        context: {
+          workspace: { kind: 'project', projectId: registeredProjectId },
+        },
+        view: 'governance',
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
+    );
+    const remoteProjectSession = await remote.request('session.create', {
+      sessionId: 'remote-project-session',
+      workspace: { kind: 'project', projectId: registeredProjectId },
+      modelTarget: { kind: 'default' },
+    });
+    assert.ok(!('kind' in remoteProjectSession));
+    if (!('kind' in remoteProjectSession)) {
+      assert.deepEqual(remoteProjectSession.workspace, {
+        target: { kind: 'project', projectId: registeredProjectId },
+        hostCwd: canonicalRoot,
+      });
+    }
+
     const created = await local.request('session.create', {
       sessionId: 'shared-session',
-      cwd: root,
+      workspace: { kind: 'host_path', path: root },
       name: 'Shared Session',
       modelTarget: { kind: 'default' },
     });
@@ -176,7 +214,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     await assert.rejects(
       remote.request('session.create', {
         sessionId: 'remote-path-session',
-        cwd: root,
+        workspace: { kind: 'host_path', path: root },
         modelTarget: { kind: 'default' },
       }),
       (error: unknown) =>

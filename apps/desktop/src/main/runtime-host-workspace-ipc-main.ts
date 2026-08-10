@@ -36,8 +36,8 @@ export function registerRuntimeHostWorkspaceIpc(
 async function sessionWorkspace(client: WorkspaceClient, sessionId: string): Promise<string | null> {
   const session = await client.getSession(sessionId);
   if (!session) throw new Error(`No such Session: ${sessionId}`);
-  const workspace = await stat(session.cwd).catch(() => null);
-  return workspace?.isDirectory() ? session.cwd : null;
+  const workspace = await stat(session.workspace.hostCwd).catch(() => null);
+  return workspace?.isDirectory() ? session.workspace.hostCwd : null;
 }
 
 function readRequest(value: unknown): {
