@@ -1328,11 +1328,6 @@ function AppShellContent({
     pinWorkbarTab,
     openWorkbarLauncher,
   } = useShellLayout();
-  const revealWorkbarLauncher = useCallback(() => {
-    setWorkbarCollapsed(false);
-    openWorkbarLauncher('right');
-  }, [openWorkbarLauncher, setWorkbarCollapsed]);
-
   const openNewSideConversation = useCallback(
     (placement: SessionWorkbarPlacement, initialPrompt?: string) => {
       const sourceSessionId = activeIdRef.current;
@@ -2566,7 +2561,6 @@ function AppShellContent({
               <AppShellWorkspaceTopActions
                 workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
                 workbarCollapsed={workbarCollapsed}
-                onOpenWorkbarLauncher={revealWorkbarLauncher}
                 onToggleWorkbar={toggleWorkbar}
               />
             )}

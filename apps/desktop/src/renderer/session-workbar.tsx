@@ -2,7 +2,6 @@ import {
   lazy,
   Suspense,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -48,8 +47,10 @@ import { Badge } from '@astryxdesign/core/Badge';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { ContextMenu } from '@astryxdesign/core/ContextMenu';
-import { Item } from '@astryxdesign/core/Item';
+import { Heading } from '@astryxdesign/core/Heading';
+import { Icon } from '@astryxdesign/core/Icon';
 import { Kbd } from '@astryxdesign/core/Kbd';
+import { List, ListItem } from '@astryxdesign/core/List';
 import { Section } from '@astryxdesign/core/Section';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
@@ -542,20 +543,15 @@ function SortableWorkbarTab(props: {
 }
 
 function WorkbarLauncher(props: {
-  active: boolean;
-  returnTabId: string | null;
   onOpen: (kind: SessionWorkbarTabKind) => void;
-  onDismiss: () => void;
   sideChatAvailable: boolean;
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
-  const isMac = navigator.platform.toLowerCase().includes('mac');
-  const menuRef = useRef<HTMLDivElement>(null);
   const actions: Array<{
     kind: SessionWorkbarTabKind;
     label: string;
     description: string;
-    icon: ReactNode;
+    icon: typeof Activity;
     shortcut?: string;
     disabled?: boolean;
   }> = [
@@ -563,142 +559,74 @@ function WorkbarLauncher(props: {
       kind: 'side-chat',
       label: copy.sideChat,
       description: copy.launcher.sideChat,
-      icon: <MessageCircleQuestion aria-hidden />,
-      // Astryx Kbd tokens (+ separated); mod = Cmd on Mac / Ctrl elsewhere.
-      shortcut: isMac ? 'mod+alt+s' : 'ctrl+alt+s',
+      icon: MessageCircleQuestion,
+      shortcut: 'mod+alt+s',
       disabled: !props.sideChatAvailable,
     },
     {
       kind: 'review',
       label: copy.review,
       description: copy.launcher.review,
-      icon: <GitBranch aria-hidden />,
+      icon: GitBranch,
       shortcut: 'ctrl+shift+g',
     },
     {
       kind: 'terminal',
       label: copy.terminal,
       description: copy.launcher.terminal,
-      icon: <Terminal aria-hidden />,
+      icon: Terminal,
       shortcut: 'ctrl+`',
     },
     {
       kind: 'browser',
       label: copy.browser,
       description: copy.launcher.browser,
-      icon: <Globe aria-hidden />,
+      icon: Globe,
       shortcut: 'mod+t',
     },
     {
       kind: 'files',
       label: copy.files,
       description: copy.launcher.files,
-      icon: <FolderOpen aria-hidden />,
+      icon: FolderOpen,
       shortcut: 'mod+p',
     },
     {
       kind: 'tasks',
       label: copy.tasks,
       description: copy.launcher.tasks,
-      icon: <ListTodo aria-hidden />,
+      icon: ListTodo,
     },
     {
       kind: 'inspector',
       label: copy.inspector,
       description: copy.launcher.inspector,
-      icon: <Activity aria-hidden />,
+      icon: Activity,
     },
   ];
-  const firstEnabledActionIndex = actions.findIndex(
-    (action) => !action.disabled,
-  );
-  useLayoutEffect(() => {
-    if (!props.active) return;
-    menuRef.current
-      ?.querySelector<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')
-      ?.focus();
-  }, [props.active]);
-  const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    const menu = menuRef.current;
-    if (!menu) return;
-    const items = Array.from(
-      menu.querySelectorAll<HTMLElement>(
-        '[role="menuitem"]:not([aria-disabled="true"])',
-      ),
-    );
-    const currentIndex = items.findIndex(
-      (item) => item === document.activeElement,
-    );
-    let targetIndex = -1;
-    if (event.key === 'ArrowDown') {
-      targetIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
-    } else if (event.key === 'ArrowUp') {
-      targetIndex =
-        currentIndex < 0
-          ? items.length - 1
-          : (currentIndex - 1 + items.length) % items.length;
-    } else if (event.key === 'Home') {
-      targetIndex = 0;
-    } else if (event.key === 'End') {
-      targetIndex = items.length - 1;
-    } else if (event.key === 'Escape' && props.returnTabId) {
-      event.preventDefault();
-      props.onDismiss();
-      window.requestAnimationFrame(() => {
-        document
-          .querySelector<HTMLElement>(
-            `[data-workbar-tab-id="${CSS.escape(props.returnTabId ?? '')}"] [role="tab"]`,
-          )
-          ?.focus();
-      });
-      return;
-    } else if (event.key === 'Enter' || event.key === ' ') {
-      // Item + role="menuitem" puts onClick on the row div (parent-role mode)
-      // and does not render a keyboard-activatable button — the menu parent
-      // must activate the focused item.
-      event.preventDefault();
-      const focused = items[currentIndex >= 0 ? currentIndex : 0];
-      focused?.click();
-      return;
-    }
-    const target = items[targetIndex];
-    if (!target) return;
-    event.preventDefault();
-    target.focus();
-  };
   return (
     <div className="maka-workbar-launcher">
-      <div
-        ref={menuRef}
+      <List
         className="maka-workbar-launcher-list"
-        role="menu"
-        aria-label={copy.openTab}
-        onKeyDown={handleMenuKeyDown}
+        density="compact"
+        header={<Heading level={4}>{copy.openTools}</Heading>}
       >
-        {actions.map((action, index) => (
-          <Item
+        {actions.map((action) => (
+          <ListItem
             key={action.kind}
-            role="menuitem"
-            className="maka-workbar-launcher-row"
-            data-secondary={
-              action.kind === 'tasks' || action.kind === 'inspector' || undefined
-            }
-            tabIndex={index === firstEnabledActionIndex ? 0 : -1}
-            startContent={<span className="maka-workbar-launcher-icon">{action.icon}</span>}
+            startContent={<Icon icon={action.icon} size="sm" color="secondary" />}
             label={action.label}
-            aria-description={action.description}
+            description={action.description}
             endContent={
               action.shortcut ? (
-                <span className="maka-workbar-launcher-shortcut">
-                  <Kbd keys={action.shortcut} />
-                </span>
+                <Kbd keys={action.shortcut} />
               ) : undefined
             }
             isDisabled={action.disabled}
             onClick={() => props.onOpen(action.kind)}
           />
         ))}
-      </div>
+      </List>
     </div>
   );
 }
@@ -809,14 +737,7 @@ export function SessionWorkbar(props: {
             />
             <WorkbarPanel active={visible && showingLauncher} placement={placement}>
               <WorkbarLauncher
-                active={visible && showingLauncher}
-                returnTabId={activeTab?.id ?? null}
                 onOpen={(kind) => props.onRequestOpenTab(placement, kind)}
-                onDismiss={() => {
-                  if (activeTab) {
-                    props.onActivateTab(placement, activeTab.id);
-                  }
-                }}
                 sideChatAvailable={props.sourceSession !== undefined}
               />
             </WorkbarPanel>

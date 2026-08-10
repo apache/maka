@@ -59,7 +59,6 @@ const controlBlocks = [
     /\.maka-module-list-skeleton-row\b[\s\S]{0,220}?min-height:\s*(\d+)px/,
     'module-list-skeleton-row',
   ],
-  [/\.maka-workbar-launcher-row\b[\s\S]{0,220}?min-height:\s*(\d+)px/, 'workbar-launcher-row'],
 ];
 
 for (const rel of HEIGHT_GUARD_FILES) {
@@ -98,7 +97,7 @@ const REQUIRED_IMPORTS = [
   ['apps/desktop/src/renderer/external-session-import-dialog.tsx', /SegmentedControl/],
   ['apps/desktop/src/renderer/external-session-import-dialog.tsx', /Item/],
   ['apps/desktop/src/renderer/plan-mode-panel.tsx', /Collapsible/],
-  ['apps/desktop/src/renderer/session-workbar.tsx', /from '@astryxdesign\/core\/Item'/],
+  ['apps/desktop/src/renderer/session-workbar.tsx', /from '@astryxdesign\/core\/List'/],
 ];
 for (const [rel, re] of REQUIRED_IMPORTS) {
   const text = readFileSync(join(root, rel), 'utf8');
@@ -109,30 +108,16 @@ for (const [rel, re] of REQUIRED_IMPORTS) {
 
 // Contracts that fixed a11y regressions after the first Astryx pass.
 const workbar = readFileSync(join(root, 'apps/desktop/src/renderer/session-workbar.tsx'), 'utf8');
-// Negative lookbehind: bare description= prop, not aria-description=
-if (/(?<![\w-])description=\{action\.description\}/.test(workbar)) {
+if (!/<List\b/.test(workbar) || !/<ListItem\b/.test(workbar)) {
+  failures.push('session-workbar.tsx: launcher should use Astryx List/ListItem');
+}
+if (!/(?<![\w-])description=\{action\.description\}/.test(workbar)) {
+  failures.push('session-workbar.tsx: launcher ListItem should show its action description');
+}
+if (/role=["']menuitem["']|aria-description=\{action\.description\}/.test(workbar)) {
   failures.push(
-    'session-workbar.tsx: launcher Item must not put action.description in visible description',
+    'session-workbar.tsx: launcher must not recreate ListItem semantics with menu roles or aria-only copy',
   );
-}
-if (!/aria-description=\{action\.description\}/.test(workbar)) {
-  failures.push(
-    'session-workbar.tsx: launcher Item should keep AT description via aria-description',
-  );
-}
-
-const launcherCss = readFileSync(
-  join(root, 'apps/desktop/src/renderer/styles/chat-detail.css'),
-  'utf8',
-);
-if (
-  /\.maka-workbar-launcher-row:disabled\b/.test(launcherCss) &&
-  !/\.maka-workbar-launcher-row\[aria-disabled/.test(launcherCss)
-) {
-  failures.push('chat-detail.css: launcher disabled style must target [aria-disabled]');
-}
-if (!/\.maka-workbar-launcher-row\[aria-disabled/.test(launcherCss)) {
-  failures.push('chat-detail.css: missing .maka-workbar-launcher-row[aria-disabled] rule');
 }
 
 const importTsx = readFileSync(

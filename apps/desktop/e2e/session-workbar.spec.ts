@@ -8,9 +8,11 @@ async function openGitChanges(page: Page) {
   await composer.fill('create review session');
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: create review session/)).toBeVisible();
+  const workspaceActions = page.getByRole('toolbar', { name: '工作区辅助操作' });
+  await expect(workspaceActions.getByRole('button')).toHaveCount(1);
   await page.getByRole('button', { name: '展开会话工作栏' }).click();
-  await page.getByRole('button', { name: '打开工作栏标签' }).first().click();
-  await page.getByRole('menuitem', { name: '变更' }).click();
+  await expect(page.getByRole('list', { name: '打开工具' })).toBeVisible();
+  await page.getByRole('button', { name: /变更.*查看当前 Git 工作区变化/ }).click();
   return page.getByRole('region', { name: 'Git 变更' });
 }
 
