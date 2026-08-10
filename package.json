@@ -15,6 +15,7 @@
     "packages/mcp",
     "packages/runtime",
     "packages/runtime-host",
+    "packages/eval",
     "packages/computer-use",
     "packages/headless",
     "packages/cli",
