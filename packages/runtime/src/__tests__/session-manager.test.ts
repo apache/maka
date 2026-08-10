@@ -940,7 +940,9 @@ describe('SessionManager graph operator provisioning', () => {
       runStore,
       runtimeEventStore: runStore,
       backends: new BackendRegistry(),
-      childTools: IMPLEMENTATION_AGENT_DEFINITION.tools.map(testTool),
+      childTools: IMPLEMENTATION_AGENT_DEFINITION.tools
+        .filter((name) => name !== 'Write' && name !== 'Edit')
+        .map(testTool),
       worktreeChildExecutor: {
         isAvailable: async () => true,
         provision: async (input) => {
@@ -1007,6 +1009,15 @@ describe('SessionManager graph operator provisioning', () => {
     expect(result.header.cwd).toBe(result.header.subagentWorkspace?.worktreePath);
     expect(result.header.subagentWorkspace?.kind).toBe('git_worktree');
     expect(result.header.subagentWorkspace?.branch).toMatch(/^maka\/subagent\//);
+    expect(result.header.subagentRuntime?.toolNames).toEqual([
+      'Read',
+      'Glob',
+      'Grep',
+      'apply_patch',
+      'Bash',
+      'WriteStdin',
+      'StopBackgroundTask',
+    ]);
     expect(headerToSummary(result.header).subagentWorkspace).toEqual(
       result.header.subagentWorkspace,
     );

@@ -210,16 +210,38 @@ export function registerRuntimeHostConnectionsIpc(
     return requireProjectedConnection(await snapshot(), current.slug);
   });
   deps.ipcMain.handle('connections:delete', async (_event, slug: unknown) => {
-    const catalog = await snapshot();
-    const current = requireConnection(catalog, slug);
-    requireCommitted(
-      await deps.client.removeConnection({
+    // OAuth/model-fetch can bump the connection revision under the UI. Retry
+    // on connection_stale with a fresh snapshot so delete does not fail with a
+    // opaque "service unavailable" after the user already confirmed.
+    const maxAttempts = 6;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const catalog = await snapshot();
+      let current: ReturnType<typeof requireConnection>;
+      try {
+        current = requireConnection(catalog, slug);
+      } catch (error) {
+        // Only treat a missing slug as success. Invalid input must still fail.
+        if (error instanceof Error && error.message.startsWith('No such Connection:')) {
+          deps.emitConnectionListChanged();
+          return;
+        }
+        throw error;
+      }
+      const result = await deps.client.removeConnection({
         connectionId: current.connectionId,
         revision: current.revision,
-      }),
-      'delete Connection',
-    );
-    deps.emitConnectionListChanged();
+      });
+      // RemoveCatalogConnectionResult is only committed | connection_stale.
+      if (result.kind === 'committed') {
+        deps.emitConnectionListChanged();
+        return;
+      }
+      if (attempt < maxAttempts - 1) {
+        continue;
+      }
+      // English so renderer locale mapping (provider-panel-shared) can choose zh/en.
+      throw new Error('Unable to delete Connection: connection_stale');
+    }
   });
   deps.ipcMain.handle('connections:fetchModels', async (_event, slug: unknown) => {
     const current = requireConnection(await snapshot(), slug);

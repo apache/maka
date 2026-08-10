@@ -86,7 +86,7 @@ import type { MemoryExtractionSourceSnapshot } from '../memory-extraction.js';
 import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 
-describe('AiSdkBackend native ApplyPatch routing', () => {
+describe('AiSdkBackend ApplyPatch routing', () => {
   test('advertises apply_patch only to supported native OpenAI models', async () => {
     for (const [providerType, modelId, expected] of [
       ['openai', 'gpt-5.4', true],
@@ -105,14 +105,53 @@ describe('AiSdkBackend native ApplyPatch routing', () => {
         apiKey: 'sk-test',
         modelId,
         modelFactory: () => model,
-        tools: [nativeApplyPatchTool()],
+        tools: [
+          nativeApplyPatchTool(),
+          testTool('Write', z.object({})),
+          testTool('Edit', z.object({})),
+        ],
         newId: idGenerator(),
         now: monotonicClock(),
       });
 
       await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
-      assert.equal(modelToolNames(model).includes('apply_patch'), expected);
+      const names = modelToolNames(model);
+      assert.equal(names.includes('apply_patch'), expected);
+      assert.equal(names.includes('Write'), !expected);
+      assert.equal(names.includes('Edit'), !expected);
     }
+  });
+
+  test('replaces Write and Edit with freeform apply_patch for declared DeepSeek V4 Flash', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        ...connection(),
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'sk-test',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => model,
+      tools: [
+        nativeApplyPatchTool(),
+        testTool('Write', z.object({})),
+        testTool('Edit', z.object({})),
+      ],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
+
+    const names = modelToolNames(model);
+    assert.equal(names.includes('apply_patch'), true);
+    assert.equal(names.includes('Write'), false);
+    assert.equal(names.includes('Edit'), false);
   });
 
   test('replays a durable apply_patch failure as native provider JSON', async () => {
@@ -182,6 +221,271 @@ describe('AiSdkBackend native ApplyPatch routing', () => {
       type: 'json',
       value: { status: 'failed', output: 'diff rejected' },
     });
+  });
+
+  test('replays a durable DeepSeek freeform apply_patch result as plain text', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        ...connection(),
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'sk-test',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => model,
+      tools: [nativeApplyPatchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-user',
+            turnId: 'turn-previous',
+            role: 'user',
+            author: 'user',
+            text: 'patch it',
+          }),
+          runtimeEvent({
+            id: 'rt-call',
+            turnId: 'turn-previous',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'call-1',
+              name: 'apply_patch',
+              args: {
+                callId: 'call-1',
+                operation: {
+                  type: 'update_file',
+                  path: 'file.txt',
+                  diff: '@@\n-before\n+after',
+                },
+              },
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-result',
+            turnId: 'turn-previous',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'call-1',
+              name: 'apply_patch',
+              result: { status: 'completed', output: 'Applied 1 file operation.' },
+            },
+          }),
+        ],
+      }),
+    );
+
+    const toolResult = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
+      .find((message) => message.role === 'tool')
+      ?.content.find((part) => part.type === 'tool-result');
+    const toolCall = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
+      .find((message) => message.role === 'assistant')
+      ?.content.find((part) => part.type === 'tool-call');
+    assert.equal(
+      toolCall?.input,
+      '*** Begin Patch\n*** Update File: file.txt\n@@\n-before\n+after\n*** End Patch',
+    );
+    assert.deepEqual(toolResult?.output, {
+      type: 'text',
+      value: 'Applied 1 file operation.',
+    });
+  });
+
+  test('preserves a multi-file ApplyPatch fact when structured replay cannot represent it', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [nativeApplyPatchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const patch = [
+      '*** Begin Patch',
+      '*** Add File: added.txt',
+      '+hello',
+      '*** Delete File: removed.txt',
+      '*** End Patch',
+    ].join('\n');
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-user',
+            turnId: 'turn-previous',
+            role: 'user',
+            author: 'user',
+            text: 'patch both files',
+          }),
+          runtimeEvent({
+            id: 'rt-call',
+            turnId: 'turn-previous',
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'function_call', id: 'call-1', name: 'apply_patch', args: patch },
+          }),
+          runtimeEvent({
+            id: 'rt-result',
+            turnId: 'turn-previous',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'call-1',
+              name: 'apply_patch',
+              result: {
+                status: 'completed',
+                applied: [
+                  { type: 'create_file', path: 'added.txt' },
+                  { type: 'delete_file', path: 'removed.txt' },
+                ],
+                output: 'Applied 2 file operations.',
+              },
+            },
+          }),
+        ],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
+    const replayText = prompt
+      .filter((message) => message.role === 'assistant')
+      .flatMap((message) => message.content)
+      .find((part) => part.type === 'text' && part.text.includes('added.txt'));
+    assert.equal(
+      replayText?.text,
+      'ApplyPatch completed 2 file operations: create_file added.txt, delete_file removed.txt.',
+    );
+    assert.equal(
+      prompt.some((message) =>
+        message.content.some(
+          (part) => part.type === 'tool-call' && part.toolName === 'apply_patch',
+        ),
+      ),
+      false,
+    );
+  });
+
+  test('preserves every multi-file ApplyPatch fact from one provider step', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [nativeApplyPatchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const firstPatch = [
+      '*** Begin Patch',
+      '*** Add File: first.txt',
+      '+first',
+      '*** Delete File: old-first.txt',
+      '*** End Patch',
+    ].join('\n');
+    const secondPatch = [
+      '*** Begin Patch',
+      '*** Add File: second.txt',
+      '+second',
+      '*** Delete File: old-second.txt',
+      '*** End Patch',
+    ].join('\n');
+    const call = (id: string, args: string) =>
+      runtimeEvent({
+        id: `rt-${id}`,
+        turnId: 'turn-previous',
+        role: 'model',
+        author: 'agent',
+        refs: { stepId: 'patch-step' },
+        content: { kind: 'function_call', id, name: 'apply_patch', args },
+      });
+    const result = (id: string, applied: Array<{ type: string; path: string }>) =>
+      runtimeEvent({
+        id: `rt-${id}-result`,
+        turnId: 'turn-previous',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id,
+          name: 'apply_patch',
+          result: { status: 'completed', applied, output: 'Applied 2 file operations.' },
+        },
+      });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-user',
+            turnId: 'turn-previous',
+            role: 'user',
+            author: 'user',
+            text: 'patch both pairs',
+          }),
+          call('call-1', firstPatch),
+          call('call-2', secondPatch),
+          result('call-1', [
+            { type: 'create_file', path: 'first.txt' },
+            { type: 'delete_file', path: 'old-first.txt' },
+          ]),
+          result('call-2', [
+            { type: 'create_file', path: 'second.txt' },
+            { type: 'delete_file', path: 'old-second.txt' },
+          ]),
+          runtimeEvent({
+            id: 'rt-step-text',
+            turnId: 'turn-previous',
+            role: 'model',
+            author: 'agent',
+            refs: { providerEventId: 'patch-step' },
+            content: { kind: 'text', text: 'Both patches finished.' },
+          }),
+        ],
+      }),
+    );
+
+    const replayFacts = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
+      .filter((message) => message.role === 'assistant')
+      .flatMap((message) => message.content)
+      .filter((part) => part.type === 'text' && part.text.startsWith('ApplyPatch completed'))
+      .map((part) => part.text);
+    assert.deepEqual(replayFacts, [
+      'ApplyPatch completed 2 file operations: create_file first.txt, delete_file old-first.txt.',
+      'ApplyPatch completed 2 file operations: create_file second.txt, delete_file old-second.txt.',
+    ]);
   });
 });
 

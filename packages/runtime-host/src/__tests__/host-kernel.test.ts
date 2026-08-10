@@ -22,6 +22,7 @@ import { promisify } from 'node:util';
 import {
   connectOrSpawnRuntimeHost,
   connectRuntimeHost,
+  RuntimeHostRequestInterruptedError,
   type RuntimeHostConnection,
 } from '../client/index.js';
 import { connectOrSpawnRuntimeHostWithDependencies } from '../client/connect-or-spawn.js';
@@ -910,7 +911,11 @@ describe('non-serving Runtime Host kernel', () => {
         await assert.rejects(
           locallyTimed,
           (error: unknown) =>
-            error instanceof RuntimeHostTransportError && error.code === 'read_timeout',
+            error instanceof RuntimeHostRequestInterruptedError &&
+            error.reason === 'timeout' &&
+            error.retryable &&
+            error.cause instanceof RuntimeHostTransportError &&
+            error.cause.code === 'read_timeout',
         );
         assert.equal(
           (await connected.connection.status()).hostEpoch,
@@ -957,9 +962,12 @@ describe('non-serving Runtime Host kernel', () => {
           assert.rejects(
             pending,
             (error: unknown) =>
-              error instanceof RuntimeHostTransportError &&
-              error.code === 'read_timeout' &&
-              error.message.includes('host.status'),
+              error instanceof RuntimeHostRequestInterruptedError &&
+              error.reason === 'connection_lost' &&
+              error.retryable &&
+              error.cause instanceof RuntimeHostTransportError &&
+              error.cause.code === 'read_timeout' &&
+              error.cause.message.includes('host.status'),
           ),
           5_000,
           'automatic Runtime Host liveness check did not reject pending work',

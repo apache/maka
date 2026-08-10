@@ -47,6 +47,12 @@
   white-space: nowrap;
 }
 
+.maka-composer-command-token {
+  margin-inline-start: var(--space-2);
+  color: var(--muted-foreground);
+  font: var(--maka-text-code);
+}
+
 .maka-composer-mention-secondary {
   font: var(--maka-text-supporting);
   min-width: 0;

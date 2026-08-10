@@ -6,7 +6,9 @@ import type {
   SessionContinuitySnapshot,
   SubscriptionFrame,
 } from "@maka/runtime-host/protocol";
+import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
+import { RuntimeHostSessionObservationRegistry } from "../runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
@@ -101,6 +103,126 @@ test("joins an active Turn without losing or replaying assistant text", async ()
 
   await observer.unobserve("observer-1");
   assert.equal(closeCount, 1);
+});
+
+test("restores renderer observation after the Host connection is replaced", async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const firstObserver = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => ({
+        snapshot: continuitySnapshot(),
+        transcript: Promise.resolve([]),
+        events: firstEvents,
+        async close() {
+          firstEvents.end();
+        },
+      }),
+    },
+    emitSessionsChanged() {},
+  });
+  const secondObserver = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => ({
+        snapshot: continuitySnapshot(),
+        transcript: Promise.resolve([
+          {
+            type: "assistant",
+            id: "message-1",
+            turnId: "turn-1",
+            ts: 10,
+            text: "Hello",
+            modelId: "test-model",
+          },
+        ]),
+        events: secondEvents,
+        async close() {
+          secondEvents.end();
+        },
+      }),
+    },
+    emitSessionsChanged() {},
+    now: () => 50,
+  });
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const target = eventTarget(10);
+
+  assert.deepEqual(await observations.attach(firstObserver), []);
+  await observations.observe("session-1", "observer-1", target);
+  observations.detach(firstObserver);
+  await firstObserver.close();
+  assert.deepEqual(await observations.attach(secondObserver), ["session-1"]);
+  await waitFor(() => target.events.length === 1);
+
+  secondEvents.push(deltaFrame(1, 5, " again"));
+  secondEvents.push({
+    kind: "subscription.session_projection",
+    hostEpoch: "host-2",
+    subscriptionId: "subscription-2",
+    sequence: 2,
+    snapshot: continuitySnapshot({
+      rootTurn: {
+        sessionId: "session-1",
+        turnId: "turn-1",
+        runId: "run-1",
+        status: "completed",
+        terminalEventId: "terminal-1",
+      },
+    }),
+  });
+  await waitFor(() =>
+    target.events.some((event) => event.type === "complete"),
+  );
+
+  assert.deepEqual(
+    target.events.map((event) => [
+      event.type,
+      "text" in event ? event.text : undefined,
+    ]),
+    [
+      ["text_delta", "Hello"],
+      ["text_delta", " again"],
+      ["text_complete", "Hello again"],
+      ["complete", undefined],
+    ],
+  );
+
+  await observations.close();
+  await secondObserver.close();
+});
+
+test("does not publish a terminal error while an owner-managed connection is replaced", async () => {
+  let rejectFrame!: (error: Error) => void;
+  let closeCount = 0;
+  const events: AsyncIterable<SubscriptionFrame> = {
+    [Symbol.asyncIterator]: () => ({
+      next: () =>
+        new Promise<IteratorResult<SubscriptionFrame>>((_resolve, reject) => {
+          rejectFrame = reject;
+        }),
+    }),
+  };
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => ({
+        snapshot: continuitySnapshot(),
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          closeCount += 1;
+        },
+      }),
+    },
+    emitSessionsChanged() {},
+    recoverConnectionClosed: true,
+  });
+  const target = eventTarget(11);
+  await observer.observe("session-1", "observer-1", target);
+
+  rejectFrame(new RuntimeHostSubscriptionError("connection_closed", "Host restarted"));
+  await waitFor(() => closeCount === 1);
+  assert.equal(target.events.some((event) => event.type === "error"), false);
+  await observer.close();
 });
 
 test("keeps a native Turn watched without a renderer and releases it at terminal", async () => {

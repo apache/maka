@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import type { IpcMain } from 'electron';
 import {
   isCollaborationMode,
   isOrchestrationMode,
@@ -28,6 +27,10 @@ import {
 } from './session-family-action.js';
 import { normalizeSessionModelSelection } from './session-model-input.js';
 import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 
 type RuntimeHostSessionCatalogClient = Pick<
   DesktopRuntimeHostClient,
@@ -60,7 +63,7 @@ export interface RuntimeHostSessionCatalogIpcDeps {
 
 export function registerRuntimeHostSessionCatalogIpc(
   deps: RuntimeHostSessionCatalogIpcDeps,
-  ipcMain: Pick<IpcMain, 'handle'>,
+  ipcMain: ReconnectableReadIpcMain,
 ): void {
   const newId = deps.newId ?? randomUUID;
   const listSessions = async (filter?: SessionListFilter): Promise<DesktopHostSessionSummary[]> => {
@@ -78,7 +81,9 @@ export function registerRuntimeHostSessionCatalogIpc(
   const actionIds = (sessionId: string, options: unknown) =>
     resolveSessionActionIds(() => listSessions(), sessionId, options);
 
-  ipcMain.handle('sessions:list', (_event, filter?: SessionListFilter) => listSessions(filter));
+  handleReconnectableRead(ipcMain, 'sessions:list', (_event, filter?: SessionListFilter) =>
+    listSessions(filter),
+  );
   ipcMain.handle('sessions:cleanupSessionCopy', async (_event, sessionId: string) => {
     await deps.sessionCopyCleanup.cleanup(sessionId);
   });

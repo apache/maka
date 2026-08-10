@@ -65,9 +65,6 @@ function ChromeColumnToggle(props: {
 export function AppShellTopbarActions(props: {
   sidebarCollapsed: boolean;
   onToggleSidebar(): void;
-  /* Settings has its own navigation column; the session-sidebar toggle is
-     meaningless there. */
-  sidebarToggleHidden?: boolean;
   onOpenSearchModal(): void;
 }) {
   const locale = useUiLocale();
@@ -85,16 +82,14 @@ export function AppShellTopbarActions(props: {
           onClick={props.onOpenSearchModal}
         />
       </Tooltip>
-      {!props.sidebarToggleHidden && (
-        <ChromeColumnToggle
-          collapsed={props.sidebarCollapsed}
-          expandLabel={copy.expandSidebar}
-          collapseLabel={copy.collapseSidebar}
-          expandIcon={PanelLeftOpen}
-          collapseIcon={PanelLeftClose}
-          onToggle={props.onToggleSidebar}
-        />
-      )}
+      <ChromeColumnToggle
+        collapsed={props.sidebarCollapsed}
+        expandLabel={copy.expandSidebar}
+        collapseLabel={copy.collapseSidebar}
+        expandIcon={PanelLeftOpen}
+        collapseIcon={PanelLeftClose}
+        onToggle={props.onToggleSidebar}
+      />
       {/* Collapsed "new task" lives on the SideNav rail (SessionSidebarNav),
           not here — a third titlebar button duplicated the rail icon and made
           left-cluster width state-dependent for drag-region math. */}

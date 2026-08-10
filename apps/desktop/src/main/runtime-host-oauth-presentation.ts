@@ -29,6 +29,10 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
       resolvePresented = accept;
       rejectPresented = decline;
     });
+    // If a later expect() supersedes this one before waitForPresentation
+    // attaches, Node would log UnhandledPromiseRejection. Keep a no-op
+    // handler; real waiters still observe the same rejection.
+    void presented.catch(() => undefined);
     const timer = setTimeout(() => {
       if (this.#pending?.attemptId !== attemptId) return;
       this.#pending = undefined;

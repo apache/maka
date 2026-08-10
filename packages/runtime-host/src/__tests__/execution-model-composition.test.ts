@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { z } from 'zod';
+import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
@@ -376,7 +377,9 @@ test('production backend creation continues after a Session Client Capability is
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
-  const provider = coordinator.attachConnection('provider-a', { send: async () => undefined });
+  const provider = coordinator.attachConnection(clientCapabilityConnectionIdentity('provider-a'), {
+    send: async () => undefined,
+  });
   const context: ConnectionContext = {
     hostEpoch: 'backend-creation-epoch',
     connectionId: 'provider-a',
@@ -442,25 +445,28 @@ test('production backend preserves coordinator Client Capability semantics acros
   let connection: ReturnType<HostClientCapabilityCoordinator['attachConnection']> | undefined;
   let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
   try {
-    connection = coordinator.attachConnection('client-capability-provider', {
-      send: async (frame) => {
-        if (frame.kind !== 'client.capability.call') return;
-        calls.push(frame);
-        queueMicrotask(() => {
-          connection?.accept({
-            kind: 'client.capability.accepted',
-            invocationId: frame.invocationId,
+    connection = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity('client-capability-provider'),
+      {
+        send: async (frame) => {
+          if (frame.kind !== 'client.capability.call') return;
+          calls.push(frame);
+          queueMicrotask(() => {
+            connection?.accept({
+              kind: 'client.capability.accepted',
+              invocationId: frame.invocationId,
+            });
+            connection?.accept({
+              kind: 'client.capability.result',
+              invocationId: frame.invocationId,
+              result: {
+                content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
+              },
+            });
           });
-          connection?.accept({
-            kind: 'client.capability.result',
-            invocationId: frame.invocationId,
-            result: {
-              content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
-            },
-          });
-        });
+        },
       },
-    });
+    );
     const context = {
       hostEpoch: 'client-capability-host-epoch',
       connectionId: 'client-capability-provider',

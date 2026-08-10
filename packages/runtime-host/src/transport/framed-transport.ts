@@ -64,7 +64,7 @@ export class FramedTransport implements RuntimeHostMessageTransport {
       this.#ended = true;
       this.#drainInbound();
     });
-    socket.once('error', (error) => this.#fail(error));
+    socket.once('error', (error) => this.#fail(transportFailure(error)));
     socket.once('close', (hadError) => {
       if (!this.#readTerminal || hadError) {
         this.#fail(new RuntimeHostTransportError('closed', 'Runtime Host transport closed'));
@@ -111,8 +111,13 @@ export class FramedTransport implements RuntimeHostMessageTransport {
     const frame = frameLocalIpcProtocolMessage(message);
     return new Promise((resolve, reject) => {
       this.socket.write(frame, (error) => {
-        if (error) reject(error);
-        else resolve();
+        if (!error) {
+          resolve();
+          return;
+        }
+        const failure = transportFailure(error);
+        this.#fail(failure);
+        reject(failure);
       });
     });
   }
@@ -122,6 +127,7 @@ export class FramedTransport implements RuntimeHostMessageTransport {
   }
 
   abort(error?: Error): void {
+    if (error) this.#fail(error);
     this.socket.destroy(error);
   }
 
@@ -249,4 +255,17 @@ export class FramedTransport implements RuntimeHostMessageTransport {
 function asError(error: unknown): Error {
   if (error instanceof Error) return error;
   return new RuntimeHostProtocolError('invalid_frame', String(error));
+}
+
+function transportFailure(error: Error): Error {
+  if (error instanceof RuntimeHostTransportError || error instanceof RuntimeHostProtocolError) {
+    return error;
+  }
+  return new RuntimeHostTransportError(
+    'closed',
+    `Runtime Host transport failed: ${error.message}`,
+    {
+      cause: error,
+    },
+  );
 }

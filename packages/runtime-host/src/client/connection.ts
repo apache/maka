@@ -75,7 +75,7 @@ import {
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
 import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
 import { WebSocketTransport } from '../transport/websocket-transport.js';
-import type { OperationSpec } from '../protocol/operation-spec.js';
+import type { OperationMode, OperationSpec } from '../protocol/operation-spec.js';
 import {
   ClientSessionSubscription,
   RuntimeHostSubscriptionError,
@@ -265,6 +265,33 @@ export class RuntimeHostOperationError extends Error {
   }
 }
 
+export type RuntimeHostRequestDispatch = 'not_dispatched' | 'dispatched';
+export type RuntimeHostRequestInterruptionReason = 'connection_lost' | 'timeout';
+
+export class RuntimeHostRequestInterruptedError extends Error {
+  readonly retryable: boolean;
+
+  constructor(
+    readonly operation: OperationKey,
+    readonly mode: OperationMode,
+    readonly dispatch: RuntimeHostRequestDispatch,
+    readonly reason: RuntimeHostRequestInterruptionReason,
+    options: ErrorOptions = {},
+  ) {
+    const outcome =
+      mode === 'query'
+        ? reason === 'connection_lost'
+          ? 'the query may be retried on another connection'
+          : 'the query timed out and may be retried'
+        : dispatch === 'not_dispatched'
+          ? 'the operation was not dispatched'
+          : 'the operation outcome is unknown; do not retry it automatically';
+    super(`Runtime Host ${operation} was interrupted: ${outcome}`, options);
+    this.name = 'RuntimeHostRequestInterruptedError';
+    this.retryable = mode === 'query';
+  }
+}
+
 interface PendingRequest {
   operation: OperationKey;
   accept(value: unknown): unknown;
@@ -380,7 +407,6 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   ): Promise<Result> {
     const boundedTimeoutMs =
       timeoutMs === undefined ? undefined : requireTimeout(timeoutMs, 'timeoutMs');
-    if (this.#terminalError) return Promise.reject(this.#terminalError);
     const spec = HOST_OPERATION_SPECS[operation] as OperationSpec<
       OperationInput<K>,
       OperationOutput<K>,
@@ -391,6 +417,18 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       canonicalInput = spec.decodeInput(input);
     } catch (error) {
       return Promise.reject(asError(error));
+    }
+    if (this.#terminalError) {
+      return Promise.reject(
+        this.#terminalError instanceof RuntimeHostTransportError
+          ? interruptedRequestError(
+              operation,
+              'not_dispatched',
+              'connection_lost',
+              this.#terminalError,
+            )
+          : this.#terminalError,
+      );
     }
     const requestId = randomUUID();
     const isDomainRequest = operation !== 'host.status';
@@ -737,7 +775,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     if (pending.domainState === 'queued') {
       const index = this.#queuedDomainFrames.findIndex((queued) => queued.requestId === requestId);
       if (index !== -1) this.#queuedDomainFrames.splice(index, 1);
-      pending.reject(error);
+      pending.reject(
+        interruptedRequestError(pending.operation, 'not_dispatched', 'timeout', error),
+      );
       this.#scheduleLivenessCheck();
       return;
     }
@@ -745,7 +785,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       operation: pending.operation,
       ...(pending.domainState === 'in_flight' ? { domainState: pending.domainState } : {}),
     });
-    pending.reject(error);
+    pending.reject(interruptedRequestError(pending.operation, 'dispatched', 'timeout', error));
     this.#scheduleLivenessCheck();
   }
 
@@ -886,7 +926,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#inFlightDomainRequests = 0;
     for (const pending of this.#pendingRequests.values()) {
       if (pending.timer) clearTimeout(pending.timer);
-      pending.reject(error);
+      pending.reject(
+        error instanceof RuntimeHostTransportError
+          ? interruptedRequestError(
+              pending.operation,
+              pending.domainState === 'queued' ? 'not_dispatched' : 'dispatched',
+              'connection_lost',
+              error,
+            )
+          : error,
+      );
     }
     this.#pendingRequests.clear();
     this.#retiredRequests.clear();
@@ -1384,5 +1433,20 @@ function requestTimeoutError(operation: OperationKey): RuntimeHostTransportError
   return new RuntimeHostTransportError(
     'read_timeout',
     `Timed out waiting for Runtime Host ${operation} response`,
+  );
+}
+
+function interruptedRequestError(
+  operation: OperationKey,
+  dispatch: RuntimeHostRequestDispatch,
+  reason: RuntimeHostRequestInterruptionReason,
+  cause: Error,
+): RuntimeHostRequestInterruptedError {
+  return new RuntimeHostRequestInterruptedError(
+    operation,
+    HOST_OPERATION_SPECS[operation].mode,
+    dispatch,
+    reason,
+    { cause },
   );
 }

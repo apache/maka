@@ -330,6 +330,7 @@ test('drives the renderer Session execution facade through real UDS framing', as
       {
         client,
         observer,
+        observations: observer,
         attachmentApprovals: createAttachmentApprovalRegistry(),
         emitSessionsChanged() {},
         stat: async () => ({ size: 0 }),

@@ -7,6 +7,7 @@ import {
   createTriggerSearchSource,
   isChatInputComposing,
   mentionQueryMatches,
+  slashCommandQuery,
   skillMentionQuery,
 } from '../chat-input-behavior.js';
 
@@ -118,5 +119,14 @@ describe('mention filtering', () => {
     assert.equal(skillMentionQuery('skill:wri'), 'wri');
     assert.equal(skillMentionQuery('SKILL:wri'), 'wri');
     assert.equal(skillMentionQuery('writer'), 'writer');
+  });
+
+  it('offers commands only for a leading token, outside explicit Skill syntax', () => {
+    assert.equal(slashCommandQuery('/', '', ''), '');
+    assert.equal(slashCommandQuery('  /comp', '', 'comp'), 'comp');
+    assert.equal(slashCommandQuery('explain /comp', '', 'comp'), null);
+    assert.equal(slashCommandQuery('/comp', 'act', 'comp'), null);
+    assert.equal(slashCommandQuery('/skill:compact', '', 'skill:compact'), null);
+    assert.equal(slashCommandQuery('/SKILL:compact', '', 'SKILL:compact'), null);
   });
 });

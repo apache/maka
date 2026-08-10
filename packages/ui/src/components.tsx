@@ -40,6 +40,7 @@ export { AutomationsPage, DailyReviewPage, SkillsPage } from './module-pages.js'
 export { Composer } from './composer.js';
 export type {
   ComposerHandle,
+  ComposerSendMetadata,
   ComposerSlashCommandOption,
 } from './composer.js';
 export {

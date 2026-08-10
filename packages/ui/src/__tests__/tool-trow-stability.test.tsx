@@ -92,14 +92,33 @@ describe('linked subagent tool rows', () => {
     onOpenLinkedSession?: (sessionId: string) => void,
   ) => renderToStaticMarkup(createElement(ToolTrow, { items: [item], onOpenLinkedSession }));
 
-  it('renders agent_spawn with an Astryx open-session control when linked', () => {
+  it('renders a linked agent as one compact clickable list row', () => {
     const html = renderTool(subagent('child-1'), () => undefined);
 
     assert.match(html, />Local Read</);
-    assert.match(html, /打开子代理会话「Local Read」/);
+    assert.equal(html.match(/<button\b/g)?.length, 1);
+    assert.equal(renderTool(subagent(), () => undefined).match(/<button\b/g)?.length ?? 0, 0);
+    assert.equal(renderTool(subagent('child-1')).match(/<button\b/g)?.length ?? 0, 0);
+  });
 
-    assert.doesNotMatch(renderTool(subagent(), () => undefined), /打开子代理会话/);
-    assert.doesNotMatch(renderTool(subagent('child-1')), /打开子代理会话/);
+  it('preserves mixed tool and linked-agent order', () => {
+    const before = runningTool('tool-before', 'Read');
+    before.intent = 'before linked session';
+    const linked = subagent('child-1');
+    const after = runningTool('tool-after', 'Grep');
+    after.intent = 'after linked session';
+
+    const html = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [before, linked, after],
+      onOpenLinkedSession: () => undefined,
+    }));
+    const beforeIndex = html.indexOf('before linked session');
+    const linkedIndex = html.indexOf('Inspect the runtime');
+    const afterIndex = html.indexOf('after linked session');
+
+    assert.ok(beforeIndex >= 0);
+    assert.ok(linkedIndex > beforeIndex);
+    assert.ok(afterIndex > linkedIndex);
   });
 
   it('uses the child result status instead of the settled transport status', () => {
@@ -132,7 +151,7 @@ describe('linked subagent tool rows', () => {
     assert.match(withArtifacts, />已取消 · 只读<\/span>/);
   });
 
-  it('renders each swarm child as a native row and activates only linked sessions', () => {
+  it('links only swarm children that have a session', () => {
     const html = renderTool({
       toolUseId: 'swarm-1',
       toolName: 'agent_swarm',
@@ -173,12 +192,11 @@ describe('linked subagent tool rows', () => {
 
     assert.match(html, />Reader</);
     assert.match(html, />Worker</);
-    assert.equal(html.match(/>打开子代理会话/g)?.length, 1);
+    assert.equal(html.match(/<button\b/g)?.length, 1);
     assert.match(html, /startup_failed/);
     assert.match(html, />失败</);
     assert.match(html, />已完成 · 只读<\/span>/);
     assert.doesNotMatch(html, />local_read<\/span>/);
-    assert.doesNotMatch(html, /aria-label="Loading"/);
   });
 
   it('keeps an empty swarm visible as its parent tool row', () => {

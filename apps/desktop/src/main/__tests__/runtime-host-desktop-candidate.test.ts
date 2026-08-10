@@ -63,9 +63,10 @@ test('tears down the whole candidate when the Host connection closes', async () 
   const candidate = await createDesktopRuntimeHostCandidate(host.connection, deps(ipc));
 
   host.disconnect();
+  await Promise.resolve();
+  assert.equal(ipc.size, 0);
   await candidate.closed;
 
-  assert.equal(ipc.size, 0);
   assert.equal(host.closeCalls, 1);
 });
 

@@ -60,7 +60,10 @@ import {
   OPENAI_RESPONSES_LANE_HEADER,
   type OpenAiResponsesTransportState,
 } from './openai-responses-websocket.js';
-import { openAiApplyPatchProviderTool } from './openai-apply-patch.js';
+import {
+  codexV4aApplyPatchProviderTool,
+  openAiApplyPatchProviderTool,
+} from './openai-apply-patch.js';
 
 /**
  * Build an ai-sdk LanguageModel from a single input object.
@@ -817,6 +820,8 @@ function compileProviderTool(
   switch (tool.kind) {
     case 'openai-apply-patch':
       return openAiApplyPatchProviderTool;
+    case 'openai-custom-apply-patch':
+      return codexV4aApplyPatchProviderTool;
     case 'openai-web-search':
       return openai.tools.webSearch({
         ...(tool.searchContextSize ? { searchContextSize: tool.searchContextSize } : {}),

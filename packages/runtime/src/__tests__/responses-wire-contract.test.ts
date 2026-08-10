@@ -7,6 +7,8 @@ import {
   thinkingVariantsForModel,
 } from '@maka/core';
 import { buildProviderOptions, getAIModel } from '@maka/runtime';
+import { z } from 'zod';
+import { routeApplyPatchTools } from '../apply-patch-profile.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 import { lowerModelTools } from '../model-adapter.js';
 
@@ -140,6 +142,100 @@ describe('responses wire request body', () => {
       status: 'failed',
       output: 'conflict',
     });
+  });
+
+  test('sends DeepSeek-compatible freeform apply_patch calls and plain-text results', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({
+        id: 'r',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const connection = conn('deepseek');
+    const model = getAIModel({
+      connection,
+      apiKey: 'test-key',
+      modelId: 'deepseek-v4-flash',
+      fetch,
+    });
+    const patch = '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch';
+    const runtime = resolveModelRuntime(connection, 'deepseek-v4-flash');
+    const [routedTool] = routeApplyPatchTools(
+      [
+        {
+          name: 'apply_patch',
+          description: 'Apply file changes',
+          parameters: z.object({}),
+          providerTool: { kind: 'openai-apply-patch' },
+          impl: async () => ({ status: 'completed' }),
+        },
+      ],
+      runtime.applyPatchProfile,
+    );
+    assert.ok(routedTool);
+    assert.ok(routedTool.providerTool);
+    assert.equal((routedTool.parameters as z.ZodType).safeParse(patch).success, true);
+    assert.deepEqual(
+      await routedTool.toModelOutput?.({
+        toolCallId: 'call-1',
+        input: patch,
+        output: { status: 'completed', output: 'Applied 1 file operation.' },
+      }),
+      { type: 'text', value: 'Applied 1 file operation.' },
+    );
+    const tools = lowerModelTools({
+      apply_patch: {
+        kind: 'provider',
+        providerTool: routedTool.providerTool,
+      },
+    });
+
+    await model.doGenerate({
+      prompt: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call-1',
+              toolName: 'apply_patch',
+              input: patch,
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'apply_patch',
+              output: { type: 'text', value: 'Applied 1 file operation.' },
+            },
+          ],
+        },
+      ],
+      tools: [{ ...(tools.apply_patch as object), name: 'apply_patch' } as never],
+      providerOptions: { openai: { store: false } },
+    });
+
+    assert.deepEqual((body?.tools as unknown[] | undefined)?.[0], {
+      type: 'custom',
+      name: 'apply_patch',
+    });
+    assert.deepEqual((body?.input as unknown[] | undefined)?.slice(-2), [
+      { type: 'custom_tool_call', call_id: 'call-1', name: 'apply_patch', input: patch },
+      {
+        type: 'custom_tool_call_output',
+        call_id: 'call-1',
+        output: 'Applied 1 file operation.',
+      },
+    ]);
   });
 
   test('a non-OpenAI-named Responses model still asks for encrypted reasoning', async () => {

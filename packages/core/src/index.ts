@@ -13,6 +13,7 @@ export * from './orchestration.js';
 export * from './tool-mode.js';
 export * from './swarm-command.js';
 export * from './graph-command.js';
+export * from './slash-command-catalog.js';
 export * from './plan.js';
 export * from './agent-graph-control.js';
 export * from './agent-graph-schedule.js';
@@ -1410,6 +1411,7 @@ export type {
   ModelDiscoveryResult,
   ModelDiscoverySource,
   ModelInfo,
+  ApplyPatchProtocol,
   ProviderCategory,
   ProviderCatalogGroup,
   ProviderDefaults,

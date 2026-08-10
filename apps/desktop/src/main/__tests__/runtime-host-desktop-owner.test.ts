@@ -9,18 +9,25 @@ import type {
 import { startRuntimeHostDesktopOwner } from '../runtime-host-desktop-owner.js';
 
 test('replaces a disconnected generation without falling back to embedded Runtime', { timeout: 10_000 }, async () => {
-  const first = candidateHarness();
+  const first = candidateHarness({ delayDisconnect: true });
   const second = candidateHarness();
   const queue = [ready(first.candidate), ready(second.candidate)];
   let starts = 0;
   let resolveSecondStart!: () => void;
+  let releaseSecond!: () => void;
   const secondStarted = new Promise<void>((resolve) => {
     resolveSecondStart = resolve;
+  });
+  const secondReleased = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
   });
   const owner = await startRuntimeHostDesktopOwner({} as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async () => {
       starts += 1;
-      if (starts === 2) resolveSecondStart();
+      if (starts === 2) {
+        resolveSecondStart();
+        await secondReleased;
+      }
       const result = queue.shift();
       assert.ok(result);
       return result;
@@ -28,10 +35,18 @@ test('replaces a disconnected generation without falling back to embedded Runtim
   });
 
   first.disconnect();
-  await secondStarted;
+  const botMessage = owner.handleBotIncomingMessage({ text: 'hello' } as BotIncomingMessage);
+  const stop = owner.stopSession('session-1');
   await new Promise<void>((resolve) => setImmediate(resolve));
-  await owner.handleBotIncomingMessage({ text: 'hello' } as BotIncomingMessage);
-  await owner.stopSession('session-1');
+  assert.equal(starts, 1);
+  assert.equal(first.botMessages, 0);
+  assert.deepEqual(first.stoppedSessions, []);
+  first.finishDisconnect();
+  await secondStarted;
+  assert.equal(second.botMessages, 0);
+  assert.deepEqual(second.stoppedSessions, []);
+  releaseSecond();
+  await Promise.all([botMessage, stop]);
 
   assert.equal(first.botMessages, 0);
   assert.equal(second.botMessages, 1);
@@ -40,33 +55,75 @@ test('replaces a disconnected generation without falling back to embedded Runtim
   assert.equal(second.closeCalls, 1);
 });
 
-test('reports exhausted reconnect attempts as fatal and never starts a fallback', { timeout: 10_000 }, async () => {
+test('keeps reconnecting with bounded backoff until the Desktop adapter is restored', async () => {
   const first = candidateHarness();
+  const replacement = candidateHarness();
   let starts = 0;
+  const delays: number[] = [];
+  let resolveRestored!: () => void;
+  const restored = new Promise<void>((resolve) => {
+    resolveRestored = resolve;
+  });
+  const owner = await startRuntimeHostDesktopOwner({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (): Promise<DesktopRuntimeHostCandidateStartResult> => {
+      starts += 1;
+      if (starts === 1) return ready(first.candidate);
+      if (starts < 4) return { kind: 'failed', reason: 'host_unresponsive' };
+      resolveRestored();
+      return ready(replacement.candidate);
+    },
+    reconnectBackoff: {
+      minMs: 100,
+      maxMs: 150,
+      random: () => 0.5,
+      wait: async (delayMs) => {
+        delays.push(delayMs);
+      },
+    },
+  });
+
+  first.disconnect();
+  await restored;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(starts, 4);
+  assert.deepEqual(delays, [100, 150]);
+  await owner.handleBotIncomingMessage({ text: 'restored' } as BotIncomingMessage);
+  assert.equal(replacement.botMessages, 1);
+  await owner.close();
+});
+
+test('stops reconnecting when the replacement Host is incompatible', async () => {
+  const first = candidateHarness();
   let reportFatal!: (error: Error) => void;
   const fatalReported = new Promise<Error>((resolve) => {
     reportFatal = resolve;
   });
   const owner = await startRuntimeHostDesktopOwner({} as DesktopRuntimeHostCandidateStartInput, {
-    startCandidate: async (): Promise<DesktopRuntimeHostCandidateStartResult> => {
-      starts += 1;
-      return starts === 1
+    startCandidate: async () =>
+      first.closeCalls === 0
         ? ready(first.candidate)
-        : { kind: 'failed', reason: 'host_unresponsive' };
-    },
-    onFatalError: (error) => {
-      reportFatal(error);
-    },
+        : {
+            kind: 'incompatible',
+            handshake: {
+              kind: 'incompatible',
+              hostEpoch: 'replacement-host',
+              protocolMin: 1,
+              protocolMax: 1,
+              compatibilityEpoch: 1,
+              state: 'ready',
+              replacement: 'wait_for_idle_exit',
+            },
+          },
+    onFatalError: reportFatal,
   });
 
-  first.disconnect();
+  await first.candidate.close();
   const fatal = await fatalReported;
-  assert.equal(starts, 4);
-  assert.match(fatal.message, /host_unresponsive/);
+  assert.match(fatal.message, /incompatible/);
   await owner.close();
 });
 
-function candidateHarness() {
+function candidateHarness(options: { delayDisconnect?: boolean } = {}) {
   let resolveClosed: (() => void) | undefined;
   const closed = new Promise<void>((resolve) => {
     resolveClosed = resolve;
@@ -74,9 +131,14 @@ function candidateHarness() {
   let closeCalls = 0;
   let botMessages = 0;
   const stoppedSessions: string[] = [];
+  let lifecycleState: 'ready' | 'unavailable' = 'ready';
   const candidate = {
     closed,
-    client: {},
+    client: {
+      get lifecycleState() {
+        return lifecycleState;
+      },
+    },
     botIncoming: {
       async handleBotIncomingMessage() {
         botMessages += 1;
@@ -84,6 +146,7 @@ function candidateHarness() {
     },
     async close() {
       closeCalls += 1;
+      lifecycleState = 'unavailable';
       resolveClosed?.();
     },
     async stopSession(sessionId: string) {
@@ -92,7 +155,11 @@ function candidateHarness() {
   } as unknown as DesktopRuntimeHostCandidate;
   return {
     candidate,
-    disconnect: () => resolveClosed?.(),
+    disconnect: () => {
+      lifecycleState = 'unavailable';
+      if (!options.delayDisconnect) resolveClosed?.();
+    },
+    finishDisconnect: () => resolveClosed?.(),
     get closeCalls() {
       return closeCalls;
     },
