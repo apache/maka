@@ -333,10 +333,14 @@ export class AgentGraphSupervisorWakeCoordinator {
     });
   }
 
-  async close(): Promise<void> {
+  beginDrain(): void {
     if (this.#closed) return;
     this.#closed = true;
     this.#abortController.abort();
+  }
+
+  async close(): Promise<void> {
+    this.beginDrain();
     await this.waitForIdle();
     this.#sessionAbortControllers.clear();
     this.#tasksBySession.clear();

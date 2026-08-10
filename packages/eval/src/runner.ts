@@ -61,7 +61,7 @@ export interface ExperimentExecutor {
     input: { readonly cell: ExperimentCell; readonly signal?: AbortSignal },
     operation: (attempt: {
       readonly context: SubjectExecutionContext;
-      verify(subject: SubjectExecutionResult): Promise<ExecutorVerification>;
+      verify(): Promise<ExecutorVerification>;
     }) => Promise<EvalResult>,
   ): Promise<
     | { readonly kind: 'settled'; readonly value: EvalResult }
@@ -149,7 +149,7 @@ async function executeCell(
           return fromUncertainSubject(execution, signal?.aborted === true);
         }
         try {
-          const verified = decodeVerification(await verify(execution));
+          const verified = decodeVerification(await verify());
           return {
             score: verified.score,
             usage: execution.usage,

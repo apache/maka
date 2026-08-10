@@ -11,7 +11,6 @@ import type {
   ExperimentExecutor,
   ExecutorVerification,
   SubjectExecutionContext,
-  SubjectExecutionResult,
 } from './runner.js';
 import type { EvalResult } from './result.js';
 
@@ -60,7 +59,7 @@ async function runHarnessAttempt(
   { cell, signal }: { readonly cell: ExperimentCell; readonly signal?: AbortSignal },
   operation: (attempt: {
     readonly context: SubjectExecutionContext;
-    verify(subject: SubjectExecutionResult): Promise<ExecutorVerification>;
+    verify(): Promise<ExecutorVerification>;
   }) => Promise<EvalResult>,
 ): Promise<
   | { readonly kind: 'settled'; readonly value: EvalResult }
@@ -81,11 +80,11 @@ async function runHarnessAttempt(
   try {
     value = await operation({
       context: relayContext(state, cell, signal),
-      verify: async (subject) => {
+      verify: async () => {
         decide('verify');
         clean = await waitForTrial(state.child, signal);
         if (!clean) throw new Error('Trial did not finalize cleanly');
-        return readVerification(state, cell, subject);
+        return readVerification(state, cell);
       },
     });
     hasValue = true;
@@ -269,7 +268,6 @@ async function closeServer(server: Server): Promise<void> {
 async function readVerification(
   state: RelayState,
   cell: ExperimentCell,
-  subject: SubjectExecutionResult,
 ): Promise<ExecutorVerification> {
   const result = JSON.parse(await readFile(join(state.trialPath, 'result.json'), 'utf8')) as {
     exception_info?: { exception_type?: unknown } | null;
@@ -279,7 +277,7 @@ async function readVerification(
   const subjectException = ['AgentTimeoutError', 'NonZeroAgentExitCodeError'].includes(
     String(result.exception_info?.exception_type),
   );
-  if (result.exception_info && !subjectException && subject.status === 'completed') {
+  if (result.exception_info && !subjectException) {
     throw new Error('Trial failed outside subject execution');
   }
   return {

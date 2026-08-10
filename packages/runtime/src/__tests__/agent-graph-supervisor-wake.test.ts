@@ -672,7 +672,7 @@ describe('Agent Graph supervisor wake delivery', () => {
     }
   });
 
-  test('close aborts an in-flight wake turn and leaves its attempt retryable', async () => {
+  test('beginDrain aborts an in-flight wake turn and close joins it', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     const started = deferred();
     const coordinator = new AgentGraphSupervisorWakeCoordinator({
@@ -693,11 +693,14 @@ describe('Agent Graph supervisor wake delivery', () => {
     try {
       coordinator.notify('root-session', reconciliation());
       await started.promise;
-      await coordinator.close();
+      coordinator.beginDrain();
+      await coordinator.waitForIdle();
       assert.equal(
         (await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1'))?.status,
         'retryable_failed',
       );
+      assert.equal(coordinator.notify('root-session', reconciliation()), undefined);
+      await coordinator.close();
     } finally {
       await coordinator.close();
       store.close();

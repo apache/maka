@@ -1436,6 +1436,7 @@ export async function createExecutionRuntimeHostComposition(
             await requireGraphCoordinator(graphCoordinator).recover();
           },
         },
+        drain: [() => graphSupervisorWake?.beginDrain(), () => graphCoordinator?.beginDrain()],
         close: [
           () => graphSupervisorWake?.close(),
           () => graphClient?.close(),
