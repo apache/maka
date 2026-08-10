@@ -1474,7 +1474,7 @@ export async function createExecutionRuntimeHostComposition(
         close: [() => sessionRetirement.close()],
       }),
       createRuntimeHostDomainModule({
-        id: 'eval-execution',
+        id: 'hosted-execution',
         handlers: [hostedExecutions.handlers],
         drain: [() => hostedExecutions.beginDrain()],
         close: [() => hostedExecutions.close()],
