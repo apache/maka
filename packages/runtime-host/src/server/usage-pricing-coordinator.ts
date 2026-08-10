@@ -551,6 +551,7 @@ function projectUsageLog(row: UsageLogRow): LlmUsageLogProjection {
       : {}),
     reasoningTokens: row.reasoningTokens,
     totalTokens: row.totalTokens,
+    ...(row.usageBasis === undefined ? {} : { usageBasis: row.usageBasis }),
     ...(row.costUsd === undefined ? {} : { costUsd: row.costUsd }),
     ...(row.costBasis === undefined ? {} : { costBasis: row.costBasis }),
     latencyMs: row.latencyMs,

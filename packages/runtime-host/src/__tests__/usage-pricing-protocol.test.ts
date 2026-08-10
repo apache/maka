@@ -169,7 +169,10 @@ describe('Usage/Pricing protocol', () => {
       usageResponse({
         kind: 'logs',
         source: 'llm',
-        rows: [validLog(), { ...validLog(1), callKind: 'goal_evaluation' }],
+        rows: [
+          { ...validLog(), usageBasis: 'missing' },
+          { ...validLog(1), callKind: 'goal_evaluation', usageBasis: 'reported' },
+        ],
         offset: 0,
         total: 2,
         nextOffset: null,
@@ -255,6 +258,14 @@ describe('Usage/Pricing protocol', () => {
         kind: 'logs',
         source: 'llm',
         rows: [{ ...validLog(), callKind: 'unknown' }],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+      },
+      {
+        kind: 'logs',
+        source: 'llm',
+        rows: [{ ...validLog(), usageBasis: 'guessed' }],
         offset: 0,
         total: 1,
         nextOffset: null,

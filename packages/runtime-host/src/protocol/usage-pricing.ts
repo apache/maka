@@ -3,6 +3,7 @@ import {
   normalizePricingModelKey,
   validateCanonicalPricingConfig,
 } from '@maka/core/usage-stats/pricing';
+import { MODEL_CALL_USAGE_BASES, type ModelCallUsageBasis } from '@maka/core/model-call-attempt';
 import type {
   CacheMissInputSource,
   ModelCallKind,
@@ -76,6 +77,7 @@ const LLM_USAGE_LOG_FIELDS = new Set([
   'cacheMissInputSource',
   'reasoningTokens',
   'totalTokens',
+  'usageBasis',
   'costUsd',
   'costBasis',
   'latencyMs',
@@ -139,6 +141,8 @@ export interface LlmUsageLogProjection {
   readonly cacheMissInputSource?: CacheMissInputSource;
   readonly reasoningTokens: number;
   readonly totalTokens: number;
+  /** Undefined for frozen rows whose schema predates the canonical ledger. */
+  readonly usageBasis?: ModelCallUsageBasis;
   /** Absent when `costBasis` is `'unpriced'`. Zero means genuinely free. */
   readonly costUsd?: number;
   /** Undefined for rows from the frozen table, which never recorded a basis. */
@@ -963,6 +967,7 @@ function decodeLlmUsageLog(value: unknown): LlmUsageLogProjection {
       : { cacheMissInputSource: decodeCacheMissInputSource(row.cacheMissInputSource) }),
     reasoningTokens: requireCount(row.reasoningTokens, 'usage log reasoning tokens'),
     totalTokens: requireCount(row.totalTokens, 'usage log total tokens'),
+    ...optionalEnum(row, 'usageBasis', MODEL_CALL_USAGE_BASES),
     ...(row.costUsd === undefined
       ? {}
       : { costUsd: nonnegativeFinite(row.costUsd, 'usage log cost') }),

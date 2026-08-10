@@ -1,3 +1,5 @@
+import type { ModelCallUsageBasis } from '../model-call-attempt.js';
+
 export const MODEL_CALL_KINDS = [
   'main',
   'semantic_compact',
@@ -74,6 +76,12 @@ export interface UsageLogRow {
   cacheWriteTokens: number;
   reasoningTokens: number;
   totalTokens: number;
+  /**
+   * How completely the provider reported token usage for this attempt.
+   * Frozen pre-ledger rows leave this absent because their schema did not
+   * preserve the distinction.
+   */
+  usageBasis?: ModelCallUsageBasis;
   /**
    * Absent when `costBasis` is `'unpriced'`. Zero means the call was genuinely
    * free — it must never stand in for a price that could not be resolved.
