@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { ArtifactRecord, GitReviewSnapshot, Task } from '@maka/core';
+import type { ArtifactRecord, GitReviewSnapshot, SessionSummary, Task } from '@maka/core';
 import type { SessionTrace } from '@maka/core/session-trace';
 import { ToastProvider } from '@maka/ui';
 import { SessionWorkbar } from '../src/renderer/session-workbar';
@@ -34,6 +34,21 @@ import { withScopedMakaBridge } from './maka-bridge';
 
 const SESSION_ID = 'session-workbar';
 const NOW = Date.UTC(2026, 6, 31, 10, 30, 0);
+const TOOL_PICKER_SOURCE_SESSION: SessionSummary = {
+  id: SESSION_ID,
+  name: '工作栏组件审查',
+  isFlagged: false,
+  isArchived: false,
+  labels: [],
+  hasUnread: false,
+  status: 'active',
+  lastMessageAt: NOW,
+  backend: 'ai-sdk',
+  llmConnectionSlug: 'anthropic-main',
+  connectionLocked: false,
+  model: 'claude-sonnet-4-5',
+  permissionMode: 'ask',
+};
 
 // The record-file row reads `app:info`'s operationalStateDatabasePath (the
 // exact path main resolves). The short one is what a default workspace looks
@@ -501,7 +516,10 @@ function bridge(options: {
 }
 
 /** The column AppShell hands the workbar, at the width it restores by default. */
-function Workbar(props: { tab?: 'review' | 'tasks' | 'files' | 'inspector' }) {
+function Workbar(props: {
+  tab?: 'review' | 'tasks' | 'files' | 'inspector';
+  sourceSession?: SessionSummary;
+}) {
   const emptyTabsState = createSessionWorkbarTabsState();
   const tabsState = props.tab
     ? openStaticSessionWorkbarTab(emptyTabsState, props.tab)
@@ -525,21 +543,7 @@ function Workbar(props: { tab?: 'review' | 'tasks' | 'files' | 'inspector' }) {
           onPinTab={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
-          sourceSession={{
-            id: SESSION_ID,
-            name: '工作栏组件审查',
-            isFlagged: false,
-            isArchived: false,
-            labels: [],
-            hasUnread: false,
-            status: 'active',
-            lastMessageAt: NOW,
-            backend: 'ai-sdk',
-            llmConnectionSlug: 'anthropic-main',
-            connectionLocked: false,
-            model: 'claude-sonnet-4-5',
-            permissionMode: 'ask',
-          }}
+          sourceSession={props.sourceSession}
         />
       </ToastProvider>
     </div>
@@ -559,7 +563,7 @@ type Story = StoryObj<typeof meta>;
 // workbar's empty content, composed entirely from Astryx List primitives.
 export const ToolPicker: Story = {
   decorators: [bridge()],
-  render: () => <Workbar />,
+  render: () => <Workbar sourceSession={TOOL_PICKER_SOURCE_SESSION} />,
 };
 
 // Real path: 会话工作栏 → 变更, showing the live branch comparison from the
