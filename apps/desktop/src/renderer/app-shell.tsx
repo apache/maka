@@ -1682,6 +1682,21 @@ function AppShellContent({
     toastApi,
   });
 
+  // Agent Automations (Automation tool) live in Runtime Host, not the plan
+  // store. Re-merge them whenever the scheduled-tasks page is open so a cron
+  // created in chat appears without a manual refresh. Poll while the page is
+  // foregrounded because the host does not yet push automation-catalog events.
+  const planRemindersSurfaceActive =
+    navSelection.section === 'automations' && navSelection.module === 'plan-reminders';
+  useEffect(() => {
+    if (!planRemindersSurfaceActive) return;
+    void refreshPlanReminders({ shouldShowError: isAutomationsSurfaceActive });
+    const timer = window.setInterval(() => {
+      void refreshPlanReminders({ shouldShowError: () => false });
+    }, 12_000);
+    return () => window.clearInterval(timer);
+  }, [planRemindersSurfaceActive, refreshPlanReminders]);
+
   // 保持系统唤醒 capability for the 定时任务 page: reads/writes
   // settings.system.keepSystemAwake over the existing settings bridge. When
   // the bridge is absent the panel hides the row (fail-soft).

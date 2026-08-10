@@ -63,6 +63,19 @@ export interface PlanReminderRunRecord {
   blockReason?: PlanReminderBlockReason;
 }
 
+/**
+ * When present, this row is a *projection* of a Runtime Host agent Automation
+ * (the Automation tool's durable cron / heartbeat) into the scheduled-tasks UI.
+ * It is never written to the plan-reminder SQLite store — only assembled at
+ * list time so agent-created schedules appear next to UI-created reminders.
+ */
+export interface PlanReminderAgentOrigin {
+  automationId: string;
+  sessionId: string;
+  kind: 'heartbeat' | 'cron';
+  durable: boolean;
+}
+
 export interface PlanReminder {
   id: string;
   title: string;
@@ -77,6 +90,8 @@ export interface PlanReminder {
   lastRun?: PlanReminderRunRecord;
   runs: PlanReminderRunRecord[];
   runCount: number;
+  /** UI-only: agent Automation projection. Absent for real plan reminders. */
+  agentOrigin?: PlanReminderAgentOrigin;
 }
 
 export interface CreatePlanReminderInput {

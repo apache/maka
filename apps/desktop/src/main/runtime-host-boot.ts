@@ -661,6 +661,8 @@ function registerHostClientIpc(
   registerPlanReminderIpc({
     ipcMain: scopedIpc,
     planReminders,
+    runtimeHostClient: client,
+    workspaceRoot,
     getWorkspacePrivacyContext: async () => ({
       incognitoActive: (await client.queryRuntimePolicy()).policy.privacy
         .incognitoActive,
