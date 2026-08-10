@@ -76,6 +76,38 @@ class RaceWriter:
         pass
 
 
+class TimeoutEnvironment(FakeEnvironment):
+    def __init__(self):
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def exec(self, command, cwd, **_kwargs):
+        if command == "/cancel":
+            self.release.set()
+            return types.SimpleNamespace(return_code=0, stdout="")
+        self.started.set()
+        await self.release.wait()
+        return types.SimpleNamespace(return_code=0, stdout="settled")
+
+
+class QueueWriter:
+    def __init__(self):
+        self.messages = []
+
+    def write(self, value):
+        self.messages.append(json.loads(value))
+
+    async def drain(self):
+        pass
+
+    def close(self):
+        pass
+
+    async def wait_closed(self):
+        pass
+
+
 class RelayAgentTest(unittest.IsolatedAsyncioTestCase):
     async def test_credential_is_staged_without_entering_the_command_line(self):
         relay = load_relay("harbor")
@@ -125,6 +157,37 @@ class RelayAgentTest(unittest.IsolatedAsyncioTestCase):
             await agent.run("solve", FakeEnvironment(), None)
 
         self.assertEqual(reader.calls, 2)
+
+    async def test_framework_timeout_is_reported_as_an_explicit_termination(self):
+        relay = load_relay("harbor")
+        token = "token"
+        reader = RaceReader(
+            {
+                "token": token,
+                "kind": "execute",
+                "command": "/opt/agent",
+                "args": [],
+                "cwd": "/app",
+                "credentials": {},
+                "cancel": {"command": "/cancel", "args": []},
+            }
+        )
+        writer = QueueWriter()
+        environment = TimeoutEnvironment()
+
+        async def open_connection(_host, _port):
+            return reader, writer
+
+        agent = relay.RelayAgent(relay_host="127.0.0.1", relay_port=1, relay_token=token)
+        with patch.object(relay.asyncio, "open_connection", open_connection):
+            execution = asyncio.create_task(agent.run("solve", environment, None))
+            await environment.started.wait()
+            execution.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await execution
+
+        executed = next(message for message in writer.messages if message["kind"] == "executed")
+        self.assertEqual(executed["termination"], "framework_timeout")
 
 
 if __name__ == "__main__":

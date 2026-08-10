@@ -28,7 +28,7 @@ test('maka eval publishes only immutable attempts from one spec', async () => {
           cwd: '/app',
           taskInput: 'solve',
           metadata: {},
-          execute: async () => ({ exitCode: 0, stdout: '' }),
+          execute: async () => ({ termination: 'exited', exitCode: 0, stdout: '' }),
         },
         verify: async () => ({
           status: 'completed',

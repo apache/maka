@@ -19,6 +19,26 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
           ),
           credentialNames: cell.subject.credentials,
         });
+        if (execution.termination === 'cancelled') {
+          return {
+            usage: null,
+            costUsd: null,
+            durationMs: Date.now() - startedAt,
+            status: 'indeterminate' as const,
+            failureReason: 'external subject cancelled',
+            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
+          };
+        }
+        if (execution.termination === 'framework_timeout') {
+          return {
+            usage: null,
+            costUsd: null,
+            durationMs: Date.now() - startedAt,
+            status: 'failed' as const,
+            failureReason: 'external subject exceeded the framework timeout',
+            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
+          };
+        }
         if (execution.exitCode !== 0) {
           return {
             usage: null,

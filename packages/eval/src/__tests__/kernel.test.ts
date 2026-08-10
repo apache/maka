@@ -85,7 +85,7 @@ test('infra failure skips verification and the next run appends one replacement'
           cwd: '/workspace',
           taskInput: 'solve',
           metadata: {},
-          execute: async () => ({ exitCode: 0, stdout: '' }),
+          execute: async () => ({ termination: 'exited', exitCode: 0, stdout: '' }),
         },
         verify: async () => {
           verifications += 1;
@@ -144,7 +144,7 @@ test('malformed subject output is recorded as replaceable infrastructure failure
             cwd: '/workspace',
             taskInput: 'solve',
             metadata: {},
-            execute: async () => ({ exitCode: 0, stdout: '' }),
+            execute: async () => ({ termination: 'exited', exitCode: 0, stdout: '' }),
           },
           verify: async () => ({
             status: 'completed',
@@ -191,7 +191,7 @@ test('verifier infrastructure failure remains replaceable after subject failure'
           cwd: '/workspace',
           taskInput: 'solve',
           metadata: {},
-          execute: async () => ({ exitCode: 1, stdout: '' }),
+          execute: async () => ({ termination: 'exited', exitCode: 1, stdout: '' }),
         },
         verify: async () => ({
           status: ++verifications === 1 ? 'infra_failed' : 'completed',
@@ -238,7 +238,7 @@ test('invalid subject status cannot be verified into a completed result', async 
           cwd: '/workspace',
           taskInput: 'solve',
           metadata: {},
-          execute: async () => ({ exitCode: 0, stdout: '' }),
+          execute: async () => ({ termination: 'exited', exitCode: 0, stdout: '' }),
         },
         verify: async () => {
           verifications += 1;

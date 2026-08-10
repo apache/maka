@@ -28,6 +28,15 @@ export class HostHostedExecutionRunner {
     signal: AbortSignal,
   ): Promise<HostedExecutionProjection> {
     const startedAt = (this.input.now ?? Date.now)();
+    let drainRequested = false;
+    const requestDrain = () => {
+      if (drainRequested) return;
+      drainRequested = true;
+      this.input.requestDrain();
+    };
+    const requestCancellation = () => requestDrain();
+    signal.addEventListener('abort', requestCancellation, { once: true });
+    if (signal.aborted) requestCancellation();
     try {
       signal.throwIfAborted();
       await requireSuccess(
@@ -58,8 +67,10 @@ export class HostHostedExecutionRunner {
       return {
         executionId: input.executionId,
         kind: 'settled',
-        status: terminalStatus(terminal),
-        ...(terminal.status === 'failed' ? { failureReason: terminal.failureClass } : {}),
+        status: signal.aborted ? 'cancelled' : terminalStatus(terminal),
+        ...(!signal.aborted && terminal.status === 'failed'
+          ? { failureReason: terminal.failureClass }
+          : {}),
         usage: {
           inputTokens: usage.summary.totalTokens.input,
           outputTokens: usage.summary.totalTokens.output,
@@ -74,16 +85,17 @@ export class HostHostedExecutionRunner {
             : null,
       };
     } catch {
-      this.input.requestDrain();
+      requestDrain();
       await this.input.waitForResidencies().catch(() => undefined);
       return indeterminate(input.executionId, 'Runtime Host could not settle execution');
+    } finally {
+      signal.removeEventListener('abort', requestCancellation);
     }
   }
 
   async #waitForTerminal(started: TurnSnapshot, signal: AbortSignal): Promise<TurnSnapshot> {
     let stop: Promise<TurnSnapshot> | undefined;
     const requestStop = () => {
-      this.input.requestDrain();
       stop ??= requireSuccess(
         this.input.handlers['turn.stop'](
           { sessionId: started.sessionId, turnId: started.turnId, runId: started.runId },

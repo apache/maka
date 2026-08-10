@@ -19,6 +19,7 @@ test('external subject delegates exactly one declared command to its executor', 
       execute: async (input) => {
         request = input;
         return {
+          termination: 'exited',
           exitCode: 0,
           stdout: JSON.stringify({
             schemaVersion: 'maka.external_subject_result.v1',
@@ -73,6 +74,7 @@ test('Maka subject delegates one Hosted execution without owning Runtime lifecyc
         assert.equal(payload.execution.content.text, 'official instruction');
         assert.equal(payload.execution.maxSteps, 100);
         return {
+          termination: 'exited',
           exitCode: 0,
           stdout: JSON.stringify({
             executionId: payload.execution.executionId,
@@ -88,6 +90,58 @@ test('Maka subject delegates one Hosted execution without owning Runtime lifecyc
 
   assert.equal(request?.args[0], '/opt/maka/harbor-maka-subject.js');
   assert.equal(result.status, 'completed');
+});
+
+test('framework timeout remains a verifiable failure for every subject kind', async () => {
+  const cell = subjectCell('maka', {
+    nodePath: '/opt/node/bin/node',
+    shimPath: '/opt/maka/harbor-maka-subject.js',
+    runtimeHostsPath: '/tmp/maka-runtime-hosts',
+    baseUrl: 'https://provider.test/v1',
+    connectionSlug: 'provider',
+    model: 'model',
+    thinkingLevel: 'high',
+    permissionMode: 'bypass',
+    collaborationMode: 'agent',
+    orchestrationMode: 'default',
+  });
+  const makaResult = await createMakaSubjectAdapter().execute({
+    cell,
+    context: {
+      cwd: '/app',
+      taskInput: 'official instruction',
+      metadata: {},
+      execute: async (input) => {
+        const payload = JSON.parse(Buffer.from(input.args[1] ?? '', 'base64url').toString()) as {
+          execution: { executionId: string };
+        };
+        return {
+          termination: 'framework_timeout' as const,
+          exitCode: 124,
+          stdout: JSON.stringify({
+            executionId: payload.execution.executionId,
+            kind: 'settled',
+            status: 'cancelled',
+            usage: zeroUsage(),
+            costUsd: null,
+          }),
+        };
+      },
+    },
+  });
+
+  assert.equal(makaResult.status, 'failed');
+
+  const externalResult = await createExternalSubjectAdapter().execute({
+    cell: subjectCell('external', { command: '/opt/competitor', args: [] }),
+    context: {
+      cwd: '/app',
+      taskInput: 'official instruction',
+      metadata: {},
+      execute: async () => ({ termination: 'framework_timeout', exitCode: 0, stdout: '' }),
+    },
+  });
+  assert.equal(externalResult.status, 'failed');
 });
 
 function subjectCell(

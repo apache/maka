@@ -105,6 +105,35 @@ test('hosted execution cancellation before Turn admission starts no Turn', async
   assert.equal(turnStarts, 0);
 });
 
+test('hosted execution cancellation remains active while Runtime continuations settle', async () => {
+  const abort = new AbortController();
+  const residency = deferred();
+  const settling = deferred();
+  let drains = 0;
+  const runner = new HostHostedExecutionRunner({
+    handlers: handlers(),
+    context: context(),
+    requestDrain: () => {
+      drains += 1;
+    },
+    waitForResidencies: () => {
+      settling.resolve();
+      return residency.promise;
+    },
+  });
+
+  const execution = runner.run(input(), abort.signal);
+  await settling.promise;
+  abort.abort();
+  residency.resolve();
+
+  const result = await execution;
+  assert.equal(result.kind, 'settled');
+  if (result.kind !== 'settled') return;
+  assert.equal(result.status, 'cancelled');
+  assert.equal(drains, 1);
+});
+
 const ID = '00000000-0000-4000-8000-000000000001';
 
 function input() {

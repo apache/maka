@@ -56,6 +56,26 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
             artifacts: [{ kind: 'runtime_host_execution', executionId }],
           };
         }
+        if (process.termination === 'cancelled') {
+          return {
+            usage: projection.usage,
+            costUsd: projection.costUsd,
+            durationMs: Date.now() - startedAt,
+            status: 'indeterminate' as const,
+            failureReason: 'Maka subject cancelled',
+            artifacts: [{ kind: 'runtime_host_execution', executionId }],
+          };
+        }
+        if (process.termination === 'framework_timeout') {
+          return {
+            usage: projection.usage,
+            costUsd: projection.costUsd,
+            durationMs: Date.now() - startedAt,
+            status: 'failed' as const,
+            failureReason: 'Maka subject exceeded the framework timeout',
+            artifacts: [{ kind: 'runtime_host_execution', executionId }],
+          };
+        }
         if (process.exitCode !== 0) {
           return {
             usage: projection.usage,

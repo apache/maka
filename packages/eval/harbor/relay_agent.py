@@ -60,6 +60,7 @@ class RelayAgent(BaseAgent):
                 {
                     "token": self._token,
                     "kind": "executed",
+                    "termination": "cancelled" if cancelled else "exited",
                     "exitCode": 130 if cancelled else result.return_code,
                     "stdout": result.stdout or "",
                 },
@@ -76,6 +77,7 @@ class RelayAgent(BaseAgent):
                         {
                             "token": self._token,
                             "kind": "executed",
+                            "termination": "framework_timeout",
                             "exitCode": 124,
                             "stdout": result.stdout or "",
                         },

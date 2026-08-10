@@ -146,12 +146,19 @@ function relayContext(
         if (
           executed.token !== state.token ||
           executed.kind !== 'executed' ||
+          (executed.termination !== 'exited' &&
+            executed.termination !== 'framework_timeout' &&
+            executed.termination !== 'cancelled') ||
           typeof executed.exitCode !== 'number' ||
           typeof executed.stdout !== 'string'
         ) {
           throw new Error('relay returned an invalid execution result');
         }
-        return { exitCode: executed.exitCode, stdout: executed.stdout };
+        return {
+          termination: executed.termination,
+          exitCode: executed.exitCode,
+          stdout: executed.stdout,
+        };
       } finally {
         signal?.removeEventListener('abort', cancel);
       }
