@@ -34,6 +34,7 @@ export class HostWorkspaceResolver {
   constructor(
     private readonly catalog: Pick<ProjectCatalog, 'list' | 'touch'>,
     private readonly membership: HostProjectMembershipGate,
+    private readonly onProjectChanged: () => void,
   ) {}
 
   resolve(target: WorkspaceTarget): Promise<ResolvedWorkspace> {
@@ -55,6 +56,7 @@ export class HostWorkspaceResolver {
       const workspace = await this.#resolve(target);
       if (workspace.projectId !== null) {
         await this.catalog.touch(workspace.projectId, workspace.cwd);
+        this.onProjectChanged();
       }
       return operation(workspace);
     });

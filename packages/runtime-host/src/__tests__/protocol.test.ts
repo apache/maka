@@ -104,7 +104,6 @@ describe('Runtime Host bootstrap protocol', () => {
       'plan.turn.start',
       'pricing.mutate',
       'pricing.query',
-      'project.catalog.location.query',
       'project.catalog.mutate',
       'project.catalog.query',
       'queue.retract',

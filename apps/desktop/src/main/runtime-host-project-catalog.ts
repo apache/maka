@@ -1,5 +1,8 @@
 import type { ProjectRecord } from "@maka/core";
-import type { ProjectCatalogProject } from "@maka/runtime-host/protocol";
+import type {
+  ProjectCatalogProject,
+  ProjectCatalogProjectDetails,
+} from "@maka/runtime-host/protocol";
 import type { ProjectManagementCatalog } from "./project-management-service.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 
@@ -9,7 +12,6 @@ type RuntimeHostProjectClient = Pick<
   DesktopRuntimeHostClient,
   | "archiveProject"
   | "listProjects"
-  | "projectLocations"
   | "registerProject"
   | "relinkProject"
   | "renameProject"
@@ -22,7 +24,7 @@ export function createRuntimeHostProjectCatalog(
   return {
     list: async () => {
       const client = resolveClient();
-      return Promise.all((await client.listProjects()).map((project) => projectRecord(client, project)));
+      return (await client.listProjects()).map(toProjectRecord);
     },
     register: async (path) => {
       const client = resolveClient();
@@ -48,24 +50,24 @@ export function createRuntimeHostProjectCatalog(
 }
 
 async function projectRecord(
-  client: Pick<DesktopRuntimeHostClient, "projectLocations">,
+  client: Pick<DesktopRuntimeHostClient, "listProjects">,
   project: ProjectCatalogProject,
 ): Promise<ProjectRecord> {
-  if (!project.available || project.archivedAt !== null) return toProjectRecord(project);
-  return toProjectRecord(project, await client.projectLocations(project.id));
+  const details = (await client.listProjects()).find(
+    (candidate) => candidate.id === project.id || candidate.aliases.includes(project.id),
+  );
+  if (!details) throw new Error(`Project ${project.id} disappeared after mutation`);
+  return toProjectRecord(details);
 }
 
-function toProjectRecord(
-  project: ProjectCatalogProject,
-  location?: Awaited<ReturnType<DesktopRuntimeHostClient["projectLocations"]>>,
-): ProjectRecord {
+function toProjectRecord(project: ProjectCatalogProjectDetails): ProjectRecord {
   return {
     id: project.id,
     ...(project.aliases.length === 0 ? {} : { aliases: [...project.aliases] }),
     name: project.name,
-    locations: location ? [...location.locations] : [],
+    locations: [...project.locations],
     ...(project.archivedAt === null ? {} : { archivedAt: project.archivedAt }),
     available: project.available,
-    ...(location ? { preferredPath: location.preferredPath } : {}),
+    ...(project.preferredPath === null ? {} : { preferredPath: project.preferredPath }),
   };
 }

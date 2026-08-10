@@ -15,23 +15,21 @@ import {
   type OperationOutcome,
   type ProjectCatalogMutateInput,
   type ProjectCatalogMutateResult,
-  type ProjectCatalogLocationQueryInput,
   type ProjectCatalogPageItem,
   type ProjectCatalogProject,
   type ProjectCatalogQueryInput,
   type ProjectCatalogQueryResult,
   type ProjectCatalogRevision,
+  type ProjectCatalogView,
 } from '../protocol/index.js';
 import type { ProjectCatalogOperationHandlerMap } from './operation-dispatcher.js';
 import type { HostProjectCatalogChangeService } from './project-catalog-change-service.js';
 import type { HostProjectMembershipGate } from './project-membership-gate.js';
 import type { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
-import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
 
 export class HostProjectCatalogCoordinator {
   readonly handlers: ProjectCatalogOperationHandlerMap = {
     'project.catalog.query': (input) => this.#query(input),
-    'project.catalog.location.query': (input) => this.#queryLocation(input),
     'project.catalog.mutate': (input) => this.#mutate(input),
   };
 
@@ -40,7 +38,6 @@ export class HostProjectCatalogCoordinator {
     private readonly projectChanges: HostProjectCatalogChangeService,
     private readonly sessionChanges: HostSessionCatalogChangeService,
     private readonly membership: HostProjectMembershipGate,
-    private readonly workspaceResolver: Pick<HostWorkspaceResolver, 'run'>,
     private readonly requestDrain: () => void,
   ) {}
 
@@ -48,12 +45,13 @@ export class HostProjectCatalogCoordinator {
     input: ProjectCatalogQueryInput,
   ): Promise<OperationOutcome<'project.catalog.query'>> {
     try {
-      const projects = (await this.catalog.list()).map(projectProject);
-      const items = projectCatalogItems(projects);
+      const records = await this.catalog.list();
+      const items = projectCatalogItems(records, input.view);
       const revision = catalogRevision(items);
       if (input.kind === 'list_continue' && input.revision !== revision) {
         return successQuery({
           kind: 'revision_changed',
+          view: input.view,
           expected: input.revision,
           actual: revision,
         });
@@ -66,7 +64,7 @@ export class HostProjectCatalogCoordinator {
       ) {
         return queryFailure('invalid_request', 'Project catalog cursor is invalid');
       }
-      return successQuery(createPage(revision, projects.length, items, offset));
+      return successQuery(createPage(input.view, revision, records.length, items, offset));
     } catch {
       return queryFailure('persistence_failed', 'Project catalog is unavailable');
     }
@@ -99,40 +97,6 @@ export class HostProjectCatalogCoordinator {
         'commit_outcome_unknown',
         'Project catalog mutation outcome is unknown',
       );
-    }
-  }
-
-  async #queryLocation(
-    input: ProjectCatalogLocationQueryInput,
-  ): Promise<OperationOutcome<'project.catalog.location.query'>> {
-    try {
-      return await this.workspaceResolver.run(
-        { kind: 'project', projectId: input.projectId },
-        async (workspace) => {
-          if (workspace.projectId === null) {
-            throw new Error('Project workspace resolution returned a Host path');
-          }
-          return {
-            ok: true,
-            result: {
-              projectId: workspace.projectId,
-              locations: workspace.project.locations.map(({ path, isWorktree }) => ({
-                path,
-                isWorktree,
-              })),
-              preferredPath: workspace.cwd,
-            },
-          };
-        },
-      );
-    } catch (error) {
-      if (error instanceof WorkspaceResolutionError) {
-        return locationFailure(
-          error.code === 'not_found' ? 'not_found' : 'operation_conflict',
-          error.message,
-        );
-      }
-      return locationFailure('persistence_failed', 'Project catalog is unavailable');
     }
   }
 
@@ -170,25 +134,46 @@ function projectProject(project: ProjectRecord): ProjectCatalogProject {
   });
 }
 
-function projectCatalogItems(projects: readonly ProjectCatalogProject[]): ProjectCatalogPageItem[] {
-  return projects.flatMap((project, projectIndex): ProjectCatalogPageItem[] => [
-    {
-      kind: 'project',
-      projectIndex,
-      id: project.id,
-      name: project.name,
-      aliasCount: project.aliases.length,
-      locationCount: project.locationCount,
-      archivedAt: project.archivedAt,
-      available: project.available,
-    },
-    ...project.aliases.map((alias, itemIndex) => ({
-      kind: 'alias' as const,
-      projectIndex,
-      itemIndex,
-      alias,
-    })),
-  ]);
+function projectCatalogItems(
+  records: readonly ProjectRecord[],
+  view: ProjectCatalogView,
+): ProjectCatalogPageItem[] {
+  return records.flatMap((record, projectIndex): ProjectCatalogPageItem[] => {
+    const project = projectProject(record);
+    const preferredLocationIndex = record.preferredPath
+      ? record.locations.findIndex((location) => location.path === record.preferredPath)
+      : -1;
+    if (record.preferredPath && preferredLocationIndex < 0) {
+      throw new Error('Project preferred location is missing from its catalog record');
+    }
+    return [
+      {
+        kind: 'project',
+        projectIndex,
+        id: project.id,
+        name: project.name,
+        aliasCount: project.aliases.length,
+        locationCount: project.locationCount,
+        preferredLocationIndex: preferredLocationIndex < 0 ? null : preferredLocationIndex,
+        archivedAt: project.archivedAt,
+        available: project.available,
+      },
+      ...project.aliases.map((alias, itemIndex) => ({
+        kind: 'alias' as const,
+        projectIndex,
+        itemIndex,
+        alias,
+      })),
+      ...(view === 'summary'
+        ? []
+        : record.locations.map((location, itemIndex) => ({
+            kind: 'location' as const,
+            projectIndex,
+            itemIndex,
+            location: { path: location.path, isWorktree: location.isWorktree },
+          }))),
+    ];
+  });
 }
 
 function catalogRevision(items: readonly ProjectCatalogPageItem[]): ProjectCatalogRevision {
@@ -196,6 +181,7 @@ function catalogRevision(items: readonly ProjectCatalogPageItem[]): ProjectCatal
 }
 
 function createPage(
+  view: ProjectCatalogView,
   revision: ProjectCatalogRevision,
   projectCount: number,
   items: readonly ProjectCatalogPageItem[],
@@ -209,6 +195,7 @@ function createPage(
     const nextOffset = index + 1;
     const candidate: ProjectCatalogQueryResult = {
       kind: 'page',
+      view,
       revision,
       projectCount,
       items: [...pageItems, item],
@@ -223,6 +210,7 @@ function createPage(
   const nextOffset = offset + pageItems.length;
   return {
     kind: 'page',
+    view,
     revision,
     projectCount,
     items: pageItems,
@@ -265,13 +253,6 @@ function queryFailure(
   code: 'invalid_request' | 'persistence_failed',
   message: string,
 ): OperationOutcome<'project.catalog.query'> {
-  return { ok: false, error: { code, message } };
-}
-
-function locationFailure(
-  code: 'not_found' | 'operation_conflict' | 'persistence_failed',
-  message: string,
-): OperationOutcome<'project.catalog.location.query'> {
   return { ok: false, error: { code, message } };
 }
 

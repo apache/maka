@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createRuntimeHostProjectCatalog } from '../runtime-host-project-catalog.js';
 
-test('adds Host-authorized paths only in the Desktop adapter', async () => {
+test('reads every Project location through one stable Host catalog view', async () => {
   const project = {
     id: 'project-1',
     aliases: [],
@@ -10,33 +10,35 @@ test('adds Host-authorized paths only in the Desktop adapter', async () => {
     locationCount: 2,
     archivedAt: null,
     available: true,
+    locations: [
+      { path: '/workspace/project', isWorktree: false },
+      { path: '/workspace/worktree', isWorktree: true },
+    ],
+    preferredPath: '/workspace/project',
   } as const;
+  let listCalls = 0;
   const catalog = createRuntimeHostProjectCatalog(() =>
     ({
-      listProjects: async () => [project],
+      listProjects: async () => {
+        listCalls += 1;
+        return [project];
+      },
       registerProject: async () => project,
-      projectLocations: async () => ({
-        projectId: 'project-1',
-        locations: [
-          { path: '/workspace/project', isWorktree: false },
-          { path: '/workspace/worktree', isWorktree: true },
-        ],
-        preferredPath: '/workspace/project',
-      }),
     }) as never,
   );
 
-  assert.deepEqual(await catalog.list(), [
-    {
-      id: 'project-1',
-      name: 'Project',
-      locations: [
-        { path: '/workspace/project', isWorktree: false },
-        { path: '/workspace/worktree', isWorktree: true },
-      ],
-      preferredPath: '/workspace/project',
-      available: true,
-    },
-  ]);
-  assert.deepEqual(await catalog.register('/workspace/project'), (await catalog.list())[0]);
+  const expected = {
+    id: 'project-1',
+    name: 'Project',
+    locations: [
+      { path: '/workspace/project', isWorktree: false },
+      { path: '/workspace/worktree', isWorktree: true },
+    ],
+    preferredPath: '/workspace/project',
+    available: true,
+  };
+  assert.deepEqual(await catalog.list(), [expected]);
+  assert.equal(listCalls, 1);
+  assert.deepEqual(await catalog.register('/workspace/project'), expected);
+  assert.equal(listCalls, 2);
 });

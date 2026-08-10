@@ -43,6 +43,27 @@ test('migrates the legacy path selection once and removes the legacy file', asyn
   }
 });
 
+test('keeps a legacy path selection until it can be represented by a Project id', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-preference-path-migration-'));
+  const fallback = join(base, 'fallback');
+  const project = join(base, 'project');
+  await mkdir(fallback);
+  await mkdir(project);
+  const legacy = join(base, 'last-project-path.json');
+  await writeFile(legacy, JSON.stringify({ projectPath: project }));
+  try {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      assert.deepEqual(await controller(base, fallback, 'root-a').currentSelection(), {
+        projectId: undefined,
+        path: project,
+      });
+    }
+    assert.equal(JSON.parse(await readFile(legacy, 'utf8')).projectPath, project);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('does not reuse a preference from another Runtime Host root', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-preference-scope-'));
   const fallback = join(base, 'fallback');

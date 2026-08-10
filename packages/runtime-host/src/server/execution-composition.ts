@@ -405,8 +405,15 @@ export async function createExecutionRuntimeHostComposition(
           initiatingConnectionId: string,
         ) => Promise<string[]>)
       | undefined;
+    const configurationChanges = new HostConfigurationChangeService();
+    const sessionCatalogChanges = new HostSessionCatalogChangeService();
+    const projectCatalogChanges = new HostProjectCatalogChangeService();
     const projectMembership = new HostProjectMembershipGate();
-    const workspaceResolver = new HostWorkspaceResolver(openedProjectCatalog, projectMembership);
+    const workspaceResolver = new HostWorkspaceResolver(
+      openedProjectCatalog,
+      projectMembership,
+      () => projectCatalogChanges.publish(),
+    );
     const skills = new HostSkillCatalogCoordinator(
       new SkillCatalogRepository({
         runWithRoot: (operation) =>
@@ -443,15 +450,11 @@ export async function createExecutionRuntimeHostComposition(
         };
       },
     );
-    const configurationChanges = new HostConfigurationChangeService();
-    const sessionCatalogChanges = new HostSessionCatalogChangeService();
-    const projectCatalogChanges = new HostProjectCatalogChangeService();
     const projects = new HostProjectCatalogCoordinator(
       openedProjectCatalog,
       projectCatalogChanges,
       sessionCatalogChanges,
       projectMembership,
-      workspaceResolver,
       context.requestDrain,
     );
     let rootCoordinator: RootTurnCoordinator | undefined;

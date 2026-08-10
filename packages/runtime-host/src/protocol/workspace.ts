@@ -53,8 +53,10 @@ function isLexicallyAbsoluteHostPath(path: string): boolean {
 
 export function decodeWorkspaceProjection(value: unknown): WorkspaceProjection {
   const projection = requireExactRecord(value, 'Workspace projection', ['target', 'hostCwd']);
-  return {
-    target: decodeWorkspaceTarget(projection.target),
-    hostCwd: decodeHostPath(projection.hostCwd, 'Workspace Host cwd'),
-  };
+  const target = decodeWorkspaceTarget(projection.target);
+  const hostCwd = decodeHostPath(projection.hostCwd, 'Workspace Host cwd');
+  if (target.kind === 'host_path' && target.path !== hostCwd) {
+    throw invalidProtocolFrame('Workspace Host path does not match its cwd');
+  }
+  return { target, hostCwd };
 }

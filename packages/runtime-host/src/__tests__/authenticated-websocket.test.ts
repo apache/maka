@@ -125,7 +125,10 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       (error: unknown) =>
         error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
     );
-    const remoteProjects = await remote.request('project.catalog.query', { kind: 'list_start' });
+    const remoteProjects = await remote.request('project.catalog.query', {
+      kind: 'list_start',
+      view: 'summary',
+    });
     assert.equal(remoteProjects.kind, 'page');
     await assert.rejects(
       remote.request('project.catalog.mutate', {
@@ -145,7 +148,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     const registeredProjectId = registered.project.id;
     const canonicalRoot = await realpath(root);
     await assert.rejects(
-      remote.request('project.catalog.location.query', { projectId: registeredProjectId }),
+      remote.request('project.catalog.query', { kind: 'list_start', view: 'locations' }),
       (error: unknown) =>
         error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
     );

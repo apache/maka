@@ -62,7 +62,7 @@ export function createProjectRootController(
 
   function setSelection(projectId: string | null, projectPath: string): void {
     selectedProject = { projectId, path: projectPath };
-    void savePreference(deps, projectId);
+    void persistSelection(deps, projectId);
   }
 
   return { current, currentSelection, resolveExplicit, setSelection };
@@ -77,11 +77,20 @@ async function loadInitialSelection(
 
   const legacy = await readLegacySelection(deps.legacySelectionFile);
   if (!legacy) return { projectId: undefined, path: fallbackPath };
-  if (legacy.projectId !== undefined && !(await savePreference(deps, legacy.projectId))) {
+  if (typeof legacy.projectId !== 'string') return legacy;
+  if (!(await savePreference(deps, legacy.projectId))) {
     return legacy;
   }
   await rm(deps.legacySelectionFile, { force: true }).catch(() => undefined);
   return legacy;
+}
+
+async function persistSelection(
+  deps: ProjectRootControllerDeps,
+  projectId: string | null,
+): Promise<void> {
+  if (!(await savePreference(deps, projectId))) return;
+  await rm(deps.legacySelectionFile, { force: true }).catch(() => undefined);
 }
 
 async function readPreference(file: string, rootId: string): Promise<string | null | undefined> {

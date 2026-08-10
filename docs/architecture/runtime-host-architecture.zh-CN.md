@@ -123,7 +123,9 @@ type WorkspaceTarget =
 
 `project` 是可跨机器传递的形式。Runtime Host 通过自己的 Project Catalog 解析它，并返回包含 canonical target 与 `hostCwd` 的 projection。`host_path` 只供拥有明确 Host-path authority 的 Client 使用，例如从本地 checkout 启动的 CLI。
 
-Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 将所选 Project 保存为按 root 隔离的 Client preference；选择 Project 不修改 Host 全局状态。没有 Host-path authority 的 Client 可以使用已注册 Project，但不能注册、relink、reveal 或提交 Host path。
+Project Catalog 提供 revision-pinned、paginated 的 summary 与 location view。Summary 不包含 path；读取 location 必须拥有 Host-path authority。
+
+Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 将所选 Project 保存为按 root 隔离的 Client preference；选择 Project 不修改 Host 全局状态。没有 Host-path authority 的 Client 可以使用已注册 Project，但不能注册、relink、请求 Host 侧 reveal 或提交 Host path。
 
 ## 生命周期
 

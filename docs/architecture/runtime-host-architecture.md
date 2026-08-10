@@ -123,7 +123,9 @@ type WorkspaceTarget =
 
 `project` is the portable form. Runtime Host resolves it through its Project Catalog and returns a projection containing the canonical target and `hostCwd`. `host_path` is for a Client that has explicit Host-path authority, such as a local CLI started in a checkout.
 
-Clients do not combine a path with a Project ID or resolve a Host path themselves. Desktop keeps its selected Project as a root-scoped Client preference; selecting a Project does not mutate global Host state. A Client without Host-path authority can use a registered Project, but cannot register, relink, reveal, or submit a Host path.
+The Project Catalog has revision-pinned, paginated summary and location views. The summary is path-free; reading locations requires Host-path authority.
+
+Clients do not combine a path with a Project ID or resolve a Host path themselves. Desktop keeps its selected Project as a root-scoped Client preference; selecting a Project does not mutate global Host state. A Client without Host-path authority can use a registered Project, but cannot register, relink, request a Host-side reveal, or submit a Host path.
 
 ## Lifecycle
 

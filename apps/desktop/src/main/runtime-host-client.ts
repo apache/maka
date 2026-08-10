@@ -33,7 +33,7 @@ import {
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
-  readRuntimeHostProjects,
+  readRuntimeHostProjectDetails,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
 } from "@maka/runtime-host/client";
@@ -66,8 +66,8 @@ import {
   type PricingQueryResult,
   type ProjectCatalogMutateInput,
   type ProjectCatalogMutateResult,
-  type ProjectCatalogLocationQueryResult,
   type ProjectCatalogProject,
+  type ProjectCatalogProjectDetails,
   type QueueRetractInput,
   type QueueRetractResult,
   type SessionCatalogFilter,
@@ -491,10 +491,10 @@ export class DesktopRuntimeHostClient {
     }
   }
 
-  async listProjects(): Promise<ProjectCatalogProject[]> {
+  async listProjects(): Promise<ProjectCatalogProjectDetails[]> {
     this.#assertOpen();
     try {
-      return await readRuntimeHostProjects(this.connection);
+      return await readRuntimeHostProjectDetails(this.connection);
     } catch (error) {
       if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
       throw new DesktopRuntimeHostClientError(
@@ -507,10 +507,6 @@ export class DesktopRuntimeHostClient {
   async registerProject(path: string): Promise<ProjectCatalogProject> {
     const result = await this.#mutateProject({ kind: "register", path });
     return this.#projectForMutation(result);
-  }
-
-  projectLocations(projectId: string): Promise<ProjectCatalogLocationQueryResult> {
-    return this.#request("project.catalog.location.query", { projectId });
   }
 
   async relinkProject(projectId: string, path: string): Promise<ProjectCatalogProject> {

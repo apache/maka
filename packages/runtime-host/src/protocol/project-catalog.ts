@@ -7,7 +7,7 @@ import {
   requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
-import { defineHostPathOperation, defineOperation } from './operation-spec.js';
+import { defineHostPathOperation } from './operation-spec.js';
 import { decodeHostPath } from './workspace.js';
 
 export const PROJECT_CATALOG_PAGE_MAX_ITEMS = 64;
@@ -24,8 +24,6 @@ const QUERY_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
-const LOCATION_QUERY_ERRORS = [...QUERY_ERRORS, 'not_found', 'operation_conflict'] as const;
-
 const MUTATE_ERRORS = [
   'host_not_ready',
   'host_draining',
@@ -39,6 +37,8 @@ const MUTATE_ERRORS = [
 ] as const;
 
 export type ProjectCatalogRevision = `sha256:${string}`;
+
+export type ProjectCatalogView = 'summary' | 'locations';
 
 export interface ProjectCatalogLocation {
   readonly path: string;
@@ -54,6 +54,11 @@ export interface ProjectCatalogProject {
   readonly available: boolean;
 }
 
+export interface ProjectCatalogProjectDetails extends ProjectCatalogProject {
+  readonly locations: readonly ProjectCatalogLocation[];
+  readonly preferredPath: string | null;
+}
+
 export type ProjectCatalogPageItem =
   | {
       readonly kind: 'project';
@@ -62,6 +67,7 @@ export type ProjectCatalogPageItem =
       readonly name: string;
       readonly aliasCount: number;
       readonly locationCount: number;
+      readonly preferredLocationIndex: number | null;
       readonly archivedAt: number | null;
       readonly available: boolean;
     }
@@ -70,12 +76,19 @@ export type ProjectCatalogPageItem =
       readonly projectIndex: number;
       readonly itemIndex: number;
       readonly alias: string;
+    }
+  | {
+      readonly kind: 'location';
+      readonly projectIndex: number;
+      readonly itemIndex: number;
+      readonly location: ProjectCatalogLocation;
     };
 
 export type ProjectCatalogQueryInput =
-  | { readonly kind: 'list_start' }
+  | { readonly kind: 'list_start'; readonly view: ProjectCatalogView }
   | {
       readonly kind: 'list_continue';
+      readonly view: ProjectCatalogView;
       readonly revision: ProjectCatalogRevision;
       readonly cursor: string;
     };
@@ -83,6 +96,7 @@ export type ProjectCatalogQueryInput =
 export type ProjectCatalogQueryResult =
   | {
       readonly kind: 'page';
+      readonly view: ProjectCatalogView;
       readonly revision: ProjectCatalogRevision;
       readonly projectCount: number;
       readonly items: readonly ProjectCatalogPageItem[];
@@ -90,6 +104,7 @@ export type ProjectCatalogQueryResult =
     }
   | {
       readonly kind: 'revision_changed';
+      readonly view: ProjectCatalogView;
       readonly expected: ProjectCatalogRevision;
       readonly actual: ProjectCatalogRevision;
     };
@@ -106,39 +121,26 @@ export type ProjectCatalogMutateResult = {
   readonly project: ProjectCatalogProject;
 };
 
-export interface ProjectCatalogLocationQueryInput {
-  readonly projectId: string;
-}
-
-export interface ProjectCatalogLocationQueryResult {
-  readonly projectId: string;
-  readonly locations: readonly ProjectCatalogLocation[];
-  readonly preferredPath: string;
-}
-
 export const PROJECT_CATALOG_OPERATION_SPECS = {
-  'project.catalog.query': defineOperation<
+  'project.catalog.query': defineHostPathOperation<
     ProjectCatalogQueryInput,
     ProjectCatalogQueryResult,
     (typeof QUERY_ERRORS)[number]
-  >({
-    mode: 'query',
-    availability: 'ready',
-    errors: QUERY_ERRORS,
-    decodeInput: decodeProjectCatalogQueryInput,
-    decodeOutput: decodeProjectCatalogQueryResult,
-  }),
-  'project.catalog.location.query': defineHostPathOperation<
-    ProjectCatalogLocationQueryInput,
-    ProjectCatalogLocationQueryResult,
-    (typeof LOCATION_QUERY_ERRORS)[number]
-  >({
-    mode: 'query',
-    availability: 'ready',
-    errors: LOCATION_QUERY_ERRORS,
-    decodeInput: decodeProjectCatalogLocationQueryInput,
-    decodeOutput: decodeProjectCatalogLocationQueryResult,
-  }),
+  >(
+    {
+      mode: 'query',
+      availability: 'ready',
+      errors: QUERY_ERRORS,
+      decodeInput: decodeProjectCatalogQueryInput,
+      decodeOutput: decodeProjectCatalogQueryResult,
+      assertOutputForInput: (input, output) => {
+        if (input.view !== output.view) {
+          throw invalidProtocolFrame('Project catalog view changed');
+        }
+      },
+    },
+    (input) => input.view === 'locations',
+  ),
   'project.catalog.mutate': defineHostPathOperation<
     ProjectCatalogMutateInput,
     ProjectCatalogMutateResult,
@@ -155,62 +157,22 @@ export const PROJECT_CATALOG_OPERATION_SPECS = {
   ),
 } as const;
 
-export function decodeProjectCatalogLocationQueryInput(
-  value: unknown,
-): ProjectCatalogLocationQueryInput {
-  const input = requireExactRecord(value, 'project catalog location query input', ['projectId']);
-  return { projectId: projectId(input.projectId) };
-}
-
-export function decodeProjectCatalogLocationQueryResult(
-  value: unknown,
-): ProjectCatalogLocationQueryResult {
-  const result = requireExactRecord(value, 'project catalog location query result', [
-    'projectId',
-    'locations',
-    'preferredPath',
-  ]);
-  if (
-    !Array.isArray(result.locations) ||
-    result.locations.length > PROJECT_CATALOG_PAGE_MAX_ITEMS
-  ) {
-    throw invalidProtocolFrame('Invalid project locations');
-  }
-  const locations = result.locations.map(decodeProjectLocation);
-  const preferredPath = absolutePath(result.preferredPath, 'project preferred path');
-  if (
-    new Set(locations.map((location) => location.path)).size !== locations.length ||
-    !locations.some((location) => location.path === preferredPath)
-  ) {
-    throw invalidProtocolFrame('Invalid project locations');
-  }
-  const decoded: ProjectCatalogLocationQueryResult = {
-    projectId: projectId(result.projectId),
-    locations,
-    preferredPath,
-  };
-  requireEncodedByteLimit(
-    decoded,
-    'project catalog location query result',
-    PROJECT_CATALOG_PAGE_MAX_BYTES,
-  );
-  return decoded;
-}
-
 export function decodeProjectCatalogQueryInput(value: unknown): ProjectCatalogQueryInput {
   const record = requireRecord(value, 'project catalog query input');
   if (record.kind === 'list_start') {
-    requireExactRecord(record, 'project catalog list start input', ['kind']);
-    return { kind: 'list_start' };
+    const input = requireExactRecord(record, 'project catalog list start input', ['kind', 'view']);
+    return { kind: 'list_start', view: projectCatalogView(input.view) };
   }
   if (record.kind === 'list_continue') {
     const input = requireExactRecord(record, 'project catalog list continuation input', [
       'kind',
+      'view',
       'revision',
       'cursor',
     ]);
     return {
       kind: 'list_continue',
+      view: projectCatalogView(input.view),
       revision: revision(input.revision, 'project catalog revision'),
       cursor: requireUtf8String(
         input.cursor,
@@ -227,11 +189,13 @@ export function decodeProjectCatalogQueryResult(value: unknown): ProjectCatalogQ
   if (record.kind === 'revision_changed') {
     const result = requireExactRecord(record, 'project catalog revision changed result', [
       'kind',
+      'view',
       'expected',
       'actual',
     ]);
     return {
       kind: 'revision_changed',
+      view: projectCatalogView(result.view),
       expected: revision(result.expected, 'expected project catalog revision'),
       actual: revision(result.actual, 'actual project catalog revision'),
     };
@@ -239,6 +203,7 @@ export function decodeProjectCatalogQueryResult(value: unknown): ProjectCatalogQ
   if (record.kind !== 'page') throw invalidProtocolFrame('Invalid project catalog query result');
   const page = requireExactRecord(record, 'project catalog page result', [
     'kind',
+    'view',
     'revision',
     'projectCount',
     'items',
@@ -247,11 +212,13 @@ export function decodeProjectCatalogQueryResult(value: unknown): ProjectCatalogQ
   if (!Array.isArray(page.items) || page.items.length > PROJECT_CATALOG_PAGE_MAX_ITEMS) {
     throw invalidProtocolFrame('Invalid project catalog page items');
   }
+  const view = projectCatalogView(page.view);
   const decoded: ProjectCatalogQueryResult = {
     kind: 'page',
+    view,
     revision: revision(page.revision, 'project catalog revision'),
     projectCount: requireCount(page.projectCount, 'project catalog projectCount'),
-    items: page.items.map(decodeProjectCatalogPageItem),
+    items: page.items.map((item) => decodeProjectCatalogPageItem(item, view)),
     nextCursor:
       page.nextCursor === null
         ? null
@@ -318,7 +285,10 @@ export function decodeProjectCatalogMutateResult(value: unknown): ProjectCatalog
   throw invalidProtocolFrame('Invalid project catalog mutation result kind');
 }
 
-function decodeProjectCatalogPageItem(value: unknown): ProjectCatalogPageItem {
+function decodeProjectCatalogPageItem(
+  value: unknown,
+  view: ProjectCatalogView,
+): ProjectCatalogPageItem {
   const record = requireRecord(value, 'project catalog page item');
   if (record.kind === 'project') {
     const item = requireExactRecord(record, 'project catalog header item', [
@@ -328,6 +298,7 @@ function decodeProjectCatalogPageItem(value: unknown): ProjectCatalogPageItem {
       'name',
       'aliasCount',
       'locationCount',
+      'preferredLocationIndex',
       'archivedAt',
       'available',
     ]);
@@ -338,6 +309,10 @@ function decodeProjectCatalogPageItem(value: unknown): ProjectCatalogPageItem {
       name: requireUtf8String(item.name, 'project name', PROJECT_CATALOG_NAME_MAX_BYTES),
       aliasCount: requireCount(item.aliasCount, 'project alias count'),
       locationCount: requireCount(item.locationCount, 'project location count'),
+      preferredLocationIndex:
+        item.preferredLocationIndex === null
+          ? null
+          : requireCount(item.preferredLocationIndex, 'project preferred location index'),
       archivedAt:
         item.archivedAt === null ? null : requireCount(item.archivedAt, 'project archivedAt'),
       available: boolean(item.available, 'project available'),
@@ -355,6 +330,23 @@ function decodeProjectCatalogPageItem(value: unknown): ProjectCatalogPageItem {
       projectIndex: requireCount(item.projectIndex, 'project index'),
       itemIndex: requireCount(item.itemIndex, 'project alias index'),
       alias: projectId(item.alias),
+    };
+  }
+  if (record.kind === 'location') {
+    if (view !== 'locations') {
+      throw invalidProtocolFrame('Project summary contains a Host location');
+    }
+    const item = requireExactRecord(record, 'project catalog location item', [
+      'kind',
+      'projectIndex',
+      'itemIndex',
+      'location',
+    ]);
+    return {
+      kind: 'location',
+      projectIndex: requireCount(item.projectIndex, 'project index'),
+      itemIndex: requireCount(item.itemIndex, 'project location index'),
+      location: decodeProjectLocation(item.location),
     };
   }
   throw invalidProtocolFrame('Invalid project catalog page item kind');
@@ -386,6 +378,45 @@ export function decodeProjectCatalogProject(value: unknown): ProjectCatalogProje
   return project;
 }
 
+export function decodeProjectCatalogProjectDetails(value: unknown): ProjectCatalogProjectDetails {
+  const record = requireExactRecord(value, 'project catalog project details', [
+    'id',
+    'aliases',
+    'name',
+    'locationCount',
+    'archivedAt',
+    'available',
+    'locations',
+    'preferredPath',
+  ]);
+  const project = decodeProjectCatalogProject({
+    id: record.id,
+    aliases: record.aliases,
+    name: record.name,
+    locationCount: record.locationCount,
+    archivedAt: record.archivedAt,
+    available: record.available,
+  });
+  if (!Array.isArray(record.locations) || record.locations.length !== project.locationCount) {
+    throw invalidProtocolFrame('Invalid project locations');
+  }
+  const locations = record.locations.map(decodeProjectLocation);
+  if (new Set(locations.map((location) => location.path)).size !== locations.length) {
+    throw invalidProtocolFrame('Invalid project locations');
+  }
+  const preferredPath =
+    record.preferredPath === null
+      ? null
+      : absolutePath(record.preferredPath, 'project preferred path');
+  if (
+    project.available !== (preferredPath !== null) ||
+    (preferredPath !== null && !locations.some((location) => location.path === preferredPath))
+  ) {
+    throw invalidProtocolFrame('Invalid project preferred location');
+  }
+  return { ...project, locations, preferredPath };
+}
+
 function projectId(value: unknown): string {
   return requireEntityId(value, 'projectId');
 }
@@ -412,5 +443,12 @@ function revision(value: unknown, label: string): ProjectCatalogRevision {
 
 function boolean(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') throw invalidProtocolFrame(`Invalid ${label}`);
+  return value;
+}
+
+function projectCatalogView(value: unknown): ProjectCatalogView {
+  if (value !== 'summary' && value !== 'locations') {
+    throw invalidProtocolFrame('Invalid project catalog view');
+  }
   return value;
 }

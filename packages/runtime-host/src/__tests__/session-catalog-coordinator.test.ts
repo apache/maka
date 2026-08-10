@@ -468,7 +468,11 @@ test('creation resolves a Project alias and records Host-owned usage', async () 
   try {
     let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
     const touches: Array<{ projectId: string; path?: string }> = [];
+    let projectChanges = 0;
     const fixture = createFixture({
+      onProjectChanged: () => {
+        projectChanges += 1;
+      },
       projectCatalog: {
         list: async () => [
           {
@@ -516,6 +520,7 @@ test('creation resolves a Project alias and records Host-owned usage', async () 
     assert.equal(created?.input.cwd, currentPath);
     assert.equal(created?.input.projectId, 'project-current');
     assert.deepEqual(touches, [{ projectId: 'project-current', path: currentPath }]);
+    assert.equal(projectChanges, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -668,6 +673,7 @@ function createFixture(
     readonly continuity?: Partial<SessionContinuity>;
     readonly connection?: FixtureConnection;
     readonly projectCatalog?: ProjectCatalog;
+    readonly onProjectChanged?: () => void;
   } = {},
 ) {
   const sessionId = 'session-1';
@@ -736,6 +742,7 @@ function createFixture(
     workspaceResolver: new HostWorkspaceResolver(
       options.projectCatalog ?? ({ list: async () => [] } as never),
       new HostProjectMembershipGate(),
+      options.onProjectChanged ?? (() => undefined),
     ),
     requestDrain: () => {
       drains += 1;

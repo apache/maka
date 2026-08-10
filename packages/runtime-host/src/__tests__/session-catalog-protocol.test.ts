@@ -382,6 +382,20 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('rejects a Host path projection whose target and cwd disagree', () => {
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          workspace: {
+            target: { kind: 'host_path', path: '/workspace' },
+            hostCwd: '/different-workspace',
+          },
+        }),
+      isProtocolError,
+    );
+  });
+
   test('bounds pages and preserves revision-pinned continuation results', () => {
     const sessions = Array.from({ length: SESSION_CATALOG_PAGE_MAX_ITEMS }, (_, index) =>
       projection({ id: `session-${index}` }),

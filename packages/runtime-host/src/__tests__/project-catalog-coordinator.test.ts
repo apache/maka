@@ -9,7 +9,6 @@ import { HostProjectCatalogChangeService } from '../server/project-catalog-chang
 import { HostProjectCatalogCoordinator } from '../server/project-catalog-coordinator.js';
 import { HostProjectMembershipGate } from '../server/project-membership-gate.js';
 import { HostSessionCatalogChangeService } from '../server/session-catalog-change-service.js';
-import { HostWorkspaceResolver } from '../server/workspace-resolver.js';
 
 test('Host Project Catalog relink merges identities and reassigns every affected Session', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-project-catalog-'));
@@ -50,7 +49,6 @@ test('Host Project Catalog relink merges identities and reassigns every affected
     projectChanges,
     sessionChanges,
     membership,
-    new HostWorkspaceResolver(catalog, membership),
     () => assert.fail('ordinary project mutations must not drain the Host'),
   );
 
@@ -96,25 +94,30 @@ test('Host Project Catalog relink merges identities and reassigns every affected
     );
 
     const listed = await coordinator.handlers['project.catalog.query'](
-      { kind: 'list_start' },
+      { kind: 'list_start', view: 'summary' },
       connection(),
     );
     assert.equal(listed.ok, true);
     assert.equal(listed.ok && listed.result.kind, 'page');
     assert.equal(listed.ok && listed.result.kind === 'page' && listed.result.projectCount, 1);
 
-    const location = await coordinator.handlers['project.catalog.location.query'](
-      { projectId: duplicate.id },
+    const locations = await coordinator.handlers['project.catalog.query'](
+      { kind: 'list_start', view: 'locations' },
       connection(),
     );
-    assert.deepEqual(location, {
-      ok: true,
-      result: {
-        projectId: original.id,
-        locations: [{ path: destinationPath, isWorktree: false }],
-        preferredPath: destinationPath,
-      },
-    });
+    assert.equal(locations.ok, true);
+    if (!locations.ok || locations.result.kind !== 'page') return;
+    assert.deepEqual(
+      locations.result.items.filter((item) => item.kind === 'location'),
+      [
+        {
+          kind: 'location',
+          projectIndex: 0,
+          itemIndex: 0,
+          location: { path: destinationPath, isWorktree: false },
+        },
+      ],
+    );
   } finally {
     catalog.close();
     await sessions.close?.();

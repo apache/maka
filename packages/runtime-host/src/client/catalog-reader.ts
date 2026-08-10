@@ -1,5 +1,6 @@
 import {
   decodeProjectCatalogProject,
+  decodeProjectCatalogProjectDetails,
   type ConnectionCatalogCursor,
   type ConnectionCatalogPageItem,
   type ConnectionCatalogQueryResult,
@@ -16,7 +17,9 @@ import {
   type OperationOutput,
   type ProjectCatalogPageItem,
   type ProjectCatalogProject,
+  type ProjectCatalogProjectDetails,
   type ProjectCatalogQueryResult,
+  type ProjectCatalogView,
 } from '../protocol/index.js';
 import type { RuntimeHostConnection } from './connection.js';
 
@@ -164,19 +167,44 @@ export async function readRuntimeHostSessions(
 export async function readRuntimeHostProjects(
   connection: RuntimeHostCatalogConnection,
 ): Promise<ProjectCatalogProject[]> {
+  return readRuntimeHostProjectCatalog(connection, 'summary');
+}
+
+export async function readRuntimeHostProjectDetails(
+  connection: RuntimeHostCatalogConnection,
+): Promise<ProjectCatalogProjectDetails[]> {
+  return readRuntimeHostProjectCatalog(connection, 'locations');
+}
+
+function readRuntimeHostProjectCatalog(
+  connection: RuntimeHostCatalogConnection,
+  view: 'summary',
+): Promise<ProjectCatalogProject[]>;
+function readRuntimeHostProjectCatalog(
+  connection: RuntimeHostCatalogConnection,
+  view: 'locations',
+): Promise<ProjectCatalogProjectDetails[]>;
+async function readRuntimeHostProjectCatalog(
+  connection: RuntimeHostCatalogConnection,
+  view: ProjectCatalogView,
+): Promise<ProjectCatalogProject[] | ProjectCatalogProjectDetails[]> {
   const { first, pages } = await collectStablePages(
     'project',
     async () => {
-      const result = await connection.request('project.catalog.query', { kind: 'list_start' });
-      return result.kind === 'page' ? result : null;
+      const result = await connection.request('project.catalog.query', {
+        kind: 'list_start',
+        view,
+      });
+      return result.kind === 'page' && result.view === view ? result : null;
     },
     async (revision, cursor) => {
       const result = await connection.request('project.catalog.query', {
         kind: 'list_continue',
+        view,
         revision,
         cursor,
       });
-      return result.kind === 'page' ? result : null;
+      return result.kind === 'page' && result.view === view ? result : null;
     },
   );
   return assembleProjectCatalog(
@@ -276,6 +304,7 @@ function assembleProjectCatalog(
     {
       header: Extract<ProjectCatalogPageItem, { kind: 'project' }>;
       aliases: Map<number, string>;
+      locations: Map<number, Extract<ProjectCatalogPageItem, { kind: 'location' }>['location']>;
     }
   >();
   for (const item of items) {
@@ -283,33 +312,64 @@ function assembleProjectCatalog(
     if (projects.has(item.projectIndex)) {
       throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
     }
-    projects.set(item.projectIndex, { header: item, aliases: new Map() });
+    projects.set(item.projectIndex, { header: item, aliases: new Map(), locations: new Map() });
   }
   for (const item of items) {
     if (item.kind === 'project') continue;
     const project = projects.get(item.projectIndex);
     if (!project) throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
-    if (item.itemIndex >= project.header.aliasCount || project.aliases.has(item.itemIndex)) {
+    const values = item.kind === 'alias' ? project.aliases : project.locations;
+    const expectedCount =
+      item.kind === 'alias' ? project.header.aliasCount : project.header.locationCount;
+    if (item.itemIndex >= expectedCount || values.has(item.itemIndex)) {
       throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
     }
-    project.aliases.set(item.itemIndex, item.alias);
+    if (item.kind === 'alias') project.aliases.set(item.itemIndex, item.alias);
+    else project.locations.set(item.itemIndex, item.location);
   }
   if (projects.size !== first.projectCount) {
     throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
   }
   return [...projects.entries()]
     .sort(([left], [right]) => left - right)
-    .map(([, { header, aliases }]) => {
-      if (aliases.size !== header.aliasCount) {
+    .map(([, { header, aliases, locations }]) => {
+      if (
+        aliases.size !== header.aliasCount ||
+        header.available !== (header.preferredLocationIndex !== null) ||
+        (header.preferredLocationIndex !== null &&
+          header.preferredLocationIndex >= header.locationCount)
+      ) {
         throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
       }
-      return decodeProjectCatalogProject({
+      const project = decodeProjectCatalogProject({
         id: header.id,
         aliases: orderedValues(aliases),
         name: header.name,
         locationCount: header.locationCount,
         archivedAt: header.archivedAt,
         available: header.available,
+      });
+      if (first.view === 'summary') {
+        if (locations.size !== 0) {
+          throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
+        }
+        return project;
+      }
+      if (locations.size !== header.locationCount) {
+        throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
+      }
+      const orderedLocations = orderedValues(locations);
+      const preferredPath =
+        header.preferredLocationIndex === null
+          ? null
+          : orderedLocations[header.preferredLocationIndex]?.path;
+      if (preferredPath === undefined) {
+        throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
+      }
+      return decodeProjectCatalogProjectDetails({
+        ...project,
+        locations: orderedLocations,
+        preferredPath,
       });
     });
 }

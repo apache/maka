@@ -4,6 +4,7 @@ import type { RuntimeHostConnection } from '../client/connection.js';
 import {
   RuntimeHostCatalogReadError,
   readRuntimeHostConnectionCatalog,
+  readRuntimeHostProjectDetails,
   readRuntimeHostProjects,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
@@ -118,6 +119,7 @@ test('reassembles Project aliases without exposing Host locations', async () => 
       name: 'Project',
       aliasCount: aliases.length,
       locationCount,
+      preferredLocationIndex: 0,
       archivedAt: null,
       available: true,
     },
@@ -129,11 +131,13 @@ test('reassembles Project aliases without exposing Host locations', async () => 
     })),
   ];
   const connection = fakeConnection(async (_operation, input) => {
+    assert.equal(input.view, 'summary');
     const offset = input.kind === 'list_start' ? 0 : Number(input.cursor);
     const page = items.slice(offset, offset + 64);
     const nextOffset = offset + page.length;
     return {
       kind: 'page',
+      view: 'summary',
       revision: `sha256:${'a'.repeat(64)}`,
       projectCount: 1,
       items: page,
@@ -149,6 +153,59 @@ test('reassembles Project aliases without exposing Host locations', async () => 
       locationCount,
       archivedAt: null,
       available: true,
+    },
+  ]);
+});
+
+test('reassembles more Project locations than fit in one protocol page', async () => {
+  const locations = Array.from({ length: 70 }, (_, index) => ({
+    path: `/workspace/worktree-${index}`,
+    isWorktree: index !== 0,
+  }));
+  const items = [
+    {
+      kind: 'project' as const,
+      projectIndex: 0,
+      id: 'project-1',
+      name: 'Project',
+      aliasCount: 0,
+      locationCount: locations.length,
+      preferredLocationIndex: 0,
+      archivedAt: null,
+      available: true,
+    },
+    ...locations.map((location, itemIndex) => ({
+      kind: 'location' as const,
+      projectIndex: 0,
+      itemIndex,
+      location,
+    })),
+  ];
+  const connection = fakeConnection(async (_operation, input) => {
+    assert.equal(input.view, 'locations');
+    const offset = input.kind === 'list_start' ? 0 : Number(input.cursor);
+    const page = items.slice(offset, offset + 64);
+    const nextOffset = offset + page.length;
+    return {
+      kind: 'page',
+      view: 'locations',
+      revision: `sha256:${'b'.repeat(64)}`,
+      projectCount: 1,
+      items: page,
+      nextCursor: nextOffset < items.length ? String(nextOffset) : null,
+    };
+  });
+
+  assert.deepEqual(await readRuntimeHostProjectDetails(connection), [
+    {
+      id: 'project-1',
+      aliases: [],
+      name: 'Project',
+      locationCount: locations.length,
+      archivedAt: null,
+      available: true,
+      locations,
+      preferredPath: locations[0]?.path,
     },
   ]);
 });
