@@ -57,7 +57,10 @@ describe('agent automation → plan-reminder projection', () => {
   });
 
   it('maps paused / completed / failed states', () => {
-    assert.equal(projectAgentAutomationAsPlanReminder(automation({ status: 'paused' })).status, 'paused');
+    assert.equal(
+      projectAgentAutomationAsPlanReminder(automation({ status: 'paused' })).status,
+      'paused',
+    );
     assert.equal(
       projectAgentAutomationAsPlanReminder(automation({ status: 'completed' })).status,
       'completed',
