@@ -136,6 +136,7 @@ const EXTENDED_SCRIPT_FILES = new Set([
   // release path even when nothing macOS-specific was touched.
   'scripts/verify-packaged-app.mjs',
   'scripts/verify-macos-arm64-dmg.mjs',
+  'scripts/verify-windows-installer-lifecycle.mjs',
   'scripts/verify-windows-x64.mjs',
   'scripts/windows-x64-release.test.mjs',
 ]);

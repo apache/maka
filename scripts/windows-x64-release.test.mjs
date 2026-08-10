@@ -15,6 +15,9 @@ const {
   verifyPackagedWindowsApp,
   verifyWindowsX64Release,
 } = await import(new URL('verify-windows-x64.mjs', import.meta.url));
+const { verifyWindowsInstallerLifecycle, waitForInstalledProcessesToExit } = await import(
+  new URL('verify-windows-installer-lifecycle.mjs', import.meta.url)
+);
 
 const desktopManifest = JSON.parse(
   await readFile(new URL('../apps/desktop/package.json', import.meta.url), 'utf8'),
@@ -198,4 +201,80 @@ test('the PE machine is read from the executable header', async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('the final NSIS artifact waits for installed processes before uninstalling', async () => {
+  const calls = [];
+
+  await verifyWindowsInstallerLifecycle('C:/release/Maka.exe', {
+    platform: 'win32',
+    makeTemporaryDirectory: async () => 'C:/runner-temp/lifecycle',
+    requirePath: async () => {},
+    run: async (command, args, options) => calls.push({ command, args, options }),
+    verifyApp: async (path) => calls.push({ verified: path }),
+    waitForProcessesToExit: async (path) => calls.push({ processesExited: path }),
+    waitForMissing: async (path) => calls.push({ missing: path }),
+    resolvePath: (path) => path,
+    remove: async () => {},
+  });
+
+  assert.deepEqual(calls[0].args, ['/S', '/D=C:/runner-temp/lifecycle/installed']);
+  assert.deepEqual(calls.slice(1, 4), [
+    { verified: 'C:/runner-temp/lifecycle/installed' },
+    { processesExited: 'C:/runner-temp/lifecycle/installed' },
+    {
+      command: 'C:/runner-temp/lifecycle/installed/Uninstall Maka.exe',
+      args: ['/S'],
+      options: { timeoutMs: 120_000 },
+    },
+  ]);
+  assert.deepEqual(calls[4], { missing: 'C:/runner-temp/lifecycle/installed' });
+});
+
+test('installed processes must exit before the lifecycle can continue', async () => {
+  const observations = [
+    [{ processId: 42, name: 'Maka.exe' }],
+    [{ processId: 43, name: 'Maka.exe' }],
+    [],
+  ];
+  const sleeps = [];
+  await waitForInstalledProcessesToExit('C:/Maka', {
+    listProcesses: async () => observations.shift(),
+    sleep: async (milliseconds) => sleeps.push(milliseconds),
+  });
+  assert.deepEqual(sleeps, [1_000, 1_000]);
+});
+
+test('a final cleanup failure does not replace the primary verification error', async () => {
+  const primary = new Error('installed app verification failed');
+  const cleanup = Object.assign(new Error('temporary directory is locked'), { code: 'EBUSY' });
+
+  await assert.rejects(
+    verifyWindowsInstallerLifecycle('C:/release/Maka.exe', {
+      platform: 'win32',
+      makeTemporaryDirectory: async () => 'C:/runner-temp/lifecycle',
+      requirePath: async () => {},
+      run: async () => {},
+      verifyApp: async () => {
+        throw primary;
+      },
+      resolvePath: (path) => path,
+      remove: async () => {
+        throw cleanup;
+      },
+    }),
+    (error) => error === primary && error.cause instanceof AggregateError,
+  );
+});
+
+test('installer lifecycle verification fails closed before touching a host', async () => {
+  await assert.rejects(
+    verifyWindowsInstallerLifecycle('C:/Maka.exe', { platform: 'darwin' }),
+    /requires Windows/,
+  );
+  await assert.rejects(verifyWindowsInstallerLifecycle('', { platform: 'win32' }), /Usage:/);
+  await assert.rejects(
+    verifyWindowsInstallerLifecycle('C:/Maka.zip', { platform: 'win32' }),
+    /NSIS installer/,
+  );
 });

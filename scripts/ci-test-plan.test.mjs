@@ -214,6 +214,7 @@ test('release tooling and the release config select the checks that cover them',
   for (const path of [
     'scripts/npm-spawn.mjs',
     'scripts/package-windows-x64.mjs',
+    'scripts/verify-windows-installer-lifecycle.mjs',
     'scripts/verify-windows-x64.mjs',
     'scripts/windows-x64-release.test.mjs',
     'scripts/verify-packaged-app.mjs',
