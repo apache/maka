@@ -884,15 +884,17 @@ export async function createExecutionRuntimeHostComposition(
       authority: graphCoordinator,
       continuity: continuityCoordinator,
       stopExecution: (rootSessionId) =>
-        requireGraphSupervisorWake(graphSupervisorWake).runWithSessionWakesSuppressed(
-          rootSessionId,
-          async () => {
-            await requireRootCoordinator(rootCoordinator).stopSession(rootSessionId, {
+        requireGraphCoordinator(graphCoordinator).stopExecution(rootSessionId, {
+          stopRoot: () =>
+            requireRootCoordinator(rootCoordinator).stopSession(rootSessionId, {
               source: 'stop_button',
-            });
-            await requireGraphCoordinator(graphCoordinator).stop(rootSessionId);
-          },
-        ),
+            }),
+          withSupervisorWakesSuppressed: (operation) =>
+            requireGraphSupervisorWake(graphSupervisorWake).runWithSessionWakesSuppressed(
+              rootSessionId,
+              operation,
+            ),
+        }),
     });
     const observeBackendInvalidation = (completion: Promise<void>) => {
       void completion.catch(() => {

@@ -704,9 +704,13 @@ describe('Agent Graph supervisor wake delivery', () => {
     }
   });
 
-  test('client stop aborts one Session wake without allowing an automatic retry', async () => {
+  test('overlapping client stops keep one Session wake suppressed until both settle', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     const started = deferred();
+    const firstStopEntered = deferred();
+    const secondStopEntered = deferred();
+    const releaseFirstStop = deferred();
+    const releaseSecondStop = deferred();
     let snapshotVersion = 'snapshot-1';
     let turns = 0;
     const coordinator = new AgentGraphSupervisorWakeCoordinator({
@@ -731,7 +735,18 @@ describe('Agent Graph supervisor wake delivery', () => {
     try {
       coordinator.notify('root-session', reconciliation());
       await started.promise;
-      await coordinator.runWithSessionWakesSuppressed('root-session', async () => undefined);
+      const firstStop = coordinator.runWithSessionWakesSuppressed('root-session', async () => {
+        firstStopEntered.resolve();
+        await releaseFirstStop.promise;
+      });
+      await firstStopEntered.promise;
+      const secondStop = coordinator.runWithSessionWakesSuppressed('root-session', async () => {
+        secondStopEntered.resolve();
+        await releaseSecondStop.promise;
+      });
+      await secondStopEntered.promise;
+      releaseFirstStop.resolve();
+      await firstStop;
 
       const stopped = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
       assert.equal(stopped?.status, 'superseded');
@@ -739,6 +754,9 @@ describe('Agent Graph supervisor wake delivery', () => {
       assert.equal(turns, 1);
 
       snapshotVersion = 'snapshot-2';
+      assert.equal(coordinator.notify('root-session', reconciliation()), undefined);
+      releaseSecondStop.resolve();
+      await secondStop;
       coordinator.notify('root-session', reconciliation());
       await coordinator.waitForIdle();
       assert.equal(turns, 2);

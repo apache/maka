@@ -57,6 +57,7 @@ test('two Clients query and control one Agent graph through Session invalidation
       const graph = new HostAgentGraphCoordinator({
         authority,
         continuity,
+        stopExecution: (rootSessionId) => authority.stopExecution(rootSessionId),
       });
       return {
         handlers: {
@@ -150,7 +151,7 @@ test('two Clients query and control one Agent graph through Session invalidation
 
 type GraphAuthority = Pick<
   AgentGraphCoordinator,
-  'getSnapshot' | 'inspectOperator' | 'stop' | 'subscribeAll'
+  'getSnapshot' | 'inspectOperator' | 'subscribeAll'
 >;
 
 class FakeAgentGraphAuthority implements GraphAuthority {
@@ -171,7 +172,8 @@ class FakeAgentGraphAuthority implements GraphAuthority {
    *  probe cycles — causal ordering, no fixed timing at all. */
   stopGate: Promise<void> = Promise.resolve();
 
-  async stop(): Promise<void> {
+  async stopExecution(rootSessionId: string): Promise<void> {
+    assert.equal(rootSessionId, ROOT_SESSION_ID);
     await this.stopGate;
     this.stopCount += 1;
     this.#snapshot.status = 'stopped';

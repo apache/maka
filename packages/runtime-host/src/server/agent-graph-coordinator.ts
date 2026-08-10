@@ -42,7 +42,7 @@ import type { SessionContinuityCoordinator } from './session-continuity-coordina
 
 type AgentGraphAuthority = Pick<
   AgentGraphCoordinator,
-  'getSnapshot' | 'inspectOperator' | 'stop' | 'subscribeAll'
+  'getSnapshot' | 'inspectOperator' | 'subscribeAll'
 >;
 
 type GraphContinuity = Pick<SessionContinuityCoordinator, 'enqueueAgentGraphChanged'>;
@@ -76,11 +76,10 @@ export class HostAgentGraphCoordinator {
   constructor(options: {
     authority: AgentGraphAuthority;
     continuity: GraphContinuity;
-    stopExecution?: (rootSessionId: string) => Promise<void>;
+    stopExecution: (rootSessionId: string) => Promise<void>;
   }) {
     this.#authority = options.authority;
-    this.#stopExecution =
-      options.stopExecution ?? ((rootSessionId) => this.#authority.stop(rootSessionId));
+    this.#stopExecution = options.stopExecution;
     this.#unsubscribe = options.authority.subscribeAll((event) =>
       options.continuity.enqueueAgentGraphChanged(projectChangedEvent(event)),
     );
