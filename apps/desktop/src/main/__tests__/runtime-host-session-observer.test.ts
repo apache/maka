@@ -769,12 +769,13 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
   await observer.close();
 });
 
-test("reconciles terminal, interaction, and sidecar state after subscription recovery", async () => {
+test("reconciles terminal, Goal, interaction, and sidecar state after subscription recovery", async () => {
   const firstEvents = new AsyncFrameQueue();
   const secondEvents = new AsyncFrameQueue();
   const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
   const interactionSnapshots: Array<readonly { requestId: string }[]> = [];
   const recoveredSessions: string[] = [];
+  const sessionChanges: string[] = [];
   const firstInteraction = pendingQuestion("interaction-1", "turn-1", "run-1");
   const secondInteraction = pendingQuestion("interaction-2", "turn-2", "run-2");
   let openCount = 0;
@@ -797,6 +798,7 @@ test("reconciles terminal, interaction, and sidecar state after subscription rec
         return {
           snapshot: continuitySnapshot({
             projectionRevision: 3,
+            goal: activeGoal(),
             rootTurn: {
               sessionId: "session-1",
               turnId: "turn-2",
@@ -838,7 +840,9 @@ test("reconciles terminal, interaction, and sidecar state after subscription rec
         };
       },
     },
-    emitSessionsChanged() {},
+    emitSessionsChanged(reason) {
+      sessionChanges.push(reason);
+    },
     onWatchedTurnFinished: (sessionId, outcome) => {
       finishedTurns.push([sessionId, outcome]);
     },
@@ -865,6 +869,7 @@ test("reconciles terminal, interaction, and sidecar state after subscription rec
 
   assert.deepEqual(finishedTurns, [["session-1", "completed"]]);
   assert.deepEqual(recoveredSessions, ["session-1"]);
+  assert.ok(sessionChanges.includes("goal-change"));
   assert.deepEqual(
     interactionSnapshots.at(-1)?.map((interaction) => interaction.requestId),
     ["interaction-2"],
@@ -1292,6 +1297,26 @@ function continuitySnapshot(
     },
     interactions: { pending: [] },
     ...overrides,
+  };
+}
+
+function activeGoal() {
+  return {
+    goalId: "goal-1",
+    revision: 1,
+    sessionId: "session-1",
+    condition: "Finish the recovery",
+    status: "active" as const,
+    setAt: 1,
+    iterations: 0,
+    maxIterations: 20,
+    consecutiveNoProgress: 0,
+    blockCap: 8,
+    tokenBudget: null,
+    tokensSpent: 0,
+    lastReason: null,
+    achievedAt: null,
+    pausedAt: null,
   };
 }
 

@@ -316,7 +316,7 @@ test('does not release or report a Revision the Host retained during cleanup', a
   await candidate.close();
 });
 
-test('resyncs exact interaction and sidecar state after candidate replacement', async () => {
+test('resyncs Goal, exact interaction, and sidecar state after candidate replacement', async () => {
   const ref = 'maka://runtime/background-tasks/shell-1';
   const observations = new RuntimeHostSessionObservationRegistry();
   const firstIpc = ipcHarness();
@@ -351,6 +351,7 @@ test('resyncs exact interaction and sidecar state after candidate replacement', 
 
   const secondIpc = ipcHarness();
   const resyncs: Array<{ channel: string; payload: unknown }> = [];
+  const sessionChanges: Array<{ reason: string; sessionId?: string }> = [];
   let terminalReattach: Promise<unknown> | undefined;
   const secondHost = connectionHarness('second-observer', {
     subscriptionSnapshot: continuitySnapshot({ interactions: { pending: [] } }),
@@ -360,6 +361,8 @@ test('resyncs exact interaction and sidecar state after candidate replacement', 
     secondHost.connection,
     {
       ...deps(secondIpc),
+      emitSessionsChanged: (reason, sessionId) =>
+        sessionChanges.push({ reason, sessionId }),
       sendToRenderer: (channel, payload) => {
         resyncs.push({ channel, payload });
         if (channel === 'shell-runs:resync') {
@@ -378,6 +381,12 @@ test('resyncs exact interaction and sidecar state after candidate replacement', 
       ({ channel, payload }) =>
         channel === 'graphs:resync' &&
         (payload as { rootSessionId?: unknown }).rootSessionId === 'session-1',
+    ),
+  );
+  assert.ok(
+    sessionChanges.some(
+      ({ reason, sessionId }) =>
+        reason === 'goal-change' && sessionId === 'session-1',
     ),
   );
   assert.ok(

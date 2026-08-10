@@ -20,13 +20,13 @@ import type {
   SessionContinuitySnapshot,
   SubscriptionFrame,
 } from "@maka/runtime-host/protocol";
-import type {
-  DesktopRuntimeHostClient,
-  DesktopRuntimeHostSession,
-} from "./runtime-host-client.js";
+import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
-
-const MAX_PENDING_FRAMES = 512;
+import {
+  type PreparedSessionSubscription,
+  RuntimeHostSessionSubscriptionOwner,
+  SessionRemovedSubscriptionError,
+} from "./runtime-host-session-subscription-owner.js";
 
 type SessionObserverClient = Pick<DesktopRuntimeHostClient, "openSession">;
 
@@ -71,9 +71,7 @@ interface ObservedSessionState {
   readonly sessionId: string;
   readonly targets: Map<number, ObserverTargetGroup>;
   readonly watchedTurnIds: Set<string>;
-  openTask: Promise<void>;
-  handle?: DesktopRuntimeHostSession;
-  attempt?: SessionSubscriptionAttempt;
+  readonly subscriptionOwner: RuntimeHostSessionSubscriptionOwner;
   transcript?: StoredMessage[];
   transcriptConsumed: boolean;
   snapshot?: SessionContinuitySnapshot;
@@ -94,32 +92,11 @@ interface SubscriptionFailureIdentity {
   readonly message: string;
 }
 
-interface SessionSubscriptionAttempt {
-  readonly handle: DesktopRuntimeHostSession;
-  readonly pendingFrames: SubscriptionFrame[];
-  readonly failed: Promise<Error>;
-  fail(error: Error): void;
-  failure?: Error;
-  committed: boolean;
-}
-
-interface AcquiredSessionSubscription {
-  readonly attempt: SessionSubscriptionAttempt;
-  readonly snapshot: SessionContinuitySnapshot;
-  readonly transcript: StoredMessage[];
-}
-
-class SessionRemovedSubscriptionError extends Error {
-  readonly name = "SessionRemovedSubscriptionError";
-}
-
 /**
- * Owns the Desktop-side lifetime of Host Session subscriptions.
+ * Projects an owned Host Session subscription into Desktop observers.
  *
- * The initial transcript and the following frames come from one atomic Host
- * subscription. The observer seeds the live projection from the active
- * transcript, then applies offset-bearing deltas, so joining mid-Turn neither
- * loses the already-generated prefix nor renders it twice.
+ * SessionSubscriptionOwner keeps replacement and catch-up atomic. This class
+ * owns only renderer targets and the resulting Desktop projection.
  */
 export class RuntimeHostSessionObserver {
   readonly #states = new Map<string, ObservedSessionState>();
@@ -168,7 +145,7 @@ export class RuntimeHostSessionObserver {
     this.#assertOpen();
     const existing = this.#states.get(sessionId);
     if (existing) {
-      await existing.openTask;
+      await existing.subscriptionOwner.waitUntilReady();
       if (!existing.transcriptConsumed) {
         existing.transcriptConsumed = true;
         return cloneMessages(existing.transcript ?? []);
@@ -176,7 +153,7 @@ export class RuntimeHostSessionObserver {
     }
     if (!existing) {
       const state = this.#state(sessionId);
-      await state.openTask;
+      await state.subscriptionOwner.waitUntilReady();
       state.transcriptConsumed = true;
       const transcript = cloneMessages(state.transcript ?? []);
       void this.#closeIfIdle(state);
@@ -189,7 +166,7 @@ export class RuntimeHostSessionObserver {
     this.#assertOpen();
     const existing = this.#states.get(sessionId);
     if (existing) {
-      await existing.openTask;
+      await existing.subscriptionOwner.waitUntilReady();
       if (existing.snapshot) return structuredClone(existing.snapshot);
     }
     const handle = await this.#client.openSession(sessionId);
@@ -234,7 +211,7 @@ export class RuntimeHostSessionObserver {
     group.observerIds.add(observerId);
     this.#observers.set(observerId, { state, group });
     try {
-      await state.openTask;
+      await state.subscriptionOwner.waitUntilReady();
       this.#seedTarget(state, group);
     } catch (error) {
       this.#detachObserver(observerId);
@@ -251,7 +228,7 @@ export class RuntimeHostSessionObserver {
     this.#assertOpen();
     const state = this.#state(sessionId);
     state.watchedTurnIds.add(turnId);
-    await state.openTask;
+    await state.subscriptionOwner.waitUntilReady();
     const root = state.snapshot?.rootTurn;
     if (root && root.turnId === turnId && isTerminalTurn(root)) {
       this.#finishWatchedTurn(state, turnId, "completed");
@@ -346,123 +323,49 @@ export class RuntimeHostSessionObserver {
   #state(sessionId: string): ObservedSessionState {
     const existing = this.#states.get(sessionId);
     if (existing) return existing;
-    const state: ObservedSessionState = {
+    let state!: ObservedSessionState;
+    const subscriptionOwner = new RuntimeHostSessionSubscriptionOwner({
+      client: this.#client,
+      sessionId,
+      now: this.#now,
+      commit: (subscription, recovered) =>
+        this.#commitSubscription(state, subscription, recovered),
+      acceptFrame: (frame) => this.#acceptFrame(state, frame),
+      recoveryStarted: (error) => {
+        console.warn(
+          "[runtime-host-session-observer] recovering subscription",
+          subscriptionFailureIdentity(state, error),
+        );
+      },
+      recoveryCompleted: (error) => {
+        console.info(
+          "[runtime-host-session-observer] subscription recovered",
+          subscriptionFailureIdentity(state, error),
+        );
+      },
+      recoveryFailed: (initialError, error) => {
+        console.error(
+          "[runtime-host-session-observer] subscription recovery failed",
+          {
+            failure: subscriptionFailureIdentity(state, initialError),
+            recovery: subscriptionFailureIdentity(state, error),
+          },
+        );
+      },
+      terminalFailure: (error) =>
+        this.#handleTerminalSubscriptionFailure(state, error),
+    });
+    state = {
       sessionId,
       targets: new Map(),
       watchedTurnIds: new Set(),
-      openTask: Promise.resolve(),
+      subscriptionOwner,
       transcriptConsumed: false,
       closing: false,
     };
     this.#states.set(sessionId, state);
-    state.openTask = this.#open(state);
+    subscriptionOwner.start();
     return state;
-  }
-
-  async #open(state: ObservedSessionState): Promise<void> {
-    try {
-      await this.#establishSubscription(state);
-    } catch (error) {
-      if (error instanceof SessionRemovedSubscriptionError) {
-        this.#emitSessionsChanged("deleted", state.sessionId);
-      }
-      await this.#closeState(state);
-      throw error;
-    }
-  }
-
-  async #acquireSubscription(
-    state: ObservedSessionState,
-  ): Promise<AcquiredSessionSubscription> {
-    const handle = await this.#client.openSession(state.sessionId);
-    if (state.closing) {
-      await handle.close();
-      throw new Error("Runtime Host Session observer closed while opening");
-    }
-    let fail!: (error: Error) => void;
-    const failed = new Promise<Error>((resolve) => {
-      fail = resolve;
-    });
-    const attempt: SessionSubscriptionAttempt = {
-      handle,
-      pendingFrames: [],
-      failed,
-      fail(error) {
-        if (attempt.failure) return;
-        attempt.failure = error;
-        fail(error);
-      },
-      committed: false,
-    };
-    state.attempt = attempt;
-    void this.#pump(state, attempt);
-    try {
-      const loaded = await Promise.race([
-        handle.transcript.then(
-          (transcript) => ({ kind: "transcript" as const, transcript }),
-          (error: unknown) => ({ kind: "failure" as const, error: asError(error) }),
-        ),
-        failed.then((error) => ({ kind: "failure" as const, error })),
-      ]);
-      if (loaded.kind === "failure") throw loaded.error;
-      if (attempt.failure) throw attempt.failure;
-      if (state.closing || state.attempt !== attempt) {
-        throw new Error("Runtime Host Session observer closed while opening");
-      }
-      validatePendingFrames(handle.snapshot, loaded.transcript, attempt.pendingFrames, this.#now);
-      return {
-        attempt,
-        snapshot: structuredClone(handle.snapshot),
-        transcript: loaded.transcript,
-      };
-    } catch (error) {
-      if (state.attempt === attempt) state.attempt = undefined;
-      await handle.close().catch(() => undefined);
-      throw error;
-    }
-  }
-
-  async #pump(
-    state: ObservedSessionState,
-    attempt: SessionSubscriptionAttempt,
-  ): Promise<void> {
-    const { handle } = attempt;
-    try {
-      for await (const frame of handle.events) {
-        if (state.closing) return;
-        if (frame.kind === "subscription.closed") {
-          throw subscriptionClosedError(frame.reason);
-        }
-        if (!attempt.committed) {
-          if (attempt.pendingFrames.length >= MAX_PENDING_FRAMES) {
-            throw new RuntimeHostSubscriptionError(
-              "slow_consumer",
-              "Runtime Host Session transcript could not keep up with live events",
-            );
-          }
-          attempt.pendingFrames.push(frame);
-        } else {
-          this.#acceptFrame(state, frame);
-        }
-      }
-      if (!state.closing)
-        throw new Error("Runtime Host Session subscription ended unexpectedly");
-    } catch (error) {
-      if (state.closing) return;
-      const failure = asError(error);
-      if (!attempt.committed) {
-        attempt.fail(failure);
-        return;
-      }
-      if (state.handle !== handle) return;
-      if (
-        isRecoverableSubscriptionFailure(failure)
-      ) {
-        this.#recoverSubscription(state, handle, failure);
-        return;
-      }
-      this.#handleTerminalSubscriptionFailure(state, failure);
-    }
   }
 
   #seedTarget(state: ObservedSessionState, group: ObserverTargetGroup): void {
@@ -617,85 +520,18 @@ export class RuntimeHostSessionObserver {
     this.#publishSubscriptionFailure(state, error);
   }
 
-  #recoverSubscription(
-    state: ObservedSessionState,
-    handle: DesktopRuntimeHostSession,
-    error: unknown,
-  ): void {
-    const identity = subscriptionFailureIdentity(state, error);
-    console.warn("[runtime-host-session-observer] recovering subscription", identity);
-    const recovery = this.#establishSubscription(state, handle, error);
-    state.openTask = recovery;
-    void recovery.catch((recoveryError: unknown) => {
-      if (state.closing || this.#states.get(state.sessionId) !== state) return;
-      const recovered = subscriptionFailureIdentity(state, recoveryError);
-      console.error(
-        "[runtime-host-session-observer] subscription recovery failed",
-        { failure: identity, recovery: recovered },
-      );
-      this.#handleTerminalSubscriptionFailure(state, asError(recoveryError));
-    });
-  }
-
-  async #establishSubscription(
-    state: ObservedSessionState,
-    failed?: DesktopRuntimeHostSession,
-    initialFailure?: unknown,
-  ): Promise<void> {
-    let failure =
-      initialFailure === undefined
-        ? undefined
-        : subscriptionFailureIdentity(state, initialFailure);
-    if (failed) await failed.close().catch(() => undefined);
-    while (true) {
-      if (state.closing || this.#states.get(state.sessionId) !== state) {
-        throw new Error("Runtime Host Session observer closed while opening");
-      }
-      let acquired: AcquiredSessionSubscription;
-      try {
-        acquired = await this.#acquireSubscription(state);
-      } catch (error) {
-        if (isRecoverableSubscriptionFailure(error)) {
-          failure ??= subscriptionFailureIdentity(state, error);
-          continue;
-        }
-        throw error;
-      }
-      try {
-        this.#commitSubscription(state, acquired, failure !== undefined);
-      } catch (error) {
-        if (state.attempt === acquired.attempt) state.attempt = undefined;
-        await acquired.attempt.handle.close().catch(() => undefined);
-        if (isRecoverableSubscriptionFailure(error)) {
-          failure ??= subscriptionFailureIdentity(state, error);
-          continue;
-        }
-        throw error;
-      }
-      if (failure) {
-        console.info("[runtime-host-session-observer] subscription recovered", failure);
-      }
-      return;
-    }
-  }
-
   #commitSubscription(
     state: ObservedSessionState,
-    acquired: AcquiredSessionSubscription,
+    subscription: PreparedSessionSubscription,
     recovered: boolean,
   ): void {
-    if (
-      state.closing ||
-      this.#states.get(state.sessionId) !== state ||
-      state.attempt !== acquired.attempt
-    ) {
+    if (state.closing || this.#states.get(state.sessionId) !== state) {
       throw new Error("Runtime Host Session observer closed before commit");
     }
-    if (acquired.attempt.failure) throw acquired.attempt.failure;
     const previousSnapshot = state.snapshot;
     const projector = new RuntimeHostSessionProjector(
-      acquired.snapshot,
-      acquired.transcript,
+      subscription.snapshot,
+      subscription.transcript,
       this.#now,
     );
     const replacement =
@@ -703,17 +539,17 @@ export class RuntimeHostSessionObserver {
         ? replacementProjection(
             previousSnapshot,
             projector,
-            acquired.transcript,
+            subscription.transcript,
           )
         : undefined;
+    const goalChanged = previousSnapshot
+      ? !sameGoal(previousSnapshot.goal, subscription.snapshot.goal)
+      : false;
 
-    state.attempt = undefined;
-    state.handle = acquired.attempt.handle;
-    state.snapshot = structuredClone(acquired.snapshot);
-    state.transcript = acquired.transcript;
+    state.snapshot = structuredClone(subscription.snapshot);
+    state.transcript = subscription.transcript;
     state.transcriptConsumed = false;
     state.projector = projector;
-    acquired.attempt.committed = true;
 
     if (replacement) {
       for (const event of replacement.terminalEvents) {
@@ -733,6 +569,9 @@ export class RuntimeHostSessionObserver {
         });
       }
       this.#emitActiveInteractions(state);
+      if (goalChanged) {
+        this.#emitSessionsChanged("goal-change", state.sessionId);
+      }
       const root = state.snapshot.rootTurn;
       this.#emitSessionsChanged(
         "status-change",
@@ -748,13 +587,13 @@ export class RuntimeHostSessionObserver {
       for (const group of state.targets.values()) this.#seedTarget(state, group);
     }
 
-    this.#finishPersistedWatchedTurns(state, projector, acquired.transcript);
+    this.#finishPersistedWatchedTurns(
+      state,
+      projector,
+      subscription.transcript,
+    );
 
     if (recovered) this.#emitSubscriptionRecovered(state.sessionId);
-
-    for (const frame of acquired.attempt.pendingFrames.splice(0)) {
-      this.#acceptFrame(state, frame);
-    }
     void this.#closeIfIdle(state);
   }
 
@@ -854,16 +693,7 @@ export class RuntimeHostSessionObserver {
       for (const group of state.targets.values())
         this.#detachTarget(state, group);
     }
-    const handle = state.handle;
-    const attempt = state.attempt;
-    state.handle = undefined;
-    state.attempt = undefined;
-    await Promise.all([
-      handle?.close().catch(() => undefined),
-      attempt && attempt.handle !== handle
-        ? attempt.handle.close().catch(() => undefined)
-        : undefined,
-    ]);
+    await state.subscriptionOwner.close();
   }
 
   async #removeTarget(
@@ -935,18 +765,6 @@ async function drainFrames(
     // A one-shot transcript read still owns a live Host subscription until it
     // closes. Drain bounded frames so transcript pagination cannot be evicted
     // as a slow consumer.
-  }
-}
-
-function validatePendingFrames(
-  snapshot: SessionContinuitySnapshot,
-  transcript: readonly StoredMessage[],
-  frames: readonly SubscriptionFrame[],
-  now: () => number,
-): void {
-  const projector = new RuntimeHostSessionProjector(snapshot, transcript, now);
-  for (const frame of frames) {
-    projector.accept(frame);
   }
 }
 
@@ -1023,33 +841,6 @@ function samePendingInteractions(
   return next.interactions.pending.every(
     (interaction) =>
       revisions.get(interaction.interactionId) === interaction.revision,
-  );
-}
-
-function subscriptionClosedError(
-  reason: "slow_consumer" | "session_removed",
-): Error {
-  return reason === "session_removed"
-    ? new SessionRemovedSubscriptionError(
-        "Runtime Host Session was removed while it was observed",
-      )
-    : new RuntimeHostSubscriptionError(
-        "slow_consumer",
-        "Runtime Host Session subscription closed for a slow consumer",
-      );
-}
-
-function asError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
-}
-
-function isRecoverableSubscriptionFailure(error: unknown): boolean {
-  if (!(error instanceof RuntimeHostSubscriptionError)) return false;
-  return (
-    error.reason === "slow_consumer" ||
-    error.reason === "sequence_gap" ||
-    error.reason === "projection_revision_invalid" ||
-    error.reason === "transcript_expired"
   );
 }
 

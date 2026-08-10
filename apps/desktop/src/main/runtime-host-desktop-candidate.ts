@@ -345,6 +345,7 @@ export async function createDesktopRuntimeHostCandidate(
     observationsAttached = true;
     for (const sessionId of restoredSessionIds) {
       deps.emitSessionsChanged("message-appended", sessionId);
+      deps.emitSessionsChanged("goal-change", sessionId);
       domains.sessionSubscriptionRecovered(sessionId);
       emitActiveInteractionsChanged(
         sessionId,
