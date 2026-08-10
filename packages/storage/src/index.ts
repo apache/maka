@@ -138,3 +138,6 @@ export * from './session-bundle-manifest.js';
 export * from './session-bundle-canonical-tree.js';
 export * from './session-bundle-ustar.js';
 export * from './session-bundle-file-service.js';
+export * from './managed-secret-store.js';
+export * from './activation-secret-injector.js';
+export * from './encrypted-file-managed-secret-store.js';
