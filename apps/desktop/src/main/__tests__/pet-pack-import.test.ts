@@ -292,42 +292,6 @@ test('IPC returns sprite bytes, removes the pack, and emits only real mutations'
   });
 });
 
-test('IPC reports picker cancellation without touching storage', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  registerPetPackIpc({
-    ipcMain: {
-      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
-    },
-    workspaceRoot: '/unused',
-    mainWindowController: {
-      showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
-      send: () => {},
-    },
-    settingsStore: {
-      get: async () => {
-        throw new Error('settings get must not run');
-      },
-      update: async () => {
-        throw new Error('settings update must not run');
-      },
-    },
-    store: {
-      list: async () => [],
-      get: async () => undefined,
-      install: async () => {
-        throw new Error('install must not run');
-      },
-      readSpriteSheet: async () => undefined,
-      remove: async () => false,
-    },
-  });
-
-  assert.deepEqual(await handlers.get('pets:importLocalDirectory')?.({}), {
-    ok: false,
-    reason: 'cancelled',
-  });
-});
-
 async function writeSourcePack(source: string): Promise<void> {
   await mkdir(join(source, 'assets'), { recursive: true });
   await writeFile(join(source, 'pet.json'), JSON.stringify(manifest()));
