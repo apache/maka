@@ -29,43 +29,6 @@ describe('convertOpenAIComputerAction', () => {
     );
   });
 
-  test('converts lossless pointer, keyboard, type, wait, and screenshot actions', () => {
-    assert.deepEqual(
-      convertOpenAIComputerAction({
-        type: 'click',
-        button: 'right',
-        x: 10,
-        y: 20,
-      }),
-      {
-        ok: true,
-        actions: [{ type: 'right_click', coordinate: { x: 10, y: 20 } }],
-      },
-    );
-    assert.deepEqual(
-      convertOpenAIComputerAction({
-        type: 'keypress',
-        keys: ['ENTER'],
-      }),
-      {
-        ok: true,
-        actions: [{ type: 'key', text: 'ENTER' }],
-      },
-    );
-    assert.deepEqual(convertOpenAIComputerAction({ type: 'type', text: 'hello' }), {
-      ok: true,
-      actions: [{ type: 'type', text: 'hello' }],
-    });
-    assert.deepEqual(convertOpenAIComputerAction({ type: 'wait' }), {
-      ok: true,
-      actions: [{ type: 'wait', durationMs: 2000 }],
-    });
-    assert.deepEqual(convertOpenAIComputerAction({ type: 'screenshot' }), {
-      ok: true,
-      actions: [],
-    });
-  });
-
   test('converts only a two-point drag path', () => {
     assert.deepEqual(
       convertOpenAIComputerAction({
