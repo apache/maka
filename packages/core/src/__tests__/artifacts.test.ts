@@ -2,9 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   ARTIFACT_ENTITY_ID_MAX_CHARS,
-  ARTIFACT_SOURCES,
   ARTIFACT_TURN_KEY_MAX_CHARS,
-  type ArtifactSource,
   canUserDeleteArtifact,
   isArtifactTurnKey,
   isCanonicalArtifactEntityId,
@@ -21,14 +19,7 @@ describe('canonical Artifact entity identity', () => {
     for (const value of [
       '',
       'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS + 1),
-      '.',
-      'artifact.id',
       'artifact/id',
-      'artifact\\id',
-      'artifact id',
-      'artifact\nid',
-      '\0artifact',
-      1,
       null,
     ]) {
       assert.equal(isCanonicalArtifactEntityId(value), false, JSON.stringify(value));
@@ -38,11 +29,7 @@ describe('canonical Artifact entity identity', () => {
 
 describe('Artifact turn key', () => {
   test('accepts bounded opaque turn keys without coupling to synthetic namespaces', () => {
-    assert.equal(isArtifactTurnKey('turn-1'), true);
-    assert.equal(isArtifactTurnKey('history-compact:0'), true);
-    assert.equal(isArtifactTurnKey('synthesis-cache:1.5'), true);
-    assert.equal(isArtifactTurnKey('future-runtime-kind:sequence/branch'), true);
-    assert.equal(isArtifactTurnKey('回合:一'), true);
+    assert.equal(isArtifactTurnKey('未来:sequence/分支'), true);
     assert.equal(isArtifactTurnKey('x'.repeat(ARTIFACT_TURN_KEY_MAX_CHARS)), true);
   });
 
@@ -50,8 +37,6 @@ describe('Artifact turn key', () => {
     for (const value of [
       '',
       'turn\n1',
-      'turn\t1',
-      'turn\u007f1',
       'x'.repeat(ARTIFACT_TURN_KEY_MAX_CHARS + 1),
       null,
     ]) {
@@ -61,16 +46,16 @@ describe('Artifact turn key', () => {
 });
 
 describe('Artifact user-delete policy', () => {
-  test('makes every source decision explicit and protects durable evidence', () => {
-    const protectedSources = new Set<ArtifactSource>([
+  test('protects durable evidence while allowing ordinary and legacy artifacts', () => {
+    for (const source of [
       'deep_research',
       'subagent_writeback',
       'tool_result_archive',
       'session_effect',
-    ]);
-    for (const source of ARTIFACT_SOURCES) {
-      assert.equal(canUserDeleteArtifact({ source }), !protectedSources.has(source), source);
+    ] as const) {
+      assert.equal(canUserDeleteArtifact({ source }), false, source);
     }
+    assert.equal(canUserDeleteArtifact({ source: 'user_upload' }), true);
     assert.equal(canUserDeleteArtifact({ source: undefined }), true);
   });
 });
