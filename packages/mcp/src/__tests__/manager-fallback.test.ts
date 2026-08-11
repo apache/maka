@@ -114,6 +114,28 @@ describe('McpClientManager Streamable HTTP fallback contract', () => {
     }
   });
 
+  test('does not start a remote probe after a connecting listener cancels synchronously', async () => {
+    const fixture = await createFallbackFixture({ streamable: { kind: 'hang' } });
+    const manager = createManager();
+    let cancelResult: boolean | undefined;
+    manager.onChange((status) => {
+      if (status.serverId === 'remote' && status.state === 'connecting') {
+        cancelResult = manager.cancelConnect('remote');
+      }
+    });
+
+    try {
+      await settlesWithin(manager.sync(remoteConfig(fixture.url, 'auto')));
+    } finally {
+      fixture.releaseStreamable();
+    }
+
+    assert.equal(cancelResult, true);
+    assert.equal(fixture.streamablePosts, 0);
+    assert.equal(fixture.sseGets, 0);
+    assert.equal(manager.status('remote')?.state, 'disconnected');
+  });
+
   test('does not fall back after the Streamable HTTP probe times out', async () => {
     const fixture = await createFallbackFixture({ streamable: { kind: 'hang' } });
     const manager = createManager(50);

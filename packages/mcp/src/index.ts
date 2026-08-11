@@ -1640,8 +1640,13 @@ async function connectRemoteCandidate(
     // instead of leaving a late handshake running after manager cancellation.
     void transport.close().catch(() => {});
   };
-  if (signal.aborted) closeOnAbort();
-  else signal.addEventListener('abort', closeOnAbort, { once: true });
+  if (signal.aborted) {
+    await transport.close().catch(() => {});
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error(String(signal.reason ?? 'MCP connection aborted'));
+  }
+  signal.addEventListener('abort', closeOnAbort, { once: true });
   try {
     await client.connect(transport, { timeout, signal });
   } finally {
