@@ -446,9 +446,6 @@ function projectContentPart(
         );
       }
       return projectBinaryContent(part.data.data, part.mediaType);
-    case "file-data":
-    case "image-data":
-      return projectBinaryContent(part.data, part.mediaType);
     default:
       throw new Error(
         `Desktop native capability cannot return ${part.type} content`,

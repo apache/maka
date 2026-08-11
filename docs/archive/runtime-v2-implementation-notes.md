@@ -54,8 +54,8 @@ formal flow seam:
   `AgentFlow.run(ctx, input)` contract.
 
 The runtime barrel re-exports the canonical `InvocationContext` from
-`invocation-context.ts`; the previous duplicate flow-local context has been
-removed so runner and flow code share the same identity/provider spine.
+`invocation-context.ts`; the previous duplicate flow-local context was removed
+so runner and flow code share the same identity/provider spine.
 
 ## What remains (by phase)
 
@@ -84,8 +84,7 @@ removed so runner and flow code share the same identity/provider spine.
 - **Flow runnable surface:** `RuntimeRunner` depends on the centrally owned
   `RunnableAgentFlow` (`Pick<AgentFlow, 'run'>`) so it remains decoupled from
   flow metadata (`kind`, `sessionId`) while sharing the formal `AgentFlow.run`
-  signature. The old `AgentFlowLike` name remains as a deprecated compatibility
-  alias.
+  signature.
 
 ## Verification snapshot
 

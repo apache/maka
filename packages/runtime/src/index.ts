@@ -1277,7 +1277,6 @@ export { RuntimeRunner, runtimeGateFromCallback } from './runtime-runner.js';
 export type {
   RuntimeGate,
   RuntimeGateDecision,
-  AgentFlowLike,
   RuntimeRunnerDeps,
 } from './runtime-runner.js';
 

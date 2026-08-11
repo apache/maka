@@ -1570,7 +1570,6 @@ export type {
   ChatDefaultPermissionMode,
   ChatDefaultsSettings,
   NetworkProxySettings,
-  NetworkSettings,
   NotificationSettings,
   PrivacySettings,
   ProxyProtocol,
