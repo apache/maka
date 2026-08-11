@@ -718,8 +718,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(fixture.recorded.length, 1);
   });
 
-
-
   test('fails open with write_failed diagnostics when the checkpoint write fails under the window', async () => {
     const fixture = buildFixture({
       record: () => {

@@ -25,7 +25,11 @@ describe('isLikelySandboxDenial', () => {
       false,
     );
     assert.equal(
-      isLikelySandboxDenial({ stdout: 'command not found', stderr: 'exit code 127', sandboxed: true }),
+      isLikelySandboxDenial({
+        stdout: 'command not found',
+        stderr: 'exit code 127',
+        sandboxed: true,
+      }),
       false,
     );
   });
