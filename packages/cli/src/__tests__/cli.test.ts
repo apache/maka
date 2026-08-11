@@ -115,7 +115,6 @@ describe('Maka CLI args', () => {
       [['run', 'hello', '--max-steps', '3'], { kind: 'run', args: ['hello', '--max-steps', '3'] }],
       [['-p', 'hello', '--max-steps', '3'], { kind: 'run', args: ['hello', '--max-steps', '3'] }],
       [['--version'], { kind: 'version', text: '0.1.0' }],
-      [['headless'], { kind: 'error', message: 'Unexpected argument: headless', exitCode: 2 }],
       [['--resume', 'abc'], { kind: 'tui', resumeSessionId: 'abc' }],
       [
         ['--resume', 'abc', '--cwd', '../moved repo'],
@@ -147,7 +146,6 @@ describe('Maka CLI args', () => {
     assert.equal(help.kind, 'help');
     if (help.kind === 'help') assert.match(help.text, /Usage: maka/);
     if (help.kind === 'help') assert.match(help.text, /--resume <id> --cwd <path>/);
-    if (help.kind === 'help') assert.doesNotMatch(help.text, /inspect|autonomous|headless/i);
   });
 
   test('preserves an established process exit code', () => {

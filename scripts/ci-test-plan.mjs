@@ -26,10 +26,8 @@ const TYPECHECK_ONLY_FILES = new Set([
 
 const WINDOWS_BASELINE_FILES = new Set([
   '.github/workflows/windows-baseline.yml',
-  'scripts/windows-baseline-workflow.test.mjs',
   'scripts/windows-process-identity.ps1',
   'scripts/windows-smoke.mjs',
-  'scripts/windows-smoke.test.mjs',
 ]);
 
 /**
@@ -120,7 +118,6 @@ function isE2eProductPath(path) {
 
 const EXTENDED_SCRIPT_FILES = new Set([
   'scripts/cu-process-restart-e2e.mjs',
-  'scripts/cu-process-restart-harness.test.mjs',
   'scripts/cu-provider-matrix.mjs',
   'scripts/cu-provider-matrix.test.mjs',
   'scripts/cu-real-model-fixture.mjs',

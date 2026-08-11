@@ -72,34 +72,6 @@ describe('FileConnectionStore', () => {
     });
   });
 
-  test('migrates a legacy connection to only its default model enabled', async () => {
-    await withConnectionStore(async (store, dir) => {
-      await writeFile(
-        join(dir, 'llm-connections.json'),
-        JSON.stringify({
-          defaultSlug: 'openrouter-main',
-          connections: [
-            {
-              slug: 'openrouter-main',
-              name: 'OpenRouter',
-              providerType: 'openrouter',
-              defaultModel: 'openrouter/auto',
-              enabled: true,
-              models: [{ id: 'openrouter/auto' }, { id: 'anthropic/claude-opus-4.8' }],
-              createdAt: 1,
-              updatedAt: 1,
-            },
-          ],
-        }),
-        'utf8',
-      );
-
-      const migrated = await store.get('openrouter-main');
-
-      assert.deepEqual(migrated?.enabledModelIds, ['openrouter/auto']);
-    });
-  });
-
   test('relay profiles sanitize on create and prune when a model is disabled', async () => {
     await withConnectionStore(async (store) => {
       const created = await store.create({

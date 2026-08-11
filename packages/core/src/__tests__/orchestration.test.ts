@@ -8,7 +8,7 @@ import {
 } from '../orchestration.js';
 
 describe('orchestration contract', () => {
-  test('legacy sessions resolve to the compatible default mode', () => {
+  test('sessions without an explicit mode use the default mode', () => {
     assert.deepEqual(resolveEffectiveOrchestration(undefined, undefined), {
       mode: 'default',
       source: 'session',

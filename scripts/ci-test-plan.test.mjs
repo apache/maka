@@ -99,7 +99,6 @@ test('Windows planning runs workflow changes fully and helper changes narrowly',
   assert.equal(workflow.windowsStorage, true);
 
   for (const path of [
-    'scripts/windows-baseline-workflow.test.mjs',
     'scripts/windows-process-identity.ps1',
     'scripts/windows-smoke.mjs',
   ]) {

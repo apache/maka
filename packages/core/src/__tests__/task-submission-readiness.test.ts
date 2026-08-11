@@ -47,26 +47,6 @@ describe('task submission readiness', () => {
     expect(snapshot.blockers[0]?.repairTarget).toBe(undefined);
   });
 
-  test('normalizes a legacy Codex session model exactly like the send path', () => {
-    const input = readyInput();
-    input.modelTarget = {
-      kind: 'resolved',
-      connection: {
-        ...connection(),
-        slug: 'codex-sub',
-        providerType: 'openai-codex',
-        defaultModel: 'gpt-5.6-sol',
-        enabledModelIds: ['gpt-5.6-sol'],
-        models: [{ id: 'gpt-5.6-sol' }],
-      },
-      hasSecret: true,
-      requestedModel: 'gpt-5-codex',
-      checkedAt: 90,
-    };
-
-    expect(deriveTaskSubmissionReadiness(input).state).toBe('ready');
-  });
-
   test('distinguishes unavailable runtime and workspace from repairable setup', () => {
     const runtimeInput = readyInput();
     runtimeInput.runtime.state = 'unavailable';

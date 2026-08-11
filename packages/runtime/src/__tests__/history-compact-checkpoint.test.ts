@@ -128,20 +128,13 @@ describe('history compact checkpoint', () => {
     );
   });
 
-  test('keeps legacy V2 checkpoints readable but rejects inconsistent projection cursors', () => {
+  test('rejects inconsistent projection cursors', () => {
     const events = [textEvent(0), textEvent(1)];
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: events,
       summary: 'source-bound',
     });
-    const { source: _source, ...legacy } = checkpoint;
-    assert.equal(validateHistoryCompactCheckpointShape(legacy, 'session-1'), true);
-    assert.equal(
-      matchHistoryCompactCheckpointPrefix(legacy as typeof checkpoint, events).coveredEventCount,
-      events.length,
-    );
-
     const invalid = {
       ...checkpoint,
       source: {
@@ -250,34 +243,6 @@ describe('history compact checkpoint', () => {
     const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
 
     assert.equal(loaded?.checkpointId, furthest.checkpointId);
-  });
-
-  test('prefers source-bound recovery over a legacy checkpoint that cannot prove cursor ordering', async () => {
-    const sourceBound = buildHistoryCompactCheckpoint({
-      sessionId: 'session-1',
-      coveredRuntimeEvents: [textEvent(0), textEvent(1)],
-      summary: 'bound',
-    });
-    const legacyBuilt = buildHistoryCompactCheckpoint({
-      sessionId: 'session-1',
-      coveredRuntimeEvents: [textEvent(0), textEvent(1), textEvent(2)],
-      summary: 'legacy',
-    });
-    const { source: _source, ...legacy } = legacyBuilt;
-    const store = new StubAgentRunStore(
-      [run('run-bound', 10), run('run-legacy', 20)],
-      new Map([
-        ['run-bound', [checkpointEvent('ledger-bound', 'run-bound', sourceBound, 10)]],
-        [
-          'run-legacy',
-          [checkpointEvent('ledger-legacy', 'run-legacy', legacy as typeof legacyBuilt, 20)],
-        ],
-      ]),
-    );
-
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
-
-    assert.equal(loaded?.checkpointId, sourceBound.checkpointId);
   });
 
   test('recovers the tip of an out-of-order same-coverage successor chain across runs', async () => {

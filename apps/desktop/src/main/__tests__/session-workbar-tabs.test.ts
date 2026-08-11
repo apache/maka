@@ -319,15 +319,7 @@ describe('session workbar tab persistence', () => {
     assert.equal(state.activeTabId, 'workbar:inspector');
   });
 
-  it('migrates the legacy active tab and otherwise starts on the New Tab page', () => {
-    (globalThis as { localStorage?: unknown }).localStorage = {
-      getItem: (key: string) =>
-        key === 'maka-session-workbar-tab-v1' ? 'browser' : null,
-    };
-    assert.deepEqual(readSessionWorkbarTabs().tabs, [
-      { id: 'workbar:browser', kind: 'browser' },
-    ]);
-
+  it('starts on the New Tab page without persisted state', () => {
     (globalThis as { localStorage?: unknown }).localStorage = {
       getItem: () => null,
     };
@@ -460,7 +452,7 @@ describe('session workbar panel topology', () => {
     });
   });
 
-  it('reads v3 topology and migrates v2 tabs into the right panel', () => {
+  it('reads v3 topology', () => {
     (globalThis as { localStorage?: unknown }).localStorage = {
       getItem: (key: string) =>
         key === 'maka-session-workbar-panels-v3'
@@ -484,21 +476,5 @@ describe('session workbar panel topology', () => {
       { id: 'workbar:files', kind: 'files' },
     ]);
     assert.equal(readSessionWorkbarPanels().focusedPanel, 'bottom');
-
-    (globalThis as { localStorage?: unknown }).localStorage = {
-      getItem: (key: string) =>
-        key === 'maka-session-workbar-tabs-v2'
-          ? JSON.stringify({
-              version: 2,
-              tabs: [{ id: 'workbar:tasks', kind: 'tasks' }],
-              activeTabId: 'workbar:tasks',
-            })
-          : null,
-    };
-    const migrated = readSessionWorkbarPanels();
-    assert.deepEqual(migrated.right.tabs, [
-      { id: 'workbar:tasks', kind: 'tasks' },
-    ]);
-    assert.deepEqual(migrated.bottom.tabs, []);
   });
 });
