@@ -252,10 +252,6 @@ test('external project sources are read-only while Data Root preferences use dur
   assert.match(await readFile(join(skillPath, 'SKILL.md'), 'utf8'), /External/);
 });
 
-
-
-
-
 test('noncanonical external ids remain wire-safe governance entries', async () => {
   const fixture = await createFixture();
   await createSkill(

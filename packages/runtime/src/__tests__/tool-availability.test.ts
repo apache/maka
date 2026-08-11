@@ -170,7 +170,6 @@ describe('ToolAvailabilityRuntime — durable ledger seed', () => {
     assert.ok(!plan.activeTools.includes('docs_edit'), 'unseeded group still hidden');
   });
 
-
   test('an unknown seeded group id is ignored (forward compatible)', () => {
     const plan = runtime(true).prepare([event(LOAD_TOOLS_NAME, { group: 'ghost' })]);
     assert.ok(!plan.activeTools.includes('rive_run'));
@@ -254,7 +253,6 @@ describe('ToolAvailabilityRuntime — activation robustness', () => {
     });
     assert.ok(!after.activeTools.includes('rive_run'), 'malformed input activates nothing');
   });
-
 
   test('a non-function_call ledger event does not seed a group', () => {
     const plan = runtime(true).prepare([

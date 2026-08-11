@@ -610,7 +610,6 @@ describe('committed stream graph projection', () => {
     assert.equal(state.operators.research?.currentActivationId, 'run-2');
   });
 
-
   test('fails closed on ambiguous authority or impossible replay order', async () => {
     const run = runHeader({
       sessionId: 'child-a',

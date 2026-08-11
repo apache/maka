@@ -43,9 +43,6 @@ function attempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
 }
 
 describe('ModelCallAttempt codec', () => {
-
-
-
   test('rejects an unpriced attempt that carries a cost', () => {
     assert.throws(
       () => decodeModelCallAttempt(attempt({ costBasis: 'unpriced', costUsd: 0 })),
@@ -62,14 +59,12 @@ describe('ModelCallAttempt codec', () => {
     );
   });
 
-
   test('rejects missing usage that still carries tokens', () => {
     assert.throws(
       () => decodeModelCallAttempt(attempt({ usageBasis: 'missing' })),
       /missing usage but carries tokens/,
     );
   });
-
 
   test('rejects completedAt before startedAt', () => {
     assert.throws(

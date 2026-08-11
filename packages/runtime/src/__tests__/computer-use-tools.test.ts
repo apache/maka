@@ -100,11 +100,6 @@ function observation(over: Partial<CuObservation> = {}): CuObservation {
 }
 
 describe('adaptToCuAction — flat Anthropic grammar → discriminated CuAction', () => {
-
-
-
-
-
   test('a click without a coordinate throws invalid_coordinate', () => {
     assert.throws(() => adaptToCuAction({ action: 'left_click' } as never), /invalid_coordinate/);
   });
@@ -204,8 +199,6 @@ test('computer params reject accessors before policy or execution', () => {
 });
 
 describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
-
-
   test('waits for presentation readiness before dispatch without waiting for finish', async () => {
     const events: string[] = [];
     let ready!: () => void;
@@ -1815,8 +1808,6 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.match(r.text, /permission_missing/);
     assert.match(r.text, /Screen Recording/);
   });
-
-
 
   test('serializes preflight and dispatch in tool-call arrival order', async () => {
     const events: string[] = [];

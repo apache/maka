@@ -239,8 +239,6 @@ describe('fetchProviderModels', () => {
     );
   });
 
-
-
   test('provider fetch failures throw generalized errors instead of returning fallback models', async () => {
     const server = await startJsonServer((_request, response) => {
       respondJson(response, 401, {
@@ -259,8 +257,6 @@ describe('fetchProviderModels', () => {
       },
     );
   });
-
-
 
   test('Codex OAuth discovers models from the chatgpt.com/backend-api/codex/models endpoint', async () => {
     const requests: Array<{ url: string; authorization: string | undefined }> = [];
@@ -348,8 +344,6 @@ describe('fetchProviderModels', () => {
       (err: unknown) => (err as { status?: number }).status === 401,
     );
   });
-
-
 
   test('connection discovery classifies structurally invalid JSON from a real HTTP response', async () => {
     const secret = 'raw-provider-secret';

@@ -97,9 +97,6 @@ const note = (kind: SystemNoteMessage['kind']): SystemNoteMessage => ({
 // ---------- materializeSession ----------
 
 describe('materializeSession', () => {
-
-
-
   test('errored tool: result with isError=true → status errored', () => {
     const vm = materializeSession([
       toolCall('t-2', 'Write'),
@@ -237,8 +234,6 @@ describe('materializeSession', () => {
     expect(item.decision?.id).toBe('req-1');
   });
 
-
-
   test('mixed full conversation', () => {
     const vm = materializeSession([
       note('session_start'),
@@ -270,9 +265,6 @@ describe('applyAppendedMessage', () => {
     expect(appendedItem.item.activityKind).toBe('command');
   });
 
-
-
-
   test('append tool_result with isError=true → status errored', () => {
     const items = applyAppendedMessage([], toolCall('t', 'Write')).items;
     const next = applyAppendedMessage(items, toolResult('t', true, 'denied'));
@@ -295,7 +287,6 @@ describe('applyAppendedMessage', () => {
     if (item?.kind !== 'tool') throw new Error('wrong kind');
     expect(item.decision?.decision).toBe('deny');
   });
-
 });
 
 // ---------- setToolStatus (renderer idempotent merge per §10) ----------
@@ -319,5 +310,4 @@ describe('setToolStatus', () => {
     const twice = setToolStatus(once, 't', { status: 'running' });
     expect(twice).toEqual(once);
   });
-
 });

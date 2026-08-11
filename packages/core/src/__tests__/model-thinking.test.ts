@@ -14,11 +14,6 @@ import {
   thinkingVariantsForModel,
 } from '../model-thinking.js';
 
-
-
-
-
-
 test('thinking-level guard accepts only the closed display vocabulary', () => {
   for (const level of THINKING_LEVELS) assert.equal(isThinkingLevel(level), true);
   for (const value of ['default', 'turbo', undefined, 123]) {
@@ -159,8 +154,6 @@ test('resolveThinkingLevel discards levels the model does not offer', () => {
   assert.equal(resolveThinkingLevel(relay, 'm', undefined), undefined);
   assert.equal(resolveThinkingLevel({ providerType: 'openai' }, 'gpt-5.5', 'xhigh'), 'xhigh');
 });
-
-
 
 // Reasoning replay has no toggle: DeepSeek-like relays require
 // reasoning_content in tool-call history (400 otherwise), and other relays

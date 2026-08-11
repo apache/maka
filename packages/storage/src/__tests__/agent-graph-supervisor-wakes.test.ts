@@ -200,5 +200,4 @@ describe('SQLite Agent Graph supervisor wakes', () => {
       store.close();
     }
   });
-
 });

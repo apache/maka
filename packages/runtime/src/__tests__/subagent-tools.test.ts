@@ -321,7 +321,6 @@ describe('subagent tools', () => {
     });
   });
 
-
   test('agent definition policy uses the explicit tool allowlist', () => {
     expect(
       evaluateAgentDefinitionToolAccess(
@@ -379,7 +378,6 @@ describe('subagent tools', () => {
       }),
     ).toEqual({ status: 'available' });
   });
-
 
   test('child agent toolset keeps only built-in profile allowlisted tools', () => {
     const tools = buildChildAgentTools([
@@ -561,7 +559,6 @@ describe('subagent tools', () => {
       artifactIds: [],
     });
   });
-
 
   test('agent_spawn bounds projected child tool activity', async () => {
     const tool = buildSubagentSpawnTool();
@@ -1259,7 +1256,6 @@ describe('subagent tools', () => {
     );
     expect(JSON.stringify(worstCase).length <= 7_000).toBe(true);
   });
-
 
   test('agent_output uses an explicit locator when a provider fills unrelated fields', async () => {
     const outputTool = buildSubagentOutputTool();

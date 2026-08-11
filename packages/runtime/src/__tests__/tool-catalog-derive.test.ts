@@ -155,7 +155,6 @@ describe('projectEffectiveProductToolSurface', () => {
     );
   });
 
-
   it('treats a scoped child binding as a hard ceiling', () => {
     const surface = projectEffectiveProductToolSurface({
       host: 'desktop',

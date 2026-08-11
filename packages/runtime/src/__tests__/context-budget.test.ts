@@ -1335,7 +1335,6 @@ describe('context-budget history compact', () => {
     assert.equal(result.diagnostic.historyCompactedTurns, 4);
   });
 
-
   test('V2 checkpoint compaction retains only the latest complete turn', () => {
     const events = [
       textEvent('old-1', 'turn-1', 'old context '.repeat(40)),

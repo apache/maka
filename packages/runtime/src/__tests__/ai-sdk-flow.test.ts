@@ -425,7 +425,6 @@ describe('AiSdkFlow seam', () => {
     assert.equal(out[2].status, 'completed');
   });
 
-
   test('maps the error path preserving error content + terminal failed', async () => {
     const backend = new ScriptedBackend({
       events: [
@@ -703,8 +702,7 @@ describe('AiSdkFlow seam', () => {
   });
 });
 
-describe('token usage durable round trip', () => {
-});
+describe('token usage durable round trip', () => {});
 
 // ============================================================================
 // Pure mapping unit tests

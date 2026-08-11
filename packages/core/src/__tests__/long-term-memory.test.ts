@@ -75,5 +75,4 @@ describe('long-term memory contract', () => {
     assert.equal(isMemoryKeyType('code'), true);
     assert.equal(isMemoryKeyType('keyword'), false);
   });
-
 });

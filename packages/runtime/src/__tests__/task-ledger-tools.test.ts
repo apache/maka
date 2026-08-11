@@ -177,7 +177,6 @@ describe('task ledger tools', () => {
     }
   });
 
-
   test('task tool feature flag defaults on and can be disabled explicitly', () => {
     assert.equal(isTaskLedgerToolsEnabled({}), true);
     assert.equal(isTaskLedgerToolsEnabled({ MAKA_TASK_LEDGER_TOOLS: 'false' }), false);

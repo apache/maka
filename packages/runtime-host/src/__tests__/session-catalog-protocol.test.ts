@@ -422,7 +422,6 @@ describe('Session catalog protocol', () => {
     };
     assert.deepEqual(decodeSessionCatalogQueryResult(changed), changed);
   });
-
 });
 
 function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionCatalogProjection {

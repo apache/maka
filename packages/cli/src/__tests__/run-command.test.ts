@@ -23,7 +23,6 @@ function processContractStderr(stderr: string): string {
 }
 
 describe('maka run argument parsing', () => {
-
   test('recognizes stdin prompt mode and rejects malformed limits', () => {
     assert.deepEqual(parseMakaRunArgs(['-']), {
       kind: 'run',
@@ -32,7 +31,6 @@ describe('maka run argument parsing', () => {
     assert.equal(parseMakaRunArgs(['x', '--timeout', '0']).kind, 'error');
     assert.equal(parseMakaRunArgs(['x', '--max-steps', '1.5']).kind, 'error');
   });
-
 
   test('accepts only the explicit non-interactive sandbox bypass flag', () => {
     assert.deepEqual(parseMakaRunArgs(['run tools', '--yolo']), {
@@ -62,12 +60,9 @@ describe('maka run argument parsing', () => {
     });
     assert.equal(parseMakaRunArgs(['next', '--resume', 'session-1', '--continue']).kind, 'error');
   });
-
 });
 
 describe('maka run process contract', () => {
-
-
   test('waits for the complete Graph before printing the final supervisor output', async () => {
     const result = await runFixture(['implement it', '--graph'], {
       input: '',
@@ -89,8 +84,6 @@ describe('maka run process contract', () => {
     assert.match(result.stderr, /provider failed before graph creation/);
     assert.doesNotMatch(result.stderr, /graph-wait-called/);
   });
-
-
 
   test('combines a positional instruction with piped stdin context', async () => {
     const result = await runFixture(['summarize'], { input: 'document body' });
@@ -143,9 +136,6 @@ describe('maka run process contract', () => {
     assert.equal(result.stdout, '');
   });
 
-
-
-
   test('creates a bypass boundary only when --yolo is explicit', async () => {
     const result = await runFixture(['hello', '--yolo'], {
       input: '',
@@ -162,7 +152,6 @@ describe('maka run process contract', () => {
     assert.match(result.stderr, /unknown option: --permission-mode/);
     assert.equal(result.stdout, '');
   });
-
 
   test('fails closed when resuming a bypass session without --yolo', async () => {
     const cwd = await realpath(process.cwd());

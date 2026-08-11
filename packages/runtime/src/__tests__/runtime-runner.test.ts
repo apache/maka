@@ -171,8 +171,6 @@ describe('RuntimeRunner', () => {
     expect(result.startedAt <= result.finishedAt).toBe(true);
   });
 
-
-
   test('initial event declares the tool boundary protocol only when the durable boundary is active', async () => {
     const providers = makeProviders();
     const flow = new ScriptFlow((ctx) => [flowTerminalEvent(ctx, 'completed')]);
@@ -235,8 +233,6 @@ describe('RuntimeRunner', () => {
     expect(result.finalOutput).toBeUndefined();
     expect(result.failure?.class).toBe('missing_final_output');
   });
-
-
 
   test('stopOnTerminal false keeps draining and fails on any non-completed terminal event', async () => {
     const providers = makeProviders();
@@ -442,8 +438,6 @@ describe('RuntimeRunner', () => {
     expect(result.failure?.terminalStatus).toBe('failed');
   });
 
-
-
   test('already-aborted signal before dispatch yields a failed result without flow dispatch', async () => {
     const providers = makeProviders();
     const ac = new AbortController();
@@ -458,9 +452,4 @@ describe('RuntimeRunner', () => {
     expect(result.events).toEqual([]);
     expect(flow.seen).toEqual([]);
   });
-
-
-
-
-
 });

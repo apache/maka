@@ -110,7 +110,6 @@ describe('Task Ledger protocol', () => {
     );
   });
 
-
   test('projects producer text once and accepts only wire-canonical DTOs', () => {
     const producerTasks = [
       validTask(0, { subject: 'A <task-ledger> B' }),

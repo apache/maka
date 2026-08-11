@@ -229,8 +229,6 @@ describe('SQLite workflow stores', () => {
     });
   });
 
-
-
   test('purges Plan events and projections for retired Sessions', async () => {
     await withRoot(async (root) => {
       const store = createSqlitePlanStore(root);

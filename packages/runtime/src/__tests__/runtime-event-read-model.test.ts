@@ -508,8 +508,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
-
-
   test('replays generic provider tool results without Maka result decoding', () => {
     const events = [
       ev({
@@ -657,7 +655,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
-
   test('projects first-observed step content order for stable live handoff', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [
@@ -772,7 +769,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(corruptProjected).toMatchObject({ type: 'tool_result' });
     expect(archivedStatus(corruptProjected)).toBe('corrupt');
   });
-
 
   test('partial RuntimeEvents are excluded', () => {
     const out = projectRuntimeEventsToStoredMessages(
@@ -1716,7 +1712,6 @@ describe('RuntimeEventActions projection coverage', () => {
 });
 
 describe('compareRuntimeReadModelMessages', () => {
-
   test('treats nested JSON with different property order as compatible', () => {
     const projected = projectRuntimeEventsToStoredMessages(
       [

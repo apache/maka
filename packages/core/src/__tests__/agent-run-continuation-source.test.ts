@@ -56,7 +56,6 @@ describe('AgentRun continuation source decoding', () => {
       /Invalid AgentRun header schema/,
     );
   });
-
 });
 
 function headerWithContinuation(

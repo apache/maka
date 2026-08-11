@@ -119,7 +119,6 @@ describe('deriveOnboardingState', () => {
     });
   });
 
-
   it('covers the top-level state decision table', () => {
     const ready = realConnection();
     const disabled = realConnection({ enabled: false });

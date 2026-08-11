@@ -2141,7 +2141,6 @@ describe('builtin read tools path containment', () => {
     );
     expect(JSON.stringify(absoluteGrepResult).includes('main.ts')).toBe(true);
   });
-
 });
 
 describe('builtin write tools path containment', () => {
@@ -2456,7 +2455,6 @@ describe('builtin FormatJson (file in place)', () => {
     };
   }
 
-
   test('rejects image results from the workspace executor', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-image-'));
     const formatJson = buildBuiltinTools({
@@ -2472,7 +2470,6 @@ describe('builtin FormatJson (file in place)', () => {
     );
   });
 
-
   test('sort_keys: true preserves __proto__ as a data property', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
     const name = await writeInput(root, 'data.json', '{"__proto__":{"polluted":true},"a":1}');
@@ -2484,7 +2481,6 @@ describe('builtin FormatJson (file in place)', () => {
     expect(parsed['__proto__']).toEqual({ polluted: true });
     expect(parsed.a).toBe(1);
   });
-
 
   test('invalid JSON returns a structured error diagnostic (no write, byteDelta 0)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
@@ -2500,8 +2496,6 @@ describe('builtin FormatJson (file in place)', () => {
     // File is left untouched on invalid input.
     expect(await readFile(join(root, name), 'utf8')).toBe('not json');
   });
-
-
 });
 
 async function waitFor(predicate: () => boolean): Promise<void> {

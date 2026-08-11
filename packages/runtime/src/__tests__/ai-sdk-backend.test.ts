@@ -992,8 +992,6 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-
-
   test('prefers the connection-advertised Kimi output limit over catalog metadata', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
@@ -1024,7 +1022,6 @@ describe('AiSdkBackend model history', () => {
 
     assert.equal(model.doStreamCalls[0]?.maxOutputTokens, 65_536);
   });
-
 
   test('reserves Kimi fixed thinking inside the provider wire output limit', async () => {
     const model = completionModel();
@@ -1839,7 +1836,6 @@ describe('AiSdkBackend model history', () => {
       `expected a historical image/png part in stored-message fallback, got: ${JSON.stringify(parts)}`,
     );
   });
-
 
   test('current-turn image attachment falls back to text unless vision support is explicit', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
@@ -6687,7 +6683,6 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-
   test('replays a persisted compact block whose provenance JSON outgrows the token budget', async () => {
     const model = completionModel();
     const events: SessionEvent[] = [];
@@ -7492,8 +7487,6 @@ describe('AiSdkBackend error surfaces', () => {
 });
 
 describe('AiSdkBackend usage telemetry', () => {
-
-
   test('retries an output-free truncated provider stream once and recovers', async () => {
     const durable = durableTurnHarness('turn-truncated-retry', 'analyse the image');
     let calls = 0;
@@ -9848,7 +9841,6 @@ describe('AiSdkBackend usage telemetry', () => {
 });
 
 describe('AiSdkBackend request-shape diagnostics', () => {
-
   test('classifies targeted request-shape changes', () => {
     const tools = canonicalizeToolSet(
       [testTool('Read', z.object({ path: z.string() }))],
@@ -11801,7 +11793,6 @@ describe('AiSdkBackend RunTrace', () => {
 });
 
 describe('AiSdkBackend tool execution', () => {
-
   test('WebSearch telemetry never copies the user-derived query', async () => {
     const telemetry: Array<{ argsSummary?: string }> = [];
     const backend = createTestAiSdkBackend({
@@ -13699,7 +13690,6 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.doesNotMatch(promptJson, /tool-orphan/);
     assert.doesNotMatch(promptJson, /orphan payload/);
   });
-
 
   test('signature-only (omitted) thinking is persisted and replays with its signature', async () => {
     // Anthropic omitted/redacted thinking: a signed reasoning block whose text

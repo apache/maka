@@ -28,7 +28,6 @@ import {
 before(() => _setColorLevelForTesting(3));
 
 describe('Maka Pi TUI transcript', () => {
-
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'inspect the package');
@@ -1218,7 +1217,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.ok(visibleLines.some((line) => line.includes('saved ~24000 tokens')));
   });
 
-
   test('renders an unboxed session sandbox boundary request with exact scopes', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
@@ -1684,8 +1682,6 @@ describe('Maka Pi TUI transcript', () => {
     // The exit code is red.
     assert.match(lines.join('\n'), /\x1b\[31mexit 1\x1b\[39m/);
   });
-
-
 
   test('shows the latest live output line while a tool is running', () => {
     const state = createMakaPiTranscriptState();

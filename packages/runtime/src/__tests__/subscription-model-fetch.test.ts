@@ -52,7 +52,6 @@ describe('subscription model fetch', () => {
     assert.equal(body.cache_control, undefined);
   });
 
-
   test('rejects Claude subscription cloaking without complete metadata', () => {
     assert.throws(
       () =>
@@ -231,9 +230,6 @@ describe('subscription model fetch', () => {
     );
     assert.equal(attempts, 1);
   });
-
-
-
 
   test('aborts while waiting to retry an HTML 403', async () => {
     let attempts = 0;

@@ -528,7 +528,6 @@ describe('semantic compact', () => {
     assert.doesNotMatch(rendered, /providerSourceIds=/);
   });
 
-
   test('preserves prior replay and the exact multimodal current-user head anchor', async () => {
     const messages = [
       { role: 'user', content: 'prior user' },

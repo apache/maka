@@ -1296,8 +1296,6 @@ Body.`,
     });
   });
 
-
-
   it('re-evaluates zero-match schema v2 bare preferences after multi-scope discovery changes', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const projectRoot = join(workspaceRoot, 'project');
