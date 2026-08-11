@@ -24,7 +24,6 @@ import {
   WEB_RESEARCH_AGENT_DEFINITION,
   WEB_RESEARCH_AGENT_PROFILE,
   assertAgentDefinitionRunnable,
-  buildToolsForAgentDefinition,
   evaluateAgentDefinitionAvailability,
   evaluateAgentDefinitionToolAccess,
   listBuiltinAgentDefinitions,
@@ -158,12 +157,10 @@ describe('subagent tools', () => {
         testCatalogTool('Glob', 'read'),
         testCatalogTool('Grep', 'read'),
         testCatalogTool('WebSearch', 'web_read'),
-        testCatalogTool('SearchHistory', 'read'),
-        testCatalogTool('ReadHistory', 'read'),
       ],
     });
     const localRead = definitions.find((definition) => definition.id === LOCAL_READ_AGENT_ID);
-    expect(localRead?.tools).toEqual(['Read', 'Glob', 'Grep', 'SearchHistory', 'ReadHistory']);
+    expect(localRead?.tools).toEqual(['Read', 'Glob', 'Grep']);
     expect(localRead?.availability).toEqual({ status: 'available' });
   });
 
@@ -228,16 +225,7 @@ describe('subagent tools', () => {
     });
   });
 
-  test('agent definition policy uses the explicit allowlist plus inherited history reads', () => {
-    expect(
-      evaluateAgentDefinitionToolAccess(
-        LOCAL_READ_AGENT_DEFINITION,
-        testCatalogTool('SearchHistory', 'read'),
-      ),
-    ).toEqual({
-      category: 'read',
-      decision: 'allow',
-    });
+  test('agent definition policy uses the explicit tool allowlist', () => {
     expect(
       evaluateAgentDefinitionToolAccess(
         LOCAL_READ_AGENT_DEFINITION,
@@ -269,25 +257,6 @@ describe('subagent tools', () => {
       category: 'web_read',
       decision: 'allow',
     });
-  });
-
-  test('new children inherit available history tools while durable snapshots stay exact', () => {
-    const tools = [
-      testCatalogTool('Read', 'read'),
-      testCatalogTool('Glob', 'read'),
-      testCatalogTool('Grep', 'read'),
-      testCatalogTool('SearchHistory', 'read'),
-      testCatalogTool('ReadHistory', 'read'),
-    ];
-
-    expect(
-      buildToolsForAgentDefinition(tools, LOCAL_READ_AGENT_DEFINITION).map((tool) => tool.name),
-    ).toEqual(['Read', 'Glob', 'Grep']);
-    expect(
-      buildToolsForAgentDefinition(tools, LOCAL_READ_AGENT_DEFINITION, {
-        includeInherited: true,
-      }).map((tool) => tool.name),
-    ).toEqual(['Read', 'Glob', 'Grep', 'SearchHistory', 'ReadHistory']);
   });
 
   test('implementation remains available with the Write and Edit fallback', () => {
@@ -340,16 +309,12 @@ describe('subagent tools', () => {
         categoryHint: 'subagent',
         impl: async () => ({}),
       },
-      testCatalogTool('SearchHistory', 'read'),
-      testCatalogTool('ReadHistory', 'read'),
     ]);
 
     expect(tools.map((tool) => tool.name)).toEqual([
       'Read',
       'Glob',
       'Grep',
-      'SearchHistory',
-      'ReadHistory',
       'WebSearch',
       'Write',
       'Edit',
@@ -362,8 +327,6 @@ describe('subagent tools', () => {
       'Read',
       'Glob',
       'Grep',
-      'SearchHistory',
-      'ReadHistory',
       'WebSearch',
       'Write',
       'Edit',

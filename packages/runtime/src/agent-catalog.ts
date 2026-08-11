@@ -10,7 +10,6 @@ import {
   type SubagentProfile,
 } from '@maka/core/subagent-settings';
 import type { MakaTool } from './tool-runtime.js';
-import { READ_HISTORY_TOOL_NAME, SEARCH_HISTORY_TOOL_NAME } from './history-tools.js';
 
 export const LOCAL_READ_AGENT_ID = 'local-read';
 export const LOCAL_READ_AGENT_PROFILE = 'local_read';
@@ -25,10 +24,6 @@ export const AGENT_WORKSPACE_SAME_WORKSPACE = 'same_workspace';
 export const AGENT_WORKSPACE_WORKTREE = 'worktree';
 export const AGENT_WRITE_BACK_SUMMARY = 'summary';
 export const AGENT_WRITE_BACK_PATCH = 'patch';
-export const INHERITED_CHILD_TOOL_NAMES = [
-  SEARCH_HISTORY_TOOL_NAME,
-  READ_HISTORY_TOOL_NAME,
-] as const;
 
 export type AgentProfile = SubagentProfile;
 export type AgentCapability = AgentProfile;
@@ -115,16 +110,12 @@ export interface AgentDefinitionListOptions {
   worktreeChildExecutorAvailable?: boolean;
 }
 
-export interface BuildAgentToolsOptions {
-  includeInherited?: boolean;
-}
-
 export const LOCAL_READ_AGENT_DEFINITION: AgentDefinition = {
   definitionVersion: 1,
   id: LOCAL_READ_AGENT_ID,
   profile: LOCAL_READ_AGENT_PROFILE,
   name: 'Local Read',
-  description: 'Read-only repository exploration with optional conversation history.',
+  description: 'Read-only repository exploration with file and text search tools only.',
   contract: {
     capability: 'local_read',
     invocation: AGENT_INVOCATION_FOREGROUND,
@@ -137,8 +128,7 @@ export const LOCAL_READ_AGENT_DEFINITION: AgentDefinition = {
   tools: ['Read', 'Glob', 'Grep'],
   systemPrompt: [
     'You are a foreground local-read child agent.',
-    'Use the provided Read, Glob, and Grep tools for repository exploration.',
-    'When available and relevant, SearchHistory globally searches visible Maka conversation records; ReadHistory optionally opens context around a hit.',
+    'Use only the provided Read, Glob, and Grep tools.',
     'Do not use shell, web, browser, write, or nested agent tools.',
     'Return a concise answer with concrete file or symbol evidence.',
   ].join('\n'),
@@ -149,7 +139,7 @@ export const WEB_RESEARCH_AGENT_DEFINITION: AgentDefinition = {
   id: WEB_RESEARCH_AGENT_ID,
   profile: WEB_RESEARCH_AGENT_PROFILE,
   name: 'Web Research',
-  description: 'Network-backed web research with optional conversation history.',
+  description: 'Network-backed web research with WebSearch only.',
   contract: {
     capability: 'web_research',
     invocation: AGENT_INVOCATION_FOREGROUND,
@@ -162,8 +152,7 @@ export const WEB_RESEARCH_AGENT_DEFINITION: AgentDefinition = {
   tools: ['WebSearch'],
   systemPrompt: [
     'You are a foreground web-research child agent.',
-    'Use WebSearch for current external sources.',
-    'When available and relevant, SearchHistory globally searches visible Maka conversation records; ReadHistory optionally opens context around a hit.',
+    'Use only the provided WebSearch tool.',
     'Do not read local files, use shell, browser, write, or nested agent tools.',
     'Return concise findings with source titles and URLs for every external claim.',
     'Separate sourced facts from your own inference.',
@@ -200,8 +189,7 @@ export const IMPLEMENTATION_AGENT_DEFINITION: AgentDefinition = {
   systemPrompt: [
     'You are a foreground implementation child agent.',
     'Run only inside a dedicated worktree child executor when the host provides one.',
-    'Use local file and shell tools for the assigned implementation task.',
-    'When available and relevant, SearchHistory globally searches visible Maka conversation records; ReadHistory optionally opens context around a hit.',
+    'Use local file and shell tools only for the assigned implementation task.',
     'Do not use web, browser, or nested agent tools.',
     'Return a concise patch-oriented summary with verification results.',
   ].join('\n'),
@@ -230,12 +218,7 @@ export function listBuiltinAgentDefinitions(
         })
       : { status: 'unknown' },
     permissionMode: definition.permissionMode,
-    tools: [
-      ...definition.tools,
-      ...INHERITED_CHILD_TOOL_NAMES.filter((name) =>
-        options.tools?.some((tool) => tool.name === name),
-      ),
-    ],
+    tools: [...definition.tools],
   }));
 }
 
@@ -301,14 +284,7 @@ export function evaluateAgentDefinitionToolAccess(
   tool: Pick<MakaTool, 'name' | 'categoryHint'>,
 ): { category: ToolCategory; decision: PolicyDecision } {
   const category = categoryForTool(tool);
-  return {
-    category,
-    decision:
-      definition.tools.includes(tool.name) ||
-      INHERITED_CHILD_TOOL_NAMES.includes(tool.name as (typeof INHERITED_CHILD_TOOL_NAMES)[number])
-        ? 'allow'
-        : 'block',
-  };
+  return { category, decision: definition.tools.includes(tool.name) ? 'allow' : 'block' };
 }
 
 export function evaluateAgentDefinitionAvailability(input: {
@@ -340,15 +316,13 @@ export function evaluateAgentDefinitionAvailability(input: {
 export function buildToolsForAgentDefinition(
   tools: readonly MakaTool[],
   definition: AgentRuntimeDefinition = LOCAL_READ_AGENT_DEFINITION,
-  options: BuildAgentToolsOptions = {},
 ): MakaTool[] {
-  return resolveAgentDefinitionToolSet(tools, definition, options.includeInherited ?? false).tools;
+  return resolveAgentDefinitionToolSet(tools, definition).tools;
 }
 
 function resolveAgentDefinitionToolSet(
   tools: readonly MakaTool[],
   definition: AgentRuntimeDefinition,
-  includeInherited = false,
 ): { tools: MakaTool[]; missingTools: string[] } {
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const groupedToolNames = new Set<string>(
@@ -367,19 +341,10 @@ function resolveAgentDefinitionToolSet(
     }
   }
   return {
-    tools: [
-      ...definition.tools.flatMap((name) => {
-        const tool = byName.get(name);
-        return tool ? [tool] : [];
-      }),
-      ...(includeInherited
-        ? INHERITED_CHILD_TOOL_NAMES.flatMap((name) => {
-            if (definition.tools.includes(name)) return [];
-            const tool = byName.get(name);
-            return tool ? [tool] : [];
-          })
-        : []),
-    ],
+    tools: definition.tools.flatMap((name) => {
+      const tool = byName.get(name);
+      return tool ? [tool] : [];
+    }),
     missingTools,
   };
 }

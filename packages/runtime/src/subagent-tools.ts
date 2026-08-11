@@ -10,7 +10,6 @@ import {
   AGENT_WRITE_BACK_PATCH,
   AGENT_WRITE_BACK_SUMMARY,
   BUILTIN_AGENT_DEFINITIONS,
-  INHERITED_CHILD_TOOL_NAMES,
   agentProfilesForDefinitions,
   buildToolsForAgentDefinition,
   requireAgentDefinitionByProfile,
@@ -28,12 +27,7 @@ export const AGENT_TOOL_NAMES = [
   AGENT_OUTPUT_TOOL_NAME,
 ] as const;
 export const CHILD_AGENT_TOOL_NAMES = [
-  ...new Set(
-    BUILTIN_AGENT_DEFINITIONS.flatMap((definition) => [
-      ...definition.tools,
-      ...INHERITED_CHILD_TOOL_NAMES,
-    ]),
-  ),
+  ...new Set(BUILTIN_AGENT_DEFINITIONS.flatMap((definition) => definition.tools)),
 ] as readonly string[];
 const AGENT_SPAWN_WRITE_BACK_MODES = [AGENT_WRITE_BACK_SUMMARY, AGENT_WRITE_BACK_PATCH] as const;
 const AGENT_SPAWN_ISOLATION_MODES = [
@@ -66,9 +60,7 @@ export function buildChildAgentTools(tools: readonly MakaTool[]): MakaTool[] {
   const seen = new Set<string>();
   const out: MakaTool[] = [];
   for (const definition of BUILTIN_AGENT_DEFINITIONS) {
-    for (const tool of buildToolsForAgentDefinition(tools, definition, {
-      includeInherited: true,
-    })) {
+    for (const tool of buildToolsForAgentDefinition(tools, definition)) {
       if (seen.has(tool.name)) continue;
       seen.add(tool.name);
       out.push(tool);

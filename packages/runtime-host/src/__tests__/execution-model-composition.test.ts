@@ -1636,14 +1636,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     // Its own placeholders name `ArchiveRead`, so the ceiling that governs
     // agent-permission tools cannot be the thing that decides whether the child
     // can read back a result the runtime itself pruned.
-    assert.deepEqual(toolNames(requests[2]?.body), [
-      'ArchiveRead',
-      'Glob',
-      'Grep',
-      'Read',
-      'ReadHistory',
-      'SearchHistory',
-    ]);
+    assert.deepEqual(toolNames(requests[2]?.body), ['ArchiveRead', 'Glob', 'Grep', 'Read']);
     assert.ok(toolNames(requests[3]?.body).includes('agent_spawn'));
 
     const sessions = await execution.sessionStore.listForRecovery();
@@ -1847,8 +1840,6 @@ test('production Host publishes and retires an implementation child patch', asyn
       'Glob',
       'Grep',
       'Read',
-      'ReadHistory',
-      'SearchHistory',
       'StopBackgroundTask',
       'Write',
       'WriteStdin',
@@ -3722,14 +3713,7 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'child_agent' && streamRequestIndex === 3) {
-    assert.deepEqual(toolNames(body), [
-      'ArchiveRead',
-      'Glob',
-      'Grep',
-      'Read',
-      'ReadHistory',
-      'SearchHistory',
-    ]);
+    assert.deepEqual(toolNames(body), ['ArchiveRead', 'Glob', 'Grep', 'Read']);
     respondProviderText(response, CHILD_AGENT_RESULT_TEXT);
     return;
   }
@@ -3746,8 +3730,6 @@ async function handleProviderRequest(
       'Glob',
       'Grep',
       'Read',
-      'ReadHistory',
-      'SearchHistory',
       'StopBackgroundTask',
       'Write',
       'WriteStdin',

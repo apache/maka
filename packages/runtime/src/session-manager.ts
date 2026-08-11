@@ -2484,9 +2484,9 @@ export class SessionManager {
       tools: availableChildTools,
       worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(parentHeader),
     });
-    const resolvedToolNames = buildToolsForAgentDefinition(availableChildTools, definition, {
-      includeInherited: true,
-    }).map((tool) => tool.name);
+    const resolvedToolNames = buildToolsForAgentDefinition(availableChildTools, definition).map(
+      (tool) => tool.name,
+    );
     const childPermissionMode =
       parentHeader.permissionMode === 'bypass' ? 'bypass' : definition.permissionMode;
 
@@ -3073,9 +3073,9 @@ export class SessionManager {
       tools: availableChildTools,
       worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(parentHeader),
     });
-    const resolvedToolNames = buildToolsForAgentDefinition(availableChildTools, definition, {
-      includeInherited: true,
-    }).map((tool) => tool.name);
+    const resolvedToolNames = buildToolsForAgentDefinition(availableChildTools, definition).map(
+      (tool) => tool.name,
+    );
 
     const proposedTurnId = input.turnId ?? this.deps.newId();
     const proposedRunId = input.runId ?? this.deps.newId();
@@ -4044,7 +4044,6 @@ export class SessionManager {
         toolNames: buildToolsForAgentDefinition(
           await this.childToolsForSession(sessionId),
           resolved,
-          { includeInherited: true },
         ).map((tool) => tool.name),
       };
     }
