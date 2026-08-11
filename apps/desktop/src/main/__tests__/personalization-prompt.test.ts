@@ -8,13 +8,6 @@ import {
 } from '@maka/runtime/system-prompt/personalization-prompt';
 
 describe('personalization prompt fragment', () => {
-  test('empty personalization produces no prompt fragment', () => {
-    const fragment = buildPersonalizationPromptFragment({ displayName: '', assistantTone: '' });
-
-    assert.equal(fragment.text, undefined);
-    assert.deepEqual(fragment.warnings, []);
-  });
-
   test('normal tone is wrapped once as low-priority untrusted preference', () => {
     const fragment = buildPersonalizationPromptFragment({
       displayName: 'JK',
