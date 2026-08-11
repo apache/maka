@@ -5,6 +5,7 @@ import {
   MCP_CONFIG_VERSION,
   createDefaultMcpConfig,
   type McpConfigFile,
+  type McpProtocolPreference,
   type McpRemoteServerConfig,
   type McpServerConfig,
   type McpStdioServerConfig,
@@ -29,16 +30,19 @@ export function createMcpConfigStore(workspaceRoot: string): McpConfigStore {
 
 export function normalizeMcpConfig(value: unknown): McpConfigFile {
   if (!isRecord(value)) throw new Error('MCP config must be an object');
-  if (value.version !== undefined && value.version !== MCP_CONFIG_VERSION) {
-    throw new Error(`Unsupported MCP config version: ${String(value.version)}`);
-  }
+  const sourceVersion = supportedSourceVersion(value);
   if (!isRecord(value.mcpServers)) throw new Error('mcpServers must be an object');
   const entries = Object.entries(value.mcpServers);
   if (entries.length > MAX_SERVERS) throw new Error(`mcpServers exceeds ${MAX_SERVERS} entries`);
   const mcpServers: Record<string, McpServerConfig> = Object.create(null);
   for (const [serverId, raw] of entries) {
     assertSafeKey(serverId, 'server id');
-    mcpServers[serverId] = normalizeServer(raw, serverId);
+    mcpServers[serverId] = normalizeServer(
+      raw,
+      serverId,
+      sourceVersion,
+      value.version === undefined,
+    );
   }
   return { version: MCP_CONFIG_VERSION, mcpServers: { ...mcpServers } };
 }
@@ -55,6 +59,7 @@ class FileMcpConfigStore implements McpConfigStore {
   async set(config: McpConfigFile): Promise<McpConfigFile> {
     const normalized = normalizeMcpConfig(config);
     return this.serial(async () => {
+      await this.assertCurrentVersionCanBeReplaced();
       await this.write(normalized);
       return normalized;
     });
@@ -117,6 +122,27 @@ class FileMcpConfigStore implements McpConfigStore {
     }
   }
 
+  private async assertCurrentVersionCanBeReplaced(): Promise<void> {
+    let text: string;
+    try {
+      text = await readFile(this.path, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    let current: unknown;
+    try {
+      current = JSON.parse(text);
+    } catch {
+      // Full replacement is the explicit recovery path for malformed files.
+      return;
+    }
+    if (!isRecord(current)) return;
+    // A client that does not understand a future wrapper must not erase it.
+    // Reuse the normal read boundary so this guard advances with the schema.
+    supportedSourceVersion(current);
+  }
+
   private async serial<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.queue;
     let release!: () => void;
@@ -132,10 +158,23 @@ class FileMcpConfigStore implements McpConfigStore {
   }
 }
 
-function normalizeServer(value: unknown, serverId: string): McpServerConfig {
+function normalizeServer(
+  value: unknown,
+  serverId: string,
+  sourceVersion: 1 | typeof MCP_CONFIG_VERSION,
+  versionMissing: boolean,
+): McpServerConfig {
   if (!isRecord(value)) throw new Error(`MCP server "${serverId}" must be an object`);
+  const hasProtocol = Object.hasOwn(value, 'protocol');
+  if (sourceVersion === 1 && hasProtocol) {
+    const source = versionMissing ? 'without a version' : 'version 1';
+    throw new Error(`MCP config ${source} must not contain "protocol"`);
+  }
   const enabled = value.enabled === undefined ? true : bool(value.enabled, `${serverId}.enabled`);
   if (typeof value.command === 'string') {
+    if (hasProtocol) {
+      throw new Error(`${serverId}.protocol is not supported for stdio in version 2`);
+    }
     const result: McpStdioServerConfig = {
       enabled,
       command: nonEmptyString(value.command, `${serverId}.command`),
@@ -162,13 +201,30 @@ function normalizeServer(value: unknown, serverId: string): McpServerConfig {
   if (transport !== 'auto' && transport !== 'streamable-http' && transport !== 'sse') {
     throw new Error(`${serverId}.transport is invalid`);
   }
-  const result: McpRemoteServerConfig = { enabled, url: parsed.toString(), transport };
+  const protocol = protocolPreference(value.protocol, `${serverId}.protocol`);
+  if (transport === 'sse' && protocol !== undefined && protocol !== 'legacy') {
+    throw new Error(`${serverId}.transport "sse" requires protocol "legacy"`);
+  }
+  const result: McpRemoteServerConfig = {
+    enabled,
+    url: parsed.toString(),
+    transport,
+  };
   if (value.headers !== undefined) result.headers = stringMap(value.headers, `${serverId}.headers`);
+  if (protocol !== undefined) result.protocol = protocol;
   return result;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function supportedSourceVersion(value: Record<string, unknown>): 1 | typeof MCP_CONFIG_VERSION {
+  const sourceVersion = value.version === undefined ? 1 : value.version;
+  if (sourceVersion !== 1 && sourceVersion !== MCP_CONFIG_VERSION) {
+    throw new Error(`Unsupported MCP config version: ${String(value.version)}`);
+  }
+  return sourceVersion;
 }
 
 function assertSafeKey(value: string, label: string): void {
@@ -187,6 +243,14 @@ function nonEmptyString(value: unknown, label: string): string {
 
 function bool(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') throw new Error(`${label} must be boolean`);
+  return value;
+}
+
+function protocolPreference(value: unknown, label: string): McpProtocolPreference | undefined {
+  if (value === undefined) return undefined;
+  if (value !== 'legacy' && value !== 'auto' && value !== '2026-07-28') {
+    throw new Error(`${label} is invalid`);
+  }
   return value;
 }
 
