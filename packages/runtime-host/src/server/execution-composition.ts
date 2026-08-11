@@ -425,16 +425,16 @@ export async function createExecutionRuntimeHostComposition(
           .incognitoActive,
       }),
     });
-    const childHostTools = [
+    const hostTools = [
       createHostWebSearchToolFromService(webSearchService),
       createHostWebFetchToolFromService(webFetchService),
+      ...historyTools,
       ...runtimePolicy.modelTools,
     ];
-    const hostTools = [...childHostTools, ...historyTools];
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
-      hostTools: childHostTools,
+      hostTools,
       worktreePatchWriteBackAvailable: true,
     });
     const openedGraphControlStore = createAgentGraphControlStore(

@@ -25,7 +25,7 @@ export class AgentGraphProviderScenario {
     const names = toolNames(body);
     // The graph child's exact surface: its read-only allowlist plus the archive
     // decoder every session that archives now carries (#2026).
-    if (names.join(',') === 'ArchiveRead,Glob,Grep,Read') {
+    if (names.join(',') === 'ArchiveRead,Glob,Grep,Read,ReadHistory,SearchHistory') {
       assert.equal(this.#childCompleted, false, 'Graph child provider request was repeated');
       this.#childCompleted = true;
       reply.text(this.childResultText);

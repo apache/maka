@@ -1219,7 +1219,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
         const available = await this.childToolActivationForSession(sessionId);
         assertAgentDefinitionRunnable({ definition, tools: available.tools });
         childActivation = {
-          tools: buildToolsForAgentDefinition(available.tools, definition),
+          tools: buildToolsForAgentDefinition(available.tools, definition, {
+            includeInherited: true,
+          }),
           ...(available.shell ? { shell: available.shell } : {}),
         };
       },
@@ -1275,7 +1277,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
         tools: preflightActivation.tools,
       });
     }
-    const preflightChildTools = buildToolsForAgentDefinition(preflightActivation.tools, definition);
+    const preflightChildTools = buildToolsForAgentDefinition(preflightActivation.tools, definition, {
+      includeInherited: !linkedSnapshot,
+    });
     if (linkedSnapshot && preflightChildTools.length !== linkedSnapshot.toolNames.length) {
       throw new Error('Linked child retry durable runtime tool snapshot is unavailable');
     }
