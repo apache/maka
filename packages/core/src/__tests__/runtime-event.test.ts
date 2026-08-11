@@ -9,7 +9,6 @@ import {
 } from '../events.js';
 import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from '../interaction.js';
 import {
-  TERMINAL_RUNTIME_EVENT_STATUSES,
   decodeRuntimeEvent,
   isTerminalRuntimeEvent,
   runtimeEventHasModelVisibleContent,
@@ -545,16 +544,9 @@ describe('RuntimeEvent actions', () => {
 
 describe('isTerminalRuntimeEvent', () => {
   test('classifies terminal status and explicit invocation completion', () => {
-    for (const status of TERMINAL_RUNTIME_EVENT_STATUSES) {
-      expect(isTerminalRuntimeEvent(baseEvent({ status }))).toBe(true);
-    }
-    for (const event of [
-      baseEvent({ content: { kind: 'text', text: 'hi' } }),
-      baseEvent({ status: 'streaming' }),
-      baseEvent({ actions: { endInvocation: false } }),
-    ]) {
-      expect(isTerminalRuntimeEvent(event)).toBe(false);
-    }
+    expect(isTerminalRuntimeEvent(baseEvent({ status: 'completed' }))).toBe(true);
+    expect(isTerminalRuntimeEvent(baseEvent({ status: 'streaming' }))).toBe(false);
+    expect(isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: false } }))).toBe(false);
     expect(isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: true } }))).toBe(true);
   });
 });

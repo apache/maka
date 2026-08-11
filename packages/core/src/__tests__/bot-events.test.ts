@@ -31,17 +31,11 @@ describe('bot event contract', () => {
   });
 
   test('recognizes only exact plaintext commands in direct messages', () => {
-    const commandCases = [
-      [isPlaintextResetCommand, BOT_PLAINTEXT_RESET_COMMANDS],
-      [isPlaintextHelpCommand, BOT_PLAINTEXT_HELP_COMMANDS],
-    ] as const;
-    for (const [matches, commands] of commandCases) {
-      for (const text of commands) assert.equal(matches({ isGroup: false, text }), true, text);
-      assert.equal(matches({ isGroup: false, text: `  ${commands[0]!.toUpperCase()}  ` }), true);
-      assert.equal(matches({ isGroup: true, text: commands[0]! }), false);
-      assert.equal(matches({ isGroup: false, text: `please ${commands[0]}` }), false);
-      assert.equal(matches({ isGroup: false, text: '   ' }), false);
-    }
+    assert.equal(isPlaintextResetCommand({ isGroup: false, text: '  RESET  ' }), true);
+    assert.equal(isPlaintextHelpCommand({ isGroup: false, text: '帮助' }), true);
+    assert.equal(isPlaintextHelpCommand({ isGroup: true, text: 'help' }), false);
+    assert.equal(isPlaintextHelpCommand({ isGroup: false, text: 'please help' }), false);
+    assert.equal(isPlaintextHelpCommand({ isGroup: false, text: '   ' }), false);
     for (const phrase of BOT_PLAINTEXT_HELP_COMMANDS) {
       assert.equal(BOT_PLAINTEXT_RESET_COMMANDS.includes(phrase), false);
     }

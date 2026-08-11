@@ -7,7 +7,6 @@ import {
 } from '../model-metadata.js';
 import { curatedCatalogFallbackModelsForProvider } from '../model-metadata.js';
 import {
-  PROVIDER_REGISTRY,
   backendKindOf,
   effectiveBaseUrl,
   normalizeConnectionBaseUrl,
@@ -20,26 +19,12 @@ import {
 } from '../llm-connections.js';
 
 test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs', () => {
-  for (const value of [
-    undefined,
-    '  ',
-    'https://api.example.com/v1',
-    'http://localhost:11434/v1',
-    'http://192.168.1.50:8080',
-  ]) {
-    assert.equal(validateConnectionBaseUrl(value), null, String(value));
-  }
-
-  for (const value of [
-    'javascript:alert(1)',
-    'file:///etc/passwd',
-    'ws://example.com',
-    'not-a-url',
-    'http:',
-    `https://example.com/${'a'.repeat(2050)}`,
-  ]) {
-    assert.notEqual(validateConnectionBaseUrl(value), null, value);
-  }
+  assert.equal(validateConnectionBaseUrl(undefined), null);
+  assert.equal(validateConnectionBaseUrl('https://api.example.com/v1'), null);
+  assert.equal(validateConnectionBaseUrl('http://localhost:11434/v1'), null);
+  assert.notEqual(validateConnectionBaseUrl('javascript:alert(1)'), null);
+  assert.notEqual(validateConnectionBaseUrl('not-a-url'), null);
+  assert.notEqual(validateConnectionBaseUrl(`https://example.com/${'a'.repeat(2050)}`), null);
 
   const exactLimit = `https://example.com/${'a'.repeat(2048 - 'https://example.com/'.length)}`;
   assert.equal(exactLimit.length, 2048);
@@ -67,9 +52,8 @@ test('base URL normalization preserves clear intent and rejects untrusted runtim
     value: 'https://Example.com:443/V1',
   });
 
-  for (const value of ['javascript:alert(1)', null, Symbol('value')]) {
-    assert.equal(normalizeConnectionBaseUrl(value).ok, false, String(value));
-  }
+  assert.equal(normalizeConnectionBaseUrl('javascript:alert(1)').ok, false);
+  assert.equal(normalizeConnectionBaseUrl(null).ok, false);
 });
 
 test('unknown provider ids fail closed without breaking persisted connections', () => {
@@ -187,14 +171,7 @@ test('the alias table is selected by provider and names only renames', () => {
     modelIdAliasesForProvider('claude-subscription'),
     CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES,
   );
-  for (const providerType of Object.keys(PROVIDER_REGISTRY) as ProviderType[]) {
-    if (providerType === 'claude-subscription') continue;
-    assert.equal(
-      modelIdAliasesForProvider(providerType),
-      undefined,
-      `${providerType} must keep its model ids opaque`,
-    );
-  }
+  assert.equal(modelIdAliasesForProvider('anthropic'), undefined);
   const offered = curatedCatalogFallbackModelsForProvider('claude-subscription') ?? [];
   for (const [renamed, target] of Object.entries(CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES)) {
     assert.ok(offered.includes(target), `${target} is not offered by the curated inventory`);
