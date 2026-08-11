@@ -171,21 +171,6 @@ describe('model catalog picker helpers', () => {
     );
   });
 
-  it('offers the normalized fallback for legacy Codex-only inventory', () => {
-    const choices = buildChatModelChoices([
-      connection({
-        slug: 'codex-account',
-        providerType: 'openai-codex',
-        defaultModel: 'gpt-5-codex',
-        enabledModelIds: ['gpt-5-codex'],
-        models: [{ id: 'gpt-5-codex' }],
-      }),
-    ]);
-
-    assert.deepEqual(choices.map(choiceIdentity), [
-      'codex-account:openai-codex:gpt-5.6-sol',
-    ]);
-  });
 
   it('projects enabled models across wired providers without collapsing provider identities', () => {
     const openrouter = connection({

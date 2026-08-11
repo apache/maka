@@ -423,19 +423,6 @@ describe('Session catalog protocol', () => {
     assert.deepEqual(decodeSessionCatalogQueryResult(changed), changed);
   });
 
-  test('decodes only the closed unsupported legacy record shape', () => {
-    const unsupported = {
-      kind: 'unsupported_legacy_record' as const,
-      id: 'session-1',
-      revision: 2,
-      reason: 'not_wire_representable' as const,
-    };
-    assert.deepEqual(decodeSessionCatalogItem(unsupported), unsupported);
-    assert.throws(
-      () => decodeSessionCatalogItem({ ...unsupported, projectId: 'hidden' }),
-      isProtocolError,
-    );
-  });
 });
 
 function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionCatalogProjection {

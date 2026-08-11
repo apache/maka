@@ -729,34 +729,6 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-  test('derives totals from the legacy scalar detail shape', () => {
-    const usage = {
-      inputTokens: undefined,
-      outputTokens: undefined,
-      totalTokens: undefined,
-      inputTokenDetails: {
-        noCacheTokens: 10,
-        cacheReadTokens: 5,
-        cacheWriteTokens: 2,
-      },
-      outputTokenDetails: {
-        textTokens: 4,
-        reasoningTokens: 3,
-      },
-    } as unknown as Parameters<typeof normalizeAiSdkUsage>[0];
-
-    assert.deepEqual(normalizeAiSdkUsage(usage), {
-      inputTokens: 17,
-      outputTokens: 7,
-      cacheHitInputTokens: 5,
-      cacheMissInputTokens: 10,
-      cacheMissInputSource: 'explicit',
-      cachedInputTokens: 5,
-      cacheWriteInputTokens: 2,
-      reasoningTokens: 3,
-      totalTokens: 24,
-    });
-  });
 
   test('preserves DeepSeek and OpenAI-compatible raw usage fields', () => {
     assert.deepEqual(

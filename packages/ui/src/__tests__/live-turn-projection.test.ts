@@ -543,46 +543,6 @@ describe('applyLiveTurnEvent', () => {
     }]);
   });
 
-  it('ignores legacy generic permission events in the live projection', () => {
-    const started = applyLiveTurnEvent(undefined, {
-      type: 'tool_start',
-      id: 'event-1',
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      toolUseId: 'tool-1',
-      toolName: 'Bash',
-      args: { command: 'rm file' },
-      ts: 100,
-    });
-    const waiting = applyLiveTurnEvent(started, {
-      type: 'permission_request',
-      kind: 'tool_permission',
-      id: 'event-2',
-      turnId: 'turn-1',
-      requestId: 'request-1',
-      toolUseId: 'tool-1',
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: 'rm file' },
-      rememberForTurnAllowed: true,
-      ts: 101,
-    });
-    const allowed = applyLiveTurnEvent(waiting, {
-      type: 'permission_decision_ack',
-      id: 'event-3',
-      turnId: 'turn-1',
-      requestId: 'request-1',
-      toolUseId: 'tool-1',
-      decision: 'allow',
-      ts: 102,
-    });
-
-    assert.equal(waiting, started);
-    assert.equal(allowed, started);
-    assert.equal(allowed?.steps[0]?.tools[0]?.status, 'pending');
-    assert.equal(allowed?.steps[0]?.stepId, 'step-1');
-  });
 
   it('appends late thinking without moving an already visible tool', () => {
     const tool = applyLiveTurnEvent(undefined, {

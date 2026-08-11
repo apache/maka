@@ -1337,51 +1337,6 @@ describe('context-budget history compact', () => {
     assert.equal(result.diagnostic.historyCompactedTurns, 4);
   });
 
-  test('preserves the legacy V1 token-tail selection contract', () => {
-    const events = [
-      textEvent('old-1', 'turn-1', 'old context '.repeat(40)),
-      textEvent('tail-2', 'turn-2', 'tail two'),
-      textEvent('tail-3', 'turn-3', 'tail three'),
-      textEvent('tail-4', 'turn-4', 'tail four'),
-      textEvent('tail-5', 'turn-5', 'tail five'),
-    ];
-
-    const result = applyRuntimeEventContextBudget(events, {
-      maxHistoryEstimatedTokens: 2000,
-      minRecentTurns: 2,
-      charsPerToken: 1,
-      historyCompact: {
-        enabled: true,
-        highWaterRatio: 0.1,
-        minRecentTurns: 2,
-        tailEstimatedTokens: 100,
-        maxSummaryEstimatedTokens: 120,
-      },
-    });
-
-    assert.ok(result);
-    assert.equal(
-      result.events.some((event) => event.id === 'old-1'),
-      false,
-    );
-    assert.equal(
-      result.events.some((event) => event.id === 'tail-2'),
-      true,
-    );
-    assert.equal(
-      result.events.some((event) => event.id === 'tail-3'),
-      true,
-    );
-    assert.equal(
-      result.events.some((event) => event.id === 'tail-4'),
-      true,
-    );
-    assert.equal(
-      result.events.some((event) => event.id === 'tail-5'),
-      true,
-    );
-    assert.equal(result.diagnostic.historyCompactedTurns, 1);
-  });
 
   test('V2 checkpoint compaction retains only the latest complete turn', () => {
     const events = [

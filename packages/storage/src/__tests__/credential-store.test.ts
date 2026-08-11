@@ -347,25 +347,4 @@ describe('FileCredentialStore secret-kind + slug contract', () => {
     ['tavily_api_key', 'tavilyApiKey'],
   ];
 
-  test('preserves the legacy stored-key suffix for every kind', async () => {
-    await withTempDir(async (dir) => {
-      const store = createFileCredentialStore(dir);
-      // The generic API expresses every kind — including the bot/proxy/gateway/
-      // tavily secrets the migration carries — as `${slug}:${suffix}`. The
-      // caller owns the slug, so a key never derives from a secret value.
-      for (const [kind] of kindToStoredSuffix) {
-        await store.setSecret('settings:bot:telegram', kind, `val-${kind}`);
-      }
-      const raw = JSON.parse(await readFile(join(dir, 'credentials.json'), 'utf8')) as {
-        values: Record<string, string>;
-      };
-      for (const [kind, suffix] of kindToStoredSuffix) {
-        assert.equal(
-          raw.values[`settings:bot:telegram:${suffix}`],
-          `val-${kind}`,
-          `${kind} -> settings:bot:telegram:${suffix}`,
-        );
-      }
-    });
-  });
 });

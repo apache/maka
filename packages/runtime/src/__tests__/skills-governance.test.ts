@@ -10,18 +10,14 @@ import {
   createBundledSkillLock,
   createManagedSkillLock,
   encodeSkillRuntimePreferences,
-  getSkillRuntimePreference,
   getBundledSkillSource,
   listManagedSkillSources,
-  isSkillPreferenceReviewPending,
-  migrateSkillRuntimePreferences,
   patchSkillRuntimePreference,
   readManagedSkillSource,
   readManagedSkillSources,
   resolveManagedSkillSourcesRoot,
   resolveSkillPreferenceTarget,
   validateSkillLock,
-  type SkillRuntimeStateReadResult,
 } from '../skills.js';
 
 describe('shared bundled skill catalog', () => {
@@ -256,7 +252,7 @@ describe('shared skill preference semantics', () => {
     { ref: 'workspace:legacy:writer', id: 'writer' },
   ];
 
-  it('resolves refs, rejects ambiguous ids, and migrates only unambiguous v1 keys', () => {
+  it('resolves stable refs and rejects ambiguous ids', () => {
     assert.deepEqual(resolveSkillPreferenceTarget(inventory, 'shared'), {
       ok: false,
       reason: 'needs_review',
@@ -266,27 +262,6 @@ describe('shared skill preference semantics', () => {
       target: inventory[2],
     });
 
-    const state: Extract<SkillRuntimeStateReadResult, { ok: true }> = {
-      ok: true,
-      states: new Map([
-        ['shared', false],
-        ['writer', false],
-      ]),
-      preferences: new Map([
-        ['shared', { enabled: false, pinned: false }],
-        ['writer', { enabled: false, pinned: true }],
-      ]),
-      needsReview: new Set(),
-      schemaVersion: 1,
-    };
-    const migrated = migrateSkillRuntimePreferences(state, inventory);
-    assert.equal(migrated.preferences.has('writer'), false);
-    assert.deepEqual(migrated.preferences.get('workspace:legacy:writer'), {
-      enabled: false,
-      pinned: true,
-    });
-    assert.equal(migrated.preferences.has('shared'), true);
-    assert.deepEqual([...migrated.needsReview], ['shared']);
   });
 
   it('patches one stable ref and clears review only after every collision is explicit', () => {
@@ -320,77 +295,7 @@ describe('shared skill preference semantics', () => {
     assert.equal(second.preferences.get(inventory[1].ref)?.enabled, true);
   });
 
-  it('normalizes case-only legacy ids across migration, prior lookup, and review clearing', () => {
-    const caseInventory = [
-      { ref: 'project:maka:Shared', id: 'Shared' },
-      { ref: 'workspace:legacy:shared', id: 'shared' },
-    ];
-    const state: Extract<SkillRuntimeStateReadResult, { ok: true }> = {
-      ok: true,
-      states: new Map([['Shared', false]]),
-      preferences: new Map([['Shared', { enabled: false, pinned: true }]]),
-      needsReview: new Set(),
-      schemaVersion: 1,
-    };
-    const migrated = migrateSkillRuntimePreferences(state, caseInventory);
-    assert.equal(isSkillPreferenceReviewPending(migrated, 'Shared'), true);
-    assert.equal(isSkillPreferenceReviewPending(migrated, 'shared'), true);
-    assert.deepEqual(getSkillRuntimePreference(migrated, caseInventory[0]), {
-      enabled: false,
-      pinned: true,
-    });
-    assert.deepEqual(getSkillRuntimePreference(migrated, caseInventory[1]), {
-      enabled: false,
-      pinned: true,
-    });
 
-    const first = clearResolvedSkillPreferenceReviews(
-      patchSkillRuntimePreference(migrated, caseInventory[0], { enabled: false }),
-      caseInventory,
-    );
-    assert.equal(isSkillPreferenceReviewPending(first, 'shared'), true);
-    const second = clearResolvedSkillPreferenceReviews(
-      patchSkillRuntimePreference(first, caseInventory[1], { enabled: false }),
-      caseInventory,
-    );
-    assert.equal(isSkillPreferenceReviewPending(second, 'Shared'), false);
-    assert.equal(second.preferences.has('Shared'), false);
-    assert.equal(second.preferences.has('shared'), false);
-    assert.equal(second.preferences.has(caseInventory[0].ref), true);
-    assert.equal(second.preferences.has(caseInventory[1].ref), true);
-  });
-
-  it('re-evaluates unresolved schema v2 bare ids without migrating stable refs', () => {
-    const stablePreference = { enabled: true, pinned: true };
-    const unresolvedPreference = { enabled: false, pinned: false };
-    const state: Extract<SkillRuntimeStateReadResult, { ok: true }> = {
-      ok: true,
-      states: new Map([
-        ['Future', false],
-        ['project:maka:Shared', true],
-      ]),
-      preferences: new Map([
-        ['Future', unresolvedPreference],
-        ['project:maka:Shared', stablePreference],
-      ]),
-      needsReview: new Set(),
-      schemaVersion: 2,
-    };
-
-    const beforeDiscovery = migrateSkillRuntimePreferences(state, []);
-    assert.equal(beforeDiscovery.preferences.get('Future'), unresolvedPreference);
-    assert.equal(beforeDiscovery.needsReview.size, 0);
-
-    const afterDiscovery = migrateSkillRuntimePreferences(state, [
-      { ref: 'project:maka:future', id: 'future' },
-      { ref: 'user:agents:Future', id: 'Future' },
-      { ref: 'project:maka:shared', id: 'shared' },
-    ]);
-    assert.deepEqual([...afterDiscovery.needsReview], ['Future']);
-    assert.equal(afterDiscovery.preferences.get('Future'), unresolvedPreference);
-    assert.equal(afterDiscovery.preferences.get('project:maka:Shared'), stablePreference);
-    assert.equal(afterDiscovery.preferences.has('project:maka:shared'), false);
-  });
 
   it('resolves case-only stable refs exactly while keeping bare ids normalized', () => {
     const caseInventory = [

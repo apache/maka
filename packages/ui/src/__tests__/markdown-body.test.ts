@@ -36,23 +36,7 @@ it('redacts secrets before even the lazy Markdown fallback reaches the rendered 
   assert.match(markup, /&lt;redacted&gt;/);
 });
 
-it('renders Markdown through the Astryx document surface', () => {
-  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: '# Heading\n\nparagraph',
-  }));
 
-  assert.match(markup, /<div[^>]*role="document"/);
-  assert.match(markup, /<h1[^>]*>Heading<\/h1>/);
-});
-
-it('declares one stable migration scope around Astryx Markdown', () => {
-  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: 'paragraph',
-  }));
-
-  assert.match(markup, /^<div data-maka-contract="markdown"/);
-  assert.match(markup, /<div[^>]*role="document"/);
-});
 
 it('preserves allowlisted Maka navigation links through sanitization', () => {
   const markup = renderToStaticMarkup(

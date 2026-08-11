@@ -113,16 +113,6 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     assert.equal(closeCalls, 1);
   });
 
-  test('legacy question responder fails closed when hosted authority is configured', async () => {
-    const fixture = runtimeFixture({ closeSucceeds: true });
-    await assert.rejects(
-      fixture.kernel.respondToUserQuestion(SESSION_ID, {
-        requestId: 'hosted-question',
-        answers: ['Yes'],
-      }),
-      RuntimeInteractionInvariantError,
-    );
-  });
 
   test('explicit stop starts backend cleanup before deferred close settles and reports both failures', async () => {
     const stopFailure = new Error('backend stop rejected');

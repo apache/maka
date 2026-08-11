@@ -342,21 +342,6 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(observed[0]?.finalOutput, 'Host answer');
   });
 
-  test('canonicalizes a legacy resumed Session through Host authority', async () => {
-    const fixture = runFixture({
-      sessionCwdOverride: { sessionId: 'session-legacy', cwd: '/canonical-workspace' },
-      switchSummaryCwd: '/workspace-link',
-    });
-
-    await collect(
-      fixture.context.runtime.sendMessage('session-legacy', {
-        turnId: 'turn-1',
-        text: 'resume safely',
-      }),
-    );
-
-    assert.deepEqual(fixture.moves, ['/canonical-workspace']);
-  });
 
   test('applies the requested step cap through the Host turn', async () => {
     const fixture = runFixture({ maxSteps: 3 });

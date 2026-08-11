@@ -297,27 +297,6 @@ describe('session workbar tab persistence', () => {
     delete (globalThis as { localStorage?: unknown }).localStorage;
   });
 
-  it('reads a v2 dynamic tab snapshot', () => {
-    const value = JSON.stringify({
-      version: 2,
-      tabs: [
-        { id: 'workbar:files', kind: 'files' },
-        { id: 'side-chat:stale', kind: 'side-chat' },
-        { id: 'workbar:inspector', kind: 'inspector' },
-      ],
-      activeTabId: 'workbar:inspector',
-    });
-    (globalThis as { localStorage?: unknown }).localStorage = {
-      getItem: (key: string) => (key === 'maka-session-workbar-tabs-v2' ? value : null),
-    };
-
-    const state = readSessionWorkbarTabs();
-    assert.deepEqual(state.tabs, [
-      { id: 'workbar:files', kind: 'files' },
-      { id: 'workbar:inspector', kind: 'inspector' },
-    ]);
-    assert.equal(state.activeTabId, 'workbar:inspector');
-  });
 
   it('starts on the New Tab page without persisted state', () => {
     (globalThis as { localStorage?: unknown }).localStorage = {

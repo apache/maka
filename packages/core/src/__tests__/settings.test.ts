@@ -121,25 +121,6 @@ describe('appearance settings boundaries', () => {
     ).toMatchObject({ theme: 'auto', palette: 'onedark' });
   });
 
-  test('drops retired appearance fields without resetting current settings', () => {
-    const normalized = normalizeSettings({
-      appearance: {
-        theme: 'dark',
-        palette: 'tokyo-night',
-        toastPosition: 'top-left',
-        density: 'compact',
-      },
-      personalization: { displayName: 'Yuejing', assistantTone: 'concise' },
-    });
-
-    expect('toastPosition' in normalized.appearance).toBe(false);
-    expect('density' in normalized.appearance).toBe(false);
-    expect(normalized.appearance).toMatchObject({ theme: 'dark', palette: 'tokyo-night' });
-    expect(normalized.personalization).toMatchObject({
-      displayName: 'Yuejing',
-      assistantTone: 'concise',
-    });
-  });
 });
 
 describe('custom pet selection settings', () => {

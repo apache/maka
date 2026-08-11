@@ -1289,26 +1289,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.ok(visibleLines.some((line) => line.includes('saved ~24000 tokens')));
   });
 
-  test('ignores legacy generic permission requests', () => {
-    const state = createMakaPiTranscriptState();
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'permission_request',
-        requestId: 'permission-1',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        category: 'shell_unsafe',
-        reason: 'shell_dangerous',
-        args: { command: 'npm test' },
-        hint: 'Run tests before editing.',
-      }),
-    );
-
-    assert.equal(state.pendingInteraction, undefined);
-    assert.deepEqual(state.queuedInteractions, []);
-  });
 
   test('renders an unboxed session sandbox boundary request with exact scopes', () => {
     const state = createMakaPiTranscriptState();

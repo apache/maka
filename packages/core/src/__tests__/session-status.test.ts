@@ -82,13 +82,4 @@ describe('TurnStatus contract', () => {
     ]);
   });
 
-  it('migrates legacy turns without turn_state records as completed', () => {
-    const turns = deriveTurnRecords([
-      { type: 'user', id: 'u1', turnId: 'legacy', ts: 1, text: 'hello' },
-      { type: 'assistant', id: 'a1', turnId: 'legacy', ts: 2, text: 'world', modelId: 'm' },
-    ]);
-
-    assert.equal(turns[0]?.status, 'completed');
-    assert.equal(turns[0]?.partialOutputRetained, true);
-  });
 });

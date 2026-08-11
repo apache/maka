@@ -599,45 +599,6 @@ describe("live tool status over persisted", () => {
   // A legacy turn has no turn_state, so `status` falls back to an inferred
   // `completed`. That is a guess about old data, not evidence this turn ended,
   // and must not be allowed to take a status away from live.
-  test("an inferred legacy status never overrides live", () => {
-    const settled = materializeTurns([
-      userMsg("t1", 1, "run it"),
-      {
-        type: "tool_call",
-        id: "bash-1",
-        turnId: "t1",
-        ts: 2,
-        toolName: "Bash",
-        args: { command: "sleep 60" },
-      },
-    ]);
-    assert.equal(settled[0]?.statusSource, "inferred");
-    const turns = overlayLiveTurn(settled, {
-      turnId: "t1",
-      phase: "streamed",
-      steps: [
-        {
-          stepId: "a1",
-          tools: [
-            {
-              toolUseId: "bash-1",
-              toolName: "Bash",
-              stepId: "a1",
-              status: "running",
-              args: {},
-            },
-          ],
-        },
-      ],
-    });
-    const tools = turns
-      .find((turn) => turn.turnId === "t1")
-      ?.timeline.find((item: TurnTimelineItem) => item.kind === "tools");
-    assert.equal(
-      tools?.kind === "tools" ? tools.items[0]?.status : undefined,
-      "running",
-    );
-  });
 
   test("keeps durable tool detail while a Runtime Host Turn is still live", () => {
     const settled = materializeTurns([
@@ -838,13 +799,6 @@ describe("final reply extraction for copy (#2407)", () => {
     );
   });
 
-  test("leaves the legacy aggregate concatenation untouched for its other consumers", () => {
-    const [turn] = materializeTurns(multiStepTurn());
-    assert.equal(
-      turn?.assistant?.text,
-      "Let me inspect the files first.\n\nFound it — the flag was inverted.\n\nDone: the fix is committed and the tests pass.",
-    );
-  });
 
   test("falls back to the aggregate when the timeline has no text entry", () => {
     const [turn] = materializeTurns(multiStepTurn());

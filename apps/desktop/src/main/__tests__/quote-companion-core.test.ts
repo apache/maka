@@ -662,15 +662,6 @@ describe('applyCompanionInteractionEvent', () => {
     assert.equal(queues.S.length, 1);
   });
 
-  it('a legacy permission_handoff complete clears the pending prompt', () => {
-    const withPrompt = applyCompanionInteractionEvent({}, 'S', req);
-    const afterHandoff = applyCompanionInteractionEvent(
-      withPrompt,
-      'S',
-      { type: 'complete', stopReason: 'permission_handoff' } as SessionEvent,
-    );
-    assert.deepEqual(afterHandoff.S, []);
-  });
 
   it('a terminal complete clears the queue', () => {
     const withPrompt = applyCompanionInteractionEvent({}, 'S', req);

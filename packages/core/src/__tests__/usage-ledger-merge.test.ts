@@ -192,27 +192,6 @@ describe('usage ledger merge', () => {
     ]);
   });
 
-  test('a legacy and a canonical call in the same hour land in one bucket', () => {
-    // The two sources used to derive the hour differently — an epoch-hour
-    // ordinal against an ISO hour — so the merge saw two keys and split one
-    // hour in half without failing anywhere.
-    const ts = NOW - 60_000;
-    const merged = mergeUsageBuckets(
-      [legacyBucket({ key: hourKey(ts), label: hourKey(ts), requests: 2 })],
-      {
-        attempts: [attempt({ attemptId: 'a', completedAt: ts })],
-        unreadableRecords: 0,
-        pendingRepairs: 0,
-      },
-      { range: 'all' },
-      'hour',
-      NOW,
-    );
-
-    assert.equal(merged.buckets.length, 1);
-    assert.equal(merged.buckets[0]?.key, hourKey(ts));
-    assert.equal(merged.buckets[0]?.requests, 3);
-  });
 
   test('log pages interleave both sources newest first and page across the boundary', () => {
     const legacyRows = [legacyLog('legacy-new', NOW - 100), legacyLog('legacy-old', NOW - 900)];

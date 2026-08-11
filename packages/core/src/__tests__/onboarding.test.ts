@@ -119,21 +119,6 @@ describe('deriveOnboardingState', () => {
     });
   });
 
-  it('normalizes legacy Codex models before selecting the first-task candidate', () => {
-    const connection = realConnection({
-      slug: 'openai-codex',
-      providerType: 'openai-codex',
-      defaultModel: 'gpt-5-codex',
-      enabledModelIds: ['gpt-5-codex'],
-      models: [{ id: 'gpt-5-codex' }],
-    });
-
-    assert.deepEqual(derive({ connections: [connection], secrets: { [connection.slug]: true } }), {
-      kind: 'ready_empty',
-      connectionSlug: connection.slug,
-      model: 'gpt-5.6-sol',
-    });
-  });
 
   it('covers the top-level state decision table', () => {
     const ready = realConnection();

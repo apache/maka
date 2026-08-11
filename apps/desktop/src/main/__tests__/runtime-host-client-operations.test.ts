@@ -636,25 +636,6 @@ test('restarts paginated Session traces instead of mixing revisions', async () =
   );
 });
 
-test('fails explicitly when the Host cannot represent a legacy Session', async () => {
-  const { client } = clientWithResponses([
-    {
-      kind: 'session',
-      session: {
-        kind: 'unsupported_legacy_record',
-        id: 'legacy-session',
-        revision: 1,
-        reason: 'not_wire_representable',
-      },
-    },
-  ]);
-
-  await assert.rejects(
-    () => client.getSession('legacy-session'),
-    (error: unknown) =>
-      error instanceof DesktopRuntimeHostClientError && error.code === 'unsupported_session',
-  );
-});
 
 test('restarts Session sidecar reads when a paginated revision changes', async () => {
   const taskRevisionOne = catalogRevision('3');

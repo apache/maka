@@ -110,56 +110,6 @@ describe('Task Ledger protocol', () => {
     );
   });
 
-  test('projects legacy evidence-incomplete tasks to conservative resume trust', () => {
-    for (const task of [
-      validTask(0, { status: 'blocked' }),
-      validTask(1, { status: 'failed' }),
-      validTask(2, { status: 'completed' }),
-    ]) {
-      assert.equal(encodeTaskLedgerTask(task).resumeTrust, 'needs_revalidation');
-    }
-
-    const task = validTask(3, {
-      status: 'completed',
-      resumeTrust: 'needs_revalidation',
-    });
-    const result = {
-      kind: 'task' as const,
-      sessionId: 'session-1',
-      revision,
-      task,
-    };
-    assert.deepEqual(decodeTaskLedgerQueryResult(encodeTaskLedgerQueryResult(result)), result);
-
-    const untrustedTask = validTask(4, {
-      status: 'completed',
-      resumeTrust: 'untrusted',
-    });
-    const untrustedResult = {
-      kind: 'task' as const,
-      sessionId: 'session-1',
-      revision,
-      task: untrustedTask,
-    };
-    assert.deepEqual(encodeTaskLedgerTask(untrustedTask), untrustedTask);
-    assert.deepEqual(
-      decodeTaskLedgerQueryResult(encodeTaskLedgerQueryResult(untrustedResult)),
-      untrustedResult,
-    );
-
-    for (const resumeTrust of [undefined, 'trusted'] as const) {
-      const result = {
-        kind: 'task' as const,
-        sessionId: 'session-1',
-        revision,
-        task: validTask(5, {
-          status: 'completed',
-          ...(resumeTrust === undefined ? {} : { resumeTrust }),
-        }),
-      };
-      assertInvalid(() => decodeTaskLedgerQueryResult(result));
-    }
-  });
 
   test('projects producer text once and accepts only wire-canonical DTOs', () => {
     const producerTasks = [

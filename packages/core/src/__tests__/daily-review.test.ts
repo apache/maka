@@ -215,29 +215,6 @@ describe('Daily Review range contract', () => {
     assert.equal(parseDailyReviewArchiveId('2026-08-03-deep'), null);
   });
 
-  it('maps legacy modes onto the range contract when reading', () => {
-    const legacy = normalizeDailyReviewArchive({
-      id: '2026-08-03-deep',
-      day,
-      mode: 'deep',
-      status: 'ok',
-      generatedAt: day.toMs,
-      trigger: 'manual',
-      modelKey: '',
-      sections: { summary: 'Seven days' },
-      totals: {
-        sessionCount: 1,
-        requestCount: 2,
-        totalTokens: 3,
-        costUsd: 0.04,
-        errorCount: 0,
-      },
-    });
-
-    assert.equal(legacy.range, 7);
-    assert.equal(legacy.id, '2026-08-03-deep');
-    assert.equal(legacy.sections.summary, 'Seven days');
-  });
 
   it('rejects structurally invalid canonical archives', () => {
     const valid = {

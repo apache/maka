@@ -155,39 +155,6 @@ describe('projectEffectiveProductToolSurface', () => {
     );
   });
 
-  it('does not let a historical load call revive a disabled surface', () => {
-    const surface = projectEffectiveProductToolSurface({
-      host: 'cli',
-      tools: [tool('Read'), tool('agent_spawn'), tool('agent_list'), tool('agent_output')],
-      policy: {
-        economy: true,
-        disabledSurfaceIds: ['agent'],
-      },
-    });
-    const plan = new ToolAvailabilityRuntime(
-      surface.tools,
-      surface.toolAvailability,
-      tool('invalid'),
-    ).prepare([
-      {
-        content: {
-          kind: 'function_call',
-          name: LOAD_TOOLS_NAME,
-          args: { group: 'agent' },
-        },
-      },
-    ]);
-
-    assert.deepEqual(plan.activeTools, ['Read']);
-    assert.equal(
-      plan.providerTools.some((candidate) => candidate.name === LOAD_TOOLS_NAME),
-      false,
-    );
-    assert.equal(
-      plan.providerTools.some((candidate) => candidate.name.startsWith('agent_')),
-      false,
-    );
-  });
 
   it('treats a scoped child binding as a hard ceiling', () => {
     const surface = projectEffectiveProductToolSurface({

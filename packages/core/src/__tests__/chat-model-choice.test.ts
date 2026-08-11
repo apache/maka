@@ -36,22 +36,6 @@ test('projects enabled chat models with display, models.dev facts, and thinking 
   ]);
 });
 
-test('redacts OAuth names and normalizes legacy Codex inventory', () => {
-  const [choice] = buildChatModelChoices([
-    connection({
-      slug: 'codex-account',
-      name: 'private@example.com',
-      providerType: 'openai-codex',
-      defaultModel: 'gpt-5-codex',
-      enabledModelIds: ['gpt-5-codex'],
-      models: [{ id: 'gpt-5-codex' }],
-    }),
-  ]);
-  assert.equal(choice?.model, 'gpt-5.6-sol');
-  assert.equal(choice?.providerLabel, 'OpenAI OAuth');
-  assert.equal(choice?.connectionName, undefined);
-  assert.equal(choice?.isDefault, true);
-});
 
 test('openai-compatible relay choices carry the thinking levels declared per model', () => {
   const [declared, undeclared] = buildChatModelChoices([

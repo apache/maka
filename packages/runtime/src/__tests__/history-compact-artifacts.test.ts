@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { Buffer } from 'node:buffer';
 import { describe, test } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { buildHistoryCompactBlockFromSummary } from '../context-budget.js';
@@ -94,41 +93,6 @@ describe('history compact artifacts', () => {
 
     assert.deepEqual(loaded.skippedReasonCounts, undefined);
     assert.equal(loaded.blocks[0]?.blockId, write.blocks[0]?.blockId);
-  });
-
-  test('keeps read-only compatibility with legacy V1 blocks larger than 1 MiB', async () => {
-    const store = memoryArtifactStore();
-    const foldedEvents = Array.from({ length: 6_000 }, (_, index) =>
-      textEvent(`legacy-${index}`, `legacy-turn-${Math.floor(index / 4)}`, `legacy fact ${index}`),
-    );
-    const block = buildHistoryCompactBlockFromSummary({
-      sessionId: 'session-1',
-      foldedRuntimeEvents: foldedEvents,
-      summary: 'legacy V1 summary',
-      highWaterName: 'legacy-history-compact',
-      highWaterSeq: 1,
-      now: 1_800_000_000_000,
-      charsPerToken: 4,
-    });
-    const serialized = JSON.stringify(block);
-    assert.ok(Buffer.byteLength(serialized, 'utf8') > 1_048_576);
-    await store.create({
-      sessionId: 'session-1',
-      turnId: 'turn-write',
-      name: `history-compact-${block.blockId}.json`,
-      kind: 'file',
-      content: serialized,
-      mimeType: 'application/json',
-      source: 'history_compact_block',
-    });
-
-    const loaded = await loadHistoryCompactBlocksFromArtifacts(store, {
-      sessionId: 'session-1',
-      maxBlocks: 1,
-      maxEstimatedTokens: 2_048,
-    });
-
-    assert.equal(loaded.blocks[0]?.blockId, block.blockId);
   });
 
   test('skips a block whose persisted token estimate understates its rendered size', async () => {

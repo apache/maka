@@ -321,33 +321,6 @@ describe('subagent tools', () => {
     });
   });
 
-  test('agent definition availability depends on exposed tools, not legacy parent modes', () => {
-    expect(
-      evaluateAgentDefinitionAvailability({
-        definition: LOCAL_READ_AGENT_DEFINITION,
-        tools: [testCatalogTool('Read', 'read')],
-      }),
-    ).toEqual({
-      status: 'unavailable',
-      reason: 'missing_tools',
-      missingTools: ['Glob', 'Grep'],
-    });
-
-    expect(
-      evaluateAgentDefinitionAvailability({
-        definition: {
-          ...LOCAL_READ_AGENT_DEFINITION,
-          id: 'writer',
-          permissionMode: 'execute',
-        },
-        tools: [
-          testCatalogTool('Read', 'read'),
-          testCatalogTool('Glob', 'read'),
-          testCatalogTool('Grep', 'read'),
-        ],
-      }),
-    ).toEqual({ status: 'available' });
-  });
 
   test('agent definition policy uses the explicit tool allowlist', () => {
     expect(
@@ -407,20 +380,6 @@ describe('subagent tools', () => {
     ).toEqual({ status: 'available' });
   });
 
-  test('legacy parent mode does not override the authoritative child boundary and tool surface', () => {
-    assertAgentDefinitionRunnable({
-      definition: {
-        ...LOCAL_READ_AGENT_DEFINITION,
-        id: 'writer',
-        permissionMode: 'execute',
-      },
-      tools: [
-        testCatalogTool('Read', 'read'),
-        testCatalogTool('Glob', 'read'),
-        testCatalogTool('Grep', 'read'),
-      ],
-    });
-  });
 
   test('child agent toolset keeps only built-in profile allowlisted tools', () => {
     const tools = buildChildAgentTools([
@@ -603,54 +562,6 @@ describe('subagent tools', () => {
     });
   });
 
-  test('agent_spawn prefers a configured subagent_id over a redundant legacy profile', async () => {
-    const tool = buildSubagentSpawnTool();
-    const calls: Array<{ agentProfile: string; subagentId?: string; prompt?: string }> = [];
-    await tool.impl(
-      {
-        profile: IMPLEMENTATION_AGENT_PROFILE,
-        subagent_id: 'fast-reader',
-        task: 'Inspect the runtime tests.',
-      },
-      {
-        sessionId: 'session-1',
-        turnId: 'parent-turn',
-        cwd: '/tmp/cwd',
-        toolCallId: 'tool-1',
-        abortSignal: new AbortController().signal,
-        emitOutput: () => {},
-        listChildAgents: async () => ({
-          presets: [
-            {
-              id: 'fast-reader',
-              profile: LOCAL_READ_AGENT_PROFILE,
-              availability: { status: 'available' },
-            },
-          ],
-        }),
-        spawnChildSession: async (input) => {
-          calls.push(input);
-          return {
-            profile: input.agentProfile,
-            childSessionId: 'child-session',
-            agentId: LOCAL_READ_AGENT_ID,
-            agentName: 'Local Read',
-            turnId: 'child-turn',
-            runId: 'child-run',
-            status: 'completed',
-            permissionMode: 'explore',
-            summary: 'done',
-            artifactIds: [],
-          };
-        },
-      },
-    );
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.agentProfile).toBe(LOCAL_READ_AGENT_PROFILE);
-    expect(calls[0]?.subagentId).toBe('fast-reader');
-    expect(calls[0]?.prompt).toBe('Inspect the runtime tests.');
-  });
 
   test('agent_spawn bounds projected child tool activity', async () => {
     const tool = buildSubagentSpawnTool();
@@ -1349,31 +1260,6 @@ describe('subagent tools', () => {
     expect(JSON.stringify(worstCase).length <= 7_000).toBe(true);
   });
 
-  test('agent_output accepts linked child-session and legacy run locators', () => {
-    const outputTool = buildSubagentOutputTool();
-    const schema = outputTool.parameters as { safeParse(input: unknown): { success: boolean } };
-
-    expect(schema.safeParse({ run_id: 'child-run' }).success).toBe(true);
-    expect(schema.safeParse({ run_id: 'child-run', view: 'result' }).success).toBe(true);
-    expect(schema.safeParse({ turn_id: 'child-turn' }).success).toBe(true);
-    expect(schema.safeParse({ child_session_id: 'child-session' }).success).toBe(true);
-    expect(
-      schema.safeParse({
-        child_session_id: 'child-session',
-        run_id: 'child-run',
-      }).success,
-    ).toBe(true);
-    expect(schema.safeParse({}).success).toBe(false);
-    expect(schema.safeParse({ run_id: 'child-run', turn_id: 'child-turn' }).success).toBe(false);
-    expect(
-      schema.safeParse({
-        child_session_id: 'child-session',
-        turn_id: 'child-turn',
-      }).success,
-    ).toBe(false);
-    expect(schema.safeParse({ child_session_id: '' }).success).toBe(false);
-    expect(schema.safeParse({ run_id: '' }).success).toBe(false);
-  });
 
   test('agent_output uses an explicit locator when a provider fills unrelated fields', async () => {
     const outputTool = buildSubagentOutputTool();

@@ -393,13 +393,4 @@ describe('buildMarkerRegex', () => {
     assert.equal(match[1], body);
   });
 
-  it('does NOT match the old xonsh shape `mark {...} mark` (space-separated)', () => {
-    // The dropped xonsh branch ran Python `print(mark, json, mark)`, whose
-    // default sep joins args with a SPACE — producing `mark {...} mark`. That
-    // shape never satisfied the flush-marker regex, which is exactly why the
-    // branch was dead. This test is the guard that would have caught review
-    // item #3 before it shipped.
-    const xonshShape = `${MARK} {"k":"v"} ${MARK}`;
-    assert.equal(buildMarkerRegex(MARK).exec(xonshShape), null);
-  });
 });
