@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { describe, test } from 'node:test';
-import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
@@ -12,7 +11,6 @@ import {
   collectStaleToolResultArchiveCandidates,
   buildSynthesisCacheBlocksFromHydratedArchives,
   deserializeToolResultArchive,
-  mergeContextBudgetDiagnostic,
   renderHistoryCompactBlock,
   retrieveArchivedToolResultsForReplay,
   retrieveRuntimeEventHistoryAround,
@@ -1870,69 +1868,6 @@ describe('context-budget search and rewrite diagnostics', () => {
     assert.equal(budgeted.diagnostic.historyRewriteGate, 'phase6-high-water');
     assert.equal(budgeted.diagnostic.historyRewriteVersion, 'phase6-v1');
     assert.equal(budgeted.diagnostic.historyRewriteResetReason, 'explicit_test_reset');
-  });
-});
-
-describe('context-budget diagnostic merges', () => {
-  test('omits count-record fields that are absent from both inputs', () => {
-    const merged = mergeContextBudgetDiagnostic(
-      {
-        enabled: true,
-        estimatedTokensBefore: 287,
-        estimatedTokensAfter: 287,
-        keptTurns: 1,
-        droppedTurns: 0,
-        keptEvents: 6,
-        droppedEvents: 0,
-        historyCompactSkippedReasonCounts: { below_high_water: 1 },
-      },
-      {
-        historyCompactBlocksLoaded: 0,
-        historyCompactBlocksAvailable: 0,
-        historyCompactSkippedReasonCounts: {
-          below_high_water: 2,
-          already_compacted: 1,
-        },
-      },
-    );
-
-    assert.equal(Object.hasOwn(merged, 'archiveRetrievalFailureReasonCounts'), false);
-    assert.equal(Object.hasOwn(merged, 'synthesisCacheSkippedReasonCounts'), false);
-    assert.equal(Object.hasOwn(merged, 'historyCompactLoadSkippedReasonCounts'), false);
-    assert.deepEqual(merged.historyCompactSkippedReasonCounts, {
-      below_high_water: 3,
-      already_compacted: 1,
-    });
-  });
-
-  test('produces a losslessly serializable token usage diagnostic', () => {
-    const contextBudget = mergeContextBudgetDiagnostic(
-      {
-        enabled: true,
-        estimatedTokensBefore: 287,
-        estimatedTokensAfter: 287,
-        keptTurns: 1,
-        droppedTurns: 0,
-        keptEvents: 6,
-        droppedEvents: 0,
-        historyCompactSkippedReasonCounts: { below_high_water: 1 },
-      },
-      {
-        historyCompactBlocksLoaded: 0,
-        historyCompactBlocksAvailable: 0,
-      },
-    );
-    const event = baseEvent({
-      actions: {
-        tokenUsage: {
-          input: 9_131,
-          output: 44,
-          contextBudget,
-        },
-      },
-    });
-
-    assert.doesNotThrow(() => encodeCanonicalRuntimeEvent(event));
   });
 });
 

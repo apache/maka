@@ -76,7 +76,6 @@ const TRUNCATED = process.env.MAKACU_MOCK_TRUNCATED === '1';
 let DIFFERENCE_PRESENTATION = '';
 const LAUNCH_TOOK_FOREGROUND = process.env.MAKACU_MOCK_LAUNCH_FOREGROUND === '1';
 const WINDOW_ORIGIN_Y = Number(process.env.MAKACU_MOCK_WINDOW_ORIGIN_Y || '25');
-const SELECTED_TEXT = process.env.MAKACU_MOCK_SELECTED_TEXT || '';
 const NONCE = crypto.randomBytes(16).toString('hex');
 // 1x1 transparent PNG.
 const PNG = Buffer.from(
@@ -153,7 +152,7 @@ function snapshot(includeImage) {
     },
     windowDigest: digest('window_' + snapshotSeq),
     focusedElementToken: 'el_2',
-    selectedText: SELECTED_TEXT ? { text: SELECTED_TEXT, truncated: true } : null,
+    selectedText: null,
     image: includeImage ? writeImage(id) : null,
     displays: [{
       displayId: '69732928',
@@ -390,7 +389,6 @@ function makeBackend(
     timeoutMs?: number;
     launchTookForeground?: boolean;
     windowOriginY?: number;
-    selectedText?: string;
     physicalInputRecentlyActive?: MakaCuBackendOptions['physicalInputRecentlyActive'];
     allowCompatibilityInputDispatch?: boolean;
     onTrace?: MakaCuBackendOptions['onTrace'];
@@ -427,7 +425,6 @@ function makeBackend(
   process.env.MAKACU_MOCK_TRUNCATED = opts.truncated ? '1' : '';
   process.env.MAKACU_MOCK_LAUNCH_FOREGROUND = opts.launchTookForeground ? '1' : '';
   process.env.MAKACU_MOCK_WINDOW_ORIGIN_Y = String(opts.windowOriginY ?? 25);
-  process.env.MAKACU_MOCK_SELECTED_TEXT = opts.selectedText ?? '';
   const backend = createMakaCuBackend({
     binaryPath: mockPath,
     imageDir,

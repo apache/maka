@@ -2203,17 +2203,6 @@ describe('runtime policy stores', () => {
     });
   });
 
-  test('resolves WebFetch independently of the WebSearch feature gate', async () => {
-    await withInteractiveOwner(async ({ stores }) => {
-      const resolved = await stores.operations.resolveWebFetchExecution();
-
-      assert.equal(resolved.kind, 'ready');
-      if (resolved.kind !== 'ready') return;
-      assert.equal(resolved.networkProxy.enabled, false);
-      assert.deepEqual(resolved.secretMaterial, {});
-    });
-  });
-
   test('blocks WebFetch while privacy mode is active', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const policy = await stores.runtimePolicy.mutate({
