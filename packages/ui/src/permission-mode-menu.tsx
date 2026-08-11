@@ -1,6 +1,7 @@
-import type { ChatDefaultPermissionMode, PermissionMode } from '@maka/core';
-import { CHAT_DEFAULT_PERMISSION_MODES } from '@maka/core';
-import type { UiLocale } from '@maka/core';
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import type { PermissionMode } from '@maka/core/permission';
+import { CHAT_DEFAULT_PERMISSION_MODES } from '@maka/core/settings';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   Selector,
   SelectorOption,

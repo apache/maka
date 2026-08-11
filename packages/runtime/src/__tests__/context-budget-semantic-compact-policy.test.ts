@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 
 describe('semantic compaction policy env plumbing (issue #882 PR 3)', () => {

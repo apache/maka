@@ -7,16 +7,6 @@ const CHILD_CONTINUATION_UNAVAILABLE_REASON =
   'Child Sessions must be continued through their parent agent.';
 const IMPORT_STAGING_UNAVAILABLE_REASON = 'Imported Session history is still being prepared.';
 
-export function runtimeHostAutomationSessionUnavailableReason(
-  header: Pick<SessionHeader, 'collaborationMode' | 'transcriptLedgerVersion'>,
-): string | undefined {
-  if (header.transcriptLedgerVersion === 0) return IMPORT_STAGING_UNAVAILABLE_REASON;
-  if (header.collaborationMode === 'plan') {
-    return 'Automations cannot execute while the target Session is in Plan mode.';
-  }
-  return undefined;
-}
-
 export function runtimeHostExternalTurnUnavailableReason(
   header: Pick<
     SessionHeader,

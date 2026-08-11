@@ -2,25 +2,20 @@ import { app, clipboard, dialog, ipcMain, powerSaveBlocker, shell } from "electr
 import { randomUUID } from "node:crypto";
 import { arch as osArch, homedir, release as osRelease } from "node:os";
 import { basename, join } from "node:path";
-import {
-  type ConnectionEvent,
-  type SessionChangedEvent,
-  type SessionChangedReason,
-  isBotDeliveryProvider,
-  resolveSystemUiLocale,
-  resolveUiLocale,
-} from "@maka/core";
+import { type ConnectionEvent } from '@maka/core/connections';
+import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/session';
+import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
+import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core/ui-locale';
 import {
   PROVIDER_DEFAULTS,
   providerAuthRequiresSecret,
 } from "@maka/core/llm-connections";
+import { BotRegistry, type BotIncomingMessage } from '@maka/runtime/bots';
 import {
-  BotRegistry,
   SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID,
   SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_VERSION,
-  buildMcpTools,
-  type BotIncomingMessage,
-} from "@maka/runtime";
+} from '@maka/runtime/scheduled-task-tools';
+import { buildMcpTools } from '@maka/runtime/mcp-tools';
 import { loadOrCreateRuntimeHostClientInstanceId } from "@maka/runtime-host/client";
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { McpClientManager } from "@maka/mcp";
@@ -68,7 +63,7 @@ import {
   type DesktopModelTargetResolution,
 } from "./task-submission-readiness-main.js";
 import { registerNotificationsIpc } from "./notifications-ipc-main.js";
-import { registerScheduledTaskIpc } from "./scheduled-tasks-ipc-main.js";
+import { registerMarkdownSaveIpc } from "./markdown-save-ipc-main.js";
 import { registerPetPackIpc } from "./pet-pack-import.js";
 import {
   createPermissionOverlayMain,
@@ -91,8 +86,6 @@ import { createClientSettingsEffects } from "./client-settings-effects.js";
 import { startClientSettingsWatcher } from "./client-settings-watcher.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
-import { registerRuntimeHostDailyReviewIpc } from "./runtime-host-daily-review-ipc-main.js";
-import { registerRuntimeHostInspectorIpc } from "./runtime-host-inspector-ipc-main.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { DesktopRuntimeHostCandidateControls } from "./runtime-host-desktop-candidate.js";
 import {
@@ -105,6 +98,7 @@ import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js"
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
+import { registerRuntimeHostRendererIpc } from "./runtime-host-renderer-ipc-main.js";
 import { registerRuntimeHostSearchIpc } from "./runtime-host-search-ipc-main.js";
 import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
@@ -115,7 +109,6 @@ import {
 } from "./runtime-host-settings-ipc-main.js";
 import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js";
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
-import { registerRuntimeHostWebSearchIpc } from "./runtime-host-web-search-ipc-main.js";
 import { registerRuntimeHostWorkspaceIpc } from "./runtime-host-workspace-ipc-main.js";
 import { resolveShellEnv } from "./shell-env.js";
 import {
@@ -531,10 +524,11 @@ function registerHostClientIpc(
     });
     if (frame.reason !== "fired") return;
     void client
-      .getScheduledTask(frame.taskId)
-      .then((task) => {
+      .request('scheduled-task.query', { kind: 'get', taskId: frame.taskId })
+      .then((result) => {
+        const task = result.kind === 'task' ? result.task : null;
         if (!task) return;
-        if (task.effect.kind === "agent_run" || task.effect.channel === "bot") {
+        if (task.effect.kind !== "notify" || task.effect.channel === "bot") {
           mainWindowController.send("scheduled-tasks:fired", task);
         }
       })
@@ -563,6 +557,7 @@ function registerHostClientIpc(
     client,
     emitConnectionListChanged,
   });
+  registerRuntimeHostRendererIpc({ ipcMain: scopedIpc, client });
   registerRuntimeHostArtifactsIpc({
     ipcMain: scopedIpc,
     client,
@@ -571,12 +566,7 @@ function registerHostClientIpc(
       mainWindowController.send(channel, ...args),
     showItemInFolder: (path) => shell.showItemInFolder(path),
   });
-  registerRuntimeHostDailyReviewIpc({
-    ipcMain: scopedIpc,
-    client,
-    mainWindowController,
-  });
-  registerRuntimeHostInspectorIpc({ ipcMain: scopedIpc, client });
+  registerMarkdownSaveIpc({ ipcMain: scopedIpc, mainWindowController });
   registerRuntimeHostOAuthIpc({
     ipcMain: scopedIpc,
     client,
@@ -669,12 +659,7 @@ function registerHostClientIpc(
     sendToRenderer: (channel, ...args) =>
       mainWindowController.send(channel, ...args),
   });
-  registerRuntimeHostWebSearchIpc({ ipcMain: scopedIpc, client });
   registerRuntimeHostWorkspaceIpc({ ipcMain: scopedIpc, client });
-  registerScheduledTaskIpc({
-    ipcMain: scopedIpc,
-    client,
-  });
   const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
     resolveProjectContextRoot(sessionId, {
       currentProjectRoot: () => projectRoot.current(),
@@ -817,7 +802,7 @@ function registerPersistentClientIpc(): void {
     },
     getRuntimeHostTurnTrace: async (sessionId, turnId) => {
       if (!runtimePolicyClient) throw new Error("Runtime Host is unavailable");
-      const result = await runtimePolicyClient.queryExecutionInspect({
+      const result = await runtimePolicyClient.request('execution.inspect.query', {
         kind: "turn_trace",
         sessionId,
         turnId,

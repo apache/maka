@@ -1,6 +1,6 @@
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
-import type { ProjectRecord } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
 import {
   type ProjectCatalog,
   ProjectArchivedError,

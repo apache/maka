@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { decodeStoredMessageForRecovery, type BackendKind } from '@maka/core/session';
-import type { AgentRunHeader } from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SessionEvent } from '@maka/core/events';
 import type { BackendSendInput, BackendSessionEvent } from '@maka/core/backend-types';

@@ -1,15 +1,13 @@
 import type { ToolOutputStream, ToolResultContent } from '@maka/core/events';
+import { formatQuietJsonValue, formatToolInvocationLine } from '@maka/core/tool-quiet-preview';
 import {
-  formatQuietJsonValue,
-  formatToolInvocationLine,
   isActiveShellRunStatus,
-  countDiffLineStats,
-  ptyTuiTerminalRows,
-  ptyTuiTerminalView,
-  readWriteStdinInputPreview,
   type PtyShellOutput,
   type ShellRunOperation,
-} from '@maka/core';
+} from '@maka/core/shell-run';
+import { countDiffLineStats } from '@maka/core/unified-diff';
+import { ptyTuiTerminalRows, ptyTuiTerminalView } from '@maka/core/pty-output-view';
+import { readWriteStdinInputPreview } from '@maka/core/tool-activity-args';
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import { ansi, disc } from './tui-ansi.js';
 import { colorDiff } from './tui-diff.js';
@@ -563,7 +561,7 @@ function plainResultText(entry: MakaPiToolEntry): string {
     // dumping a single-line JSON blob. It extracts headline + body from
     // known shapes (lists, text payloads, Write/Edit results, key-value) and
     // never produces escaped JSON braces (#1065). AskUserQuestion, GoalSet,
-    // Automation, and any future tool without a custom case render
+    // ScheduledTask, and any future tool without a custom case render
     // human-readable text here.
     const preview = formatQuietJsonValue(value, 'en');
     return preview.headline ? `${preview.headline}\n${preview.body}` : preview.body;
@@ -791,7 +789,7 @@ function toolInputSummary(entry: MakaPiToolEntry): string {
   // dumping raw JSON. It extracts headline fields (command/path/pattern/query/
   // name/…) and never produces escaped JSON braces (#1065). The explicit per-
   // tool cases above are an optimization for the common tools; this fallback
-  // covers Skill, AskUserQuestion, GoalSet, Automation, and any future tool.
+  // covers Skill, AskUserQuestion, GoalSet, ScheduledTask, and any future tool.
   const line = formatToolInvocationLine({ toolName: entry.toolName, args: input }, 'en');
   if (line) return limitText(line, 600);
   // Absolute last resort — still single-line for the compact header contract.

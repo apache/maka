@@ -1,4 +1,5 @@
-import type { SettingsSection, UiCatalog, UiLocale } from '@maka/core';
+import type { SettingsSection } from '@maka/core/settings';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type { SettingsNavGroup } from '../settings/nav-group-summary.js';
 
 export type SettingsNavigationCopy = {

@@ -1,4 +1,4 @@
-import type { CuAction } from '@maka/core';
+import type { CuAction } from '@maka/core/computer-use';
 import {
   convertOpenAIComputerAction,
   isOpenAIComputerActionSafeByDefault,

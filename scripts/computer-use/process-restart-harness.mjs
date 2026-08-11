@@ -1,10 +1,10 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
-import { createMakaCuBackend } from '../packages/computer-use/dist/index.js';
-import { buildComputerUseTools } from '../packages/runtime/dist/index.js';
+import { createMakaCuBackend } from '../../packages/computer-use/dist/index.js';
+import { buildComputerUseTools } from '../../packages/runtime/dist/computer-use-tools.js';
 
-const repoRoot = new URL('..', import.meta.url).pathname;
+const repoRoot = new URL('../..', import.meta.url).pathname;
 const binaryPath = join(repoRoot, 'apps/desktop/resources/bin/maka-cu');
 const labRoot = '/Users/haoqing/Documents/Learning/codex-computer-use-lab';
 const expectedAppPath = join(labRoot, 'test-app/build/Codex CUA Lab.app');

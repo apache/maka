@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AppSettings, LocalMemoryState, UiLocale } from '@maka/core';
+import type { AppSettings } from '@maka/core/settings';
+import type { LocalMemoryState } from '@maka/core/local-memory';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   appendManualLocalMemoryEntryDraft,
   findLocalMemoryEntryDraftRange,
   setLocalMemoryEntryStatusDraft,
-} from '@maka/core';
+} from '@maka/core/local-memory';
 import { useToast, useUiLocale } from '@maka/ui';
 import { openPathFailureCopy, openPathActionLabel } from '../open-path';
 import { settingsActionErrorMessage } from './settings-error-copy';

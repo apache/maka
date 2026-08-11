@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
 import { classifyAgentRunRecovery } from '../agent-run-recovery.js';
 
 describe('AgentRun startup recovery', () => {

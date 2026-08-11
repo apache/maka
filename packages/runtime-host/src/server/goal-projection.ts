@@ -1,4 +1,8 @@
-import { GOAL_CONDITION_TEXT_LIMIT, GOAL_REASON_TEXT_LIMIT, type GoalState } from '@maka/runtime';
+import {
+  GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_REASON_TEXT_LIMIT,
+  type GoalState,
+} from '@maka/runtime/goal-state';
 import { decodeGoalProjection, type GoalProjection } from '../protocol/index.js';
 
 export function projectGoalState(goal: GoalState): GoalProjection {

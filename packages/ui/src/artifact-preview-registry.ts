@@ -40,7 +40,9 @@
  *   5. Add deterministic fixture and journey coverage.
  */
 
-import type { ArtifactBinaryReadResult, ArtifactKind, UiLocale } from '@maka/core';
+import type { ArtifactBinaryReadResult, ArtifactKind } from '@maka/core/artifacts';
+
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 /**

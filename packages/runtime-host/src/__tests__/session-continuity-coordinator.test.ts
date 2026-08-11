@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { setImmediate as delayImmediate } from 'node:timers/promises';
 import test from 'node:test';
-import type { SessionEvent, ShellRunUpdate, StoredMessage } from '@maka/core';
+import type { SessionEvent, ShellRunUpdate } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
 import {
+  decodeHostFrame,
+  encodeProtocolMessage,
   type SessionTranscriptCursor,
   type SubscriptionFrame,
 } from '../protocol/index.js';

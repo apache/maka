@@ -1,4 +1,4 @@
-import type { ShellRunPatch, ShellRunRecord, ShellRunStore } from '@maka/core';
+import type { ShellRunPatch, ShellRunRecord, ShellRunStore } from '@maka/core/shell-run';
 import {
   assertStorageRootLease,
   runWithStorageRootLease,

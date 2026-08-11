@@ -27,7 +27,7 @@ import {
   SessionConfigurationRevisionConflictError,
   SessionConfigurationTransitionError,
   type SessionManager,
-} from '@maka/runtime';
+} from '@maka/runtime/session-manager';
 import {
   decodeSessionCatalogProjection,
   SESSION_CATALOG_LABEL_MAX_BYTES,

@@ -12,7 +12,7 @@ import {
   type ChatModelChoice,
   type ComposerHandle,
 } from '@maka/ui';
-import type { SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useAppShellComposerAttachments } from './use-app-shell-composer-attachments';
 import { preflightAttachmentItems } from './attachment-preflight';

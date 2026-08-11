@@ -1,6 +1,7 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { ArtifactRecord, SessionHeader, StoredMessage } from '@maka/core';
+import type { ArtifactRecord } from '@maka/core/artifacts';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import { createSqliteArtifactMetadataRepository } from '@maka/storage';
 import { ARTIFACT_SESSION_ID, header } from './seed-helpers.js';
 

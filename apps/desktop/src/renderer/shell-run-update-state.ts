@@ -1,9 +1,6 @@
-import {
-  mergeShellRunUpdate,
-  projectShellRunUpdateForSession,
-  ShellRunUpdateBuffer,
-  type ShellRunUpdate,
-} from '@maka/core';
+import { mergeShellRunUpdate, projectShellRunUpdateForSession, ShellRunUpdateBuffer } from '@maka/core/shell-run-result';
+
+import { type ShellRunUpdate } from '@maka/core/events';
 
 export type ShellRunUpdatesBySession = Record<string, Record<string, ShellRunUpdate>>;
 

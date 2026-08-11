@@ -5,14 +5,12 @@ import { describe, test } from 'node:test';
 import type { ModelMessage } from '../model-protocol.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { APICallError, type LanguageModelV4StreamPart } from '@ai-sdk/provider';
-import type {
-  AgentRunHeader,
-  AttachmentByteReader,
-  BackendSendInput,
-  LlmConnection,
-  SessionHeader,
-  StorageRef,
-} from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { AttachmentByteReader } from '@maka/core/attachments';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionHeader } from '@maka/core/session';
+import type { StorageRef } from '@maka/core/events';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';

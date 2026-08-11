@@ -27,13 +27,9 @@ import {
   migrateSqliteArtifactDatabase,
   SQLITE_ARTIFACT_SCHEMA_VERSION,
 } from './sqlite-artifact-schema.js';
-import {
-  migrateSqliteAutomationDatabase,
-  SQLITE_AUTOMATION_SCHEMA_VERSION,
-} from './sqlite-automation-schema.js';
 
 export const OPERATIONAL_STATE_DATABASE_NAME = 'runtime.sqlite';
-export const OPERATIONAL_STATE_SCHEMA_VERSION = 1;
+export const OPERATIONAL_STATE_SCHEMA_VERSION = 2;
 
 /** Resolve the authoritative on-disk path of the operational-state database. */
 export function resolveOperationalStateDatabasePath(workspaceRoot: string): string {
@@ -47,9 +43,11 @@ const OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map([
   ['workflow', SQLITE_WORKFLOW_SCHEMA_VERSION],
   ['usage', SQLITE_USAGE_SCHEMA_VERSION],
   ['artifact', SQLITE_ARTIFACT_SCHEMA_VERSION],
-  ['automation', SQLITE_AUTOMATION_SCHEMA_VERSION],
   ['operational', OPERATIONAL_STATE_SCHEMA_VERSION],
 ] as const);
+const REMOVED_OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map([
+  ['automation', 2],
+]);
 
 const require = createRequire(import.meta.url);
 const owners = new Map<string, OperationalStateDatabaseOwner>();
@@ -113,7 +111,6 @@ class OperationalStateDatabaseOwner {
       migrateSqliteWorkflowDatabase(this.database);
       migrateSqliteUsageDatabase(this.database);
       migrateSqliteArtifactDatabase(this.database);
-      migrateSqliteAutomationDatabase(this.database);
       migrateOperationalStateDatabase(this.database, options.now ?? Date.now);
     } catch (error) {
       this.database.close();
@@ -208,6 +205,14 @@ function assertOperationalSchemaCanMigrate(database: DatabaseSync): void {
     if (typeof scope !== 'string') continue;
     const supportedVersion = OPERATIONAL_SCHEMA_VERSIONS.get(scope);
     if (supportedVersion === undefined) {
+      const removedVersion = REMOVED_OPERATIONAL_SCHEMA_VERSIONS.get(scope);
+      if (removedVersion !== undefined) {
+        if (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 0) {
+          throw new Error(`Operational schema ${scope} has invalid version ${String(version)}`);
+        }
+        assertSupportedOperationalSchemaVersion(scope, version, removedVersion);
+        continue;
+      }
       throw new Error(
         `Operational schema ${scope} is unknown to this Maka build; ` +
           'Maka did not migrate or delete the database. Upgrade Maka to open this workspace.',
@@ -257,6 +262,12 @@ function migrateOperationalStateDatabase(db: DatabaseSync, now: () => number): v
       );
     `);
     const appliedAt = now();
+    db.exec(`
+      DROP TABLE IF EXISTS automation_pending_fires;
+      DROP TABLE IF EXISTS automation_definitions;
+      DROP TABLE IF EXISTS automation_authority_state;
+      DELETE FROM operational_schema_migrations WHERE scope = 'automation';
+    `);
     for (const [scope, version] of OPERATIONAL_SCHEMA_VERSIONS) {
       registerSchema(db, scope, version, appliedAt);
     }

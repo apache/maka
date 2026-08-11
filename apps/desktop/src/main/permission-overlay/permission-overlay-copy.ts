@@ -6,7 +6,7 @@
  * resolves the locale and ships the finished strings in the show payload.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type { DragGrantPermissionId } from './permission-overlay-controller.js';
 
 export interface PermissionOverlayCopy {

@@ -1,7 +1,7 @@
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
-import { classifyTerminalRuntimeLedger } from '@maka/runtime';
+import { classifyTerminalRuntimeLedger } from '@maka/runtime/terminal-run-commit';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import { TURN_FAILURE_MESSAGE_MAX_BYTES, type TurnSnapshot } from '../protocol/index.js';
 

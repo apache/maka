@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { buildSessionEnvironmentPromptFragment } from '@maka/runtime';
+import { buildSessionEnvironmentPromptFragment } from '@maka/runtime/system-prompt/session-environment-prompt';
 
 describe('session environment prompt', () => {
   it('keeps filesystem-derived values on a single prompt line', () => {

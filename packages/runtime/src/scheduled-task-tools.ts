@@ -27,7 +27,7 @@ export interface ScheduledTaskToolAuthority {
       | { kind: 'once'; runAt: number }
       | { kind: 'interval'; everySeconds: number; startAt?: number }
       | { kind: 'cron'; expression: string; startAt?: number };
-    effect: 'agent_run' | 'notify_local';
+    effect: 'session_resume' | 'agent_run' | 'notify_local';
     sessionId: string;
     maxFires?: number;
   }): Promise<ScheduledTask | { error: string }>;
@@ -68,10 +68,10 @@ const schema = z.object({
     .describe('[create] Work description or agent prompt to run when due'),
   schedule: scheduleSchema.optional(),
   effect: z
-    .enum(['agent_run', 'notify_local'])
+    .enum(['session_resume', 'agent_run', 'notify_local'])
     .optional()
     .describe(
-      '[create] agent_run (default) starts a fresh agent session; notify_local only shows a local notification',
+      '[create] session_resume (default) resumes this conversation; agent_run starts a fresh session; notify_local only shows a local notification',
     ),
   id: z.string().min(1).optional().describe('[pause|resume|delete] task id'),
   maxFires: z.number().int().min(1).max(10_000).optional(),
@@ -83,9 +83,8 @@ export function buildScheduledTaskTool(deps: { authority: ScheduledTaskToolAutho
     displayName: 'ScheduledTask',
     description:
       'Create and manage global scheduled tasks (定时任务). ' +
-      'Use for standalone recurring/one-shot work that must appear in the desktop Scheduled tasks page. ' +
-      'Default effect agent_run starts a fresh session with intentBody when due. ' +
-      'For session-internal polling use Automation instead.',
+      'Use for every recurring or one-shot task. All tasks appear in the desktop Scheduled tasks page. ' +
+      'The default session_resume effect continues this conversation; use agent_run for independent work.',
     parameters: schema,
     impl: async (raw, ctx) => {
       const input = schema.parse(raw);
@@ -108,7 +107,7 @@ export function buildScheduledTaskTool(deps: { authority: ScheduledTaskToolAutho
           title: input.title,
           intentBody: input.intentBody,
           schedule: input.schedule,
-          effect: input.effect ?? 'agent_run',
+          effect: input.effect ?? 'session_resume',
           sessionId,
           ...(input.maxFires !== undefined ? { maxFires: input.maxFires } : {}),
         });
@@ -141,7 +140,7 @@ export function buildAgentScheduledTaskCreatePayload(input: {
     | { kind: 'once'; runAt: number }
     | { kind: 'interval'; everySeconds: number; startAt?: number }
     | { kind: 'cron'; expression: string; startAt?: number };
-  effect: 'agent_run' | 'notify_local';
+  effect: 'session_resume' | 'agent_run' | 'notify_local';
   sessionId: string;
   execution?: ScheduledTaskExecutionTemplate;
   maxFires?: number;
@@ -180,6 +179,16 @@ export function buildAgentScheduledTaskCreatePayload(input: {
       intentBody: input.intentBody,
       schedule,
       effect: { kind: 'agent_run', execution: input.execution! },
+      createdBy: { kind: 'agent', sessionId: input.sessionId },
+      ...(input.maxFires !== undefined ? { maxFires: input.maxFires } : {}),
+    };
+  }
+  if (input.effect === 'session_resume') {
+    return {
+      title: input.title,
+      intentBody: input.intentBody,
+      schedule,
+      effect: { kind: 'session_resume', sessionId: input.sessionId },
       createdBy: { kind: 'agent', sessionId: input.sessionId },
       ...(input.maxFires !== undefined ? { maxFires: input.maxFires } : {}),
     };

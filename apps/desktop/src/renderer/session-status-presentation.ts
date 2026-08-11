@@ -21,8 +21,9 @@
  *     vocabulary.
  */
 
-import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core';
-import type { SessionBlockedReason, SessionSummary, UiLocale } from '@maka/core';
+import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core/sandbox-boundary';
+import type { SessionBlockedReason, SessionStatus, SessionSummary } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   describeBlockedReason,
   presentSessionStatus,

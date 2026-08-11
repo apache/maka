@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { describe, test } from 'node:test';
-import { createDefaultBotChannel } from '@maka/core';
+import { createDefaultBotChannel } from '@maka/core/bot-chat-settings';
 import { botReadinessFromSettings, botSettingsRequireRestart } from '../base-adapter.js';
 import {
   getWechatBridgeQrCode,

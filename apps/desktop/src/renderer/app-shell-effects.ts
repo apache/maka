@@ -1,21 +1,14 @@
 import { useEffect, useEffectEvent, useLayoutEffect } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
-import type {
-  ConnectionEvent,
-  SessionChangedEvent,
-  SessionEvent,
-  SessionEventStreamSnapshot,
-  SessionSummary,
-  StoredMessage,
-  ThemePalette,
-  ThemePreference,
-  UiLocale,
-} from '@maka/core';
-import {
-  generalizedErrorMessageChinese,
-  sessionExpectsEventStream,
-  type ShellRunUpdate,
-} from '@maka/core';
+import type { ConnectionEvent } from '@maka/core/connections';
+import type { SessionChangedEvent, SessionSummary, StoredMessage } from '@maka/core/session';
+import type { SessionEvent } from '@maka/core/events';
+import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
+import type { ThemePalette, ThemePreference } from '@maka/core/settings';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { sessionExpectsEventStream } from '@maka/core/session-event-health';
+import { type ShellRunUpdate } from '@maka/core/events';
 import type { LiveTurnProjection, NavSelection } from '@maka/ui';
 import { messageReadErrorMessage } from './app-shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';

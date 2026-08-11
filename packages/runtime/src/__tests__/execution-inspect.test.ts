@@ -8,8 +8,8 @@ import type {
   AgentRunEventType,
   AgentRunHeader,
   EmittedAgentRunEvent,
-  RuntimeEvent,
-} from '@maka/core';
+} from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionStore } from '@maka/storage';
 import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
 import {

@@ -5,8 +5,8 @@ import {
   mergeSettings,
   type AppSettings,
   type UpdateAppSettingsInput,
-} from '@maka/core';
-import type { BotRegistry } from '@maka/runtime';
+} from '@maka/core/settings';
+import type { BotRegistry } from '@maka/runtime/bots';
 import type { SettingsStore } from '@maka/storage';
 import {
   BotOnboardingService,

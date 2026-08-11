@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { resolveProjectRoot } from '@maka/runtime';
+import { resolveProjectRoot } from '@maka/runtime/system-prompt/project-context';
 
 export interface CurrentProjectSelection {
   projectId: string | null | undefined;

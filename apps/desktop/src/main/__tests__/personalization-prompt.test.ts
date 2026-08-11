@@ -5,7 +5,7 @@ import {
   collectPersonalizationWarnings,
   sanitizeAssistantTone,
   sanitizeDisplayName,
-} from '@maka/runtime';
+} from '@maka/runtime/system-prompt/personalization-prompt';
 
 describe('personalization prompt fragment', () => {
   test('empty personalization produces no prompt fragment', () => {

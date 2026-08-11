@@ -9,12 +9,9 @@ import type {
   AgentGraphIntentClaimRequest,
 } from '@maka/core/agent-graph-control';
 import type { ShellRunRecord } from '@maka/core/shell-run';
-import {
-  FAKE_ASK_USER_QUESTION_PROMPT,
-  FakeBackend,
-  LOCAL_READ_AGENT_DEFINITION,
-  SessionManager,
-} from '@maka/runtime';
+import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '@maka/runtime/fake-backend';
+import { LOCAL_READ_AGENT_DEFINITION } from '@maka/runtime/agent-catalog';
+import { SessionManager } from '@maka/runtime/session-manager';
 import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-admission';
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';

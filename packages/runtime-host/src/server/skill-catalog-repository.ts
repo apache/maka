@@ -12,14 +12,11 @@ import {
   getBundledSkillSource,
   gateSkillsByHostCapabilities,
   invalidSkillLockStatus,
-  isPathInside,
-  isSafeSkillId,
   isSkillPreferenceReviewPending,
   MANAGED_SKILL_BASELINE_RELATIVE_PATH,
   migrateSkillRuntimePreferences,
   missingSkillLockStatus,
   patchSkillRuntimePreference,
-  readContainedRegularFile,
   readManagedSkillSource,
   readManagedSkillSources,
   resolveManagedSkillSourcesRoot,
@@ -40,7 +37,12 @@ import {
   type SkillScanResult,
   type SkillManifest,
   type SkillPreferenceMigration,
-} from '@maka/runtime';
+} from '@maka/runtime/skills';
+import {
+  isPathInside,
+  isSafeSkillId,
+  readContainedRegularFile,
+} from '@maka/runtime/path-containment';
 import {
   SKILL_CATALOG_PAGE_MAX_BYTES,
   SKILL_CATALOG_PAGE_MAX_ITEMS,

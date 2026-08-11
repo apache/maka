@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { createDangerFullAccessPermissionProfile } from '@maka/core';
+import { createDangerFullAccessPermissionProfile } from '@maka/core/permission-profile';
 
 import { MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';

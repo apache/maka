@@ -187,7 +187,6 @@ describe('HealthSignal contract', () => {
     expect(partial.layer).toBe('feature');
     expect(partial.blocksCapability).toBe(false);
   });
-
 });
 
 function connection(patch: Partial<LlmConnection>): LlmConnection {

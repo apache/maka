@@ -1,4 +1,4 @@
-import type { ScheduledTask } from '@maka/core';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
 import {
   AlertCircle,
   Archive,

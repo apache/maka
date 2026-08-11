@@ -4,7 +4,7 @@ import type {
   UsageRange,
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
-} from "@maka/core";
+} from '@maka/core/settings';
 import type {
   CredentialLocator,
   CredentialStatus,

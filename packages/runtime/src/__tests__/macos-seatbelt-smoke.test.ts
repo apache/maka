@@ -6,11 +6,12 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 
+import { applySandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
+
 import {
-  applySandboxBoundaryExpansion,
   createWorkspaceWritePermissionProfile,
   type PermissionProfile,
-} from '@maka/core';
+} from '@maka/core/permission-profile';
 
 import { MACOS_SEATBELT_EXECUTABLE, MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';

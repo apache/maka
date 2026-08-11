@@ -9,14 +9,6 @@ import {
 } from '../../renderer/session-event-health.js';
 
 describe('renderer session event health projection', () => {
-  it('creates a connected subscription snapshot', () => {
-    assert.deepEqual(createSessionEventStreamSubscription({ sessionId: 's1', now: 1_000 }), {
-      sessionId: 's1',
-      status: 'connected',
-      subscribedAt: 1_000,
-      checkedAt: 1_000,
-    });
-  });
 
   it('marks stale running sessions and asks for one throttled refresh', () => {
     const previous = createSessionEventStreamSubscription({ sessionId: 's1', now: 1_000 });

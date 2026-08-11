@@ -1,5 +1,8 @@
 import { tmpdir } from 'node:os';
-import { assessSandboxBoundaryExpansion, type SandboxBoundaryExpansion } from '@maka/core';
+import {
+  assessSandboxBoundaryExpansion,
+  type SandboxBoundaryExpansion,
+} from '@maka/core/sandbox-boundary';
 import { z } from 'zod';
 
 import { SandboxCommandError } from './sandbox/errors.js';

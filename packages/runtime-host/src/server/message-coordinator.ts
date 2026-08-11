@@ -13,7 +13,7 @@ import {
   type RuntimeMessageAuthority,
   type RuntimeMessageRunIdentity,
   type RuntimeMessageRunOwner,
-} from '@maka/runtime';
+} from '@maka/runtime/message-authority';
 import {
   normalizeRootTurnAdmissionPayload,
   type ImmutableSteeringMessageProof,

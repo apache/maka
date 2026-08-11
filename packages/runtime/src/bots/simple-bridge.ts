@@ -1,4 +1,5 @@
-import type { BotAttachmentKind, BotChannelSettings } from '@maka/core';
+import type { BotAttachmentKind } from '@maka/core/bot-events';
+import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type { BotPlatform, BotSendOptions, BotStatus, SendCapable } from './types.js';

@@ -4,7 +4,7 @@ import {
   type BotChannelSettings,
   type BotChatSettings,
   type BotProvider,
-} from '@maka/core';
+} from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BOT_PROVIDERS } from '@maka/core/settings';
 import { DingTalkBotBridge } from './dingtalk-bridge.js';

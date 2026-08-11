@@ -1,4 +1,4 @@
-import type { SessionSummary, StoredMessage } from '@maka/core';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 
 export type SessionReadBoundaries = Record<string, number>;
 

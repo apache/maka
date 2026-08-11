@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { SandboxBoundaryRequestEvent, SessionEventStreamSnapshot, SessionSummary } from '@maka/core';
+import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
+import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
+import type { SessionSummary } from '@maka/core/session';
 import { armLiveTurn, confirmLiveTurn } from '@maka/ui';
 import { settledSessionTransientIds } from '../../renderer/settled-session-transients.js';
 import {

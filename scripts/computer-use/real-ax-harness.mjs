@@ -4,12 +4,14 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 
-import { AiSdkBackend, buildComputerUseTools, getAIModel } from '../packages/runtime/dist/index.js';
-import { createMakaCuBackend } from '../packages/computer-use/dist/index.js';
-import { createDirectRuntimeTurnLedger } from './cu-direct-runtime-ledger.mjs';
-import { sanitizeCuDirectReport } from './cu-report-sanitize.mjs';
+import { AiSdkBackend } from '../../packages/runtime/dist/ai-sdk-backend.js';
+import { buildComputerUseTools } from '../../packages/runtime/dist/computer-use-tools.js';
+import { getAIModel } from '../../packages/runtime/dist/model-factory.js';
+import { createMakaCuBackend } from '../../packages/computer-use/dist/index.js';
+import { createDirectRuntimeTurnLedger } from './direct-runtime-ledger.mjs';
+import { sanitizeCuDirectReport } from './report-sanitize.mjs';
 
-const repoRoot = new URL('..', import.meta.url).pathname;
+const repoRoot = new URL('../..', import.meta.url).pathname;
 const binaryPath = join(repoRoot, 'apps/desktop/resources/bin/maka-cu');
 const labRoot =
   process.env.MAKA_CU_AX_MODEL_LAB_ROOT ??
@@ -82,7 +84,7 @@ const reportLineage = {
   gitRevision,
   generatedAt,
   contentLineage: {
-    generator: 'scripts/cu-real-ax-model-e2e.mjs',
+    generator: 'scripts/computer-use/real-ax-harness.mjs',
     gitRevision,
     generatedAt,
   },
@@ -762,7 +764,7 @@ try {
                   : 'appkit-ax-set-value',
     policyMode: 'enforced',
     qualificationEligible: evidenceClass === 'real-runtime',
-    producer: 'cu-real-ax-model-e2e',
+    producer: 'computer-use/real-ax',
     transportClass: 'live-network',
     model: modelId,
     provider,

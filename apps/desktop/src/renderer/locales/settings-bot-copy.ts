@@ -1,5 +1,7 @@
 import type { StatusSemantic } from '@maka/ui';
-import type { BotProvider, BotReadinessState, UiCatalog, UiLocale } from '@maka/core';
+import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type WidenCopy<T> = T extends string
   ? string

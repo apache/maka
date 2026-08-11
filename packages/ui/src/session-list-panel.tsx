@@ -1,4 +1,5 @@
-import type { ScheduledTask, SessionSummary } from '@maka/core';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
+import type { SessionSummary } from '@maka/core/session';
 import {
   SegmentedControl,
   SegmentedControlItem,

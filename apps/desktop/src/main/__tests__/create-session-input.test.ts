@@ -7,8 +7,10 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { AppSettings, ChatDefaultPermissionMode } from '@maka/core';
-import { DEEP_RESEARCH_SESSION_LABEL, DEFAULT_SESSION_NAME } from '@maka/core';
+import type { AppSettings, ChatDefaultPermissionMode } from '@maka/core/settings';
+import { DEEP_RESEARCH_SESSION_LABEL } from '@maka/core/explore-agent';
+
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 
 import {
   type CreateSessionRequest,
@@ -17,7 +19,9 @@ import {
 } from '../create-session-input.js';
 
 function settings(permissionMode: ChatDefaultPermissionMode) {
-  return async () => ({ chatDefaults: { permissionMode } }) as AppSettings;
+  return async () => (({
+    chatDefaults: { permissionMode },
+  }) as AppSettings);
 }
 
 /** Anything the renderer can put on the wire, including what the type forbids:

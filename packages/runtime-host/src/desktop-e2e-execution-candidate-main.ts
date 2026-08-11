@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import type { BackendCompactHistoryInput, BackendCompactHistoryResult } from '@maka/core';
-import {
-  buildHistoryCompactCheckpoint,
-  FakeBackend,
-  type BackendFactoryContext,
-} from '@maka/runtime';
+import type {
+  BackendCompactHistoryInput,
+  BackendCompactHistoryResult,
+} from '@maka/core/backend-types';
+import { buildHistoryCompactCheckpoint } from '@maka/runtime/history-compact-checkpoint';
+import { FakeBackend } from '@maka/runtime/fake-backend';
+import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { parseInteractiveRuntimeHostCandidateArguments } from './candidate-cli.js';
 import { startExecutionRuntimeHostCandidate } from './server/execution-candidate.js';
 import { createExecutionRuntimeHostComposition } from './server/execution-composition.js';

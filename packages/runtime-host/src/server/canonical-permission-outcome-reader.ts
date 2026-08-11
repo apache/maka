@@ -1,7 +1,7 @@
 import type {
   CanonicalPermissionOutcomeReader,
   CanonicalPermissionOutcomeRecord,
-} from '@maka/runtime';
+} from '@maka/runtime/interaction-authority';
 import type { InteractionStoreReader } from '@maka/storage/interaction-store';
 
 export const CANONICAL_PERMISSION_OUTCOME_CACHE_CAPACITY = 256;

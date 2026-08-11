@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type {
-  AgentGraphIntentClaimStore,
-  AgentRunHeader,
-  RuntimeEvent,
-  SessionEvent,
-} from '@maka/core';
+import type { AgentGraphIntentClaimStore } from '@maka/core/agent-graph-control';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { SessionEvent } from '@maka/core/events';
 import { createSqliteSessionMetadataStore } from '@maka/storage';
 import type {
   AgentGraphIntentExecutor,

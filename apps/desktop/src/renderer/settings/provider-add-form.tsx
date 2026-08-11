@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import {
   OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   type ProviderType,
-} from '@maka/core';
+} from '@maka/core/llm-connections';
 import {
   PROVIDER_DEFAULTS,
   deriveConnectionSlug,

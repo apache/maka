@@ -1,17 +1,19 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import type { ModelInfo, SubscriptionActionResult } from '@maka/core';
+import type { ModelInfo } from '@maka/core/llm-connections';
+
+import type { SubscriptionActionResult } from '@maka/core/oauth-subscription';
 import {
   createGitHubCopilotAccountTokens,
-  fetchGitHubCopilotModels,
   GITHUB_COPILOT_DEFAULT_API_ENDPOINT,
   isSupportedGitHubCopilotAccountToken,
   parseOAuthSubscriptionTokens,
   resolveOAuthSubscriptionTokens,
   serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
-} from '@maka/runtime';
+} from '@maka/runtime/subscription-credentials';
+import { fetchGitHubCopilotModels } from '@maka/runtime/model-fetcher';
 import type { CredentialStore } from '@maka/storage';
 
 const GITHUB_COPILOT_CONNECTION_SLUG = 'github-copilot';

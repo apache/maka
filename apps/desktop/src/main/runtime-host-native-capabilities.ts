@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
-import type { ComputerUseToolSet, MakaTool } from "@maka/runtime";
+import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   createOAuthPresentationClientProvider,
   type ClientCapabilityProvider,

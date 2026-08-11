@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { CuAction } from '@maka/core';
-import { buildComputerUseTools } from '@maka/runtime';
+import type { CuAction } from '@maka/core/computer-use';
+import { buildComputerUseTools } from '@maka/runtime/computer-use-tools';
 import { parseObservationText } from '@maka/runtime/test-only/observation-text-reader';
 import { createComputerUseOverlayHook } from '../computer-use-overlay-hook.js';
 

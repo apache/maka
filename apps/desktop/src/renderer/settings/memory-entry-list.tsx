@@ -1,4 +1,4 @@
-import type { LocalMemoryState } from '@maka/core';
+import type { LocalMemoryState } from '@maka/core/local-memory';
 import { EmptyState } from '@astryxdesign/core';
 import { Button, MoreMenu, RelativeTime } from '@maka/ui';
 import { memoryOriginLabel } from './memory-settings-labels';

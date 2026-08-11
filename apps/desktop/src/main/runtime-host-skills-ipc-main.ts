@@ -1,9 +1,6 @@
-import type { ChatDefaultPermissionMode } from "@maka/core";
-import {
-  resolveSkillDiscoveryPaths,
-  scanSkillsWithDiagnostics,
-  type InvocableSkillEntry,
-} from "@maka/runtime";
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import { resolveSkillDiscoveryPaths, scanSkillsWithDiagnostics } from '@maka/runtime/skills';
+import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import type {
   SkillCatalogGovernanceItem,
   SkillCatalogManagedUpdateMutation,

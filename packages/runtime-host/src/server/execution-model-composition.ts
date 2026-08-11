@@ -1,28 +1,27 @@
 import { randomUUID } from 'node:crypto';
-import { createRunCompositionSnapshot } from '@maka/core';
+import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
 import { relayModelProfile } from '@maka/core/model-thinking';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { PermissionMode } from '@maka/core/permission';
+import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
 import {
-  AiSdkBackend,
   buildDefaultContextBudgetPolicy,
-  buildLlmHistorySummarizer,
-  buildPricingLookup,
-  buildProviderOptions,
-  createProviderRequestCaptureRecorder,
-  createProxiedFetchTransport,
-  getAIModel,
-  recordToolInvocation,
   resolveSelectedModelContextWindow,
-  stableHash,
-  toolAvailabilityHash,
-  toolCatalogHash,
-  type BackendFactoryContext,
+} from '@maka/runtime/context-budget-policy';
+import { buildLlmHistorySummarizer } from '@maka/runtime/history-compact-summarizer';
+import { buildPricingLookup, recordToolInvocation } from '@maka/runtime/telemetry';
+import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import { createProviderRequestCaptureRecorder } from '@maka/runtime/provider-request-telemetry';
+import {
+  createProxiedFetchTransport,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
-  type RuntimeCommitSink,
-} from '@maka/runtime';
+} from '@maka/runtime/network/scoped-fetch-transport';
+import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
+import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
+import { type BackendFactoryContext } from '@maka/runtime/session-manager';
+import { type RuntimeCommitSink } from '@maka/runtime/runtime-commit-sink';
 import {
   createAttachmentByteReader,
   persistProviderRequestCaptureArtifact,

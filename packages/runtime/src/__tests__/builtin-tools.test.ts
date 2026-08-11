@@ -15,7 +15,8 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { z } from 'zod';
-import { applySandboxBoundaryExpansion, SHELL_RUN_ID_MAX_CHARS } from '@maka/core';
+import { applySandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
+import { SHELL_RUN_ID_MAX_CHARS } from '@maka/core/shell-run';
 import {
   createWorkspaceWritePermissionProfile,
   type PermissionProfile,

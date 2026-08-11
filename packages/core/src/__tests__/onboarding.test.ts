@@ -192,7 +192,6 @@ describe('deriveOnboardingState', () => {
       }
     }
   });
-
 });
 
 describe('onboarding milestone persistence', () => {

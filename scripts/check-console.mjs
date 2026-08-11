@@ -94,10 +94,6 @@ const ALLOW = new Map([
     'picture-in-picture load failure: the one state that is otherwise silent and invisible; logs the overlay asset path and the Chromium error code only.',
   ],
   [
-    'packages/storage/src/automation-store.ts',
-    'best-effort warning when automation store read/write fails.',
-  ],
-  [
     'packages/storage/src/session-store.ts',
     'one-time legacy JSONL session import diagnostics (imported/failed counts + per-file reasons); no credentials or provider payloads.',
   ],

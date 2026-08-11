@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { StoredMessage } from '@maka/core';
+import type { StoredMessage } from '@maka/core/session';
 import { RuntimeHostSessionProjector } from '../adapter/session-projector.js';
 import type { SessionContinuitySnapshot, SubscriptionFrame } from '../protocol/index.js';
 

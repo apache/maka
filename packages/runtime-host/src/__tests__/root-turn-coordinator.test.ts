@@ -4,35 +4,39 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
 import {
-  agentGraphIdForRootSession,
-  BackendRegistry,
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
-  FakeBackend,
-  FAKE_ASK_USER_QUESTION_PROMPT,
+} from '@maka/runtime/terminal-run-commit';
+import { FakeBackend, FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime/fake-backend';
+import {
   IMPLEMENTATION_AGENT_DEFINITION,
   LOCAL_READ_AGENT_PROFILE,
-  mcpProxyToolName,
+} from '@maka/runtime/agent-catalog';
+import { mcpProxyToolName } from '@maka/runtime/mcp-tools';
+import {
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
-  RuntimeInteractionAdmissionRejectedError,
   RuntimeMessageAuthorityInvariantError,
-  SessionManager,
-  type PreparedSkillInvocationMessage,
   type RuntimeHostedRootAuthority,
+  type RuntimeMessageAuthority,
+} from '@maka/runtime/message-authority';
+import {
+  RuntimeInteractionAdmissionRejectedError,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunClosureReason,
-  type RuntimeMessageAuthority,
-} from '@maka/runtime';
+} from '@maka/runtime/interaction-authority';
+import { type PreparedSkillInvocationMessage } from '@maka/runtime/skill-invocation';
 import type {
   AgentBackend,
   BackendCompactHistoryInput,
   BackendSendInput,
 } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
-import type { MakaTool } from '@maka/runtime';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import {
   openInteractiveExecutionStoresForWrite,
@@ -1125,11 +1129,11 @@ test('worktree child Sessions reject roots outside managed child execution', asy
       () =>
         executeHostedExecutionToSettlement(fixture.coordinator, {
           sessionId: child.id,
-          turnId: 'automation-child-turn',
-          runId: 'automation-child-run',
-          userMessageId: 'automation-child-message',
-          execution: { kind: 'automation', automationId: 'automation-child' },
-          content: { text: 'Modify the child from Automation.' },
+          turnId: 'external-child-turn-2',
+          runId: 'external-child-run-2',
+          userMessageId: 'external-child-message-2',
+          execution: { kind: 'external_message' },
+          content: { text: 'Modify the child from an external message.' },
           start: async function* () {},
         }),
       RuntimeHostedRootUnavailableError,
@@ -1222,145 +1226,6 @@ test('worktree child Sessions reject roots outside managed child execution', asy
     backend?.release();
     await recoveryCoordinator?.close();
     await fixture.coordinator.close();
-    await fixture.messages.close();
-    await fixture.dispose();
-  }
-});
-
-test('hosted Automation roots preserve one admission, UserMessage, and AgentRun identity', async () => {
-  let recoveryValidationCount = 0;
-  const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
-  });
-  const automationId = 'automation-root-fixture';
-  const turnId = 'turn-automation-root';
-  const runId = 'run-automation-root';
-  const userMessageId = 'message-automation-root';
-  const prompt = '[Automation: check build]\n\nCheck the build.';
-  try {
-    await executeHostedExecutionToSettlement(fixture.coordinator, {
-      sessionId: fixture.sessionId,
-      turnId,
-      runId,
-      userMessageId,
-      execution: { kind: 'automation', automationId },
-      content: { text: prompt },
-      start: ({ runId: admittedRunId, userMessageId: admittedMessageId, onRunStarted }) =>
-        fixture.manager.sendMessage(
-          fixture.sessionId,
-          {
-            turnId,
-            text: prompt,
-            origin: { kind: 'automation', automationId },
-          },
-          {
-            runId: admittedRunId,
-            userMessageId: admittedMessageId ?? undefined,
-            durability: 'required',
-            onRunStarted,
-          },
-        ),
-    });
-
-    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
-      fixture.sessionId,
-      turnId,
-    );
-    assert.ok(admission);
-    assert.deepEqual(admission?.execution, {
-      kind: 'automation',
-      automationId,
-    });
-    assert.equal(admission?.runId, runId);
-    assert.equal(admission?.userMessageId, userMessageId);
-    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
-    assert.equal(run.status, 'completed');
-    assert.equal(run.automationId, automationId);
-    const messages = await fixture.stores.sessionStore.readMessagesSnapshot(fixture.sessionId);
-    const user = messages.find((message) => message.id === userMessageId);
-    assert.ok(user?.type === 'user');
-    if (user?.type === 'user') {
-      assert.deepEqual(user.origin, { kind: 'automation', automationId });
-      assert.equal(user.text, prompt);
-    }
-    assert.equal(fixture.drainRequested(), false);
-
-    await fixture.coordinator.close();
-    const recoveryCoordinator = fixture.createRecoveryCoordinator(() => {
-      recoveryValidationCount += 1;
-    });
-    await recoveryCoordinator.prepareRecovery();
-    assert.equal(recoveryValidationCount, 0);
-
-    await recoveryCoordinator.close();
-    await fixture.messages.close();
-  } finally {
-    await fixture.dispose();
-  }
-});
-
-test('startup recovery leaves an admitted Automation fire for its domain prerequisite gate', async () => {
-  const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
-  });
-  const automationId = 'automation-domain-recovery';
-  const turnId = 'turn-automation-domain-recovery';
-  const runId = 'run-automation-domain-recovery';
-  const userMessageId = 'message-automation-domain-recovery';
-  const content = { text: '[Automation: recovery]\n\nResume through Automation authority.' };
-  let recovery: RootTurnCoordinator | undefined;
-  let validated: RootTurnAdmission | undefined;
-  try {
-    await fixture.coordinator.close();
-    await fixture.stores.agentRunStore.admitRootTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-      proposedRunId: runId,
-      proposedUserMessageId: userMessageId,
-      execution: { kind: 'automation', automationId },
-      normalizedInput: content,
-      sourceMessages: [],
-      admittedAt: Date.now(),
-      previousRootTurnId: null,
-    });
-
-    recovery = fixture.createRecoveryCoordinator((admission) => {
-      validated = admission;
-    });
-    await recovery.prepareRecovery();
-    await recovery.recover();
-
-    const prerequisite = new Error('Capability provider is unavailable');
-    await assert.rejects(
-      recovery.admit({
-        sessionId: fixture.sessionId,
-        turnId,
-        runId,
-        userMessageId,
-        execution: { kind: 'automation', automationId },
-        content,
-        admitExecution: async () => {
-          throw prerequisite;
-        },
-        start: () => assert.fail('Automation started before its prerequisite gate'),
-      }),
-      (error) => error === prerequisite,
-    );
-
-    assert.equal(validated?.turnId, turnId);
-    assert.deepEqual(await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId), []);
-    const message = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
-      (candidate) => candidate.id === userMessageId,
-    );
-    assert.ok(message?.type === 'user');
-    if (message?.type === 'user') {
-      assert.deepEqual(message.origin, { kind: 'automation', automationId });
-      assert.equal(message.text, content.text);
-    }
-    assert.deepEqual(recovery.readRootState(fixture.sessionId), { kind: 'idle' });
-    assert.equal(fixture.drainRequested(), false);
-  } finally {
-    await recovery?.close();
     await fixture.messages.close();
     await fixture.dispose();
   }
@@ -2032,10 +1897,7 @@ test('hosted root target unavailability is retryable without poisoning the Host'
           turnId: 'turn-missing-root',
           runId: 'run-missing-root',
           userMessageId: 'message-missing-root',
-          execution: {
-            kind: 'automation',
-            automationId: 'automation-missing-root',
-          },
+          execution: { kind: 'external_message' },
           content: { text: 'Retry later.' },
           start: async function* () {},
         }),
@@ -4800,10 +4662,7 @@ async function createFailureFixture(options: {
   const artifactAuthority = artifacts
     ? new HostArtifactCoordinator(artifacts, requestDrain, sessionAdmission, stores.sessionStore)
     : undefined;
-  const createCoordinator = (
-    admissionOwner: RootAdmissionOwner,
-    assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
-  ) =>
+  const createCoordinator = (admissionOwner: RootAdmissionOwner) =>
     new RootTurnCoordinator(
       manager,
       stores,
@@ -4819,7 +4678,7 @@ async function createFailureFixture(options: {
       requestDrain,
       options.clientCapabilities,
       () => NO_EXECUTION_OBSERVER,
-      assertAutomationRecoveryAdmission,
+      undefined,
       artifactAuthority,
       options.prepareSkillInvocation,
     );
@@ -4859,9 +4718,7 @@ async function createFailureFixture(options: {
     artifacts,
     sessionAdmission,
     acquireResidency,
-    createRecoveryCoordinator: (
-      assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
-    ) => {
+    createRecoveryCoordinator: () => {
       const admissionOwner = new RootAdmissionOwner(stores.agentRunStore);
       const recoveryProjection = new CanonicalSessionProjectionReader({
         stores,
@@ -4876,7 +4733,7 @@ async function createFailureFixture(options: {
         sessionAdmission,
         requestDrain,
       );
-      coordinator = createCoordinator(admissionOwner, assertAutomationRecoveryAdmission);
+      coordinator = createCoordinator(admissionOwner);
       turnControl = new HostTurnControlCoordinator({
         executions: coordinator,
         sessionAdmission,

@@ -2,7 +2,6 @@ import { z } from 'zod';
 import { jsonSchema, zodSchema } from 'ai';
 import {
   encodedTerminalInputActionsByteLength,
-  isActiveShellRunStatus,
   normalizeTerminalInputActionDefaults,
   parseTerminalInputAction,
   TERMINAL_INPUT_MODIFIERS,
@@ -11,7 +10,8 @@ import {
   TERMINAL_MOUSE_EVENTS,
   TERMINAL_MOUSE_SCROLL_DIRECTIONS,
   type TerminalInputAction,
-} from '@maka/core';
+} from '@maka/core/terminal-input';
+import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { redactSecrets } from '@maka/core/redaction';
 import type { ToolResultContent } from '@maka/core/events';
 import type { ToolExecutionFacts } from '@maka/core/permission';

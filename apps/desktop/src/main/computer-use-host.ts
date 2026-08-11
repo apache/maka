@@ -15,7 +15,7 @@ import {
   selectComputerUseBackend,
   type SelectedComputerUseBackend,
 } from '@maka/computer-use';
-import type { CuOverlayHook } from '@maka/runtime';
+import type { CuOverlayHook } from '@maka/runtime/computer-use-types';
 
 export interface ComputerUseHostState {
   selected: SelectedComputerUseBackend;

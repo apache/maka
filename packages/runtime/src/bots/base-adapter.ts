@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { hasBotChannelCredentials, type BotChannelSettings } from '@maka/core';
+import { hasBotChannelCredentials, type BotChannelSettings } from '@maka/core/bot-chat-settings';
 import type { BotBridge, BotIncomingMessage, BotPlatform, BotStatus } from './types.js';
 
 export abstract class BaseBotAdapter extends EventEmitter implements BotBridge {

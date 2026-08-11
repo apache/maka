@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
-import {
-  projectDeepResearchClientProgress,
-  type DeepResearchRun,
-  type PlanSessionState,
-  type ShellRunUpdate,
-} from '@maka/core';
+import { projectDeepResearchClientProgress } from '@maka/core/deep-research-client-progress';
+import { type DeepResearchRun } from '@maka/core/deep-research-run';
+import { type PlanSessionState } from '@maka/core/plan';
+import { type ShellRunUpdate } from '@maka/core/events';
 import { encodeDeepResearchSnapshot } from '@maka/runtime-host/protocol';
 import {
   projectEmbeddedDeepResearch,

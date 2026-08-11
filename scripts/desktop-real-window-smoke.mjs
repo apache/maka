@@ -10,7 +10,7 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
-import { terminateChildProcessTree } from '@maka/runtime';
+import { terminateChildProcessTree } from '@maka/runtime/process-tree-terminator';
 import { closeElectronApplication } from './electron-lifecycle.mjs';
 import { buildFixtureEnv } from './fixture-env.mjs';
 import { existsSync } from 'node:fs';

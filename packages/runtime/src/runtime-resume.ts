@@ -14,7 +14,7 @@ import type {
   RuntimeBoundaryDigest,
 } from '@maka/core/runtime-boundary';
 import type { AgentRunHeader } from '@maka/core/agent-run';
-import type { ContinuationClaimStateV1 } from '@maka/core';
+import type { ContinuationClaimStateV1 } from '@maka/core/runtime-event-store';
 import { isDeepStrictEqual } from 'node:util';
 import {
   buildContinuationReplayPlan,

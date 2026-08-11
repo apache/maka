@@ -18,12 +18,10 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { BotBrandLogo } from './bot-brand-logo.js';
-import type {
-  BotProvider,
-  ScheduledTask,
-  ScheduledTaskSchedule,
-} from '@maka/core';
-import { BOT_DELIVERY_PROVIDERS, botDisplayLabel } from '@maka/core';
+import type { BotProvider } from '@maka/core/bot-chat-settings';
+import type { ScheduledTask, ScheduledTaskSchedule } from '@maka/core/scheduled-task';
+import { BOT_DELIVERY_PROVIDERS } from '@maka/core/bot-chat-settings';
+import { botDisplayLabel } from '@maka/core/bot-events';
 import {
   type ScheduledTaskFormSeed,
   formatScheduledTaskDeliveryProviderList,

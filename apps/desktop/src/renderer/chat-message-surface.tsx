@@ -1,11 +1,8 @@
 import { useMemo, type ComponentProps, type ReactNode } from 'react';
-import {
-  isDeepResearchSession,
-  type LlmConnection,
-  type OnboardingState,
-  type ProviderType,
-  type SettingsSection,
-} from '@maka/core';
+import { isDeepResearchSession } from '@maka/core/explore-agent';
+import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
+import { type OnboardingState } from '@maka/core/onboarding';
+import { type SettingsSection } from '@maka/core/settings';
 import { Skeleton } from '@astryxdesign/core';
 import { Banner, Button, ChatView, useUiLocale } from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';

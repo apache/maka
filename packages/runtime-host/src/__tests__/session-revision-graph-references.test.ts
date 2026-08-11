@@ -2,10 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
-import {
-  agentGraphIdForRootSession,
-  collectConversationCopyLinkedChildReferences,
-} from '@maka/runtime';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { collectConversationCopyLinkedChildReferences } from '@maka/runtime/conversation-copy';
 import {
   agentGraphRevisionAdmissionSessionIds,
   prepareAgentGraphRevisionReferences,

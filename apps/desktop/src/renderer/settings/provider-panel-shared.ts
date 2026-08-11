@@ -1,7 +1,5 @@
+import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
 import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-  redactSecrets,
   type ConnectionTestResult,
   type CreateConnectionInput,
   type LlmConnection,
@@ -10,9 +8,9 @@ import {
   type SavedRequestHeaders,
   type ProviderCategory,
   type ProviderType,
-  type UiLocale,
   type UpdateConnectionInput,
-} from '@maka/core';
+} from '@maka/core/llm-connections';
+import { type UiLocale } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
 import { cleanErrorMessage } from '../model-connection-errors.js';
 

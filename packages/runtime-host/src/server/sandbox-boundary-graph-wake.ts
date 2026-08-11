@@ -1,5 +1,5 @@
 import type { SessionHeader } from '@maka/core/session';
-import { agentGraphIdForRootSession } from '@maka/runtime';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 
 export interface SandboxBoundaryGraphWakeHeaderReader {
   readHeaderSnapshot(sessionId: string): Promise<Pick<SessionHeader, 'id' | 'subagentParent'>>;

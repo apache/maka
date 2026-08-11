@@ -1,12 +1,12 @@
-import type { SessionEvent } from '@maka/core';
+import type { SessionEvent } from '@maka/core/events';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import {
   drainGoalTurn,
-  type GoalTurnOutcome,
   type SessionActivityLease,
   type SessionActivityRegistry,
-} from '@maka/runtime';
+} from '@maka/runtime/goal-turn-lifecycle';
+import { type GoalTurnOutcome } from '@maka/runtime/goal-continuation';
 import {
   SkillInvocationBlockedError,
   type MakaPreparedSessionTurn,
@@ -48,7 +48,7 @@ export interface RunMakaPiTuiTurnInput {
 
 /**
  * Owns one visible TUI turn from activity reservation through full stream drain.
- * Goal continuation and Automation admission remain Runtime Host responsibilities.
+ * Goal continuation and ScheduledTask admission remain Runtime Host responsibilities.
  */
 export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<GoalTurnOutcome> {
   const { request } = input;

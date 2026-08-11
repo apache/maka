@@ -8,7 +8,7 @@ import type {
   AgentRunHeader,
   AgentRunStore,
   EmittedAgentRunEvent,
-} from '@maka/core';
+} from '@maka/core/agent-run';
 import { createSqliteAgentRunStore } from '@maka/storage';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 

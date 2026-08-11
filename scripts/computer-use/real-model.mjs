@@ -7,21 +7,17 @@ import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { evaluateCuE2eScenarioState, getCuE2eScenario } from './cu-e2e-scenarios.mjs';
-import { validateRealReport } from './cu-provider-matrix.mjs';
-import {
-  sanitizeCuActionRecord,
-  sanitizeCuReport,
-  sanitizeCuTrace,
-} from './cu-report-sanitize.mjs';
+import { evaluateCuE2eScenarioState, getCuE2eScenario } from './e2e-scenarios.mjs';
+import { validateRealReport } from './provider-matrix.mjs';
+import { sanitizeCuActionRecord, sanitizeCuReport, sanitizeCuTrace } from './report-sanitize.mjs';
 import {
   createConnectionStore,
   createFileCredentialStore,
   createSqliteAgentRunStore,
-} from '../packages/storage/dist/index.js';
+} from '../../packages/storage/dist/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(here, '..');
+const repoRoot = join(here, '../..');
 const execFileAsync = promisify(execFile);
 const sourceWorkspace = join(
   homedir(),
@@ -69,7 +65,7 @@ async function reportLineage() {
     gitRevision,
     generatedAt,
     contentLineage: {
-      generator: 'scripts/cu-real-model-launcher.mjs',
+      generator: 'scripts/computer-use/real-model.mjs',
       gitRevision,
       generatedAt,
     },
@@ -328,7 +324,7 @@ export async function discoverFixtureIdentity(
 
 async function discoverLauncherFixtureIdentity(fixturePid, windowSpecs) {
   const [{ createMakaCuBackend }, manifestText] = await Promise.all([
-    import('../packages/computer-use/dist/index.js'),
+    import('../../packages/computer-use/dist/index.js'),
     readFile(join(repoRoot, 'apps', 'desktop', 'bundled-tools.json'), 'utf8'),
   ]);
   const manifest = JSON.parse(manifestText);
@@ -425,7 +421,7 @@ async function run() {
       [
         `--remote-debugging-port=${fixturePort}`,
         '--remote-allow-origins=*',
-        join(here, 'cu-real-model-fixture.mjs'),
+        join(here, 'real-model-fixture.mjs'),
       ],
       {
         cwd: repoRoot,
@@ -600,7 +596,7 @@ async function run() {
       qualificationEligible: true,
       toolExposure: 'direct-e2e',
       scenarioId: scenario.id,
-      producer: 'cu-real-model-launcher',
+      producer: 'computer-use/real-model',
       transportClass: 'live-network',
       provider: runResult.connection.providerType,
       model: runResult.connection.model,
@@ -640,7 +636,7 @@ async function run() {
     };
     const provider = {
       id: runResult.connection.providerType,
-      producer: 'cu-real-model-launcher',
+      producer: 'computer-use/real-model',
       model: runResult.connection.model,
     };
     const provisionalReport = sanitizeCuReport(reportInput);
@@ -687,7 +683,7 @@ async function handleRunFailure(error) {
     ...lineage,
     evidenceClass: 'real-runtime',
     scenarioId: scenario.id,
-    producer: 'cu-real-model-launcher',
+    producer: 'computer-use/real-model',
     status: 'inconclusive',
     terminal: { type: 'error' },
     run: {

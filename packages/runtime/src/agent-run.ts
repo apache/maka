@@ -3,18 +3,14 @@ import type {
   AgentRunHeader,
   AgentRunStore,
   EmittedAgentRunEvent,
-  RuntimeEvent,
-  RuntimeEventStore,
-  RunCompositionSnapshot,
-  ToolBoundaryProtocol,
-} from '@maka/core';
-import {
-  decodeRunCompositionSnapshot,
-  DurableStoreWriteError,
-  RunSealedError,
-  isSessionInlineRun,
-  isTerminalRuntimeEvent,
-} from '@maka/core';
+} from '@maka/core/agent-run';
+import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { RunCompositionSnapshot } from '@maka/core/run-composition';
+import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
+import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
+import { isSessionInlineRun } from '@maka/core/agent-run';
+import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import {
   ToolLedgerCorruptionError,
   ToolLedgerRejectionError,
@@ -1240,8 +1236,8 @@ export class AgentRun {
         : {}),
       ...(this.input.userInput.agentId ? { agentId: this.input.userInput.agentId } : {}),
       ...(this.input.userInput.agentName ? { agentName: this.input.userInput.agentName } : {}),
-      ...(this.input.userInput.origin?.kind === 'automation'
-        ? { automationId: this.input.userInput.origin.automationId }
+      ...(this.input.userInput.origin?.kind === 'scheduled_task'
+        ? { scheduledTaskId: this.input.userInput.origin.scheduledTaskId }
         : {}),
       ...(this.input.userInput.origin?.kind === 'goal'
         ? { goalId: this.input.userInput.origin.goalId }

@@ -14,7 +14,9 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 
-import type { CuaBoundAction, CuObservation, CuRunContext } from '@maka/runtime';
+import type { CuaBoundAction } from '@maka/runtime/cua-frame-state';
+
+import type { CuObservation, CuRunContext } from '@maka/runtime/computer-use-types';
 import {
   createMakaCuBackend,
   type MakaCuBackendOptions,

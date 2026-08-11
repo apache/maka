@@ -9,7 +9,7 @@ const EVIDENCE_CLASSES = new Set([
   'hermetic-protocol',
   'static-contract',
 ]);
-const REAL_REPORT_PRODUCERS = new Set(['cu-real-model-launcher', 'cu-real-ax-model-e2e']);
+const REAL_REPORT_PRODUCERS = new Set(['computer-use/real-model', 'computer-use/real-ax']);
 const ACTIONS_WITHOUT_TARGET_OWNERSHIP = new Set(['list_apps', 'wait', 'cursor_position']);
 const ACTIONS_WITHOUT_OBSERVATION_LINEAGE = new Set([
   'list_apps',
@@ -287,11 +287,9 @@ export function validateRealReport(report, provider, scenario) {
     errors.push('generatedAt missing or invalid');
   if (
     report.contentLineage?.generator !==
-      `scripts/${
-        report.producer === 'cu-real-model-launcher'
-          ? 'cu-real-model-launcher.mjs'
-          : 'cu-real-ax-model-e2e.mjs'
-      }` ||
+      (report.producer === 'computer-use/real-model'
+        ? 'scripts/computer-use/real-model.mjs'
+        : 'scripts/computer-use/real-ax-harness.mjs') ||
     report.contentLineage?.gitRevision !== report.gitRevision ||
     report.contentLineage?.generatedAt !== report.generatedAt
   )
@@ -727,7 +725,7 @@ export function renderMarkdown(matrix) {
 export async function runCli(argv = process.argv.slice(2)) {
   if (argv.includes('--help') || argv.includes('-h')) {
     process.stdout.write(
-      'Usage: node scripts/cu-provider-matrix.mjs --scenarios scenarios.json ' +
+      'Usage: node scripts/computer-use.mjs provider-matrix --scenarios scenarios.json ' +
         '--providers providers.json --json matrix.json --markdown matrix.md\n',
     );
     return;

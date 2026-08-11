@@ -1,4 +1,4 @@
-import type { ProjectRecord } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
 import type { CurrentProjectSelection } from './project-root-controller.js';
 
 type DirectoryActionResult =

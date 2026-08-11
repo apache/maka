@@ -19,8 +19,9 @@ import type { RuntimePolicyReader } from '@maka/storage/runtime-policy-stores';
 import {
   buildHistoryCompactCheckpoint,
   type HistoryCompactCheckpoint,
-  type MemoryExtractionSourceSnapshot,
-} from '@maka/runtime';
+} from '@maka/runtime/history-compact-checkpoint';
+
+import { type MemoryExtractionSourceSnapshot } from '@maka/runtime/memory-extraction';
 
 import { HostMemoryExtractionCoordinator } from '../server/memory-extraction-coordinator.js';
 import { MemoryExtractionSessionLane } from '../server/memory-extraction-session-lane.js';

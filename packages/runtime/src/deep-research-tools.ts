@@ -21,13 +21,13 @@ import {
   DEEP_RESEARCH_STEP_STATUSES,
   DEEP_RESEARCH_STEP_TEXT_MAX_CHARS,
   normalizeDeepResearchObjective,
-  redactSecrets,
-  type ArtifactRecord,
   type DeepResearchRun,
   type DeepResearchArtifactRef,
   type DeepResearchEvent,
   type DeepResearchStore,
-} from '@maka/core';
+} from '@maka/core/deep-research-run';
+import { redactSecrets } from '@maka/core/redaction';
+import { type ArtifactRecord } from '@maka/core/artifacts';
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 
 export const DEEP_RESEARCH_START_TOOL_NAME = 'deep_research_start';

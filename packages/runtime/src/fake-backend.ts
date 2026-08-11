@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { BackendKind, SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
+import type { BackendKind, SessionHeader, StoredMessage } from '@maka/core/session';
+import type { SessionEvent } from '@maka/core/events';
 import type {
   AgentBackend,
   BackendSendInput,

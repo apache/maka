@@ -9,7 +9,7 @@ import {
   PRICING_MODEL_KEY_MAX_CHARS,
 } from '@maka/core/usage-stats/pricing';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
-import { BUILTIN_PRICING } from '@maka/runtime';
+import { BUILTIN_PRICING } from '@maka/runtime/telemetry';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   resolveRootControlNamespace,

@@ -12,35 +12,34 @@ import { clientCapabilityConnectionIdentity } from './fixtures/client-capability
 import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
-  createWorkspaceWritePermissionProfile,
-  decodeRunCompositionSnapshot,
-  decodeCanonicalToolResultContent,
-  type ModelCallKind,
-  type RuntimeEvent,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
+import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
+import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { type ModelCallKind } from '@maka/core/model-call-attempt';
+import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { PlanSessionState, PlanStore } from '@maka/core/plan';
 import type { TaskLedgerStore } from '@maka/core/task-ledger';
 import {
   serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
-  type BackendFactoryContext,
-  type AiSdkBackendInput,
-  type FilesystemWorkerExecuteInput,
-  type MakaTool,
-  type MakaToolContext,
+} from '@maka/runtime/subscription-credentials';
+import { type BackendFactoryContext } from '@maka/runtime/session-manager';
+import { type AiSdkBackendInput, type RunTraceEvent } from '@maka/runtime/ai-sdk-backend';
+import { type FilesystemWorkerExecuteInput } from '@maka/runtime/filesystem-worker';
+import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
+import {
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
-  type RunTraceEvent,
-  type ScannedSkill,
-  agentGraphIdForRootSession,
-  buildParentAgentTools,
-  SESSION_RECAP_INSTRUCTION,
-  createToolResultArchiveCapability,
-  stableHash,
-  toolAvailabilityHash,
-  toolCatalogHash,
-} from '@maka/runtime';
+} from '@maka/runtime/network/scoped-fetch-transport';
+import { type ScannedSkill } from '@maka/runtime/skills';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
+import { SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
+import { createToolResultArchiveCapability } from '@maka/runtime/tool-result-archive-capability';
+import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
+import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
@@ -779,7 +778,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.deepEqual(toolNames(request?.body), [
       'ArchiveRead',
       'AskUserQuestion',
-      'Automation',
       'Bash',
       'Edit',
       'ExploreAgent',
@@ -2257,11 +2255,11 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     categoryHint: 'client_capability',
     impl: async () => 'capability',
   };
-  const automationTool: MakaTool = {
-    name: 'Automation',
+  const scheduledTaskTool: MakaTool = {
+    name: 'ScheduledTask',
     description: 'A root-only Host authority outside the exact child ceiling.',
     parameters: {},
-    impl: async () => 'automation',
+    impl: async () => 'scheduled-task',
   };
   const composition = createInteractiveRunComposer({
     runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
@@ -2272,7 +2270,7 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     taskLedger: {} as TaskLedgerStore,
     boundTools: [boundTool],
     parentAgentTools: buildParentAgentTools(),
-    automationTool,
+    scheduledTaskTool,
     builtinTools: {},
     clientCapabilities: {
       tools: [capabilityTool],

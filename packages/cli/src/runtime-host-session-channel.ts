@@ -1,4 +1,5 @@
-import { decodeStoredMessageForRead, type SessionEvent, type StoredMessage } from '@maka/core';
+import { decodeStoredMessageForRead, type StoredMessage } from '@maka/core/session';
+import { type SessionEvent } from '@maka/core/events';
 import {
   RuntimeHostSessionProjector,
   isRuntimeHostTerminalTurn as isTerminalTurn,

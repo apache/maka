@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ProjectRecord } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
 import {
   ProjectArchivedError,
   type ProjectCatalog,

@@ -1,6 +1,7 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { E2eFixtureScenario, E2eFixtureState, UiLocale } from '@maka/core';
+import type { E2eFixtureScenario, E2eFixtureState } from '@maka/core/e2e-fixture';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { createFileCredentialStore, createProjectCatalog } from '@maka/storage';
 import type { CredentialStore } from '@maka/storage';
 import { resolveStorageRoot } from '@maka/storage/root-authority';

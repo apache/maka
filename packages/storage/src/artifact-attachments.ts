@@ -3,9 +3,8 @@ import {
   MAX_READ_IMAGE_BYTES,
   READ_IMAGE_TOO_LARGE_MESSAGE,
   type AttachmentByteReader,
-  type StorageRef,
-  type ToolResultContent,
-} from '@maka/core';
+} from '@maka/core/attachments';
+import { type StorageRef, type ToolResultContent } from '@maka/core/events';
 import type {
   ArtifactAuthorityStore,
   ArtifactStore,

@@ -3,16 +3,16 @@ import { createHash } from 'node:crypto';
 import { lstat, readFile, rm } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { countDiffLineStats } from '@maka/core/unified-diff';
 import {
-  countDiffLineStats,
   type GitReviewFile,
   type GitReviewFileStatus,
   type GitReviewMutationAction,
   type GitReviewMutationResult,
   type GitReviewReadResult,
   type GitReviewSource,
-} from '@maka/core';
-import { resolveProjectGitInfo, resolveProjectRoot } from '@maka/runtime';
+} from '@maka/core/git-review';
+import { resolveProjectGitInfo, resolveProjectRoot } from '@maka/runtime/system-prompt/project-context';
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 10_000;
@@ -495,10 +495,7 @@ function cleanLine(value: string): string | null {
 }
 
 function isUnbornRepositoryError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    /unknown revision|bad revision|ambiguous argument|does not have any commits/i.test(
-      error.message,
-    )
-  );
+  return (error instanceof Error && /unknown revision|bad revision|ambiguous argument|does not have any commits/i.test(
+    error.message,
+  ));
 }

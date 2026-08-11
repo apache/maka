@@ -25,7 +25,9 @@
  * source of that decision.
  */
 
-import type { TurnStatus, UiLocale } from '@maka/core';
+import type { TurnStatus } from '@maka/core/session';
+
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
 export type TurnFooterActionId = 'regenerate' | 'branch' | 'copy' | 'info';

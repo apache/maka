@@ -25,7 +25,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import type { ArtifactDescriptor } from '@maka/core';
+import type { ArtifactDescriptor } from '@maka/core/artifacts';
 import { Button, useUiLocale } from '@maka/ui';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Spinner } from '@astryxdesign/core/Spinner';

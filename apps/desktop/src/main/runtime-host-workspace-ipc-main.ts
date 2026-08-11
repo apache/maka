@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises';
-import type { GitReviewMutationAction, GitReviewSource } from '@maka/core';
+import type { GitReviewMutationAction, GitReviewSource } from '@maka/core/git-review';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import { mutateGitReview, readGitReview } from './git-review-main.js';
 import {

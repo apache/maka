@@ -1,4 +1,4 @@
-import type { AgentRunEvent, AgentRunStore } from '@maka/core';
+import type { AgentRunEvent, AgentRunStore } from '@maka/core/agent-run';
 import {
   canReplaceHistoryCompactCheckpoint,
   validateHistoryCompactCheckpointShape,

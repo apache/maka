@@ -5,7 +5,7 @@ import {
   computerUseApprovalSummary,
   COMPUTER_USE_SEMANTIC_ACTIONS,
   CU_ACTION_TYPES,
-} from '@maka/core';
+} from '@maka/core/computer-use';
 import { computerParams } from '../computer-use-codec.js';
 import { computerWireParams } from '../computer-use-tools.js';
 

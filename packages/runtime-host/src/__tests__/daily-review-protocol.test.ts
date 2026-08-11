@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { DailyReviewArchive } from '@maka/core';
+import type { DailyReviewArchive } from '@maka/core/daily-review';
 import {
   DAILY_REVIEW_PAGE_MAX_ITEMS,
   decodeDailyReviewMutateInput,

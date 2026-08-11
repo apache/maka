@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { Task } from '@maka/core';
+import type { Task } from '@maka/core/task-ledger';
 import { LocaleProvider } from '../locale-context.js';
 import { deriveTaskLedgerPanelModel, TaskLedgerPanel } from '../task-ledger-panel.js';
 

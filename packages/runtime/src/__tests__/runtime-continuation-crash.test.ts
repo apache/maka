@@ -7,7 +7,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 
-import type { AgentRunHeader, RuntimeEvent } from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionStore, createSqliteRuntimeStore } from '@maka/storage';
 import { createSqliteAgentRunStore } from '@maka/storage';
 

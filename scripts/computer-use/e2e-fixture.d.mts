@@ -1,5 +1,5 @@
 import type { BrowserWindowConstructorOptions } from 'electron';
-import type { CuE2eScenario } from './cu-e2e-scenarios.mjs';
+import type { CuE2eScenario } from './e2e-scenarios.mjs';
 
 interface FixtureWindow {
   id: number;

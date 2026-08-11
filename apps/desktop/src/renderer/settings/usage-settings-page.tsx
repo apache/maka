@@ -12,13 +12,13 @@ import {
   pixel,
   proportional,
 } from '@astryxdesign/core';
+import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import {
-  uiLocaleToIntlLocale,
   type AppSettings,
   type UpdateAppSettingsResult,
   type UsageRange,
   type UsageStats,
-} from '@maka/core';
+} from '@maka/core/settings';
 import {
   Button,
   TextInput,

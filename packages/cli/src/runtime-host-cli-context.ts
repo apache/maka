@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { NO_REAL_CONNECTION_CODE } from '@maka/core';
+import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
   connectOrSpawnRuntimeHost,

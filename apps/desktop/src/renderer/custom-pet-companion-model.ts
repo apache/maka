@@ -1,10 +1,6 @@
-import type {
-  PetActivityState,
-  PetAnimationV1,
-  PetPackManifestV1,
-  PetSpriteSheetV1,
-  SessionStatus,
-} from '@maka/core';
+import type { PetActivityState, PetAnimationV1, PetPackManifestV1, PetSpriteSheetV1 } from '@maka/core/pet';
+
+import type { SessionStatus } from '@maka/core/session';
 
 export interface PetCompanionSource {
   getSelection(): Promise<string | null>;

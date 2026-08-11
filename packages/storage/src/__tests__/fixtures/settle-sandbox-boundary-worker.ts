@@ -1,6 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 
-import type { SandboxBoundarySettlement } from '@maka/core';
+import type { SandboxBoundarySettlement } from '@maka/core/sandbox-boundary';
 
 import { createSqliteSessionMetadataStore } from '../../sqlite-session-metadata-store.js';
 

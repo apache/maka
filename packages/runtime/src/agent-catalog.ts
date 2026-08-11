@@ -4,7 +4,11 @@ import {
   type PolicyDecision,
   type ToolCategory,
 } from '@maka/core/permission';
-import { SUBAGENT_PROFILES, type SubagentPreset, type SubagentProfile } from '@maka/core';
+import {
+  SUBAGENT_PROFILES,
+  type SubagentPreset,
+  type SubagentProfile,
+} from '@maka/core/subagent-settings';
 import type { MakaTool } from './tool-runtime.js';
 
 export const LOCAL_READ_AGENT_ID = 'local-read';

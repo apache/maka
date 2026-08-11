@@ -1,4 +1,4 @@
-import { resolveSystemUiLocale, type UiLocale } from '@maka/core';
+import { resolveSystemUiLocale, type UiLocale } from '@maka/core/ui-locale';
 import { useEffect, useState } from 'react';
 
 export function readSystemUiLocale(): UiLocale {

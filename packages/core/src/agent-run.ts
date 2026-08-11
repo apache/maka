@@ -58,7 +58,7 @@ export type RootExecutionDescriptor =
     }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }
-  | { kind: 'automation'; automationId: string }
+  | { kind: 'scheduled_task'; scheduledTaskId: string }
   | { kind: 'goal'; goalId: string }
   | {
       kind: 'agent_graph_supervisor_wake';
@@ -164,8 +164,8 @@ export interface AgentRunHeader {
   parentSessionId?: string;
   /** Durable claim that this run is the continuation child for one source boundary. */
   continuationSource?: AgentRunContinuationSource;
-  /** Non-user trigger for this run (e.g. a scheduled automation fire). */
-  automationId?: string;
+  /** ScheduledTask that triggered this host-authored Run. */
+  scheduledTaskId?: string;
   /** Host-owned Goal generation that triggered this continuation Run. */
   goalId?: string;
   /** Durable graph milestone that caused this host-authored supervisor turn. */
@@ -186,7 +186,7 @@ type HostedRootExecutionDescriptor = Extract<
     kind:
       | 'regenerate'
       | 'context_compact'
-      | 'automation'
+      | 'scheduled_task'
       | 'goal'
       | 'agent_graph_supervisor_wake'
       | 'safe_boundary_continuation';
@@ -211,7 +211,7 @@ export function agentRunMatchesHostedRootExecution(
       run.branchOfTurnId === undefined &&
       run.parentSessionId === undefined &&
       run.continuationSource === undefined &&
-      run.automationId === undefined &&
+      run.scheduledTaskId === undefined &&
       run.goalId === undefined &&
       run.agentGraphWakeId === undefined &&
       run.agentGraphWakeAttemptId === undefined
@@ -231,7 +231,7 @@ export function agentRunMatchesHostedRootExecution(
       run.branchOfTurnId === undefined &&
       run.parentSessionId === undefined &&
       run.continuationSource === undefined &&
-      run.automationId === undefined &&
+      run.scheduledTaskId === undefined &&
       run.goalId === undefined &&
       run.agentGraphWakeId === undefined &&
       run.agentGraphWakeAttemptId === undefined
@@ -261,7 +261,7 @@ export function agentRunMatchesHostedRootExecution(
       run.regeneratedFromTurnId === undefined &&
       run.branchOfTurnId === undefined &&
       run.parentSessionId === undefined &&
-      run.automationId === undefined &&
+      run.scheduledTaskId === undefined &&
       run.goalId === undefined &&
       run.agentGraphWakeId === undefined &&
       run.agentGraphWakeAttemptId === undefined
@@ -292,9 +292,9 @@ function hostedRootAuthorityMatches(
   >,
 ): boolean {
   switch (execution.kind) {
-    case 'automation':
+    case 'scheduled_task':
       return (
-        run.automationId === execution.automationId &&
+        run.scheduledTaskId === execution.scheduledTaskId &&
         run.goalId === undefined &&
         run.agentGraphWakeId === undefined &&
         run.agentGraphWakeAttemptId === undefined
@@ -302,7 +302,7 @@ function hostedRootAuthorityMatches(
     case 'goal':
       return (
         run.goalId === execution.goalId &&
-        run.automationId === undefined &&
+        run.scheduledTaskId === undefined &&
         run.agentGraphWakeId === undefined &&
         run.agentGraphWakeAttemptId === undefined
       );
@@ -314,7 +314,7 @@ function hostedRootAuthorityMatches(
         run.orchestrationMode === 'graph' &&
         run.orchestrationSource === 'turn_override' &&
         run.agentSwarmAuthorization === 'none' &&
-        run.automationId === undefined &&
+        run.scheduledTaskId === undefined &&
         run.goalId === undefined
       );
   }
@@ -446,7 +446,7 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'parentSessionId',
     'workspaceIdentity',
     'continuationSource',
-    'automationId',
+    'scheduledTaskId',
     'goalId',
     'agentGraphWakeId',
     'agentGraphWakeAttemptId',
@@ -492,7 +492,10 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     (value.agentSwarmAuthorization === undefined ||
       isAgentSwarmAuthorizationSource(value.agentSwarmAuthorization)) &&
     (value.rootExecutionKind === undefined || value.rootExecutionKind === 'context_compact') &&
-    !(value.automationId !== undefined && value.goalId !== undefined) &&
+    Number(value.scheduledTaskId !== undefined) +
+      Number(value.goalId !== undefined) +
+      Number(value.agentGraphWakeId !== undefined) <=
+      1 &&
     (value.toolMode === undefined || isToolMode(value.toolMode)) &&
     (value.runComposition === undefined || isRunCompositionSnapshot(value.runComposition)) &&
     isFiniteNumber(value.createdAt) &&
@@ -511,7 +514,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       value.branchOfTurnId,
       value.parentSessionId,
       value.workspaceIdentity,
-      value.automationId,
+      value.scheduledTaskId,
       value.goalId,
       value.agentGraphWakeId,
       value.agentGraphWakeAttemptId,

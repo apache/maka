@@ -1,5 +1,11 @@
 import { useMemo, useState } from 'react';
-import type { ChatModelChoice, LlmConnection, SessionSendProjection, SessionSummary, SettingsSection, ThinkingLevel, UiLocale } from '@maka/core';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionSendProjection } from '@maka/core/session-send-projection';
+import type { SessionSummary } from '@maka/core/session';
+import type { SettingsSection } from '@maka/core/settings';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   chatModelChoiceLabel,
   normalizeActiveChatModel,

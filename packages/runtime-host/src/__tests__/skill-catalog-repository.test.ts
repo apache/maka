@@ -8,7 +8,7 @@ import {
   BUNDLED_SKILL_CATALOG,
   buildStarterSkillTemplate,
   createManagedSkillLock,
-} from '@maka/runtime';
+} from '@maka/runtime/skills';
 import {
   decodeHostFrame,
   isSkillCatalogProjectRootLexicallyAbsolute,

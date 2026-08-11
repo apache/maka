@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-import { DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS } from '@maka/runtime';
+import { DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS } from '@maka/runtime/computer-use-tools';
 
 import {
   CODEX_CURSOR_MOTION,

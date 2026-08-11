@@ -1,11 +1,12 @@
-import type { SessionEventStreamSnapshot, SessionStatus } from '@maka/core';
-import { isInFlightToolStatus } from '@maka/core';
+import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
+import type { SessionStatus } from '@maka/core/session';
+import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import type { ToolActivityItem } from '@maka/ui';
 import {
   deriveSessionEventStreamStatus,
   sessionExpectsEventStream,
   shouldRefreshStaleSessionEventStream,
-} from '@maka/core';
+} from '@maka/core/session-event-health';
 
 export function createSessionEventStreamSubscription(input: {
   sessionId: string;

@@ -3,11 +3,9 @@ import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import {
-  applySandboxBoundaryExpansion,
-  createWorkspaceWritePermissionProfile,
-  type ExecutionBoundary,
-} from '@maka/core';
+import { applySandboxBoundaryExpansion, type ExecutionBoundary } from '@maka/core/sandbox-boundary';
+
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 
 import {
   FilesystemWorkerClient,

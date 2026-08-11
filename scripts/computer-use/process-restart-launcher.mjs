@@ -5,9 +5,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(here, '..');
-const harnessPath = join(here, 'cu-process-restart-e2e.mjs');
-const monitorPath = join(here, 'cu-real-e2e-monitor.swift');
+const repoRoot = join(here, '../..');
+const harnessPath = join(here, 'process-restart-harness.mjs');
+const monitorPath = join(here, 'real-e2e-monitor.swift');
 const labRoot = '/Users/haoqing/Documents/Learning/codex-computer-use-lab';
 const statePath = join(labRoot, 'test-app', 'runtime', 'state.json');
 const SOAK_ROUNDS = 5;
@@ -40,7 +40,7 @@ async function runBuilds() {
       cwd: repoRoot,
     });
   }
-  await runChild('npm', ['run', 'prepare:maka-cu'], { cwd: repoRoot });
+  await runChild(process.execPath, ['scripts/computer-use.mjs', 'prepare'], { cwd: repoRoot });
 }
 
 async function frontmostApplication() {

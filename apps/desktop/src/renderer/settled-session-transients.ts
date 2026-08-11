@@ -1,4 +1,4 @@
-import type { SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
 import type { LiveTurnProjection } from '@maka/ui';
 
 /**
@@ -19,7 +19,7 @@ import type { LiveTurnProjection } from '@maka/ui';
  * and no session-level status may be read as an answer. It is cleared by the
  * first word about that exact turn — its start, its failure to start, its end,
  * or any of its events — so a status change caused by some OTHER turn (another
- * client, an automation) cannot release it early.
+ * client, a scheduled task) cannot release it early.
  */
 export function settledSessionTransientIds(options: {
   activeId?: string;

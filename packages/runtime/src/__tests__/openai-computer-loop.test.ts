@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { CuAction } from '@maka/core';
+import type { CuAction } from '@maka/core/computer-use';
 import { runOpenAIComputerLoop } from '../openai-computer-loop.js';
 import type { OpenAIComputerRequest } from '../openai-computer-codec.js';
 

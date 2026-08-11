@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { ScheduledTask } from '@maka/core';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
 import {
   decodeScheduledTaskQueryResult,
   decodeClientFrame,

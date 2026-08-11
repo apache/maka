@@ -1,11 +1,8 @@
 import type { IpcMain } from "electron";
-import type {
-  ActiveInteractionRequestEvent,
-  CreateSessionRequestInput,
-  SessionChangedEvent,
-  SessionChangedReason,
-} from "@maka/core";
-import type { BotRegistry } from "@maka/runtime";
+import type { ActiveInteractionRequestEvent } from '@maka/core/events';
+import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
+import type { SessionChangedEvent, SessionChangedReason } from '@maka/core/session';
+import type { BotRegistry } from '@maka/runtime/bots';
 import {
   connectOrSpawnRuntimeHost,
   waitForRuntimeHostReady,

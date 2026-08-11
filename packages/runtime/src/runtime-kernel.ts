@@ -1,14 +1,11 @@
+import type { AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
+import type { ContinuationClaimV1, ImmutableRuntimePrefixV1 } from '@maka/core/runtime-boundary';
+import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
 import type {
-  AgentRunHeader,
-  AgentRunStore,
-  ContinuationClaimV1,
-  ImmutableRuntimePrefixV1,
-  RuntimeEvent,
   RuntimeContinuationAuthorityStore,
   RuntimeEventStore,
-  ToolBoundaryProtocol,
-} from '@maka/core';
-import { isSessionInlineRun } from '@maka/core';
+} from '@maka/core/runtime-event-store';
+import { isSessionInlineRun } from '@maka/core/agent-run';
 import type {
   ActiveInteractionRequestEvent,
   CompleteEvent,

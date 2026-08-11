@@ -1,4 +1,4 @@
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type BackgroundTerminalStatus = 'running' | 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'orphaned';
 type WebCredentialCopyKey = 'env' | 'settings' | 'missing' | 'unknown';
@@ -58,14 +58,6 @@ export interface ToolActivityCopy {
       'move' | 'left' | 'right' | 'middle' | 'double' | 'triple' | 'down' | 'up' | 'drag',
       string
     >;
-  };
-  automation: {
-    created: (name: string) => string;
-    nextFire: (value: string) => string;
-    deleted: string;
-    notFound: string;
-    list: (count: number) => string;
-    empty: string;
   };
   loadTools: {
     displayName: string;
@@ -197,7 +189,6 @@ const TOOL_ACTIVITY_COPY = {
         drag: '拖动',
       },
     },
-    automation: { created: (name) => `自动化任务已创建：${name}`, nextFire: (value) => `下次触发：${value}`, deleted: '自动化任务已删除', notFound: '未找到该任务（可能已完成或已删除）', list: (count) => `自动化任务列表 (${count})`, empty: '当前会话暂无自动化任务' },
     loadTools: { displayName: '加载工具组', loaded: (namespace) => namespace ? `已加载 ${namespace} 工具组` : '已加载工具组', count: (n) => `新增 ${n} 个可用工具：`, footer: '下一步即可调用' },
     permissionDenied: '用户已拒绝权限请求',
     result: {
@@ -255,7 +246,6 @@ const TOOL_ACTIVITY_COPY = {
         drag: 'Drag',
       },
     },
-    automation: { created: (name) => `Automation created: ${name}`, nextFire: (value) => `Next run: ${value}`, deleted: 'Automation deleted', notFound: 'Automation not found (it may have completed or been deleted)', list: (count) => `Automations (${count})`, empty: 'No automations in this conversation' },
     loadTools: { displayName: 'Load tools', loaded: (namespace) => namespace ? `Loaded ${namespace} tools` : 'Loaded tools', count: (n) => `Added ${n} available ${n === 1 ? 'tool' : 'tools'}:`, footer: 'Ready to use' },
     permissionDenied: 'User denied the permission request',
     result: {

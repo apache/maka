@@ -1,14 +1,14 @@
 import {
   createOpenAIStrictObjectSchema,
   projectOpenAIStrictFunctionArgs,
-} from '../packages/runtime/dist/index.js';
+} from '../../packages/runtime/dist/openai-strict-function.js';
 import {
   createSyntheticComputerScenario,
   canonicalizeSyntheticComputerArgs,
   SYNTHETIC_COMPUTER_ALLOWED_KEYS,
   SYNTHETIC_COMPUTER_KNOWN_KEYS,
   SYNTHETIC_COMPUTER_TOOL_PROPERTIES,
-} from './cu-synthetic-model-scenario.mjs';
+} from './synthetic-model-scenario.mjs';
 
 const baseUrl = process.env.MAKA_CU_MODEL_BASE_URL ?? 'http://127.0.0.1:8538/v1';
 const model = process.env.MAKA_CU_MODEL_ID ?? 'gpt-5.6-sol';

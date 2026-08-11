@@ -20,118 +20,359 @@ import type {
   DesktopDiagnosticCopyResult,
   DesktopErrorDiagnosticInput,
 } from './diagnostics-contract.js';
+import type { ConnectionEvent } from '@maka/core/connections';
 import type {
-  ConnectionEvent,
   ConnectionTestResult,
   CreateConnectionInput,
-  AppSettings,
-  BotProvider,
-  BotOnboardingSnapshot,
-  BotOnboardingStartInput,
-  HealthSnapshot,
-  ExecutionBoundaryReadModel,
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
-  ActiveInteractionRequestEvent,
-  SandboxBoundaryResponse,
-  UserQuestionResponse,
-  PermissionMode,
-  CollaborationMode,
-  OrchestrationMode,
-  TurnOrchestration,
-  PlanSessionState,
-  SearchErrorReason,
-  SearchRequest,
-  SearchResult,
-  SettingsTestResult,
-  SessionCommand,
-  SessionChangedEvent,
-  SessionEvent,
-  SessionListFilter,
-  SessionSummary,
-  ShellRunUpdate,
-  StoredMessage,
-  ThinkingLevel,
   UpdateConnectionInput,
+} from '@maka/core/llm-connections';
+import type {
+  AppSettings,
+  SettingsTestResult,
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
   UsageRange,
   UsageStats,
-  E2eFixtureState,
-  ExternalSessionSummary,
+  ThemePreference,
+} from '@maka/core/settings';
+import type { BotProvider } from '@maka/core/bot-chat-settings';
+import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/bot-onboarding';
+import type { HealthSnapshot } from '@maka/core/health';
+import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type {
+  ActiveInteractionRequestEvent,
+  SessionCommand,
+  SessionEvent,
+  ShellRunUpdate,
+  QueueEnqueueOutcome,
+} from '@maka/core/events';
+import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { PermissionMode } from '@maka/core/permission';
+import type { CollaborationMode } from '@maka/core/collaboration';
+import type { OrchestrationMode } from '@maka/core/orchestration';
+import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
+import type { PlanSessionState } from '@maka/core/plan';
+import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
+import type { SessionChangedEvent, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { E2eFixtureState } from '@maka/core/e2e-fixture';
+import type { ExternalSessionSummary } from '@maka/core/external-session';
+import type {
   GitReviewReadResult,
   GitReviewMutationAction,
   GitReviewMutationResult,
   GitReviewSource,
+} from '@maka/core/git-review';
+import type {
   ArtifactBinaryReadResult,
   ArtifactChangedEvent,
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
-  CapabilitySnapshotCollection,
-  RegenerateTurnInput,
-  TurnRecord,
-  PermissionSnapshot,
-  LocalMemoryEntryPreview,
-  LocalMemoryState,
+} from '@maka/core/artifacts';
+import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/core/capabilities';
+import type { LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
+import type {
   AuthorizationUrlPayload,
   SubscriptionAccountState,
   SubscriptionActionResult,
-  CreateScheduledTaskInput,
-  ScheduledTask,
-  UpdateScheduledTaskInput,
-  ProjectRecord,
+} from '@maka/core/oauth-subscription';
+import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
+import type { ProjectRecord } from '@maka/core/project';
+import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
-  QueueEnqueueOutcome,
   DailyReviewConfig,
   DailyReviewRange,
   DailyReviewSummary,
-  WebSearchProvider,
-  WebSearchResponse,
-  BrowserState,
-  BrowserViewRect,
-  ThemePreference,
-  Task,
-  TaskLedgerChangedEvent,
-  DeepResearchChangedEvent,
-  DeepResearchClientProgress,
-} from '@maka/core';
-import type { SessionTrace } from '@maka/core/session-trace';
+} from '@maka/core/daily-review';
+import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
+import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
+import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
+import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
+import {
+  isWebSearchProvider,
+  MASKED_TOKEN_SENTINEL,
+  normalizeWebSearchLimit,
+  normalizeWebSearchQuery,
+} from '@maka/core/web-search';
+import {
+  isSessionTrace,
+  type SessionTrace,
+} from '@maka/core/session-trace';
+import {
+  DAILY_REVIEW_RANGES,
+  normalizeDailyReviewConfig,
+} from '@maka/core/daily-review';
 import type {
   AgentGraphClientSnapshot,
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
-  BotStatus,
-  ShellRunPtyDataEvent,
-  ShellRunPtySnapshot,
-  WechatBridgeQrCodeResult,
-} from '@maka/runtime';
-import type { GoalState } from '@maka/runtime';
+} from '@maka/runtime/stream-graph-read-model';
+import type { BotStatus, WechatBridgeQrCodeResult } from '@maka/runtime/bots';
+import type { ShellRunPtyDataEvent, ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
+import type { GoalState } from '@maka/runtime/goal-state';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from '@maka/ui';
 import type { ConfigCategory } from '@maka/storage';
-import type { TestProxyInput } from '@maka/core/settings/network-settings';
+import {
+  SENSITIVE_PLACEHOLDER,
+  type TestProxyInput,
+} from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
-import type { CreateSessionRequestInput } from '@maka/core';
+import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigFile,
   McpServerConfig,
   McpServerStatus,
   McpTestResult,
 } from '@maka/core/mcp';
-import type {
-  AttachmentRef,
-  InlineReference,
-  OnboardingMilestoneId,
-  QuoteRef,
-} from '@maka/core';
+import type { AttachmentRef, InlineReference, QuoteRef } from '@maka/core/events';
+import type { OnboardingMilestoneId } from '@maka/core/onboarding';
+import {
+  SCHEDULED_TASK_CATALOG_MAX_ITEMS,
+  type OperationInput,
+  type OperationOutput,
+} from '@maka/runtime-host/protocol';
 
 type LocalMemoryMutationResult =
   | { ok: true; state: LocalMemoryState; entry?: LocalMemoryEntryPreview; proposal?: LocalMemoryEntryPreview }
   | { ok: false; state: LocalMemoryState; reason: string; message: string };
 
+const runtimeHost: MakaBridge['runtimeHost'] = {
+  query(operation, input) {
+    return ipcRenderer.invoke('runtime-host:query', operation, input);
+  },
+  command(operation, input) {
+    return ipcRenderer.invoke('runtime-host:command', operation, input);
+  },
+};
+
+async function listScheduledTasks(): Promise<ScheduledTask[]> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const tasks: ScheduledTask[] = [];
+    const taskIds = new Set<string>();
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    let revision: number | undefined;
+    let retry = false;
+    do {
+      const result = await runtimeHost.query('scheduled-task.query', {
+        kind: 'list',
+        ...(cursor === undefined ? {} : { cursor, expectedRevision: revision! }),
+      });
+      if (result.kind === 'revision_changed') {
+        retry = true;
+        break;
+      }
+      if (result.kind !== 'page') throw new Error('Invalid ScheduledTask catalog page');
+      revision ??= result.revision;
+      if (result.revision !== revision) {
+        throw new Error('ScheduledTask catalog revision changed without a restart signal');
+      }
+      for (const task of result.tasks) {
+        if (taskIds.has(task.id)) throw new Error('ScheduledTask catalog repeated a task');
+        taskIds.add(task.id);
+      }
+      tasks.push(...result.tasks);
+      if (tasks.length > SCHEDULED_TASK_CATALOG_MAX_ITEMS) {
+        throw new Error('ScheduledTask catalog exceeds its item limit');
+      }
+      cursor = result.nextCursor ?? undefined;
+      if (cursor !== undefined) {
+        if (result.tasks.length === 0 || cursors.has(cursor)) {
+          throw new Error('ScheduledTask catalog repeated a page cursor');
+        }
+        cursors.add(cursor);
+      }
+    } while (cursor !== undefined);
+    if (!retry) return tasks;
+  }
+  throw new Error('ScheduledTask catalog kept changing while Desktop read it');
+}
+
+async function mutateScheduledTask(
+  input: OperationInput<'scheduled-task.mutate'>,
+): Promise<ScheduledTask> {
+  const result = await runtimeHost.command('scheduled-task.mutate', input);
+  if (result.kind !== 'task') throw new Error('Runtime Host returned no ScheduledTask');
+  return result.task;
+}
+
+async function loadSessionTrace(sessionId: string): Promise<SessionTrace> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const first = await runtimeHost.query('execution.inspect.query', {
+      kind: 'session_trace_start',
+      sessionId,
+    });
+    if (first.kind !== 'session_trace_page') throw new Error('Invalid Session trace page');
+    const turns = [...first.turns];
+    const offsets = new Set<number>([0]);
+    let nextOffset = first.nextOffset;
+    let retry = false;
+    while (nextOffset !== null) {
+      if (offsets.has(nextOffset)) throw new Error('Session trace repeated a page offset');
+      offsets.add(nextOffset);
+      const next = await runtimeHost.query('execution.inspect.query', {
+        kind: 'session_trace_continue',
+        sessionId,
+        revision: first.revision,
+        offset: nextOffset,
+      });
+      if (next.kind === 'session_trace_revision_changed') {
+        retry = true;
+        break;
+      }
+      if (
+        next.kind !== 'session_trace_page' ||
+        next.revision !== first.revision ||
+        next.offset !== nextOffset ||
+        JSON.stringify(next.totals) !== JSON.stringify(first.totals) ||
+        JSON.stringify(next.coverage) !== JSON.stringify(first.coverage)
+      ) {
+        throw new Error('Invalid Session trace continuation');
+      }
+      turns.push(...next.turns);
+      nextOffset = next.nextOffset;
+    }
+    if (retry) continue;
+    const trace = {
+      schemaVersion: first.schemaVersion,
+      sessionId,
+      turns,
+      totals: first.totals,
+      coverage: first.coverage,
+    };
+    if (!isSessionTrace(trace)) throw new Error('Invalid Session trace projection');
+    return trace;
+  }
+  throw new Error('Session trace kept changing while Desktop read it');
+}
+
+async function updateDailyReviewConfig(
+  patch: Partial<DailyReviewConfig>,
+): Promise<DailyReviewConfig> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await runtimeHost.query('daily-review.query', { kind: 'config' });
+    if (current.kind !== 'config') throw new Error('Invalid Daily Review config');
+    const config = normalizeDailyReviewConfig({ ...current.config, ...patch });
+    const result = await runtimeHost.command('daily-review.mutate', {
+      kind: 'update_config',
+      expectedRevision: current.revision,
+      config,
+    });
+    if (result.kind === 'config_committed' || result.kind === 'config_unchanged') {
+      return result.config;
+    }
+  }
+  throw new Error('Daily Review config kept changing while Desktop updated it');
+}
+
+async function listDailyReviewArchives(): Promise<DailyReviewArchiveSummary[]> {
+  const archives: DailyReviewArchiveSummary[] = [];
+  let beforeArchiveId: string | null = null;
+  do {
+    const result: OperationOutput<'daily-review.query'> = await runtimeHost.query(
+      'daily-review.query', {
+      kind: 'archives',
+      beforeArchiveId,
+      limit: 32,
+      },
+    );
+    if (result.kind !== 'archives') throw new Error('Invalid Daily Review archive page');
+    archives.push(...result.archives);
+    beforeArchiveId = result.nextBeforeArchiveId;
+  } while (beforeArchiveId !== null);
+  return archives;
+}
+
+function executeWebSearchQuery(input: {
+  query: string;
+  limit?: number;
+  provider?: WebSearchProvider;
+  apiKey?: string;
+}): Promise<WebSearchResponse> {
+  if (input.provider !== undefined && !isWebSearchProvider(input.provider)) {
+    return Promise.resolve(unsupportedWebSearchProvider());
+  }
+  if (input.provider === 'model') {
+    return Promise.resolve({
+      ok: false,
+      reason: 'unsupported_provider',
+      message: '原生联网搜索由对话中的主模型请求执行，不支持从设置页单独调用。',
+    });
+  }
+  const query = normalizeWebSearchQuery(input.query);
+  if (!query) {
+    return Promise.resolve({ ok: false, reason: 'invalid_query', message: '请输入有效的搜索关键词。' });
+  }
+  const apiKey = webSearchCredentialOverride(input.apiKey);
+  return runtimeHost.command('web-search.execute', {
+    kind: 'query',
+    query,
+    limit: normalizeWebSearchLimit(input.limit),
+    ...(apiKey ? { apiKey } : {}),
+  });
+}
+
+function executeWebSearchTest(input: {
+  provider?: WebSearchProvider;
+  apiKey?: string;
+}): Promise<WebSearchResponse> {
+  if (input.provider !== undefined && !isWebSearchProvider(input.provider)) {
+    return Promise.resolve(unsupportedWebSearchProvider());
+  }
+  if (input.provider === 'model') {
+    return Promise.resolve({
+      ok: false,
+      reason: 'unsupported_provider',
+      message: '原生联网搜索由对话中的主模型请求执行，不需要单独测试搜索凭据。',
+    });
+  }
+  const apiKey = webSearchCredentialOverride(input.apiKey);
+  return runtimeHost.command('web-search.execute', {
+    kind: 'test',
+    provider: 'tavily',
+    ...(apiKey ? { apiKey } : {}),
+  });
+}
+
+function unsupportedWebSearchProvider(): WebSearchResponse {
+  return {
+    ok: false,
+    reason: 'unsupported_provider',
+    message: '当前配置不支持这个搜索引擎，请选择 Tavily 后重试。',
+  };
+}
+
+function webSearchCredentialOverride(value: unknown): string | undefined {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value !== MASKED_TOKEN_SENTINEL &&
+    value !== SENSITIVE_PLACEHOLDER
+    ? value
+    : undefined;
+}
+
+function integer(value: unknown, fallback: number): number {
+  return Number.isFinite(value) ? Math.trunc(value as number) : fallback;
+}
+
+async function bridgeResult<T>(operation: () => Promise<T>, code: string): Promise<Result<T>> {
+  try {
+    return { ok: true, data: await operation() };
+  } catch (error) {
+    return {
+      ok: false,
+      error: { code, message: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
 const makaBridge = {
+  runtimeHost,
   pets: {
     list() {
       return ipcRenderer.invoke('pets:list');
@@ -253,12 +494,12 @@ const makaBridge = {
           turnId: string;
           attachments: AttachmentRef[];
           inlineReferences: InlineReference[];
-          skillInvocation: import('@maka/runtime').SkillInvocationResult;
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
         }
       | {
           ok: false;
           reason: 'skill_invocation_failed';
-          skillInvocation: import('@maka/runtime').SkillInvocationResult;
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
         }
     > {
       if (command.type === 'send' && 'attachmentItems' in command && command.attachmentItems) {
@@ -592,13 +833,13 @@ const makaBridge = {
     hasSecret(slug: string): Promise<boolean> {
       return ipcRenderer.invoke('connections:hasSecret', slug);
     },
-    getRequestHeaders(slug: string): Promise<import('@maka/core').SavedRequestHeaders> {
+    getRequestHeaders(slug: string): Promise<import('@maka/core/llm-connections').SavedRequestHeaders> {
       return ipcRenderer.invoke('connections:getRequestHeaders', slug);
     },
     setRequestHeaders(
       slug: string,
-      headers: readonly import('@maka/core').RequestHeaderUpdate[],
-    ): Promise<import('@maka/core').SavedRequestHeaders> {
+      headers: readonly import('@maka/core/llm-connections').RequestHeaderUpdate[],
+    ): Promise<import('@maka/core/llm-connections').SavedRequestHeaders> {
       return ipcRenderer.invoke('connections:setRequestHeaders', slug, headers);
     },
     subscribeEvents(handler: (event: ConnectionEvent) => void): () => void {
@@ -942,28 +1183,28 @@ const makaBridge = {
   },
   scheduledTasks: {
     list(): Promise<ScheduledTask[]> {
-      return ipcRenderer.invoke('scheduled-tasks:list');
+      return listScheduledTasks();
     },
     create(input: Omit<CreateScheduledTaskInput, 'createdBy'>): Promise<ScheduledTask> {
-      return ipcRenderer.invoke('scheduled-tasks:create', input);
+      return mutateScheduledTask({ kind: 'create', input });
     },
     update(id: string, patch: UpdateScheduledTaskInput): Promise<ScheduledTask> {
-      return ipcRenderer.invoke('scheduled-tasks:update', id, patch);
+      return mutateScheduledTask({ kind: 'update', taskId: id, patch });
     },
     setEnabled(id: string, enabled: boolean): Promise<ScheduledTask> {
-      return ipcRenderer.invoke('scheduled-tasks:setEnabled', id, enabled);
+      return mutateScheduledTask({ kind: enabled ? 'resume' : 'pause', taskId: id });
     },
     triggerNow(id: string): Promise<ScheduledTask> {
-      return ipcRenderer.invoke('scheduled-tasks:triggerNow', id);
+      return mutateScheduledTask({ kind: 'trigger_now', taskId: id });
     },
     snooze(id: string): Promise<ScheduledTask> {
-      return ipcRenderer.invoke('scheduled-tasks:snooze', id);
+      return mutateScheduledTask({ kind: 'snooze', taskId: id, delayMs: 10 * 60 * 1000 });
     },
     clearRunHistory(id: string): Promise<ScheduledTask> {
-      return ipcRenderer.invoke('scheduled-tasks:clearRunHistory', id);
+      return mutateScheduledTask({ kind: 'clear_history', taskId: id });
     },
-    delete(id: string): Promise<void> {
-      return ipcRenderer.invoke('scheduled-tasks:delete', id);
+    async delete(id: string): Promise<void> {
+      await runtimeHost.command('scheduled-task.mutate', { kind: 'delete', taskId: id });
     },
     subscribeChanges(handler: (event: { type: 'scheduled_tasks_changed'; reason: string; taskId?: string; ts: number }) => void): () => void {
       const listener = (_event: Electron.IpcRendererEvent, payload: { type: 'scheduled_tasks_changed'; reason: string; taskId?: string; ts: number }) => handler(payload);
@@ -1048,27 +1289,47 @@ const makaBridge = {
   inspector: {
     /** Read-only per-session causal trace (#1625). Never writes runtime state. */
     trace(sessionId: string): Promise<Result<SessionTrace>> {
-      return ipcRenderer.invoke('inspector:trace', sessionId);
+      return bridgeResult(() => loadSessionTrace(sessionId), 'INSPECTOR_TRACE_FAILED');
     },
   },
   dailyReview: {
     day(offsetDays: number, daySpan?: number): Promise<Result<DailyReviewSummary>> {
-      return ipcRenderer.invoke('daily-review:day', { offsetDays, daySpan });
+      return bridgeResult(async () => {
+        const result = await runtimeHost.query('daily-review.query', {
+          kind: 'summary',
+          offsetDays: integer(offsetDays, 0),
+          daySpan: Math.max(1, Math.min(30, integer(daySpan, 1))),
+        });
+        if (result.kind !== 'summary') throw new Error('Invalid Daily Review summary');
+        return result.summary;
+      }, 'DAILY_REVIEW_DAY_FAILED');
     },
-    getConfig(): Promise<DailyReviewConfig> {
-      return ipcRenderer.invoke('daily-review:getConfig');
+    async getConfig(): Promise<DailyReviewConfig> {
+      const result = await runtimeHost.query('daily-review.query', { kind: 'config' });
+      if (result.kind !== 'config') throw new Error('Invalid Daily Review config');
+      return result.config;
     },
     setConfig(patch: Partial<DailyReviewConfig>): Promise<DailyReviewConfig> {
-      return ipcRenderer.invoke('daily-review:setConfig', patch);
+      return updateDailyReviewConfig(patch);
     },
-    runOnce(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }> {
-      return ipcRenderer.invoke('daily-review:runOnce', input);
+    async runOnce(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }> {
+      const result = await runtimeHost.command('daily-review.mutate', {
+        kind: 'run',
+        range: DAILY_REVIEW_RANGES.includes(input.range) ? input.range : 1,
+        offsetDays: integer(input.offsetDays, 0),
+        modelKeyOverride: input.modelKey ?? '',
+        replaceExisting: false,
+      });
+      if (result.kind !== 'archive') throw new Error('Invalid Daily Review run');
+      return { archiveId: result.archive.id };
     },
     listArchives(): Promise<DailyReviewArchiveSummary[]> {
-      return ipcRenderer.invoke('daily-review:list');
+      return listDailyReviewArchives();
     },
-    getArchive(archiveId: string): Promise<DailyReviewArchive | null> {
-      return ipcRenderer.invoke('daily-review:get', archiveId);
+    async getArchive(archiveId: string): Promise<DailyReviewArchive | null> {
+      const result = await runtimeHost.query('daily-review.query', { kind: 'archive', archiveId });
+      if (result.kind !== 'archive') throw new Error('Invalid Daily Review archive');
+      return result.archive;
     },
     /**
      * PR-DAILY-REVIEW-EXPORT-FILE-0: render the markdown in the renderer
@@ -1092,10 +1353,10 @@ const makaBridge = {
       provider?: WebSearchProvider;
       apiKey?: string;
     }): Promise<WebSearchResponse> {
-      return ipcRenderer.invoke('web-search:query', input);
+      return executeWebSearchQuery(input);
     },
     test(input: { provider?: WebSearchProvider; apiKey?: string }): Promise<WebSearchResponse> {
-      return ipcRenderer.invoke('web-search:test', input);
+      return executeWebSearchTest(input);
     },
   },
   appWindow: {
@@ -1279,7 +1540,7 @@ const makaBridge = {
         model?: string;
         collaborationMode?: 'agent' | 'plan';
       },
-    ): Promise<import('@maka/runtime').InvocableSkillEntry[]> {
+    ): Promise<import('@maka/runtime/skill-invocation').InvocableSkillEntry[]> {
       return ipcRenderer.invoke('skills:listInvocable', sessionId, newSessionContext);
     },
     catalog: {

@@ -1,4 +1,4 @@
-import type { StoredMessage } from "@maka/core";
+import type { StoredMessage } from '@maka/core/session';
 import { RuntimeHostSessionProjector } from "@maka/runtime-host/adapter";
 import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 import type {

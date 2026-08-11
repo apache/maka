@@ -10,11 +10,11 @@ import {
 import type {
   AppSettings,
   ChatDefaultPermissionMode,
-  ThinkingLevel,
-  LlmConnection,
   NetworkProxySettings,
   UpdateAppSettingsResult,
-} from "@maka/core";
+} from '@maka/core/settings';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import type { TestProxyInput } from "@maka/core/settings/network-settings";
 import { buildChatModelChoices } from "@maka/core/chat-model-choice";
 import {

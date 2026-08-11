@@ -1,11 +1,11 @@
 import {
   AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
-  type AgentRunHeader,
   type AgentGraphSupervisorWakeRecord,
   type AgentGraphSupervisorWakeStore,
-  type SessionEvent,
-  type UserMessageInput,
-} from '@maka/core';
+} from '@maka/core/agent-graph-supervisor-wake';
+import { type AgentRunHeader } from '@maka/core/agent-run';
+import { type SessionEvent } from '@maka/core/events';
+import { type UserMessageInput } from '@maka/core/runtime-inputs';
 import type {
   GoalTurnOutcome,
   SessionActivityLease,

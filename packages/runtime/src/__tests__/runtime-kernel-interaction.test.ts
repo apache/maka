@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import type { SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
+import type { SessionEvent } from '@maka/core/events';
+
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { AgentBackend, BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
 

@@ -5,7 +5,7 @@ import {
   type PlanEvent,
   type PlanMutationResult,
 } from '@maka/core/plan';
-import type { SessionManager } from '@maka/runtime';
+import type { SessionManager } from '@maka/runtime/session-manager';
 import {
   isSessionNotFoundError,
   type ExecutionSessionWriter,

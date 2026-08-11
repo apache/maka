@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { TaskSubmissionReadinessSnapshot } from '@maka/core';
+import type { TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
 import {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,

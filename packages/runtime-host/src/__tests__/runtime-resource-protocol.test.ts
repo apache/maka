@@ -1,10 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import {
-  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
-  type ShellRunSnapshotResult,
-  type ShellRunUpdate,
-} from '@maka/core';
+import { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from '@maka/core/shell-run';
+import { type ShellRunSnapshotResult, type ShellRunUpdate } from '@maka/core/events';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import {
   decodeSubscriptionFrame,

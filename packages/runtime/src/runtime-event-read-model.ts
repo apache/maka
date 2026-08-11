@@ -1,23 +1,21 @@
-import type {
-  AgentRunHeader,
-  AssistantStepContentKind,
-  RuntimeEvent,
-  RuntimeEventStatus,
-  StoredMessage,
-  ToolActivityKind,
-  ToolResultContent,
-  TurnStatus,
-} from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/core/session';
+import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
+import type { ToolActivityKind, ToolResultContent } from '@maka/core/events';
 import {
   SANDBOX_BOUNDARY_REQUEST_STATUSES,
-  TOOL_ACTIVITY_KINDS,
+  validateSandboxBoundaryExpansion,
+} from '@maka/core/sandbox-boundary';
+
+import { TOOL_ACTIVITY_KINDS, normalizeMessageContent } from '@maka/core/events';
+
+import {
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
   isTerminalRuntimeEventStatus,
-  normalizeMessageContent,
-  normalizeToolResultContentForRead,
-  validateSandboxBoundaryExpansion,
-} from '@maka/core';
+} from '@maka/core/runtime-event';
+
+import { normalizeToolResultContentForRead } from '@maka/core/tool-result-record-schema';
 
 /** The statuses a settled boundary decision can carry — every status but `pending`. */
 type SettledSandboxBoundaryStatus = Exclude<

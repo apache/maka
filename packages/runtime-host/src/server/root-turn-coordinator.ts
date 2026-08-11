@@ -16,24 +16,29 @@ import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import {
-  agentGraphIdForRootSession,
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
+  RuntimeMessageAuthorityInvariantError,
+  type RuntimeMessageRunIdentity,
+} from '@maka/runtime/message-authority';
+import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
-  RuntimeMessageAuthorityInvariantError,
-  RuntimeRegenerateTurnError,
-  RuntimeOwnerCleanupError,
+} from '@maka/runtime/interaction-authority';
+import { RuntimeRegenerateTurnError, type SessionManager } from '@maka/runtime/session-manager';
+import { RuntimeOwnerCleanupError } from '@maka/runtime/runtime-kernel';
+import {
   parseSkillInvocationTokens,
-  skillInvocationInlineReferences,
   type PreparedSkillInvocationMessage,
+} from '@maka/runtime/skill-invocation';
+import { skillInvocationInlineReferences } from '@maka/runtime/skill-invocation-receipt';
+import {
   type RuntimeContinuation,
   type SafeBoundaryContinuationPlan,
-  type RuntimeMessageRunIdentity,
-  type SessionManager,
-} from '@maka/runtime';
+} from '@maka/runtime/runtime-resume';
 import {
   authenticateExecutionStoresWriter,
   isSessionNotFoundError,
@@ -288,7 +293,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     private readonly requestHostDrain: () => void,
     private readonly clientCapabilities: HostClientCapabilityCoordinator | undefined,
     private readonly resolveExecutionObserver: () => HostedExecutionObserver,
-    private readonly assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
+    private readonly assertScheduledTaskRecoveryAdmission?: (
+      admission: RootTurnAdmission,
+    ) => Promise<void>,
     attachmentValidator?: HostTurnAttachmentValidator,
     prepareSkillInvocation?: HostSkillInvocationPreparer,
   ) {
@@ -307,8 +314,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       rootAdmissions: this.rootAdmissionOwner,
       projection: this.executionProjection,
       runtime: this.manager,
-      ...(this.assertAutomationRecoveryAdmission
-        ? { assertAutomationAdmission: this.assertAutomationRecoveryAdmission }
+      ...(this.assertScheduledTaskRecoveryAdmission
+        ? { assertScheduledTaskAdmission: this.assertScheduledTaskRecoveryAdmission }
         : {}),
     });
     for (const plan of plans) {

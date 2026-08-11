@@ -1,20 +1,20 @@
+import type { AgentGraphClientProjectionStore } from '@maka/core/agent-graph-client-projection';
+import type { AgentGraphIntentClaim } from '@maka/core/agent-graph-control';
 import type {
-  AgentGraphClientProjectionStore,
-  AgentGraphIntentClaim,
   AgentGraphScheduleControlStore,
-  AgentGraphTimelineMetadataStore,
   AgentGraphScheduleUpdate,
-  AgentGraphOperatorProvision,
-  AgentRunStore,
-  RuntimeEventStore,
-  SessionHeader,
-} from '@maka/core';
+} from '@maka/core/agent-graph-schedule';
+import type { AgentGraphTimelineMetadataStore } from '@maka/core/agent-graph-timeline';
+import type { AgentGraphOperatorProvision } from '@maka/core/agent-graph-topology';
+import type { AgentRunStore } from '@maka/core/agent-run';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { SessionHeader } from '@maka/core/session';
 import {
   AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
   AgentGraphClientProjectionConflictError,
   AgentGraphClientTerminalCursorError,
-  decodeAgentGraphIntentClaim,
-} from '@maka/core';
+} from '@maka/core/agent-graph-client-projection';
+import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
 import type { MakaTool } from './tool-runtime.js';
 import type { SessionManager } from './session-manager.js';
 import { readCommittedAgentGraphProjection } from './stream-graph-projection.js';

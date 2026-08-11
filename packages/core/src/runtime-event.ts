@@ -723,8 +723,8 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
 
 function isTurnOrigin(value: unknown): value is TurnOrigin {
   if (!isRecord(value)) return false;
-  if (value.kind === 'automation') {
-    return Object.keys(value).length === 2 && typeof value.automationId === 'string';
+  if (value.kind === 'scheduled_task') {
+    return Object.keys(value).length === 2 && typeof value.scheduledTaskId === 'string';
   }
   if (value.kind === 'goal') {
     return Object.keys(value).length === 2 && typeof value.goalId === 'string';

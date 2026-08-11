@@ -1,4 +1,5 @@
-import type { CreateSessionInput, SessionHeader } from '@maka/core';
+import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { SessionHeader } from '@maka/core/session';
 import type { ExternalAgentId, ExternalSessionAdapterRegistry } from '@maka/core/external-session';
 import type { SessionAuthorityStore } from './session-store.js';
 

@@ -3,13 +3,15 @@ import { describe, test } from 'node:test';
 import {
   AgentGraphClientOperationError,
   agentGraphIdForRootSession,
+  type AgentGraphClientChangedListener,
+  type AgentGraphCoordinator,
+} from '@maka/runtime/stream-graph-coordinator';
+import {
   decodeAgentGraphTerminalCursor,
   type AgentGraphClientActivity,
-  type AgentGraphClientChangedListener,
   type AgentGraphClientSnapshot as RuntimeAgentGraphClientSnapshot,
-  type AgentGraphCoordinator,
   type AgentGraphOperatorInspection as RuntimeAgentGraphOperatorInspection,
-} from '@maka/runtime';
+} from '@maka/runtime/stream-graph-read-model';
 import { AGENT_GRAPH_RESULT_MAX_BYTES, decodeAgentGraphClientSnapshot } from '../protocol/index.js';
 import {
   HostAgentGraphCoordinator,

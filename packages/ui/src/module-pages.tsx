@@ -1,6 +1,6 @@
 import { lazy, Suspense } from 'react';
-import type { ScheduledTask } from '@maka/core';
-import { deriveCapabilityAuditReport } from '@maka/core';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
+import { deriveCapabilityAuditReport } from '@maka/core/capability-audit';
 import { ICON_SIZE, CalendarDays } from './icons.js';
 import { EmptyState, Spinner } from '@astryxdesign/core';
 import { ModulePage } from './primitives/module-page.js';
@@ -115,21 +115,21 @@ export function DailyReviewPage(props: {
         // The page header lives INSIDE the panel: its primary action (生成分析 /
         // 查看分析) rides the panel's run state, exactly like 定时任务's 新建.
         // The bridge-less fallback keeps its own static header below.
-        <Suspense fallback={<ModulePanelFallback message={copy.loadingDailyReview} />}>
+        (<Suspense fallback={<ModulePanelFallback message={copy.loadingDailyReview} />}>
           <DailyReviewPanel {...props} bridge={props.bridge} />
-        </Suspense>
+        </Suspense>)
       ) : (
         // The disconnected state keeps the module switch: it is the only
         // in-page way back to 定时任务, and a page you cannot leave is a worse
         // failure than the one it is reporting.
-        <ModulePage
+        (<ModulePage
           title={label}
           toolbar={props.hubHeader?.badge ? <div className="maka-module-page-bar">{props.hubHeader.badge}</div> : undefined}
         >
           <div className="maka-module-page-panel">
             <EmptyState icon={<CalendarDays size={ICON_SIZE.empty} />} title={copy.dailyReviewDisconnectedTitle} description={copy.dailyReviewDisconnectedBody} />
           </div>
-        </ModulePage>
+        </ModulePage>)
       )}
     </main>
   );

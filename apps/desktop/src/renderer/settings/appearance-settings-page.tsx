@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Grid, HStack, SelectableCard, Text, VStack } from '@astryxdesign/core';
 import { SettingsPage, SettingsSection } from './settings-section';
-import type { ThemePalette, ThemePreference, UpdateAppSettingsResult } from '@maka/core';
+import type { ThemePalette, ThemePreference, UpdateAppSettingsResult } from '@maka/core/settings';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
@@ -175,7 +175,6 @@ export function AppearanceSettingsPage(props: {
           ))}
         </Grid>
       </SettingsSection>
-
       {/* The group description says what the palette governs AND when a switch
           lands, the same two things `sections.themeHelp` says for the section
           above — so both sections now take their lede from the same `sections`
@@ -228,7 +227,6 @@ export function AppearanceSettingsPage(props: {
           </VStack>
         ))}
       </SettingsSection>
-
       <CustomPetSettingsSection />
     </SettingsPage>
   );

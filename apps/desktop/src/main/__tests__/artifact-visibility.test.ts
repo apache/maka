@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ArtifactRecord, ArtifactSource } from '@maka/core';
+import type { ArtifactRecord, ArtifactSource } from '@maka/core/artifacts';
 import { filterUserVisibleArtifacts } from '../../renderer/artifact-visibility.js';
 
 function artifact(source: ArtifactSource): ArtifactRecord {

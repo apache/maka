@@ -26,17 +26,17 @@
 import assert from 'node:assert/strict';
 import type { IncomingMessage } from 'node:http';
 import { after, describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import {
   PROVIDER_CONTRACT_DIMENSIONS,
-  PROVIDER_DEFAULTS,
   PROVIDER_CONTRACT_MATRIX_PLAN,
   listProviderContractCells,
   type ProviderContractDiscoveryPlan,
   type ProviderContractRow,
   type ProviderContractGeneratedCell,
   type ProviderContractWire,
-} from '@maka/core';
+} from '@maka/core/provider-contract-matrix';
+import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import { generateText, isStepCount, tool } from 'ai';
 import { z } from 'zod';
 import { fetchProviderModels } from '../model-fetcher.js';

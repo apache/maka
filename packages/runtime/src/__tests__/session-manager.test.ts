@@ -5,15 +5,15 @@ import { createHash } from 'node:crypto';
 import {
   applySandboxBoundaryExpansion,
   createGenesisExecutionBoundary,
-  createWorkspaceWritePermissionProfile,
-  DEEP_RESEARCH_SESSION_LABEL,
-  SIDE_CONVERSATION_SESSION_LABEL,
-  RUNTIME_CONTINUATION_AUTHORITY_V1,
-  deriveTurnRecords,
   isSandboxBoundaryRestartClosure,
-  isSessionInlineRun,
-  isTerminalRuntimeEvent,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
+import { DEEP_RESEARCH_SESSION_LABEL } from '@maka/core/explore-agent';
+import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
+import { RUNTIME_CONTINUATION_AUTHORITY_V1 } from '@maka/core/runtime-event-store';
+import { deriveTurnRecords } from '@maka/core/session';
+import { isSessionInlineRun } from '@maka/core/agent-run';
+import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { buildImmutableRuntimePrefix, decodeContinuationClaim } from '@maka/core/runtime-boundary';
 import type {
@@ -23,33 +23,32 @@ import type {
   SandboxBoundarySettlement,
   SettleSandboxBoundaryRequest,
 } from '@maka/core/sandbox-boundary';
+import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
+import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
+import type { QueueEnqueueOutcome, SessionEvent, ShellRunSnapshotResult } from '@maka/core/events';
 import type {
-  CreateSessionInput,
-  ExecutionBoundary,
-  QueueEnqueueOutcome,
   AgentGraphIntentClaim,
   AgentGraphIntentClaimStore,
+} from '@maka/core/agent-graph-control';
+import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
+} from '@maka/core/agent-graph-topology';
+import type {
   AgentRunEvent,
   EmittedAgentRunEvent,
   AgentRunHeader,
   AgentRunStore,
-  ArtifactRecord,
-  ContinuationClaimV1,
-  RuntimeBoundaryDigest,
-  RuntimeContinuationAuthorityStore,
-  RuntimeEvent,
-  RuntimeEventStore,
   RootExecutionDescriptor,
-  SessionEvent,
-  SessionHeader,
-  SessionListFilter,
-  SessionSummary,
-  ShellRunSnapshotResult,
-  StoredMessage,
-  TurnRecord,
-} from '@maka/core';
+} from '@maka/core/agent-run';
+import type { ArtifactRecord } from '@maka/core/artifacts';
+import type { ContinuationClaimV1, RuntimeBoundaryDigest } from '@maka/core/runtime-boundary';
+import type {
+  RuntimeContinuationAuthorityStore,
+  RuntimeEventStore,
+} from '@maka/core/runtime-event-store';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
 import { PlanConflictError, emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
 import { expect } from '../test-helpers.js';
@@ -7121,12 +7120,6 @@ describe('SessionManager permission mode updates', () => {
     expect(backendCalls).toBe(0);
   });
 
-
-
-
-
-
-
   test('sendMessage preserves token usage fields while resuming from an empty prior runtime ledger', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -13426,9 +13419,6 @@ describe('SessionManager permission mode updates', () => {
     expect(activeTurn?.status).toBe('completed');
   });
 
-
-
-
   test('startup recovery derives the interrupted outcome sink from the runtime store', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -13617,8 +13607,6 @@ describe('SessionManager permission mode updates', () => {
     expect(await store.listPendingSandboxBoundaryRequests(session.id)).toEqual([]);
   });
 
-
-
   test('startup recovery keeps the generic restart class for an answered boundary request', async () => {
     const { store, runStore, manager, session } = await seedBoundaryRestartSession({
       now: 12_890,
@@ -13682,9 +13670,6 @@ describe('SessionManager permission mode updates', () => {
     const [turn] = await store.listTurns(session.id);
     expect(turn?.errorClass).toBe('app_restarted');
   });
-
-
-
 
   test('branchFromTurn marks side conversations without changing ordinary branches', async () => {
     const store = new MemorySessionStore();
@@ -14264,9 +14249,6 @@ describe('SessionManager permission mode updates', () => {
       danglingUpdates[0],
     );
   });
-
-
-
 
   test('reviseBeforeTurn creates an in-conversation version without ordinary branch lineage', async () => {
     const store = new MemorySessionStore();

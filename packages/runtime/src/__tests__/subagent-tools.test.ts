@@ -3,14 +3,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type {
-  LlmConnection,
-  SessionHeader,
-  Task,
-  TaskAgentOutcome,
-  TaskLedgerStore,
-  TaskOwner,
-} from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionHeader } from '@maka/core/session';
+import type { Task, TaskAgentOutcome, TaskLedgerStore, TaskOwner } from '@maka/core/task-ledger';
 import type { SessionEvent } from '@maka/core/events';
 import { zodSchema } from 'ai';
 import { buildBuiltinTools } from '../builtin-tools.js';

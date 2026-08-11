@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { defaultEnabledModelIdsWhenOmitted } from '@maka/core';
+import { defaultEnabledModelIdsWhenOmitted } from '@maka/core/llm-connections';
 import {
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,

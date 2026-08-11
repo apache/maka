@@ -6,13 +6,12 @@ import {
 } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionTrace } from '@maka/core/session-trace';
+import { inspectAgentRunDocument, inspectSessionDocument } from '@maka/runtime/execution-inspect';
+import { projectSessionTrace } from '@maka/runtime/session-trace-projection';
 import {
-  inspectAgentRunDocument,
-  inspectSessionDocument,
-  projectSessionTrace,
   type AgentRunInspectDocument,
   type SessionInspectDocument,
-} from '@maka/runtime';
+} from '@maka/core/execution-inspect';
 import {
   isSessionNotFoundError,
   type BoundedEvidenceReadResult,

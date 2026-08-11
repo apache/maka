@@ -1,9 +1,9 @@
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import {
-  SKILL_INVOCATION_TOKEN_SOURCE,
   decodeSkillInvocationResult,
   type SkillInvocationFailure,
   type SkillInvocationResult,
-} from '@maka/core';
+} from '@maka/core/skill-invocation';
 import {
   gateSkillsByHostCapabilities,
   loadSkillInstructionsFromScan,
@@ -60,7 +60,7 @@ export interface SkillInvocationToken {
   end: number;
 }
 
-export type { SkillInvocationFailure, SkillInvocationResult } from '@maka/core';
+export type { SkillInvocationFailure, SkillInvocationResult } from '@maka/core/skill-invocation';
 
 export type PreparedSkillInvocationMessage =
   | {

@@ -1,9 +1,11 @@
-import { AiSdkBackend, buildComputerUseTools, getAIModel } from '../packages/runtime/dist/index.js';
+import { AiSdkBackend } from '../../packages/runtime/dist/ai-sdk-backend.js';
+import { buildComputerUseTools } from '../../packages/runtime/dist/computer-use-tools.js';
+import { getAIModel } from '../../packages/runtime/dist/model-factory.js';
 import {
   createSyntheticComputerScenario,
   canonicalizeSyntheticComputerArgs,
-} from './cu-synthetic-model-scenario.mjs';
-import { createDirectRuntimeTurnLedger } from './cu-direct-runtime-ledger.mjs';
+} from './synthetic-model-scenario.mjs';
+import { createDirectRuntimeTurnLedger } from './direct-runtime-ledger.mjs';
 
 const baseUrl = process.env.MAKA_CU_MODEL_BASE_URL ?? 'http://127.0.0.1:8538/v1';
 const modelId = process.env.MAKA_CU_MODEL_ID ?? 'gpt-5.6-sol';

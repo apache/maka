@@ -27,9 +27,9 @@
  *      dimension.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
-export type { UiLocale } from '@maka/core';
+export type { UiLocale } from '@maka/core/ui-locale';
 
 export type PromptSuggestion = { label: string; prompt: string };
 

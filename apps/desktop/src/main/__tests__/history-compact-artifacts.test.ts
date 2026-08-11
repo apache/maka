@@ -9,8 +9,8 @@ import {
   applyRuntimeEventHistoryCompact,
   buildHistoryCompactBlockFromSummary,
   type HistoryCompactBlock,
-  type HistoryCompactWriteInput,
-} from '@maka/runtime';
+} from '@maka/runtime/context-budget';
+import { type HistoryCompactWriteInput } from '@maka/runtime/ai-sdk-compaction-contract';
 import {
   createSqliteArtifactStore,
   type ArtifactStore,
@@ -18,7 +18,7 @@ import {
 import {
   loadHistoryCompactBlocksFromArtifacts,
   persistHistoryCompactBlocksToArtifacts,
-} from '@maka/runtime';
+} from '@maka/runtime/history-compact-artifacts';
 
 describe('desktop history compact artifact lifecycle', () => {
   test('persists archived RuntimeEvent sources and a compact block', async () => {

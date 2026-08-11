@@ -771,17 +771,17 @@
       }
     },
     {
-      "name": "valid-host-automation-origin",
+      "name": "valid-host-scheduled-task-origin",
       "accepted": true,
       "overrides": {
         "role": "user",
         "author": "host",
         "content": {
           "kind": "text",
-          "text": "Run the automation",
+          "text": "Run the scheduled task",
           "origin": {
-            "kind": "automation",
-            "automationId": "automation-1"
+            "kind": "scheduled_task",
+            "scheduledTaskId": "scheduled-task-1"
           }
         }
       }
@@ -884,10 +884,10 @@
         "author": "host",
         "content": {
           "kind": "text",
-          "text": "Run the automation",
+          "text": "Run the scheduled task",
           "origin": {
-            "kind": "automation",
-            "automationId": "automation-1",
+            "kind": "scheduled_task",
+            "scheduledTaskId": "scheduled-task-1",
             "extra": true
           }
         }

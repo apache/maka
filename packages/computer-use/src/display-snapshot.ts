@@ -1,4 +1,4 @@
-import type { ComputerUseDisplayIdentity } from '@maka/core';
+import type { ComputerUseDisplayIdentity } from '@maka/core/computer-use';
 
 export interface CuaHostDisplay {
   id: number | string;

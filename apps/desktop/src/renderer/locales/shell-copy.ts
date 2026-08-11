@@ -1,14 +1,14 @@
-import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-  type UiCatalog,
-  type UiLocale,
-  type PermissionMode,
-  type ChatDefaultPermissionMode,
-  type SettingsSection,
-  type SlashCommandIdForSurface,
-  type ThinkingLevel,
-} from '@maka/core';
+import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+
+import { type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+
+import { type PermissionMode } from '@maka/core/permission';
+
+import { type ChatDefaultPermissionMode, type SettingsSection } from '@maka/core/settings';
+
+import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
+
+import { type ThinkingLevel } from '@maka/core/model-thinking';
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',

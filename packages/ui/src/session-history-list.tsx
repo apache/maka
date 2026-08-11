@@ -9,8 +9,10 @@ import {
   type Ref,
 } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import type { ProjectRecord, SessionSummary, UiLocale } from '@maka/core';
-import { formatCompactTimestamp } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
+import type { SessionSummary } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { formatCompactTimestamp } from '@maka/core/relative-time';
 import {
   ICON_SIZE,
   AlertTriangle,

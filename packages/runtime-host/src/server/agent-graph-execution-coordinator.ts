@@ -1,14 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { normalizeMessageContent, type UserMessageInput } from '@maka/core';
+import { normalizeMessageContent } from '@maka/core/events';
+import { type UserMessageInput } from '@maka/core/runtime-inputs';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import {
-  agentGraphIdForRootSession,
   recoverAgentGraphSupervisorContextOverflow,
-  RuntimeHostedRootConflictError,
-  RuntimeMessageAuthorityInvariantError,
   type AgentGraphSupervisorContextRecoveryDiagnostic,
   type AgentGraphSupervisorTurnOutcome,
-  type SessionManager,
-} from '@maka/runtime';
+} from '@maka/runtime/agent-graph-supervisor-wake';
+import {
+  RuntimeHostedRootConflictError,
+  RuntimeMessageAuthorityInvariantError,
+} from '@maka/runtime/message-authority';
+import { type SessionManager } from '@maka/runtime/session-manager';
 import type {
   HostedExecutionAdmission,
   HostedExecutionAdmissionResult,

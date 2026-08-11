@@ -5,7 +5,9 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 import { build } from 'esbuild';
-import type { ChatModelChoice, LlmConnection, SessionSummary } from '@maka/core';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionSummary } from '@maka/core/session';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import {
   normalizeActiveChatModel,

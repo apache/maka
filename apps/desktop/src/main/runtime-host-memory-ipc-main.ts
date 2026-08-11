@@ -5,8 +5,8 @@ import type {
   LocalMemoryBackupInfo,
   LocalMemoryEntryPreview,
   LocalMemoryState,
-} from "@maka/core";
-import { isPathInside } from "@maka/runtime";
+} from '@maka/core/local-memory';
+import { isPathInside } from '@maka/runtime/path-containment';
 import {
   MEMORY_DOCUMENT_CHUNK_MAX_BYTES,
   type MemoryBackupKind,

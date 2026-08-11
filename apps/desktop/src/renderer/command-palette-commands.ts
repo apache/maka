@@ -26,15 +26,11 @@ import {
   Wifi,
   type LucideIcon,
 } from '@maka/ui/icons';
-import type {
-  ChatDefaultPermissionMode,
-  LlmConnection,
-  PermissionMode,
-  SessionSummary,
-  SettingsSection,
-  ThemePreference,
-  UiLocale,
-} from '@maka/core';
+import type { ChatDefaultPermissionMode, SettingsSection, ThemePreference } from '@maka/core/settings';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { PermissionMode } from '@maka/core/permission';
+import type { SessionSummary } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy } from './locales/shell-copy.js';
 import { SETTINGS_NAV } from './settings/settings-nav.js';

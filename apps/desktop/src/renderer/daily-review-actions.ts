@@ -1,9 +1,8 @@
-import type { DailyReviewArchive, UiLocale } from '@maka/core';
-import {
-  dailyReviewArchiveId,
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-} from '@maka/core';
+import type { DailyReviewArchive } from '@maka/core/daily-review';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { dailyReviewArchiveId } from '@maka/core/daily-review';
+
+import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 
 export function dailyReviewExportDefaultName(
   input: Pick<DailyReviewArchive, 'day' | 'range'>,

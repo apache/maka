@@ -2,13 +2,12 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
   AppSettings,
-  OnboardingMilestone,
-  OnboardingMilestoneId,
   SettingsTestResult,
   UpdateAppSettingsInput,
   UsageRange,
   UsageStats,
-} from '@maka/core';
+} from '@maka/core/settings';
+import type { OnboardingMilestone, OnboardingMilestoneId } from '@maka/core/onboarding';
 import { createDefaultSettings, mergeSettings, normalizeSettings } from '@maka/core/settings';
 import { sanitizeOnboardingMilestones } from '@maka/core/onboarding';
 import { readUsageStats } from './usage-stats-store.js';

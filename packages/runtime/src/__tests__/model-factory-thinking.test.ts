@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core';
-import { thinkingVariantsForModel, type ThinkingLevel } from '@maka/core';
-import { changesBackendConfig, buildProviderOptions, getAIModel } from '@maka/runtime';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import { thinkingVariantsForModel, type ThinkingLevel } from '@maka/core/model-thinking';
+import { changesBackendConfig } from '@maka/runtime/session-manager';
+
+import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
   return {

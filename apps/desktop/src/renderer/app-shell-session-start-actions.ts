@@ -1,4 +1,5 @@
-import type { SessionStartMode, UiLocale } from '@maka/core';
+import type { SessionStartMode } from '@maka/core/explore-agent';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 import {

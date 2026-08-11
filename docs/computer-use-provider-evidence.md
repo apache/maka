@@ -62,7 +62,7 @@ Qualification also keeps three fail-closed invariants:
   so a launcher cannot exit successfully for a matrix-invalid report.
 
 The old direct real-machine qualification runner was removed. The five-round
-restart runner remains available as `e2e:computer-use-process-restart-soak`,
+restart runner remains available as `npm run computer-use -- restart-soak`,
 but is regression-only and cannot satisfy a provider matrix cell. There is one
 qualification path rather than parallel evidence standards.
 

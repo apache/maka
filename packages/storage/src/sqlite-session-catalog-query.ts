@@ -1,4 +1,4 @@
-import type { SessionListFilter } from '@maka/core';
+import type { SessionListFilter } from '@maka/core/runtime-inputs';
 
 export interface SqliteSessionCatalogCursor {
   readonly activityAt: number;

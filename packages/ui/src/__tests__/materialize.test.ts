@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { AttachmentRef, StoredMessage } from "@maka/core";
+import type { AttachmentRef } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
 import {
   finalAssistantReplyText,
   materializeChat,

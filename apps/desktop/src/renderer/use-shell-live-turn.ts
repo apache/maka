@@ -1,4 +1,4 @@
-import type { SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
 import type { LiveTurnSnapshot } from './live-turn-snapshot.js';
 import { MODEL_CONTINUING_DELAY_MS, MODEL_PROCESSING_DELAY_MS, RUNNING_STATUS_DELAY_MS, deriveModelWait, deriveTurnActive, type ModelWaitKind } from './model-wait-state.js';
 import { useDelayedFlag } from './use-delayed-flag.js';

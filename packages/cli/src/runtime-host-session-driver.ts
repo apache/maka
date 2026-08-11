@@ -1,15 +1,17 @@
 import { randomUUID } from 'node:crypto';
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
-  DEFAULT_SESSION_NAME,
   decodeStoredMessageForRead,
   userFacingText,
+  type SessionSummary,
+  type StoredMessage,
+} from '@maka/core/session';
+import {
   type ActiveInteractionRequestEvent,
   type QueueEnqueueOutcome,
   type SessionEvent,
-  type SessionSummary,
   type ShellRunUpdate,
-  type StoredMessage,
-} from '@maka/core';
+} from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
@@ -18,7 +20,7 @@ import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import type { ContextDiagnostics } from '@maka/runtime';
+import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import {
   isRuntimeHostTerminalTurn as isTerminalTurn,
   type RuntimeHostTerminalTurn as TerminalTurnSnapshot,

@@ -1,4 +1,4 @@
-import type { SessionHeader, StoredMessage } from '@maka/core';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import { header, TURN_SESSION_ID } from './seed-helpers.js';
 
 export function turnSession(now: number): SessionHeader {

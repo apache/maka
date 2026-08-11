@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import type { StoredMessage } from '@maka/core';
+import type { StoredMessage } from '@maka/core/session';
 import { createArrivalBottomPin, type ArrivalBottomPin } from './arrival-bottom-pin.js';
 import { createTurnSizeWarmup } from './turn-size-warmup.js';
 

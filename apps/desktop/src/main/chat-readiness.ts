@@ -1,21 +1,28 @@
 import {
   isConnectionReady,
-  NO_REAL_CONNECTION_CODE,
   normalizeOpenAiCodexConnection,
   normalizeRequestedModelForReadiness,
+  type ChatConfigurationReason,
+} from '@maka/core/connection-readiness';
+import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
+import {
   projectSessionSendOutcome,
   sessionOwnConnectionBlockReason,
   shouldRebindSessionToDefault,
-  type ChatConfigurationReason,
-  type LlmConnection,
-  type SessionHeader,
-} from '@maka/core';
+} from '@maka/core/session-send-projection';
+import { type LlmConnection } from '@maka/core/llm-connections';
+import { type SessionHeader } from '@maka/core/session';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 
 // The rebind-eligibility taxonomy moved to `@maka/core/session-send-projection`
 // (#1038) so the send gate and the renderer health notice share one
 // decision source. Re-exported here for back-compat.
-export { NO_REAL_CONNECTION_CODE, shouldRebindSessionToDefault } from '@maka/core';
+export { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
+
+// The rebind-eligibility taxonomy moved to `@maka/core/session-send-projection`
+// (#1038) so the send gate and the renderer health notice share one
+// decision source. Re-exported here for back-compat.
+export { shouldRebindSessionToDefault } from '@maka/core/session-send-projection';
 
 // `ChatConfigurationReason` moved to `@maka/core/connection-readiness`
 // (PR110a) so the same taxonomy is shared between the send path and

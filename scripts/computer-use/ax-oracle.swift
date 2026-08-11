@@ -11,7 +11,7 @@
 // the one that has to explain itself.
 //
 // Usage:
-//   swift cu-ax-oracle.swift <bundle-id> [--role AXButton] [--depth 8]
+//   swift scripts/computer-use/ax-oracle.swift <bundle-id> [--role AXButton] [--depth 8]
 // Prints one JSON object: the app, its windows, and every element with a role,
 // a label, and a value. Exit 0 means the object describes the tree. Exit 1
 // means it describes why there is no tree to describe — `screen_locked`,
@@ -27,7 +27,7 @@ import Foundation
 
 let arguments = CommandLine.arguments
 guard arguments.count >= 2 else {
-  FileHandle.standardError.write("usage: cu-ax-oracle.swift <bundle-id> [--role R] [--depth N]\n".data(using: .utf8)!)
+  FileHandle.standardError.write("usage: ax-oracle.swift <bundle-id> [--role R] [--depth N]\n".data(using: .utf8)!)
   exit(64)
 }
 let bundleId = arguments[1]
@@ -56,7 +56,7 @@ func emit(_ object: [String: Any], status: Int32 = 0) -> Never {
 
 // A state this oracle cannot see through. It is printed as JSON like everything
 // else, because a caller may want to read the reason — but it exits non-zero,
-// so `cu-ax-oracle.swift X > witness.json && assert ...` cannot walk on with a
+// so `ax-oracle.swift X > witness.json && assert ...` cannot walk on with a
 // file that says the tree is empty because the oracle was blindfolded. Exiting
 // 0 here is the same mistake as an observation that reports success for a
 // dispatch that never happened.

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent, type ToolRecoveryMode } from '@maka/core';
+import {
+  TOOL_BOUNDARY_PROTOCOL_V1,
+  type RuntimeEvent,
+  type ToolRecoveryMode,
+} from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { recoverClientCapabilityOutcomes } from '../server/client-capability-recovery.js';

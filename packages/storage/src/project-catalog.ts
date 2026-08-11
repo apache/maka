@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { basename, dirname, join, normalize, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import type { ProjectLocation, ProjectRecord, SessionHeader } from '@maka/core';
+import type { ProjectLocation, ProjectRecord } from '@maka/core/project';
+import type { SessionHeader } from '@maka/core/session';
 import { hasEnclosingGitEntry } from './git-entry.js';
 import {
   acquireOperationalStateDatabase,
@@ -11,7 +12,7 @@ import {
 } from './operational-state-store.js';
 import { normalizeSessionHeader } from './session-store.js';
 
-export type { ProjectLocation, ProjectRecord } from '@maka/core';
+export type { ProjectLocation, ProjectRecord } from '@maka/core/project';
 
 const execFileAsync = promisify(execFile);
 

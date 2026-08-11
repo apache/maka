@@ -14,7 +14,7 @@ import {
   type CanonicalUsageSource,
   type UsageProvenance,
 } from '@maka/core/usage-ledger-merge';
-import { BUILTIN_PRICING } from '@maka/runtime';
+import { BUILTIN_PRICING } from '@maka/runtime/telemetry';
 import {
   authenticateInteractiveUsageStoresWriter,
   classifyInteractiveUsageStoresFailure,

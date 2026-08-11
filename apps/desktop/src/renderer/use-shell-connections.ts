@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import type { ConnectionEvent, LlmConnection, UiLocale } from '@maka/core';
+import type { ConnectionEvent } from '@maka/core/connections';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 

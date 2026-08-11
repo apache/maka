@@ -44,7 +44,7 @@
  * Purely presentational: a value control fed by host-injected props.
  */
 
-import type { ProjectRecord } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { useMemo } from 'react';
 import { ICON_SIZE, AlertTriangle, Check, FolderOpen, Plus, X } from './icons.js';

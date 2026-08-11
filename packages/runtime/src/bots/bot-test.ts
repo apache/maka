@@ -1,4 +1,5 @@
-import { botDisplayLabel, type BotChannelSettings, type BotProvider } from '@maka/core';
+import { botDisplayLabel } from '@maka/core/bot-events';
+import { type BotChannelSettings, type BotProvider } from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { WebClient } from '@slack/web-api';
 import type { BotTestResult } from './types.js';

@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import {
-  AGENT_GRAPH_INTENT_CLAIM_SCHEMA_VERSION,
-  AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION,
-  AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
-} from '@maka/core';
+import { AGENT_GRAPH_INTENT_CLAIM_SCHEMA_VERSION } from '@maka/core/agent-graph-control';
+import { AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION } from '@maka/core/agent-graph-schedule';
+import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core/agent-graph-supervisor-wake';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite agent graph timeline metadata', () => {

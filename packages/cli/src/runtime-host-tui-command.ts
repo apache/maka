@@ -1,6 +1,6 @@
-import { parseNoRealConnectionError } from '@maka/core';
+import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
 import { createInterface } from 'node:readline/promises';
-import { SessionActivityRegistry } from '@maka/runtime';
+import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
 import { createForeignSessionStore } from '@maka/storage';
 import { connectRuntimeHostCli, RuntimeHostCliConflictError } from './runtime-host-cli-context.js';

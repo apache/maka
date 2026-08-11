@@ -1,11 +1,10 @@
 import { stat } from 'node:fs/promises';
 import {
   deriveTaskSubmissionReadiness,
-  PROVIDER_DEFAULTS,
-  type LlmConnection,
   type TaskSubmissionReadinessDimension,
   type TaskSubmissionReadinessSnapshot,
-} from '@maka/core';
+} from '@maka/core/task-submission-readiness';
+import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
 import { providerAuthRequiresSecret } from '@maka/core/llm-connections';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';

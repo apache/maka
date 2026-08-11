@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID } from '@maka/runtime';
+import { SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID } from '@maka/runtime/scheduled-task-tools';
 import {
   CLIENT_CAPABILITY_MAX_MANIFEST_BYTES,
   CLIENT_CAPABILITY_MAX_OFFERS,

@@ -276,8 +276,8 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
         const maxFires = Object.prototype.hasOwnProperty.call(normalized.value, 'maxFires')
           ? (normalized.value.maxFires ?? null)
           : task.maxFires;
-        if (effect.kind === 'agent_run' && !intentBody.trim()) {
-          throw storeError('invalid_input', 'Agent run intent body is required');
+        if (effect.kind !== 'notify' && !intentBody.trim()) {
+          throw storeError('invalid_input', 'Agent intent body is required');
         }
         if (maxFires !== null && maxFires <= task.fireCount) {
           throw storeError(
@@ -464,7 +464,7 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
       ...state,
       claims: state.claims.map((claim) => {
         if (claim.id !== claimId) return claim;
-        if (claim.task.effect.kind !== 'agent_run') {
+        if (claim.task.effect.kind === 'notify') {
           throw storeError(
             'operation_conflict',
             `Scheduled task fire ${claimId} is not an Agent execution`,

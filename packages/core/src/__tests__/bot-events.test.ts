@@ -14,7 +14,7 @@ import {
   plaintextHelpReply,
   type BotAttachmentKind,
   type BotMessageEvent,
-} from '../index.js';
+} from '../bot-events.js';
 
 describe('bot event contract', () => {
   const message: BotMessageEvent = {

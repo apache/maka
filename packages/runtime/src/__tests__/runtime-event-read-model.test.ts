@@ -1,16 +1,9 @@
 import { describe, test } from 'node:test';
-import type {
-  AgentRunHeader,
-  CreateSessionInput,
-  RuntimeEvent,
-  RuntimeEventActions,
-  SessionHeader,
-  SessionListFilter,
-  SessionSummary,
-  StoredMessage,
-  TurnRecord,
-} from '@maka/core';
-import { deriveTurnRecords } from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
+import type { RuntimeEvent, RuntimeEventActions } from '@maka/core/runtime-event';
+import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import { deriveTurnRecords } from '@maka/core/session';
 import { expect } from '../test-helpers.js';
 import {
   compareRuntimeReadModelMessages,

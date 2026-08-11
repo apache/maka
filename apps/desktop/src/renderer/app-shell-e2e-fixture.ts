@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
-import type { SettingsSection, ThemePreference, UiLocale } from '@maka/core';
+import type { SettingsSection, ThemePreference } from '@maka/core/settings';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { applyTheme } from './theme';
 import type { SessionWorkbarTabKind } from './session-workbar-tabs';

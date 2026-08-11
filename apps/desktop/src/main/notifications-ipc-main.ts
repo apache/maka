@@ -1,5 +1,5 @@
 import { ipcMain, Notification } from 'electron';
-import type { AppSettings } from '@maka/core';
+import type { AppSettings } from '@maka/core/settings';
 import type { createMainWindowController } from './main-window.js';
 import {
   isRunNotificationKind,

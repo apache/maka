@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AppSettings, ProjectRecord, UpdateAppSettingsResult } from '@maka/core';
+import type { AppSettings, UpdateAppSettingsResult } from '@maka/core/settings';
+import type { ProjectRecord } from '@maka/core/project';
 import {
   Badge,
   Button,
@@ -127,185 +128,185 @@ export function ProjectsSettingsPage(props: {
           // list semantics, real dividers, and a leading slot for the icon
           // that gives each row something to hang on. Built out of settings
           // rows first, the page was four paragraphs of text in a column.
-          <List density="balanced" hasDividers aria-label={copy.section}>
-          {listed.map((project) => {
-            const isDefault = project.id === defaultProjectId;
-            const endCluster = (
-                  <>
-                    {isDefault ? (
-                      <Badge variant="neutral" label={copy.defaultBadge} />
-                    ) : (
-                      <Button
-                        variant="secondary"
+          (<List density="balanced" hasDividers aria-label={copy.section}>
+            {listed.map((project) => {
+              const isDefault = project.id === defaultProjectId;
+              const endCluster = (
+                    <>
+                      {isDefault ? (
+                        <Badge variant="neutral" label={copy.defaultBadge} />
+                      ) : (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          label={copy.setDefault}
+                          // A disabled control explains its own disabling:
+                          // the enabled tooltip answers "what does this do",
+                          // which is exactly the question the user is NOT
+                          // asking once the button is greyed out.
+                          tooltip={
+                            project.available
+                              ? copy.setDefaultTitle
+                              : copy.setDefaultDisabledTitle
+                          }
+                          isDisabled={!project.available}
+                          clickAction={() =>
+                            runRowAction(
+                              `default:${project.id}`,
+                              () => setDefault(project.id),
+                              copy.setDefaultFailed,
+                            )
+                          }
+                        />
+                      )}
+                      <MoreMenu
+                        label={copy.moreActions(project.name)}
                         size="sm"
-                        label={copy.setDefault}
-                        // A disabled control explains its own disabling:
-                        // the enabled tooltip answers "what does this do",
-                        // which is exactly the question the user is NOT
-                        // asking once the button is greyed out.
-                        tooltip={
-                          project.available
-                            ? copy.setDefaultTitle
-                            : copy.setDefaultDisabledTitle
-                        }
-                        isDisabled={!project.available}
-                        clickAction={() =>
-                          runRowAction(
-                            `default:${project.id}`,
-                            () => setDefault(project.id),
-                            copy.setDefaultFailed,
-                          )
-                        }
-                      />
-                    )}
-                    <MoreMenu
-                      label={copy.moreActions(project.name)}
-                      size="sm"
-                      items={[
-                        ...(isDefault
-                          ? [{
-                              label: copy.clearDefault,
-                              onClick: () =>
-                                void runRowAction(
-                                  `default:${project.id}`,
-                                  () => setDefault(undefined),
-                                  copy.setDefaultFailed,
-                                ),
-                            }]
-                          : []),
-                        {
-                          label: copy.rename,
-                          onClick: () => {
-                            setDraftName(project.name);
-                            setRenamingId(project.id);
+                        items={[
+                          ...(isDefault
+                            ? [{
+                                label: copy.clearDefault,
+                                onClick: () =>
+                                  void runRowAction(
+                                    `default:${project.id}`,
+                                    () => setDefault(undefined),
+                                    copy.setDefaultFailed,
+                                  ),
+                              }]
+                            : []),
+                          {
+                            label: copy.rename,
+                            onClick: () => {
+                              setDraftName(project.name);
+                              setRenamingId(project.id);
+                            },
                           },
-                        },
-                        {
-                          label: copy.openFolder,
-                          // Only offered when the catalog still vouches for the
-                          // folder; a menu entry that always fails is worse
-                          // than one that is not there.
-                          isDisabled: !project.available,
-                          onClick: () =>
-                            void runRowAction(
-                              `reveal:${project.id}`,
-                              async () => {
-                                const result = await window.maka.projects.reveal(project.id);
-                                if (!result.ok) throw new Error(result.reason);
-                              },
-                              copy.openFolderFailed,
-                            ),
-                        },
-                        {
-                          label: copy.remove,
-                          onClick: () =>
-                            void runRowAction(
-                              `remove:${project.id}`,
-                              async () => {
-                                const ok = await toast.confirm({
-                                  title: copy.removeConfirmTitle,
-                                  description: copy.removeConfirmBody,
-                                  confirmLabel: copy.removeConfirm,
-                                  cancelLabel: copy.removeCancel,
-                                  destructive: true,
-                                });
-                                if (!ok) return;
-                                await window.maka.projects.archive(project.id);
-                                // Removing the default leaves the preference
-                                // pointing at nothing; clear it in the same
-                                // action rather than leaving a dangling id.
-                                if (isDefault) await setDefault(undefined);
-                              },
-                              copy.actionFailed,
-                            ),
-                        },
-                      ]}
-                    />
-                  </>
-            );
-
-            const isRenaming = renamingId === project.id;
-            const canSave =
-              draftName.trim() !== '' && draftName.trim() !== project.name;
-
-            async function saveRename() {
-              const next = draftName.trim();
-              if (next === '' || next === project.name) return;
-              await runRowAction(
-                `rename:${project.id}`,
-                async () => {
-                  await window.maka.projects.rename(project.id, next);
-                  setRenamingId(null);
-                },
-                copy.renameFailed,
+                          {
+                            label: copy.openFolder,
+                            // Only offered when the catalog still vouches for the
+                            // folder; a menu entry that always fails is worse
+                            // than one that is not there.
+                            isDisabled: !project.available,
+                            onClick: () =>
+                              void runRowAction(
+                                `reveal:${project.id}`,
+                                async () => {
+                                  const result = await window.maka.projects.reveal(project.id);
+                                  if (!result.ok) throw new Error(result.reason);
+                                },
+                                copy.openFolderFailed,
+                              ),
+                          },
+                          {
+                            label: copy.remove,
+                            onClick: () =>
+                              void runRowAction(
+                                `remove:${project.id}`,
+                                async () => {
+                                  const ok = await toast.confirm({
+                                    title: copy.removeConfirmTitle,
+                                    description: copy.removeConfirmBody,
+                                    confirmLabel: copy.removeConfirm,
+                                    cancelLabel: copy.removeCancel,
+                                    destructive: true,
+                                  });
+                                  if (!ok) return;
+                                  await window.maka.projects.archive(project.id);
+                                  // Removing the default leaves the preference
+                                  // pointing at nothing; clear it in the same
+                                  // action rather than leaving a dangling id.
+                                  if (isDefault) await setDefault(undefined);
+                                },
+                                copy.actionFailed,
+                              ),
+                          },
+                        ]}
+                      />
+                    </>
               );
-            }
 
-            const path = project.preferredPath
-              ? projectPathDisplay(project.preferredPath, { homePath })
-              : undefined;
+              const isRenaming = renamingId === project.id;
+              const canSave =
+                draftName.trim() !== '' && draftName.trim() !== project.name;
 
-            return (
-              <ListItem
-                key={project.id}
-                // While renaming, the field and its save/cancel pair share ONE
-                // flex container. Split across label and endContent they
-                // overlapped: the field claims the label slot's full width and
-                // the buttons render on top of its right edge.
-                label={isRenaming ? (
-                  <HStack gap={2} align="center">
-                  <TextInput
-                    type="text"
-                    value={draftName}
-                    onChange={(value) => setDraftName(value.slice(0, 80))}
-                    // Enter saves and Escape backs out: a field that can only
-                    // be dismissed by mousing to a button is a trap for anyone
-                    // who opened it from the keyboard.
-                    onEnter={() => {
-                      if (canSave) void saveRename();
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Escape') setRenamingId(null);
-                    }}
-                    label={copy.renameLabel}
-                    isLabelHidden
-                    hasAutoFocus
-                  />
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      isDisabled={!canSave}
-                      clickAction={() => saveRename()}
-                      label={copy.save}
+              async function saveRename() {
+                const next = draftName.trim();
+                if (next === '' || next === project.name) return;
+                await runRowAction(
+                  `rename:${project.id}`,
+                  async () => {
+                    await window.maka.projects.rename(project.id, next);
+                    setRenamingId(null);
+                  },
+                  copy.renameFailed,
+                );
+              }
+
+              const path = project.preferredPath
+                ? projectPathDisplay(project.preferredPath, { homePath })
+                : undefined;
+
+              return (
+                <ListItem
+                  key={project.id}
+                  // While renaming, the field and its save/cancel pair share ONE
+                  // flex container. Split across label and endContent they
+                  // overlapped: the field claims the label slot's full width and
+                  // the buttons render on top of its right edge.
+                  label={isRenaming ? (
+                    <HStack gap={2} align="center">
+                    <TextInput
+                      type="text"
+                      value={draftName}
+                      onChange={(value) => setDraftName(value.slice(0, 80))}
+                      // Enter saves and Escape backs out: a field that can only
+                      // be dismissed by mousing to a button is a trap for anyone
+                      // who opened it from the keyboard.
+                      onEnter={() => {
+                        if (canSave) void saveRename();
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Escape') setRenamingId(null);
+                      }}
+                      label={copy.renameLabel}
+                      isLabelHidden
+                      hasAutoFocus
                     />
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setRenamingId(null)}
-                      label={copy.cancel}
-                    />
-                  </HStack>
-                ) : project.name}
-                description={isRenaming ? undefined : (
-                  <code
-                    className="settingsReadOnlyValue"
-                    data-mono="true"
-                    // The abbreviated form is what the row shows; the whole
-                    // path stays one hover away rather than being lost.
-                    title={path?.title}
-                  >
-                    {path?.text ?? copy.unavailable}
-                  </code>
-                )}
-                // No wrapper class: `startContent` already owns the slot's
-                // layout, and the anchor's weight comes from the icon's size
-                // rather than a plate or a second glyph family.
-                startContent={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
-                endContent={isRenaming ? undefined : endCluster}
-              />
-            );
-          })}
-          </List>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        isDisabled={!canSave}
+                        clickAction={() => saveRename()}
+                        label={copy.save}
+                      />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setRenamingId(null)}
+                        label={copy.cancel}
+                      />
+                    </HStack>
+                  ) : project.name}
+                  description={isRenaming ? undefined : (
+                    <code
+                      className="settingsReadOnlyValue"
+                      data-mono="true"
+                      // The abbreviated form is what the row shows; the whole
+                      // path stays one hover away rather than being lost.
+                      title={path?.title}
+                    >
+                      {path?.text ?? copy.unavailable}
+                    </code>
+                  )}
+                  // No wrapper class: `startContent` already owns the slot's
+                  // layout, and the anchor's weight comes from the icon's size
+                  // rather than a plate or a second glyph family.
+                  startContent={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
+                  endContent={isRenaming ? undefined : endCluster}
+                />
+              );
+            })}
+          </List>)
         )}
       </SettingsSection>
     </SettingsPage>

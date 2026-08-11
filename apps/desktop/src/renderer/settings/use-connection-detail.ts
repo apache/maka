@@ -4,7 +4,7 @@ import {
   type LlmConnection,
   type ModelInfo,
   type ProviderType,
-} from '@maka/core';
+} from '@maka/core/llm-connections';
 import { PROVIDER_DEFAULTS, connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
 import {

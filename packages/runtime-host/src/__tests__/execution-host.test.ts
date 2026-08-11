@@ -16,26 +16,28 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
+import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import { decodeStoredMessageForRead, type StoredMessage } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
 import {
-  buildTaskLedgerTools,
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
+} from '@maka/runtime/terminal-run-commit';
+import {
   FAKE_ASK_SANDBOX_BOUNDARY_PROMPT,
   FAKE_ASK_USER_QUESTION_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
-  type MakaTool,
-  type MakaToolContext,
-} from '@maka/runtime';
+} from '@maka/runtime/fake-backend';
+import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
@@ -60,7 +62,6 @@ import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
   TASK_LEDGER_PAGE_MAX_ITEMS,
-  type AutomationProjection,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
@@ -96,7 +97,7 @@ import {
   withTimeout,
 } from './fixtures/execution-host-suite.js';
 
-test('production Host executes an admitted heartbeat through the durable root authority', {
+test('production Host resumes a Session through the ScheduledTask authority', {
   timeout: 30_000,
 }, async () => {
   await withExecutionRoot(async (fixture) => {
@@ -104,34 +105,29 @@ test('production Host executes an admitted heartbeat through the durable root au
     const desktop = await connectClient(fixture.root, 'desktop');
     const tui = await connectClient(fixture.root, 'tui');
     try {
-      const heartbeat = await desktop.request('automation.mutate', {
+      const heartbeat = await desktop.request('scheduled-task.mutate', {
         kind: 'create',
-        sessionId: fixture.sessionId,
-        name: 'heartbeat execution proof',
-        prompt: 'Complete the heartbeat execution proof.',
-        schedule: { type: 'once', delaySeconds: 5 },
+        input: {
+          title: 'session resume execution proof',
+          intentBody: 'Complete the scheduled execution proof.',
+          schedule: { kind: 'once', runAt: Date.now() + 5_000 },
+          effect: { kind: 'session_resume', sessionId: fixture.sessionId },
+        },
       });
-      assert.equal(heartbeat.kind, 'committed');
-      if (heartbeat.kind !== 'committed' || !heartbeat.automation) {
+      assert.equal(heartbeat.kind, 'task');
+      if (heartbeat.kind !== 'task') {
         return;
       }
 
-      const observedHeartbeat = await waitForAutomationCompletion(
-        tui,
-        fixture.sessionId,
-        heartbeat.automation.id,
-      );
-      assert.ok(observedHeartbeat.lastRunId);
+      const observedHeartbeat = await waitForScheduledTaskCompletion(tui, heartbeat.task.id);
+      assert.ok(observedHeartbeat.runs[0]?.runId);
       assert.equal(observedHeartbeat.lastError, null);
-      assert.equal(observedHeartbeat.firePending, false);
 
-      const deletedHeartbeat = await tui.request('automation.mutate', {
+      const deletedHeartbeat = await tui.request('scheduled-task.mutate', {
         kind: 'delete',
-        sessionId: fixture.sessionId,
-        automationId: heartbeat.automation.id,
+        taskId: heartbeat.task.id,
       });
-      assert.equal(deletedHeartbeat.kind, 'committed');
-      assert.equal(deletedHeartbeat.kind === 'committed' && deletedHeartbeat.automation, null);
+      assert.equal(deletedHeartbeat.kind, 'deleted');
     } finally {
       await Promise.allSettled([desktop.close(), tui.close()]);
       await fixture.stopHost(host);
@@ -1141,38 +1137,25 @@ async function collectTaskLedgerProjection(
   };
 }
 
-async function waitForAutomationCompletion(
+async function waitForScheduledTaskCompletion(
   client: RuntimeHostConnection,
-  sessionId: string,
-  automationId: string,
-): Promise<AutomationProjection> {
+  taskId: string,
+): Promise<ScheduledTask> {
   const deadline = Date.now() + 20_000;
-  let last: AutomationProjection | null = null;
+  let last: ScheduledTask | null = null;
   while (Date.now() < deadline) {
-    const result = await client.request('automation.query', {
+    const result = await client.request('scheduled-task.query', {
       kind: 'get',
-      sessionId,
-      automationId,
+      taskId,
     });
-    if (
-      result.kind === 'automation' &&
-      result.automation?.status === 'completed' &&
-      !result.automation.firePending
-    ) {
-      return result.automation;
-    }
-    if (result.kind === 'automation') last = result.automation;
-    if (
-      result.kind === 'automation' &&
-      result.automation &&
-      !result.automation.firePending &&
-      result.automation.lastError
-    ) {
-      throw new Error(`Automation execution failed: ${result.automation.lastError}`);
+    if (result.kind === 'task' && result.task?.status === 'completed') return result.task;
+    if (result.kind === 'task') last = result.task;
+    if (result.kind === 'task' && result.task?.lastError) {
+      throw new Error(`ScheduledTask execution failed: ${result.task.lastError}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(
-    `Automation ${automationId} did not settle before the deadline: ${JSON.stringify(last)}`,
+    `ScheduledTask ${taskId} did not settle before the deadline: ${JSON.stringify(last)}`,
   );
 }

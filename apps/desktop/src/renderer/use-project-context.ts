@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ProjectRecord, UiLocale } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   createAppShellProjectActions,
   type AppShellProjectActions,

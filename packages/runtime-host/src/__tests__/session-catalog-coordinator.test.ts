@@ -3,15 +3,15 @@ import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
+import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
+import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/explore-agent';
+import { type RelayModelProfile } from '@maka/core/model-thinking';
+import { type SessionHeader } from '@maka/core/session';
 import {
-  createDefaultRuntimePolicy,
-  createGenesisExecutionBoundary,
-  DEEP_RESEARCH_SESSION_LABEL,
-  DEEP_RESEARCH_SESSION_NAME,
-  type RelayModelProfile,
-  type SessionHeader,
-} from '@maka/core';
-import { SessionConfigurationTransitionError, headerToSummary } from '@maka/runtime';
+  SessionConfigurationTransitionError,
+  headerToSummary,
+} from '@maka/runtime/session-manager';
 import { type ProjectCatalog, ProjectUnavailableError } from '@maka/storage';
 import {
   SessionMetadataVersionConflictError,

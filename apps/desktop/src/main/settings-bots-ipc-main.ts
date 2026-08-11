@@ -1,18 +1,13 @@
 import type { IpcMain } from 'electron';
-import type {
-  AppSettings,
-  BotOnboardingSnapshot,
-  BotOnboardingStartInput,
-  BotProvider,
-  BotReadinessState,
-  UpdateAppSettingsInput,
-} from '@maka/core';
+import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
+import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/bot-onboarding';
+import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
 import { tryResult } from '@maka/core/result';
 import {
   getWechatBridgeQrCode,
   testBotChannel as testRuntimeBotChannel,
   type BotRegistry,
-} from '@maka/runtime';
+} from '@maka/runtime/bots';
 import type { SettingsStore } from '@maka/storage';
 import {
   BotOnboardingService,

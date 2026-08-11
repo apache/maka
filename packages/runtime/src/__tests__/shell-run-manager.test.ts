@@ -12,9 +12,8 @@ import {
   SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
   type ShellRunRecord,
   type ShellRunStore,
-  type ShellRunUpdate,
-  type ToolResultContent,
-} from '@maka/core';
+} from '@maka/core/shell-run';
+import { type ShellRunUpdate, type ToolResultContent } from '@maka/core/events';
 import { createSqliteShellRunStore } from '@maka/storage';
 
 import { ShellRunProcessManager } from '../shell-run-manager.js';

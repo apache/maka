@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentRunInspectDocument, SessionInspectDocument } from '@maka/runtime';
+import type { AgentRunInspectDocument, SessionInspectDocument } from '@maka/core/execution-inspect';
 import {
   decodeClientFrame,
   decodeHostFrame,

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { QuoteRef } from '@maka/core';
+import type { QuoteRef } from '@maka/core/events';
 import {
   appendPending,
   clearPending,

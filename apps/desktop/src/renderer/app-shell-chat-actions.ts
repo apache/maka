@@ -1,17 +1,13 @@
-import type {
-  CollaborationMode,
-  InlineReference,
-  OrchestrationMode,
-  SandboxBoundaryResponse,
-  QuoteRef,
-  SessionSummary,
-  StoredMessage,
-  ThinkingLevel,
-  TurnOrchestration,
-  UiLocale,
-  UserQuestionResponse,
-} from '@maka/core';
-import { DEFAULT_SESSION_NAME } from '@maka/core';
+import type { CollaborationMode } from '@maka/core/collaboration';
+import type { InlineReference, QuoteRef } from '@maka/core/events';
+import type { OrchestrationMode } from '@maka/core/orchestration';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { TurnOrchestration } from '@maka/core/runtime-inputs';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type { UserQuestionResponse } from '@maka/core/user-question';
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
   armLiveTurn,
   dequeueInteractionByRequestId,
@@ -39,7 +35,7 @@ export type PendingAttachment = {
   stagingKey: string;
   displayName: string;
   mimeType?: string;
-  kind: import('@maka/core').AttachmentRef['kind'];
+  kind: import('@maka/core/events').AttachmentRef['kind'];
   size: number;
   /** Composer drawer thumbnail source for image attachments. Merged in from
    *  the preview cache only after the URL has actually decoded as an image,
@@ -209,7 +205,7 @@ export function createAppShellChatActions(deps: {
   function optimisticUserMessage(
     turnId: string,
     text: string,
-    attachments: readonly import('@maka/core').AttachmentRef[] = [],
+    attachments: readonly import('@maka/core/events').AttachmentRef[] = [],
     quotes: readonly QuoteRef[] = [],
     inlineReferences: readonly InlineReference[] = [],
   ): StoredMessage {
@@ -229,7 +225,7 @@ export function createAppShellChatActions(deps: {
     sessionId: string,
     turnId: string,
     text: string,
-    attachments: readonly import('@maka/core').AttachmentRef[] = [],
+    attachments: readonly import('@maka/core/events').AttachmentRef[] = [],
     options: {
       replaceCurrentMessages?: boolean;
       quotes?: readonly QuoteRef[];

@@ -10,8 +10,8 @@ import {
   projectShellRunUpdateForSession,
   type ShellRunMergeDiagnostic,
   type ShellRunToolResult,
-  type ShellRunUpdate,
-} from '../index.js';
+} from '../shell-run-result.js';
+import type { ShellRunUpdate } from '../events.js';
 
 describe('mergeShellRunState', () => {
   it('orders state by revision and strips child operations', () => {

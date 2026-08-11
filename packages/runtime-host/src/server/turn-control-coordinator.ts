@@ -1,4 +1,7 @@
-import { RuntimeHostedRootConflictError, RuntimeHostedRootUnavailableError } from '@maka/runtime';
+import {
+  RuntimeHostedRootConflictError,
+  RuntimeHostedRootUnavailableError,
+} from '@maka/runtime/message-authority';
 import type { OperationOutcome, TurnQueryInput, TurnStopInput } from '../protocol/index.js';
 import type { TurnOperationHandlerMap } from './operation-dispatcher.js';
 import type { HostedExecutionAuthority } from './hosted-execution-authority.js';

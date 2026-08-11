@@ -7,7 +7,7 @@ import {
   realpathAllowMissing,
   resolveCanonicalDirectoryEntryTarget,
 } from '../path-containment.js';
-import { sandboxBoundaryExpansionAllowsPath } from '@maka/core';
+import { sandboxBoundaryExpansionAllowsPath } from '@maka/core/sandbox-boundary';
 import {
   ApplyPatchRejectedError,
   createPatchedFile,

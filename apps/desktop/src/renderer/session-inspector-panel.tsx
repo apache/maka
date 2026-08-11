@@ -9,7 +9,7 @@ import { Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { ToggleButton } from '@astryxdesign/core/ToggleButton';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
-import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core';
+import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
 import type { TraceTotals } from '@maka/core/session-trace';
 import { useToast, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Activity, AlertTriangle, Copy } from '@maka/ui/icons';

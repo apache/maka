@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LanguageModelV4CallOptions, LanguageModelV4StreamPart } from '@ai-sdk/provider';
-import type { RuntimeExecutionConnection } from '@maka/core';
-import { getAIModel } from '@maka/runtime';
+import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
+import { getAIModel } from '@maka/runtime/model-factory';
 
 /**
  * Regression guard for #1967 and #1976. Both are the same modelling defect: the streamed

@@ -1,4 +1,4 @@
-import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core';
+import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core/workspace-version-authority';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,

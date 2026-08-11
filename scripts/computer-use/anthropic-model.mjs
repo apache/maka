@@ -4,7 +4,7 @@ import {
   SYNTHETIC_COMPUTER_ALLOWED_KEYS,
   SYNTHETIC_COMPUTER_KNOWN_KEYS,
   SYNTHETIC_COMPUTER_TOOL_PROPERTIES,
-} from './cu-synthetic-model-scenario.mjs';
+} from './synthetic-model-scenario.mjs';
 
 const baseUrl = process.env.MAKA_CU_ANTHROPIC_BASE_URL ?? 'http://127.0.0.1:8537';
 const model = process.env.MAKA_CU_ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';

@@ -52,9 +52,7 @@ export type WorkspacePrivacyContextResult =
   | { ok: true; value: WorkspacePrivacyContext }
   | { ok: false; reason: WorkspacePrivacyContextInvalidReason; message: string };
 
-export type WorkspacePrivacyContextInvalidReason =
-  | 'not_object'
-  | 'incognito_active_invalid';
+export type WorkspacePrivacyContextInvalidReason = 'not_object' | 'incognito_active_invalid';
 
 // ---------------------------------------------------------------------------
 // Type guard + validator

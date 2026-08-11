@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
-import type { ArtifactRecord, ArtifactSource } from '@maka/core';
+import type { ArtifactRecord, ArtifactSource } from '@maka/core/artifacts';
 import { estimateTokens } from './context-budget-helpers.js';
 import {
   buildHistoryCompactBlockFromSummary,

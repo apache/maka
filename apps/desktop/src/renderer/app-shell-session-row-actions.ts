@@ -1,6 +1,7 @@
-import type { SessionSummary, StoredMessage, UiLocale } from '@maka/core';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
-import { revisionFamilySessionIds } from '@maka/core';
+import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 
 type RefBox<T> = { current: T };
 

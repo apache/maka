@@ -1,8 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  AUTOMATION_LAST_RUN_STATUSES,
-  AUTOMATION_RECORD_TRIGGERS,
+  SCHEDULED_TASK_LAST_RUN_STATUSES,
   CAPABILITY_AUDIT_PERMISSION_MODES,
   LOCAL_SKILL_SOURCE_SLUG,
   SOURCE_AUTH_TYPES,
@@ -14,13 +13,12 @@ import {
 import type { ScheduledTask } from '../scheduled-task.js';
 
 describe('capability audit contract', () => {
-  it('locks the visible source and automation enums', () => {
+  it('locks the visible source and ScheduledTask enums', () => {
     assert.deepEqual(SOURCE_RECORD_TYPES, ['mcp', 'api', 'local']);
     assert.deepEqual(SOURCE_AUTH_TYPES, ['oauth', 'bearer', 'none']);
     assert.deepEqual(SOURCE_RECORD_STATUSES, ['ready', 'needs_auth', 'error', 'disabled']);
     assert.deepEqual(CAPABILITY_AUDIT_PERMISSION_MODES, ['explore', 'ask', 'execute']);
-    assert.deepEqual(AUTOMATION_RECORD_TRIGGERS, ['manual', 'schedule', 'event']);
-    assert.deepEqual(AUTOMATION_LAST_RUN_STATUSES, ['ok', 'error', 'skipped']);
+    assert.deepEqual(SCHEDULED_TASK_LAST_RUN_STATUSES, ['ok', 'error', 'skipped']);
   });
 
   it('synthesizes a local skills source and keeps skill permission mode read-first', () => {
@@ -58,10 +56,10 @@ describe('capability audit contract', () => {
     assert.equal(report.skills[1].permissionMode, 'explore');
   });
 
-  it('maps scheduled tasks into automation records without losing run state', () => {
+  it('maps scheduled tasks into audit records without losing run state', () => {
     const tasks: ScheduledTask[] = [
       {
-        id: 'auto-1',
+        id: 'scheduled-task-1',
         title: '每日复盘',
         intent: { kind: 'text', body: '' },
         schedule: { kind: 'calendar', anchorAt: 1_700_000_000_000, recurrence: 'daily' },
@@ -79,7 +77,7 @@ describe('capability audit contract', () => {
         lastError: null,
       },
       {
-        id: 'auto-2',
+        id: 'scheduled-task-2',
         title: '周会提醒',
         intent: { kind: 'text', body: '' },
         schedule: { kind: 'once', runAt: 1_700_000_100_000 },
@@ -97,7 +95,7 @@ describe('capability audit contract', () => {
         lastError: 'skip',
       },
       {
-        id: 'auto-3',
+        id: 'scheduled-task-3',
         title: '月末归档',
         intent: { kind: 'text', body: '' },
         schedule: { kind: 'once', runAt: 1_700_000_200_000 },
@@ -118,19 +116,18 @@ describe('capability audit contract', () => {
 
     const report = deriveCapabilityAuditReport({ scheduledTasks: tasks });
 
-    assert.equal(report.automations.length, 3);
-    assert.equal(report.automations[0].trigger, 'schedule');
-    assert.equal(report.automations[0].permissionMode, 'execute');
-    assert.equal(report.automations[0].lastRunStatus, 'ok');
-    assert.equal(report.automations[1].permissionMode, 'ask');
-    assert.equal(report.automations[1].lastRunStatus, 'skipped');
-    assert.equal(report.automations[2].permissionMode, 'explore');
-    assert.equal(report.automations[2].lastRunStatus, 'error');
-    assert.equal(report.summary.automationCount, 3);
-    assert.equal(report.summary.enabledAutomationCount, 1);
-    assert.equal(report.summary.executableAutomationCount, 1);
-    assert.equal(report.summary.failedAutomationCount, 1);
-    assert.equal(report.summary.skippedAutomationCount, 1);
+    assert.equal(report.scheduledTasks.length, 3);
+    assert.equal(report.scheduledTasks[0].permissionMode, 'execute');
+    assert.equal(report.scheduledTasks[0].lastRunStatus, 'ok');
+    assert.equal(report.scheduledTasks[1].permissionMode, 'ask');
+    assert.equal(report.scheduledTasks[1].lastRunStatus, 'skipped');
+    assert.equal(report.scheduledTasks[2].permissionMode, 'explore');
+    assert.equal(report.scheduledTasks[2].lastRunStatus, 'error');
+    assert.equal(report.summary.scheduledTaskCount, 3);
+    assert.equal(report.summary.enabledScheduledTaskCount, 1);
+    assert.equal(report.summary.executableScheduledTaskCount, 1);
+    assert.equal(report.summary.failedScheduledTaskCount, 1);
+    assert.equal(report.summary.skippedScheduledTaskCount, 1);
   });
 
   it('keeps explicit remote sources visible without forcing a local duplicate', () => {

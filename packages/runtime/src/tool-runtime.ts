@@ -1,7 +1,7 @@
+import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { projectAgentSwarmResult } from '@maka/core/agent-swarm';
+import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 import {
-  decodeCanonicalToolResultContent,
-  projectAgentSwarmResult,
-  projectToolActivityArgs,
   type CreateSandboxBoundaryRequest,
   type ExecutionBoundary,
   type SandboxBoundaryDecision,
@@ -9,7 +9,7 @@ import {
   type SandboxBoundaryRequest,
   type SandboxBoundarySettlement,
   type SettleSandboxBoundaryRequest,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
   SandboxBoundaryDecisionAckEvent,
@@ -41,11 +41,11 @@ import type {
   UserQuestionResponse,
   UserQuestionResult,
 } from '@maka/core/user-question';
-import { computerUseModelCallArgs } from '@maka/core';
+import { computerUseModelCallArgs } from '@maka/core/computer-use';
 import type { SessionHeader } from '@maka/core/session';
 import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { redactSecrets } from '@maka/core/redaction';
-import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core';
+import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core/runtime-event';
 import { serializedByteLength } from '@maka/code-mode';
 
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';

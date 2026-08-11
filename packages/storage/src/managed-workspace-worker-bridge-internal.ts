@@ -1,8 +1,8 @@
 import {
   createManagedExecutionBoundary,
-  createReadOnlyPermissionProfile,
   type ExecutionBoundary,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
+import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import {
   requireManagedWorkspaceExecutionScopeInternal,
   type ManagedWorkspaceExecutionScope,

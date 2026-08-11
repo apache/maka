@@ -1,10 +1,10 @@
+import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import {
-  isActiveShellRunStatus,
   ShellRunUpdateBuffer,
   mergeShellRunUpdate,
   projectShellRunUpdateForSession,
-  type ShellRunUpdate,
-} from '@maka/core';
+} from '@maka/core/shell-run-result';
+import { type ShellRunUpdate } from '@maka/core/events';
 import type { MakaSessionDriver } from './session-driver.js';
 
 export interface ShellRunHydrationController {

@@ -4,12 +4,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import {
-  createGenesisExecutionBoundary,
-  type LlmConnection,
-  type SessionEvent,
-  type SessionHeader,
-} from '@maka/core';
+import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
+import { type LlmConnection } from '@maka/core/llm-connections';
+import { type SessionEvent } from '@maka/core/events';
+import { type SessionHeader } from '@maka/core/session';
 import type { McpToolBinding } from '@maka/core/mcp';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';

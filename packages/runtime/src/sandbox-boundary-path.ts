@@ -7,7 +7,7 @@ import {
   type SandboxBoundaryAccess,
   type SandboxBoundaryExpansion,
   type SandboxBoundaryScope,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
 
 export interface NormalizedSandboxBoundaryPath {
   readonly displayPath: string;

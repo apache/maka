@@ -1,4 +1,5 @@
-import type { DailyReviewRange, UiLocale } from '@maka/core';
+import type { DailyReviewRange } from '@maka/core/daily-review';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 
 export function createAppShellDailyReviewBridge(locale: UiLocale = 'zh') {

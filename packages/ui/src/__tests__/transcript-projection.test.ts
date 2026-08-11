@@ -1,11 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type {
-  ShellRunSnapshotResult,
-  ShellRunToolResult,
-  ShellRunUpdate,
-  StoredMessage,
-} from '@maka/core';
+import type { ShellRunSnapshotResult, ShellRunUpdate } from '@maka/core/events';
+import type { ShellRunToolResult } from '@maka/core/shell-run-result';
+import type { StoredMessage } from '@maka/core/session';
 import { createTranscriptProjection, valuesEqual } from '../transcript-projection.js';
 import { foldShellRunToolActivities, timelineTools, type ToolActivityItem, type TurnViewModel } from '../materialize.js';
 import type { LiveTurnProjection } from '../live-turn-projection.js';

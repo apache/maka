@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
-import type { ProjectRecord, UiLocale } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { openPathActionErrorMessage } from './app-shell-copy';
 import { openPathActionLabel, openPathFailureCopy } from './open-path';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';

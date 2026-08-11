@@ -4,12 +4,13 @@ import type { InteractiveLongTermMemoryWriter } from '@maka/storage/long-term-me
 import type { RuntimePolicyReader } from '@maka/storage/runtime-policy-stores';
 import {
   MemoryExtractionEngine,
-  type HistoryCompactCheckpoint,
   type MemoryExtractionGate,
   type MemoryExtractionSourceCapabilities,
   type MemoryExtractionSourceSnapshot,
   type MemoryRememberResult,
-} from '@maka/runtime';
+} from '@maka/runtime/memory-extraction';
+
+import { type HistoryCompactCheckpoint } from '@maka/runtime/history-compact-checkpoint';
 
 import type { RuntimeHostResidency } from './host-kernel.js';
 import type { HostMemoryExtractionModel } from './execution-model-authority.js';

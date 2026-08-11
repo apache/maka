@@ -3,10 +3,9 @@ import { test } from 'node:test';
 import {
   ExternalSessionAdapterRegistry,
   type ExternalSessionAdapter,
-  type SessionHeader,
-  type StoredMessage,
-} from '@maka/core';
-import { headerToSummary } from '@maka/runtime';
+} from '@maka/core/external-session';
+import { type SessionHeader, type StoredMessage } from '@maka/core/session';
+import { headerToSummary } from '@maka/runtime/session-manager';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
 import { EXTERNAL_SESSION_RESULT_MAX_BYTES } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';

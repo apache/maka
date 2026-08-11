@@ -1,7 +1,6 @@
 import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
 import { ACCESS_AUTHORITY_OPERATION_SPECS } from './access-authority.js';
 import { AGENT_GRAPH_OPERATION_SPECS } from './agent-graph.js';
-import { AUTOMATION_OPERATION_SPECS } from './automation.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
 import { CONFIGURATION_OPERATION_SPECS } from './configuration.js';
@@ -168,7 +167,6 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   RUNTIME_POLICY_OPERATION_SPECS,
   RUNTIME_RESOURCE_OPERATION_SPECS,
   SCHEDULED_TASK_OPERATION_SPECS,
-  AUTOMATION_OPERATION_SPECS,
   PLAN_OPERATION_SPECS,
   PROJECT_CATALOG_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,

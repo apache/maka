@@ -1,8 +1,8 @@
 import {
   buildSideConversationSystemPromptFragment,
   isSideConversationSession,
-  type RunCompositionSourceRevision,
-} from '@maka/core';
+} from '@maka/core/side-conversation';
+import { type RunCompositionSourceRevision } from '@maka/core/run-composition';
 import {
   buildDeepResearchSystemPromptFragment,
   isDeepResearchSession,
@@ -15,42 +15,46 @@ import {
   renderTaskLedgerPromptText,
   type TaskLedgerStore,
 } from '@maka/core/task-ledger';
+import { assembleMainSessionSystemPrompt } from '@maka/runtime/system-prompt/main-session-prompt';
+import { buildAskUserQuestionTool } from '@maka/runtime/ask-user-question-tool';
+import { buildBuiltinTools, type BuildBuiltinToolsOptions } from '@maka/runtime/builtin-tools';
 import {
-  assembleMainSessionSystemPrompt,
-  buildAskUserQuestionTool,
-  buildBuiltinTools,
   buildCancelPlanTool,
-  buildExploreAgentTool,
+  buildSubmitPlanTool,
+  buildUpdatePlanTool,
+} from '@maka/runtime/plan-tools';
+import { buildExploreAgentTool } from '@maka/runtime/explore-agent-tool';
+import {
   buildHostCapabilitiesFromBinding,
-  buildParentAgentTools,
-  buildPersonalizationPromptFragment,
-  buildRequestSandboxBoundaryTool,
-  buildSessionEnvironmentPromptFragment,
+  projectEffectiveProductToolSurface,
+} from '@maka/runtime/tool-catalog-derive';
+import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
+import { buildPersonalizationPromptFragment } from '@maka/runtime/system-prompt/personalization-prompt';
+import { buildRequestSandboxBoundaryTool } from '@maka/runtime/sandbox-boundary-tool';
+import { buildSessionEnvironmentPromptFragment } from '@maka/runtime/system-prompt/session-environment-prompt';
+import {
   buildSkillAgentToolFromInventory,
   buildSkillSearchAgentToolFromInventory,
   buildSkillsPromptFragmentFromInventoryWithReport,
-  buildSubmitPlanTool,
-  buildTaskLedgerTools,
-  buildUpdatePlanTool,
-  buildWorkspaceInstructionsPromptFragment,
-  isDeepResearchToolAllowed,
-  listRunnableBuiltinAgentDefinitions,
-  projectEffectiveProductToolSurface,
+  SkillShadowSelectionTracker,
+  type SkillCatalogBudgetOptions,
+  type SkillInventoryResolver,
+} from '@maka/runtime/skills';
+import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
+import { buildWorkspaceInstructionsPromptFragment } from '@maka/runtime/system-prompt/workspace-instructions';
+import { isDeepResearchToolAllowed } from '@maka/runtime/deep-research-tools';
+import { listRunnableBuiltinAgentDefinitions } from '@maka/runtime/agent-catalog';
+import {
   renderInterruptedPlanContext,
   renderPlanExecutionPrompt,
   renderPlanModePrompt,
-  resolveProjectGitInfo,
-  routeWebFetchTools,
-  routeWebSearchTools,
   selectCollaborationTools,
-  SkillShadowSelectionTracker,
-  type BuildBuiltinToolsOptions,
-  type MakaTool,
-  type SkillCatalogBudgetOptions,
-  type SkillInventoryResolver,
-  type ToolAvailabilityConfig,
-  type ToolGroup,
-} from '@maka/runtime';
+} from '@maka/runtime/plan-mode';
+import { resolveProjectGitInfo } from '@maka/runtime/system-prompt/project-context';
+import { routeWebFetchTools } from '@maka/runtime/web-fetch-tool';
+import { routeWebSearchTools } from '@maka/runtime/native-web-search-tool';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { type ToolAvailabilityConfig, type ToolGroup } from '@maka/runtime/tool-availability';
 import type {
   ClientCapabilitySnapshot,
   HostClientCapabilityCoordinator,
@@ -89,7 +93,6 @@ export interface InteractiveRunComposerInput {
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
-  readonly automationTool?: MakaTool;
   readonly scheduledTaskTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
@@ -116,7 +119,6 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         inventoryFor,
         input.builtinTools,
         input.hostTools,
-        input.automationTool,
         input.scheduledTaskTool,
         input.goalTools,
         input.parentAgentTools,
@@ -342,7 +344,6 @@ export function createInteractiveRunComposerFactory(
         ...(clientCapabilities ? { clientCapabilities } : {}),
         ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
         ...(hostTools.length > 0 ? { hostTools } : {}),
-        ...(input.automationTool ? { automationTool: input.automationTool } : {}),
         ...(input.scheduledTaskTool ? { scheduledTaskTool: input.scheduledTaskTool } : {}),
         ...(input.goalTools ? { goalTools: input.goalTools } : {}),
         ...(parentAgentTools ? { parentAgentTools } : {}),
@@ -413,7 +414,6 @@ function buildDefaultHostTools(
   inventoryFor: SkillInventoryResolver,
   builtinOptions?: BuildBuiltinToolsOptions,
   hostTools: readonly MakaTool[] = [],
-  automationTool?: MakaTool,
   scheduledTaskTool?: MakaTool,
   goalTools: readonly MakaTool[] = [],
   parentAgentTools: readonly MakaTool[] = [],
@@ -448,7 +448,6 @@ function buildDefaultHostTools(
     'Skill',
     'SkillSearch',
     ...taskTools.map((tool) => tool.name),
-    ...(automationTool ? [automationTool.name] : []),
     ...(scheduledTaskTool ? [scheduledTaskTool.name] : []),
     ...goalTools.map((tool) => tool.name),
     ...parentAgentTools.map((tool) => tool.name),
@@ -466,7 +465,6 @@ function buildDefaultHostTools(
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     buildSkillSearchAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     ...taskTools,
-    ...(automationTool ? [automationTool] : []),
     ...(scheduledTaskTool ? [scheduledTaskTool] : []),
     ...goalTools,
     ...parentAgentTools,

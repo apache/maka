@@ -210,8 +210,8 @@ test('an empty field shows what it is prompting for, marked as not a value', () 
 // The offline evaluator's entry point
 // ---------------------------------------------------------------------------
 //
-// `scripts/cu-prune-eval.mjs` measures what a rendering change would cost
-// against recorded trajectories. It has to call the real renderer — the same
+// Offline evaluation measures what a rendering change would cost against
+// recorded trajectories. It has to call the real renderer — the same
 // instrument built elsewhere reached a reversed conclusion twice because it
 // carried a hand-written copy of the policy — so the policy takes an option
 // instead. What must stay true is that the option changes nothing until it is

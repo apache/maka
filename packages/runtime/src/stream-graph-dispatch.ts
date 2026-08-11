@@ -5,7 +5,7 @@ import {
 } from '@maka/core/agent-graph-control';
 import type { AgentRunStore } from '@maka/core/agent-run';
 import type { SessionEvent } from '@maka/core/events';
-import type { RuntimeEventStore } from '@maka/core';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type {
   ClaimedAgentGraphIntentResult,
   RunClaimedAgentGraphIntentInput,

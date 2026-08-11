@@ -4,7 +4,7 @@ import { describe, test } from 'node:test';
 import type {
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
-} from '@maka/core';
+} from '@maka/core/events';
 import {
   activeInteractionFor,
   clearInteractions,

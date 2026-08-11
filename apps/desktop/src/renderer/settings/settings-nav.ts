@@ -16,7 +16,8 @@ import {
   Workflow,
   type LucideProps,
 } from '@maka/ui/icons';
-import type { SettingsSection, UiLocale } from '@maka/core';
+import type { SettingsSection } from '@maka/core/settings';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { safeLocalStorageGet } from '../browser-storage.js';
 import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.js';
 import {

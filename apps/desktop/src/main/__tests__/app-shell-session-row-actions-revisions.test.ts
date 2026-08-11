@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
 import { createAppShellSessionRowActions } from '../../renderer/app-shell-session-row-actions.js';
 
 function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {

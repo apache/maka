@@ -3,7 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { MAX_ATTACHMENT_BYTES, type StorageRef } from '@maka/core';
+import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
+import { type StorageRef } from '@maka/core/events';
 import {
   createArtifactAttachmentResourceReader,
   createAttachmentByteReader,

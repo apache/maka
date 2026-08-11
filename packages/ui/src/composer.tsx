@@ -52,8 +52,11 @@ import {
   type ChatInputActionOwner,
   type ComposerTextPort,
 } from './chat-input-behavior.js';
-import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
-import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
+import type { AttachmentRef, QuoteRef } from '@maka/core/events';
+import type { PermissionMode } from '@maka/core/permission';
+import type { ProviderType } from '@maka/core/llm-connections';
+import type { SessionSummary } from '@maka/core/session';
 import {
   Button as UiButton,
   ChatComposer as AstryxChatComposer,
@@ -263,12 +266,12 @@ export const Composer = forwardRef<
     modelChangePending?: boolean;
     onModelChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
     /** Per-model thinking-level variants for the active model; empty/undefined hides the switcher. */
-    activeThinkingLevels?: readonly import('@maka/core').ThinkingLevel[];
-    activeThinkingLevel?: import('@maka/core').ThinkingLevel;
-    onThinkingLevelChange?(level: import('@maka/core').ThinkingLevel | undefined): void | Promise<void>;
-    newChatThinkingLevels?: readonly import('@maka/core').ThinkingLevel[];
-    newChatThinkingLevel?: import('@maka/core').ThinkingLevel;
-    onNewChatThinkingLevelChange?(level: import('@maka/core').ThinkingLevel | undefined): void | Promise<void>;
+    activeThinkingLevels?: readonly import('@maka/core/model-thinking').ThinkingLevel[];
+    activeThinkingLevel?: import('@maka/core/model-thinking').ThinkingLevel;
+    onThinkingLevelChange?(level: import('@maka/core/model-thinking').ThinkingLevel | undefined): void | Promise<void>;
+    newChatThinkingLevels?: readonly import('@maka/core/model-thinking').ThinkingLevel[];
+    newChatThinkingLevel?: import('@maka/core/model-thinking').ThinkingLevel;
+    onNewChatThinkingLevelChange?(level: import('@maka/core/model-thinking').ThinkingLevel | undefined): void | Promise<void>;
     /**
      * Home / empty-state composer only (no active session yet): the model
      * the next new chat will start with, and the picker callback. When set,

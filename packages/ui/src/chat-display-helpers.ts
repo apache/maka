@@ -21,7 +21,7 @@
  * sites.
  */
 
-import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core';
+import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
 import { getConversationCopy } from './conversation-copy.js';
 
 function createAbsoluteTimeFormat(locale: UiLocale): Intl.DateTimeFormat {

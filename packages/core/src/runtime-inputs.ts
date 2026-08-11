@@ -96,14 +96,13 @@ export interface UserMessageInput extends MessageContent {
   regeneratedFromTurnId?: string;
   branchOfTurnId?: string;
   parentSessionId?: string;
-  /** What triggered this turn, when it is not a direct user message. Lets trace
-   *  distinguish an automation-triggered run from a hand-typed one. */
+  /** What triggered this turn, when it is not a direct user message. */
   origin?: TurnOrigin;
 }
 
 /** Non-user trigger source for a turn. */
 export type TurnOrigin =
-  | { kind: 'automation'; automationId: string }
+  | { kind: 'scheduled_task'; scheduledTaskId: string }
   | { kind: 'goal'; goalId: string }
   | {
       kind: 'agent_graph';

@@ -4,7 +4,7 @@ import type {
   RuntimePolicy,
   RuntimePolicySnapshot,
 } from '@maka/core/runtime-policy';
-import type { MakaTool } from '@maka/runtime';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
 
 const personalizationPatchSchema = z

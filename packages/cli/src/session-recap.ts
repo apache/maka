@@ -1,4 +1,4 @@
-import { cleanSessionRecapText, SESSION_RECAP_INSTRUCTION } from '@maka/runtime';
+import { cleanSessionRecapText, SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
 
 export const RECAP_INSTRUCTION = SESSION_RECAP_INSTRUCTION;
 export const cleanRecapText = cleanSessionRecapText;

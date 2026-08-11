@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import type { SessionEvent, StoredMessage } from "@maka/core";
+import type { SessionEvent } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
 import type {
   SessionContinuitySnapshot,
   SubscriptionFrame,

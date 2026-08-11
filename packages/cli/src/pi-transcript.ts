@@ -14,14 +14,16 @@ import {
 } from '@maka/core/session';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import {
-  isActiveShellRunStatus,
-  mergeShellRunStateWithDiagnostics,
-  projectToolActivityArgs,
-  type ShellRunUpdate,
-} from '@maka/core';
+import { isActiveShellRunStatus } from '@maka/core/shell-run';
+import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
+import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
+import { type ShellRunUpdate } from '@maka/core/events';
 import { homedir } from 'node:os';
-import { materializeSession, type ChatItem, type ToolActivityItem } from '@maka/runtime';
+import {
+  materializeSession,
+  type ChatItem,
+  type ToolActivityItem,
+} from '@maka/runtime/materializer';
 import type { MakaSessionDriver } from './session-driver.js';
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';

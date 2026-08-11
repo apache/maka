@@ -1,10 +1,9 @@
+import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
+import { isCollaborationMode } from '@maka/core/collaboration';
+import { isOrchestrationMode } from '@maka/core/orchestration';
+import { isPermissionMode } from '@maka/core/permission';
 import {
-  isBotDeliveryProvider,
-  isCollaborationMode,
-  isOrchestrationMode,
-  isPermissionMode,
   isScheduledTaskStatus,
-  isThinkingLevel,
   SCHEDULED_TASK_CHAT_ID_MAX_CHARS,
   SCHEDULED_TASK_CRON_MAX_CHARS,
   SCHEDULED_TASK_INTENT_MAX_CHARS,
@@ -13,6 +12,7 @@ import {
   SCHEDULED_TASK_MIN_INTERVAL_SECONDS,
   SCHEDULED_TASK_RUN_HISTORY_LIMIT,
   SCHEDULED_TASK_RUN_MESSAGE_MAX_CHARS,
+  SCHEDULED_TASK_SESSION_ID_MAX_CHARS,
   SCHEDULED_TASK_TITLE_MAX_CHARS,
   type CreateScheduledTaskInput,
   type ScheduledTask,
@@ -22,7 +22,8 @@ import {
   type ScheduledTaskRun,
   type ScheduledTaskSchedule,
   type UpdateScheduledTaskInput,
-} from '@maka/core';
+} from '@maka/core/scheduled-task';
+import { isThinkingLevel } from '@maka/core/model-thinking';
 import type { BackendKind } from '@maka/core/session';
 import {
   requireCount,
@@ -474,6 +475,21 @@ function decodeEffect(value: unknown): ScheduledTaskEffect {
       'execution',
     ]);
     return { kind: 'agent_run', execution: decodeExecution(exact.execution) };
+  }
+  if (effect.kind === 'session_resume') {
+    const exact = requireExactRecord(effect, 'ScheduledTask Session resume effect', [
+      'kind',
+      'sessionId',
+    ]);
+    return {
+      kind: 'session_resume',
+      sessionId: boundedText(
+        exact.sessionId,
+        'ScheduledTask Session id',
+        SCHEDULED_TASK_SESSION_ID_MAX_CHARS,
+        true,
+      ),
+    };
   }
   throw invalidProtocolFrame('Invalid ScheduledTask effect');
 }

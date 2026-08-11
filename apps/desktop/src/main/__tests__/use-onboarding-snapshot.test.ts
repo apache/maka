@@ -11,7 +11,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { OnboardingState } from '@maka/core';
+import type { OnboardingState } from '@maka/core/onboarding';
 import {
   advanceOnboardingSnapshotState,
   createOnboardingSnapshotPoller,

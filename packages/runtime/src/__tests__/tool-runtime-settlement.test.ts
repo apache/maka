@@ -4,9 +4,9 @@ import { describe, it } from 'node:test';
 import {
   createBypassExecutionBoundary,
   createGenesisExecutionBoundary,
-  type LlmConnection,
-  type SessionHeader,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
+import { type LlmConnection } from '@maka/core/llm-connections';
+import { type SessionHeader } from '@maka/core/session';
 import { buildForegroundBashTool, buildManagedBashTool } from '../shell-tools.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
 

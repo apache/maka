@@ -1,11 +1,9 @@
-import type {
-  AgentGraphClientClaimAdmission,
-  AgentGraphIntentClaim,
-  AgentGraphOperatorProvision,
-  AgentGraphScheduleUpdate,
-  SessionEvent,
-} from '@maka/core';
-import { failureClassFromCompleteStopReason } from '@maka/core';
+import type { AgentGraphClientClaimAdmission } from '@maka/core/agent-graph-client-projection';
+import type { AgentGraphIntentClaim } from '@maka/core/agent-graph-control';
+import type { AgentGraphOperatorProvision } from '@maka/core/agent-graph-topology';
+import type { AgentGraphScheduleUpdate } from '@maka/core/agent-graph-schedule';
+import type { SessionEvent } from '@maka/core/events';
+import { failureClassFromCompleteStopReason } from '@maka/core/events';
 import type {
   AgentGraphSupervisorObservation,
   AgentGraphSupervisorRuntimeEvent,

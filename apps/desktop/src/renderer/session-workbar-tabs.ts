@@ -473,15 +473,6 @@ export function moveSessionWorkbarTab(
   return target ? reorderSessionWorkbarTab(state, tabId, target.id) : state;
 }
 
-export function reconcileSessionWorkbarTabs(
-  state: SessionWorkbarTabsState,
-  available: ReadonlySet<string>,
-): SessionWorkbarTabsState {
-  const tabs = state.tabs.filter((tab) => available.has(tab.id));
-  if (tabs.length === state.tabs.length) return state;
-  return createSessionWorkbarTabsState(tabs, state.activeTabId);
-}
-
 export function persistableSessionWorkbarTabs(
   state: SessionWorkbarTabsState,
 ): PersistedSessionWorkbarTabs {
@@ -525,10 +516,6 @@ export function readSessionWorkbarPanels(): SessionWorkbarPanelsState {
     }
   }
   return createSessionWorkbarPanelsState(readLegacySessionWorkbarTabs());
-}
-
-export function readSessionWorkbarTabs(): SessionWorkbarTabsState {
-  return readSessionWorkbarPanels().right;
 }
 
 function readLegacySessionWorkbarTabs(): SessionWorkbarTabsState {

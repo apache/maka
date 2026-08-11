@@ -14,9 +14,9 @@
 // unready entry in a packaged build — a development build is the only place
 // this binary runs.
 //
-//   node scripts/prepare-maka-cu.mjs
-//   MAKA_CU_SOURCE=/path/to/maka-cu node scripts/prepare-maka-cu.mjs
-//   MAKA_CU_SOURCE_BRANCH=maka/base node scripts/prepare-maka-cu.mjs
+//   node scripts/computer-use.mjs prepare
+//   MAKA_CU_SOURCE=/path/to/maka-cu node scripts/computer-use.mjs prepare
+//   MAKA_CU_SOURCE_BRANCH=maka/base node scripts/computer-use.mjs prepare
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -33,9 +33,9 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveMakaCuSourceBranch } from './prepare-maka-cu-provenance.mjs';
+import { resolveMakaCuSourceBranch } from './prepare-provenance.mjs';
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const manifestPath = join(repoRoot, 'apps', 'desktop', 'bundled-tools.json');
 const destination = join(repoRoot, 'apps', 'desktop', 'resources', 'bin', 'maka-cu');
 
@@ -45,7 +45,7 @@ const MACH_O_MAGICS = new Set([
 ]);
 
 function fail(message) {
-  process.stderr.write(`prepare-maka-cu: ${message}\n`);
+  process.stderr.write(`computer-use prepare: ${message}\n`);
   process.exit(1);
 }
 
@@ -111,7 +111,7 @@ if (status && process.env.MAKA_CU_ALLOW_DIRTY !== '1') {
   );
 }
 
-process.stderr.write(`prepare-maka-cu: building ${source}\n`);
+process.stderr.write(`computer-use prepare: building ${source}\n`);
 execFileSync('swift', ['build', '-c', 'release', '--package-path', source], { stdio: 'inherit' });
 
 const built = execFileSync(
@@ -137,12 +137,12 @@ chmodSync(destination, 0o755);
 // identified by its designated requirement, which survives a rebuild. Any
 // identity does that, including a self-signed one:
 //
-//   MAKA_CU_SIGN_IDENTITY="Codex++ Local Signing" node scripts/prepare-maka-cu.mjs
+//   MAKA_CU_SIGN_IDENTITY="Codex++ Local Signing" node scripts/computer-use.mjs prepare
 //
 // `security find-identity -v -p codesigning` lists what this machine has.
 const identity = process.env.MAKA_CU_SIGN_IDENTITY;
 if (identity) {
-  process.stderr.write(`prepare-maka-cu: signing with ${identity}\n`);
+  process.stderr.write(`computer-use prepare: signing with ${identity}\n`);
   execFileSync(
     'codesign',
     ['--force', '--options', 'runtime', '--timestamp=none', '--sign', identity, destination],
@@ -225,19 +225,19 @@ manifest.makaCu = {
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
 process.stderr.write(
-  `prepare-maka-cu: ${destination}\n` +
-    `prepare-maka-cu: sha256 ${binarySha256}\n` +
-    `prepare-maka-cu: commit ${manifest.makaCu.commit} on ${manifest.makaCu.branch}\n` +
-    `prepare-maka-cu: signature ${signing.signature}` +
+  `computer-use prepare: ${destination}\n` +
+    `computer-use prepare: sha256 ${binarySha256}\n` +
+    `computer-use prepare: commit ${manifest.makaCu.commit} on ${manifest.makaCu.branch}\n` +
+    `computer-use prepare: signature ${signing.signature}` +
     `${signing.hardenedRuntime ? ' + hardened runtime' : ''}` +
     `, notarization ${manifest.makaCu.notarization}` +
     `, distributionReady ${distributionReady}\n` +
     (distributionReady
       ? ''
-      : 'prepare-maka-cu: development only — a packaged build will refuse this entry.\n') +
+      : 'computer-use prepare: development only — a packaged build will refuse this entry.\n') +
     (identity
       ? ''
-      : 'prepare-maka-cu: unsigned, so macOS identifies it by its code directory hash — ' +
+      : 'computer-use prepare: unsigned, so macOS identifies it by its code directory hash — ' +
         'Accessibility has to be granted again after every rebuild. Set ' +
         'MAKA_CU_SIGN_IDENTITY to a codesigning identity (a self-signed one is enough) ' +
         'to make the grant survive.\n'),

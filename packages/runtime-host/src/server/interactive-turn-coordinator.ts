@@ -3,11 +3,9 @@ import { isDeepStrictEqual } from 'node:util';
 import type { RootExecutionDescriptor } from '@maka/core/agent-run';
 import { normalizeMessageContent, type MessageContent } from '@maka/core/events';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
-import {
-  RuntimeMessageAuthorityInvariantError,
-  parseSkillInvocationTokens,
-  type SessionManager,
-} from '@maka/runtime';
+import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-authority';
+import { parseSkillInvocationTokens } from '@maka/runtime/skill-invocation';
+import { type SessionManager } from '@maka/runtime/session-manager';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import type { OperationOutcome, TurnRegenerateInput, TurnStartInput } from '../protocol/index.js';
 import type { ConnectionContext, TurnOperationHandlerMap } from './operation-dispatcher.js';

@@ -29,14 +29,15 @@
 //   abandoned      the turn ended within one call of a refusal.
 //   cost           calls per task, and how much of that was spent recovering.
 //
-//   node scripts/cu-trace-analyse.mjs /tmp/cu-desktop-scenarios/*.trace.jsonl
+//   node scripts/computer-use.mjs trace-analyse /tmp/cu-desktop-scenarios/*.trace.jsonl
 //
-// Every shape below is exported and tested from `cu-trace-analyse.test.mjs`
+// Every shape below is exported for focused analysis of the journal format.
 // against fixtures in the journal's own format. An analyser whose counters
 // cannot be shown to move is an analyser that reports zero forever, which is
 // exactly what three of these did before the test existed.
 import { readFile } from 'node:fs/promises';
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 // The vocabulary comes from the product, not from a copy of it kept here. Two
 // regexes used to restate the action names; by the time anyone looked, neither
@@ -46,7 +47,11 @@ import { basename } from 'node:path';
 // `window_action`, `element_sequence`, `wait_for_text`) had zero occurrences
 // on the wire. Importing the enum makes that failure impossible: an action
 // added to the tool is classified here the day it lands.
-import { CU_TOOL_ACTION_TYPES, isCuMutatingAction, isCuObservingAction } from '@maka/core';
+import {
+  CU_TOOL_ACTION_TYPES,
+  isCuMutatingAction,
+  isCuObservingAction,
+} from '@maka/core/computer-use';
 
 /** The call as the model asked for it, with the volatile parts removed. */
 export function signature(args) {
@@ -488,10 +493,10 @@ async function main(files) {
   return 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const files = process.argv.slice(2).filter((a) => !a.startsWith('-'));
   if (files.length === 0) {
-    console.log('usage: node scripts/cu-trace-analyse.mjs <trace.jsonl...>');
+    console.log('usage: node scripts/computer-use.mjs trace-analyse <trace.jsonl...>');
     process.exit(2);
   }
   process.exit(await main(files));

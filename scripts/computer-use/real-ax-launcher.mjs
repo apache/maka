@@ -5,10 +5,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(here, '..');
-const harnessPath = join(here, 'cu-real-ax-model-e2e.mjs');
-const monitorPath = join(here, 'cu-real-e2e-monitor.swift');
-const inputAgeSource = join(here, 'cu-physical-input-age.swift');
+const repoRoot = join(here, '../..');
+const harnessPath = join(here, 'real-ax-harness.mjs');
+const monitorPath = join(here, 'real-e2e-monitor.swift');
+const inputAgeSource = join(here, 'physical-input-age.swift');
 const labRoot = process.env.MAKA_CU_AX_MODEL_LAB_ROOT;
 if (!labRoot) {
   throw new Error(
@@ -248,7 +248,7 @@ async function run() {
         cwd: repoRoot,
       });
     }
-    await runChild('npm', ['run', 'prepare:maka-cu'], { cwd: repoRoot });
+    await runChild(process.execPath, ['scripts/computer-use.mjs', 'prepare'], { cwd: repoRoot });
     if (driverOverride) {
       await copyFile(driverOverride, join(repoRoot, 'apps/desktop/resources/bin/maka-cu'));
     }

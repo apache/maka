@@ -3,14 +3,14 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import {
-  createWorkspaceWritePermissionProfile,
   type ExecutionBoundary,
   type SandboxBoundaryRequest,
   type SandboxBoundarySettlement,
-  type SessionEvent,
-  type SessionHeader,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
+import { type SessionEvent } from '@maka/core/events';
+import { type SessionHeader } from '@maka/core/session';
 import type {
   HostedInteractionBridge,
   HostedSandboxBoundarySettlement,

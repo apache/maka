@@ -123,7 +123,6 @@ const STORAGE_STRESS_FILES = new Set([
   'packages/storage/src/root-authority.ts',
   'packages/storage/src/operational-state-store.ts',
   'packages/storage/src/sqlite-artifact-schema.ts',
-  'packages/storage/src/sqlite-automation-schema.ts',
   'packages/storage/src/sqlite-core-execution-schema.ts',
   'packages/storage/src/sqlite-runtime-schema.ts',
   'packages/storage/src/sqlite-session-metadata-schema.ts',
@@ -160,7 +159,12 @@ export function loadWorkspaceGraph(repoRoot = defaultRepoRoot, readFile = readFi
       ...Object.keys(manifest.optionalDependencies ?? {}),
       ...Object.keys(manifest.peerDependencies ?? {}),
     ]);
-    return { dir, name: manifest.name, dependencyNames };
+    return {
+      dir,
+      name: manifest.name,
+      dependencyNames,
+      hasDistTests: typeof manifest.scripts?.['test:dist'] === 'string',
+    };
   });
   const dirByName = new Map(entries.map(({ dir, name }) => [name, dir]));
   const dependents = new Map(dirs.map((dir) => [dir, new Set()]));
@@ -170,7 +174,11 @@ export function loadWorkspaceGraph(repoRoot = defaultRepoRoot, readFile = readFi
       if (dependencyDir) dependents.get(dependencyDir)?.add(entry.dir);
     }
   }
-  return { dirs, dependents };
+  return {
+    dirs,
+    dependents,
+    testDirs: new Set(entries.filter((entry) => entry.hasDistTests).map((entry) => entry.dir)),
+  };
 }
 
 export function reverseDependencyClosure(seedDirs, graph) {
@@ -187,10 +195,14 @@ export function reverseDependencyClosure(seedDirs, graph) {
   return graph.dirs.filter((dir) => selected.has(dir));
 }
 
-function workspaceLanes(workspaces) {
+function workspaceLanes(workspaces, graph) {
+  const testDirs = graph.testDirs ?? new Set(workspaces);
   return {
-    runtimeHost: workspaces.includes('packages/runtime-host'),
-    standardWorkspaces: workspaces.filter((dir) => !DEDICATED_WORKSPACE_LANES.has(dir)),
+    runtimeHost:
+      workspaces.includes('packages/runtime-host') && testDirs.has('packages/runtime-host'),
+    standardWorkspaces: workspaces.filter(
+      (dir) => testDirs.has(dir) && !DEDICATED_WORKSPACE_LANES.has(dir),
+    ),
   };
 }
 
@@ -216,7 +228,7 @@ export function planTests(changedFiles, options = {}) {
       windowsRuntime: true,
       windowsStorage: true,
       workspaces,
-      ...workspaceLanes(workspaces),
+      ...workspaceLanes(workspaces, graph),
     };
   }
 
@@ -292,7 +304,7 @@ export function planTests(changedFiles, options = {}) {
     windowsRuntime,
     windowsStorage,
     workspaces,
-    ...workspaceLanes(workspaces),
+    ...workspaceLanes(workspaces, graph),
   };
 }
 

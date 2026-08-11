@@ -1,4 +1,4 @@
-import type { BotIncomingMessage } from '@maka/runtime';
+import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   RuntimeHostPermanentReconnectError,
   startRuntimeHostReconnectLifecycle,

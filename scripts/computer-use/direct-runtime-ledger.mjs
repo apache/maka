@@ -1,7 +1,7 @@
 import {
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
-} from '../packages/runtime/dist/index.js';
+} from '../../packages/runtime/dist/ai-sdk-flow.js';
 
 export function createDirectRuntimeTurnLedger({ sessionId, turnId, text, newId, now }) {
   const invocationId = `${sessionId}-invocation`;

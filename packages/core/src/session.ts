@@ -670,7 +670,7 @@ export interface UserMessage extends MessageContent {
   /** Non-user trigger source. Lets the chat mark turns the user did not
    * hand-type. Mirrors TurnOrigin in runtime-inputs. */
   origin?:
-    | { kind: 'automation'; automationId: string }
+    | { kind: 'scheduled_task'; scheduledTaskId: string }
     | { kind: 'goal'; goalId: string }
     | { kind: 'agent_graph'; graphId: string; wakeId: string; attemptId: string };
 }
@@ -946,10 +946,13 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
   ['signature', 'providerOptions', 'parts'],
 );
 type MessageOrigin = NonNullable<UserMessage['origin']>;
-type AutomationOrigin = Extract<MessageOrigin, { kind: 'automation' }>;
+type ScheduledTaskOrigin = Extract<MessageOrigin, { kind: 'scheduled_task' }>;
 type GoalOrigin = Extract<MessageOrigin, { kind: 'goal' }>;
 type AgentGraphOrigin = Extract<MessageOrigin, { kind: 'agent_graph' }>;
-const AUTOMATION_ORIGIN_SHAPE = defineObjectShape<AutomationOrigin>()(['kind', 'automationId'], []);
+const SCHEDULED_TASK_ORIGIN_SHAPE = defineObjectShape<ScheduledTaskOrigin>()(
+  ['kind', 'scheduledTaskId'],
+  [],
+);
 const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], []);
 const AGENT_GRAPH_ORIGIN_SHAPE = defineObjectShape<AgentGraphOrigin>()(
   ['kind', 'graphId', 'wakeId', 'attemptId'],
@@ -1144,15 +1147,6 @@ function isAssistantThinking(value: unknown): value is AssistantThinking {
   );
 }
 
-function isAutomationOrigin(value: unknown): value is AutomationOrigin {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, AUTOMATION_ORIGIN_SHAPE) &&
-    value.kind === 'automation' &&
-    typeof value.automationId === 'string'
-  );
-}
-
 function isGoalOrigin(value: unknown): value is GoalOrigin {
   return (
     isRecord(value) &&
@@ -1173,8 +1167,17 @@ function isAgentGraphOrigin(value: unknown): value is AgentGraphOrigin {
   );
 }
 
+function isScheduledTaskOrigin(value: unknown): value is ScheduledTaskOrigin {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, SCHEDULED_TASK_ORIGIN_SHAPE) &&
+    value.kind === 'scheduled_task' &&
+    typeof value.scheduledTaskId === 'string'
+  );
+}
+
 function isMessageOrigin(value: unknown): value is MessageOrigin {
-  return isAutomationOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value);
+  return isScheduledTaskOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value);
 }
 
 function isOptionalFiniteDuration(value: unknown): boolean {

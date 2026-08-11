@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { SessionEvent, SessionSummary, StoredMessage } from '@maka/core';
+import type { SessionEvent } from '@maka/core/events';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';
 import type {
   InteractionPendingSnapshot,

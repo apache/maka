@@ -5,13 +5,12 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import {
-  decodeCanonicalToolResultContent,
-  type AgentGraphOperatorProvisionRequest,
-  type AgentRunHeader,
-  type RuntimeEvent,
-} from '@maka/core';
-import { agentGraphIdForRootSession, FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime';
+import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { type AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
+import { type AgentRunHeader } from '@maka/core/agent-run';
+import { type RuntimeEvent } from '@maka/core/runtime-event';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime/fake-backend';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';

@@ -6,7 +6,7 @@ import {
   type DailyReviewArchive,
   type DailyReviewArchiveSummary,
   type DailyReviewConfig,
-} from '@maka/core';
+} from '@maka/core/daily-review';
 import { acquireOperationalStateDatabase } from '@maka/storage';
 
 const ARCHIVE_ID_PATTERN = /^\d{4}-\d{2}-\d{2}-(1d|7d|30d)$/;

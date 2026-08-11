@@ -7,27 +7,32 @@ import type { SessionHeader } from '@maka/core/session';
 import type { ModelCallKind } from '@maka/core/usage-stats/types';
 import {
   buildPricingLookup,
-  buildProviderOptions,
-  buildSessionRecapMessages,
-  buildSessionTitlePrompt,
-  cleanGeneratedSessionTitle,
-  createProxiedFetchTransport,
-  generateToolFreeModelCall,
-  generateProviderPrefixModelCall,
-  modelUsesAnthropicMessages,
-  getAIModel,
   llmCallUsageFields,
   recordLlmCallStrict,
+} from '@maka/runtime/telemetry';
+import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import { buildSessionRecapMessages } from '@maka/runtime/session-recap';
+import {
+  buildSessionTitlePrompt,
+  cleanGeneratedSessionTitle,
   SESSION_TITLE_GENERATION_TIMEOUT_MS,
-  type BackendFactoryContext,
-  type GoalEvaluatorResource,
-  type ModelMessage,
+} from '@maka/runtime/session-title';
+import {
+  createProxiedFetchTransport,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
+} from '@maka/runtime/network/scoped-fetch-transport';
+import {
+  generateToolFreeModelCall,
+  generateProviderPrefixModelCall,
   type ToolFreeModelCallContent,
-  type MemoryExtractionSourceSnapshot,
   ProviderPrefixModelCallUnavailableError,
-} from '@maka/runtime';
+} from '@maka/runtime/tool-free-model-call';
+import { modelUsesAnthropicMessages } from '@maka/runtime/model-runtime';
+import { type BackendFactoryContext } from '@maka/runtime/session-manager';
+import { type GoalEvaluatorResource } from '@maka/runtime/goal-evaluator';
+import { type ModelMessage } from '@maka/runtime/model-protocol';
+import { type MemoryExtractionSourceSnapshot } from '@maka/runtime/memory-extraction';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import type { InteractiveUsageStoresWriter } from '@maka/storage/usage-stores';
 import {

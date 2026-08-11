@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
-import { SessionActivityRegistry, type InvocableSkillEntry } from '@maka/runtime';
+import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
+import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import {
   readRuntimeHostInvocableSkills,
   type RuntimeHostConnection,

@@ -7,24 +7,21 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { before, describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
+import { SHELL_RUN_UPDATE_BUFFER_MAX_ENTRIES } from '@maka/core/shell-run-result';
+import { type PermissionMode } from '@maka/core/permission';
+import { type OrchestrationMode } from '@maka/core/orchestration';
 import {
-  SHELL_RUN_UPDATE_BUFFER_MAX_ENTRIES,
-  type PermissionMode,
-  type OrchestrationMode,
   type QueueEnqueueOutcome,
-  type SandboxBoundaryResponse,
   type SessionEvent,
-  type SessionSummary,
-  type StoredMessage,
-  type ThinkingLevel,
-  type UserQuestionResponse,
-} from '@maka/core';
-import type { SkillInvocationResult } from '@maka/core/skill-invocation';
-import {
-  SessionActivityRegistry,
-  type ContextDiagnostics,
   type ShellRunUpdate,
-} from '@maka/runtime';
+} from '@maka/core/events';
+import { type SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import { type SessionSummary, type StoredMessage } from '@maka/core/session';
+import { type ThinkingLevel } from '@maka/core/model-thinking';
+import { type UserQuestionResponse } from '@maka/core/user-question';
+import type { SkillInvocationResult } from '@maka/core/skill-invocation';
+import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
+import { type ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type {
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,

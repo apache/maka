@@ -1,4 +1,4 @@
-import { validateCuE2eScenario } from './cu-e2e-scenarios.mjs';
+import { validateCuE2eScenario } from './e2e-scenarios.mjs';
 
 function windowBody(spec) {
   switch (spec.kind) {

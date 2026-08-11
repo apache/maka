@@ -3,7 +3,7 @@
  *
  * Model-facing autonomous-execution controls. The agent can arm its own stop
  * condition (GoalSet), and pause/resume/clear the loop. PascalCase names match
- * the builtin tool family (Bash/Read/TaskCreate/Automation).
+ * the builtin tool family (Bash/Read/TaskCreate/ScheduledTask).
  */
 
 import { z } from 'zod';

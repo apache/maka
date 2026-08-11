@@ -1,7 +1,8 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { expect } from '../test-helpers.js';
-import { createDefaultSettings, type LlmConnection } from '@maka/core';
+import { createDefaultSettings } from '@maka/core/settings';
+import { type LlmConnection } from '@maka/core/llm-connections';
 import { createConfiguredSubagentCatalog } from '../configured-subagent-catalog.js';
 
 const connection: LlmConnection = {

@@ -20,20 +20,20 @@ One noun: **`ScheduledTask`**.
 | Due effects | Runtime Host; Desktop is only a native delivery provider |
 | Desktop/TUI/CLI access | bounded `scheduled-task.query` / `scheduled-task.mutate` protocol |
 | Agent create/list/pause/resume/delete | `ScheduledTask` tool → Host coordinator directly |
-| Heartbeat (session polling) | still `Automation` tool, session-scoped only |
 
 ### Effects
 
 - `notify.local` / `notify.bot` — Host admits the fire, then invokes one Desktop native-effect
   provider. Desktop never reads or advances the catalog.
+- `session_resume` — continue the creating Session with a new Turn and durable ScheduledTask origin.
 - `agent_run` — freeze the execution template at create; on fire, Host creates a stable Session and
   admits the root AgentRun itself.
 
 ### UI
 
-The scheduled-task panel consumes `ScheduledTask` directly. The renderer keeps its existing
-`scheduled-tasks:*` IPC surface, but Desktop main is a thin Runtime Host protocol proxy. Host
-change frames are signals only; Desktop re-queries the canonical record.
+The scheduled-task panel consumes `ScheduledTask` directly. Its preload facade uses the shared
+`runtime-host:query` / `runtime-host:command` transport and the canonical Host protocol codecs.
+Host change frames are signals only; Desktop re-queries the canonical record.
 
 ### Authority invariant
 
@@ -53,8 +53,7 @@ Scheduled tasks keep Runtime Host resident even when the initiating client exits
 requires no Desktop. Local and bot notifications wait durably for a native-effect provider before
 crossing the delivery boundary. Once invocation starts, an unknown outcome is recorded as failed
 and is never replayed. Other interactive clients can create and manage the global catalog through
-the same Host protocol; heartbeat remains a separate session-scoped Automation. The separate
-Headless runtime is outside this interactive authority boundary.
+the same Host protocol. The separate Headless runtime is outside this interactive authority boundary.
 
 ## Key files
 
@@ -63,5 +62,6 @@ Headless runtime is outside this interactive authority boundary.
 - `packages/runtime/src/scheduled-task-tools.ts`
 - `packages/runtime-host/src/protocol/scheduled-task.ts`
 - `packages/runtime-host/src/server/scheduled-task-coordinator.ts`
-- `apps/desktop/src/main/scheduled-tasks-ipc-main.ts` (protocol proxy)
+- `apps/desktop/src/main/runtime-host-renderer-ipc-main.ts` (shared protocol transport)
+- `apps/desktop/src/preload/runtime-host-renderer-operations.ts` (renderer allowlist)
 - `apps/desktop/src/main/runtime-host-boot.ts` (native-effect provider)

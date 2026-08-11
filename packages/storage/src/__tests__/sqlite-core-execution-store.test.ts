@@ -4,13 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import type {
-  AgentRunHeader,
-  EmittedAgentRunEvent,
-  InteractionCanonicalOutcome,
-  InteractionRequest,
-  ShellRunRecord,
-} from '@maka/core';
+import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import type { InteractionCanonicalOutcome, InteractionRequest } from '@maka/core/interaction';
+import type { ShellRunRecord } from '@maka/core/shell-run';
 import { createSqliteAgentRunStore } from '../agent-run-store.js';
 import {
   closeSqliteInteractionStoreFacade,

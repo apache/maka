@@ -24,13 +24,13 @@ import {
 import { useStreamingText } from '@astryxdesign/core/hooks';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import {
-  SKILL_INVOCATION_TOKEN_SOURCE,
   type AttachmentRef,
   type InlineReference,
   type ProviderRetryEvent,
   type QuoteRef,
-} from '@maka/core';
+} from '@maka/core/events';
 import {
   finalAssistantReplyText,
   type TurnTimelineItem,
@@ -168,7 +168,7 @@ const MessageBody = memo(function MessageBody(props: {
             /* `value` takes ms directly: Timestamp's own parseValue reads
                anything past 1e12 as milliseconds (2001-09-09 onward), and a
                chat message never predates that. */
-            <Timestamp className="maka-message-time-inline" value={props.ts} format="time" />
+            (<Timestamp className="maka-message-time-inline" value={props.ts} format="time" />)
           ) : undefined
         }
         footer={
@@ -442,19 +442,19 @@ export const TurnView = memo(function TurnView(props: {
       )}
       {/* Host provenance keeps non-user prompts from impersonating the user.
           Durable ids stay in tooltips instead of the transcript body. */}
-      {turn.user?.hostOrigin?.kind === 'automation' && (
+      {turn.user?.hostOrigin?.kind === 'scheduled_task' && (
         <Marker
-          variant="automation-origin"
+          variant="host-origin"
           role="note"
-          title={copy.automationTitle(turn.user.hostOrigin.automationId)}
+          title={copy.scheduledTaskTitle(turn.user.hostOrigin.scheduledTaskId)}
         >
           <Timer size={ICON_SIZE.meta} aria-hidden="true" />
-          <span>{copy.automationTriggered}</span>
+          <span>{copy.scheduledTaskTriggered}</span>
         </Marker>
       )}
       {turn.user?.hostOrigin?.kind === 'goal' && (
         <Marker
-          variant="automation-origin"
+          variant="host-origin"
           role="note"
           title={copy.goalTitle(turn.user.hostOrigin.goalId)}
         >
@@ -464,7 +464,7 @@ export const TurnView = memo(function TurnView(props: {
       )}
       {turn.user?.hostOrigin?.kind === 'agent_graph' && (
         <Marker
-          variant="automation-origin"
+          variant="host-origin"
           role="note"
           title={copy.agentGraphTitle(turn.user.hostOrigin.graphId)}
         >
@@ -634,7 +634,7 @@ export const TurnView = memo(function TurnView(props: {
                actionable footer here: the live tail's derived status is
                `completed`, so a real `TurnFooterActions` would render a
                clickable regenerate/branch on a still-streaming answer. */
-            <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
+            (<div aria-hidden="true" className="maka-live-turn-footer-placeholder" />)
           ) : (
             props.footerActions && props.footerActions.length > 0 && (
               <TurnFooterActions

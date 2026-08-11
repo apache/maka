@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type JSX } from 'react';
-import type {
-  PlanExecutionStep,
-  PlanProposal,
-  PlanSessionState,
-  SessionEvent,
-  SessionSummary,
-} from '@maka/core';
+import type { PlanExecutionStep, PlanProposal, PlanSessionState } from '@maka/core/plan';
+import type { SessionEvent } from '@maka/core/events';
+import type { SessionSummary } from '@maka/core/session';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { Badge, type BadgeVariant, Button as UiButton, useToast } from '@maka/ui';

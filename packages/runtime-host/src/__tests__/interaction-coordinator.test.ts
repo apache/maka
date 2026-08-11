@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { SandboxBoundaryRequest } from '@maka/core';
+import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
 import type { SandboxBoundaryRequestEvent, UserQuestionRequestEvent } from '@maka/core/events';
 import {
   bindRuntimeInteractionRun,
@@ -12,7 +12,7 @@ import {
   type RuntimeInteractionRunIdentity,
   type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
-} from '@maka/runtime';
+} from '@maka/runtime/interaction-authority';
 import {
   openInteractiveExecutionStoresForWrite,
   type ExecutionStoresWriter,

@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { open, mkdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { MAX_ATTACHMENT_BYTES, type ArtifactSaveResult } from "@maka/core";
+import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
+import { type ArtifactSaveResult } from '@maka/core/artifacts';
 import { sanitizeArtifactName } from "@maka/storage/artifact-stores";
 import {
   handleReconnectableRead,

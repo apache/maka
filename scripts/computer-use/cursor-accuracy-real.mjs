@@ -8,11 +8,11 @@
 //
 // This reads the pixels. It finds the painted cursor in the overlay's canvas,
 // converts that back to screen coordinates, and compares it with the target
-// control's real rectangle as `cu-ax-oracle.swift` reads it from the system.
+// control's real rectangle as `ax-oracle.swift` reads it from the system.
 // Those two numbers agreeing is the only evidence that the cursor points at
 // the thing being clicked.
 //
-// Run: node scripts/cu-cursor-accuracy-real.mjs
+// Run: node scripts/computer-use.mjs cursor-accuracy
 import { _electron as electron } from 'playwright';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -21,9 +21,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const exec = promisify(execFile);
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const DESKTOP = join(ROOT, 'apps', 'desktop');
-const ORACLE = join(ROOT, 'scripts', 'cu-ax-oracle.swift');
+const ORACLE = join(dirname(fileURLToPath(import.meta.url)), 'ax-oracle.swift');
 const OUT = '/tmp/cu-cursor-accuracy';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

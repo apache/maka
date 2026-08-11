@@ -1,9 +1,7 @@
 import { join } from 'node:path';
-import type {
-  DailyReviewArchive,
-  LlmConnection,
-  E2eFixtureScenario,
-} from '@maka/core';
+import type { DailyReviewArchive } from '@maka/core/daily-review';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { E2eFixtureScenario } from '@maka/core/e2e-fixture';
 import { createDefaultSettings } from '@maka/core/settings';
 import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
 import {

@@ -1,12 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  buildComputerUseTools,
-  type ComputerUseToolSet,
-  type CuDispatchBackend,
-  type MakaTool,
-  type MakaToolContext,
-} from '@maka/runtime';
+import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import { type CuDispatchBackend } from '@maka/runtime/computer-use-types';
+import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
   decodeClientCapabilityReplaceInput,

@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { z } from 'zod';
-import type { ArtifactRecord, DeepResearchRun } from '@maka/core';
+import type { ArtifactRecord } from '@maka/core/artifacts';
+import type { DeepResearchRun } from '@maka/core/deep-research-run';
 import { createSqliteDeepResearchStore } from '@maka/storage';
 import {
   DEEP_RESEARCH_CHECKPOINT_TOOL_NAME,

@@ -3,10 +3,9 @@ import type {
   DailyReviewArchiveSummary,
   DailyReviewRange,
   DailyReviewSummary,
-  CreateScheduledTaskInput,
-  ScheduledTaskEffect,
-  UpdateScheduledTaskInput,
-} from '@maka/core';
+} from '@maka/core/daily-review';
+
+import type { CreateScheduledTaskInput, ScheduledTaskEffect, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
 
 export interface SkillEntry {
   kind?: 'skill' | 'discovery_diagnostic';

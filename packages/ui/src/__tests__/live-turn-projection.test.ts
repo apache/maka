@@ -25,7 +25,7 @@ describe('the unconfirmed claim an arm carries', () => {
     assert.equal(confirmed?.phase, 'waiting', 'confirming is not the same as streaming');
   });
 
-  // Another client's turn, or an automation's, says nothing about this send.
+  // Another client's turn, or a scheduled task's, says nothing about this send.
   it('survives an answer that names a different turn', () => {
     const armed = armLiveTurn('turn-mine');
 

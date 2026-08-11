@@ -162,5 +162,4 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
       }
     }
   });
-
 });

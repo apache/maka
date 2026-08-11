@@ -1,4 +1,5 @@
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT, type UiLocale } from '@maka/core';
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import { type UiLocale } from '@maka/core/ui-locale';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
 type PreflightItem = {

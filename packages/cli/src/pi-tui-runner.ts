@@ -22,21 +22,22 @@ import {
 import { type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
+import { projectRevisionLinkedSessionTree } from '@maka/core/session-revisions';
 import {
-  projectRevisionLinkedSessionTree,
   slashCommandsForSurface,
-  type QueueEnqueueOutcome,
-  type SessionSummary,
-  type ShellRunUpdate,
   type SlashCommandIdForSurface,
-} from '@maka/core';
+} from '@maka/core/slash-command-catalog';
+import { type QueueEnqueueOutcome, type ShellRunUpdate } from '@maka/core/events';
+import { type SessionSummary } from '@maka/core/session';
 import {
   buildForeignSessionHandoffMessage,
   foreignSessionHandoffDisplayText,
   foreignSourceLabel,
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
-import type { ContextDiagnostics, GoalTurnOutcome, SessionActivityLease } from '@maka/runtime';
+import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
+import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
+import type { SessionActivityLease } from '@maka/runtime/goal-turn-lifecycle';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
   MakaForeignSessionReader,
@@ -47,14 +48,10 @@ import type {
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
 import { AUTO_RECAP_DISPLAY_LIMIT_BYTES, shouldAutoRecap } from './session-recap.js';
-import type { InvocableSkillEntry } from '@maka/runtime';
+import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
-import {
-  parseGraphCommand,
-  parseSwarmCommand,
-  type ParsedGraphCommand,
-  type ParsedSwarmCommand,
-} from '@maka/core';
+import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
+import { parseSwarmCommand, type ParsedSwarmCommand } from '@maka/core/swarm-command';
 import {
   inspectSessionResumeAvailability,
   type MakaAttachedSessionTurn,

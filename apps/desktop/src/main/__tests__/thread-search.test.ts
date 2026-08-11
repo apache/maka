@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { SessionSummary, StoredMessage } from '@maka/core';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
   SNIPPET_MAX_CODE_POINTS,
   TOOL_RESULT_SCAN_CAP_BYTES,

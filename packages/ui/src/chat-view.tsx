@@ -8,14 +8,11 @@ import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
 import { PromptAnchorRail } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
-import type {
-  DeepResearchClientProgress,
-  ProviderType,
-  SessionSummary,
-  ShellRunUpdate,
-  StoredMessage,
-} from '@maka/core';
-import { isDeepResearchSession } from '@maka/core';
+import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
+import type { ProviderType } from '@maka/core/llm-connections';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { ShellRunUpdate } from '@maka/core/events';
+import { isDeepResearchSession } from '@maka/core/explore-agent';
 import { Button, ButtonGroup, ChatMessageList, EmptyState, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
@@ -685,7 +682,7 @@ export function ChatView(props: {
                       ) : (
                         /* No turn here means no `startedAt`, so this one shows
                            the working phrase without a clock. */
-                        props.runningStatus && <TurnRunningStatus />
+                        (props.runningStatus && <TurnRunningStatus />)
                       )}
                     </div>
                     <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />

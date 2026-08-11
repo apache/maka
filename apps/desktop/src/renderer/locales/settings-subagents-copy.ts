@@ -1,9 +1,8 @@
-import type {
-  SubagentProfile,
-  ThinkingLevel,
-  UiCatalog,
-  UiLocale,
-} from '@maka/core';
+import type { SubagentProfile } from '@maka/core/subagent-settings';
+
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type ProfileCopy = {
   label: string;

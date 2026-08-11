@@ -4,7 +4,7 @@ import {
   normalizeWebSearchQuery,
   type WebSearchResponse,
   type WebSearchResultRow,
-} from '@maka/core';
+} from '@maka/core/web-search';
 
 const TAVILY_ENDPOINT = 'https://api.tavily.com/search';
 const TAVILY_TIMEOUT_MS = 10_000;

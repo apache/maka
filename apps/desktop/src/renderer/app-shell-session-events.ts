@@ -1,4 +1,6 @@
-import type { SessionEvent, StoredMessage, UiLocale } from '@maka/core';
+import type { SessionEvent } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   applyLiveTurnEvent,
   clearInteractions,

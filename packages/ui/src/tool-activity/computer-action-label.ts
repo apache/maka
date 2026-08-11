@@ -52,7 +52,9 @@
  * falling back to the tool name.
  */
 
-import { type ComputerUseModelCallArgs, type UiLocale } from '@maka/core';
+import { type ComputerUseModelCallArgs } from '@maka/core/computer-use';
+
+import { type UiLocale } from '@maka/core/ui-locale';
 import type { ToolActivityItem } from '../materialize.js';
 import { getToolActivityCopy, type ToolActivityCopy } from './copy.js';
 

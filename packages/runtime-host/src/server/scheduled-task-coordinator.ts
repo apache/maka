@@ -1,20 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import {
-  botDisplayLabel,
-  isBotDeliveryProvider,
-  type ScheduledTask,
-  type ScheduledTaskExecutionTemplate,
-} from '@maka/core';
+import { botDisplayLabel } from '@maka/core/bot-events';
+import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
+import { messageContentsEqual } from '@maka/core/events';
+import { type ScheduledTask, type ScheduledTaskExecutionTemplate } from '@maka/core/scheduled-task';
 import type { SessionHeader } from '@maka/core/session';
 import {
   buildAgentScheduledTaskCreatePayload,
   buildScheduledTaskTool,
   SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID,
   SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_VERSION,
-  type MakaTool,
   type ScheduledTaskToolAuthority,
-  type SessionManager,
-} from '@maka/runtime';
+} from '@maka/runtime/scheduled-task-tools';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { type SessionManager } from '@maka/runtime/session-manager';
 import {
   authenticateInteractiveScheduledTaskStoreWriter,
   type InteractiveScheduledTaskStoreWriter,
@@ -25,6 +23,7 @@ import {
 import {
   isSessionNotFoundError,
   type ExecutionSessionWriter,
+  type RootTurnAdmission,
 } from '@maka/storage/execution-stores';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import {
@@ -39,7 +38,6 @@ import {
 import type { ScheduledTaskOperationHandlerMap } from './operation-dispatcher.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import type { HostedExecutionAuthority } from './hosted-execution-authority.js';
-import { messageContentDigest } from './message-content-digest.js';
 import type { HostScheduledTaskChangeService } from './scheduled-task-change-service.js';
 import type { SessionCreateInput } from '../protocol/session-catalog.js';
 
@@ -77,6 +75,15 @@ export interface HostScheduledTaskCoordinatorInput {
   readonly clearTimeout?: (timer: unknown) => void;
 }
 
+export class HostScheduledTaskSessionBusyError extends Error {
+  readonly name = 'HostScheduledTaskSessionBusyError';
+}
+
+export interface HostScheduledTaskSessionRetirement {
+  commit(): void;
+  rollback(): void;
+}
+
 /** Host-owned ScheduledTask catalog, scheduler, fire admission, and tool authority. */
 export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority {
   readonly handlers: ScheduledTaskOperationHandlerMap = {
@@ -108,6 +115,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   #started = false;
   #draining = false;
   #closed = false;
+  readonly #retiringSessions = new Set<string>();
 
   constructor(input: HostScheduledTaskCoordinatorInput) {
     this.#store = authenticateInteractiveScheduledTaskStoreWriter(input.store);
@@ -132,6 +140,29 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     await this.#store.ready();
     this.#prepared = true;
     await this.#refreshResidency();
+  }
+
+  async assertRecoveryAdmission(admission: RootTurnAdmission): Promise<void> {
+    if (!this.#prepared) {
+      throw new Error('ScheduledTask recovery admission was inspected before Store recovery');
+    }
+    if (admission.execution.kind !== 'scheduled_task') return;
+    const scheduledTaskId = admission.execution.scheduledTaskId;
+    const claims = await this.#store.listPendingFires();
+    const claim = claims.find((candidate) => candidate.task.id === scheduledTaskId);
+    const execution = claim?.execution;
+    if (
+      !claim ||
+      !execution ||
+      execution.sessionId !== admission.sessionId ||
+      execution.turnId !== admission.turnId ||
+      execution.runId !== admission.runId ||
+      execution.userMessageId !== admission.userMessageId ||
+      admission.normalizedInput === null ||
+      !messageContentsEqual({ text: claim.task.intent.body }, admission.normalizedInput)
+    ) {
+      throw new Error(`ScheduledTask admission ${admission.turnId} has no matching pending fire`);
+    }
   }
 
   async recover(): Promise<void> {
@@ -189,16 +220,15 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       | { kind: 'once'; runAt: number }
       | { kind: 'interval'; everySeconds: number; startAt?: number }
       | { kind: 'cron'; expression: string; startAt?: number };
-    effect: 'agent_run' | 'notify_local';
+    effect: 'session_resume' | 'agent_run' | 'notify_local';
     sessionId: string;
     maxFires?: number;
   }): Promise<ScheduledTask | { error: string }> {
     let execution: ScheduledTaskExecutionTemplate | undefined;
-    if (input.effect === 'agent_run') {
+    if (input.effect !== 'notify_local') {
       try {
-        execution = executionTemplateFromHeader(
-          await this.#sessions.readHeaderSnapshot(input.sessionId),
-        );
+        const header = await this.#readResumableSession(input.sessionId);
+        if (input.effect === 'agent_run') execution = executionTemplateFromHeader(header);
       } catch (error) {
         if (isSessionNotFoundError(error)) return { error: 'Session was not found' };
         return { error: errorMessage(error) };
@@ -219,6 +249,36 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
 
   list(): Promise<readonly ScheduledTask[]> {
     return this.#exclusive(() => this.#store.list());
+  }
+
+  beginSessionRetirement(
+    sessionIds: readonly string[],
+  ): Promise<HostScheduledTaskSessionRetirement> {
+    const unique = [...new Set(sessionIds)];
+    return this.#exclusive(async () => {
+      const targets = new Set(unique);
+      const [tasks, claims] = await Promise.all([
+        this.#store.list(),
+        this.#store.listPendingFires(),
+      ]);
+      const blocked =
+        tasks.some(
+          (task) => task.effect.kind === 'session_resume' && targets.has(task.effect.sessionId),
+        ) || claims.some((claim) => targets.has(claim.execution?.sessionId ?? ''));
+      if (blocked) {
+        throw new HostScheduledTaskSessionBusyError(
+          'Session retirement requires session-bound ScheduledTasks to be removed first',
+        );
+      }
+      for (const sessionId of unique) this.#retiringSessions.add(sessionId);
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        for (const sessionId of unique) this.#retiringSessions.delete(sessionId);
+      };
+      return Object.freeze({ commit: finish, rollback: finish });
+    });
   }
 
   async pause(id: string): Promise<ScheduledTask | { error: string }> {
@@ -505,7 +565,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     let execution = claim.execution;
     if (!execution) {
       execution = {
-        sessionId: this.#newId(),
+        sessionId: task.effect.kind === 'session_resume' ? task.effect.sessionId : this.#newId(),
         turnId: this.#newId(),
         runId: this.#newId(),
         userMessageId: this.#newId(),
@@ -515,7 +575,15 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     try {
       await this.#ensureAgentSession(task, execution);
       await this.#admitAgentRun(task, execution);
-      return this.#settle(claim, 'ok', '已启动 Agent 会话执行。', 'fired', execution);
+      return this.#settle(
+        claim,
+        'ok',
+        task.effect.kind === 'session_resume'
+          ? '已在原会话中继续执行。'
+          : '已启动 Agent 会话执行。',
+        'fired',
+        execution,
+      );
     } catch (error) {
       return this.#settleFailure(claim, errorMessage(error));
     }
@@ -525,7 +593,14 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     task: ScheduledTask,
     identity: ScheduledTaskFireExecution,
   ): Promise<void> {
-    if (task.effect.kind !== 'agent_run') throw new Error('Task effect is not agent_run');
+    if (task.effect.kind === 'notify') throw new Error('Task effect is not an Agent execution');
+    if (task.effect.kind === 'session_resume') {
+      if (identity.sessionId !== task.effect.sessionId) {
+        throw new Error('ScheduledTask Session identity changed');
+      }
+      await this.#readResumableSession(identity.sessionId);
+      return;
+    }
     try {
       await this.#sessions.readHeaderSnapshot(identity.sessionId);
       return;
@@ -557,7 +632,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     const content = { text: task.intent.body };
     await this.#root.admit({
       ...identity,
-      execution: { kind: 'external_message', inputDigest: messageContentDigest(content) },
+      execution: { kind: 'scheduled_task', scheduledTaskId: task.id },
       content,
       start: ({ runId, userMessageId, onRunStarted }) => {
         if (runId !== identity.runId || userMessageId !== identity.userMessageId) {
@@ -565,7 +640,11 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
         }
         return this.#runtime.sendMessage(
           identity.sessionId,
-          { turnId: identity.turnId, ...content },
+          {
+            turnId: identity.turnId,
+            ...content,
+            origin: { kind: 'scheduled_task', scheduledTaskId: task.id },
+          },
           {
             runId: identity.runId,
             userMessageId: identity.userMessageId,
@@ -580,6 +659,17 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
         );
       },
     });
+  }
+
+  async #readResumableSession(sessionId: string): Promise<SessionHeader> {
+    if (this.#retiringSessions.has(sessionId)) {
+      throw new Error('Session lifecycle is changing');
+    }
+    const header = await this.#sessions.readHeaderSnapshot(sessionId);
+    if (header.isArchived || header.status === 'archived') {
+      throw new Error('Archived Sessions cannot own session-bound ScheduledTasks');
+    }
+    return header;
   }
 
   async #settleFailure(claim: ScheduledTaskFireClaim, message: string): Promise<ScheduledTask> {

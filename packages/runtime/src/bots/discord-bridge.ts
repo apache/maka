@@ -11,7 +11,7 @@
  */
 
 import { WebSocket } from 'undici';
-import type { BotChannelSettings } from '@maka/core';
+import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import { proxiedFetch } from './proxied-fetch.js';
 import type { BotPlatform, BotSendOptions, BotStatus, SendCapable } from './types.js';

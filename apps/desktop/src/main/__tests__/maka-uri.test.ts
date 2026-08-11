@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { SETTINGS_SECTIONS } from '@maka/core';
+import { SETTINGS_SECTIONS } from '@maka/core/settings';
 import {
   isMakaUri,
   isMakaUriCandidate,

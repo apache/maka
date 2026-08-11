@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentGraphOperatorProvision, AgentGraphScheduleUpdate } from '@maka/core';
+import type { AgentGraphOperatorProvision } from '@maka/core/agent-graph-topology';
+import type { AgentGraphScheduleUpdate } from '@maka/core/agent-graph-schedule';
 import type {
   AgentGraphSupervisorObservation,
   AgentGraphSupervisorRuntimeEvent,

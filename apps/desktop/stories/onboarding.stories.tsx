@@ -1,6 +1,8 @@
 import { type ComponentProps, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { LlmConnection, OnboardingState, ProviderType, SettingsSection } from '@maka/core';
+import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { OnboardingState } from '@maka/core/onboarding';
+import type { SettingsSection } from '@maka/core/settings';
 import { ChatSurfaceLayout, ChatView } from '@maka/ui';
 import { OnboardingHero } from '../src/renderer/onboarding-hero';
 

@@ -43,7 +43,7 @@
  * `components.tsx`; this module is pure.
  */
 
-import { SETTINGS_SECTIONS, type SettingsSection } from '@maka/core';
+import { SETTINGS_SECTIONS, type SettingsSection } from '@maka/core/settings';
 
 /**
  * Runtime allowlist derived from Core's canonical section tuple. Adding or

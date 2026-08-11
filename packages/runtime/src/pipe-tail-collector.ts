@@ -1,4 +1,4 @@
-import type { PipeShellOutput } from '@maka/core';
+import type { PipeShellOutput } from '@maka/core/shell-run';
 import { redactSecrets } from '@maka/core/redaction';
 
 import { BashTailBuffer } from './bash-tail-buffer.js';

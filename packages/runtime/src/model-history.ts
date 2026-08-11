@@ -42,11 +42,9 @@ import {
   type RuntimeEventContent,
   type RuntimeEventRole,
 } from '@maka/core/runtime-event';
-import {
-  formatAttachmentResourceRef,
-  normalizeShellToolResultContent,
-  normalizeToolResultContentForRead,
-} from '@maka/core';
+import { formatAttachmentResourceRef } from '@maka/core/attachments';
+import { normalizeShellToolResultContent } from '@maka/core/shell-run-result';
+import { normalizeToolResultContentForRead } from '@maka/core/tool-result-record-schema';
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
 import { projectBashToolResultForModel } from './bash-model-output.js';

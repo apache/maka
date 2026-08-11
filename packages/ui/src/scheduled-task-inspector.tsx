@@ -11,7 +11,7 @@
 // delete controls all live here, where they are plain buttons with room for
 // real labels instead of six entries behind a per-row overflow menu.
 
-import type { ScheduledTask } from '@maka/core';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
 import {
   Button,
   Divider,
@@ -51,7 +51,7 @@ export function ScheduledTaskInspector(props: {
   const locale = useUiLocale();
   const copy = getScheduledTaskCopy(locale);
   const { task } = props;
-  const isAgentTask = task.effect.kind === 'agent_run';
+  const isAgentTask = task.effect.kind !== 'notify';
   const isTerminal = task.status === 'completed' || task.status === 'expired';
   const lastRun = task.runs[0];
   const pending = Array.from(props.pendingActionKeys).some((key) => key.startsWith(`${task.id}:`));
@@ -80,7 +80,6 @@ export function ScheduledTaskInspector(props: {
           <Text type="supporting" color="secondary">{copy.detail.agentSourceHint}</Text>
         ) : null}
       </VStack>
-
       {!isTerminal && (
         <HStack gap={3} vAlign="center">
           <StackItem size="fill">
@@ -93,7 +92,6 @@ export function ScheduledTaskInspector(props: {
           </StackItem>
         </HStack>
       )}
-
       <HStack gap={2} wrap="wrap">
           <Button
             size="sm"
@@ -113,9 +111,7 @@ export function ScheduledTaskInspector(props: {
             onClick={props.onSnooze}
           />
       </HStack>
-
       <Divider />
-
       <MetadataList columns="single" label={{ position: 'start', width: 88 }}>
         <MetadataListItem label={copy.detail.recurrence}>
           <Text type="body">{formatScheduledTaskRecurrence(task, locale)}</Text>
@@ -139,9 +135,7 @@ export function ScheduledTaskInspector(props: {
           <Text type="body">{formatTaskTime(task.createdAt, locale)}</Text>
         </MetadataListItem>
       </MetadataList>
-
       <Divider />
-
       <VStack gap={2}>
         <HStack gap={2} vAlign="center">
           <StackItem size="fill">
@@ -176,12 +170,10 @@ export function ScheduledTaskInspector(props: {
         ) : (
           /* A quiet line, not a full EmptyState: the panel is already narrow
              and this is one empty section inside it, not an empty page. */
-          <Text type="supporting" color="secondary">{copy.detail.noRuns}</Text>
+          (<Text type="supporting" color="secondary">{copy.detail.noRuns}</Text>)
         )}
       </VStack>
-
       <Divider />
-
       <HStack gap={2} wrap="wrap">
         {!isAgentTask ? (
           <>

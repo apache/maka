@@ -1,11 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type {
-  ProjectRecord,
-  SessionBlockedReason,
-  SessionStatus,
-  SessionSummary,
-} from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
+import type { SessionBlockedReason, SessionStatus, SessionSummary } from '@maka/core/session';
 import { SessionListPanel } from '../src/session-list-panel.js';
 
 const NOW = Date.now();

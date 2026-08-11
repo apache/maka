@@ -23,7 +23,6 @@ import {
   OPERATIONAL_STATE_SCHEMA_VERSION,
 } from './operational-state-store.js';
 import { SQLITE_ARTIFACT_SCHEMA_VERSION } from './sqlite-artifact-schema.js';
-import { SQLITE_AUTOMATION_SCHEMA_VERSION } from './sqlite-automation-schema.js';
 import { SQLITE_CORE_EXECUTION_SCHEMA_VERSION } from './sqlite-core-execution-schema.js';
 import { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 import { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
@@ -347,7 +346,6 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         ['workflow', SQLITE_WORKFLOW_SCHEMA_VERSION],
         ['usage', SQLITE_USAGE_SCHEMA_VERSION],
         ['artifact', SQLITE_ARTIFACT_SCHEMA_VERSION],
-        ['automation', SQLITE_AUTOMATION_SCHEMA_VERSION],
         ['operational', OPERATIONAL_STATE_SCHEMA_VERSION],
       ]);
       const rows = database
@@ -426,9 +424,6 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         'usage_pricing_authority',
         'usage_pricing_overrides',
         'artifact_records',
-        'automation_authority_state',
-        'automation_definitions',
-        'automation_pending_fires',
       ];
       const tableExists = database.prepare(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",

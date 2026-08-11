@@ -3,9 +3,11 @@ import { sessionRevisionFamilyId, type SessionHeader } from '@maka/core/session'
 import {
   agentGraphIdForRootSession,
   type AgentGraphCoordinator,
+} from '@maka/runtime/stream-graph-coordinator';
+import {
   type ConversationCopyExternalChildReferences,
   type ConversationCopyLinkedChildReference,
-} from '@maka/runtime';
+} from '@maka/runtime/conversation-copy';
 import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
 
 type ConversationCopyKind = 'branch' | 'revision';

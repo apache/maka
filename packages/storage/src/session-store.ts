@@ -16,41 +16,46 @@ import {
   acquireOperationalStateDatabase,
   OPERATIONAL_STATE_DATABASE_NAME,
 } from './operational-state-store.js';
+import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
 import {
-  DEFAULT_SESSION_NAME,
   decodeStoredMessageForRecovery,
   deriveTurnRecords,
-  isCollaborationMode,
-  isOrchestrationMode,
-  isPermissionMode,
   isSessionBlockedReason,
   isSessionConversationCopy,
   isSubagentSessionParent,
   isSubagentSessionRuntime,
   isSubagentSessionSpawn,
-  isSubagentWorkspaceBinding,
   isSessionStatus,
-  normalizeUserSessionName,
   subagentSessionRuntimeSummary,
-  WORKSPACE_AUTHORITY_SESSION_ID,
-} from '@maka/core';
+} from '@maka/core/session';
+import { isCollaborationMode } from '@maka/core/collaboration';
+import { isOrchestrationMode } from '@maka/core/orchestration';
+import { isPermissionMode } from '@maka/core/permission';
+import { isSubagentWorkspaceBinding } from '@maka/core/subagent-workspace';
+import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core/workspace-version-authority';
 import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
+} from '@maka/core/agent-graph-topology';
+
+import type {
   CreateSandboxBoundaryRequest,
-  CreateSessionInput,
   ExecutionBoundary,
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
+  SettleSandboxBoundaryRequest,
+} from '@maka/core/sandbox-boundary';
+
+import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
+
+import type {
   SessionHeader,
   SessionConversationCopy,
-  SessionListFilter,
   SessionSummary,
   StoredMessage,
-  SettleSandboxBoundaryRequest,
   TurnRecord,
   UserMessage,
-} from '@maka/core';
+} from '@maka/core/session';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 

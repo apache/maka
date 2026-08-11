@@ -3,7 +3,7 @@ import {
   type AgentRunHeader,
   type RootExecutionDescriptor,
 } from '@maka/core/agent-run';
-import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime';
+import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-authority';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import { readCanonicalTurnSnapshot } from './canonical-turn-snapshot.js';
 import type { HostedExecutionRef, HostedExecutionSnapshot } from './hosted-execution-authority.js';
@@ -84,7 +84,7 @@ function assertRunMatchesExecution(
       return;
     case 'regenerate':
     case 'context_compact':
-    case 'automation':
+    case 'scheduled_task':
     case 'goal':
     case 'agent_graph_supervisor_wake':
     case 'safe_boundary_continuation':
@@ -125,7 +125,7 @@ function assertTrustedAgentIdentity(
         | 'external_message'
         | 'regenerate'
         | 'context_compact'
-        | 'automation'
+        | 'scheduled_task'
         | 'goal'
         | 'agent_graph_supervisor_wake'
         | 'safe_boundary_continuation';

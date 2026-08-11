@@ -3,7 +3,8 @@ import { Card } from '@astryxdesign/core/Card';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { useUiLocale, type Composer } from '@maka/ui';
-import type { ChatModelChoice, SessionSummary } from '@maka/core';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import type { SessionSummary } from '@maka/core/session';
 import { getShellCopy } from './locales/shell-copy';
 import type {
   SessionWorkbarPanelsState,

@@ -1,19 +1,18 @@
 import { constants as osConstants } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
+import { encodeTerminalInputActions } from '@maka/core/terminal-input';
 import {
-  encodeTerminalInputActions,
   isActiveShellRunStatus,
   isShellRunSourceToolCallId,
   isTerminalShellRunStatus,
   SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
-  TerminalMouseInputRejectedError,
   type ShellMode,
   type ShellOutput,
   type ShellRunPatch,
   type ShellRunRecord,
-  type ShellRunSnapshotResult,
-  type ShellRunUpdate,
-} from '@maka/core';
+} from '@maka/core/shell-run';
+import { TerminalMouseInputRejectedError } from '@maka/core/terminal-mouse-input';
+import { type ShellRunSnapshotResult, type ShellRunUpdate } from '@maka/core/events';
 import type { ToolResultContent } from '@maka/core/events';
 import { redactSecrets } from '@maka/core/redaction';
 

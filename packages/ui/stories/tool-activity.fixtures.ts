@@ -1,4 +1,4 @@
-import type { ToolResultContent } from '@maka/core';
+import type { ToolResultContent } from '@maka/core/events';
 import type { ToolActivityItem, ToolOutputChunk } from '../src/materialize.js';
 
 const NOW = 1_735_689_600_000;

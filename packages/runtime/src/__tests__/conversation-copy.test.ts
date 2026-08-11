@@ -3,15 +3,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type {
-  AgentRunHeader,
-  AgentRunStore,
-  EmittedAgentRunEvent,
-  RuntimeEvent,
-  RuntimeEventStore,
-  StoredMessage,
-} from '@maka/core';
-import { decodeCanonicalToolResultContent, isSessionInlineRun } from '@maka/core';
+import type { AgentRunHeader, AgentRunStore, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { StoredMessage } from '@maka/core/session';
+import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { isSessionInlineRun } from '@maka/core/agent-run';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   createSqliteAgentRunStore,

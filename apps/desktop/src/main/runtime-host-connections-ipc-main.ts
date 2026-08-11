@@ -4,7 +4,7 @@ import type {
   LlmConnection,
   SavedRequestHeaders,
   UpdateConnectionInput,
-} from '@maka/core';
+} from '@maka/core/llm-connections';
 import {
   connectionEnabledModelIds,
   defaultEnabledModelIdsWhenOmitted,

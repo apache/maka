@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AppSettings, UpdateAppSettingsResult } from '@maka/core';
+import type { AppSettings, UpdateAppSettingsResult } from '@maka/core/settings';
 
 import {
   Banner,

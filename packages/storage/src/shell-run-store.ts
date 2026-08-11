@@ -8,7 +8,7 @@ import {
   type ShellRunRecord,
   type ShellRunPatch,
   type ShellRunStore,
-} from '@maka/core';
+} from '@maka/core/shell-run';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,

@@ -1,4 +1,6 @@
-import type { AppSettings, WebSearchCredentialSource } from '@maka/core';
+import type { AppSettings } from '@maka/core/settings';
+
+import type { WebSearchCredentialSource } from '@maka/core/web-search';
 
 const TAVILY_ENV_KEYS = ['TAVILY_API_KEY', 'MAKA_TAVILY_API_KEY'] as const;
 

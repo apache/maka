@@ -6,32 +6,40 @@ import { isDeepResearchSession } from '@maka/core/session';
 import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import {
   AgentGraphCoordinator,
-  AgentGraphSupervisorWakeCoordinator,
   agentGraphIdForRootSession,
+} from '@maka/runtime/stream-graph-coordinator';
+import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-supervisor-wake';
+import {
   BackendRegistry,
-  buildToolsForAgentDefinition,
-  buildHostCapabilitiesFromBinding,
-  createLocalContinuationSafetyInspector,
-  createConfiguredSubagentCatalog,
-  createBuiltinSandboxManager,
-  createFilesystemWorkerLaunchSpecProvider,
-  FakeBackend,
-  FilesystemWorkerClient,
-  isOAuthEnrollmentProviderEnabled,
-  isBuiltinFilesystemWorkerSandboxAvailable,
-  loadLatestHistoryCompactCheckpointFromRunLedger,
-  prepareSkillInvocationMessageFromInventory,
-  RuntimeReadModel,
-  routeWebSearchTools,
-  renderAgentSwarmSupervisorWake,
   SessionManager,
-  shouldWakeAgentSwarmSupervisor,
-  SessionActivityRegistry,
-  ShellRunProcessManager,
   type BackendFactory,
-  type MakaTool,
-  type RuntimeHostedRootAuthority,
-} from '@maka/runtime';
+} from '@maka/runtime/session-manager';
+import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
+import { buildHostCapabilitiesFromBinding } from '@maka/runtime/tool-catalog-derive';
+import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
+import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
+import {
+  createBuiltinSandboxManager,
+  isBuiltinFilesystemWorkerSandboxAvailable,
+} from '@maka/runtime/sandbox';
+import {
+  createFilesystemWorkerLaunchSpecProvider,
+  FilesystemWorkerClient,
+} from '@maka/runtime/filesystem-worker';
+import { FakeBackend } from '@maka/runtime/fake-backend';
+import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime/oauth-provider-contracts';
+import { loadLatestHistoryCompactCheckpointFromRunLedger } from '@maka/runtime/history-compact-ledger';
+import { prepareSkillInvocationMessageFromInventory } from '@maka/runtime/skill-invocation';
+import { RuntimeReadModel } from '@maka/runtime/runtime-read-model';
+import { routeWebSearchTools } from '@maka/runtime/native-web-search-tool';
+import {
+  renderAgentSwarmSupervisorWake,
+  shouldWakeAgentSwarmSupervisor,
+} from '@maka/runtime/agent-swarm-status-tool';
+import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
+import { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import {
   openInteractiveProjectCatalogForWrite,
   type InteractiveProjectCatalogWriter,
@@ -42,7 +50,6 @@ import {
   createReadImageSnapshotter,
   openInteractiveArtifactStoreForWrite,
 } from '@maka/storage/artifact-stores';
-import { openInteractiveAutomationAuthorityForWrite } from '@maka/storage/automation-authority';
 import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
 import { openInteractiveDeepResearchStoreForWrite } from '@maka/storage/deep-research-authority';
 import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
@@ -80,7 +87,6 @@ import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-out
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
 import { HostAgentGraphCoordinator } from './agent-graph-coordinator.js';
 import { HostAgentGraphExecutionCoordinator } from './agent-graph-execution-coordinator.js';
-import { HostAutomationCoordinator } from './automation-coordinator.js';
 import { HostScheduledTaskCoordinator } from './scheduled-task-coordinator.js';
 import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
@@ -204,9 +210,6 @@ export async function createExecutionRuntimeHostComposition(
   let artifactStore: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
   let shellRunStore: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>> | undefined;
   let longTermMemoryStore: InteractiveLongTermMemoryWriter | undefined;
-  let automationStore:
-    | Awaited<ReturnType<typeof openInteractiveAutomationAuthorityForWrite>>
-    | undefined;
   let scheduledTaskStore:
     | Awaited<ReturnType<typeof openInteractiveScheduledTaskStoreForWrite>>
     | undefined;
@@ -243,10 +246,6 @@ export async function createExecutionRuntimeHostComposition(
       });
     }
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
-    const openedAutomationStore = await openInteractiveAutomationAuthorityForWrite(
-      context.owner.lease,
-    );
-    automationStore = openedAutomationStore;
     const openedScheduledTaskStore = await openInteractiveScheduledTaskStoreForWrite(
       context.owner.lease,
     );
@@ -463,7 +462,6 @@ export async function createExecutionRuntimeHostComposition(
     let memory: HostMemoryCoordinator | undefined;
     let clientCapabilities: HostClientCapabilityCoordinator | undefined;
     let oauth: HostOAuthCoordinator | undefined;
-    let automations: HostAutomationCoordinator | undefined;
     let scheduledTasks: HostScheduledTaskCoordinator | undefined;
     let scheduledTaskTool: MakaTool | undefined;
     let goal: HostGoalCoordinator | undefined;
@@ -628,7 +626,6 @@ export async function createExecutionRuntimeHostComposition(
               memory: requireMemory(memory),
               taskLedger,
               clientCapabilities: requireClientCapabilities(clientCapabilities),
-              automationTool: requireAutomationCoordinator(automations).modelTool,
               ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
               planStore: openedPlanStore,
               deepResearchTools: requireDeepResearch(deepResearch).toolsForSession(
@@ -699,7 +696,6 @@ export async function createExecutionRuntimeHostComposition(
           ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
           builtinTools,
           hostTools: [...hostTools, ...graphTools],
-          automationTool: requireAutomationCoordinator(automations).modelTool,
           ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
           goalTools: requireGoal(goal).tools,
           parentAgentTools: childAgentTools.parentTools,
@@ -742,7 +738,6 @@ export async function createExecutionRuntimeHostComposition(
             ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
             builtinTools,
             hostTools,
-            automationTool: requireAutomationCoordinator(automations).modelTool,
             ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
             goalTools: requireGoal(goal).tools,
             parentAgentTools: childAgentTools.parentTools,
@@ -991,7 +986,7 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       clientCapabilities,
       () => requireGoal(goal),
-      (admission) => requireAutomationCoordinator(automations).assertRecoveryAdmission(admission),
+      (admission) => requireScheduledTasks(scheduledTasks).assertRecoveryAdmission(admission),
       artifacts,
       async ({ sessionId, text, skillIds }) => {
         const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
@@ -1061,19 +1056,6 @@ export async function createExecutionRuntimeHostComposition(
       },
       acquireResidency: () => context.acquireResidency('agent-graph-supervisor'),
       onError: () => context.requestDrain(),
-    });
-    automations = new HostAutomationCoordinator({
-      store: openedAutomationStore,
-      sessions: stores.sessionStore,
-      runs: stores.agentRunStore,
-      runtime: manager,
-      root: coordinator,
-      runtimePolicy: runtimePolicyStores,
-      clientCapabilities,
-      isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
-      sessionAdmission,
-      acquireResidency: () => context.acquireResidency('automation'),
-      requestDrain: context.requestDrain,
     });
     const goalExecutionCoordinator = new HostGoalExecutionCoordinator({
       executions: coordinator,
@@ -1199,7 +1181,7 @@ export async function createExecutionRuntimeHostComposition(
       messages,
       interactions,
       goals: requireGoal(goal),
-      automation: automations,
+      scheduledTasks,
       resources: runtimeResources,
       sessionEffects: sessionEffectCoordinator,
       graph: requireGraphCoordinator(graphCoordinator),
@@ -1374,17 +1356,6 @@ export async function createExecutionRuntimeHostComposition(
         },
         drain: [() => dailyReview?.beginDrain()],
         close: [() => requireDailyReview(dailyReview).close()],
-      }),
-      createRuntimeHostDomainModule({
-        id: 'automation',
-        handlers: [requireAutomationCoordinator(automations).handlers],
-        recovery: {
-          executions: () => requireAutomationCoordinator(automations).prepareRecovery(),
-          domains: () => requireAutomationCoordinator(automations).recover(),
-          schedulers: () => requireAutomationCoordinator(automations).start(),
-        },
-        drain: [() => automations?.beginDrain()],
-        close: [() => automations?.close(), () => openedAutomationStore.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'scheduled-task',
@@ -1600,11 +1571,6 @@ export async function createExecutionRuntimeHostComposition(
       errors.push(closeError);
     }
     try {
-      automationStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
       scheduledTaskStore?.close();
     } catch (closeError) {
       errors.push(closeError);
@@ -1729,13 +1695,6 @@ function requireNewSessionToolNameResolver(
 ) => Promise<string[]> {
   if (!resolver) throw new Error('Runtime Host new Session tool resolver is not composed');
   return resolver;
-}
-
-function requireAutomationCoordinator(
-  coordinator: HostAutomationCoordinator | undefined,
-): HostAutomationCoordinator {
-  if (!coordinator) throw new Error('Runtime Host Automation coordinator is not composed');
-  return coordinator;
 }
 
 function requireScheduledTasks(

@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { before, describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { _setColorLevelForTesting } from '../tui-ansi.js';
-import type { PipeShellOutput, PtyShellOutput, ShellRunToolResult } from '@maka/core';
+import type { PipeShellOutput, PtyShellOutput } from '@maka/core/shell-run';
+import type { ShellRunToolResult } from '@maka/core/shell-run-result';
 import type { SessionEvent, ToolResultContent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {

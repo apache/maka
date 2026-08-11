@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { CreateSessionInput } from '@maka/core';
+import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { createSessionStore, isSessionNotFoundError } from '../session-store.js';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';

@@ -1,4 +1,5 @@
-import type { ModelInfo, SubscriptionActionResult } from '@maka/core';
+import type { ModelInfo } from '@maka/core/llm-connections';
+import type { SubscriptionActionResult } from '@maka/core/oauth-subscription';
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,

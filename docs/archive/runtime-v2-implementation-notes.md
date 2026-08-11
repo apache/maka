@@ -18,8 +18,8 @@ Source plan: `docs/archive/runtime-v2-architecture-evolution.md`.
   `runtimeEventHasModelVisibleContent` / `createRuntimeEventId`).
 - `packages/core/src/__tests__/runtime-event.test.ts` — focused contract
   tests.
-- New subpath export `@maka/core/runtime-event`, plus a barrel re-export of
-  the public surface from `packages/core/src/index.ts`.
+- New subpath export `@maka/core/runtime-event`. The later public-API cleanup
+  removed the package root barrel, so this subpath is now the only public route.
 
 ### Runtime v2 seam (`@maka/runtime`)
 
@@ -39,9 +39,9 @@ Each module shipped with co-located tests for the initial migration seam.
 ### Exports consolidated by the steward
 
 - `packages/core/package.json` — added `"./runtime-event"`.
-- `packages/core/src/index.ts` — re-exports the `RuntimeEvent` surface.
 - `packages/runtime/package.json` — added the runtime-v2 subpath exports.
-- `packages/runtime/src/index.ts` — selective barrel re-exports.
+- The later public-API cleanup removed both package root barrels in favor of
+  explicit domain subpaths.
 
 ## Reconciled: single `InvocationContext` type
 

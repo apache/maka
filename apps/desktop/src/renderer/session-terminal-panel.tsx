@@ -4,7 +4,7 @@ import { EmptyState } from '@astryxdesign/core/EmptyState';
 import {
   generalizedErrorMessage,
   generalizedErrorMessageChinese,
-} from '@maka/core';
+} from '@maka/core/redaction';
 import { useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Terminal as TerminalIcon } from '@maka/ui/icons';
 import { FitAddon } from '@xterm/addon-fit';
