@@ -11,7 +11,6 @@ import {
 import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from '../interaction.js';
 import {
   TERMINAL_RUNTIME_EVENT_STATUSES,
-  decodePersistedRuntimeEvent,
   decodeRuntimeEvent,
   isTerminalRuntimeEvent,
   runtimeEventHasModelVisibleContent,
