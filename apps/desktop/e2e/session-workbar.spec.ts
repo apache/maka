@@ -33,6 +33,28 @@ test('titlebar workbar action restores an existing tool instead of the picker', 
   await expect(picker).not.toBeVisible();
 });
 
+test('a new task stays focused on chat after its first message creates the session', async ({
+  window: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('create source session');
+  await composer.press('Enter');
+  await expect(page.getByText(/Fake backend received: create source session/)).toBeVisible();
+
+  await page.getByRole('button', { name: '展开会话工作栏' }).click();
+  await expect(page.getByRole('list', { name: '打开工具' })).toBeVisible();
+
+  await page.getByRole('button', { name: '新任务', exact: true }).click();
+  await expect(page.locator('.maka-turn')).toHaveCount(0);
+  await composer.fill('new task keeps the workbar closed');
+  await expect(composer).toHaveText('new task keeps the workbar closed');
+  await composer.press('Enter');
+  await expect(page.getByText(/Fake backend received: new task keeps the workbar closed/)).toBeVisible();
+
+  await expect(page.getByRole('button', { name: '展开会话工作栏' })).toBeVisible();
+  await expect(page.getByRole('list', { name: '打开工具' })).not.toBeVisible();
+});
+
 test('Git changes show branch files as a collapsed single-open list', async ({
   gitReviewWindow,
 }) => {

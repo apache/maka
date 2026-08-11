@@ -211,3 +211,15 @@ Maka now selects instant following for automatic content growth while retaining
 the spring for the user-triggered scroll-to-bottom action. A repeat run produced
 18 height changes and 16 scroll events, with zero sub-3px movement frames and
 zero observed distance from the bottom.
+
+## Latest-main integration
+
+Rebasing onto the August 11 mainline exposed two integration boundaries:
+
+- Session catalog projections now carry the authoritative working directory as
+  `session.workspace.hostCwd`; rich queued attachments use that field rather
+  than the retired top-level `cwd`.
+- Entering the new-task surface explicitly collapses the right workbar. The
+  workbar is absent before the first Session exists, so retaining an expanded
+  state made it appear only after the first send and looked like send had opened
+  it. Existing Sessions still preserve a workbar the user opened deliberately.
