@@ -587,7 +587,11 @@ export function compileAgentGraphScheduleUpdate(input: {
     turnId: requireIdentity(input.context.turnId, 'source turn id'),
     toolCallId: requireIdentity(input.context.toolCallId, 'source tool call id'),
     orchestrationMode:
-      input.context.orchestrationMode === 'swarm' ? ('swarm' as const) : ('graph' as const),
+      input.context.orchestrationMode === 'swarm'
+        ? ('swarm' as const)
+        : input.context.orchestrationMode === 'delegate'
+          ? ('delegate' as const)
+          : ('graph' as const),
   };
   const addWorkInput =
     parsed.operation === undefined || parsed.operation === 'add_work'

@@ -263,7 +263,8 @@ function isScheduleSource(value: unknown): value is AgentGraphScheduleUpdateSour
     (value.orchestrationMode === undefined ||
       value.orchestrationMode === 'default' ||
       value.orchestrationMode === 'graph' ||
-      value.orchestrationMode === 'swarm')
+      value.orchestrationMode === 'swarm' ||
+      value.orchestrationMode === 'delegate')
   );
 }
 

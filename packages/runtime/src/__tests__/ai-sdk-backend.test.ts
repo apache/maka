@@ -6421,6 +6421,52 @@ describe('AiSdkBackend usage telemetry', () => {
     );
   });
 
+  test('keeps graph controls but removes yield from the Delegate provider surface', async () => {
+    const durable = durableTurnHarness('turn-delegate-tools', 'delegate a background task');
+    const model = textCompletionModel('Task accepted; I remain available.');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        testTool('agent_list', z.object({})),
+        testTool('view_agent_graph', z.object({})),
+        testTool('update_agent_graph', z.object({})),
+        testTool('yield_agent_graph', z.object({ reason: z.string() })),
+        testTool('agent_swarm_status', z.object({})),
+        testTool('agent_output', z.object({})),
+      ],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(
+      backend.send(
+        durable.input({
+          orchestration: {
+            mode: 'delegate',
+            source: 'turn_override',
+            agentSwarmAuthorization: 'none',
+          },
+        }),
+      ),
+      durable,
+    );
+
+    const call = model.doStreamCalls[0];
+    const toolNames = (call?.tools ?? []).map((tool) => tool.name);
+    assert.ok(toolNames.includes('update_agent_graph'));
+    assert.ok(toolNames.includes('view_agent_graph'));
+    assert.equal(toolNames.includes('yield_agent_graph'), false);
+    assert.match(JSON.stringify(call?.prompt), /Orchestration Mode: Delegate/);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
   test('ends the tool loop cooperatively when the graph supervisor yields', async () => {
     const durable = durableTurnHarness('turn-graph-yield', 'coordinate the graph');
     let streamCalls = 0;

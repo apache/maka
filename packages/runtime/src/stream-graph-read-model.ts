@@ -190,7 +190,7 @@ export interface AgentGraphClientSnapshot {
   schemaVersion: typeof AGENT_GRAPH_CLIENT_SNAPSHOT_SCHEMA_VERSION;
   rootSessionId: string;
   graphId: string;
-  orchestrationMode: 'graph' | 'swarm';
+  orchestrationMode: 'graph' | 'swarm' | 'delegate';
   snapshotVersion: string;
   status: AgentGraphClientStatus;
   scheduleRevision: number;
@@ -256,7 +256,7 @@ export interface BuildAgentGraphClientReadModelInput {
   provisions: readonly AgentGraphOperatorProvision[];
   scheduleUpdates: readonly AgentGraphScheduleUpdate[];
   schedule?: AgentGraphScheduleProjection;
-  orchestrationMode?: 'graph' | 'swarm';
+  orchestrationMode?: 'graph' | 'swarm' | 'delegate';
   reconciliationFailures?: readonly AgentGraphClientReconciliationFailure[];
   claimAdmissions?: readonly AgentGraphClientClaimAdmission[];
   observation: AgentGraphSupervisorObservation;
@@ -1279,7 +1279,9 @@ export function decodeMaterializedAgentGraphClientSnapshot(
     snapshot.schemaVersion !== AGENT_GRAPH_CLIENT_SNAPSHOT_SCHEMA_VERSION ||
     snapshot.rootSessionId !== expected.rootSessionId ||
     snapshot.graphId !== expected.graphId ||
-    (snapshot.orchestrationMode !== 'graph' && snapshot.orchestrationMode !== 'swarm') ||
+    (snapshot.orchestrationMode !== 'graph' &&
+      snapshot.orchestrationMode !== 'swarm' &&
+      snapshot.orchestrationMode !== 'delegate') ||
     snapshot.snapshotVersion !== expected.snapshotVersion ||
     !Array.isArray(snapshot.operators) ||
     !Array.isArray(snapshot.edges) ||

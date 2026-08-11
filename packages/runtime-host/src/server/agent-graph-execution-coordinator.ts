@@ -176,11 +176,11 @@ function assertAgentGraphInput(sessionId: string, input: UserMessageInput): void
   if (
     input.origin?.kind !== 'agent_graph' ||
     input.origin.graphId !== agentGraphIdForRootSession(sessionId) ||
-    input.turnOrchestration?.mode !== 'graph' ||
+    (input.turnOrchestration?.mode !== 'graph' && input.turnOrchestration?.mode !== 'delegate') ||
     input.turnOrchestration.source !== 'host_api'
   ) {
     throw new RuntimeMessageAuthorityInvariantError(
-      'Agent Graph supervisor execution requires the Session graph origin and Host Graph orchestration',
+      'Agent Graph supervisor execution requires the Session graph origin and Host Graph orchestration or Host Delegate orchestration',
     );
   }
 }

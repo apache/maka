@@ -201,6 +201,7 @@ import {
 } from './tool-availability.js';
 import { renderSwarmModePrompt } from './swarm-mode.js';
 import { renderGraphModePrompt } from './graph-mode.js';
+import { renderDelegateModePrompt } from './delegate-mode.js';
 import {
   MEMORY_EXTRACT_TOOL_NAME,
   MEMORY_REMEMBER_TOOL_NAME,
@@ -521,6 +522,27 @@ function projectToolModePlan(
             baseChars + (diagnostic.toolSchemaCharReduction ?? 0)) + execSchemaChars,
       };
     },
+  };
+}
+
+function omitToolsFromPlan(
+  plan: ToolAvailabilityPlan,
+  omittedToolNames: ReadonlySet<string>,
+): ToolAvailabilityPlan {
+  const visible = (names: readonly string[]): string[] =>
+    names.filter((name) => !omittedToolNames.has(name));
+  return {
+    ...plan,
+    providerTools: plan.providerTools.filter((tool) => !omittedToolNames.has(tool.name)),
+    activeTools: visible(plan.activeTools),
+    ...(plan.projectActiveTools
+      ? {
+          projectActiveTools: (options) => ({
+            activeTools: visible(plan.projectActiveTools?.(options).activeTools ?? []),
+          }),
+        }
+      : {}),
+    currentRepairToolNames: () => visible(plan.currentRepairToolNames()),
   };
 }
 
@@ -1544,14 +1566,14 @@ export class AiSdkBackend implements AgentBackend {
             'agent_swarm_status',
             'agent_output',
           ])
-        : scope.orchestration.mode === 'graph'
+        : scope.orchestration.mode === 'graph' || scope.orchestration.mode === 'delegate'
           ? new Set([
               'agent_list',
               'view_agent_graph',
               'update_agent_graph',
-              'yield_agent_graph',
               'agent_swarm_status',
               'agent_output',
+              ...(scope.orchestration.mode === 'graph' ? ['yield_agent_graph'] : []),
             ])
           : new Set<string>();
     const requestedToolMode: unknown =
@@ -1563,7 +1585,7 @@ export class AiSdkBackend implements AgentBackend {
     if (toolMode === 'code_mode' && this.input.tools.some((tool) => tool.name === 'exec')) {
       throw new Error('Tool name "exec" is reserved for Code Mode.');
     }
-    const plan = projectToolModePlan(
+    const toolModePlan = projectToolModePlan(
       this.toolAvailabilityRuntime.prepare(
         (input.runtimeContext ?? []).filter((event) => event.turnId !== turnId),
         requiredOrchestrationTools,
@@ -1571,6 +1593,10 @@ export class AiSdkBackend implements AgentBackend {
       toolMode,
       codeModeExecTool,
     );
+    const plan =
+      scope.orchestration.mode === 'delegate'
+        ? omitToolsFromPlan(toolModePlan, new Set(['yield_agent_graph']))
+        : toolModePlan;
     const providerTools = plan.providerTools;
     let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};
     let activeCompactDiagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
@@ -1692,6 +1718,7 @@ export class AiSdkBackend implements AgentBackend {
           await this.resolveSystemPrompt(scope),
           scope.orchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
           scope.orchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
+          scope.orchestration?.mode === 'delegate' ? renderDelegateModePrompt() : undefined,
         ]);
         const turnTailPrompt = input.continuation
           ? undefined

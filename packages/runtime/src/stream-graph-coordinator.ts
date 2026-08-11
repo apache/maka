@@ -728,7 +728,7 @@ export class AgentGraphCoordinator {
               );
               if (
                 advancement &&
-                isSwarmCheckpointTransition(advancement.before, advancement.after)
+                isAsyncCheckpointTransition(advancement.before, advancement.after)
               ) {
                 await notify(this.#input.onCheckpoint, driver.rootSessionId);
               }
@@ -1357,11 +1357,11 @@ function isMaterializedGraphClientEvent(
   ].includes(type);
 }
 
-function isSwarmCheckpointTransition(
+function isAsyncCheckpointTransition(
   before: AgentGraphClientSnapshot,
   after: AgentGraphClientSnapshot,
 ): boolean {
-  if (after.orchestrationMode !== 'swarm') return false;
+  if (after.orchestrationMode !== 'swarm' && after.orchestrationMode !== 'delegate') return false;
   const previous = projectAgentSwarmStatus(before);
   const current = projectAgentSwarmStatus(after);
   if (current.status === 'settled' && previous.status !== 'settled') return true;
@@ -1445,18 +1445,22 @@ function assertUniqueClaims(graphId: string, claims: readonly AgentGraphIntentCl
 function graphOrchestrationMode(
   updates: readonly AgentGraphScheduleUpdate[],
   header: SessionHeader,
-): 'graph' | 'swarm' {
+): 'graph' | 'swarm' | 'delegate' {
   const first = [...updates].sort((a, b) => a.revision - b.revision)[0];
   if (first?.source.orchestrationMode === 'swarm') return 'swarm';
   if (first?.source.orchestrationMode === 'graph') return 'graph';
-  return header.orchestrationMode === 'swarm' ? 'swarm' : 'graph';
+  if (first?.source.orchestrationMode === 'delegate') return 'delegate';
+  if (header.orchestrationMode === 'swarm') return 'swarm';
+  return header.orchestrationMode === 'delegate' ? 'delegate' : 'graph';
 }
 
 function isCurrentClientProjectionPayload(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const snapshot = value as Partial<AgentGraphClientSnapshot>;
   return (
-    (snapshot.orchestrationMode === 'graph' || snapshot.orchestrationMode === 'swarm') &&
+    (snapshot.orchestrationMode === 'graph' ||
+      snapshot.orchestrationMode === 'swarm' ||
+      snapshot.orchestrationMode === 'delegate') &&
     Array.isArray(snapshot.reconciliationFailures) &&
     typeof snapshot.omitted?.reconciliationFailures === 'number'
   );

@@ -36,6 +36,10 @@ import {
   renderAgentSwarmSupervisorWake,
   shouldWakeAgentSwarmSupervisor,
 } from '@maka/runtime/agent-swarm-status-tool';
+import {
+  renderDelegateSupervisorWake,
+  shouldWakeDelegateSupervisor,
+} from '@maka/runtime/delegate-mode';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
@@ -1046,8 +1050,12 @@ export async function createExecutionRuntimeHostComposition(
       },
       recoverContextOverflow: (rootSessionId, { abortSignal }) =>
         graphExecutions.recoverContextOverflow(rootSessionId, randomUUID(), abortSignal),
-      shouldWake: shouldWakeAgentSwarmSupervisor,
-      renderWake: renderAgentSwarmSupervisorWake,
+      shouldWake: (rootSessionId, result, snapshot) =>
+        shouldWakeDelegateSupervisor(rootSessionId, result, snapshot) ??
+        shouldWakeAgentSwarmSupervisor(rootSessionId, result, snapshot),
+      renderWake: (rootSessionId, snapshot, result) =>
+        renderDelegateSupervisorWake(rootSessionId, snapshot, result) ??
+        renderAgentSwarmSupervisorWake(rootSessionId, snapshot, result),
       newId: randomUUID,
       isSessionDeliverable: async (sessionId) => {
         try {

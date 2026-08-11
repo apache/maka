@@ -311,7 +311,7 @@ function hostedRootAuthorityMatches(
         execution.wakeId.startsWith(`${execution.graphId}:`) &&
         run.agentGraphWakeId === execution.wakeId &&
         run.agentGraphWakeAttemptId === execution.attemptId &&
-        run.orchestrationMode === 'graph' &&
+        (run.orchestrationMode === 'graph' || run.orchestrationMode === 'delegate') &&
         run.orchestrationSource === 'turn_override' &&
         run.agentSwarmAuthorization === 'none' &&
         run.scheduledTaskId === undefined &&
