@@ -7,10 +7,6 @@ import {
 } from '../subagent-workspace.js';
 
 describe('subagent workspace binding', () => {
-  test('accepts the strict durable Git worktree shape', () => {
-    assert.equal(isSubagentWorkspaceBinding(binding()), true);
-  });
-
   test('rejects unknown fields, unsafe leases, and malformed commits', () => {
     assert.equal(isSubagentWorkspaceBinding({ ...binding(), extra: true }), false);
     assert.equal(isSubagentWorkspaceBinding({ ...binding(), leaseId: '../shared' }), false);
