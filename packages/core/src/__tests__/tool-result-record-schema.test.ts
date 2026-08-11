@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { StoredMessage } from '../session.js';
-import { decodeStoredMessageForRead, decodeStoredMessageForRecovery } from '../session.js';
+import { decodeStoredMessageForRecovery } from '../session.js';
 import { decodeCanonicalToolResultContent } from '../tool-result-record-schema.js';
 
 describe('sandbox denial tool result metadata', () => {

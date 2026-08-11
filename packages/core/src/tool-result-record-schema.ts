@@ -1,7 +1,6 @@
 import {
   decodeCanonicalShellToolResultContent,
   isSandboxDenialSignal,
-  normalizeShellToolResultContent,
 } from './shell-run-result.js';
 import { isPermissionMode } from './permission.js';
 import { isStorageRef, type ToolResultContent } from './events.js';
@@ -191,7 +190,7 @@ const RIVE_ERROR_SHAPE = defineObjectShape<RiveError>()(
 );
 
 export function normalizeToolResultContentForRead(value: unknown): ToolResultContent {
-  const shell = normalizeShellToolResultContent(value);
+  const shell = decodeCanonicalShellToolResultContent(value);
   if (shell.state === 'invalid') throw new Error('Invalid shell tool result content');
   const normalized = shell.state === 'valid' ? shell.content : value;
   return decodeCanonicalToolResultContent(normalizeLegacySubagentToolResultContent(normalized));

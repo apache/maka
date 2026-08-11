@@ -43,7 +43,7 @@ import {
   type RuntimeEventRole,
 } from '@maka/core/runtime-event';
 import { formatAttachmentResourceRef } from '@maka/core/attachments';
-import { normalizeShellToolResultContent } from '@maka/core/shell-run-result';
+import { decodeCanonicalShellToolResultContent } from '@maka/core/shell-run-result';
 import { normalizeToolResultContentForRead } from '@maka/core/tool-result-record-schema';
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
@@ -588,7 +588,7 @@ export function buildRuntimeEventModelReplayPlan(
           );
           continue;
         }
-        const shellResult = normalizeShellToolResultContent(event.content.result);
+        const shellResult = decodeCanonicalShellToolResultContent(event.content.result);
         let invalidResultMessage: string | undefined;
         let normalizedResult: unknown =
           event.content.providerExecuted && event.content.providerOutput !== undefined
