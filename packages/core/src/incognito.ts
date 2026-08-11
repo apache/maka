@@ -5,21 +5,11 @@ export interface WorkspacePrivacyContext {
   incognitoActive: boolean;
 }
 
-export function defaultWorkspacePrivacyContext(): WorkspacePrivacyContext {
-  return { incognitoActive: false };
-}
-
 export type WorkspacePrivacyContextResult =
   | { ok: true; value: WorkspacePrivacyContext }
   | { ok: false; reason: WorkspacePrivacyContextInvalidReason; message: string };
 
 export type WorkspacePrivacyContextInvalidReason = 'not_object' | 'incognito_active_invalid';
-
-export function isWorkspacePrivacyContext(value: unknown): value is WorkspacePrivacyContext {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  return typeof record.incognitoActive === 'boolean';
-}
 
 /** Validate and strip a privacy payload without inventing a default. */
 export function validateWorkspacePrivacyContext(input: unknown): WorkspacePrivacyContextResult {

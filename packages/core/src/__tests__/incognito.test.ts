@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import {
-  isWorkspacePrivacyContext,
-  validateWorkspacePrivacyContext,
-} from '../incognito.js';
+import { validateWorkspacePrivacyContext } from '../incognito.js';
 
 describe('workspace privacy context', () => {
   it('accepts booleans and strips renderer-supplied authority fields', () => {
@@ -26,14 +23,6 @@ describe('workspace privacy context', () => {
         reason: 'incognito_active_invalid',
         message: 'WorkspacePrivacyContext.incognitoActive must be a boolean',
       });
-    }
-  });
-
-  it('guards the documented field without requiring an exact object shape', () => {
-    assert.equal(isWorkspacePrivacyContext({ incognitoActive: false }), true);
-    assert.equal(isWorkspacePrivacyContext({ incognitoActive: true, extra: 'ignored' }), true);
-    for (const input of [null, [], {}, { incognitoActive: 'true' }]) {
-      assert.equal(isWorkspacePrivacyContext(input), false);
     }
   });
 });

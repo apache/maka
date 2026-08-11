@@ -2,11 +2,8 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
 import {
-  IMAGE_PAYLOAD_MAX_BASE64_LENGTH,
   IMAGE_PAYLOAD_MAX_BYTES,
-  decideImagePostLoad,
   decideImageReadOutcome,
-  exceedsImagePayloadCap,
   resolvePreviewKind,
 } from '@maka/ui/artifact-preview-registry';
 
@@ -30,38 +27,13 @@ describe('artifact preview registry', () => {
     });
   });
 
-  it('fails closed at the post-load payload cap', () => {
-    assert.equal(exceedsImagePayloadCap('A'.repeat(IMAGE_PAYLOAD_MAX_BASE64_LENGTH)), false);
-    assert.equal(exceedsImagePayloadCap('A'.repeat(IMAGE_PAYLOAD_MAX_BASE64_LENGTH + 1)), true);
-    assert.equal(exceedsImagePayloadCap(null as never), true);
-  });
-  it('uses sniffed MIME and checks size before MIME after loading', () => {
-    const base64 = 'AAAA';
-    assert.deepEqual(decideImagePostLoad({ base64, mimeType: ' IMAGE/PNG ' }), {
-      kind: 'image',
-      safeMime: 'image/png',
-      base64,
-    });
-    assert.deepEqual(decideImagePostLoad({ base64, mimeType: 'image/svg+xml' }), {
-      kind: 'unsupported',
-      reason: 'mime_disallowed',
-    });
-    assert.deepEqual(
-      decideImagePostLoad({
-        base64: 'A'.repeat(IMAGE_PAYLOAD_MAX_BASE64_LENGTH + 1),
-        mimeType: 'image/svg+xml',
-      }),
-      { kind: 'unsupported', reason: 'oversize' },
-    );
-  });
-
   it('routes IPC failures and malformed successful payloads without retaining base64', () => {
     assert.deepEqual(decideImageReadOutcome({ ok: false, reason: 'not_found' }), {
       kind: 'unsupported',
       reason: 'read_failed',
     });
 
-    const valid: ArtifactBinaryReadResult = { ok: true, base64: 'AAAA', mimeType: 'image/png' };
+    const valid: ArtifactBinaryReadResult = { ok: true, base64: 'AAAA', mimeType: ' IMAGE/PNG ' };
     assert.deepEqual(decideImageReadOutcome(valid), {
       kind: 'image',
       safeMime: 'image/png',
@@ -80,8 +52,8 @@ describe('artifact preview registry', () => {
       [
         {
           ok: true,
-          base64: 'A'.repeat(IMAGE_PAYLOAD_MAX_BASE64_LENGTH + 1),
-          mimeType: 'image/png',
+          base64: 'A'.repeat(3 * 1024 * 1024),
+          mimeType: 'image/svg+xml',
         },
         'oversize',
       ],

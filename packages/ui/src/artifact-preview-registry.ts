@@ -27,13 +27,13 @@ export type PreviewResolution =
 export const IMAGE_PAYLOAD_MAX_BYTES = 2 * 1024 * 1024;
 
 /** Encoded-length cap, including base64 padding. */
-export const IMAGE_PAYLOAD_MAX_BASE64_LENGTH = Math.ceil((IMAGE_PAYLOAD_MAX_BYTES * 4) / 3) + 2;
+const IMAGE_PAYLOAD_MAX_BASE64_LENGTH = Math.ceil((IMAGE_PAYLOAD_MAX_BYTES * 4) / 3) + 2;
 
 /**
  * MIME allowlist shared by metadata and post-load validation. SVG is
  * intentionally absent.
  */
-export const ALLOWED_IMAGE_MIMES: ReadonlySet<string> = new Set([
+const ALLOWED_IMAGE_MIMES: ReadonlySet<string> = new Set([
   'image/png',
   'image/jpeg',
   'image/gif',
@@ -42,7 +42,7 @@ export const ALLOWED_IMAGE_MIMES: ReadonlySet<string> = new Set([
 ]);
 
 /** Return a normalized allowlisted MIME for constructing an image data URL. */
-export function normalizeAllowedImageMime(mimeType: string | undefined): string | null {
+function normalizeAllowedImageMime(mimeType: string | undefined): string | null {
   if (typeof mimeType !== 'string') return null;
   const mime = mimeType.trim().toLowerCase();
   if (mime === '') return null;
@@ -54,7 +54,7 @@ export type ImagePostLoadOutcome =
   | { kind: 'image'; safeMime: string; base64: string }
   | { kind: 'unsupported'; reason: 'oversize' | 'mime_disallowed' | 'read_failed' };
 
-export function decideImagePostLoad(input: {
+function decideImagePostLoad(input: {
   base64: string;
   mimeType: string;
 }): ImagePostLoadOutcome {
@@ -113,7 +113,7 @@ export function resolvePreviewKind(input: ArtifactPreviewInput): PreviewResoluti
 }
 
 /** Enforce the post-load cap using encoded length without decoding. */
-export function exceedsImagePayloadCap(base64: string): boolean {
+function exceedsImagePayloadCap(base64: string): boolean {
   if (typeof base64 !== 'string') return true;
   return base64.length > IMAGE_PAYLOAD_MAX_BASE64_LENGTH;
 }

@@ -56,7 +56,7 @@ export interface RunNotificationCopy {
  * could not supply a session name / reply preview (e.g. an untitled
  * session or a tool-only turn with no assistant text).
  */
-export function runNotificationCopy(kind: RunNotificationKind): RunNotificationCopy {
+function runNotificationCopy(kind: RunNotificationKind): RunNotificationCopy {
   if (kind === 'errored') {
     return { title: '对话出错', body: '本轮回答未能完成，点击查看详情。' };
   }
