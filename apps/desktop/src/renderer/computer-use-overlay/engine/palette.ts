@@ -38,9 +38,6 @@ function fromData(d: PaletteData): Palette {
   return { name: d[0], cursorStart: d[1], cursorMid: d[2], cursorEnd: d[3], bloomOuter: d[4], bloomInner: d[5] };
 }
 
-export function defaultPalette(): Palette {
-  return fromData(PALETTE_DATA[0]);
-}
 
 /**
  * Maka's brand cursor palette, derived from the app's primary token
@@ -58,50 +55,6 @@ export function makaBrandPalette(): Palette {
     bloomOuter: [157, 189, 255],
     bloomInner: [212, 229, 255],
   };
-}
-
-/**
- * Select a palette for an instance id using the same stable-hash logic as the
- * Rust `Palette::for_instance` (a port of C# `AgentCursorPalette.ForInstance`).
- * Same id → same colour, always.
- */
-export function paletteForInstance(instanceId: string): Palette {
-  if (instanceId === '' || instanceId === 'default') return defaultPalette();
-  const exact = PALETTE_DATA.find((d) => d[0] === instanceId);
-  if (exact) return fromData(exact);
-  const alternates = PALETTE_DATA.slice(1); // all except default_blue
-  return fromData(alternates[stableIndex(instanceId, alternates.length)]);
-}
-
-function stableIndex(id: string, count: number): number {
-  const sepIdx = Math.max(id.lastIndexOf('-'), id.lastIndexOf('_'), id.lastIndexOf('.'));
-  const suffix = sepIdx >= 0 ? id.slice(sepIdx + 1) : id;
-  const n = Number.parseInt(suffix, 10);
-  if (Number.isInteger(n) && String(n) === suffix.trim() && n > 0) return (n - 1) % count;
-  if (suffix.length === 1) {
-    const c = suffix.toLowerCase().charCodeAt(0);
-    if (c >= 97 && c <= 122) return (c - 97) % count;
-  }
-  // FNV-1a over the full id.
-  let hash = 2_166_136_261 >>> 0;
-  for (const ch of id) {
-    hash ^= ch.codePointAt(0)!;
-    hash = Math.imul(hash, 16_777_619) >>> 0;
-  }
-  return hash % count;
-}
-
-const lerp = (a: number, b: number, t: number): number => Math.round(a + (b - a) * t);
-
-/** Lerp cursorStart → cursorMid → cursorEnd at t ∈ [0,1] (mid at 0.53). */
-export function gradientAt(p: Palette, t: number): Rgb {
-  const c = Math.min(1, Math.max(0, t));
-  if (c <= 0.53) {
-    const u = c / 0.53;
-    return [lerp(p.cursorStart[0], p.cursorMid[0], u), lerp(p.cursorStart[1], p.cursorMid[1], u), lerp(p.cursorStart[2], p.cursorMid[2], u)];
-  }
-  const u = (c - 0.53) / 0.47;
-  return [lerp(p.cursorMid[0], p.cursorEnd[0], u), lerp(p.cursorMid[1], p.cursorEnd[1], u), lerp(p.cursorMid[2], p.cursorEnd[2], u)];
 }
 
 export const rgba = (c: Rgb, a: number): string => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
