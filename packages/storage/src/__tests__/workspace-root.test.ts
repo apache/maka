@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { resolveMakaWorkspaceRoot } from '../workspace-root.js';
+import { resolveMakaClientDataRoot, resolveMakaWorkspaceRoot } from '../workspace-root.js';
 
 describe('Maka workspace root resolver', () => {
+  test('resolves Client-owned data outside every Host State Root', () => {
+    assert.equal(
+      resolveMakaClientDataRoot({ platform: 'linux', homeDir: '/home/ada', env: {} }),
+      '/home/ada/.config/Maka',
+    );
+  });
+
   test('resolves each platform under its canonical application-data root', () => {
     const cases = [
       [

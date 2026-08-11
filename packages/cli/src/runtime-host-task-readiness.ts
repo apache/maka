@@ -15,6 +15,7 @@ export interface RuntimeHostCliTaskReadinessInput {
   readonly cwd: string;
   readonly connectionSlug?: string;
   readonly model?: string;
+  readonly workspaceState?: 'ready' | 'missing' | 'unavailable' | 'unknown';
 }
 
 export async function readRuntimeHostCliTaskReadiness(
@@ -39,7 +40,7 @@ export async function readRuntimeHostCliTaskReadiness(
     checkedAt,
     runtime: { state: 'ready', checkedAt },
     modelTarget,
-    workspace: { state: await inspectWorkspace(input.cwd), checkedAt },
+    workspace: { state: input.workspaceState ?? (await inspectWorkspace(input.cwd)), checkedAt },
   });
 }
 

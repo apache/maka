@@ -31,6 +31,16 @@ export type RuntimeHostCliCommand =
       credentialEnv?: string;
       clientIdentityPath?: string;
     }
+  | { kind: 'runtime-host-profile-list' }
+  | {
+      kind: 'runtime-host-profile-set';
+      id: string;
+      name: string;
+      url: string;
+      expectedRootId: string;
+      credentialEnv?: string;
+    }
+  | { kind: 'runtime-host-profile-remove'; id: string }
   | RuntimeHostCliError;
 
 export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
@@ -39,11 +49,73 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
   if (argv[0] === 'capability-provider') {
     return parseCapabilityProviderCommand(argv.slice(1));
   }
+  if (argv[0] === 'profile') return parseProfileCommand(argv.slice(1));
   return error(
     argv[0]
       ? `Unexpected runtime-host command: ${argv[0]}`
-      : 'runtime-host requires the serve, access, or capability-provider command',
+      : 'runtime-host requires the serve, access, profile, or capability-provider command',
   );
+}
+
+function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
+  const action = argv[0];
+  if (action === 'list') {
+    return argv.length === 1
+      ? { kind: 'runtime-host-profile-list' }
+      : error(`Unexpected argument: ${argv[1] ?? ''}`);
+  }
+  if (action === 'remove') {
+    if (argv[1] !== '--id') return error('runtime-host profile remove requires --id');
+    const id = optionValue(argv, 1, '--id');
+    if (typeof id !== 'string') return id;
+    return argv.length === 3
+      ? { kind: 'runtime-host-profile-remove', id }
+      : error(`Unexpected argument: ${argv[3] ?? ''}`);
+  }
+  if (action !== 'set') {
+    return error(
+      action
+        ? `Unexpected runtime-host profile command: ${action}`
+        : 'runtime-host profile requires the list, set, or remove command',
+    );
+  }
+  let id: string | undefined;
+  let name: string | undefined;
+  let url: string | undefined;
+  let expectedRootId: string | undefined;
+  let credentialEnv: string | undefined;
+  for (let index = 1; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (
+      argument !== '--id' &&
+      argument !== '--name' &&
+      argument !== '--url' &&
+      argument !== '--expected-root' &&
+      argument !== '--credential-env'
+    ) {
+      return error(`Unexpected argument: ${argument ?? ''}`);
+    }
+    const parsed = optionValue(argv, index, argument);
+    if (typeof parsed !== 'string') return parsed;
+    if (argument === '--id') id = parsed;
+    if (argument === '--name') name = parsed;
+    if (argument === '--url') url = parsed;
+    if (argument === '--expected-root') expectedRootId = parsed;
+    if (argument === '--credential-env') credentialEnv = parsed;
+    index += 1;
+  }
+  if (!id) return error('--id is required');
+  if (!name) return error('--name is required');
+  if (!url) return error('--url is required');
+  if (!expectedRootId) return error('--expected-root is required');
+  return {
+    kind: 'runtime-host-profile-set',
+    id,
+    name,
+    url,
+    expectedRootId,
+    ...(credentialEnv ? { credentialEnv } : {}),
+  };
 }
 
 function parseCapabilityProviderCommand(argv: string[]): RuntimeHostCliCommand {

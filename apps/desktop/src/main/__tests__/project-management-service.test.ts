@@ -120,6 +120,50 @@ test('does not silently replace a stale Project preference with another Project'
   assert.deepEqual(selections, [{ projectId: null, path: '/last-known' }]);
 });
 
+test('does not expose Client directory actions for a remote Host', async () => {
+  let pickerCalls = 0;
+  const service = createProjectManagementService({
+    catalog: {
+      list: async () => [
+        {
+          id: 'remote',
+          name: 'Remote',
+          locations: [],
+          available: true,
+        },
+      ],
+      register: unexpected,
+      relink: unexpected,
+      rename: unexpected,
+      archive: unexpected,
+      restore: unexpected,
+    },
+    chooseDirectory: async () => {
+      pickerCalls += 1;
+      return '/client/path';
+    },
+    selection: {
+      currentSelection: async () => ({ projectId: 'remote', path: '/host/project' }),
+      setSelection() {},
+    },
+    allowLocalDirectoryActions: () => false,
+  });
+
+  await assert.rejects(() => service.add(), /registered on the Host/);
+  await assert.rejects(() => service.relink('remote'), /registered on the Host/);
+  assert.equal(await service.pathFor('remote'), null);
+  assert.deepEqual(await service.select('remote'), {
+    project: {
+      id: 'remote',
+      name: 'Remote',
+      locations: [],
+      available: true,
+    },
+    path: '/host/project',
+  });
+  assert.equal(pickerCalls, 0);
+});
+
 function managementCatalog(catalog: ProjectCatalog): ProjectManagementCatalog {
   return {
     list: () => catalog.list(),

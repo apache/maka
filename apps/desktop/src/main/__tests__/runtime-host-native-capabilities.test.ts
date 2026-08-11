@@ -59,6 +59,28 @@ test('publishes self-described session-affine Browser and Computer Use offers', 
   );
 });
 
+test('remote providers do not request Host paths and use a Client-owned cwd', async () => {
+  let invokedCwd: string | undefined;
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [
+        tool('browser_navigate', z.object({ url: z.string() }), async (_args, context) => {
+          invokedCwd = context.cwd;
+          return 'ok';
+        }),
+      ],
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+    },
+    { hostPathAccess: 'none', clientCwd: '/client/runtime-host' },
+  );
+
+  assert.equal(provider.offers()[0]?.hostPathAccess, 'none');
+  await call(provider, capabilityFrame({ cwd: undefined }));
+  assert.equal(invokedCwd, '/client/runtime-host');
+});
+
 test('publishes the real Computer Use schema through the Client Capability protocol', () => {
   const computerUseTools = buildComputerUseTools({ backend: computerBackend() });
   const provider = createDesktopNativeCapabilityProvider({

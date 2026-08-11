@@ -5,8 +5,11 @@ import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import {
   readRuntimeHostInvocableSkills,
+  readRuntimeHostProjects,
   type RuntimeHostConnection,
+  type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
+import type { WorkspaceTarget } from '@maka/runtime-host/protocol';
 import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
 import type {
   MakaPiTuiTurnActivitySurface,
@@ -36,6 +39,7 @@ export interface RuntimeHostTuiContext {
   readonly listSkills: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
   readonly recap: SessionRecapGenerator;
   readonly onboarding: ReturnType<typeof createRuntimeHostOnboardingSurface>;
+  readonly profile: RuntimeHostProfile;
   close(): Promise<void>;
 }
 
@@ -43,6 +47,8 @@ export interface CreateRuntimeHostTuiContextInput {
   readonly rootPath: string;
   readonly cwd: string;
   readonly resumeSessionId?: string;
+  readonly hostProfileId?: string;
+  readonly projectId?: string;
 }
 
 export async function createRuntimeHostTuiContext(
@@ -51,10 +57,12 @@ export async function createRuntimeHostTuiContext(
   const connected = await connectRuntimeHostCli({
     rootPath: input.rootPath,
     surface: 'tui',
+    ...(input.hostProfileId ? { profileId: input.hostProfileId } : {}),
   });
   const connection = connected.connection;
   try {
     const catalog = connected.catalog;
+    const workspace = await resolveRuntimeHostTuiWorkspace(connection, connected.profile, input);
     const target = input.resumeSessionId
       ? await resolveResumeTarget(connection, catalog, input.resumeSessionId)
       : resolveTarget(catalog);
@@ -65,6 +73,7 @@ export async function createRuntimeHostTuiContext(
       llmConnectionSlug: target.connection.slug,
       model: target.model,
       permissionMode: 'ask',
+      ...(workspace ? { workspace } : {}),
     };
     const driver = createRuntimeHostMakaSessionDriver(driverInput);
     return {
@@ -80,9 +89,16 @@ export async function createRuntimeHostTuiContext(
       modelChoices,
       turnActivity: createHostOwnedTurnActivity(),
       listSkills: (cwd) =>
-        listStablePresentedSkills(connection, cwd, driver.getPermissionMode?.() ?? 'ask'),
+        listStablePresentedSkills(
+          connection,
+          driver.getSessionId(),
+          workspace ??
+            (connected.profile.kind === 'local' ? { kind: 'host_path', path: cwd } : undefined),
+          driver.getPermissionMode?.() ?? 'ask',
+        ),
       recap: createRuntimeHostRecapGenerator(connection),
       onboarding: createRuntimeHostOnboardingSurface(connection),
+      profile: connected.profile,
       close: () => connected.close(),
     };
   } catch (error) {
@@ -112,17 +128,56 @@ function createRuntimeHostRecapGenerator(connection: RuntimeHostConnection): Ses
 
 async function listStablePresentedSkills(
   connection: RuntimeHostConnection,
-  projectRoot: string,
+  sessionId: string | null,
+  fallbackWorkspace: WorkspaceTarget | undefined,
   permissionMode: PermissionMode,
 ): Promise<InvocableSkillEntry[]> {
+  const workspace = sessionId
+    ? await readSessionWorkspace(connection, sessionId, fallbackWorkspace)
+    : fallbackWorkspace;
+  if (!workspace) throw new Error('The remote Session workspace is unavailable');
   return [
     ...(await readRuntimeHostInvocableSkills(connection, {
       kind: 'new_session',
-      context: { workspace: { kind: 'host_path', path: projectRoot } },
+      context: { workspace },
       collaborationMode: 'agent',
       permissionMode,
     })),
   ];
+}
+
+export async function resolveRuntimeHostTuiWorkspace(
+  connection: RuntimeHostConnection,
+  profile: RuntimeHostProfile,
+  input: Pick<CreateRuntimeHostTuiContextInput, 'resumeSessionId' | 'projectId'>,
+): Promise<WorkspaceTarget | undefined> {
+  if (input.resumeSessionId) return undefined;
+  if (profile.kind === 'local') {
+    return input.projectId ? { kind: 'project', projectId: input.projectId } : undefined;
+  }
+  if (!input.projectId) {
+    throw new Error(`Runtime Host profile ${profile.id} requires --project for a new Session`);
+  }
+  const project = (await readRuntimeHostProjects(connection)).find(
+    (candidate) => candidate.id === input.projectId,
+  );
+  if (!project || project.archivedAt !== null || !project.available) {
+    throw new Error(`Runtime Host Project is unavailable: ${input.projectId}`);
+  }
+  return { kind: 'project', projectId: project.id };
+}
+
+async function readSessionWorkspace(
+  connection: RuntimeHostConnection,
+  sessionId: string,
+  fallback: WorkspaceTarget | undefined,
+): Promise<WorkspaceTarget> {
+  const result = await connection.request('session.catalog.query', { kind: 'get', sessionId });
+  if (result.kind === 'session' && result.session && !('kind' in result.session)) {
+    return result.session.workspace.target;
+  }
+  if (fallback) return fallback;
+  throw new Error(`Runtime Host Session is unavailable: ${sessionId}`);
 }
 
 function resolveTarget(catalog: ConnectionCatalogSnapshot): {

@@ -34,4 +34,21 @@ describe('maka run argument parsing', () => {
     });
     assert.equal(parseMakaRunArgs(['next', '--resume', 'session-1', '--continue']).kind, 'error');
   });
+
+  test('accepts a remote Host Project and rejects client cwd semantics', () => {
+    assert.deepEqual(parseMakaRunArgs(['next', '--host', 'office', '--project', 'project-1']), {
+      kind: 'run',
+      options: {
+        prompt: 'next',
+        stdinPrompt: false,
+        hostProfileId: 'office',
+        projectId: 'project-1',
+      },
+    });
+    assert.equal(parseMakaRunArgs(['next', '--host', 'office', '--continue']).kind, 'error');
+    assert.equal(
+      parseMakaRunArgs(['next', '--host', 'office', '--cwd', '/client/path']).kind,
+      'error',
+    );
+  });
 });

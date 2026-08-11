@@ -1060,7 +1060,7 @@ export async function connectRemoteRuntimeHost(
   const normalized = normalizeConnectRuntimeHostInput(input);
   const compositionId = requireHostCompositionId(input.compositionId);
   const expectedRootId = requireHostRootId(input.expectedRootId);
-  const url = requireRemoteWebSocketUrl(input.url);
+  const url = normalizeRemoteRuntimeHostUrl(input.url);
   let transport: WebSocketTransport;
   try {
     transport = await openWebSocketTransport(url, input.credential, normalized.connectTimeoutMs);
@@ -1403,7 +1403,7 @@ class RuntimeHostEpochMismatchError extends Error {}
 class RuntimeHostRootMismatchError extends Error {}
 class RuntimeHostCompositionMismatchError extends Error {}
 
-function requireRemoteWebSocketUrl(value: string): URL {
+export function normalizeRemoteRuntimeHostUrl(value: string): URL {
   const url = new URL(value);
   if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
     throw new Error('Remote Runtime Host URL must use ws or wss');

@@ -245,6 +245,14 @@ export function useAppShellBootstrapSubscriptions(options: {
   const handleConnectionSubscriptionEvent = useEffectEvent((event: ConnectionEvent) => {
     options.handleConnectionEvent(event);
   });
+  const handleRuntimeHostChange = useEffectEvent(() => {
+    const previousSessionId = options.activeIdRef.current;
+    options.setActiveId(undefined);
+    options.setMessages([]);
+    if (previousSessionId) options.clearSessionRendererState(previousSessionId);
+    void options.refreshProjects();
+    void options.refreshSessions();
+  });
   // PR-2088: the macOS application menu routes New Task / Settings / Keyboard
   // Shortcuts here through one channel. The renderer already owns these
   // implementations; the menu is only a second entry surface. The keydown
@@ -369,6 +377,8 @@ export function useAppShellBootstrapSubscriptions(options: {
     // Non-critical: defer to next frame so the first paint isn't blocked.
     requestAnimationFrame(runDeferredStartupRefreshes);
     const unsubscribeConnections = window.maka.connections.subscribeEvents(handleConnectionSubscriptionEvent);
+    const unsubscribeRuntimeHostChanges =
+      window.maka.runtimeHostProfiles.subscribeChanges(handleRuntimeHostChange);
     const unsubscribeSettingsExternal = window.maka.settings.subscribeExternalChanged(() => {
       void options.refreshShellSettings();
       void options.refreshConnections();
@@ -381,6 +391,7 @@ export function useAppShellBootstrapSubscriptions(options: {
     return () => {
       cleanupPendingRefs();
       unsubscribeConnections();
+      unsubscribeRuntimeHostChanges();
       unsubscribeSettingsExternal();
       unsubscribeSessionChanges();
       unsubscribeScheduledTaskChanges();

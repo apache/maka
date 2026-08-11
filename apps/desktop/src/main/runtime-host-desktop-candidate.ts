@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
@@ -5,10 +6,12 @@ import type { SessionChangedEvent, SessionChangedReason } from '@maka/core/sessi
 import type { BotRegistry } from '@maka/runtime/bots';
 import {
   connectOrSpawnRuntimeHost,
+  connectRemoteRuntimeHostProfile,
   waitForRuntimeHostReady,
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostConnection,
+  type RemoteRuntimeHostProfile,
 } from "@maka/runtime-host/client";
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -57,9 +60,12 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly resizeImage: (bytes: Uint8Array) => Promise<Uint8Array>;
   readonly nativeCapabilities: DesktopNativeCapabilityProviderInput;
   readonly botRegistry: BotRegistry;
-  readonly resolveBotCreateTarget: () => Promise<{ readonly workspace: WorkspaceTarget }>;
+  readonly resolveBotCreateTarget: (
+    target: DesktopRuntimeHostTargetPolicy,
+  ) => Promise<{ readonly workspace: WorkspaceTarget }>;
   readonly resolveSessionCreateProject: (
     input: Pick<CreateSessionRequestInput, "cwd" | "projectId">,
+    target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<WorkspaceTarget>;
   readonly emitSessionsChanged: (
     reason: SessionChangedReason,
@@ -88,7 +94,12 @@ export interface DesktopRuntimeHostCandidateDeps {
     client: DesktopRuntimeHostClient,
     ipcMain: ReconnectableReadIpcMain,
     controls: DesktopRuntimeHostCandidateControls,
+    target: DesktopRuntimeHostTargetPolicy,
   ) => void | (() => void | Promise<void>);
+}
+
+export interface DesktopRuntimeHostTargetPolicy {
+  readonly kind: "local" | "remote";
 }
 
 export interface DesktopRuntimeHostCandidateControls {
@@ -105,6 +116,10 @@ export interface DesktopRuntimeHostCandidateStartInput extends DesktopRuntimeHos
   readonly generation?: string;
   readonly takeoverHostEpoch?: string;
   readonly signal?: AbortSignal;
+  readonly remote?: {
+    readonly profile: RemoteRuntimeHostProfile;
+    readonly credential: string;
+  };
 }
 
 export type DesktopRuntimeHostCandidateStartResult =
@@ -118,7 +133,7 @@ export interface DesktopRuntimeHostCandidate {
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
-  readonly hostLifecycleMode: HostRegistration["lifecycleMode"];
+  readonly hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote";
   stopSession(sessionId: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -127,7 +142,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
-  readonly hostLifecycleMode: HostRegistration["lifecycleMode"];
+  readonly hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote";
   readonly #client: DesktopRuntimeHostClient;
   readonly #observer: RuntimeHostSessionObserver;
   readonly #ipc: ScopedIpcMain;
@@ -152,7 +167,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     detachSessionObservations: () => void;
     closeSessionObservations: () => Promise<void>;
     connectionClosed: Promise<void>;
-    hostLifecycleMode: HostRegistration["lifecycleMode"];
+    hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote";
     hasRegisteredCapabilities: () => boolean;
     stopSession: (sessionId: string) => Promise<void>;
   }) {
@@ -212,6 +227,13 @@ export async function startDesktopRuntimeHostCandidate(
   input: DesktopRuntimeHostCandidateStartInput,
   observationRegistry?: RuntimeHostSessionObservationRegistry,
 ): Promise<DesktopRuntimeHostCandidateStartResult> {
+  if (input.remote) {
+    return startRemoteDesktopRuntimeHostCandidate(
+      input,
+      input.remote,
+      observationRegistry,
+    );
+  }
   const connection = await connectOrSpawnRuntimeHost(connectInput(input));
   if (connection.kind !== "connected") return connection;
   try {
@@ -227,6 +249,7 @@ export async function startDesktopRuntimeHostCandidate(
         input,
         observationRegistry,
         connection.registration.lifecycleMode,
+        { kind: "local" },
       ),
     };
   } catch (error) {
@@ -235,11 +258,48 @@ export async function startDesktopRuntimeHostCandidate(
   }
 }
 
+async function startRemoteDesktopRuntimeHostCandidate(
+  input: DesktopRuntimeHostCandidateStartInput,
+  remote: NonNullable<DesktopRuntimeHostCandidateStartInput["remote"]>,
+  observationRegistry?: RuntimeHostSessionObservationRegistry,
+): Promise<DesktopRuntimeHostCandidateStartResult> {
+  const connection = await connectRemoteRuntimeHostProfile({
+    profile: remote.profile,
+    credential: remote.credential,
+    surface: "desktop",
+    clientInstanceId: input.clientInstanceId ?? randomUUID(),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+    ...(input.connectTimeoutMs === undefined
+      ? {}
+      : { connectTimeoutMs: input.connectTimeoutMs }),
+    ...(input.handshakeTimeoutMs === undefined
+      ? {}
+      : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+    readyTimeoutMs: input.electionDeadlineMs ?? 45_000,
+  });
+  try {
+    return {
+      kind: "ready",
+      candidate: await createDesktopRuntimeHostCandidate(
+        connection,
+        input,
+        observationRegistry,
+        "remote",
+        { kind: "remote" },
+      ),
+    };
+  } catch (error) {
+    await connection.close().catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function createDesktopRuntimeHostCandidate(
   connection: RuntimeHostConnection,
   deps: DesktopRuntimeHostCandidateDeps,
   observationRegistry?: RuntimeHostSessionObservationRegistry,
-  hostLifecycleMode?: HostRegistration["lifecycleMode"],
+  hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote" = "ephemeral",
+  target: DesktopRuntimeHostTargetPolicy = { kind: "local" },
 ): Promise<DesktopRuntimeHostCandidate> {
   const client = new DesktopRuntimeHostClient(connection);
   const ipc = new ScopedIpcMain(deps.ipcMain);
@@ -366,6 +426,8 @@ export async function createDesktopRuntimeHostCandidate(
       provider = createDesktopNativeCapabilityProvider(
         deps.nativeCapabilities,
         {
+          hostPathAccess: target.kind === "local" ? "cwd" : "none",
+          ...(target.kind === "remote" ? { clientCwd: deps.workspaceRoot } : {}),
           releaseResourcesOnClose: false,
           onSessionUsed: (sessionId) => nativeSessionIds.add(sessionId),
           onComputerUseTurnUsed: watchComputerUseTurn,
@@ -415,9 +477,12 @@ export async function createDesktopRuntimeHostCandidate(
         });
       },
     });
-    const registeredClientIpc = deps.registerClientIpc?.(client, ipc, {
-      refreshClientCapabilities,
-    });
+    const registeredClientIpc = deps.registerClientIpc?.(
+      client,
+      ipc,
+      { refreshClientCapabilities },
+      target,
+    );
     disposeClientIpc =
       typeof registeredClientIpc === "function"
         ? registeredClientIpc
@@ -425,7 +490,7 @@ export async function createDesktopRuntimeHostCandidate(
     registerRuntimeHostSessionCatalogIpc(
       {
         client,
-        resolveCreateProject: deps.resolveSessionCreateProject,
+        resolveCreateProject: (input) => deps.resolveSessionCreateProject(input, target),
         emitSessionsChanged: deps.emitSessionsChanged,
         releaseSessionResources: releaseNativeSession,
         sessionCopyCleanup,
@@ -463,7 +528,7 @@ export async function createDesktopRuntimeHostCandidate(
       botRegistry: deps.botRegistry,
       sessions: createRuntimeHostBotSessionAdapter({
         client,
-        resolveCreateTarget: deps.resolveBotCreateTarget,
+        resolveCreateTarget: () => deps.resolveBotCreateTarget(target),
         emitSessionsChanged: deps.emitSessionsChanged,
         ...(deps.newId ? { newId: deps.newId } : {}),
       }),

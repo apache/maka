@@ -18,6 +18,9 @@ import { RuntimeHostSessionObservationRegistry } from './runtime-host-session-ob
 export interface RuntimeHostDesktopOwner {
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
   stopSession(sessionId: string): Promise<void>;
+  switchTarget(
+    remote: DesktopRuntimeHostCandidateStartInput['remote'],
+  ): Promise<void>;
   prepareForUpdate(
     allowInterruptActiveTasks: boolean,
   ): Promise<RuntimeHostUpdatePreparation>;
@@ -57,6 +60,12 @@ export interface RuntimeHostUpgradePrompts {
   waitOnly(conflict: RuntimeHostWaitConflict): Promise<RuntimeHostWaitDecision>;
 }
 
+interface DesktopRuntimeHostTargetGeneration {
+  readonly input: DesktopRuntimeHostCandidateStartInput;
+  readonly observations: RuntimeHostSessionObservationRegistry;
+  lifecycle?: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>;
+}
+
 export async function startRuntimeHostDesktopOwner(
   input: DesktopRuntimeHostCandidateStartInput,
   options: {
@@ -89,11 +98,12 @@ export async function startRuntimeHostDesktopOwner(
 
 class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
   readonly #ipcMain: RuntimeHostReconnectingIpcMain;
-  readonly #sessionObservations: RuntimeHostSessionObservationRegistry;
-  #lifecycle: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate> | undefined;
+  #target: DesktopRuntimeHostTargetGeneration;
+  #switchTail: Promise<void> = Promise.resolve();
+  #closed = false;
 
   constructor(
-    private readonly input: DesktopRuntimeHostCandidateStartInput,
+    input: DesktopRuntimeHostCandidateStartInput,
     private readonly startCandidate: (
       input: DesktopRuntimeHostCandidateStartInput,
       observationRegistry: RuntimeHostSessionObservationRegistry,
@@ -107,43 +117,51 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     ) => Promise<void>,
     private readonly reconnectBackoff: RuntimeHostReconnectBackoff | undefined,
   ) {
-    this.#ipcMain = new RuntimeHostReconnectingIpcMain(this.input.ipcMain);
-    this.#sessionObservations = new RuntimeHostSessionObservationRegistry(
-      (error) => this.input.onError?.(error),
-    );
+    this.#ipcMain = new RuntimeHostReconnectingIpcMain(input.ipcMain);
+    this.#target = this.#createTarget(input);
   }
 
   async start(): Promise<void> {
     try {
-      this.#lifecycle = await startRuntimeHostReconnectLifecycle({
-        connect: (signal) => this.connect(signal),
-        onFatalError: this.onFatalError,
-        ...(this.reconnectBackoff ? { backoff: this.reconnectBackoff } : {}),
-      });
+      this.#target.lifecycle = await this.#startLifecycle(this.#target, true);
     } catch (error) {
-      await this.#sessionObservations.close();
+      await this.#target.observations.close();
       this.#ipcMain.close();
       throw error;
     }
   }
 
   async handleBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
+    await this.#switchTail;
     const candidate = await this.#waitForReadyCandidate();
     await candidate.botIncoming.handleBotIncomingMessage(message);
   }
 
   async stopSession(sessionId: string): Promise<void> {
+    await this.#switchTail;
     const candidate = await this.#waitForReadyCandidate();
     await candidate.stopSession(sessionId);
+  }
+
+  switchTarget(
+    remote: DesktopRuntimeHostCandidateStartInput['remote'],
+  ): Promise<void> {
+    const operation = this.#switchTail.then(() => this.#switchTarget(remote));
+    this.#switchTail = operation.catch(() => undefined);
+    return operation;
   }
 
   async prepareForUpdate(
     allowInterruptActiveTasks: boolean,
   ): Promise<RuntimeHostUpdatePreparation> {
+    await this.#switchTail;
     const lifecycle = this.#requireLifecycle();
     const quiescence = lifecycle.quiesce();
     try {
-      if (quiescence.current.hostLifecycleMode === 'service') {
+      if (
+        quiescence.current.hostLifecycleMode === 'service' ||
+        quiescence.current.hostLifecycleMode === 'remote'
+      ) {
         return { kind: 'prepared', rollback: quiescence.resume };
       }
       const result = await quiescence.current.client.prepareHostUpgrade(
@@ -162,28 +180,83 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
   }
 
   async close(): Promise<void> {
+    this.#closed = true;
+    await this.#switchTail;
     try {
-      await this.#lifecycle?.close();
+      await this.#target.lifecycle?.close();
     } finally {
       try {
-        await this.#sessionObservations.close();
+        await this.#target.observations.close();
       } finally {
         this.#ipcMain.close();
       }
     }
   }
 
-  private async connect(signal: AbortSignal): Promise<DesktopRuntimeHostCandidate> {
+  async #switchTarget(
+    remote: DesktopRuntimeHostCandidateStartInput['remote'],
+  ): Promise<void> {
+    if (this.#closed) throw new Error('Desktop Runtime Host owner is closed');
+    if (sameRuntimeHostTarget(this.#target.input.remote, remote)) return;
+
+    const previousTarget = this.#target;
+    const previousLifecycle = this.#requireLifecycle();
+    await previousLifecycle.close();
+    if (this.#closed) throw new Error('Desktop Runtime Host owner is closed');
+
+    const nextTarget = this.#createTarget(withRuntimeHostTarget(previousTarget.input, remote));
+    try {
+      nextTarget.lifecycle = await this.#startLifecycle(nextTarget, false);
+    } catch (switchError) {
+      await nextTarget.observations.close();
+      try {
+        previousTarget.lifecycle = await this.#startLifecycle(previousTarget, false);
+      } catch (rollbackError) {
+        const failure = new AggregateError(
+          [switchError, rollbackError],
+          'Runtime Host switch failed and the previous Host could not be restored',
+        );
+        this.onFatalError(failure);
+        throw failure;
+      }
+      throw switchError;
+    }
+    this.#target = nextTarget;
+    await previousTarget.observations.close();
+  }
+
+  async #startLifecycle(
+    target: DesktopRuntimeHostTargetGeneration,
+    reportInitialFailure: boolean,
+  ): Promise<RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>> {
+    let starting = true;
+    try {
+      return await startRuntimeHostReconnectLifecycle({
+        connect: (signal) => this.connect(target, signal),
+        onFatalError: (error) => {
+          if (reportInitialFailure || !starting) this.onFatalError(error);
+        },
+        ...(this.reconnectBackoff ? { backoff: this.reconnectBackoff } : {}),
+      });
+    } finally {
+      starting = false;
+    }
+  }
+
+  private async connect(
+    target: DesktopRuntimeHostTargetGeneration,
+    signal: AbortSignal,
+  ): Promise<DesktopRuntimeHostCandidate> {
     let takeoverHostEpoch: string | undefined;
     while (true) {
       const result = await this.startCandidate(
         {
-          ...this.input,
+          ...target.input,
           ipcMain: this.#ipcMain,
           signal,
           ...(takeoverHostEpoch === undefined ? {} : { takeoverHostEpoch }),
         },
-        this.#sessionObservations,
+        target.observations,
       );
       if (result.kind === 'ready') return result.candidate;
       if (result.kind === 'upgrade_required' && result.restartable) {
@@ -232,8 +305,8 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
   }
 
   #requireLifecycle(): RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate> {
-    if (!this.#lifecycle) throw new Error('Desktop Runtime Host owner has not started');
-    return this.#lifecycle;
+    if (!this.#target.lifecycle) throw new Error('Desktop Runtime Host owner has not started');
+    return this.#target.lifecycle;
   }
 
   async #waitForReadyCandidate(): Promise<DesktopRuntimeHostCandidate> {
@@ -244,6 +317,36 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     }
     return candidate;
   }
+
+  #createTarget(
+    input: DesktopRuntimeHostCandidateStartInput,
+  ): DesktopRuntimeHostTargetGeneration {
+    return {
+      input,
+      observations: new RuntimeHostSessionObservationRegistry((error) => input.onError?.(error)),
+    };
+  }
+}
+
+function sameRuntimeHostTarget(
+  left: DesktopRuntimeHostCandidateStartInput['remote'],
+  right: DesktopRuntimeHostCandidateStartInput['remote'],
+): boolean {
+  if (!left || !right) return left === right;
+  return (
+    left.profile.id === right.profile.id &&
+    left.profile.url === right.profile.url &&
+    left.profile.rootId === right.profile.rootId &&
+    left.credential === right.credential
+  );
+}
+
+function withRuntimeHostTarget(
+  input: DesktopRuntimeHostCandidateStartInput,
+  remote: DesktopRuntimeHostCandidateStartInput['remote'],
+): DesktopRuntimeHostCandidateStartInput {
+  const { remote: _previousRemote, ...base } = input;
+  return remote ? { ...base, remote } : base;
 }
 
 function waitForAbortableDelay(ms: number, signal: AbortSignal): Promise<void> {

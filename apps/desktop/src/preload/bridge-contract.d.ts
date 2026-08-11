@@ -111,6 +111,10 @@ import type { ShellRunPtyDataEvent, ShellRunPtySnapshot } from '@maka/runtime/sh
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from '@maka/ui';
 import type { ConfigCategory } from '@maka/storage';
 import type { OnboardingMilestone, OnboardingMilestoneId, OnboardingState } from '@maka/core/onboarding';
+import type {
+  RemoteRuntimeHostProfile,
+  RuntimeHostProfile,
+} from '@maka/runtime-host/client';
 
 export interface OnboardingSnapshot {
   state: OnboardingState;
@@ -212,6 +216,20 @@ export type AppUpdateInstallResult =
   | { ok: false; reason: 'active_tasks' }
   | { ok: false; reason: 'not_downloaded' | 'install_failed' };
 
+export interface DesktopRuntimeHostProfileSnapshot {
+  readonly profiles: readonly RuntimeHostProfile[];
+  readonly activeProfileId: string;
+}
+
+export interface DesktopRuntimeHostProfileSaveInput {
+  readonly profile: RemoteRuntimeHostProfile;
+  readonly credential?: string;
+}
+
+export interface DesktopRuntimeHostProfileChangedEvent {
+  readonly activeProfileId: string;
+}
+
 /**
  * Commands dispatched by the native application menu (see
  * main/application-menu.ts). The renderer owns the implementations.
@@ -226,7 +244,6 @@ export interface PetPackChangedEvent {
 }
 
 export interface MakaBridge {
-
   runtimeHost: {
     query<K extends RendererRuntimeHostQueryOperation>(
       operation: K,
@@ -236,6 +253,16 @@ export interface MakaBridge {
       operation: K,
       input: OperationInput<K>,
     ): Promise<OperationOutput<K>>;
+  };
+
+  runtimeHostProfiles: {
+    getSnapshot(): Promise<DesktopRuntimeHostProfileSnapshot>;
+    save(input: DesktopRuntimeHostProfileSaveInput): Promise<DesktopRuntimeHostProfileSnapshot>;
+    remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
+    select(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
+    subscribeChanges(
+      handler: (event: DesktopRuntimeHostProfileChangedEvent) => void,
+    ): () => void;
   };
 
   pets: {

@@ -30,6 +30,7 @@ import {
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
   readRuntimeHostProjectDetails,
+  readRuntimeHostProjects,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
 } from "@maka/runtime-host/client";
@@ -508,10 +509,14 @@ export class DesktopRuntimeHostClient {
     }
   }
 
-  async listProjects(): Promise<ProjectCatalogProjectDetails[]> {
+  async listProjects(
+    includeLocations = true,
+  ): Promise<(ProjectCatalogProject | ProjectCatalogProjectDetails)[]> {
     this.#assertOpen();
     try {
-      return await readRuntimeHostProjectDetails(this.connection);
+      return includeLocations
+        ? await readRuntimeHostProjectDetails(this.connection)
+        : await readRuntimeHostProjects(this.connection);
     } catch (error) {
       if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
       throw new DesktopRuntimeHostClientError(

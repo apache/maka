@@ -17,6 +17,7 @@ import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 import { projectPathDisplay } from '../project-path-display.js';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
+import { RuntimeHostProfilesSection } from './runtime-host-profiles-section.js';
 import { useKeyedActionGuard } from './use-action-guard';
 
 /**
@@ -48,6 +49,7 @@ export function ProjectsSettingsPage(props: {
   const [homePath, setHomePath] = useState<string | undefined>(undefined);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
+  const [activeHostKind, setActiveHostKind] = useState<'local' | 'remote'>();
   const reloadGeneration = useRef(0);
 
   const reload = useCallback(async () => {
@@ -98,6 +100,7 @@ export function ProjectsSettingsPage(props: {
 
   return (
     <SettingsPage as="section" aria-label={copy.section}>
+      <RuntimeHostProfilesSection onActiveProfileKind={setActiveHostKind} />
       {/* No section title: the page header already says 项目, and repeating it
           straight above the rows is the same duplicate-heading noise we
           removed from the skills page. The rule this page exists for lives in
@@ -108,7 +111,7 @@ export function ProjectsSettingsPage(props: {
             ? `${copy.sectionHelp} ${copy.defaultUnavailable}`
             : copy.sectionHelp
         }
-        action={
+        action={activeHostKind === 'local' ? (
           <Button
             variant="secondary"
             size="sm"
@@ -118,7 +121,7 @@ export function ProjectsSettingsPage(props: {
               if (result.ok) await reload();
             }}
           />
-        }
+        ) : undefined}
       >
         {listed.length === 0 ? (
           <EmptyState icon={<FolderOpen size={ICON_SIZE.empty} />} title={copy.emptyTitle} description={copy.emptyBody} />
@@ -181,22 +184,28 @@ export function ProjectsSettingsPage(props: {
                               setRenamingId(project.id);
                             },
                           },
-                          {
-                            label: copy.openFolder,
-                            // Only offered when the catalog still vouches for the
-                            // folder; a menu entry that always fails is worse
-                            // than one that is not there.
-                            isDisabled: !project.available,
-                            onClick: () =>
-                              void runRowAction(
-                                `reveal:${project.id}`,
-                                async () => {
-                                  const result = await window.maka.projects.reveal(project.id);
-                                  if (!result.ok) throw new Error(result.reason);
+                          ...(activeHostKind === 'local'
+                            ? [
+                                {
+                                  label: copy.openFolder,
+                                  // Only offered when the catalog still vouches for the
+                                  // folder; a menu entry that always fails is worse
+                                  // than one that is not there.
+                                  isDisabled: !project.available,
+                                  onClick: () =>
+                                    void runRowAction(
+                                      `reveal:${project.id}`,
+                                      async () => {
+                                        const result = await window.maka.projects.reveal(
+                                          project.id,
+                                        );
+                                        if (!result.ok) throw new Error(result.reason);
+                                      },
+                                      copy.openFolderFailed,
+                                    ),
                                 },
-                                copy.openFolderFailed,
-                              ),
-                          },
+                              ]
+                            : []),
                           {
                             label: copy.remove,
                             onClick: () =>

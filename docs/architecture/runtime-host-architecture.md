@@ -189,6 +189,16 @@ An authenticated Client may publish size-limited, versioned tool or service **of
 
 Publishing or invoking a capability does not transfer Session, Run, or execution ownership to the Client. Connection loss makes that provider unavailable; the owning Domain handles capability loss or an explicit result-unknown outcome through its normal durable contract.
 
+### Host profiles select a connection target
+
+A Host profile is Client-owned connection configuration, not Host state. The built-in `local` profile keeps the existing zero-configuration Local IPC and candidate-spawn path. A remote profile contains a display name, WebSocket endpoint, and required State Root identity; its access credential is stored separately and bound to that exact profile target. Changing the endpoint or root therefore requires a new credential.
+
+Selecting a profile chooses which Host a Client connects to. It does not move a Project or Session, change the Host Epoch, or mutate the selected Host. A remote profile uses only the authenticated WebSocket connector and never falls back to local discovery or candidate spawning. Every remote connection pins the profile's State Root identity and fails if the endpoint presents a different root.
+
+Desktop applies a new profile without restarting the application. It replaces the current Host connection through the existing reconnect owner; each target owns its own Session observations, and a failed switch restores the previous target. The persisted Desktop selection is only a preference: if its profile or credential disappears, Desktop starts safely on `local`. TUI and CLI select a profile when they start.
+
+A remote Desktop generation does not inherit Local Host-path authority. It reads Project summaries, submits Project IDs, and keeps Client-local capabilities from receiving remote Host paths. Local filesystem actions such as directory picking, Git review, workspace search, and opening Skill files remain available only for `local`.
+
 ### Runtime Host resolves workspaces
 
 Clients identify a workspace with exactly one of two target forms:
@@ -203,7 +213,7 @@ type WorkspaceTarget =
 
 Project summaries do not expose paths. Only a connection allowed to read Host paths may read or change project locations, reveal a path on the Host, or submit `host_path`.
 
-Clients do not combine a path with a Project ID or resolve a Host path themselves. Desktop remembers the selected Project locally for each State Root; selecting it does not mutate global Host state.
+Clients do not combine a path with a Project ID or resolve a Host path themselves. Desktop remembers the selected Project locally for each State Root; selecting it does not mutate global Host state. A remote Client selects an existing Project from the selected Host and never opens a Client-local directory picker as though it named a Host directory.
 
 ## Lifecycle
 

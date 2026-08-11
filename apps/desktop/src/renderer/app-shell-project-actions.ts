@@ -113,13 +113,21 @@ export function createAppShellProjectActions(deps: {
     path: string,
     notify: boolean,
   ): Promise<boolean> {
-    const info = await window.maka.app.resolveProjectGitInfo(path);
-    if (!info.ok) throw new Error(copy.selectedPathUnreadable);
-    setAppInfo({
-      projectId: project.id,
-      projectPath: info.projectPath,
-      projectGit: info.projectGit,
-    });
+    if (project.preferredPath) {
+      const info = await window.maka.app.resolveProjectGitInfo(path);
+      if (!info.ok) throw new Error(copy.selectedPathUnreadable);
+      setAppInfo({
+        projectId: project.id,
+        projectPath: info.projectPath,
+        projectGit: info.projectGit,
+      });
+    } else {
+      setAppInfo({
+        projectId: project.id,
+        projectPath: '',
+        projectGit: { isGitRepo: false },
+      });
+    }
     setSelectedProjectId(project.id);
     await refreshProjects();
     if (notify) {

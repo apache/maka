@@ -45,6 +45,7 @@ export function createProjectManagementService(deps: {
     currentSelection(): Promise<CurrentProjectSelection>;
     setSelection(projectId: string | null, projectPath: string): void;
   };
+  allowLocalDirectoryActions?(): boolean;
 }): ProjectManagementService {
   async function current(): Promise<CurrentProjectSelection> {
     const selection = await deps.selection.currentSelection();
@@ -64,8 +65,9 @@ export function createProjectManagementService(deps: {
       }
       return { projectId: undefined, path: selection.path };
     }
-    deps.selection.setSelection(requested.id, requested.preferredPath);
-    return { projectId: requested.id, path: requested.preferredPath };
+    const path = requested.preferredPath ?? selection.path;
+    deps.selection.setSelection(requested.id, path);
+    return { projectId: requested.id, path };
   }
 
   return {
@@ -73,6 +75,7 @@ export function createProjectManagementService(deps: {
     list: () => deps.catalog.list(),
 
     async add() {
+      requireLocalDirectoryActions(deps);
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
       const project = await deps.catalog.register(path);
@@ -93,11 +96,13 @@ export function createProjectManagementService(deps: {
       if (!project) {
         return { project: null, path: selection.path };
       }
-      deps.selection.setSelection(project.id, project.preferredPath);
-      return { project, path: project.preferredPath };
+      const path = project.preferredPath ?? selection.path;
+      deps.selection.setSelection(project.id, path);
+      return { project, path };
     },
 
     async relink(projectId) {
+      requireLocalDirectoryActions(deps);
       const id = requireProjectId(projectId);
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
@@ -112,6 +117,7 @@ export function createProjectManagementService(deps: {
     },
 
     async pathFor(projectId) {
+      if (deps.allowLocalDirectoryActions?.() === false) return null;
       const id = requireProjectId(projectId);
       const project = selectableProject(await deps.catalog.list(), id);
       return project?.preferredPath ?? null;
@@ -135,6 +141,14 @@ export function createProjectManagementService(deps: {
   };
 }
 
+function requireLocalDirectoryActions(
+  deps: { readonly allowLocalDirectoryActions?: () => boolean },
+): void {
+  if (deps.allowLocalDirectoryActions?.() === false) {
+    throw new Error('Remote Runtime Host projects must be registered on the Host');
+  }
+}
+
 function requireProjectId(value: unknown): string {
   if (typeof value !== 'string' || !value) throw new TypeError('Invalid project id.');
   return value;
@@ -143,23 +157,17 @@ function requireProjectId(value: unknown): string {
 function selectableProject(
   projects: readonly ProjectRecord[],
   id: string,
-): (ProjectRecord & { readonly preferredPath: string }) | undefined {
+): ProjectRecord | undefined {
   const project = projects.find(
     (candidate) => candidate.id === id || candidate.aliases?.includes(id),
   );
-  return isSelectableProject(project) ? project : undefined;
+  return project?.available && project.archivedAt === undefined ? project : undefined;
 }
 
 function requireSelectableProject(
   project: ProjectRecord,
 ): ProjectRecord & { readonly preferredPath: string } {
   const selected = selectableProject([project], project.id);
-  if (!selected) throw new Error(`Project is unavailable: ${project.id}`);
-  return selected;
-}
-
-function isSelectableProject(
-  project: ProjectRecord | undefined,
-): project is ProjectRecord & { readonly preferredPath: string } {
-  return Boolean(project?.available && project.archivedAt === undefined && project.preferredPath);
+  if (!selected?.preferredPath) throw new Error(`Project is unavailable: ${project.id}`);
+  return selected as ProjectRecord & { readonly preferredPath: string };
 }

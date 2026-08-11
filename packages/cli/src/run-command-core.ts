@@ -25,6 +25,8 @@ export interface MakaRunOptions {
   continueLatest?: boolean;
   graph?: true;
   thinkingDefaultExplicit?: boolean;
+  hostProfileId?: string;
+  projectId?: string;
 }
 
 export type ParseMakaRunArgsResult =
@@ -73,11 +75,13 @@ export interface MakaRunContextInput {
   enableAgentGraph?: boolean;
   sessionCwdOverride?: { sessionId: string; cwd: string };
   runOutcomeObserver?: (outcome: MakaRunOutcome) => void | Promise<void>;
+  hostProfileId?: string;
+  projectId?: string;
 }
 
 export interface MakaRunDeps {
   createContext(input: MakaRunContextInput): Promise<MakaRunContext>;
-  listSessions(workspaceRoot: string): Promise<SessionSummary[]>;
+  listSessions(workspaceRoot: string, hostProfileId?: string): Promise<SessionSummary[]>;
   workspaceRoot(): string;
   processCwd(): string;
   stdinIsTTY(): boolean;
@@ -101,6 +105,8 @@ const VALUE_FLAGS = new Set([
   'timeout',
   'max-steps',
   'resume',
+  'host',
+  'project',
 ]);
 
 const REPEATABLE_VALUE_FLAGS = new Set<string>();
@@ -156,6 +162,15 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
   if (resumeId !== undefined && continueLatest) {
     return { kind: 'error', message: '--resume and --continue cannot be used together' };
   }
+  if (flags.has('project') && (resumeId !== undefined || continueLatest)) {
+    return { kind: 'error', message: '--project cannot be used with --resume or --continue' };
+  }
+  if (flags.get('host') && flags.get('host') !== 'local' && continueLatest) {
+    return { kind: 'error', message: '--continue is unavailable for a remote Runtime Host' };
+  }
+  if (flags.get('host') && flags.get('host') !== 'local' && flags.has('cwd')) {
+    return { kind: 'error', message: '--cwd cannot be used with a remote Runtime Host' };
+  }
   const timeoutSeconds = timeout === undefined ? undefined : Number(timeout);
   if (timeoutSeconds !== undefined && (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0)) {
     return { kind: 'error', message: '--timeout must be a positive number of seconds' };
@@ -183,6 +198,8 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
       ...(continueLatest ? { continueLatest: true } : {}),
       ...(graph ? { graph: true as const } : {}),
       ...(thinking === 'default' ? { thinkingDefaultExplicit: true } : {}),
+      ...(flags.get('host') !== undefined ? { hostProfileId: flags.get('host') } : {}),
+      ...(flags.get('project') !== undefined ? { projectId: flags.get('project') } : {}),
     },
   };
 }
@@ -210,7 +227,7 @@ export async function runMakaTextCliCore(
     prompt = await resolveRunPrompt(parsed.options, deps);
     const sessions =
       parsed.options.resumeId !== undefined || parsed.options.continueLatest === true
-        ? await deps.listSessions(workspaceRoot)
+        ? await deps.listSessions(workspaceRoot, parsed.options.hostProfileId)
         : [];
     selection = await selectMakaRunSession(
       {
@@ -229,7 +246,12 @@ export async function runMakaTextCliCore(
           ? { explicitThinking: parsed.options.thinking }
           : {}),
       },
-      { canonicalizeDirectory: canonicalDirectory },
+      {
+        canonicalizeDirectory: canonicalDirectory,
+        ...(parsed.options.hostProfileId && parsed.options.hostProfileId !== 'local'
+          ? { canonicalizeStoredDirectory: async (path: string) => path }
+          : {}),
+      },
     );
   } catch (error) {
     deps.writeStderr(`maka run: ${errorMessage(error)}\n`);
@@ -264,6 +286,8 @@ export async function runMakaTextCliCore(
         : {}),
       ...(parsed.options.maxSteps !== undefined ? { maxSteps: parsed.options.maxSteps } : {}),
       ...(parsed.options.graph ? { enableAgentGraph: true } : {}),
+      ...(parsed.options.hostProfileId ? { hostProfileId: parsed.options.hostProfileId } : {}),
+      ...(parsed.options.projectId ? { projectId: parsed.options.projectId } : {}),
       runOutcomeObserver: (result) => {
         if (result.sandboxBoundary === 'recovered') {
           boundaryFailureInvocationIds.delete(result.outcomeId);
@@ -443,6 +467,8 @@ function makaRunHelpText(): string {
     'Options:',
     '  --cwd <path>              Working directory (default: current directory)',
     '  --connection <slug>       Model connection to use',
+    '  --host <profile-id>       Connect through a saved Runtime Host profile',
+    '  --project <project-id>    Select an existing Project on a remote Host',
     '  --model <id>              Model to use',
     '  --thinking <level>        off|minimal|low|medium|high|xhigh|max|default',
     '  --timeout <seconds>       Invocation timeout',

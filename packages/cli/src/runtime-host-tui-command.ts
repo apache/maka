@@ -15,6 +15,8 @@ export interface RunRuntimeHostTuiInput {
   readonly cwd: string;
   readonly resumeSessionId?: string;
   readonly resumeCwd?: string;
+  readonly hostProfileId?: string;
+  readonly projectId?: string;
   readonly onProcessExit: (exitCode: number, error?: Error) => void;
 }
 
@@ -24,6 +26,8 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
     rootPath: input.workspaceRoot,
     cwd: input.cwd,
     ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+    ...(input.hostProfileId ? { hostProfileId: input.hostProfileId } : {}),
+    ...(input.projectId ? { projectId: input.projectId } : {}),
   };
   let context;
   try {
@@ -31,14 +35,18 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
     if (!context) return 1;
   } catch (error) {
     if (!isMissingDefaultConnection(error) || input.resumeSessionId) throw error;
-    const configured = await runFirstRunOnboarding(input.workspaceRoot, input.cwd);
+    const configured = await runFirstRunOnboarding(
+      input.workspaceRoot,
+      input.cwd,
+      input.hostProfileId,
+    );
     if (!configured) throw error;
     context = await createRuntimeHostTuiContext(contextInput);
   }
   try {
     await runMakaPiTui({
       driver: context.driver,
-      title: 'Maka',
+      title: context.profile.kind === 'local' ? 'Maka' : `Maka — ${context.profile.name}`,
       cwd: context.cwd,
       model: context.model,
       models: context.modelChoices
@@ -62,7 +70,11 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
     });
     const sessionId = context.driver.getSessionId();
     if (sessionId)
-      process.stdout.write(`Resume this session with:\n  maka --resume ${sessionId}\n`);
+      process.stdout.write(
+        `Resume this session with:\n  maka --resume ${sessionId}${
+          context.profile.kind === 'remote' ? ` --host ${context.profile.id}` : ''
+        }\n`,
+      );
     return 0;
   } finally {
     await context.close();
@@ -102,8 +114,16 @@ function waitForHostRetry(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 2_000));
 }
 
-async function runFirstRunOnboarding(rootPath: string, cwd: string): Promise<boolean> {
-  const connected = await connectRuntimeHostCli({ rootPath, surface: 'tui' });
+async function runFirstRunOnboarding(
+  rootPath: string,
+  cwd: string,
+  hostProfileId?: string,
+): Promise<boolean> {
+  const connected = await connectRuntimeHostCli({
+    rootPath,
+    surface: 'tui',
+    ...(hostProfileId ? { profileId: hostProfileId } : {}),
+  });
   try {
     await runMakaPiTui({
       driver: createFirstRunSessionDriver(),

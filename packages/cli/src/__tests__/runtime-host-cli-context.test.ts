@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { basename } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import {
+  connectRemoteRuntimeHostProfile,
+  type RuntimeHostConnection,
+} from '@maka/runtime-host/client';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -91,6 +94,75 @@ test('non-interactive CLI reports how to retire an incompatible Runtime Host', a
       return true;
     },
   );
+});
+
+test('remote CLI profiles pin root identity and resolve credential outside the profile', async () => {
+  const rootId = 'a'.repeat(64);
+  let remoteInput: Parameters<typeof connectRemoteRuntimeHostProfile>[0] | undefined;
+  const connection = {
+    rootId,
+    hostEpoch: 'host-remote',
+    connectionId: 'connection-remote',
+    selectedProtocol: 0,
+    closed: new Promise<void>(() => {}),
+    status: async () => ({ state: 'ready' }),
+    subscribeConfigurationChanges: () => () => {},
+    subscribeProjectCatalogChanges: () => () => {},
+    subscribeSessionCatalogChanges: () => () => {},
+    subscribeScheduledTaskChanges: () => () => {},
+    close: async () => {},
+  } as unknown as RuntimeHostConnection;
+  const context = await connectRuntimeHostCli(
+    { rootPath: '/unused-local-root', surface: 'run', profileId: 'office' },
+    {
+      connectOrSpawn: async () => {
+        throw new Error('remote profile must not use local discovery');
+      },
+      connectRemoteProfile: async (input) => {
+        remoteInput = input;
+        return connection;
+      },
+      profileCatalog: {
+        read: async () => ({
+          schemaVersion: 1,
+          profiles: [
+            {
+              id: 'office',
+              name: 'Office',
+              kind: 'remote',
+              url: 'wss://runtime.example.com/runtime-host',
+              rootId,
+            },
+          ],
+        }),
+        resolve: async () => ({
+          profile: {
+            id: 'office',
+            name: 'Office',
+            kind: 'remote',
+            url: 'wss://runtime.example.com/runtime-host',
+            rootId,
+          },
+          credential: 'opaque-token',
+        }),
+        save: async () => {
+          throw new Error('unexpected write');
+        },
+        remove: async () => {
+          throw new Error('unexpected write');
+        },
+      },
+      loadClientInstanceId: async () => '11111111-1111-4111-8111-111111111111',
+      readConnectionCatalog: async () => ({ revision: 1, defaultTarget: null, connections: [] }),
+    },
+  );
+
+  assert.equal(context.profile.id, 'office');
+  assert.equal(remoteInput?.profile.rootId, rootId);
+  assert.equal(remoteInput?.credential, 'opaque-token');
+  assert.equal(remoteInput?.clientInstanceId, '11111111-1111-4111-8111-111111111111');
+  assert.equal(Object.hasOwn(context.profile, 'credential'), false);
+  await context.close();
 });
 
 function hostRegistration(overrides: Partial<{ compatibilityEpoch: number }> = {}) {

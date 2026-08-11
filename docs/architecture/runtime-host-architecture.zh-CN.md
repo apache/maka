@@ -189,6 +189,16 @@ Authenticated Client 可以发布带大小限制、带版本的 tool 或 service
 
 发布或调用 capability 不会把 Session、Run 或 execution ownership 转移给 Client。Connection loss 会使对应 provider unavailable；拥有该操作的 Domain 仍通过自己的 durable contract 处理 capability loss 或明确的 result-unknown outcome。
 
+### Host profile 选择连接目标
+
+Host profile 是 Client-owned connection configuration，不是 Host state。内置 `local` profile 保留现有的零配置 Local IPC 与 candidate spawn 路径。Remote profile 包含显示名称、WebSocket endpoint 和必填的 State Root identity；access credential 会单独保存，并绑定到这个 profile 的确切 target。因此改变 endpoint 或 root 时必须提供新 credential。
+
+选择 profile 只决定 Client 连接哪个 Host，不会移动 Project 或 Session、改变 Host Epoch，也不会修改所选 Host。Remote profile 只使用 authenticated WebSocket connector，绝不 fallback 到本地 discovery 或 candidate spawn。每次远程连接都固定 profile 中的 State Root identity；endpoint 给出不同 root 时必须失败。
+
+Desktop 会在当前进程内应用新 profile，不需要重启应用。它通过现有 reconnect owner 替换 Host 连接；每个 target 拥有自己的 Session observations，新 target 无法启动时则恢复之前的 target。持久化的 Desktop selection 只是 preference：对应 profile 或 credential 消失时，Desktop 会安全地使用 `local` 启动。TUI 与 CLI 在启动时选择 profile。
+
+Remote Desktop generation 不会继承 Local Host-path authority。它读取 Project summary、提交 Project ID，并阻止 Client-local capability 收到远端 Host path。目录选择、Git review、workspace search 和打开 Skill 文件等本地文件系统操作只在 `local` 下可用。
+
 ### Runtime Host 解析 workspace
 
 Client 必须使用下面两种 target form 中的一个来表达 workspace：
@@ -203,7 +213,7 @@ type WorkspaceTarget =
 
 Project summary 不暴露 path。只有被允许读取 Host path 的 connection 才能读取或修改 project location、在 Host 上 reveal path，或提交 `host_path`。
 
-Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 会按 State Root 在本地记住所选 Project；选择它不会修改 Host 全局状态。
+Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 会按 State Root 在本地记住所选 Project；选择它不会修改 Host 全局状态。Remote Client 从所选 Host 中选择已有 Project，不能打开 Client-local directory picker 并假装它选择了 Host directory。
 
 ## 生命周期
 

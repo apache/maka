@@ -10,6 +10,7 @@
     ".": "./dist/index.js",
     "./connection-store": "./dist/connection-store.js",
     "./credential-store": "./dist/credential-store.js",
+    "./file-update-lock": "./dist/file-update-lock.js",
     "./artifact-stores": "./dist/artifact-stores.js",
     "./daily-review-authority": "./dist/daily-review-authority.js",
     "./deep-research-authority": "./dist/deep-research-authority.js",
