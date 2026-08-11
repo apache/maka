@@ -53,6 +53,7 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): string {
       permissionMode: 'ask',
     },
     messages: [{ type: 'user', id: 'user-1', turnId: liveTurn.turnId, ts: 1, text: 'go' }],
+    scrollBehavior: 'smooth',
     liveTurn,
     onNew() {},
   } satisfies Parameters<typeof ChatView>[0]));
@@ -100,6 +101,7 @@ describe('single live-turn handoff', () => {
         { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'go' },
         { type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 2, text: finalText, modelId: 'model' },
       ],
+      scrollBehavior: 'smooth',
       liveTurn: {
         turnId: 'turn-1',
         phase: 'streamed',
@@ -129,6 +131,7 @@ describe('single live-turn handoff', () => {
         { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'go' },
         { type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 2, text, modelId: 'model' },
       ],
+      scrollBehavior: 'smooth',
       liveTurn: {
         turnId: 'turn-1',
         phase: 'streamed',

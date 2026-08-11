@@ -18,6 +18,7 @@ export interface PromptAnchorRailTurn {
 export interface PromptAnchorRailProps {
   turns: readonly PromptAnchorRailTurn[];
   scrollRef: RefObject<HTMLElement | null>;
+  scrollBehavior: ScrollBehavior;
   /** When progressive mount has not yet placed the turn in the DOM. */
   onNavigateFallback?: (turnId: string) => void;
   /** Bumped when turn DOM membership changes without `turns` changing. */
@@ -25,7 +26,7 @@ export interface PromptAnchorRailProps {
 }
 
 /** Right-edge rail: one tick per user prompt, scrolls to `[data-turn-id]`. */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, mountedTurnsRevision }: PromptAnchorRailProps): React.ReactElement | null {
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, scrollBehavior, onNavigateFallback, mountedTurnsRevision }: PromptAnchorRailProps): React.ReactElement | null {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [safeArea, setSafeArea] = useState<{ scrollport: number; dock: number } | null>(null);
@@ -132,7 +133,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   function jumpTo(turnId: string): void {
     const el = scrollRef.current?.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
     if (el && 'scrollIntoView' in el) {
-      (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      (el as HTMLElement).scrollIntoView({ behavior: scrollBehavior, block: 'start' });
     } else if (!el) {
       onNavigateFallback?.(turnId);
     }
