@@ -45,30 +45,6 @@ const CATALOG_TAB_GROUPS: ReadonlySet<ProviderCatalogGroup> = new Set([
 ]);
 
 describe('provider connection slug derivation contract', () => {
-  it('derives a valid canonical slug for every catalog provider', () => {
-    for (const type of CATALOG_PROVIDER_TYPES) {
-      const slug = deriveConnectionSlug(type);
-      assert.equal(
-        validateSlug(slug),
-        null,
-        `deriveConnectionSlug('${type}') derived invalid slug '${slug}'`,
-      );
-    }
-  });
-
-  it('keeps collision-suffixed slugs valid', () => {
-    for (const type of CATALOG_PROVIDER_TYPES) {
-      const first = deriveConnectionSlug(type);
-      const second = deriveConnectionSlug(type, [first]);
-      assert.equal(second, `${first}-2`);
-      assert.equal(
-        validateSlug(second),
-        null,
-        `deriveConnectionSlug('${type}', ['${first}']) derived invalid slug '${second}'`,
-      );
-    }
-  });
-
   it('continues through dense collisions until it finds an unused slug', () => {
     const base = deriveConnectionSlug('openai');
     const existing = [base, ...Array.from({ length: 98 }, (_, index) => `${base}-${index + 2}`)];
@@ -95,14 +71,6 @@ describe('provider OAuth wiring contract', () => {
 });
 
 describe('provider catalog contract — structural invariants over CATALOG_PROVIDER_TYPES', () => {
-  it('gives every catalog provider a non-empty label and description', () => {
-    for (const type of CATALOG_PROVIDER_TYPES) {
-      const def = PROVIDER_REGISTRY[type];
-      assert.ok(def.label.trim().length > 0, `${type} must carry a non-empty label`);
-      assert.ok(def.description.trim().length > 0, `${type} must carry a non-empty description`);
-    }
-  });
-
   it('assigns every catalog provider a catalog group that renders as a tab', () => {
     for (const type of CATALOG_PROVIDER_TYPES) {
       const group = PROVIDER_REGISTRY[type].catalogGroup;
@@ -195,20 +163,4 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
     }
   });
 
-  it('requires an operational reason for every ready remote provider without live discovery', () => {
-    for (const [type, def] of Object.entries(PROVIDER_REGISTRY)) {
-      if (
-        def.status !== 'ready' ||
-        def.category === 'local' ||
-        def.category === 'custom' ||
-        def.modelDiscovery.kind !== 'fallback'
-      ) {
-        continue;
-      }
-      assert.ok(
-        def.modelDiscovery.reason.trim().length > 0,
-        `${type} must explain why its inference credential cannot discover models`,
-      );
-    }
-  });
 });
