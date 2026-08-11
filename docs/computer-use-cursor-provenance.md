@@ -16,6 +16,21 @@ implementation choices.
 Every address and exact value below is scoped to that artifact. A later signed
 build may move functions or change defaults.
 
+## Canonical description
+
+Maka used this specific signed Codex Desktop binary both as a compatibility
+reference and as a static-analysis input. The inspection read Mach-O data
+constants, Swift type and field metadata, and disassembled control flow. Maka
+then wrote TypeScript using the binary-derived facts listed in this document
+and added the separately listed Maka behavior.
+
+This is more specific than saying only that Maka "referenced Codex Desktop":
+some inputs were external behavior observations, while other inputs were exact
+geometry, numeric values, or control-flow facts transcribed from the binary. No
+OpenAI source code or executable bytes were added to this repository or
+distribution. The binary is proprietary, and inspecting it does not provide a
+license for the retained facts or implementation.
+
 ## 1. Were the binary-recovery descriptions in #1255 and #1883 accurate?
 
 Mostly yes.

@@ -78,6 +78,10 @@ test('the cursor provenance record preserves the mixed source boundary', () => {
   assert.match(cursorSource, /additional score terms/);
   assert.match(cursorSource, /backwards-arrival/);
   assert.match(cursorDocument, /44320516c4c400fb5459b203498c78e4af318b0096464f16c4445a47f2b8b8f4/);
+  assert.match(cursorDocument, /compatibility\s+reference and as a static-analysis input/);
+  assert.match(cursorDocument, /Mach-O data\s+constants/);
+  assert.match(cursorDocument, /Swift type and field metadata/);
+  assert.match(cursorDocument, /disassembled control flow/);
   assert.match(cursorDocument, /^### Binary-derived facts still retained$/m);
   assert.match(cursorDocument, /^### Maka-authored or Maka-adjusted behavior$/m);
 });
