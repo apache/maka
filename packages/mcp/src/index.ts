@@ -690,6 +690,20 @@ export class McpClientManager {
         stderrTail: entry.status.stderrTail,
         updatedAt: this.now(),
       });
+      if (
+        signal.aborted ||
+        entry.closing ||
+        connected.isClosed() ||
+        entry.client !== connectedClient ||
+        entry.connectionGeneration !== connectionGeneration
+      ) {
+        throw safeMcpOperationError(
+          serverId,
+          'connection changed during tool discovery',
+          undefined,
+        );
+      }
+      publishMcpHeaderExclusionWarning(snapshot.warning);
       if (subscription) {
         this.observeSubscriptionClose(
           serverId,
@@ -916,7 +930,9 @@ export class McpClientManager {
     void this.refreshToolsAfterNotification(serverId, entry, client, connectionGeneration).catch(
       (failure) => {
         if (!this.isCurrentClient(serverId, entry, client, connectionGeneration)) return;
-        entry.refreshDiagnostic = errorMessage(failure);
+        const diagnostic = errorMessage(failure);
+        if (entry.refreshDiagnostic === diagnostic) return;
+        entry.refreshDiagnostic = diagnostic;
         this.publishConnectionDiagnostics(entry);
       },
     );
@@ -1043,6 +1059,18 @@ export class McpClientManager {
           const exposed = safeMcpOperationError(serverId, 'tool refresh failed', failure);
           entry.refreshDiagnostic = errorMessage(exposed);
           this.publishConnectionDiagnostics(entry);
+          if (
+            this.connections.get(serverId) !== entry ||
+            entry.client !== state.client ||
+            entry.connectionGeneration !== state.connectionGeneration ||
+            entry.status.state !== 'connected'
+          ) {
+            throw safeMcpOperationError(
+              serverId,
+              'connection changed during tool refresh',
+              failure,
+            );
+          }
           throw exposed;
         }
         if (!definitions) {
@@ -1066,6 +1094,7 @@ export class McpClientManager {
           throw this.toolRefreshFrequencyError(serverId);
         }
         if (state.pending) continue;
+        publishMcpHeaderExclusionWarning(snapshot.warning);
         entry.refreshDiagnostic = undefined;
         if (!state.initial) {
           this.replaceToolSnapshot(entry, snapshot.entries);
@@ -1356,6 +1385,15 @@ function projectConnectionDiagnostics(entry: Connection): string | undefined {
   return formatMcpDiagnosticText(diagnostics.join('\n'), MCP_ERROR_DIAGNOSTIC_CODE_POINTS);
 }
 
+function publishMcpHeaderExclusionWarning(warning: string | undefined): void {
+  if (!warning) return;
+  try {
+    console.warn(warning);
+  } catch {
+    // A diagnostic sink cannot roll back an already-published Tool snapshot.
+  }
+}
+
 function createToolSnapshot(
   serverId: string,
   definitions: readonly McpDiscoveredTool[],
@@ -1363,7 +1401,11 @@ function createToolSnapshot(
   managerId: string,
   connectionGeneration: number,
   previousEntries?: ReadonlyMap<string, ToolSnapshotEntry>,
-): { entries: Map<string, ToolSnapshotEntry>; descriptors: McpToolDescriptor[] } {
+): {
+  entries: Map<string, ToolSnapshotEntry>;
+  descriptors: McpToolDescriptor[];
+  warning?: string;
+} {
   const tools = definitions.map(({ definition }) => definition);
   const partition = enforceMcpHeaders
     ? partitionMcpHeaderToolDefinitions(tools)
@@ -1372,7 +1414,6 @@ function createToolSnapshot(
         rejected: [],
       };
   const warning = formatMcpHeaderExclusionWarning(partition.rejected);
-  if (warning) console.warn(warning);
 
   const entries = new Map<string, ToolSnapshotEntry>();
   const descriptors: McpToolDescriptor[] = [];
@@ -1417,7 +1458,7 @@ function createToolSnapshot(
     });
     descriptors.push(descriptor);
   }
-  return { entries, descriptors };
+  return { entries, descriptors, ...(warning ? { warning } : {}) };
 }
 
 function descriptorFromTool(serverId: string, tool: Tool): McpToolDescriptor {

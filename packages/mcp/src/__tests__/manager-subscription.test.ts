@@ -158,10 +158,20 @@ describe('McpClientManager modern tool-list subscriptions', () => {
     await manager.sync(modernConfig(fixture.url));
     const original = manager.toolSnapshot().tools[0];
     assert.ok(original);
+    const snapshotBeforeFailure = manager.toolSnapshot();
+    let refreshDiagnosticUpdates = 0;
+    const unsubscribe = manager.onChange((status) => {
+      if (/tool refresh failed/u.test(status.error ?? '')) refreshDiagnosticUpdates += 1;
+    });
 
     fixture.failToolLists(true);
     fixture.notifyToolsChanged();
     await waitFor(() => /tool refresh failed/u.test(manager.status('remote')?.error ?? ''));
+    await settleEventLoop();
+
+    assert.equal(refreshDiagnosticUpdates, 1);
+    assert.strictEqual(manager.toolSnapshot(), snapshotBeforeFailure);
+    unsubscribe();
 
     fixture.failToolLists(false);
     await fixture.rotateHandler();

@@ -618,6 +618,55 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.equal(manager.status('remote'), undefined);
     });
 
+    test('retries when a synchronous diagnostic listener requests another refresh', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+      const snapshotBefore = manager.toolSnapshot();
+      const listsBefore = countProtocolMethod(fixture, 'tools/list');
+      let retry: Promise<unknown> | undefined;
+      let failureDiagnostics = 0;
+      const unsubscribe = manager.onChange((status) => {
+        if (status.serverId !== 'remote' || status.state !== 'connected' || !status.error) return;
+        failureDiagnostics += 1;
+        retry ??= manager.refreshTools('remote');
+      });
+
+      fixture.failNextHttpRequest('tools/list', 'temporary list failure');
+      const first = manager.refreshTools('remote');
+      await first;
+      assert.ok(retry);
+      await retry;
+      unsubscribe();
+
+      assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 2);
+      assert.equal(failureDiagnostics, 1);
+      assert.strictEqual(manager.toolSnapshot(), snapshotBefore);
+      assert.equal(manager.status('remote')?.error, undefined);
+    });
+
+    test('does not leave a connected status after a synchronous listener retires the generation', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      const states: string[] = [];
+      let retiring: Promise<void> | undefined;
+      const unsubscribe = manager.onChange((status) => {
+        if (status.serverId !== 'remote') return;
+        states.push(status.state);
+        if (status.state === 'connected' && retiring === undefined) {
+          retiring = manager.disconnect('remote');
+        }
+      });
+
+      await manager.sync(remoteConfig(fixture.url));
+      unsubscribe();
+      await retiring;
+
+      assert.equal(manager.status('remote')?.state, 'disconnected');
+      assert.deepEqual(manager.toolSnapshot().tools, []);
+      assert.deepEqual(states, ['connecting', 'connected', 'disconnected']);
+    });
+
     test('does not let an old client refresh overwrite a replacement connection', async () => {
       const fixture = await createRemoteFixture('streamable-http');
       const manager = createManager();
@@ -1082,6 +1131,7 @@ interface RemoteFixture {
   requests: RemoteRequest[];
   setToolListMode(mode: ToolListMode): void;
   setHttpFailure(method: string, body: string): void;
+  failNextHttpRequest(method: string, body: string): void;
   holdNextToolList(): { started: Promise<void>; release(): void };
   setNotifyBeforeEveryToolListResponse(enabled: boolean): void;
   setNotifyOnEveryToolList(enabled: boolean): void;
@@ -1107,6 +1157,7 @@ async function createRemoteFixture(
   const requests: RemoteRequest[] = [];
   let toolListMode: ToolListMode = 'valid';
   let httpFailure: { method: string; body: string } | undefined;
+  let nextHttpFailure: { method: string; body: string } | undefined;
   let nextToolListGate: InternalToolListGate | undefined;
   let notifyBeforeEveryToolListResponse = false;
   let notifyOnEveryToolList = false;
@@ -1137,6 +1188,17 @@ async function createRemoteFixture(
       if (kind === 'streamable-http' && url.pathname === '/mcp' && req.method === 'POST') {
         const body = await readJsonBody(req);
         request.protocolMethods.push(...readProtocolMethods(body));
+        const oneShotFailure = nextHttpFailure;
+        if (
+          oneShotFailure &&
+          request.protocolMethods.some((method) => method === oneShotFailure.method)
+        ) {
+          nextHttpFailure = undefined;
+          res
+            .writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+            .end(oneShotFailure.body);
+          return;
+        }
         if (
           httpFailure &&
           request.protocolMethods.some((method) => method === httpFailure?.method)
@@ -1221,6 +1283,9 @@ async function createRemoteFixture(
     },
     setHttpFailure: (method, body) => {
       httpFailure = { method, body };
+    },
+    failNextHttpRequest: (method, body) => {
+      nextHttpFailure = { method, body };
     },
     holdNextToolList: () => {
       if (nextToolListGate) throw new Error('a tools/list gate is already pending');
