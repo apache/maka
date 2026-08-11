@@ -66,7 +66,6 @@ describe('shared bundled skill catalog', () => {
       'local_modified',
     );
   });
-
 });
 
 describe('shared managed skill source reader', () => {

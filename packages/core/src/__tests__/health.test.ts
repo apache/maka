@@ -342,7 +342,6 @@ describe('HealthSignal contract', () => {
     expect(unknownEnglish.detail).toBe('状态详情请见对应设置页。');
     expect(chinese.detail).toBe('打开 Daily Review 可查看本地活动聚合结果');
   });
-
 });
 
 function signal(id: string, status: HealthSignal['status']): HealthSignal {
