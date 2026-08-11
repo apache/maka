@@ -749,11 +749,7 @@
    `.maka-tool-terminal-*` family is currently unreachable:
    `previewVariants({part: 'terminal-*'})` has no call site — `TerminalPreview`
    renders `maka-tool-output-stack` / `ShellOutputBody` / `ToolCodeBlock`
-   instead — and `check-dead-css` cannot see that because the literals still
-   exist in `previewVariants`. The alternative is an exemption whose reason is
-   "nothing renders this", which is a fact about call sites recorded in a
-   stylesheet and would outlive the day someone wires the family back up.
-   Deleting the family is its own change. */
+   instead. Deleting the family is its own change. */
 .maka-tool-terminal-exit {
   font: var(--maka-text-heading-5);
  height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: var(--tracking-wide); }
