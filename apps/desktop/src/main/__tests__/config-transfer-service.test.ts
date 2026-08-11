@@ -221,6 +221,7 @@ describe('config-transfer-service', () => {
     const calls: string[] = [];
     let nextProfileId = 900;
     deps.profiles = {
+      materializePrimary: async () => { calls.push('materialize'); },
       list: async () => ({
         connectionRevision: 1,
         routingMode: 'legacy_primary',
@@ -306,6 +307,8 @@ describe('config-transfer-service', () => {
     // re-tested and re-enabled in order (primary, then secondary), then
     // balanced is restored.
     assert.deepEqual(calls, [
+      'materialize',
+      'setEnabled:primary:false',
       'create:backup',
       'credential:profile-900',
       'test:primary',
@@ -342,6 +345,7 @@ describe('config-transfer-service', () => {
     ];
     const calls: string[] = [];
     deps.profiles = {
+      materializePrimary: async () => { calls.push('materialize'); },
       list: async () => ({
         connectionRevision: 1,
         routingMode: 'legacy_primary',
@@ -395,7 +399,7 @@ describe('config-transfer-service', () => {
     // was written against the existing profile with a different id.
     assert.deepEqual(result.profiles?.labelConflicts, ['imported-v2/backup']);
     assert.deepEqual(result.profiles?.skipped, 1);
-    assert.deepEqual(calls, []);
+    assert.deepEqual(calls, ['materialize']);
     assert.deepEqual(result.credentials, { applied: 0, skipped: 1 });
   });
 
@@ -424,6 +428,7 @@ describe('config-transfer-service', () => {
     ];
     const calls: string[] = [];
     deps.profiles = {
+      materializePrimary: async () => { calls.push('materialize'); },
       list: async () => ({
         connectionRevision: 1,
         routingMode: 'legacy_primary',
@@ -481,7 +486,7 @@ describe('config-transfer-service', () => {
 
     assert.deepEqual(result.profiles?.updated, 1);
     assert.deepEqual(result.profiles?.created, 0);
-    assert.deepEqual(calls, ['update:profile-77', 'credential:profile-77', 'test:profile-77']);
+    assert.deepEqual(calls, ['materialize', 'update:profile-77', 'credential:profile-77', 'test:profile-77']);
     // The re-test failed -> the profile stays disabled and is reported.
     assert.deepEqual(result.profiles?.verificationFailed, ['imported-v2/renamed']);
     assert.deepEqual(result.profiles?.restoredEnabled, 0);
@@ -501,6 +506,7 @@ describe('config-transfer-service', () => {
     }> = [];
     const calls: string[] = [];
     deps.profiles = {
+      materializePrimary: async () => { calls.push('materialize'); },
       list: async () => ({
         connectionRevision: 1,
         routingMode: 'legacy_primary',
@@ -597,6 +603,7 @@ describe('config-transfer-service', () => {
     ];
     const calls: string[] = [];
     deps.profiles = {
+      materializePrimary: async () => { calls.push('materialize'); },
       list: async () => ({
         connectionRevision: 5,
         routingMode: 'balanced',
@@ -699,6 +706,7 @@ describe('config-transfer-service', () => {
     ];
     const calls: string[] = [];
     deps.profiles = {
+      materializePrimary: async () => { calls.push('materialize'); },
       list: async () => ({
         connectionRevision: 5,
         routingMode: 'balanced',
@@ -789,6 +797,7 @@ describe('config-transfer-service', () => {
     ];
     const calls: string[] = [];
     deps.profiles = {
+      materializePrimary: async () => { calls.push('materialize'); },
       list: async () => ({
         connectionRevision: 5,
         routingMode: 'legacy_primary',
@@ -879,6 +888,7 @@ describe('config-transfer-service', () => {
     ];
     const calls: string[] = [];
     deps.profiles = {
+      materializePrimary: async () => { calls.push('materialize'); },
       list: async () => ({
         connectionRevision: 5,
         routingMode: 'balanced',
@@ -963,6 +973,7 @@ describe('config-transfer-service', () => {
     ];
     const calls: string[] = [];
     deps.profiles = {
+      materializePrimary: async () => { calls.push('materialize'); },
       list: async () => ({
         connectionRevision: 5,
         routingMode: 'legacy_primary',
@@ -1018,6 +1029,190 @@ describe('config-transfer-service', () => {
     assert.deepEqual(result.profiles?.verificationFailed, ['deepseek-main/primary']);
   });
 
+  it('primary-only explicit bundle imports on a clean target through materialization', async () => {
+    const { deps } = makeDeps();
+    const profiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [
+      {
+        profileId: 'primary',
+        revision: 1,
+        label: 'primary',
+        enabled: true,
+        weight: 1,
+        primary: true,
+        credentialConfigured: false,
+        supportedModels: [],
+      },
+    ];
+    const calls: string[] = [];
+    deps.profiles = {
+      list: async () => ({
+        connectionRevision: 1,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [...profiles],
+      }),
+      create: async () => {
+        calls.push('create');
+      },
+      update: async () => {
+        calls.push('update');
+      },
+      setEnabled: async (_slug, input) => {
+        calls.push(`setEnabled:${input.profileId}:${input.enabled}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) target.enabled = input.enabled;
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async (_slug, input) => {
+        calls.push(`credential:${input.profileId}`);
+      },
+      test: async (_slug, input) => {
+        calls.push(`test:${input.profileId}`);
+        return { ok: true };
+      },
+      materializePrimary: async () => {
+        calls.push('materialize');
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections', 'credentials'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('brand-new-primary-only'),
+            credentialProfiles: [
+              { profileRef: 'primary', profileId: 'primary', label: 'primary', enabled: true, weight: 1, primary: true },
+            ],
+            routingMode: 'legacy_primary',
+          },
+        ],
+        credentials: [
+          { slug: 'brand-new-primary-only', profileRef: 'primary', kind: 'api_key', value: 'sk-primary' },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    // The clean target starts implicit: the primary routing is materialized
+    // through the authority operation, the primary is quiesced, the
+    // credential is written, the primary is re-tested and only then
+    // re-enabled — no secondary is needed to materialize the primary state.
+    assert.deepEqual(calls, [
+      'materialize',
+      'setEnabled:primary:false',
+      'test:primary',
+      'setEnabled:primary:true',
+    ]);
+    assert.deepEqual(result.profiles?.restoredEnabled, 1);
+    assert.deepEqual(result.profiles?.verificationFailed, []);
+    assert.deepEqual(result.credentials, { applied: 1, skipped: 0 });
+  });
+
+  it('v2 clean-target keeps the primary disabled when re-verification fails', async () => {
+    const { deps } = makeDeps();
+    const profiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [
+      {
+        profileId: 'primary',
+        revision: 1,
+        label: 'primary',
+        enabled: true,
+        weight: 1,
+        primary: true,
+        credentialConfigured: false,
+        supportedModels: [],
+      },
+    ];
+    const calls: string[] = [];
+    deps.profiles = {
+      list: async () => ({
+        connectionRevision: 1,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [...profiles],
+      }),
+      create: async () => {
+        calls.push('create');
+      },
+      update: async () => {
+        calls.push('update');
+      },
+      setEnabled: async (_slug, input) => {
+        calls.push(`setEnabled:${input.profileId}:${input.enabled}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) target.enabled = input.enabled;
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async (_slug, input) => {
+        calls.push(`credential:${input.profileId}`);
+      },
+      test: async (_slug, input) => {
+        calls.push(`test:${input.profileId}`);
+        return { ok: false };
+      },
+      materializePrimary: async () => {
+        calls.push('materialize');
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections', 'credentials'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('brand-new-primary-fail'),
+            credentialProfiles: [
+              { profileRef: 'primary', profileId: 'primary', label: 'primary', enabled: true, weight: 1, primary: true },
+            ],
+            routingMode: 'legacy_primary',
+          },
+        ],
+        credentials: [
+          { slug: 'brand-new-primary-fail', profileRef: 'primary', kind: 'api_key', value: 'sk-primary' },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    // Fail-closed on the clean target too: the primary stays disabled and is
+    // reported, never re-enabled around a failed verification.
+    assert.deepEqual(calls, [
+      'materialize',
+      'setEnabled:primary:false',
+      'test:primary',
+    ]);
+    assert.deepEqual(result.profiles?.restoredEnabled, 0);
+    assert.deepEqual(result.profiles?.verificationFailed, ['brand-new-primary-fail/primary']);
+  });
+
   it('scopes listed target ids per connection when two connections reuse a profile id', async () => {
     const { deps } = makeDeps();
     const profilesBySlug = new Map<
@@ -1063,6 +1258,7 @@ describe('config-transfer-service', () => {
       save: async (c) => c,
     };
     deps.profiles = {
+      materializePrimary: async () => { calls.push('materialize'); },
       list: async (slug) => ({
         connectionRevision: 3,
         routingMode: 'legacy_primary',

@@ -156,7 +156,7 @@ async function gatherRuntimeHostConfig(
  * declared routing mode. Secrets never ride here — they live in `credentials`
  * keyed by connectionSlug + profileRef + kind.
  */
-function v2ExportedConnections(
+export function v2ExportedConnections(
   connections: readonly ConnectionCatalogEntry[],
 ): V2ExportedConnection[] {
   return connections.map((connection) => {
@@ -167,26 +167,35 @@ function v2ExportedConnections(
     })[0];
     const routing = connection.credentialRouting;
     const profiles: ExportedProfileMeta[] | undefined = routing
-      ? [
-          {
-            profileRef: EXPORT_PRIMARY_PROFILE_REF,
-            profileId: connection.connectionId,
-            label: 'primary',
-            enabled: true,
-            weight: 1,
-            primary: true,
-          },
-          ...routing.profiles
-            .filter((profile) => profile.profileId !== connection.connectionId)
-            .map((profile, index) => ({
-              profileRef: `secondary-${index}`,
-              profileId: profile.profileId,
-              label: profile.label,
-              enabled: profile.enabled,
-              weight: profile.weight,
-              primary: false,
-            })),
-        ]
+      ? (() => {
+          // The primary is a real entry in the routing declaration: export its
+          // ACTUAL label/enabled/weight so an explicitly disabled primary
+          // round-trips and its metadata is not lost.
+          const primary =
+            routing.profiles.find(
+              (profile) => profile.profileId === connection.connectionId,
+            ) ?? { label: 'primary', enabled: true, weight: 1 };
+          return [
+            {
+              profileRef: EXPORT_PRIMARY_PROFILE_REF,
+              profileId: connection.connectionId,
+              label: primary.label,
+              enabled: primary.enabled,
+              weight: primary.weight,
+              primary: true,
+            },
+            ...routing.profiles
+              .filter((profile) => profile.profileId !== connection.connectionId)
+              .map((profile, index) => ({
+                profileRef: `secondary-${index}`,
+                profileId: profile.profileId,
+                label: profile.label,
+                enabled: profile.enabled,
+                weight: profile.weight,
+                primary: false,
+              })),
+          ];
+        })()
       : undefined;
     return {
       ...projected,
@@ -355,6 +364,15 @@ function profileTransferDeps(
         return { ok: false };
       }
       return { ok: tested.test.kind === 'verified' };
+    },
+    materializePrimary: async (slug) => {
+      const connection = await requireConnection(slug);
+      const materialized = await deps.client.materializeCredentialProfilePrimary(
+        connection.connectionId,
+      );
+      if (materialized.kind !== 'committed') {
+        throw new Error(`Unable to materialize primary Profile: ${materialized.kind}`);
+      }
     },
   };
 }

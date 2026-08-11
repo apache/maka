@@ -272,6 +272,8 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
         coordinator.completeConnectionProfileModelFetch(ticket, result, evidence),
       readCredentialProfileReadiness: (connectionId) =>
         coordinator.readCredentialProfileReadiness(connectionId),
+      materializePrimaryCredentialProfile: (connectionId) =>
+        coordinator.materializePrimaryCredentialProfile(connectionId),
     },
   };
   freezeFacade(stores);

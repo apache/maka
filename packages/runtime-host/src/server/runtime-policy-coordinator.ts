@@ -31,6 +31,8 @@ import {
   type CredentialVaultQueryInput,
   type CredentialVaultSetInput,
   type CredentialProfileCreateInput,
+  type CredentialProfileMaterializePrimaryInput,
+  type CredentialProfileMaterializePrimaryResult,
   type CredentialProfileQueryInput,
   type CredentialProfileRemoveInput,
   type CredentialProfileSetEnabledInput,
@@ -98,6 +100,8 @@ export class HostRuntimePolicyCoordinator {
     'credential.profile.remove': (input) => this.#removeCredentialProfile(input),
     'credential.profile.set-routing-mode': (input) => this.#setCredentialRoutingMode(input),
     'credential.profile.query': (input) => this.#queryCredentialProfileReadiness(input),
+    'credential.profile.materialize-primary': (input) =>
+      this.#materializeCredentialProfilePrimary(input),
     'connection.request-headers.query': (input) => this.#queryConnectionRequestHeaders(input),
     'connection.request-headers.replace': (input) => this.#replaceConnectionRequestHeaders(input),
   };
@@ -337,6 +341,24 @@ export class HostRuntimePolicyCoordinator {
             profiles: result.profiles,
           }
         : { kind: 'connection_not_found' as const };
+    });
+  }
+
+  async #materializeCredentialProfilePrimary(
+    input: CredentialProfileMaterializePrimaryInput,
+  ): Promise<OperationOutcome<'credential.profile.materialize-primary'>> {
+    return this.#storeMutation(async () => {
+      const result = await this.#stores.operations.materializePrimaryCredentialProfile(
+        input.connectionId,
+      );
+      if (result.kind === 'connection_stale') {
+        throw invariantFailure('Materialize primary admitted a stale connection');
+      }
+      return projectCredentialProfileMutation(
+        result,
+        input.connectionId,
+        'credential profile materialize primary',
+      ) as CredentialProfileMaterializePrimaryResult;
     });
   }
 

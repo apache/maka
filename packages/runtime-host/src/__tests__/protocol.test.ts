@@ -80,6 +80,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'context.compact',
       'context.diagnostics.query',
       'credential.profile.create',
+      'credential.profile.materialize-primary',
       'credential.profile.query',
       'credential.profile.remove',
       'credential.profile.set-enabled',
@@ -510,13 +511,16 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-  test('declares exactly the eighteen Runtime Policy operations in the current framework', () => {
+  test('declares exactly the nineteen Runtime Policy operations in the current framework', () => {
     const queries = [
       'runtime.policy.query',
       'connection.catalog.query',
       'connection.request-headers.query',
       'credential.vault.query',
       'credential.profile.query',
+    ] as const;
+    const primaryMaterialize = [
+      'credential.profile.materialize-primary',
     ] as const;
     const mutations = [
       'runtime.policy.mutate',
@@ -535,7 +539,7 @@ describe('Runtime Host bootstrap protocol', () => {
     ] as const;
     assert.deepEqual(
       Object.keys(RUNTIME_POLICY_OPERATION_SPECS).sort(),
-      [...queries, ...mutations].sort(),
+      [...queries, ...mutations, ...primaryMaterialize].sort(),
     );
     for (const operation of queries) {
       assert.equal(RUNTIME_POLICY_OPERATION_SPECS[operation].mode, 'query');

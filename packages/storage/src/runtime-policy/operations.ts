@@ -485,6 +485,15 @@ export interface RuntimePolicyOperationCoordinator {
   readCredentialProfileReadiness(
     connectionId: string,
   ): Promise<CredentialProfileReadinessResult>;
+  /**
+   * Materialize the implicit primary Profile into an explicit routing
+   * declaration (RFC 4.2/5.1). Idempotent: a connection that already has a
+   * `credentialRouting` is returned unchanged. This is the formal authority
+   * entry point for imports that carry an explicit routing with only the
+   * primary left — creating a secondary must never be the only way to
+   * materialize the primary's enable state.
+   */
+  materializePrimaryCredentialProfile(connectionId: string): Promise<CredentialProfileMutationResult>;
 }
 
 export function connectionCredentialLocator(

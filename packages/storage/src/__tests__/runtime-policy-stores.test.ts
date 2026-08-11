@@ -4306,6 +4306,71 @@ describe('runtime policy stores', () => {
       });
     });
   });
+
+  test('materialize primary routing is idempotent and auth-aware', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('materialize', 'openai', 'Materialize'),
+      );
+      // Implicit primary: no routing declaration yet.
+      const before = await stores.connectionCatalog.getSnapshot();
+      assert.equal(
+        before.connections.find((item) => item.connectionId === connection.connectionId)
+          ?.credentialRouting,
+        undefined,
+      );
+
+      // First materialization creates the explicit primary routing.
+      const materialized = await stores.operations.materializePrimaryCredentialProfile(
+        connection.connectionId,
+      );
+      assert.equal(materialized.kind, 'committed');
+      const routing = materialized.snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!.credentialRouting!;
+      assert.equal(routing.mode, 'legacy_primary');
+      assert.equal(routing.profiles.length, 1);
+      assert.equal(routing.profiles[0]?.profileId, connection.connectionId);
+      assert.equal(routing.profiles[0]?.enabled, true);
+
+      // Second materialization is idempotent: same revision, no new writes.
+      const again = await stores.operations.materializePrimaryCredentialProfile(
+        connection.connectionId,
+      );
+      assert.equal(again.kind, 'committed');
+      assert.equal(again.snapshot.revision, materialized.snapshot.revision);
+
+      // The materialized primary is a real profile: it can be disabled and
+      // tested through the normal authority paths.
+      const disabled = await stores.operations.setCredentialProfileEnabled({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: materialized.snapshot.revision,
+          profileId: connection.connectionId,
+          profileRevision: routing.profiles[0]!.revision,
+        },
+        enabled: false,
+      });
+      assert.equal(disabled.kind, 'committed');
+      assert.deepEqual(await stores.operations.resolveExecutionConnection(connection.slug), {
+        kind: 'profile_disabled',
+      });
+
+      // Auth-less providers cannot materialize a profile routing.
+      const noneCatalog = await stores.connectionCatalog.getSnapshot();
+      const none = await createConnection(
+        stores,
+        noneCatalog.revision,
+        connectionDraft('materialize-none', 'ollama', 'Materialize none'),
+      );
+      const rejected = await stores.operations.materializePrimaryCredentialProfile(
+        none.connectionId,
+      );
+      assert.equal(rejected.kind, 'auth_not_supported');
+    });
+  });
 });
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;

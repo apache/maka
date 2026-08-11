@@ -297,6 +297,15 @@ export interface CredentialProfileQueryInput {
   readonly connectionId: string;
 }
 
+export interface CredentialProfileMaterializePrimaryInput {
+  readonly connectionId: string;
+}
+
+export type CredentialProfileMaterializePrimaryResult =
+  | CredentialProfileCommitted
+  | { readonly kind: 'connection_not_found' }
+  | { readonly kind: 'auth_not_supported'; readonly providerType: string };
+
 export type CredentialProfileQueryResult =
   | {
       readonly kind: 'found';
@@ -541,6 +550,17 @@ export const RUNTIME_POLICY_OPERATION_SPECS = {
     errors: CREDENTIAL_QUERY_ERRORS,
     decodeInput: decodeCredentialProfileQueryInput,
     decodeOutput: decodeCredentialProfileQueryResult,
+  }),
+  'credential.profile.materialize-primary': defineOperation<
+    CredentialProfileMaterializePrimaryInput,
+    CredentialProfileMaterializePrimaryResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeCredentialProfileMaterializePrimaryInput,
+    decodeOutput: decodeCredentialProfileMaterializePrimaryResult,
   }),
 } as const;
 
@@ -1397,6 +1417,42 @@ function decodeCredentialProfileSetRoutingModeResult(
 function decodeCredentialProfileQueryInput(value: unknown): CredentialProfileQueryInput {
   const item = requireExactRecord(value, 'credential profile query input', ['connectionId']);
   return { connectionId: requireEntityId(item.connectionId, 'connectionId') };
+}
+
+function decodeCredentialProfileMaterializePrimaryInput(
+  value: unknown,
+): CredentialProfileMaterializePrimaryInput {
+  const item = requireExactRecord(value, 'credential profile materialize primary input', [
+    'connectionId',
+  ]);
+  return { connectionId: requireEntityId(item.connectionId, 'connectionId') };
+}
+
+function decodeCredentialProfileMaterializePrimaryResult(
+  value: unknown,
+): CredentialProfileMaterializePrimaryResult {
+  const item = requireRecord(value, 'credential profile materialize primary result');
+  if (item.kind === 'committed') return credentialProfileCommitted(item);
+  if (item.kind === 'connection_not_found') {
+    requireExactRecord(item, 'credential profile materialize connection not found result', [
+      'kind',
+    ]);
+    return { kind: 'connection_not_found' };
+  }
+  if (item.kind === 'auth_not_supported') {
+    const conflict = requireExactRecord(item, 'credential profile materialize auth not supported', [
+      'kind',
+      'providerType',
+    ]);
+    if (conflict.kind !== 'auth_not_supported') {
+      throw invalidProtocolFrame('Invalid credential profile materialize auth not supported');
+    }
+    return {
+      kind: 'auth_not_supported',
+      providerType: stringValue(conflict.providerType, 'provider type'),
+    };
+  }
+  throw invalidProtocolFrame('Invalid credential profile materialize primary result');
 }
 
 function decodeCredentialProfileQueryResult(value: unknown): CredentialProfileQueryResult {

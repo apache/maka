@@ -386,6 +386,12 @@ export class DesktopRuntimeHostClient {
     return this.#request("credential.profile.query", { connectionId });
   }
 
+  materializeCredentialProfilePrimary(
+    connectionId: string,
+  ): Promise<OperationOutput<"credential.profile.materialize-primary">> {
+    return this.#request("credential.profile.materialize-primary", { connectionId });
+  }
+
   testConnectionProfile(
     connectionId: string,
     profileId: string,

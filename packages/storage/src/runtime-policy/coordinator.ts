@@ -1774,6 +1774,15 @@ export class RuntimePolicyCoordinator {
     );
   }
 
+  materializePrimaryCredentialProfile(
+    rawConnectionId: string,
+  ): Promise<CredentialProfileMutationResult> {
+    return this.inLane((root) => {
+      const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
+      return this.catalog.materializePrimaryRouting(root, connectionId);
+    });
+  }
+
   private async readCredentialProfileReadinessInLane(
     root: string,
     rawConnectionId: string,

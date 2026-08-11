@@ -590,6 +590,54 @@ export class ConnectionCatalogDocumentOwner {
   }
 
   /**
+   * Materialize the implicit primary Profile into an explicit routing
+   * declaration (RFC 4.2/5.1). Idempotent: a connection that already declares
+   * `credentialRouting` is returned unchanged. This is the formal authority
+   * entry point for imports that carry an explicit routing with only the
+   * primary left — creating a secondary must never be the only way to
+   * materialize the primary's enable state.
+   */
+  async materializePrimaryRouting(
+    root: string,
+    connectionId: string,
+  ): Promise<CredentialProfileMutationResult> {
+    const current = await this.read(root);
+    const connection = findConnection(current, { connectionId });
+    if (!connection) {
+      return connectionStale(
+        { connectionId, revision: 0 },
+        null,
+      );
+    }
+    if (connection.credentialRouting) {
+      return committedProfile(current);
+    }
+    const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+    if (!profileCapableAuthKind(authKind)) {
+      return deepFreeze({
+        kind: 'auth_not_supported' as const,
+        providerType: connection.providerType,
+      });
+    }
+    const index = findConnectionIndex(current, connection);
+    const connections = [...current.connections];
+    connections[index] = {
+      ...connection,
+      revision: nextRevision(connection.revision),
+      credentialRouting: implicitPrimaryRouting(connection.connectionId),
+    };
+    const next = {
+      ...current,
+      schemaVersion: CONNECTION_CATALOG_SCHEMA_VERSION_V2,
+      revision: nextRevision(current.revision),
+      connections,
+    };
+    assertDocumentCredentialRoutingInvariants(next, FILE);
+    await this.write(root, next);
+    return committedProfile(next);
+  }
+
+  /**
    * Switch the routing mode. `legacy_primary` is a plain CAS write and can
    * never be blocked by transient health. `balanced` requires the structural
    * preconditions that the catalog can verify on its own; the credential and

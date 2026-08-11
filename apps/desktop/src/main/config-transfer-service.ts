@@ -121,6 +121,8 @@ export interface ConfigTransferDeps {
     setRoutingMode(slug: string, input: { mode: 'legacy_primary' | 'balanced' }): Promise<void>;
     setCredential(slug: string, input: { profileId: string; secret: string }): Promise<void>;
     test(slug: string, input: { profileId: string }): Promise<{ ok: boolean }>;
+    /** Materialize the implicit primary into an explicit routing declaration. */
+    materializePrimary(slug: string): Promise<void>;
   };
 }
 
@@ -326,16 +328,20 @@ async function applyV2ConfigImport(
       skipped: plan.skipped.length,
     };
 
-    // Quiesce before touching any credential: an overwritten connection that
-    // still declares balanced routing must drop to legacy_primary and every
-    // enabled profile — including the primary — must be disabled FIRST, so a
-    // partial failure can never leave "balanced declared + credentials
-    // partially replaced" nor a dispatchable primary with a replaced
-    // credential. Newly created connections have no routing declaration and
-    // skip this pass. The disabled set is remembered (function scope) so
-    // profiles NOT listed in the bundle can be restored to their previous
-    // enabled state after the import (RFC 13.4: absent profiles are kept).
-    for (const connection of plan.overwrite) {
+    // Quiesce before touching any credential: EVERY applied connection —
+    // created or overwritten — drops to legacy_primary and every enabled
+    // profile, including the primary, is disabled FIRST. Newly created
+    // connections start as implicit primary (no routing declaration), so the
+    // primary routing is materialized through the authority operation before
+    // it can be disabled; a partial failure can therefore never leave a
+    // dispatchable primary with a replaced credential. The disabled set is
+    // remembered (function scope) so profiles NOT listed in the bundle can be
+    // restored to their previous enabled state after the import (RFC 13.4:
+    // absent profiles are kept).
+    for (const connection of [...plan.create, ...plan.overwrite]) {
+      if (plan.create.includes(connection)) {
+        await profiles.materializePrimary(connection.slug);
+      }
       const current = await profiles.list(connection.slug);
       if (current.routingMode === 'balanced') {
         await profiles.setRoutingMode(connection.slug, { mode: 'legacy_primary' });
