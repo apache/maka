@@ -604,10 +604,9 @@ export class ConnectionCatalogDocumentOwner {
     const current = await this.read(root);
     const connection = findConnection(current, { connectionId });
     if (!connection) {
-      return connectionStale(
-        { connectionId, revision: 0 },
-        null,
-      );
+      // Materialization carries no expected revision: a missing connection is
+      // a normal domain result, not a stale basis.
+      return deepFreeze({ kind: 'connection_not_found' as const });
     }
     if (connection.credentialRouting) {
       return committedProfile(current);

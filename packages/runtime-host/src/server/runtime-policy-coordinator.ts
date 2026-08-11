@@ -351,9 +351,6 @@ export class HostRuntimePolicyCoordinator {
       const result = await this.#stores.operations.materializePrimaryCredentialProfile(
         input.connectionId,
       );
-      if (result.kind === 'connection_stale') {
-        throw invariantFailure('Materialize primary admitted a stale connection');
-      }
       return projectCredentialProfileMutation(
         result,
         input.connectionId,

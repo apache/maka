@@ -667,6 +667,7 @@ describe('config-transfer-service', () => {
     // balanced restore — never "balanced declared + credentials replaced"
     // and never a silently disabled account.
     assert.deepEqual(calls, [
+      'materialize',
       'routing:legacy_primary',
       'setEnabled:profile-77:false',
       'setEnabled:profile-extra:false',
@@ -764,6 +765,7 @@ describe('config-transfer-service', () => {
     // The bundle claimed profile-77 with enabled=false: the quiesce disable
     // must NOT be undone — only the bundle's own state rules apply.
     assert.deepEqual(calls, [
+      'materialize',
       'routing:legacy_primary',
       'setEnabled:profile-77:false',
       'update:profile-77',
@@ -855,6 +857,7 @@ describe('config-transfer-service', () => {
     // The re-test failed: fail-closed — the profile stays disabled and is
     // reported, never silently re-enabled by the quiesce restore.
     assert.deepEqual(calls, [
+      'materialize',
       'setEnabled:profile-77:false',
       'update:profile-77',
       'test:profile-77',
@@ -941,6 +944,7 @@ describe('config-transfer-service', () => {
     // bundle's explicit disabled state is respected — the absent-profile
     // restore must not re-enable a bundle-declared primary.
     assert.deepEqual(calls, [
+      'materialize',
       'routing:legacy_primary',
       'setEnabled:primary-id:false',
     ]);
@@ -1024,7 +1028,7 @@ describe('config-transfer-service', () => {
 
     // Re-verification failed: the primary stays disabled (fail-closed) and is
     // reported, never silently re-enabled around the verification flow.
-    assert.deepEqual(calls, ['setEnabled:primary-id:false', 'test:primary']);
+    assert.deepEqual(calls, ['materialize', 'setEnabled:primary-id:false', 'test:primary']);
     assert.deepEqual(result.profiles?.restoredEnabled, 0);
     assert.deepEqual(result.profiles?.verificationFailed, ['deepseek-main/primary']);
   });
@@ -1319,12 +1323,279 @@ describe('config-transfer-service', () => {
     // scoping restores it, even though the profile id collides across
     // connections.
     assert.deepEqual(calls, [
+      'materialize',
       'setEnabled:slug-a:shared-id:false',
+      'materialize',
       'setEnabled:slug-b:shared-id:false',
       'update',
       'setEnabled:slug-b:shared-id:true',
     ]);
     assert.deepEqual(result.profiles?.restoredEnabled, 1);
+  });
+
+  it('profile-aware bundle overwrite materializes an implicit legacy target before quiescing', async () => {
+    const { deps } = makeDeps();
+    // The target is an implicit legacy connection: readiness shows no routing
+    // and no profiles until materialization happens.
+    const profiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [];
+    const calls: string[] = [];
+    deps.profiles = {
+      list: async () => ({
+        connectionRevision: 5,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [...profiles],
+      }),
+      create: async () => {
+        calls.push('create');
+      },
+      update: async () => {
+        calls.push('update');
+      },
+      setEnabled: async (_slug, input) => {
+        calls.push(`setEnabled:${input.profileId}:${input.enabled}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) target.enabled = input.enabled;
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async () => {
+        calls.push('credential');
+      },
+      test: async (_slug, input) => {
+        calls.push(`test:${input.profileId}`);
+        return { ok: true };
+      },
+      materializePrimary: async () => {
+        calls.push('materialize');
+        // Materialization makes the implicit primary explicit.
+        profiles.push({
+          profileId: 'primary',
+          revision: 1,
+          label: 'primary',
+          enabled: true,
+          weight: 1,
+          primary: true,
+          credentialConfigured: false,
+          supportedModels: [],
+        });
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections', 'credentials'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('deepseek-main'),
+            credentialProfiles: [
+              { profileRef: 'primary', profileId: 'primary', label: 'primary', enabled: true, weight: 1, primary: true },
+            ],
+            routingMode: 'legacy_primary',
+          },
+        ],
+        credentials: [
+          { slug: 'deepseek-main', profileRef: 'primary', kind: 'api_key', value: 'sk-new' },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'overwrite', deps);
+
+    // The implicit legacy target is materialized first, then the primary is
+    // quiesced, then the credential is replaced, then the primary is
+    // re-tested and re-enabled.
+    assert.deepEqual(calls, [
+      'materialize',
+      'setEnabled:primary:false',
+      'test:primary',
+      'setEnabled:primary:true',
+    ]);
+    assert.deepEqual(result.profiles?.restoredEnabled, 1);
+  });
+
+  it('implicit auth-less clean target skips the profile lifecycle entirely', async () => {
+    const { deps } = makeDeps();
+    const calls: string[] = [];
+    deps.profiles = {
+      list: async () => {
+        calls.push('list');
+        return {
+          connectionRevision: 1,
+          routingMode: 'legacy_primary',
+          readyCandidateCount: 0,
+          profiles: [],
+        };
+      },
+      create: async () => {
+        calls.push('create');
+      },
+      update: async () => {
+        calls.push('update');
+      },
+      setEnabled: async () => {
+        calls.push('setEnabled');
+      },
+      setRoutingMode: async () => {
+        calls.push('routing');
+      },
+      setCredential: async () => {
+        calls.push('credential');
+      },
+      test: async () => {
+        calls.push('test');
+        return { ok: true };
+      },
+      materializePrimary: async () => {
+        calls.push('materialize');
+        // The production authority rejects auth-less providers; if the import
+        // ever called this for an implicit Ollama bundle the test fails.
+        throw new Error('auth_not_supported');
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('ollama-local'),
+            providerType: 'ollama' as const,
+            credentialProfiles: undefined,
+            routingMode: undefined,
+          },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(calls, []);
+    assert.deepEqual(result.profiles, {
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      labelConflicts: [],
+      verificationFailed: [],
+      restoredEnabled: 0,
+      balancedRestored: false,
+      balancedPending: false,
+    });
+  });
+
+  it('mixed bundle applies the profile lifecycle only to profile-aware connections', async () => {
+    const { deps } = makeDeps();
+    const apiProfiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [
+      {
+        profileId: 'primary',
+        revision: 1,
+        label: 'primary',
+        enabled: true,
+        weight: 1,
+        primary: true,
+        credentialConfigured: false,
+        supportedModels: [],
+      },
+    ];
+    const calls: string[] = [];
+    deps.connectionStore = {
+      list: async () => [conn('ollama-local')],
+      save: async (c) => c,
+    };
+    deps.profiles = {
+      list: async (slug) => ({
+        connectionRevision: 1,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: slug === 'api-main' ? [...apiProfiles] : [],
+      }),
+      create: async () => {
+        calls.push('create');
+      },
+      update: async () => {
+        calls.push('update');
+      },
+      setEnabled: async (_slug, input) => {
+        calls.push(`setEnabled:${input.profileId}:${input.enabled}`);
+        const target = apiProfiles.find((p) => p.profileId === input.profileId);
+        if (target) target.enabled = input.enabled;
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async () => {
+        calls.push('credential');
+      },
+      test: async (_slug, input) => {
+        calls.push(`test:${input.profileId}`);
+        return { ok: true };
+      },
+      materializePrimary: async (slug) => {
+        calls.push(`materialize:${slug}`);
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections', 'credentials'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('api-main'),
+            credentialProfiles: [
+              { profileRef: 'primary', profileId: 'primary', label: 'primary', enabled: true, weight: 1, primary: true },
+            ],
+            routingMode: 'legacy_primary',
+          },
+          {
+            ...conn('ollama-local'),
+            providerType: 'ollama' as const,
+            credentialProfiles: undefined,
+            routingMode: undefined,
+          },
+        ],
+        credentials: [
+          { slug: 'api-main', profileRef: 'primary', kind: 'api_key', value: 'sk-api' },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    // Only the profile-aware api-main enters the lifecycle; ollama-local is
+    // created untouched.
+    assert.deepEqual(calls, [
+      'materialize:api-main',
+      'setEnabled:primary:false',
+      'test:primary',
+      'setEnabled:primary:true',
+    ]);
+    assert.deepEqual(result.profiles?.restoredEnabled, 1);
+    assert.deepEqual(result.credentials, { applied: 1, skipped: 0 });
   });
 
   it('routes a parsed v1 bundle through the legacy import path', async () => {

@@ -328,20 +328,27 @@ async function applyV2ConfigImport(
       skipped: plan.skipped.length,
     };
 
-    // Quiesce before touching any credential: EVERY applied connection —
-    // created or overwritten — drops to legacy_primary and every enabled
-    // profile, including the primary, is disabled FIRST. Newly created
-    // connections start as implicit primary (no routing declaration), so the
-    // primary routing is materialized through the authority operation before
-    // it can be disabled; a partial failure can therefore never leave a
-    // dispatchable primary with a replaced credential. The disabled set is
+    // Quiesce before touching any credential. Only PROFILE-AWARE sources
+    // (those carrying an explicit Profile declaration or routing mode) enter
+    // the profile lifecycle: an implicit auth-less connection (e.g. Ollama)
+    // has no profiles and must never be materialized (auth_not_supported).
+    // For every profile-aware connection — created or overwritten — the
+    // primary routing is materialized (idempotent; an overwrite target that
+    // is still an implicit legacy connection needs it too), then the mode
+    // drops to legacy_primary and every enabled profile, including the
+    // primary, is disabled FIRST. A partial failure can therefore never leave
+    // a dispatchable primary with a replaced credential. The disabled set is
     // remembered (function scope) so profiles NOT listed in the bundle can be
     // restored to their previous enabled state after the import (RFC 13.4:
     // absent profiles are kept).
     for (const connection of [...plan.create, ...plan.overwrite]) {
-      if (plan.create.includes(connection)) {
-        await profiles.materializePrimary(connection.slug);
-      }
+      const source =
+        (incoming.find((candidate) => candidate.slug === connection.slug) ??
+          connection) as V2ExportedConnection;
+      const profileAware =
+        source.credentialProfiles !== undefined || source.routingMode !== undefined;
+      if (!profileAware) continue;
+      await profiles.materializePrimary(connection.slug);
       const current = await profiles.list(connection.slug);
       if (current.routingMode === 'balanced') {
         await profiles.setRoutingMode(connection.slug, { mode: 'legacy_primary' });

@@ -970,6 +970,86 @@ test('reconstructs a large catalog with revision-pinned pages and rejects stale 
   });
 });
 
+  test('materialize-primary projects connection_not_found for a missing connection', async () => {
+    await withCoordinator(async ({ coordinator }) => {
+      const outcome = await coordinator.handlers['credential.profile.materialize-primary'](
+        { connectionId: '00000000-0000-4000-8000-000000000099' },
+        context,
+      );
+      assert.deepEqual(outcome, {
+        ok: true,
+        result: { kind: 'connection_not_found' },
+      });
+    });
+  });
+
+  test('materialize-primary is idempotent and then the primary can be disabled and tested', async () => {
+    await withCoordinator(async ({ coordinator, stores }) => {
+      const created = await stores.connectionCatalog.create({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'mat-host',
+          name: 'Mat Host',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: ['gpt-5'],
+        },
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      const connection = created.snapshot.connections.find((item) => item.slug === 'mat-host')!;
+
+      const first = await coordinator.handlers['credential.profile.materialize-primary'](
+        { connectionId: connection.connectionId },
+        context,
+      );
+      assert.equal(first.ok, true);
+      if (!first.ok || first.result.kind !== 'committed') return;
+      const firstRevision = first.result.catalogRevision;
+
+      // Idempotent: a second materialization does not bump the catalog.
+      const second = await coordinator.handlers['credential.profile.materialize-primary'](
+        { connectionId: connection.connectionId },
+        context,
+      );
+      assert.equal(second.ok, true);
+      if (!second.ok || second.result.kind !== 'committed') return;
+      assert.equal(second.result.catalogRevision, firstRevision);
+
+      // The materialized primary is a real profile through the host handlers.
+      await stores.credentialVault.set({
+        locator: {
+          scope: 'connection',
+          connectionId: connection.connectionId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret: 'sk-primary',
+      });
+      const snapshot = await stores.connectionCatalog.getSnapshot();
+      const current = snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!;
+      const disabled = await coordinator.handlers['credential.profile.set-enabled'](
+        {
+          expected: {
+            connectionId: connection.connectionId,
+            connectionRevision: current.revision,
+            profileId: connection.connectionId,
+            profileRevision: current.credentialRouting!.profiles[0]!.revision,
+          },
+          enabled: false,
+        },
+        context,
+      );
+      assert.equal(disabled.ok, true);
+      if (!disabled.ok || disabled.result.kind !== 'committed') return;
+      assert.deepEqual(await stores.operations.resolveExecutionConnection(connection.slug), {
+        kind: 'profile_disabled',
+      });
+    });
+  });
+
 function isTerminalTurnStatus(status: string): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
