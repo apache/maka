@@ -79,7 +79,7 @@ test('open snapshot includes pending Interactions from the canonical projection'
   coordinator.close();
 });
 
-test('open identifies only assistant streams that are still active', async () => {
+test('open identifies every assistant stream that is still active and round-trips its result', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
@@ -88,12 +88,37 @@ test('open identifies only assistant streams that are still active', async () =>
   coordinator.attachConnection('connection-1', new RecordingSink());
   await open(coordinator, 'connection-1');
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_delta', 'message-2', 'reasoning'),
+  );
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textEvent(2),
+    messageId: 'message-3',
+  });
 
   coordinator.attachConnection('connection-2', new RecordingSink());
   const active = await open(coordinator, 'connection-2');
   assert.deepEqual(active.activeAssistantStreams, [
     { kind: 'text', turnId: 'turn-1', messageId: 'message-1' },
+    { kind: 'thinking', turnId: 'turn-1', messageId: 'message-2' },
+    { kind: 'text', turnId: 'turn-1', messageId: 'message-3' },
   ]);
+
+  const decoded = decodeHostFrame(
+    JSON.parse(
+      encodeProtocolMessage({
+        requestId: 'open-round-trip',
+        operation: 'subscription.open',
+        ok: true,
+        result: active,
+      }).toString('utf8'),
+    ),
+  );
+  assert.ok('ok' in decoded && decoded.ok);
+  if (!('ok' in decoded) || !decoded.ok || decoded.operation !== 'subscription.open') return;
+  assert.deepEqual(decoded.result.activeAssistantStreams, active.activeAssistantStreams);
 
   await coordinator.acceptRuntimeEvent(
     SESSION_ID,
@@ -101,7 +126,25 @@ test('open identifies only assistant streams that are still active', async () =>
     textCompleteEvent('message-1', 'chunk-1'),
   );
   coordinator.attachConnection('connection-3', new RecordingSink());
-  const completed = await open(coordinator, 'connection-3');
+  const remaining = await open(coordinator, 'connection-3');
+  assert.deepEqual(remaining.activeAssistantStreams, [
+    { kind: 'thinking', turnId: 'turn-1', messageId: 'message-2' },
+    { kind: 'text', turnId: 'turn-1', messageId: 'message-3' },
+  ]);
+
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_complete', 'message-2', 'reasoning'),
+  );
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textCompleteEvent('message-2', ''));
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-3', 'chunk-2'),
+  );
+  coordinator.attachConnection('connection-4', new RecordingSink());
+  const completed = await open(coordinator, 'connection-4');
   assert.deepEqual(completed.activeAssistantStreams, []);
   coordinator.close();
 });
@@ -706,6 +749,42 @@ test('a joining Client receives live assistant text that has not reached durable
   assert.deepEqual(
     JSON.parse(Buffer.from(snapshot.result.data, 'base64').toString('utf8')),
     assistantMessage('chunk-1chunk-2'),
+  );
+  coordinator.close();
+});
+
+test('a durable final replaces a non-prefix live draft during transcript catch-up', async () => {
+  const transcript = deferred<readonly StoredMessage[]>();
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    () => transcript.promise,
+  );
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textEvent(1),
+    text: 'draft',
+  });
+  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  const catchUp = coordinator.handlers['session.transcript.query'](
+    { kind: 'start', subscriptionId: opened.subscriptionId },
+    connectionContext('connection-1'),
+  );
+  transcript.resolve([assistantMessage('authoritative final')]);
+
+  const snapshot = await catchUp;
+  assert.equal(snapshot.ok, true);
+  if (!snapshot.ok) assert.fail('expected the transcript snapshot');
+  assert.equal(snapshot.result.kind, 'chunk');
+  if (snapshot.result.kind !== 'chunk') assert.fail('expected a transcript chunk');
+  assert.deepEqual(
+    JSON.parse(Buffer.from(snapshot.result.data, 'base64').toString('utf8')),
+    assistantMessage('authoritative final'),
   );
   coordinator.close();
 });

@@ -342,7 +342,6 @@ describe('Runtime Host Maka Session driver', () => {
         rootTurn: completedTurn('turn-1', 'run-1'),
       }),
     });
-    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'text_complete');
     assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
     assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     await waitFor(() => refresh.nextCalls > 0);

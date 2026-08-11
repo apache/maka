@@ -1226,14 +1226,14 @@ function mergeActiveAssistantStreams(
     }
     let nextMessage: StoredMessage;
     if (prefix.kind === 'text') {
-      const text = mergeAssistantPrefix(message.text, prefix.text);
+      const text = reconcileAssistantText(message.text, prefix.text);
       if (text === message.text) continue;
       nextMessage = { ...message, text };
     } else {
       if (!message.thinking) {
         throw new Error('Active thinking prefix has no matching transcript content');
       }
-      const text = mergeAssistantPrefix(message.thinking.text, prefix.text);
+      const text = reconcileAssistantText(message.thinking.text, prefix.text);
       if (text === message.thinking.text) continue;
       nextMessage = { ...message, thinking: { ...message.thinking, text } };
     }
@@ -1243,10 +1243,14 @@ function mergeActiveAssistantStreams(
   return merged ?? messages;
 }
 
-function mergeAssistantPrefix(durable: string, active: string): string {
+function reconcileAssistantText(durable: string, active: string): string {
   if (active.startsWith(durable)) return active;
   if (durable.startsWith(active)) return durable;
-  throw new Error('Active assistant prefix conflicts with the durable transcript');
+  // Persistence is authoritative once it contains a final value. The live
+  // stream may still retain an earlier draft until its completion event enters
+  // this lane; a non-prefix durable value therefore replaces that draft during
+  // transcript catch-up instead of making the snapshot unavailable.
+  return durable;
 }
 
 function transcriptSubscriptionNotFound(): OperationOutcome<'session.transcript.query'> {

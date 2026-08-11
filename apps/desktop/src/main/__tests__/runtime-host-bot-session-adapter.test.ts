@@ -131,8 +131,9 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
       events.push(projectionFrame(1, runningTurn(input.sessionId, input.turnId)));
       events.push(deltaFrame(2, input.sessionId, input.turnId, 0, 'Hello'));
       events.push(deltaFrame(3, input.sessionId, input.turnId, 3, 'lo world'));
+      events.push(deltaFrame(4, input.sessionId, input.turnId, 0, 'Corrected reply', true));
       events.push(
-        projectionFrame(4, {
+        projectionFrame(5, {
           ...runningTurn(input.sessionId, input.turnId),
           status: 'completed',
           terminalEventId: 'terminal-1',
@@ -154,7 +155,7 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
     text: 'hello',
   });
 
-  assert.deepEqual(result, { kind: 'completed', text: 'Hello world' });
+  assert.deepEqual(result, { kind: 'completed', text: 'Corrected reply' });
   assert.equal(closeCount, 1);
   assert.deepEqual(changes, [
     {
@@ -163,6 +164,46 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
       extra: { turnId: 'turn-1' },
     },
   ]);
+});
+
+test('accepts an empty reset delta as the authoritative Bot reply', async () => {
+  const events = new AsyncFrameQueue();
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => ({
+        snapshot: continuitySnapshot(null),
+        activeAssistantStreams: [],
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          events.end();
+        },
+      }),
+      startTurn: async (input) => {
+        events.push(deltaFrame(1, input.sessionId, input.turnId, 0, 'Provisional reply'));
+        events.push(deltaFrame(2, input.sessionId, input.turnId, 0, '', true));
+        events.push(
+          projectionFrame(3, {
+            ...runningTurn(input.sessionId, input.turnId),
+            status: 'completed',
+            terminalEventId: 'terminal-1',
+          }),
+        );
+        return startedTurn(runningTurn(input.sessionId, input.turnId));
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'bot-session-1',
+      turnId: 'turn-1',
+      text: 'hello',
+    }),
+    { kind: 'completed', text: '' },
+  );
 });
 
 test('returns blocked Skill feedback without waiting for a Turn that was not created', async () => {
@@ -344,6 +385,7 @@ function deltaFrame(
   turnId: string,
   startOffset: number,
   text: string,
+  reset = false,
 ): SubscriptionFrame {
   return {
     kind: 'subscription.session_delta',
@@ -358,6 +400,7 @@ function deltaFrame(
       messageId: 'message-1',
       startOffset,
       text,
+      ...(reset ? { reset: true } : {}),
     },
   };
 }

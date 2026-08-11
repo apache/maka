@@ -17,7 +17,6 @@ interface AssistantAccumulator {
   messageId: string;
   text: string;
   complete: boolean;
-  completionEmitted: boolean;
   replacing: boolean;
 }
 
@@ -60,7 +59,6 @@ export class RuntimeHostSessionProjector {
           messageId: message.id,
           text: message.thinking.text,
           complete: true,
-          completionEmitted: false,
           replacing: false,
         });
       }
@@ -71,7 +69,6 @@ export class RuntimeHostSessionProjector {
           messageId: message.id,
           text: message.text,
           complete: true,
-          completionEmitted: false,
           replacing: false,
         });
       }
@@ -86,7 +83,6 @@ export class RuntimeHostSessionProjector {
         messageId: stream.messageId,
         text: current?.text ?? '',
         complete: false,
-        completionEmitted: false,
         replacing: false,
       });
     }
@@ -135,7 +131,7 @@ export class RuntimeHostSessionProjector {
   }
 
   seedTerminal(turn: RuntimeHostTerminalTurn): SessionEvent[] {
-    return this.#terminalEvents(turn);
+    return this.#terminalEvents(turn, true);
   }
 
   seedStoredTerminal(turnId: string, transcript: readonly StoredMessage[]): SessionEvent[] {
@@ -217,7 +213,6 @@ export class RuntimeHostSessionProjector {
         messageId: delta.messageId,
         text: folded.text,
         complete: delta.complete === true,
-        completionEmitted: delta.complete === true,
         replacing: delta.complete === true ? false : replacing,
       });
       if (delta.complete === true) {
@@ -282,10 +277,10 @@ export class RuntimeHostSessionProjector {
     return { events, previousSnapshot, startedTurn, terminalTurn, resolvedInteractions };
   }
 
-  #terminalEvents(root: RuntimeHostTerminalTurn): SessionEvent[] {
+  #terminalEvents(root: RuntimeHostTerminalTurn, includeSettled = false): SessionEvent[] {
     const events: SessionEvent[] = [];
     for (const accumulator of this.#accumulators.values()) {
-      if (accumulator.turnId !== root.turnId || accumulator.completionEmitted) continue;
+      if (accumulator.turnId !== root.turnId || (!includeSettled && accumulator.complete)) continue;
       events.push({
         type: accumulator.kind === 'text' ? 'text_complete' : 'thinking_complete',
         id: `${root.terminalEventId}:${accumulator.kind}:${accumulator.messageId}`,

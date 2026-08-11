@@ -500,7 +500,7 @@ function decodeActiveAssistantStreams(
   value: unknown,
   snapshot: SessionContinuitySnapshot,
 ): SessionAssistantStreamIdentity[] {
-  if (!Array.isArray(value) || value.length > 2) {
+  if (!Array.isArray(value)) {
     throw invalidProtocolFrame('Invalid active Session assistant streams');
   }
   const root = snapshot.rootTurn;

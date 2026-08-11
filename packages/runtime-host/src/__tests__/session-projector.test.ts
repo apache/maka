@@ -66,6 +66,71 @@ test('seeds only streams identified as active by the Host catch-up state', () =>
   );
 });
 
+test('does not replay settled transcript steps when the active step reaches terminal', () => {
+  const transcript: StoredMessage[] = [
+    {
+      ...assistant('settled-step-1', 'first answer'),
+      thinking: { text: 'first thought' },
+    },
+    {
+      ...assistant('settled-step-2', 'second answer'),
+      thinking: { text: 'second thought' },
+    },
+    {
+      ...assistant('active-step', 'partial answer'),
+      thinking: { text: 'active thought' },
+    },
+  ];
+  const projector = new RuntimeHostSessionProjector(snapshot(), transcript, () => 10, [
+    { kind: 'text', turnId: 'turn-1', messageId: 'active-step' },
+    { kind: 'thinking', turnId: 'turn-1', messageId: 'active-step' },
+  ]);
+
+  assert.deepEqual(
+    projector
+      .seedActive(true)
+      .map((event) => [
+        event.type,
+        'messageId' in event && event.messageId,
+        'text' in event && event.text,
+      ]),
+    [
+      ['thinking_delta', 'active-step', 'active thought'],
+      ['text_delta', 'active-step', 'partial answer'],
+    ],
+  );
+
+  const terminal = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'completed',
+        terminalEventId: 'terminal-1',
+      },
+    }),
+  }).events;
+
+  assert.deepEqual(
+    terminal.map((event) => [
+      event.type,
+      'messageId' in event ? event.messageId : undefined,
+      'text' in event ? event.text : undefined,
+    ]),
+    [
+      ['thinking_complete', 'active-step', 'active thought'],
+      ['text_complete', 'active-step', 'partial answer'],
+      ['complete', undefined, undefined],
+    ],
+  );
+});
+
 function deltaFrame(
   sequence: number,
   startOffset: number,
