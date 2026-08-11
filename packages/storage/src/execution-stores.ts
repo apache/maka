@@ -348,8 +348,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       listCatalogPage: (filter, cursor, limit, expectedRevision) =>
         run(() => sessionStore.listCatalogPage(filter, cursor, limit, expectedRevision)),
       listHeaders: () => run(() => sessionStore.listHeaders()),
-      listSessionsWithUnresolvedProject: () =>
-        run(() => sessionStore.listSessionsWithUnresolvedProject()),
       listForRecovery: () => run(() => sessionStore.listForRecovery()),
       readHeaderSnapshot: (sessionId) => run(() => sessionStore.readHeaderSnapshot(sessionId)),
       readHeaderRecordSnapshot: (sessionId) =>

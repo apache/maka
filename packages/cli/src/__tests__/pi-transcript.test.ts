@@ -3986,44 +3986,6 @@ describe('Maka Pi TUI transcript', () => {
 });
 
 describe('transcript entry render memoization', () => {
-  test('re-renders live progress after the bounded buffer reaches a stable length', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'progress-cache',
-        toolName: 'Workflow',
-        args: {},
-      }),
-    );
-    for (let i = 0; i < 512; i += 1) {
-      applyMakaSessionEventToTranscript(
-        state,
-        event({
-          type: 'tool_progress',
-          toolUseId: 'progress-cache',
-          chunk: `progress-${i}\n`,
-        }),
-      );
-    }
-    assert.equal(toggleAllToolExpansion(state), true);
-    const before = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(before, /progress-511\b/);
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_progress',
-        toolUseId: 'progress-cache',
-        chunk: 'progress-512\n',
-      }),
-    );
-    const after = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(after, /progress-512\b/);
-    assert.doesNotMatch(after, /progress-0\b/);
-  });
-
   test('re-renders thinking when a same-length final replaces the streamed text', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(

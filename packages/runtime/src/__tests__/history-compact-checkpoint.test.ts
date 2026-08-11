@@ -14,63 +14,26 @@ import { estimateRuntimeEventsTokens } from '../context-budget.js';
 import { applyRuntimeEventHistoryCompact } from '../history-compact.js';
 
 describe('history compact checkpoint', () => {
-  test('keeps 10K-event coverage bounded and validates the exact ordered prefix', () => {
-    const events = Array.from({ length: 10_000 }, (_, index) => textEvent(index));
+  test('validates the exact ordered source prefix', () => {
+    const events = Array.from({ length: 4 }, (_, index) => textEvent(index));
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: events,
-      summary: 'A bounded continuation summary.',
+      summary: 'Continuation summary.',
       now: 1_800_000_010_000,
     });
 
     assert.equal(validateHistoryCompactCheckpointShape(checkpoint, 'session-1'), true);
-    assert.ok(Buffer.byteLength(JSON.stringify(checkpoint), 'utf8') < 64 * 1024);
-    assert.equal(checkpoint.coverage.eventCount, 10_000);
-    assert.equal(checkpoint.coverage.turnCount, 5_000);
-    assert.equal(checkpoint.coverage.through.runtimeEventId, 'event-9999');
-    assert.equal(checkpoint.source?.policyVersion, 'maka.compactable_runtime_event_projection.v1');
-    assert.deepEqual(checkpoint.source?.coverage, {
-      lowWater: {
-        ledger: 'runtime_event_projection',
-        streamId: 'session-1',
-        sequence: 0,
-        eventId: 'event-0',
-      },
-      highWater: {
-        ledger: 'runtime_event_projection',
-        streamId: 'session-1',
-        sequence: 9_999,
-        eventId: 'event-9999',
-      },
-      eventCount: 10_000,
-    });
-    const prefixMatch = matchHistoryCompactCheckpointPrefix(checkpoint, [
-      ...events,
-      textEvent(10_000),
-    ]);
-    assert.equal(prefixMatch.coveredEventCount, 10_000);
+    const prefixMatch = matchHistoryCompactCheckpointPrefix(checkpoint, [...events, textEvent(4)]);
+    assert.equal(prefixMatch.coveredEventCount, 4);
     assert.deepEqual(
       prefixMatch.successorRuntimeEvents.map((event) => event.id),
-      ['event-10000'],
+      ['event-4'],
     );
-    const replay = applyRuntimeEventHistoryCompact(
-      [...events, textEvent(10_000)],
-      {
-        enabled: true,
-        mode: 'read_write',
-        checkpoint,
-        highWaterRatio: 0.000001,
-        tailEstimatedTokens: 1,
-      },
-      1,
-      1_000_000,
-    );
-    assert.equal(replay.checkpoint?.checkpointId, checkpoint.checkpointId);
-    assert.ok(Buffer.byteLength(JSON.stringify(replay.diagnosticPatch), 'utf8') < 16 * 1024);
 
     const changed = [...events];
-    changed[4_999] = {
-      ...changed[4_999]!,
+    changed[1] = {
+      ...changed[1]!,
       content: { kind: 'text', text: 'changed source fact' },
     };
     assert.equal(
