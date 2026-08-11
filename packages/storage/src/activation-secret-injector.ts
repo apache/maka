@@ -1,8 +1,11 @@
 import {
   decodeManagedSecretEnvironmentName,
   decodeManagedSecretReference,
+  managedSecretRevision,
+  managedSecretValue,
   ManagedSecretError,
   type ManagedSecretActivationContext,
+  type ManagedSecretMaterial,
   type ManagedSecretReference,
   type ManagedSecretStore,
 } from './managed-secret-store.js';
@@ -127,14 +130,26 @@ export class ActivationSecretInjector {
     input: PrepareActivationSecretInjectionInput,
   ): Promise<PreparedActivationSecretInjection> {
     const bindings = normalizeBindings(input.bindings);
-    const material = await this.store.resolveForActivation({
-      context: input.context,
-      references: bindings.map((binding) => binding.reference),
-    });
+    const material = snapshotMaterial(
+      await this.store.resolveForActivation({
+        context: input.context,
+        references: bindings.map((binding) => binding.reference),
+      }),
+    );
     if (material.length !== bindings.length) {
       throw new ManagedSecretError(
         'integrity_failure',
         'Managed Secret resolution returned an invalid material set',
+      );
+    }
+    if (
+      !material.every((secret, index) =>
+        sameReference(secret?.reference, bindings[index]?.reference),
+      )
+    ) {
+      throw new ManagedSecretError(
+        'integrity_failure',
+        'Managed Secret resolution returned mismatched material references',
       );
     }
 
@@ -167,6 +182,43 @@ export class ActivationSecretInjector {
       material.map((item) => item.value),
     );
     return handle;
+  }
+}
+
+function snapshotMaterial(value: readonly ManagedSecretMaterial[]): ManagedSecretMaterial[] {
+  if (!Array.isArray(value)) {
+    throw new ManagedSecretError(
+      'integrity_failure',
+      'Managed Secret resolution returned an invalid material set',
+    );
+  }
+  try {
+    return value.map((secret) => ({
+      reference: decodeManagedSecretReference(secret?.reference),
+      revision: managedSecretRevision(secret?.revision),
+      value: managedSecretValue(secret?.value),
+    }));
+  } catch {
+    throw new ManagedSecretError(
+      'integrity_failure',
+      'Managed Secret resolution returned an invalid material set',
+    );
+  }
+}
+
+function sameReference(
+  actual: ManagedSecretReference | undefined,
+  expected: ManagedSecretReference | undefined,
+): boolean {
+  if (!actual || !expected) return false;
+  try {
+    const normalized = decodeManagedSecretReference(actual);
+    return (
+      normalized.schemaVersion === expected.schemaVersion &&
+      normalized.secretId === expected.secretId
+    );
+  } catch {
+    return false;
   }
 }
 

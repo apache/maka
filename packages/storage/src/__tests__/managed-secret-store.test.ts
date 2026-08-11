@@ -239,6 +239,141 @@ for (const [name, createHarness] of harnesses) {
 }
 
 describe('encrypted file ManagedSecretStore security boundary', () => {
+  test('keeps mutation timestamps monotonic when the wall clock moves backwards', async () => {
+    await withTempRoot(async (root) => {
+      let now = 1_000;
+      const ids = [generatedSecretId(1), generatedSecretId(2), generatedSecretId(3)];
+      const store = createEncryptedFileManagedSecretStore({
+        controlPlaneRoot: root,
+        keyProvider: new TestKeyProvider(),
+        now: () => now,
+        newSecretId: () => ids.shift()!,
+      });
+      const rotating = await store.createSecret({ principalId: PRINCIPAL, value: 'rotate' });
+      const revoking = await store.createSecret({ principalId: PRINCIPAL, value: 'revoke' });
+      const deleting = await store.createSecret({ principalId: PRINCIPAL, value: 'delete' });
+
+      now = 900;
+      const rotated = await store.rotateSecret({
+        principalId: PRINCIPAL,
+        reference: rotating.reference,
+        expectedRevision: rotating.revision,
+        value: 'rotated',
+      });
+      const revoked = await store.revokeSecret({
+        principalId: PRINCIPAL,
+        reference: revoking.reference,
+        expectedRevision: revoking.revision,
+      });
+      const deleted = await store.deleteSecret({
+        principalId: PRINCIPAL,
+        reference: deleting.reference,
+        expectedRevision: deleting.revision,
+      });
+      for (const result of [rotated, revoked, deleted]) {
+        assert.equal(result.kind, 'committed');
+        if (result.kind === 'committed') assert.equal(result.secret.updatedAt, 1_000);
+      }
+
+      const reopened = createEncryptedFileManagedSecretStore({
+        controlPlaneRoot: root,
+        keyProvider: new TestKeyProvider(),
+      });
+      assert.equal(
+        (
+          await reopened.getSecretMetadata({
+            principalId: PRINCIPAL,
+            reference: rotating.reference,
+          })
+        )?.updatedAt,
+        1_000,
+      );
+      assert.equal(
+        (
+          await reopened.getSecretMetadata({
+            principalId: PRINCIPAL,
+            reference: revoking.reference,
+          })
+        )?.updatedAt,
+        1_000,
+      );
+      assert.equal(
+        await reopened.getSecretMetadata({
+          principalId: PRINCIPAL,
+          reference: deleting.reference,
+        }),
+        null,
+      );
+    });
+  });
+
+  test('bounds tombstones separately so deleted records do not exhaust live capacity', async () => {
+    await withTempRoot(async (root) => {
+      const tombstones = Array.from({ length: 2_048 }, (_, index) => ({
+        secretId: generatedSecretId(index),
+        ownerPrincipalId: PRINCIPAL,
+        revision: 2,
+        status: 'deleted',
+        createdAt: 1,
+        // These old tombstones appear newer than the next deletions after a
+        // wall-clock rollback. Retention must follow deletion order instead.
+        updatedAt: 10_000,
+      }));
+      const path = join(root, MANAGED_SECRET_DOCUMENT_FILE);
+      await writeFile(
+        path,
+        `${JSON.stringify({
+          schemaVersion: MANAGED_SECRET_DOCUMENT_SCHEMA_VERSION,
+          revision: 2_048,
+          secrets: tombstones,
+          grants: [],
+        })}\n`,
+        'utf8',
+      );
+      const createdIds = [generatedSecretId(4_096), generatedSecretId(4_097)];
+      const store = createEncryptedFileManagedSecretStore({
+        controlPlaneRoot: root,
+        keyProvider: new TestKeyProvider(),
+        now: () => 1,
+        newSecretId: () => createdIds.shift()!,
+      });
+
+      const first = await store.createSecret({ principalId: PRINCIPAL, value: 'reclaimed-one' });
+      const second = await store.createSecret({ principalId: PRINCIPAL, value: 'reclaimed-two' });
+      let document = JSON.parse(await readFile(path, 'utf8')) as {
+        secrets: Array<{ secretId: string; status: string }>;
+      };
+      assert.equal(document.secrets.filter((record) => record.status !== 'deleted').length, 2);
+      assert.equal(document.secrets.filter((record) => record.status === 'deleted').length, 2_048);
+
+      await store.deleteSecret({
+        principalId: PRINCIPAL,
+        reference: first.reference,
+        expectedRevision: first.revision,
+      });
+      await store.deleteSecret({
+        principalId: PRINCIPAL,
+        reference: second.reference,
+        expectedRevision: second.revision,
+      });
+      document = JSON.parse(await readFile(path, 'utf8')) as {
+        secrets: Array<{ secretId: string; status: string }>;
+      };
+      assert.equal(document.secrets.length, 2_048);
+      assert.ok(document.secrets.every((record) => record.status === 'deleted'));
+      assert.ok(document.secrets.some((record) => record.secretId === first.reference.secretId));
+      assert.ok(document.secrets.some((record) => record.secretId === second.reference.secretId));
+      assert.equal(
+        document.secrets.some((record) => record.secretId === generatedSecretId(0)),
+        false,
+      );
+      assert.equal(
+        document.secrets.some((record) => record.secretId === generatedSecretId(1)),
+        false,
+      );
+    });
+  });
+
   test('persists only authenticated ciphertext in a private control-plane root', async () => {
     await withTempRoot(async (root) => {
       const value = 'never-write-this-in-plaintext';
@@ -462,6 +597,10 @@ function sequenceIds(): () => string {
     if (!value) throw new Error('test secret ids exhausted');
     return value;
   };
+}
+
+function generatedSecretId(index: number): string {
+  return `10000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`;
 }
 
 function activationContext(cloudSessionId: string) {

@@ -199,7 +199,7 @@ export class InMemoryManagedSecretStore implements ManagedSecretStore {
     const record: InMemorySecretRecord = {
       ...prepared.record,
       revision: prepared.record.revision + 1,
-      updatedAt: managedSecretTimestamp(this.#now()),
+      updatedAt: mutationTimestamp(prepared.record, this.#now()),
       value: managedSecretValue(input.value),
     };
     this.#records.set(record.reference.secretId, record);
@@ -214,7 +214,7 @@ export class InMemoryManagedSecretStore implements ManagedSecretStore {
       ...prepared.record,
       revision: prepared.record.revision + 1,
       status: 'revoked',
-      updatedAt: managedSecretTimestamp(this.#now()),
+      updatedAt: mutationTimestamp(prepared.record, this.#now()),
       value: undefined,
     };
     this.#records.set(record.reference.secretId, record);
@@ -228,7 +228,7 @@ export class InMemoryManagedSecretStore implements ManagedSecretStore {
       ...prepared.record,
       revision: prepared.record.revision + 1,
       status: 'deleted',
-      updatedAt: managedSecretTimestamp(this.#now()),
+      updatedAt: mutationTimestamp(prepared.record, this.#now()),
       value: undefined,
     };
     this.#records.set(record.reference.secretId, record);
@@ -424,6 +424,10 @@ function publicMetadata(record: ManagedSecretMetadata): ManagedSecretMetadata {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
+}
+
+function mutationTimestamp(record: Pick<ManagedSecretMetadata, 'updatedAt'>, now: number): number {
+  return Math.max(record.updatedAt, managedSecretTimestamp(now));
 }
 
 function assertManagedSecretId(value: unknown): asserts value is string {

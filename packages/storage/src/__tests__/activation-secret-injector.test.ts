@@ -10,7 +10,9 @@ import {
 import {
   InMemoryManagedSecretStore,
   ManagedSecretError,
+  type ManagedSecretMaterial,
   type ManagedSecretMetadata,
+  type ResolveManagedSecretsForActivationInput,
 } from '../managed-secret-store.js';
 
 const PRINCIPAL = 'user-1';
@@ -111,6 +113,64 @@ describe('ActivationSecretInjector', () => {
       (error: unknown) => error instanceof ManagedSecretError && error.code === 'unauthorized',
     );
     assert.deepEqual(events, []);
+  });
+
+  test('rejects reordered material references before the first sink effect', async () => {
+    const ids = ['00000000-0000-4000-8000-000000000021', '00000000-0000-4000-8000-000000000022'];
+    const store = new ReorderingManagedSecretStore({ newSecretId: () => ids.shift()! });
+    const first = await store.createSecret({ principalId: PRINCIPAL, value: 'first-value' });
+    const second = await store.createSecret({ principalId: PRINCIPAL, value: 'second-value' });
+    for (const secret of [first, second]) {
+      await store.authorizeSession({
+        principalId: PRINCIPAL,
+        reference: secret.reference,
+        cloudSessionId: SESSION,
+      });
+    }
+    const events: string[] = [];
+
+    await assert.rejects(
+      new ActivationSecretInjector(store).prepare({
+        context: CONTEXT,
+        bindings: [binding(first, 'FIRST_TOKEN'), binding(second, 'SECOND_TOKEN')],
+        sink: recordingSink(events),
+      }),
+      (error: unknown) => error instanceof ManagedSecretError && error.code === 'integrity_failure',
+    );
+    assert.deepEqual(events, []);
+  });
+
+  test('uses a private material snapshot across asynchronous sink effects', async () => {
+    const ids = ['00000000-0000-4000-8000-000000000031', '00000000-0000-4000-8000-000000000032'];
+    const store = new MutableMaterialManagedSecretStore({ newSecretId: () => ids.shift()! });
+    const first = await store.createSecret({ principalId: PRINCIPAL, value: 'first-value' });
+    const second = await store.createSecret({ principalId: PRINCIPAL, value: 'second-value' });
+    for (const secret of [first, second]) {
+      await store.authorizeSession({
+        principalId: PRINCIPAL,
+        reference: secret.reference,
+        cloudSessionId: SESSION,
+      });
+    }
+    const events: string[] = [];
+
+    const handle = await new ActivationSecretInjector(store).prepare({
+      context: CONTEXT,
+      bindings: [binding(first, 'FIRST_TOKEN'), binding(second, 'SECOND_TOKEN')],
+      sink: {
+        async injectEnvironmentVariable({ name, value }) {
+          events.push(`inject:${name}:${value}`);
+          if (name === 'FIRST_TOKEN') store.replaceSecondMaterialWithFirst();
+          return oneShotLease(() => events.push(`release:${name}`));
+        },
+      },
+    });
+
+    assert.deepEqual(events, [
+      'inject:FIRST_TOKEN:first-value',
+      'inject:SECOND_TOKEN:second-value',
+    ]);
+    await handle.release();
   });
 
   test('rolls back earlier injections and redacts a sink failure', async () => {
@@ -228,6 +288,33 @@ describe('ActivationSecretInjector', () => {
     );
   });
 });
+
+class ReorderingManagedSecretStore extends InMemoryManagedSecretStore {
+  override async resolveForActivation(
+    input: ResolveManagedSecretsForActivationInput,
+  ): Promise<readonly ManagedSecretMaterial[]> {
+    return [...(await super.resolveForActivation(input))].reverse();
+  }
+}
+
+class MutableMaterialManagedSecretStore extends InMemoryManagedSecretStore {
+  #material: ManagedSecretMaterial[] = [];
+
+  override async resolveForActivation(
+    input: ResolveManagedSecretsForActivationInput,
+  ): Promise<readonly ManagedSecretMaterial[]> {
+    this.#material = (await super.resolveForActivation(input)).map((item) => ({
+      ...item,
+      reference: { ...item.reference },
+    }));
+    return this.#material;
+  }
+
+  replaceSecondMaterialWithFirst(): void {
+    const first = this.#material[0];
+    if (first) this.#material[1] = first;
+  }
+}
 
 async function preparedStore() {
   const ids = ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002'];
