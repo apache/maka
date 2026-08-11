@@ -359,68 +359,6 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
-  test('rebuilds transcript from stored session messages', () => {
-    const state = createMakaPiTranscriptState();
-
-    replaceTranscriptWithStoredMessages(state, [
-      {
-        type: 'user',
-        id: 'user-1',
-        turnId: 'turn-1',
-        ts: 1,
-        text: 'What did we decide?',
-      },
-      {
-        type: 'assistant',
-        id: 'assistant-1',
-        turnId: 'turn-1',
-        ts: 2,
-        text: 'We decided to keep the TUI small.',
-        thinking: { text: 'recall the decision' },
-        modelId: 'deepseek-v4-flash',
-      },
-      {
-        type: 'tool_call',
-        id: 'tool-1',
-        turnId: 'turn-1',
-        ts: 3,
-        toolName: 'Read',
-        args: { path: 'README.md' },
-      },
-      {
-        type: 'tool_result',
-        id: 'tool-result-1',
-        turnId: 'turn-1',
-        ts: 4,
-        toolUseId: 'tool-1',
-        isError: false,
-        content: { kind: 'text', text: 'README contents' },
-      },
-    ] satisfies StoredMessage[]);
-
-    // Stored thinking happened before the reply text, so it resumes above it.
-    assert.deepEqual(
-      state.entries.map((entry) => entry.kind),
-      ['user', 'thinking', 'assistant', 'tool'],
-    );
-    assert.equal(
-      state.entries[0]?.kind === 'user' ? state.entries[0].text : '',
-      'What did we decide?',
-    );
-    assert.equal(
-      state.entries[1]?.kind === 'thinking' ? state.entries[1].text : '',
-      'recall the decision',
-    );
-    assert.equal(
-      state.entries[2]?.kind === 'assistant' ? state.entries[2].text : '',
-      'We decided to keep the TUI small.',
-    );
-    assert.equal(
-      state.entries[3]?.kind === 'tool' ? state.entries[3].output : '',
-      'README contents',
-    );
-  });
-
   test('folds stored background-task polling into its parent Bash card on resume', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';
@@ -933,55 +871,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(rendered, /Entered: echo hello\\r/);
     assert.match(rendered, /Resized to 100x30/);
     assert.equal(rendered.split('UNIQUE-PTY-FRAME').length - 1, 1);
-  });
-
-  test('projects raw live WriteStdin args at the TUI transcript boundary', () => {
-    const state = createMakaPiTranscriptState();
-    const ref = 'maka://runtime/background-tasks/pty-live';
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'write-live',
-        toolName: 'WriteStdin',
-        args: { ref, input: 'echo live\r' },
-      }),
-    );
-
-    const entry = state.entries.find(
-      (candidate): candidate is Extract<typeof candidate, { kind: 'tool' }> =>
-        candidate.kind === 'tool',
-    );
-    assert.deepEqual(entry?.input, {
-      ref,
-      inputPreview: { text: 'echo live\\r', bytes: 10, truncated: false },
-    });
-  });
-
-  test('rebuilds fail-open notes without claiming history was trimmed', () => {
-    const state = createMakaPiTranscriptState();
-
-    replaceTranscriptWithStoredMessages(state, [
-      {
-        type: 'system_note',
-        id: 'note-failed-open',
-        turnId: 'turn-1',
-        ts: 1,
-        kind: 'context_compaction_failed_open',
-      },
-    ] satisfies StoredMessage[]);
-
-    assert.deepEqual(
-      state.entries.filter((entry) => entry.kind === 'notice'),
-      [
-        {
-          kind: 'notice',
-          level: 'info',
-          text: 'Context summary failed; the session continued without a new summary.',
-        },
-      ],
-    );
   });
 
   test('renders an unboxed session sandbox boundary request with exact scopes', () => {

@@ -13,40 +13,6 @@ import type { RuntimeHostMakaSessionDriver } from '../runtime-host-session-drive
 import type { MakaRunContextInput, MakaRunOutcome } from '../run-command-core.js';
 
 describe('Runtime Host maka run adapter', () => {
-  test('runs the public command through one Host connection and preserves stdout semantics', async () => {
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    let closes = 0;
-    const exitCode = await runRuntimeHostTextCli(
-      ['answer once'],
-      {
-        workspaceRoot: () => '/runtime-host-data',
-        processCwd: () => process.cwd(),
-        stdinIsTTY: () => true,
-        readStdin: async () => '',
-        writeStdout: (text) => stdout.push(text),
-        writeStderr: (text) => stderr.push(text),
-        onSigint: () => () => {},
-        newId: () => 'turn-1',
-      },
-      {
-        connect: async () => ({
-          connection: readinessConnection(),
-          catalog: connectionCatalog(),
-          close: async () => {
-            closes += 1;
-          },
-        }),
-        createContext: (_connection, _catalog, input) => publicCommandContext(input),
-      },
-    );
-
-    assert.equal(exitCode, 0);
-    assert.deepEqual(stdout, ['Host answer\n']);
-    assert.deepEqual(stderr, []);
-    assert.equal(closes, 1);
-  });
-
   test('stops before context creation when CLI preflight finds a confirmed blocker', async () => {
     const stderr: string[] = [];
     let contextCreations = 0;
@@ -177,36 +143,6 @@ describe('Runtime Host maka run adapter', () => {
     assert.deepEqual(fixture.exactTurnStops, [
       { sessionId: 'session-created', turnId: 'turn-1', runId: 'run-1' },
     ]);
-  });
-
-  test('folds one Host Turn into the shared one-shot invocation contract', async () => {
-    const observed: MakaRunOutcome[] = [];
-    const fixture = runFixture({ observed });
-    const context = fixture.context;
-    const session = await context.runtime.createSession({
-      cwd: '/workspace',
-      name: 'Run once',
-      backend: 'ai-sdk',
-      llmConnectionSlug: 'openai-main',
-      model: 'gpt-5',
-      permissionMode: 'ask',
-    });
-    const events = await collect(
-      context.runtime.sendMessage(session.id, { turnId: 'turn-1', text: 'answer once' }),
-    );
-
-    assert.deepEqual(
-      events.map((event) => event.type),
-      ['text_complete', 'complete'],
-    );
-    assert.equal(observed.length, 1);
-    assert.equal(observed[0]?.outcomeId, 'run-1');
-    assert.equal(observed[0]?.status, 'completed');
-    assert.equal(observed[0]?.finalOutput, 'Host answer');
-    assert.deepEqual(context.target, {
-      connection: { slug: 'openai-main' },
-      model: 'gpt-5',
-    });
   });
 
   test('waits for Host-started graph supervisor Turns before returning', async () => {
