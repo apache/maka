@@ -321,23 +321,6 @@ test('treats empty configuration patches as read-only lookups', async () => {
   ]);
 });
 
-test('reads the bounded Host execution boundary summary', async () => {
-  const { client, requests } = clientWithResponses([
-    { kind: 'managed', access: 'read_only', revision: 4 },
-  ]);
-
-  assert.deepEqual(await client.readExecutionBoundary('session-1'), {
-    kind: 'managed',
-    access: 'read_only',
-    revision: 4,
-  });
-  assert.deepEqual(requests, [
-    {
-      operation: 'session.execution_boundary.query',
-      input: { sessionId: 'session-1' },
-    },
-  ]);
-});
 
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([

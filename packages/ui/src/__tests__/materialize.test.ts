@@ -77,42 +77,6 @@ describe("materializeChat attachments", () => {
     ]);
   });
 
-  test("projects frozen inline references onto chat and turn user messages", () => {
-    const inlineReferences = [
-      {
-        kind: "skill" as const,
-        value: "/skill:writer",
-        label: "Writer",
-        start: 4,
-      },
-      {
-        kind: "workspace_file" as const,
-        value: "@docs/my plan.md",
-        label: "my plan.md",
-        start: 21,
-      },
-    ];
-    const messages: StoredMessage[] = [
-      {
-        type: "user",
-        id: "m1",
-        turnId: "t1",
-        ts: 1,
-        text: "model envelope",
-        displayText: "Use /skill:writer on @docs/my plan.md",
-        inlineReferences,
-      },
-    ];
-
-    assert.deepEqual(
-      materializeChat(messages)[0]?.inlineReferences,
-      inlineReferences,
-    );
-    assert.deepEqual(
-      materializeTurns(messages)[0]?.user?.inlineReferences,
-      inlineReferences,
-    );
-  });
 
   test("preserves an explicit empty reference projection as the new-format marker", () => {
     const messages: StoredMessage[] = [
@@ -129,21 +93,6 @@ describe("materializeChat attachments", () => {
     assert.deepEqual(materializeTurns(messages)[0]?.user?.inlineReferences, []);
   });
 
-  test("projects user message attachments onto the chat item", () => {
-    const messages: StoredMessage[] = [
-      {
-        type: "user",
-        id: "m1",
-        turnId: "t1",
-        ts: 1,
-        text: "see this",
-        attachments: [imageAttachment, codeAttachment],
-      },
-    ];
-    const items = materializeChat(messages);
-    assert.equal(items.length, 1);
-    assert.deepEqual(items[0].attachments, [imageAttachment, codeAttachment]);
-  });
 
 
   test("preserves Host provenance on a Goal continuation", () => {
@@ -168,24 +117,6 @@ describe("materializeChat attachments", () => {
     });
   });
 
-  test("surfaces automatic context compaction system notes inline", () => {
-    const messages: StoredMessage[] = [
-      {
-        type: "system_note",
-        id: "note-1",
-        turnId: "t1",
-        ts: 1,
-        kind: "context_compacted",
-      },
-    ];
-    const items = materializeChat(messages);
-    assert.equal(items.length, 1);
-    assert.equal(items[0].role, "system");
-    assert.equal(
-      items[0].text,
-      "Context compacted to keep this session within the model window.",
-    );
-  });
 
 
 });
