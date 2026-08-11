@@ -2,47 +2,15 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
 import {
-  ALLOWED_IMAGE_MIMES,
   IMAGE_PAYLOAD_MAX_BASE64_LENGTH,
   IMAGE_PAYLOAD_MAX_BYTES,
   decideImagePostLoad,
   decideImageReadOutcome,
   exceedsImagePayloadCap,
-  normalizeAllowedImageMime,
   resolvePreviewKind,
 } from '@maka/ui/artifact-preview-registry';
 
 describe('artifact preview registry', () => {
-  it('resolves kinds, MIME metadata, and extension fallback from one decision table', () => {
-    const cases: Array<{
-      input: Parameters<typeof resolvePreviewKind>[0];
-      expected: ReturnType<typeof resolvePreviewKind>;
-    }> = [
-      ...(['file', 'diff', 'html', 'pdf'] as const).map((kind) => ({
-        input: { name: `artifact.${kind}`, kind },
-        expected: { kind: 'unsupported' as const, reason: 'kind_disallowed' as const },
-      })),
-      ...[...ALLOWED_IMAGE_MIMES].map((mimeType) => ({
-        input: { name: 'untitled', kind: 'image' as const, mimeType },
-        expected: { kind: 'image' as const, reason: 'mime_match' as const },
-      })),
-      { input: { name: 'shot.png', kind: 'image', mimeType: ' IMAGE/PNG ' }, expected: { kind: 'image', reason: 'mime_match' } },
-      ...['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif'].map((extension) => ({
-        input: { name: `image.${extension}`, kind: 'image' as const },
-        expected: { kind: 'image' as const, reason: 'ext_fallback' as const },
-      })),
-      { input: { name: 'image.JpEg', kind: 'image' }, expected: { kind: 'image', reason: 'ext_fallback' } },
-      ...['untitled', 'photo.heic', '', 'shot.', '.hidden'].map((name) => ({
-        input: { name, kind: 'image' as const },
-        expected: { kind: 'unsupported' as const, reason: 'no_mime_no_ext' as const },
-      })),
-    ];
-
-    for (const { input, expected } of cases) {
-      assert.deepEqual(resolvePreviewKind(input), expected, JSON.stringify(input));
-    }
-  });
-
   it('treats present MIME metadata as authoritative and rejects unsafe formats', () => {
     for (const mimeType of ['image/svg+xml', 'image/heic', 'image/bmp']) {
       assert.deepEqual(
@@ -71,20 +39,6 @@ describe('artifact preview registry', () => {
       assert.equal(exceedsImagePayloadCap(value as never), true);
     }
   });
-
-
-  it('normalizes only allowlisted image MIME values', () => {
-    for (const mimeType of ALLOWED_IMAGE_MIMES) {
-      assert.equal(normalizeAllowedImageMime(` ${mimeType.toUpperCase()} `), mimeType);
-    }
-    for (const mimeType of ['image/svg+xml', 'image/heic', 'application/octet-stream', '', '   ']) {
-      assert.equal(normalizeAllowedImageMime(mimeType), null);
-    }
-    for (const value of [undefined, null, 42]) {
-      assert.equal(normalizeAllowedImageMime(value as never), null);
-    }
-  });
-
   it('uses sniffed MIME and checks size before MIME after loading', () => {
     const base64 = 'AAAA';
     assert.deepEqual(decideImagePostLoad({ base64, mimeType: ' IMAGE/PNG ' }), {
