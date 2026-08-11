@@ -1415,7 +1415,6 @@ export {
   reconcileConnectionAfterEnabledModelsChange,
   reconcileConnectionAfterModelFetch,
   effectiveBaseUrl,
-  migrateConnectionV1ToV2,
   normalizeConnectionBaseUrl,
   persistedBaseUrl,
   providerSupportsModelDiscovery,
