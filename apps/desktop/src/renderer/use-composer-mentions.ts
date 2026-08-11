@@ -3,6 +3,23 @@ import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { SkillEntry } from '@maka/ui';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 
+function invocableSkillListsEqual(
+  current: readonly InvocableSkillEntry[],
+  next: readonly InvocableSkillEntry[],
+): boolean {
+  if (current.length !== next.length) return false;
+  return current.every((skill, index) => {
+    const other = next[index];
+    return (
+      other !== undefined &&
+      skill.ref === other.ref &&
+      skill.id === other.id &&
+      skill.name === other.name &&
+      skill.description === other.description
+    );
+  });
+}
+
 /**
  * Owns the composer mention popup wiring so app-shell.tsx keeps no inline
  * `window.maka` state (app-shell-composer-attachment-owner-contract). Derives
@@ -35,13 +52,17 @@ export function useComposerMentions(options: {
   useEffect(() => {
     let cancelled = false;
     let requestVersion = 0;
-    // Do not briefly advertise the previous session/project's Skills while the
-    // authoritative projection is being refreshed. The same fail-closed reset
-    // applies when a model/mode/plan or MCP event changes the backend surface:
-    // a visible popup must never retain a now-unavailable Skill.
-    const refresh = () => {
+    // Fail closed only on a key change (this effect re-running): the previous
+    // session/project's Skills must not stay visible while the authoritative
+    // projection reloads. A same-key refresh keeps the current list on screen
+    // instead. Clearing on those too is what made an open `/` menu alternate
+    // between its commands-only and commands-plus-skills geometries on every
+    // session or MCP event (#2667); the stale window is one IPC round trip,
+    // and a Skill withdrawn inside it still fails safely, because selection
+    // resolves through the Runtime resolver that no longer knows it.
+    const refresh = (options?: { failClosed?: boolean }) => {
       const version = ++requestVersion;
-      setMentionSkills([]);
+      if (options?.failClosed) setMentionSkills([]);
       void window.maka.skills.listInvocable(
         sessionId,
         sessionId
@@ -52,7 +73,12 @@ export function useComposerMentions(options: {
             },
       ).then(
         (next) => {
-          if (!cancelled && version === requestVersion) setMentionSkills(next);
+          if (cancelled || version !== requestVersion) return;
+          // A refresh that changed nothing keeps the previous array identity,
+          // so the composer's trigger memo and menu-replay effect stay quiet.
+          setMentionSkills((current) =>
+            invocableSkillListsEqual(current, next) ? current : [...next],
+          );
         },
         () => {
           // Fail soft: an unavailable projection leaves `/` with no suggestions.
@@ -60,7 +86,7 @@ export function useComposerMentions(options: {
         },
       );
     };
-    refresh();
+    refresh({ failClosed: true });
     const unsubscribeSessions = window.maka.sessions.subscribeChanges((event) => {
       if (
         sessionId &&
