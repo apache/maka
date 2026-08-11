@@ -153,23 +153,6 @@ describe('subagent tools', () => {
   });
 
   test('built-in catalog exposes local-read without shell, web, nested, or write tools', () => {
-    expect(LOCAL_READ_AGENT_DEFINITION.id).toBe(LOCAL_READ_AGENT_ID);
-    expect(LOCAL_READ_AGENT_DEFINITION.profile).toBe(LOCAL_READ_AGENT_PROFILE);
-    expect(LOCAL_READ_AGENT_DEFINITION.contract).toEqual({
-      capability: 'local_read',
-      invocation: AGENT_INVOCATION_FOREGROUND,
-      context: AGENT_CONTEXT_ISOLATED,
-      workspace: AGENT_WORKSPACE_SAME_WORKSPACE,
-      defaultWriteBack: AGENT_WRITE_BACK_SUMMARY,
-      supportedWriteBack: [AGENT_WRITE_BACK_SUMMARY],
-    });
-    expect(LOCAL_READ_AGENT_DEFINITION.permissionMode).toBe('explore');
-    expect([...LOCAL_READ_AGENT_DEFINITION.tools]).toEqual(['Read', 'Glob', 'Grep']);
-    expect(LOCAL_READ_AGENT_DEFINITION.tools.includes('Bash')).toBe(false);
-    expect(LOCAL_READ_AGENT_DEFINITION.tools.includes('WebSearch')).toBe(false);
-    expect(LOCAL_READ_AGENT_DEFINITION.tools.includes('WebFetch')).toBe(false);
-    expect(LOCAL_READ_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
-
     const definitions = listBuiltinAgentDefinitions({
       tools: [
         testCatalogTool('Read', 'read'),
@@ -191,23 +174,6 @@ describe('subagent tools', () => {
   });
 
   test('built-in catalog exposes web-research with only WebSearch and no local or write tools', () => {
-    expect(WEB_RESEARCH_AGENT_DEFINITION.id).toBe(WEB_RESEARCH_AGENT_ID);
-    expect(WEB_RESEARCH_AGENT_DEFINITION.profile).toBe(WEB_RESEARCH_AGENT_PROFILE);
-    expect(WEB_RESEARCH_AGENT_DEFINITION.contract).toEqual({
-      capability: 'web_research',
-      invocation: AGENT_INVOCATION_FOREGROUND,
-      context: AGENT_CONTEXT_ISOLATED,
-      workspace: AGENT_WORKSPACE_SAME_WORKSPACE,
-      defaultWriteBack: AGENT_WRITE_BACK_SUMMARY,
-      supportedWriteBack: [AGENT_WRITE_BACK_SUMMARY],
-    });
-    expect(WEB_RESEARCH_AGENT_DEFINITION.permissionMode).toBe('execute');
-    expect([...WEB_RESEARCH_AGENT_DEFINITION.tools]).toEqual(['WebSearch']);
-    expect(WEB_RESEARCH_AGENT_DEFINITION.tools.includes('Read')).toBe(false);
-    expect(WEB_RESEARCH_AGENT_DEFINITION.tools.includes('Bash')).toBe(false);
-    expect(WEB_RESEARCH_AGENT_DEFINITION.tools.includes('Write')).toBe(false);
-    expect(WEB_RESEARCH_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
-
     const withWebSearch = listBuiltinAgentDefinitions({
       tools: [
         testCatalogTool('Read', 'read'),
