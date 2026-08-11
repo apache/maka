@@ -1,4 +1,4 @@
-import { decodeStoredMessageForRead, type StoredMessage } from '@maka/core/session';
+import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
 import { type SessionEvent } from '@maka/core/events';
 import {
   RuntimeHostSessionProjector,
@@ -120,7 +120,7 @@ export class RuntimeHostSessionChannel {
   async #hydrateInitial(subscription: RuntimeHostSessionSubscription): Promise<boolean> {
     let messages: StoredMessage[] | undefined;
     try {
-      messages = await subscription.loadTranscript(decodeStoredMessageForRead);
+      messages = await subscription.loadTranscript(decodeStoredMessage);
     } catch (error) {
       if (!this.#canRecover(error)) throw error;
       this.#failedSubscriptions.add(subscription);
@@ -313,7 +313,7 @@ export class RuntimeHostSessionChannel {
       this.#pendingFrames.length = 0;
       void this.#pump(replacement);
       try {
-        const messages = await replacement.loadTranscript(decodeStoredMessageForRead);
+        const messages = await replacement.loadTranscript(decodeStoredMessage);
         if (this.#failedSubscriptions.has(replacement)) {
           throw new RuntimeHostSubscriptionError(
             'connection_closed',

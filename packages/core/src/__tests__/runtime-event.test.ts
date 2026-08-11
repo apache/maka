@@ -18,7 +18,7 @@ import {
   type RuntimeEvent,
   type RuntimeEventActions,
 } from '../runtime-event.js';
-import { decodeStoredMessageForRecovery } from '../session.js';
+import { decodeStoredMessage } from '../session.js';
 
 /** Minimal valid RuntimeEvent; callers spread overrides on top. */
 function baseEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
@@ -78,7 +78,7 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
       },
     },
   ];
-  const stored = decodeStoredMessageForRecovery({
+  const stored = decodeStoredMessage({
     type: 'assistant',
     id: 'message-1',
     turnId: 'turn-1',
@@ -386,7 +386,7 @@ describe('RuntimeEvent content variants', () => {
       event.content && 'quotes' in event.content ? event.content.quotes?.[0] : undefined,
       quotes[0],
     );
-    const stored = decodeStoredMessageForRecovery({
+    const stored = decodeStoredMessage({
       type: 'user',
       id: 'message-1',
       turnId: 'turn-1',
@@ -410,7 +410,7 @@ describe('RuntimeEvent content variants', () => {
     assert.notEqual(stored.quotes?.[0], quotes[0]);
     assert.throws(
       () =>
-        decodeStoredMessageForRecovery({
+        decodeStoredMessage({
           type: 'user',
           id: 'message-1',
           turnId: 'turn-1',

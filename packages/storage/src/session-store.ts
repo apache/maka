@@ -18,7 +18,7 @@ import {
 } from './operational-state-store.js';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
 import {
-  decodeStoredMessageForRecovery,
+  decodeStoredMessage,
   deriveTurnRecords,
   isSessionBlockedReason,
   isSessionConversationCopy,
@@ -325,7 +325,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       throw new Error('Subagent spawn metadata requires createSubagent()');
     }
     const canonicalMessages = messages.map((message) =>
-      decodeStoredMessageForRecovery(JSON.parse(JSON.stringify(message)) as unknown),
+      decodeStoredMessage(JSON.parse(JSON.stringify(message)) as unknown),
     );
     const header: SessionHeader = {
       ...buildSessionHeader(this.workspaceRoot, input),

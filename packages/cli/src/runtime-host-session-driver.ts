@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
-  decodeStoredMessageForRead,
+  decodeStoredMessage,
   userFacingText,
   type SessionSummary,
   type StoredMessage,
@@ -1016,7 +1016,7 @@ async function loadCurrentMessages(
     }
   })();
   try {
-    return await subscription.loadTranscript(decodeStoredMessageForRead);
+    return await subscription.loadTranscript(decodeStoredMessage);
   } finally {
     await subscription.close().catch(() => undefined);
     await draining.catch(() => undefined);

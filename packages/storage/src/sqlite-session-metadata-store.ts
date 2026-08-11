@@ -61,8 +61,7 @@ import {
   type SessionHeader,
   type StoredMessage,
   type SubagentSessionParent,
-  decodeStoredMessageForRead,
-  decodeStoredMessageForRecovery,
+  decodeStoredMessage,
 } from '@maka/core/session';
 import {
   type AgentGraphIntentAdmissionSnapshot,
@@ -1277,7 +1276,7 @@ export class SqliteSessionMetadataStore {
     // through JSON so the stored form matches what the recovery path reads.
     const encoded = messages.map((message) => {
       const json = JSON.stringify(message);
-      const canonical = decodeStoredMessageForRecovery(JSON.parse(json) as unknown);
+      const canonical = decodeStoredMessage(JSON.parse(json) as unknown);
       return { message: canonical, json };
     });
     return this.transaction(() => {
@@ -1337,7 +1336,7 @@ export class SqliteSessionMetadataStore {
     if (messages.length === 0) return;
     const encoded = messages.map((message) => {
       const json = JSON.stringify(message);
-      const canonical = decodeStoredMessageForRecovery(JSON.parse(json) as unknown);
+      const canonical = decodeStoredMessage(JSON.parse(json) as unknown);
       return { message: canonical, json };
     });
     this.transaction(() => {
@@ -1379,11 +1378,11 @@ export class SqliteSessionMetadataStore {
   }
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
-    return this.readMessagesWith(sessionId, decodeStoredMessageForRead);
+    return this.readMessagesWith(sessionId, decodeStoredMessage);
   }
 
   async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
-    return this.readMessagesWith(sessionId, decodeStoredMessageForRecovery);
+    return this.readMessagesWith(sessionId, decodeStoredMessage);
   }
 
   async readPreviewMessages(sessionId: string, limit = 10): Promise<StoredMessage[]> {
@@ -1406,7 +1405,7 @@ export class SqliteSessionMetadataStore {
       .all(sessionId, limit) as Array<{ record_json?: unknown }>;
     return rows
       .reverse()
-      .map((row, index) => decodeStoredMessageRow(row.record_json, sessionId, index, false));
+      .map((row, index) => decodeStoredMessageRow(row.record_json, sessionId, index));
   }
 
   async beginCatalogProjectionWrite(): Promise<void> {
@@ -4574,14 +4573,13 @@ function decodeStoredMessageRow(
   value: unknown,
   sessionId: string,
   index: number,
-  recovery: boolean,
 ): StoredMessage {
   if (typeof value !== 'string') {
     throw new Error(`Invalid Session message row ${index} for ${sessionId}`);
   }
   try {
     const parsed = JSON.parse(value) as unknown;
-    return recovery ? decodeStoredMessageForRecovery(parsed) : decodeStoredMessageForRead(parsed);
+    return decodeStoredMessage(parsed);
   } catch (error) {
     throw new Error(`Invalid Session message row ${index} for ${sessionId}`, {
       cause: error,

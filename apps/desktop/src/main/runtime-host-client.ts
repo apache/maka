@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { AttachmentRef, ShellRunUpdate } from "@maka/core/events";
 import type { PlanSessionState, PlanUserControlInput } from "@maka/core/plan";
 import {
-  decodeStoredMessageForRead,
+  decodeStoredMessage,
   type StoredMessage,
 } from "@maka/core/session";
 import type { Task } from "@maka/core/task-ledger";
@@ -1395,7 +1395,7 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
     this.snapshot = subscription.snapshot;
     this.activeAssistantStreams = subscription.activeAssistantStreams;
     this.events = subscription;
-    this.transcript = subscription.loadTranscript(decodeStoredMessageForRead);
+    this.transcript = subscription.loadTranscript(decodeStoredMessage);
     void this.transcript.catch(() => undefined);
   }
 

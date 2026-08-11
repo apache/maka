@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { StoredMessage } from '../session.js';
-import { decodeStoredMessageForRecovery } from '../session.js';
+import { decodeStoredMessage } from '../session.js';
 import { decodeCanonicalToolResultContent } from '../tool-result-record-schema.js';
 
 describe('sandbox denial tool result metadata', () => {
@@ -17,7 +17,7 @@ describe('sandbox denial tool result metadata', () => {
 
     assert.deepEqual(decodeCanonicalToolResultContent(result), result);
     assert.deepEqual(
-      toolResultContent(decodeStoredMessageForRecovery(storedToolResult(result))),
+      toolResultContent(decodeStoredMessage(storedToolResult(result))),
       result,
     );
   });
@@ -55,7 +55,7 @@ describe('sandbox boundary failure tool result metadata', () => {
 
     assert.deepEqual(decodeCanonicalToolResultContent(result), result);
     assert.deepEqual(
-      toolResultContent(decodeStoredMessageForRecovery(storedToolResult(result))),
+      toolResultContent(decodeStoredMessage(storedToolResult(result))),
       result,
     );
   });
@@ -92,7 +92,7 @@ describe('uncertain tool outcome metadata', () => {
 
     assert.deepEqual(decodeCanonicalToolResultContent(result), result);
     assert.deepEqual(
-      toolResultContent(decodeStoredMessageForRecovery(storedToolResult(result))),
+      toolResultContent(decodeStoredMessage(storedToolResult(result))),
       result,
     );
   });

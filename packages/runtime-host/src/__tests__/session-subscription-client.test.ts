@@ -9,7 +9,7 @@ import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
 } from '@maka/storage/root-authority';
-import { decodeStoredMessageForRead } from '@maka/core/session';
+import { decodeStoredMessage } from '@maka/core/session';
 import {
   connectRuntimeHost,
   RuntimeHostSubscriptionError,
@@ -312,7 +312,7 @@ test('loads a canonical transcript while live frames continue on the same connec
     },
     async (connection) => {
       const subscription = await connection.openSessionSubscription({ sessionId: 'session-1' });
-      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessageForRead), [message]);
+      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [message]);
       assert.deepEqual(await subscription[Symbol.asyncIterator]().next(), {
         done: false,
         value: deltaFrame(connection.hostEpoch, subscription.subscriptionId, 1),
@@ -404,10 +404,10 @@ test('restarts transcript loading after an expired snapshot', async () => {
     async (connection) => {
       const subscription = await connection.openSessionSubscription({ sessionId: 'session-1' });
       await assert.rejects(
-        () => subscription.loadTranscript(decodeStoredMessageForRead),
+        () => subscription.loadTranscript(decodeStoredMessage),
         hasSubscriptionReason('transcript_expired'),
       );
-      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessageForRead), [message]);
+      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [message]);
       await subscription.close();
     },
   );
