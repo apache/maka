@@ -169,16 +169,9 @@ describe('scheduled-task catalog', () => {
     if (result.ok) assert.equal(result.value.intentBody, '');
   });
 
-  it('keeps weekly and monthly recurrences as calendar schedules', () => {
+  it('clamps monthly recurrence to the last calendar day', () => {
     const runAt = new Date(2026, 0, 31, 9, 30).getTime();
-    const weekly = { kind: 'calendar' as const, recurrence: 'weekly' as const, anchorAt: runAt };
     const monthly = { kind: 'calendar' as const, recurrence: 'monthly' as const, anchorAt: runAt };
-    assert.deepEqual(weekly, { kind: 'calendar', recurrence: 'weekly', anchorAt: runAt });
-    assert.deepEqual(monthly, {
-      kind: 'calendar',
-      recurrence: 'monthly',
-      anchorAt: runAt,
-    });
     const february = computeNextFireAt(monthly, runAt);
     assert.equal(new Date(february!).getDate(), 28);
   });
