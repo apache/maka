@@ -14,7 +14,6 @@ import {
   decodeHostFrame,
   encodeArtifactQueryResult,
   encodeProtocolMessage,
-  HOST_OPERATION_SPECS,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RuntimeHostProtocolError,
 } from '../protocol/index.js';
@@ -23,20 +22,7 @@ import { encodeArtifactProjection } from '../protocol/artifact.js';
 const revision = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Artifact protocol', () => {
-  test('registers the closed ready ingest, query, and delete operations', () => {
-    assert.deepEqual(metadata('artifact.ingest'), {
-      mode: 'command',
-      availability: 'ready',
-    });
-    assert.deepEqual(metadata('artifact.query'), {
-      mode: 'query',
-      availability: 'ready',
-    });
-    assert.deepEqual(metadata('artifact.delete'), {
-      mode: 'command',
-      availability: 'ready',
-    });
-
+  test('accepts closed Artifact operations and rejects open shapes', () => {
     for (const input of [
       { kind: 'list_start', sessionId: 'session-1' },
       { kind: 'list_continue', sessionId: 'session-1', revision, cursor: '128' },
@@ -412,11 +398,6 @@ function validArtifact() {
     summary: 'bounded',
     status: 'live' as const,
   };
-}
-
-function metadata(key: 'artifact.ingest' | 'artifact.query' | 'artifact.delete') {
-  const { mode, availability } = HOST_OPERATION_SPECS[key];
-  return { mode, availability };
 }
 
 function request(

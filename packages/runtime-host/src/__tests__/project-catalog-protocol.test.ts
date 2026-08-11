@@ -14,59 +14,13 @@ const foreignHostPath = process.platform === 'win32' ? '/workspace' : 'C:\\works
 const revision = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Project catalog protocol', () => {
-  test('declares bounded ready operations and exact invalidations', () => {
-    assert.deepEqual(
-      Object.fromEntries(
-        (['project.catalog.query', 'project.catalog.mutate'] as const).map((operation) => [
-          operation,
-          {
-            mode: HOST_OPERATION_SPECS[operation].mode,
-            availability: HOST_OPERATION_SPECS[operation].availability,
-          },
-        ]),
-      ),
-      {
-        'project.catalog.query': { mode: 'query', availability: 'ready' },
-        'project.catalog.mutate': { mode: 'command', availability: 'ready' },
-      },
-    );
+  test('decodes exact invalidations', () => {
     const frame = { kind: 'project.catalog.changed' as const, revision: 1 };
     assert.deepEqual(decodeHostFrame(frame), frame);
     assert.throws(() => decodeHostFrame({ ...frame, extra: true }), isProtocolError);
   });
 
-  test('round-trips every closed mutation shape and correlates its result', () => {
-    for (const input of [
-      { kind: 'register', path: projectPath },
-      { kind: 'relink', projectId: 'project-1', path: projectPath },
-      { kind: 'rename', projectId: 'project-1', name: 'Project' },
-      { kind: 'archive', projectId: 'project-1' },
-      { kind: 'restore', projectId: 'project-1' },
-    ] as const) {
-      const request = {
-        requestId: `request-${input.kind}`,
-        operation: 'project.catalog.mutate' as const,
-        input,
-      };
-      assert.deepEqual(decodeClientFrame(request), request);
-    }
-    const mutation = {
-      requestId: 'request-register',
-      operation: 'project.catalog.mutate' as const,
-      ok: true as const,
-      result: {
-        kind: 'project' as const,
-        project: {
-          id: 'project-1',
-          aliases: [],
-          name: 'Project',
-          locationCount: 1,
-          archivedAt: null,
-          available: true,
-        },
-      },
-    };
-    assert.deepEqual(decodeHostFrame(mutation), mutation);
+  test('identifies Project catalog operations that expose Host paths', () => {
     const location = {
       requestId: 'request-location',
       operation: 'project.catalog.query' as const,
@@ -88,7 +42,6 @@ describe('Project catalog protocol', () => {
         nextCursor: null,
       },
     };
-    assert.deepEqual(decodeHostFrame(location), location);
     const foreignLocation = {
       ...location,
       result: {

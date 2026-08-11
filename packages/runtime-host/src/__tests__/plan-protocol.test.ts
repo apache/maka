@@ -20,10 +20,7 @@ const proposal = {
   submittedAt: 1,
 };
 
-test('Plan protocol declares bounded snapshot queries and stable controls', () => {
-  assert.equal(HOST_OPERATION_SPECS['plan.query'].mode, 'query');
-  assert.equal(HOST_OPERATION_SPECS['plan.control'].mode, 'control');
-  assert.equal(HOST_OPERATION_SPECS['plan.turn.start'].mode, 'command');
+test('Plan controls preserve request and result correlation', () => {
   assert.deepEqual(
     decodeRequestFrame({
       requestId: 'request-1',

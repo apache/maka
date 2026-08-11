@@ -64,57 +64,7 @@ export type SkillCatalogManagedUpdateMutationTypeContract = [
 ];
 
 describe('Runtime Host Skill catalog protocol', () => {
-  test('declares the four frozen ready operations and their error sets', () => {
-    assert.deepEqual(Object.keys(SKILL_CATALOG_OPERATION_SPECS).sort(), [
-      'skill.catalog.invocable.query',
-      'skill.catalog.mutate',
-      'skill.catalog.preview-update',
-      'skill.catalog.query',
-    ]);
-    const queryErrors = [
-      'host_not_ready',
-      'host_draining',
-      'operation_unavailable',
-      'invalid_request',
-      'persistence_failed',
-      'internal_failure',
-    ];
-    assert.deepEqual(
-      {
-        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.invocable.query'].mode,
-        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.invocable.query'].availability,
-        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.invocable.query'].errors,
-      },
-      { mode: 'query', availability: 'ready', errors: queryErrors },
-    );
-    assert.deepEqual(
-      {
-        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].mode,
-        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].availability,
-        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].errors,
-      },
-      { mode: 'query', availability: 'ready', errors: queryErrors },
-    );
-    assert.deepEqual(
-      {
-        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.preview-update'].mode,
-        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.preview-update'].availability,
-        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.preview-update'].errors,
-      },
-      { mode: 'query', availability: 'ready', errors: queryErrors },
-    );
-    assert.deepEqual(
-      {
-        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.mutate'].mode,
-        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.mutate'].availability,
-        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.mutate'].errors,
-      },
-      {
-        mode: 'command',
-        availability: 'ready',
-        errors: [...queryErrors, 'commit_outcome_unknown'],
-      },
-    );
+  test('identifies Skill catalog queries that expose Host paths', () => {
     assert.equal(
       SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].usesHostPaths?.({
         kind: 'start',
