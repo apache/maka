@@ -40,6 +40,17 @@ describe('McpClientManager Streamable HTTP fallback contract', () => {
       assert.ok(fixture.sseMethods.includes('initialize'));
       assert.ok(fixture.sseMethods.includes('tools/list'));
       assert.deepEqual(
+        manager.status('remote')?.tools.find((tool) => tool.name === 'echo')?.inputSchema,
+        {
+          type: 'object',
+          properties: {
+            value: { type: 'string' },
+            ratio: { type: 'number', 'x-mcp-header': 'Ratio' },
+          },
+        },
+        'legacy discovery must not apply modern x-mcp-header exclusion',
+      );
+      assert.deepEqual(
         await manager.callTool(bindingFor(manager, 'echo'), { value: `fallback-${status}` }),
         {
           content: [{ type: 'text', text: `fallback-${status}` }],
@@ -255,8 +266,9 @@ function remoteConfig(
 function bindingFor(manager: McpClientManager, toolName: string): McpToolBinding {
   const match = manager
     .toolSnapshot()
-    .tools
-    .find(({ descriptor }) => descriptor.serverId === 'remote' && descriptor.name === toolName);
+    .tools.find(
+      ({ descriptor }) => descriptor.serverId === 'remote' && descriptor.name === toolName,
+    );
   assert.ok(match, `missing bound MCP tool remote/${toolName}`);
   return match.binding;
 }
@@ -425,7 +437,10 @@ function createLegacyServer(): McpServer {
         description: 'Echo text',
         inputSchema: {
           type: 'object',
-          properties: { value: { type: 'string' } },
+          properties: {
+            value: { type: 'string' },
+            ratio: { type: 'number', 'x-mcp-header': 'Ratio' },
+          },
         },
       },
     ],

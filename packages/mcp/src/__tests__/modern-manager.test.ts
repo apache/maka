@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
 import { afterEach, describe, test } from 'node:test';
-import { SdkError, SdkErrorCode } from '@modelcontextprotocol/client';
+import { SdkError, SdkErrorCode, type Tool } from '@modelcontextprotocol/client';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, inputRequired, Server } from '@modelcontextprotocol/server';
 import {
@@ -113,6 +113,42 @@ describe('McpClientManager modern Streamable HTTP E2E', () => {
     assert.equal(fixture.toolCalls.get('needs-input'), 1);
     assert.equal(fixture.protocolMethods.filter((method) => method === 'tools/call').length, 1);
   });
+
+  test('partitions SEP-2243 definitions and mirrors safe arguments on the wire', async () => {
+    const fixture = await createModernRemoteFixture({ includeHeaderTools: true });
+    const manager = createManager();
+
+    await manager.sync(modernConfig(fixture.url, 'auto'));
+
+    assert.deepEqual(
+      manager
+        .toolSnapshot()
+        .tools.map(({ descriptor }) => descriptor.name)
+        .sort(),
+      ['echo', 'header-echo', 'needs-input', 'structured'],
+    );
+    assert.equal(bindingForOptional(manager, 'invalid-header'), undefined);
+
+    const binding = bindingFor(manager, 'header-echo');
+    assert.deepEqual(await manager.callTool(binding, { shard: 42, value: 'safe' }), {
+      content: [{ type: 'text', text: 'safe' }],
+      structuredContent: undefined,
+    });
+    assert.equal(fixture.toolCallHeaders.get('header-echo'), '42');
+    assert.equal(fixture.toolCalls.get('header-echo'), 1);
+
+    const methodsBeforeUnsafeCall = fixture.protocolMethods.length;
+    await assert.rejects(
+      manager.callTool(binding, { shard: Number.MAX_SAFE_INTEGER + 1, value: 'unsafe' }),
+      (error: unknown) =>
+        error instanceof McpToolCallError &&
+        error.serverId === 'remote' &&
+        error.toolName === 'header-echo' &&
+        /unsafe integer argument at shard/u.test(error.message),
+    );
+    assert.equal(fixture.protocolMethods.length, methodsBeforeUnsafeCall);
+    assert.equal(fixture.toolCalls.get('header-echo'), 1);
+  });
 });
 
 function createManager(): McpClientManager {
@@ -124,13 +160,20 @@ function createManager(): McpClientManager {
 }
 
 function bindingFor(manager: McpClientManager, toolName: string): McpToolBinding {
-  const match = manager
+  const binding = bindingForOptional(manager, toolName);
+  assert.ok(binding, `missing bound MCP tool remote/${toolName}`);
+  return binding;
+}
+
+function bindingForOptional(
+  manager: McpClientManager,
+  toolName: string,
+): McpToolBinding | undefined {
+  return manager
     .toolSnapshot()
     .tools.find(
       ({ descriptor }) => descriptor.serverId === 'remote' && descriptor.name === toolName,
-    );
-  assert.ok(match, `missing bound MCP tool remote/${toolName}`);
-  return match.binding;
+    )?.binding;
 }
 
 function modernConfig(url: string, protocol: McpProtocolPreference): McpConfigFile {
@@ -150,15 +193,17 @@ interface ModernRemoteFixture {
   url: string;
   protocolMethods: string[];
   toolCalls: Map<string, number>;
+  toolCallHeaders: Map<string, string | undefined>;
   close(): Promise<void>;
 }
 
 async function createModernRemoteFixture(
-  options: { advertiseTools?: boolean } = {},
+  options: { advertiseTools?: boolean; includeHeaderTools?: boolean } = {},
 ): Promise<ModernRemoteFixture> {
   const advertiseTools = options.advertiseTools !== false;
   const protocolMethods: string[] = [];
   const toolCalls = new Map<string, number>();
+  const toolCallHeaders = new Map<string, string | undefined>();
   const errors: Error[] = [];
   const handler = createMcpHandler(
     () => {
@@ -167,9 +212,37 @@ async function createModernRemoteFixture(
         { capabilities: advertiseTools ? { tools: {} } : {} },
       );
       if (advertiseTools) {
-        server.setRequestHandler('tools/list', async () => ({
-          tools: [modernTool('echo'), modernTool('structured', {}), modernTool('needs-input')],
-        }));
+        server.setRequestHandler('tools/list', async () => {
+          const tools: Tool[] = [
+            modernTool('echo'),
+            modernTool('structured', {}),
+            modernTool('needs-input'),
+          ];
+          if (options.includeHeaderTools) {
+            tools.push(
+              {
+                name: 'header-echo',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    shard: { type: 'integer', 'x-mcp-header': 'Shard' },
+                    value: { type: 'string' },
+                  },
+                },
+              },
+              {
+                name: 'invalid-header',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    ratio: { type: 'number', 'x-mcp-header': 'Ratio' },
+                  },
+                },
+              },
+            );
+          }
+          return { tools };
+        });
         server.setRequestHandler('tools/call', async ({ params }) => {
           toolCalls.set(params.name, (toolCalls.get(params.name) ?? 0) + 1);
           const args = params.arguments ?? {};
@@ -211,7 +284,11 @@ async function createModernRemoteFixture(
         return;
       }
       const body = await readJsonBody(req);
-      protocolMethods.push(...readProtocolMethods(body));
+      const methods = readProtocolMethods(body);
+      protocolMethods.push(...methods);
+      for (const toolName of readToolCallNames(body)) {
+        toolCallHeaders.set(toolName, headerValue(req, 'mcp-param-shard'));
+      }
       await nodeHandler(req, res, body);
     } catch (error) {
       errors.push(error instanceof Error ? error : new Error(String(error)));
@@ -229,6 +306,7 @@ async function createModernRemoteFixture(
     url: `http://127.0.0.1:${address.port}/mcp`,
     protocolMethods,
     toolCalls,
+    toolCallHeaders,
     close: async () => {
       await handler.close();
       await new Promise<void>((resolve, reject) =>
@@ -241,7 +319,7 @@ async function createModernRemoteFixture(
   return fixture;
 }
 
-function modernTool(name: string, outputSchema?: Record<string, unknown>) {
+function modernTool(name: string, outputSchema?: Record<string, unknown>): Tool {
   return {
     name,
     inputSchema:
@@ -270,6 +348,30 @@ function readProtocolMethods(body: unknown): string[] {
     }
     return [];
   });
+}
+
+function readToolCallNames(body: unknown): string[] {
+  return (Array.isArray(body) ? body : [body]).flatMap((message) => {
+    if (
+      typeof message === 'object' &&
+      message !== null &&
+      'method' in message &&
+      message.method === 'tools/call' &&
+      'params' in message &&
+      typeof message.params === 'object' &&
+      message.params !== null &&
+      'name' in message.params &&
+      typeof message.params.name === 'string'
+    ) {
+      return [message.params.name];
+    }
+    return [];
+  });
+}
+
+function headerValue(req: IncomingMessage, name: string): string | undefined {
+  const value = req.headers[name];
+  return Array.isArray(value) ? value.join(', ') : value;
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
