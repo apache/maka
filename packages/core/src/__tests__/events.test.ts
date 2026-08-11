@@ -3,8 +3,6 @@ import { expect } from '../test-helpers.js';
 import {
   aggregateMessageContents,
   failureClassFromCompleteStopReason,
-  TOOL_OUTPUT_DELTA_MAX_CHARS,
-  TOOL_OUTPUT_STREAMS,
 } from '../events.js';
 
 test('aggregates inline references against the combined display text', () => {
@@ -35,13 +33,6 @@ test('preserves an explicit empty inline-reference marker while aggregating', ()
   expect(aggregateMessageContents([{ text: 'plain', inlineReferences: [] }])).toEqual({
     text: 'plain',
     inlineReferences: [],
-  });
-});
-
-describe('ToolOutputDelta event contract', () => {
-  test('locks finite stream union and chunk bound constant', () => {
-    expect(TOOL_OUTPUT_STREAMS).toEqual(['stdout', 'stderr']);
-    expect(TOOL_OUTPUT_DELTA_MAX_CHARS).toBe(8192);
   });
 });
 

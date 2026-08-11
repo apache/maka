@@ -1,20 +1,3 @@
-/**
- * Provider catalog contract — structural invariants over the registry.
- *
- * These invariants replace the per-provider add-flow E2E clones that used to
- * live in apps/desktop/e2e/providers.spec.ts. They are data-driven over
- * CATALOG_PROVIDER_TYPES, so adding a provider is covered automatically with
- * zero manual test updates. They assert *shape*, never snapshot values (no
- * "provider X's model is exactly Y"), so a legitimate model/endpoint refresh
- * does not churn this file.
- *
- * Brand-mark completeness (every catalog provider resolves to a real mark, not
- * the generic fallback) is asserted on the desktop side — core cannot import a
- * renderer module — in
- * apps/desktop/src/main/__tests__/icon-governance-contract.test.ts
- * ("renders a registered brand mark for every catalog provider").
- */
-
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {

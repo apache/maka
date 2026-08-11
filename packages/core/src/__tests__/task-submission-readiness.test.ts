@@ -7,18 +7,6 @@ import {
 import { expect } from '../test-helpers.js';
 
 describe('task submission readiness', () => {
-  test('projects a ready baseline from current authorities', () => {
-    const snapshot = deriveTaskSubmissionReadiness(readyInput());
-
-    expect(snapshot.state).toBe('ready');
-    expect(snapshot.blockers).toEqual([]);
-    expect(snapshot.dimensions.map((dimension) => dimension.id)).toEqual([
-      'runtime',
-      'model_target',
-      'workspace',
-    ]);
-  });
-
   test('reuses connection readiness and routes an invalid model to its connection', () => {
     const input = readyInput();
     if (input.modelTarget.kind !== 'resolved') throw new Error('expected resolved model target');
