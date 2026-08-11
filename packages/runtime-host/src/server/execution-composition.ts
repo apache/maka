@@ -227,10 +227,7 @@ export async function createExecutionRuntimeHostComposition(
   let projectCatalog: InteractiveProjectCatalogWriter | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
   try {
-    const openedProjectCatalog = await openInteractiveProjectCatalogForWrite(context.owner.lease, {
-      onLegacyImportFailure: (error) =>
-        console.error('[runtime-host] projects.json could not be imported:', error),
-    });
+    const openedProjectCatalog = await openInteractiveProjectCatalogForWrite(context.owner.lease);
     projectCatalog = openedProjectCatalog;
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,

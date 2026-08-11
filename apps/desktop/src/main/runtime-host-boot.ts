@@ -233,7 +233,6 @@ onMainWindowClose = () => {
 const projectRoot = createProjectRootController({
   rootId: storageRoot.rootId,
   preferenceFile: join(workspaceRoot, "project-preferences.json"),
-  legacySelectionFile: join(workspaceRoot, "last-project-path.json"),
   fallbackRoots: () => [process.cwd(), app.getAppPath()],
 });
 const attachmentApprovals = createAttachmentApprovalRegistry();

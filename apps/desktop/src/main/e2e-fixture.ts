@@ -1,7 +1,7 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { E2eFixtureScenario, E2eFixtureState, UiLocale } from '@maka/core';
-import { createFileCredentialStore } from '@maka/storage';
+import { createFileCredentialStore, createProjectCatalog } from '@maka/storage';
 import type { CredentialStore } from '@maka/storage';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
@@ -11,7 +11,6 @@ import {
   LONG_SIDEBAR_PROJECT_NAME,
   LONG_SIDEBAR_SESSION_PREFIX,
   TURN_SESSION_ID,
-  writeJson,
   writeSession,
 } from './e2e-fixture/seed-helpers.js';
 import {
@@ -203,16 +202,16 @@ export async function seedE2eFixture(input: {
     for (const seed of longSidebarSessions(now)) {
       await writeSession(input.workspaceRoot, seed.header, seed.messages);
     }
-    await writeJson(join(input.workspaceRoot, 'projects.json'), {
-      schemaVersion: 1,
-      projects: [{
-        id: LONG_SIDEBAR_PROJECT_ID,
-        name: LONG_SIDEBAR_PROJECT_NAME,
-        identity: `folder:${input.workspaceRoot}`,
-        locations: [{ path: input.workspaceRoot, isWorktree: false, lastUsedAt: now }],
-        lastUsedAt: now,
-      }],
+    const catalog = createProjectCatalog(input.workspaceRoot, {
+      now: () => now,
+      createId: () => LONG_SIDEBAR_PROJECT_ID,
     });
+    try {
+      const project = await catalog.register(input.workspaceRoot);
+      await catalog.rename(project.id, LONG_SIDEBAR_PROJECT_NAME);
+    } finally {
+      catalog.close();
+    }
   }
   if (scenario === 'scheduled-tasks') await writeScheduledTasks(input.workspaceRoot, now);
   if (scenario === 'module-daily-review') await writeDailyReviewArchives(input.workspaceRoot, now);

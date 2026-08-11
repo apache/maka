@@ -285,10 +285,6 @@ test('two catalogs changing one project at the same time keep both changes', asy
     const first = createProjectCatalog(storage, { now: () => 1_000 });
     const second = createProjectCatalog(storage, { now: () => 2_000 });
     const project = await first.register(workspace);
-    // Both catalogs settle their one-time legacy-import probe first, so the two
-    // mutations below really do overlap instead of queueing behind that I/O.
-    await Promise.all([first.list(), second.list()]);
-
     // Each catalog rewrites the whole table; without holding the write lock
     // across its own read, the later writer replays a stale copy and the other
     // window's edit disappears with no error anywhere.

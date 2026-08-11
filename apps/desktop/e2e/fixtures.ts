@@ -5,7 +5,13 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { createConnectionStore, createFileCredentialStore, createSettingsStore } from '@maka/storage';
+import {
+  createConnectionStore,
+  createFileCredentialStore,
+  createProjectCatalog,
+  createSettingsStore,
+} from '@maka/storage';
+import { resolveStorageRoot } from '@maka/storage/root-authority';
 import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
 
@@ -131,12 +137,8 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
       `---\nname: Workspace Only\ndescription: Maka workspace suggestion.\n---\n# Workspace Only`,
       'utf8',
     ),
-    writeFile(
-      path.join(workspaceRoot, 'last-project-path.json'),
-      JSON.stringify({ projectPath: projectRoot }),
-      'utf8',
-    ),
   ]);
+  await seedCurrentProject(workspaceRoot, projectRoot);
 }
 
 async function seedE2eGitReviewProject(
@@ -174,11 +176,22 @@ async function seedE2eGitReviewProject(
       ),
     ),
   );
-  await writeFile(
-    path.join(workspaceRoot, 'last-project-path.json'),
-    JSON.stringify({ projectPath: projectRoot }),
-    'utf8',
-  );
+  await seedCurrentProject(workspaceRoot, projectRoot);
+}
+
+async function seedCurrentProject(workspaceRoot: string, projectRoot: string): Promise<void> {
+  const storageRoot = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const catalog = createProjectCatalog(workspaceRoot);
+  try {
+    const project = await catalog.register(projectRoot);
+    await writeFile(
+      path.join(workspaceRoot, 'project-preferences.json'),
+      JSON.stringify({ version: 1, selections: { [storageRoot.rootId]: project.id } }),
+      'utf8',
+    );
+  } finally {
+    catalog.close();
+  }
 }
 
 /**
