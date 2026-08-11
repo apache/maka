@@ -14,6 +14,19 @@ const pwshPlan: ShellPlan = {
   exe: 'C:\\pf\\pwsh.exe',
 };
 
+test('an explicit Git Bash tool declares POSIX syntax', () => {
+  const tool = buildLocalForegroundBashTool({
+    shell: {
+      kind: 'git-bash',
+      displayName: 'Git Bash',
+      exe: 'C:\\Program Files\\Git\\bin\\bash.exe',
+    },
+  });
+  assert.match(tool.description, /Git Bash/);
+  assert.match(tool.description, /POSIX shell syntax/);
+  assert.doesNotMatch(tool.description, /write PowerShell syntax/);
+});
+
 describe('Bash tool shell is threaded through to execution, not just the description', () => {
   test('foreground tool executes with the same shell it declares', async () => {
     // /bin/echo stands in for pwsh.exe: if the tool's shell reaches the

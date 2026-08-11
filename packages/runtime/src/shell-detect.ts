@@ -12,15 +12,18 @@
 // session environment fragment). Selection without declaration — or the other
 // way round — makes the model guess the dialect, which is the original bug.
 
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { win32 } from 'node:path';
+import type { ShellSettings } from '@maka/core/settings';
 
-export type ShellKind = 'posix' | 'pwsh' | 'powershell' | 'cmd';
+export type ShellKind = 'posix' | 'git-bash' | 'legacy-wsl-bash' | 'pwsh' | 'powershell' | 'cmd';
 
 export interface ShellPlan {
   kind: ShellKind;
   /** Human-readable name for prompt surfaces, e.g. "PowerShell 7 (pwsh)". */
   displayName: string;
-  /** Executable to spawn explicitly (pwsh/powershell only). */
+  /** Executable to spawn explicitly for non-default shell plans. */
   exe?: string;
 }
 
@@ -28,6 +31,81 @@ export interface DetectShellInput {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   fileExists?: (path: string) => boolean;
+}
+
+export type ShellPreferenceErrorCode =
+  | 'unsupported_platform'
+  | 'invalid_executable'
+  | 'executable_missing'
+  | 'not_bash';
+
+export class ShellPreferenceError extends Error {
+  constructor(
+    readonly code: ShellPreferenceErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ShellPreferenceError';
+  }
+}
+
+export interface ResolveShellPlanInput extends DetectShellInput {}
+
+/** Resolves the Host-owned user preference into the one plan every shell surface consumes. */
+export function resolveShellPlan(
+  settings: ShellSettings,
+  input: ResolveShellPlanInput = {},
+): ShellPlan {
+  if (settings.preference === 'auto') {
+    return input.platform !== undefined || input.env !== undefined || input.fileExists !== undefined
+      ? detectShell(input)
+      : defaultShellPlan();
+  }
+  const platform = input.platform ?? process.platform;
+  if (platform !== 'win32') {
+    throw new ShellPreferenceError(
+      'unsupported_platform',
+      'Git Bash can only be selected on a Windows Runtime Host',
+    );
+  }
+  const executable = settings.executable.trim();
+  if (!win32.isAbsolute(executable) || win32.basename(executable).toLowerCase() !== 'bash.exe') {
+    throw new ShellPreferenceError(
+      'invalid_executable',
+      'Git Bash must use an absolute path to bash.exe',
+    );
+  }
+  const fileExists = input.fileExists ?? defaultFileExists;
+  if (!fileExists(executable)) {
+    throw new ShellPreferenceError('executable_missing', 'The configured Git Bash was not found');
+  }
+  if (isLegacyWslShim(executable, input.env ?? process.env)) {
+    return { kind: 'legacy-wsl-bash', displayName: 'Legacy WSL Bash', exe: executable };
+  }
+  return { kind: 'git-bash', displayName: 'Git Bash', exe: executable };
+}
+
+export interface ValidateShellPreferenceInput extends ResolveShellPlanInput {
+  probeVersion?: (executable: string) => Promise<string>;
+}
+
+/** Rejects a persisted override unless the Host can execute it as GNU Bash. */
+export async function validateShellPreference(
+  settings: ShellSettings,
+  input: ValidateShellPreferenceInput = {},
+): Promise<ShellPlan> {
+  const plan = resolveShellPlan(settings, input);
+  if ((plan.kind !== 'git-bash' && plan.kind !== 'legacy-wsl-bash') || !plan.exe) return plan;
+  let version: string;
+  try {
+    version = await (input.probeVersion ?? probeBashVersion)(plan.exe);
+  } catch {
+    throw new ShellPreferenceError('not_bash', 'The configured executable could not run Bash');
+  }
+  if (!/\bGNU bash, version\b/i.test(version)) {
+    throw new ShellPreferenceError('not_bash', 'The configured executable is not GNU Bash');
+  }
+  return plan;
 }
 
 export function detectShell(input: DetectShellInput = {}): ShellPlan {
@@ -70,6 +148,8 @@ export interface ShellSpawnPlan {
   useShellOption: boolean;
   /** Required environment snapshot; callers must pass it to spawn when present. */
   env?: NodeJS.ProcessEnv;
+  /** Script body for shells whose executable consumes commands from stdin. */
+  stdin?: string;
 }
 
 export interface PtyShellSpawnPlan {
@@ -142,6 +222,21 @@ export function buildShellSpawnPlan(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
 ): ShellSpawnPlan {
+  if (shell.kind === 'legacy-wsl-bash') {
+    return {
+      file: requireExplicitShellExecutable(shell),
+      args: ['-s'],
+      useShellOption: false,
+      stdin: `${command}\n`,
+    };
+  }
+  if (shell.kind === 'git-bash') {
+    return {
+      file: requireExplicitShellExecutable(shell),
+      args: ['-c', command],
+      useShellOption: false,
+    };
+  }
   if ((shell.kind === 'pwsh' || shell.kind === 'powershell') && shell.exe) {
     const wrapped = buildPowerShellCommand(command, env);
     return {
@@ -159,6 +254,12 @@ export function buildPtyShellSpawnPlan(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
 ): PtyShellSpawnPlan {
+  if (shell.kind === 'legacy-wsl-bash') {
+    return { file: requireExplicitShellExecutable(shell), args: ['-c', command] };
+  }
+  if (shell.kind === 'git-bash') {
+    return { file: requireExplicitShellExecutable(shell), args: ['-c', command] };
+  }
   if ((shell.kind === 'pwsh' || shell.kind === 'powershell') && shell.exe) {
     const wrapped = buildPowerShellCommand(command, env);
     return {
@@ -185,11 +286,13 @@ export function buildPtyShellSpawnPlan(
 export function bashToolShellGuidance(shell: ShellPlan): string {
   if (shell.kind === 'posix') return '';
   const dialect =
-    shell.kind === 'pwsh'
-      ? 'Commands are executed by PowerShell 7 (pwsh); write PowerShell syntax, not cmd or bash syntax.'
-      : shell.kind === 'powershell'
-        ? 'Commands are executed by Windows PowerShell 5.1; write PowerShell 5.1-compatible syntax, not cmd or bash syntax.'
-        : 'Commands are executed by cmd.exe; write cmd syntax, not bash syntax.';
+    shell.kind === 'git-bash' || shell.kind === 'legacy-wsl-bash'
+      ? `Commands are executed by ${shell.displayName}; write POSIX shell syntax, not PowerShell or cmd syntax.`
+      : shell.kind === 'pwsh'
+        ? 'Commands are executed by PowerShell 7 (pwsh); write PowerShell syntax, not cmd or bash syntax.'
+        : shell.kind === 'powershell'
+          ? 'Commands are executed by Windows PowerShell 5.1; write PowerShell 5.1-compatible syntax, not cmd or bash syntax.'
+          : 'Commands are executed by cmd.exe; write cmd syntax, not bash syntax.';
   return `${dialect} Prefer \`git ls-files\` or the Grep/Glob tools over recursive directory listings, and always exclude node_modules and build output when enumerating files.`;
 }
 
@@ -223,4 +326,32 @@ function defaultFileExists(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isLegacyWslShim(executable: string, env: NodeJS.ProcessEnv): boolean {
+  const systemRoot = env.SystemRoot ?? env.SYSTEMROOT;
+  if (!systemRoot) return false;
+  return (
+    win32.normalize(executable).toLowerCase() ===
+    win32.normalize(win32.join(systemRoot, 'System32', 'bash.exe')).toLowerCase()
+  );
+}
+
+function requireExplicitShellExecutable(shell: ShellPlan): string {
+  if (shell.exe) return shell.exe;
+  throw new Error(`${shell.displayName} shell plan is missing its executable`);
+}
+
+function probeBashVersion(executable: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      executable,
+      ['--version'],
+      { timeout: 3_000, windowsHide: true, maxBuffer: 64 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) reject(error);
+        else resolve(`${stdout}\n${stderr}`);
+      },
+    );
+  });
 }

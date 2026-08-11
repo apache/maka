@@ -54,7 +54,10 @@ export class PipeProcessDriver {
         cwd: options.cwd,
         env: options.env,
         shell: options.plan.useShellOption,
-        stdio: buildSpawnStdio(options.fdInputs),
+        stdio: buildSpawnStdio(
+          options.fdInputs,
+          options.plan.stdin === undefined ? 'ignore' : 'pipe',
+        ),
         detached: process.platform !== 'win32',
       });
     } finally {
@@ -91,6 +94,11 @@ export class PipeProcessDriver {
 
   writeInputs(): void {
     writeChildFdInputs(this.child, this.options.fdInputs);
+    if (this.options.plan.stdin !== undefined) {
+      if (!this.child.stdin) throw new Error('Pipe process did not expose stdin');
+      this.child.stdin.on('error', () => {});
+      this.child.stdin.end(this.options.plan.stdin);
+    }
   }
 
   kill(signal: 'SIGTERM' | 'SIGKILL'): boolean {
