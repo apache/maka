@@ -22,7 +22,14 @@ import type { LlmConnection } from '@maka/core/llm-connections';
  * Reads fail closed on unknown schema versions (mirrors credential-store).
  */
 
-export const CONFIG_TRANSFER_SCHEMA_VERSION = 1;
+export const CONFIG_TRANSFER_SCHEMA_VERSION = 2;
+/** Legacy single-credential schema; import keeps its existing behavior. */
+export const CONFIG_TRANSFER_LEGACY_SCHEMA_VERSION = 1;
+
+export const CONFIG_TRANSFER_SCHEMA_VERSIONS: readonly number[] = [
+  CONFIG_TRANSFER_LEGACY_SCHEMA_VERSION,
+  CONFIG_TRANSFER_SCHEMA_VERSION,
+];
 
 export const CONFIG_CATEGORIES = ['connections', 'settings', 'credentials', 'memory'] as const;
 export type ConfigCategory = (typeof CONFIG_CATEGORIES)[number];
@@ -94,7 +101,7 @@ export function parseConfigBundle(raw: string): ConfigParseResult {
       message: 'Config bundle is missing a numeric schemaVersion.',
     };
   }
-  if (version !== CONFIG_TRANSFER_SCHEMA_VERSION) {
+  if (!CONFIG_TRANSFER_SCHEMA_VERSIONS.includes(version)) {
     return {
       ok: false,
       reason: 'unsupported_version',

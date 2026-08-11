@@ -89,7 +89,11 @@ import { HostAgentGraphCoordinator } from './agent-graph-coordinator.js';
 import { HostAgentGraphExecutionCoordinator } from './agent-graph-execution-coordinator.js';
 import { HostScheduledTaskCoordinator } from './scheduled-task-coordinator.js';
 import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js';
-import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
+import {
+  HostConnectionEffectCoordinator,
+  type ConnectionTestRunner,
+  type ModelDiscoveryRunner,
+} from './connection-effect-coordinator.js';
 import { HostConfigurationChangeService } from './configuration-change-service.js';
 import { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
 import { HostScheduledTaskChangeService } from './scheduled-task-change-service.js';
@@ -187,6 +191,11 @@ export interface ExecutionRuntimeHostCompositionDependencies {
     HostOAuthCoordinatorInput,
     'startCodexAuthorization' | 'pollCodexAuthorization' | 'exchangeCodexCode'
   >;
+  /** E2E-only deterministic provider effect runners (profile test / discovery). */
+  readonly connectionEffectRunners?: {
+    readonly runModelDiscovery?: ModelDiscoveryRunner;
+    readonly runConnectionTest?: ConnectionTestRunner;
+  };
 }
 
 export function runtimeHostFilesystemWorkerRuntime(versions: {
@@ -1111,6 +1120,12 @@ export async function createExecutionRuntimeHostComposition(
       activation: runtimePolicyActivation,
       oauthCredentials,
       onCommittedMutation: registerConfigurationMutation,
+      ...(dependencies.connectionEffectRunners?.runModelDiscovery
+        ? { runModelDiscovery: dependencies.connectionEffectRunners.runModelDiscovery }
+        : {}),
+      ...(dependencies.connectionEffectRunners?.runConnectionTest
+        ? { runConnectionTest: dependencies.connectionEffectRunners.runConnectionTest }
+        : {}),
     });
     const sessionCatalog = new HostSessionCatalogCoordinator({
       stores: stores.sessionStore,

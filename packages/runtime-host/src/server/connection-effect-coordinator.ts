@@ -61,13 +61,13 @@ import type { HostOAuthExecutionAuthority } from './oauth-execution-authority.js
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
-type ModelDiscoveryRunner = (
+export type ModelDiscoveryRunner = (
   connection: ConnectionCatalogEntry,
   apiKey: string,
   options: ConnectionEffectFetchDependency,
 ) => Promise<ConnectionModelDiscoveryEffectOutcome>;
 
-type ConnectionTestRunner = (
+export type ConnectionTestRunner = (
   connection: ConnectionCatalogEntry,
   apiKey: string,
   options: ConnectionEffectFetchDependency,

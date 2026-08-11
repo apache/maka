@@ -190,4 +190,356 @@ describe('config-transfer-service', () => {
     assert.deepEqual(setCreds, [{ slug: 'deepseek-main', kind: 'api_key', value: 'sk-new' }]);
     assert.deepEqual(result.credentials, { applied: 1, skipped: 0 });
   });
+
+  it('v2 import creates profiles disabled, maps credentials by profileRef and restores enabled after a verified test', async () => {
+    const { deps } = makeDeps();
+    const profiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [];
+    const calls: string[] = [];
+    let nextProfileId = 900;
+    deps.profiles = {
+      list: async () => ({
+        connectionRevision: 1,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [...profiles],
+      }),
+      create: async (_slug, input) => {
+        calls.push(`create:${input.label}`);
+        profiles.push({
+          profileId: `profile-${nextProfileId}`,
+          revision: 1,
+          label: input.label,
+          enabled: false,
+          weight: input.weight,
+          primary: false,
+          credentialConfigured: false,
+          supportedModels: [],
+        });
+        nextProfileId += 1;
+      },
+      update: async (_slug, input) => {
+        calls.push(`update:${input.profileId}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) {
+          target.label = input.label ?? target.label;
+          target.weight = input.weight ?? target.weight;
+          target.revision += 1;
+        }
+      },
+      setEnabled: async (_slug, input) => {
+        calls.push(`setEnabled:${input.profileId}:${input.enabled}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) target.enabled = input.enabled;
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async (_slug, input) => {
+        calls.push(`credential:${input.profileId}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) target.credentialConfigured = true;
+      },
+      test: async (_slug, input) => {
+        calls.push(`test:${input.profileId}`);
+        return { ok: true };
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections', 'credentials'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('imported-v2'),
+            credentialProfiles: [
+              { profileRef: 'primary', profileId: 'primary', label: 'primary', enabled: true, weight: 1, primary: true },
+              { profileRef: 'secondary-0', profileId: 'profile-77', label: 'backup', enabled: true, weight: 20, primary: false },
+            ],
+            routingMode: 'balanced',
+          },
+        ],
+        credentials: [
+          { slug: 'imported-v2', profileRef: 'secondary-0', kind: 'api_key', value: 'sk-backup' },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(result.profiles, {
+      created: 1,
+      updated: 0,
+      skipped: 0,
+      labelConflicts: [],
+      verificationFailed: [],
+      restoredEnabled: 1,
+      balancedRestored: true,
+      balancedPending: false,
+    });
+    // Created disabled first, then the secret, then re-verified, then enabled.
+    assert.deepEqual(calls, [
+      'create:backup',
+      'credential:profile-900',
+      'test:profile-900',
+      'setEnabled:profile-900:true',
+      'routing:balanced',
+    ]);
+    assert.deepEqual(result.credentials, { applied: 1, skipped: 0 });
+  });
+
+  it('v2 import reports label conflicts and never writes their secrets', async () => {
+    const { deps } = makeDeps();
+    const profiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [
+      {
+        profileId: 'profile-existing',
+        revision: 3,
+        label: 'backup',
+        enabled: false,
+        weight: 10,
+        primary: false,
+        credentialConfigured: true,
+        supportedModels: [],
+      },
+    ];
+    const calls: string[] = [];
+    deps.profiles = {
+      list: async () => ({
+        connectionRevision: 1,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [...profiles],
+      }),
+      create: async (_slug, input) => {
+        calls.push(`create:${input.label}`);
+      },
+      update: async (_slug, input) => {
+        calls.push(`update:${input.profileId}`);
+      },
+      setEnabled: async () => {
+        calls.push('setEnabled');
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async (_slug, input) => {
+        calls.push(`credential:${input.profileId}`);
+      },
+      test: async () => {
+        calls.push('test');
+        return { ok: true };
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections', 'credentials'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('imported-v2'),
+            credentialProfiles: [
+              { profileRef: 'secondary-0', profileId: 'profile-77', label: 'backup', enabled: true, weight: 20, primary: false },
+            ],
+            routingMode: 'legacy_primary',
+          },
+        ],
+        credentials: [
+          { slug: 'imported-v2', profileRef: 'secondary-0', kind: 'api_key', value: 'sk-must-not-write' },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    // The conflicting label is reported, no profile was created and no secret
+    // was written against the existing profile with a different id.
+    assert.deepEqual(result.profiles?.labelConflicts, ['imported-v2/backup']);
+    assert.deepEqual(result.profiles?.skipped, 1);
+    assert.deepEqual(calls, []);
+    assert.deepEqual(result.credentials, { applied: 0, skipped: 1 });
+  });
+
+  it('v2 import overwrites a profile in place only on an exact profile-ID match', async () => {
+    const { deps } = makeDeps();
+    const profiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [
+      {
+        profileId: 'profile-77',
+        revision: 2,
+        label: 'old-label',
+        enabled: false,
+        weight: 10,
+        primary: false,
+        credentialConfigured: true,
+        supportedModels: [],
+      },
+    ];
+    const calls: string[] = [];
+    deps.profiles = {
+      list: async () => ({
+        connectionRevision: 1,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [...profiles],
+      }),
+      create: async (_slug, input) => {
+        calls.push(`create:${input.label}`);
+      },
+      update: async (_slug, input) => {
+        calls.push(`update:${input.profileId}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) {
+          target.label = input.label ?? target.label;
+          target.weight = input.weight ?? target.weight;
+          target.revision += 1;
+        }
+      },
+      setEnabled: async () => {
+        calls.push('setEnabled');
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async (_slug, input) => {
+        calls.push(`credential:${input.profileId}`);
+      },
+      test: async (_slug, input) => {
+        calls.push(`test:${input.profileId}`);
+        return { ok: false };
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections', 'credentials'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('imported-v2'),
+            credentialProfiles: [
+              { profileRef: 'secondary-0', profileId: 'profile-77', label: 'renamed', enabled: true, weight: 40, primary: false },
+            ],
+            routingMode: 'legacy_primary',
+          },
+        ],
+        credentials: [
+          { slug: 'imported-v2', profileRef: 'secondary-0', kind: 'api_key', value: 'sk-in-place' },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'overwrite', deps);
+
+    assert.deepEqual(result.profiles?.updated, 1);
+    assert.deepEqual(result.profiles?.created, 0);
+    assert.deepEqual(calls, ['update:profile-77', 'credential:profile-77', 'test:profile-77']);
+    // The re-test failed -> the profile stays disabled and is reported.
+    assert.deepEqual(result.profiles?.verificationFailed, ['imported-v2/renamed']);
+    assert.deepEqual(result.profiles?.restoredEnabled, 0);
+  });
+
+  it('v2 import keeps balanced off when activation gates no longer hold', async () => {
+    const { deps } = makeDeps();
+    const profiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [];
+    const calls: string[] = [];
+    deps.profiles = {
+      list: async () => ({
+        connectionRevision: 1,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [...profiles],
+      }),
+      create: async (_slug, input) => {
+        profiles.push({
+          profileId: 'profile-new',
+          revision: 1,
+          label: input.label,
+          enabled: false,
+          weight: input.weight,
+          primary: false,
+          credentialConfigured: false,
+          supportedModels: [],
+        });
+      },
+      update: async () => {
+        calls.push('update');
+      },
+      setEnabled: async () => {
+        calls.push('setEnabled');
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+        throw new Error('balanced_activation_rejected');
+      },
+      setCredential: async () => {
+        calls.push('credential');
+      },
+      test: async () => {
+        calls.push('test');
+        return { ok: true };
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('imported-v2'),
+            credentialProfiles: [
+              { profileRef: 'secondary-0', profileId: 'profile-77', label: 'backup', enabled: true, weight: 20, primary: false },
+            ],
+            routingMode: 'balanced',
+          },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(result.profiles?.balancedRestored, false);
+    assert.deepEqual(result.profiles?.balancedPending, true);
+    assert.ok(calls.includes('routing:balanced'));
+  });
 });

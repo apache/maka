@@ -573,8 +573,10 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
   for (const [connectionIndex, connection] of snapshot.connections.entries()) {
     // Profiles ride on their enabled_model_id item, never in one header
     // table: a header item is atomic to the paginator, so a long declaration
-    // list would make the whole connection unreadable.
-    const { enabledModelIds, models, relayModelProfiles, ...header } = connection;
+    // list would make the whole connection unreadable. Credential routing
+    // declarations travel exclusively through the readiness query.
+    const { enabledModelIds, models, relayModelProfiles, credentialRouting, ...header } =
+      connection;
     items.push({
       kind: 'connection',
       connectionIndex,

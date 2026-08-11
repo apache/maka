@@ -128,7 +128,7 @@ export type ConnectionCatalogQueryInput =
 
 export type ConnectionCatalogHeaderItem = Omit<
   ConnectionCatalogEntry,
-  'enabledModelIds' | 'models' | 'relayModelProfiles'
+  'enabledModelIds' | 'models' | 'relayModelProfiles' | 'credentialRouting'
 > & {
   readonly kind: 'connection';
   readonly connectionIndex: number;

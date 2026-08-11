@@ -1738,8 +1738,16 @@ export class RuntimePolicyCoordinator {
   readCredentialProfileReadiness(
     rawConnectionId: string,
   ): Promise<CredentialProfileReadinessResult> {
-    return this.inLane(async (root) => {
-      const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
+    return this.inLane((root) =>
+      this.readCredentialProfileReadinessInLane(root, rawConnectionId),
+    );
+  }
+
+  private async readCredentialProfileReadinessInLane(
+    root: string,
+    rawConnectionId: string,
+  ): Promise<CredentialProfileReadinessResult> {
+    const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
       const catalog = await this.catalog.read(root);
       const connection = findConnection(catalog, { connectionId });
       if (!connection) {
@@ -1874,7 +1882,6 @@ export class RuntimePolicyCoordinator {
         readyCandidateCount,
         profiles: entries,
       });
-    });
   }
 
   private async prepareConnectionProfileOperation(

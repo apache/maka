@@ -223,7 +223,7 @@ export function CredentialProfilesSection(props: CredentialProfilesSectionProps)
                           {profile.primary ? copy.profilePrimary : profile.label}
                         </Text>
                         <Text size="sm" color="secondary">
-                          {profile.primary ? copy.profileConfigured : statusLabel(status)}
+                          {statusLabel(status)}
                         </Text>
                       </HStack>
                       <Text type="supporting" color="secondary">

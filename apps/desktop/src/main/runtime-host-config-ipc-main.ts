@@ -9,8 +9,11 @@ import type {
 } from '@maka/core/runtime-policy';
 import {
   applyConfigImport,
+  EXPORT_PRIMARY_PROFILE_REF,
   type ConfigTransferDeps,
   type ExportedCredential,
+  type ExportedProfileMeta,
+  type V2ExportedConnection,
 } from './config-transfer-service.js';
 import type { createMainWindowController } from './main-window.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
@@ -32,6 +35,7 @@ import {
   type ConfigCategory,
   type ConfigData,
   type ConnectionConflictStrategy,
+  type CredentialKind,
 } from '@maka/storage';
 
 interface RuntimeHostConfigIpcDeps {
@@ -129,7 +133,7 @@ async function gatherRuntimeHostConfig(
   );
 
   if (selected.has('connections') && catalog) {
-    data.connections = projectHostConnections(catalog);
+    data.connections = v2ExportedConnections(catalog.connections);
   }
   if (selected.has('settings')) {
     const settings = await deps.getSettings();
@@ -144,6 +148,52 @@ async function gatherRuntimeHostConfig(
     data.memory = await readRuntimeHostMemoryDocument(deps.client, 'memory');
   }
   return buildConfigBundle({ appVersion: deps.appVersion, data });
+}
+
+/**
+ * v2 connection payload: the projected connection plus non-secret Profile
+ * metadata (export-local profileRefs, labels, weights, enable state) and the
+ * declared routing mode. Secrets never ride here — they live in `credentials`
+ * keyed by connectionSlug + profileRef + kind.
+ */
+function v2ExportedConnections(
+  connections: readonly ConnectionCatalogEntry[],
+): V2ExportedConnection[] {
+  return connections.map((connection) => {
+    const projected = projectHostConnections({
+      revision: connection.revision,
+      defaultTarget: null,
+      connections: [connection],
+    })[0];
+    const routing = connection.credentialRouting;
+    const profiles: ExportedProfileMeta[] | undefined = routing
+      ? [
+          {
+            profileRef: EXPORT_PRIMARY_PROFILE_REF,
+            profileId: connection.connectionId,
+            label: 'primary',
+            enabled: true,
+            weight: 1,
+            primary: true,
+          },
+          ...routing.profiles
+            .filter((profile) => profile.profileId !== connection.connectionId)
+            .map((profile, index) => ({
+              profileRef: `secondary-${index}`,
+              profileId: profile.profileId,
+              label: profile.label,
+              enabled: profile.enabled,
+              weight: profile.weight,
+              primary: false,
+            })),
+        ]
+      : undefined;
+    return {
+      ...projected,
+      ...(profiles === undefined ? {} : { credentialProfiles: profiles }),
+      ...(routing === undefined ? {} : { routingMode: routing.mode }),
+    };
+  });
 }
 
 async function exportConfigurationCredentials(
@@ -185,6 +235,125 @@ function runtimeHostTransferDeps(
     writeMemory: (content) =>
       replaceRuntimeHostMemoryDocument(deps.client, content),
     appVersion: deps.appVersion,
+    profiles: profileTransferDeps(deps),
+  };
+}
+
+function profileTransferDeps(
+  deps: RuntimeHostConfigIpcDeps,
+): NonNullable<ConfigTransferDeps['profiles']> {
+  const requireConnection = async (slug: string) => {
+    const catalog = await deps.client.loadConnectionCatalog();
+    const connection = catalog.connections.find((candidate) => candidate.slug === slug);
+    if (!connection) throw new Error(`No such Connection: ${slug}`);
+    return connection;
+  };
+  return {
+    list: async (slug) => {
+      const connection = await requireConnection(slug);
+      const readiness = await deps.client.queryCredentialProfileReadiness(
+        connection.connectionId,
+      );
+      if (readiness.kind !== 'found') throw new Error('Connection no longer exists');
+      return {
+        connectionRevision: readiness.connectionRevision,
+        routingMode: readiness.routingMode,
+        readyCandidateCount: readiness.readyCandidateCount,
+        profiles: readiness.profiles.map((profile) => ({
+          profileId: profile.profileId,
+          revision: profile.revision,
+          label: profile.label,
+          enabled: profile.enabled,
+          weight: profile.weight,
+          primary: profile.primary,
+          credentialConfigured: profile.credentialConfigured,
+          supportedModels: [...profile.supportedModels],
+        })),
+      };
+    },
+    create: async (slug, input) => {
+      const connection = await requireConnection(slug);
+      const created = await deps.client.createCredentialProfile({
+        expected: { connectionId: connection.connectionId, revision: connection.revision },
+        label: input.label,
+        weight: input.weight,
+      });
+      if (created.kind !== 'committed') {
+        throw new Error(`Unable to create imported Profile: ${created.kind}`);
+      }
+    },
+    update: async (slug, input) => {
+      const connection = await requireConnection(slug);
+      const updated = await deps.client.updateCredentialProfile({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: connection.revision,
+          profileId: input.profileId,
+          profileRevision: input.profileRevision,
+        },
+        ...(input.label === undefined ? {} : { label: input.label }),
+        ...(input.weight === undefined ? {} : { weight: input.weight }),
+      });
+      if (updated.kind !== 'committed') {
+        throw new Error(`Unable to update imported Profile: ${updated.kind}`);
+      }
+    },
+    setEnabled: async (slug, input) => {
+      const connection = await requireConnection(slug);
+      const updated = await deps.client.setCredentialProfileEnabled({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: connection.revision,
+          profileId: input.profileId,
+          profileRevision: input.profileRevision,
+        },
+        enabled: input.enabled,
+      });
+      if (updated.kind !== 'committed') {
+        throw new Error(`Unable to set imported Profile state: ${updated.kind}`);
+      }
+    },
+    setRoutingMode: async (slug, input) => {
+      const connection = await requireConnection(slug);
+      const updated = await deps.client.setCredentialRoutingMode({
+        expected: { connectionId: connection.connectionId, revision: connection.revision },
+        mode: input.mode,
+      });
+      if (updated.kind !== 'committed') {
+        throw new Error(`Unable to set imported routing mode: ${updated.kind}`);
+      }
+    },
+    setCredential: async (slug, input) => {
+      const connection = await requireConnection(slug);
+      const locator = {
+        scope: 'connection_profile' as const,
+        connectionId: connection.connectionId,
+        profileId: input.profileId,
+        kind: 'api_key' as const,
+      };
+      const current = await deps.client.queryCredential(locator);
+      const saved = await deps.client.setCredential({
+        locator,
+        expected: current?.configured
+          ? { credentialId: current.credentialId, revision: current.revision }
+          : null,
+        secret: input.secret,
+      });
+      if (saved.kind !== 'committed') {
+        throw new Error(`Unable to save imported Profile credential: ${saved.kind}`);
+      }
+    },
+    test: async (slug, input) => {
+      const connection = await requireConnection(slug);
+      const tested = await deps.client.testConnectionProfile(
+        connection.connectionId,
+        input.profileId,
+      );
+      if (tested.kind !== 'committed') {
+        return { ok: false };
+      }
+      return { ok: tested.test.kind === 'verified' };
+    },
   };
 }
 
@@ -292,11 +461,32 @@ function exportLocators(
         connectionId: connection.connectionId,
         kind: 'request_headers',
       } as const;
-      return locator ? [locator, requestHeaders] : [requestHeaders];
+      const profileLocators = profileCredentialLocators(connection);
+      return locator
+        ? [locator, requestHeaders, ...profileLocators]
+        : [requestHeaders, ...profileLocators];
     }),
     { scope: 'network_proxy', kind: 'password' },
     { scope: 'web_search', provider: 'tavily', kind: 'api_key' },
   ];
+}
+
+/** Secondary Profile credential locators in stable catalog order. */
+function profileCredentialLocators(
+  connection: ConnectionCatalogEntry,
+): CredentialLocator[] {
+  const routing = connection.credentialRouting;
+  if (!routing) return [];
+  const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+  if (authKind === 'none') return [];
+  return routing.profiles
+    .filter((profile) => profile.profileId !== connection.connectionId)
+    .map((profile) => ({
+      scope: 'connection_profile' as const,
+      connectionId: connection.connectionId,
+      profileId: profile.profileId,
+      kind: authKind === 'oauth_token' ? ('oauth_token' as const) : ('api_key' as const),
+    }));
 }
 
 function connectionCredentials(
@@ -312,11 +502,47 @@ function connectionCredentials(
       kind: 'request_headers',
     } as const;
     const requestHeaders = secrets.get(locatorKey(requestHeadersLocator));
+    const routing = connection.credentialRouting;
+    const secondaryEntries: ExportedCredential[] = routing
+      ? routing.profiles
+          .filter((profile) => profile.profileId !== connection.connectionId)
+          .flatMap((profile, index) => {
+            const profileLocator = {
+              scope: 'connection_profile' as const,
+              connectionId: connection.connectionId,
+              profileId: profile.profileId,
+              kind: (PROVIDER_DEFAULTS[connection.providerType].authKind === 'oauth_token'
+                ? 'oauth_token'
+                : 'api_key') as 'api_key' | 'oauth_token',
+            };
+            const profileSecret = secrets.get(locatorKey(profileLocator));
+            return profileSecret
+              ? [
+                  {
+                    slug: connection.slug,
+                    profileRef: `secondary-${index}`,
+                    kind: profileLocator.kind,
+                    value: profileSecret,
+                  },
+                ]
+              : [];
+          })
+      : [];
     return [
-      ...(locator && secret ? [{ slug: connection.slug, kind: locator.kind, value: secret }] : []),
-      ...(requestHeaders
-        ? [{ slug: connection.slug, kind: 'request_headers' as const, value: requestHeaders }]
+      ...(locator && secret
+        ? [{ slug: connection.slug, profileRef: EXPORT_PRIMARY_PROFILE_REF, kind: locator.kind, value: secret }]
         : []),
+      ...(requestHeaders
+        ? [
+            {
+              slug: connection.slug,
+              profileRef: EXPORT_PRIMARY_PROFILE_REF,
+              kind: 'request_headers' as const,
+              value: requestHeaders,
+            },
+          ]
+        : []),
+      ...secondaryEntries,
     ];
   });
 }

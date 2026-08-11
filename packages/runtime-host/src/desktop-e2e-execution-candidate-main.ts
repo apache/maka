@@ -72,6 +72,20 @@ const result = await startExecutionRuntimeHostCandidate(
               expires_at: Date.now() + 3_600_000,
             }),
           },
+          // Deterministic provider I/O so the profile test/discovery journey
+          // can assert the readiness -> verification -> balanced pipeline
+          // without network access.
+          connectionEffectRunners: {
+            runModelDiscovery: async () => ({
+              ok: true,
+              models: [{ id: 'claude-sonnet-4-5-20250929' }],
+            }),
+            runConnectionTest: async () => ({
+              ok: true,
+              modelId: 'claude-sonnet-4-5-20250929',
+              latencyMs: 12,
+            }),
+          },
         },
       ),
   },

@@ -689,6 +689,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       await profilesBridge.create(connection.slug, input);
       await props.onChanged();
       await refreshProfileReadiness();
+      return true;
     });
     if (outcome === undefined) return false;
     if (isConnectionDetailCurrent(connectionDetailLifecycleRef.current)) {
@@ -703,8 +704,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       await profilesBridge.update(connection.slug, input);
       await props.onChanged();
       await refreshProfileReadiness();
+      return true;
     });
-    return outcome !== undefined;
+    return outcome === true;
   }
 
   async function setProfileEnabled(input: ProfileBasisInput & { enabled: boolean }): Promise<boolean> {
@@ -713,8 +715,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       await profilesBridge.setEnabled(connection.slug, input);
       await props.onChanged();
       await refreshProfileReadiness();
+      return true;
     });
-    return outcome !== undefined;
+    return outcome === true;
   }
 
   async function removeProfile(
@@ -736,8 +739,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       await profilesBridge.remove(connection.slug, input);
       await props.onChanged();
       await refreshProfileReadiness();
+      return true;
     });
-    return outcome !== undefined;
+    return outcome === true;
   }
 
   async function setProfileRoutingMode(input: ProfileRoutingModeInput): Promise<boolean> {
@@ -746,8 +750,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       await profilesBridge.setRoutingMode(connection.slug, input);
       await props.onChanged();
       await refreshProfileReadiness();
+      return true;
     });
-    return outcome !== undefined;
+    return outcome === true;
   }
 
   async function saveProfileCredential(input: ProfileCredentialInput): Promise<boolean> {
@@ -763,8 +768,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       }
       await props.onChanged();
       await refreshProfileReadiness();
+      return true;
     });
-    return outcome !== undefined;
+    return outcome === true;
   }
 
   async function runProfileTest(input: ProfileTestInput): Promise<ConnectionTestResult | null> {
@@ -799,8 +805,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       await profilesBridge.fetchModels(connection.slug, input);
       await props.onChanged();
       await refreshProfileReadiness();
+      return true;
     });
-    return outcome !== undefined;
+    return outcome === true;
   }
 
   return {

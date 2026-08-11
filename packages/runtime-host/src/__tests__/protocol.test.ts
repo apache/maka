@@ -825,6 +825,66 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
+  test('keeps credential routing out of catalog header items on the wire', () => {
+    const catalogQuery = RUNTIME_POLICY_OPERATION_SPECS['connection.catalog.query'];
+    const page = {
+      kind: 'page' as const,
+      revision: 1,
+      defaultTarget: null,
+      connectionCount: 1,
+      items: [
+        {
+          kind: 'connection' as const,
+          connectionIndex: 0,
+          connectionId: '00000000-0000-4000-8000-000000000001',
+          revision: 2,
+          slug: 'openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          enabled: true,
+          modelSource: 'fetched',
+          modelsFetchedAt: 1,
+          enabledModelIdCount: 1,
+          modelCount: 1,
+        },
+        {
+          kind: 'enabled_model_id' as const,
+          connectionIndex: 0,
+          itemIndex: 0,
+          modelId: 'gpt-5',
+        },
+        {
+          kind: 'model' as const,
+          connectionIndex: 0,
+          itemIndex: 0,
+          model: { id: 'gpt-5' },
+        },
+      ],
+      nextCursor: null,
+    };
+    assert.deepEqual(catalogQuery.decodeOutput(page), page);
+    // A header item smuggling the routing declaration must fail closed — the
+    // readiness query is the only wire surface for profile state.
+    assert.throws(
+      () =>
+        catalogQuery.decodeOutput({
+          ...page,
+          items: [
+            {
+              ...page.items[0],
+              credentialRouting: {
+                mode: 'balanced',
+                strategy: 'smooth_weighted_round_robin',
+                profiles: [],
+              },
+            },
+            ...page.items.slice(1),
+          ],
+        }),
+      isInvalidFrame,
+    );
+  });
+
   test('encodes maximum legal tool output as one bounded frame without identity loss', () => {
     const chunks = [
       ['CJK', '界'.repeat(TOOL_OUTPUT_DELTA_MAX_CHARS)],
