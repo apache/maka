@@ -32,8 +32,30 @@ const CONTEXT_OVERFLOW_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'request_too_large', // Anthropic byte-size overflow (HTTP 413): error.type
 ]);
 
+/** Stable account-state meanings exposed by provider-owned structured fields. */
+const PROVIDER_AUTH_CODES: ReadonlySet<string> = new Set([
+  'authentication',
+  'authentication_error',
+  'invalid_api_key',
+]);
+const PROVIDER_BILLING_CODES: ReadonlySet<string> = new Set([
+  'insufficient_quota',
+  'payment_required',
+]);
+const PROVIDER_PERMISSION_CODES: ReadonlySet<string> = new Set(['permission_denied']);
+const PROVIDER_USAGE_LIMIT_CODES: ReadonlySet<string> = new Set(['usage_limit_reached']);
+const PROVIDER_RATE_LIMIT_CODES: ReadonlySet<string> = new Set([
+  'rate_limit_error',
+  'rate_limit_exceeded',
+  'rate_limited',
+]);
 const PROVIDER_UNAVAILABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'server_error', // OpenAI-compatible stream errors can omit the HTTP status.
+]);
+const PROVIDER_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
+  'overloaded_error',
+  'provider_overloaded',
+  'provider_unavailable',
 ]);
 
 /**
@@ -92,7 +114,7 @@ interface ProviderErrorEvidence {
   statusCode: string;
   /** Top-level code field as a string ('' when absent). */
   code: string;
-  /** Structured provider identifiers (code/type), lowercased. */
+  /** Structured provider identifiers (code/type/error_type/provider_code), lowercased. */
   structuredCodes: string[];
 }
 
@@ -179,6 +201,16 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
 
   const status = Number(evidence.statusCode || evidence.code);
   const errorClass = classifyProviderFacts(facts);
+  // Account state cannot be repaired by immediately repeating the same
+  // physical request, even when a provider reports it through HTTP 429.
+  if (
+    errorClass === 'Auth' ||
+    errorClass === 'ProviderBilling' ||
+    errorClass === 'ProviderPermission' ||
+    errorClass === 'UsageLimit'
+  ) {
+    return { retryable: false };
+  }
   const retryAfterMs = parseRetryAfterMs(facts.responseHeaders ?? {});
   if (errorClass === 'ProviderCapacity') {
     // Capacity is transient even when the provider sends a malformed delay;
@@ -206,18 +238,27 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
   };
 }
 
-/** Collects `code`/`type` strings from a payload and from its `error` wrapper. */
+/** Collects stable identifiers from the provider envelopes Maka receives. */
 function collectStructuredCodes(payload: unknown, out: string[]): void {
   const fromRecord = (record: Record<string, unknown> | undefined) => {
     if (!record) return;
-    for (const key of ['code', 'type'] as const) {
+    for (const key of ['code', 'type', 'error_type', 'provider_code'] as const) {
       const value = safeField(record, key);
       if (typeof value === 'string' && value) out.push(value.toLowerCase());
     }
   };
   const record = providerRecord(payload);
   fromRecord(record);
-  fromRecord(record ? providerRecord(safeField(record, 'error')) : undefined);
+  if (!record) return;
+  fromRecord(providerRecord(safeField(record, 'metadata')));
+  const error = providerRecord(safeField(record, 'error'));
+  fromRecord(error);
+  fromRecord(error ? providerRecord(safeField(error, 'metadata')) : undefined);
+  const response = providerRecord(safeField(record, 'response'));
+  fromRecord(response);
+  const responseError = response ? providerRecord(safeField(response, 'error')) : undefined;
+  fromRecord(responseError);
+  fromRecord(responseError ? providerRecord(safeField(responseError, 'metadata')) : undefined);
 }
 
 function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined {
@@ -234,8 +275,9 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
     const rawBody = (target as { responseBody?: unknown }).responseBody;
     const body = typeof rawBody === 'string' ? rawBody : '';
     const structuredCodes: string[] = [];
+    collectStructuredCodes(target, structuredCodes);
     collectStructuredCodes((target as { data?: unknown }).data, structuredCodes);
-    if (structuredCodes.length === 0 && body) {
+    if (body) {
       // The failed-response handler keeps the raw body even when the provider
       // JSON failed the schema (which is exactly when `data` is absent).
       try {
@@ -634,13 +676,17 @@ export function isContextOverflowErrorText(text: string): boolean {
 
 /**
  * Classifies a provider error by DESCENDING evidence strength over the
- * normalized evidence (Error, string, or plain stream-error-part object): an
- * explicit RetryError abort → known transport codes → the provider's
- * structured capacity and overflow codes → numeric HTTP fallbacks →
- * vetoable free-text relations → generic 5xx → weak word heuristics. Exact
- * provider evidence outranks generic HTTP/text evidence because gateways can
- * wrap a provider failure in a misleading status or message; the weak
- * heuristics rank last so "generate" can never become a rate limit.
+ * normalized evidence (Error, string, or plain stream-error-part object):
+ * abort → structured account state → 402 → 429 → 401 (numeric fields,
+ * never substrings) → the provider's structured capacity and overflow codes →
+ * bare 413 (HTTP: request entity too large — itself input-side evidence,
+ * Cerebras sends it with no body) → numeric HTTP fallbacks → vetoable
+ * free-text relations → generic 5xx → weak word heuristics. Exact provider
+ * evidence outranks generic HTTP/text evidence because gateways can wrap a
+ * provider failure in a misleading status or message; specific overflow
+ * evidence outranks a generic 5xx because proxies (LiteLLM) wrap provider
+ * overflows in 503s; the weak heuristics rank last so "generate" can never
+ * become a rate limit.
  */
 export function classifyError(error: unknown): string {
   if (RetryError.isInstance(error) && error.reason === 'abort') return 'Abort';
@@ -680,16 +726,31 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
     }
     return 'Auth';
   }
+  if (structuredCodes.some((value) => PROVIDER_AUTH_CODES.has(value))) return 'Auth';
+  if (structuredCodes.some((value) => PROVIDER_BILLING_CODES.has(value))) return 'ProviderBilling';
+  if (structuredCodes.some((value) => PROVIDER_PERMISSION_CODES.has(value)))
+    return 'ProviderPermission';
+  if (structuredCodes.some((value) => PROVIDER_USAGE_LIMIT_CODES.has(value))) return 'UsageLimit';
+  if (structuredCodes.some((value) => PROVIDER_RATE_LIMIT_CODES.has(value))) return 'RateLimit';
+  if (structuredCodes.some((value) => PROVIDER_UNAVAILABLE_CODES.has(value)))
+    return 'ProviderUnavailable';
+  if (statusCode === '402' || code === '402') return 'ProviderBilling';
+  if (statusCode === '429' || code === '429') return 'RateLimit';
+  if (statusCode === '401' || code === '401') return 'Auth';
+  // A bare 403 is intentionally unknown: providers use it for valid-key
+  // permission failures, guardrails, subscription limits, and occasionally
+  // authentication. The provider's bounded diagnostic remains available.
+  // Structured provider evidence: the parsed error JSON's code/type is the
+  // only unconditional signal for a context overflow.
+  if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c))) return 'ContextLength';
   if (statusCode === '413' || code === '413') return 'ContextLength';
   // Free-text overflow relations on the composite text, veto-first inside.
   if (isContextOverflowErrorText(text)) return 'ContextLength';
   if (structuredCodes.some((c) => PROVIDER_UNAVAILABLE_PROVIDER_CODES.has(c)))
     return 'ProviderUnavailable';
   if (/^5\d\d$/.test(statusCode) || /^5\d\d$/.test(code)) return 'ProviderUnavailable';
-  // Weak word heuristics, last: they only catch errors that carried no
-  // stronger evidence for any other class. `rate` must be word-shaped
-  // ("generate"/"separate" are not rate limits) while still matching the
-  // rate_limit/RateLimitError identifier spellings.
+  // Weak word heuristics remain as compatibility fallbacks after all stronger
+  // provider facts. They must not override a structured account state.
   if (/\brate\b|rate[_-]?limit/.test(text)) return 'RateLimit';
   if (isAuthenticationErrorText(text)) return 'Auth';
   if (text.includes('timeout')) return 'Timeout';
@@ -717,10 +778,14 @@ export function errorPresentationFromClass(errorClass: string): {
       return { reason: 'provider_billing', message: 'Provider billing required' };
     case 'ProviderCapacity':
       return { reason: 'provider_capacity', message: 'Model service is temporarily at capacity' };
+    case 'ProviderPermission':
+      return { reason: 'provider_permission', message: 'Provider access denied' };
     case 'ProviderUnavailable':
       return { reason: 'provider_unavailable', message: 'Provider returned an error' };
     case 'RateLimit':
       return { reason: 'rate_limit', message: 'Rate limit exceeded' };
+    case 'UsageLimit':
+      return { reason: 'usage_limit', message: 'Usage limit reached' };
     case 'Network':
       return { reason: 'network', message: 'Network error' };
     default:

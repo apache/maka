@@ -38,10 +38,14 @@ export function describeSessionErrorReason(reason: string | undefined, locale: U
       return copy.providerBilling;
     case 'provider_capacity':
       return copy.providerCapacity;
+    case 'provider_permission':
+      return copy.providerPermission;
     case 'provider_unavailable':
       return copy.provider;
     case 'rate_limit':
       return copy.rateLimit;
+    case 'usage_limit':
+      return copy.usageLimit;
     case 'network':
       return copy.network;
     default:

@@ -335,9 +335,11 @@ export type ModelFailureKind =
   | 'network'
   | 'provider_capacity'
   | 'provider_billing'
+  | 'provider_permission'
   | 'provider_unavailable'
   | 'rate_limit'
   | 'timeout'
+  | 'usage_limit'
   | 'unknown';
 
 export interface ModelFailure {

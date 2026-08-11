@@ -244,6 +244,31 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('renders a Runtime Host provider-limit explanation as the turn error', () => {
+    const state = createMakaPiTranscriptState();
+    const message =
+      "You've reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle.";
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'error',
+        recoverable: false,
+        code: 'permission_error',
+        message,
+      }),
+    );
+
+    assert.deepEqual(state.entries.at(-1), {
+      kind: 'notice',
+      level: 'error',
+      text: message,
+    });
+    assert.match(
+      renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n'),
+      /usage limit/,
+    );
+  });
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'inspect the package');
