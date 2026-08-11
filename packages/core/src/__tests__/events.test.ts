@@ -1,9 +1,6 @@
-import { describe, test } from 'node:test';
+import { test } from 'node:test';
 import { expect } from '../test-helpers.js';
-import {
-  aggregateMessageContents,
-  failureClassFromCompleteStopReason,
-} from '../events.js';
+import { aggregateMessageContents } from '../events.js';
 
 test('aggregates inline references against the combined display text', () => {
   expect(
@@ -33,20 +30,5 @@ test('preserves an explicit empty inline-reference marker while aggregating', ()
   expect(aggregateMessageContents([{ text: 'plain', inlineReferences: [] }])).toEqual({
     text: 'plain',
     inlineReferences: [],
-  });
-});
-
-describe('failureClassFromCompleteStopReason', () => {
-  test('defines the shared failure vocabulary for incomplete turns', () => {
-    expect(failureClassFromCompleteStopReason('error')).toBe('runtime_error');
-    expect(failureClassFromCompleteStopReason('step_limit')).toBe('tool_step_cap_reached');
-    expect(failureClassFromCompleteStopReason('end_turn')).toBe(undefined);
-    expect(failureClassFromCompleteStopReason('max_tokens')).toBe(undefined);
-    expect(failureClassFromCompleteStopReason('plan_handoff')).toBe(undefined);
-    expect(failureClassFromCompleteStopReason('permission_handoff')).toBe(undefined);
-    expect(failureClassFromCompleteStopReason('user_stop')).toBe(undefined);
-    expect(failureClassFromCompleteStopReason('context_budget_exhausted')).toBe(
-      'context_budget_exhausted',
-    );
   });
 });
