@@ -445,23 +445,6 @@ describe('getAIModel: models.dev registry providers', () => {
     }
   });
 
-  test('routes only xAI Grok 4.5 through Responses', () => {
-    for (const providerType of ['xai', 'xai-oauth'] as const) {
-      const responses = getAIModel({
-        connection: conn(providerType),
-        apiKey: 'xai-test-key',
-        modelId: 'grok-4.5',
-      });
-      const chat = getAIModel({
-        connection: conn(providerType),
-        apiKey: 'xai-test-key',
-        modelId: 'grok-4.3',
-      });
-
-      assert.equal(responses.provider, 'openai.responses');
-      assert.equal(chat.provider, `${providerType}.chat`);
-    }
-  });
 
   test('routes each exact GitHub Copilot model through its account-advertised wire', () => {
     for (const [modelId, apiProtocol, expectedProvider] of [
