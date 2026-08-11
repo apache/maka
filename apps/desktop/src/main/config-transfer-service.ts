@@ -299,6 +299,10 @@ async function applyV2ConfigImport(
   // slug -> profileIds the quiesce disabled; the restore pass re-enables the
   // ones the bundle did not list.
   const quiescedSecondaries = new Map<string, Set<string>>();
+  // Every target profile the bundle claimed (mapped, regardless of enabled
+  // state or verification outcome): the quiesce restore must never re-enable
+  // a profile the bundle deliberately disabled or that failed re-verification.
+  const listedTargetProfileIds = new Set<string>();
 
   if (Array.isArray(bundle.data.connections)) {
     const incoming = bundle.data.connections as V2ExportedConnection[];
@@ -371,6 +375,7 @@ async function applyV2ConfigImport(
             weight: profile.weight,
           });
           slugMapping.set(profile.profileRef, exact.profileId);
+          listedTargetProfileIds.add(exact.profileId);
           updatedProfiles += 1;
           continue;
         }
@@ -392,7 +397,10 @@ async function applyV2ConfigImport(
           (candidate) =>
             !candidate.primary && candidate.label.toLowerCase() === profile.label.toLowerCase(),
         );
-        if (createdTarget) slugMapping.set(profile.profileRef, createdTarget.profileId);
+        if (createdTarget) {
+          slugMapping.set(profile.profileRef, createdTarget.profileId);
+          listedTargetProfileIds.add(createdTarget.profileId);
+        }
       }
     }
   }
@@ -460,7 +468,6 @@ async function applyV2ConfigImport(
       if (!appliedConnectionSlugs.has(connection.slug)) continue;
       const slugMapping = mappings.get(connection.slug);
       if (!slugMapping) continue;
-      const restoredProfileIds = new Set<string>();
       for (const profile of connection.credentialProfiles ?? []) {
         if (!profile.enabled) continue;
         const targetProfileId = slugMapping.get(profile.profileRef);
@@ -480,7 +487,6 @@ async function applyV2ConfigImport(
               profileRevision: target.revision,
               enabled: true,
             });
-            restoredProfileIds.add(target.profileId);
           }
           restoredEnabled += 1;
         } else {
@@ -489,9 +495,10 @@ async function applyV2ConfigImport(
       }
       // Profiles the quiesce disabled but the bundle did not list keep their
       // metadata and credentials (RFC 13.4); restore their previous enabled
-      // state so the import never silently disables an account. If the
-      // connection's execution basis changed, readiness naturally shows them
-      // unverified — the balanced gate re-checks the current digest.
+      // state so the import never silently disables an account. Profiles the
+      // bundle DID claim are never restored here: the ones it disabled stay
+      // disabled and the ones that failed re-verification stay disabled
+      // (fail-closed) — only the restore loop above re-enables them.
       const quiesced = quiescedSecondaries.get(connection.slug);
       if (quiesced) {
         const fresh = await profiles.list(connection.slug);
@@ -500,7 +507,7 @@ async function applyV2ConfigImport(
             !profile.primary &&
             !profile.enabled &&
             quiesced.has(profile.profileId) &&
-            !restoredProfileIds.has(profile.profileId)
+            !listedTargetProfileIds.has(profile.profileId)
           ) {
             await profiles.setEnabled(connection.slug, {
               profileId: profile.profileId,

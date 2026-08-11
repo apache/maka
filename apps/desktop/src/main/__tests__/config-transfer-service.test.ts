@@ -673,6 +673,186 @@ describe('config-transfer-service', () => {
     assert.deepEqual(result.profiles?.restoredEnabled, 2);
   });
 
+  it('v2 overwrite keeps a profile disabled when the bundle explicitly disabled it', async () => {
+    const { deps } = makeDeps();
+    const profiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [
+      {
+        profileId: 'profile-77',
+        revision: 3,
+        label: 'backup',
+        enabled: true,
+        weight: 20,
+        primary: false,
+        credentialConfigured: true,
+        supportedModels: [],
+      },
+    ];
+    const calls: string[] = [];
+    deps.profiles = {
+      list: async () => ({
+        connectionRevision: 5,
+        routingMode: 'balanced',
+        readyCandidateCount: 1,
+        profiles: [...profiles],
+      }),
+      create: async () => {
+        calls.push('create');
+      },
+      update: async (_slug, input) => {
+        calls.push(`update:${input.profileId}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) {
+          target.label = input.label ?? target.label;
+          target.weight = input.weight ?? target.weight;
+          target.revision += 1;
+        }
+      },
+      setEnabled: async (_slug, input) => {
+        calls.push(`setEnabled:${input.profileId}:${input.enabled}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) target.enabled = input.enabled;
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async (_slug, input) => {
+        calls.push(`credential:${input.profileId}`);
+      },
+      test: async (_slug, input) => {
+        calls.push(`test:${input.profileId}`);
+        return { ok: true };
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('deepseek-main'),
+            credentialProfiles: [
+              { profileRef: 'secondary-0', profileId: 'profile-77', label: 'backup', enabled: false, weight: 20, primary: false },
+            ],
+            routingMode: 'legacy_primary',
+          },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'overwrite', deps);
+
+    // The bundle claimed profile-77 with enabled=false: the quiesce disable
+    // must NOT be undone — only the bundle's own state rules apply.
+    assert.deepEqual(calls, [
+      'routing:legacy_primary',
+      'setEnabled:profile-77:false',
+      'update:profile-77',
+    ]);
+    assert.deepEqual(result.profiles?.restoredEnabled, 0);
+    assert.deepEqual(result.profiles?.verificationFailed, []);
+  });
+
+  it('v2 overwrite keeps a profile disabled when re-verification fails', async () => {
+    const { deps } = makeDeps();
+    const profiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [
+      {
+        profileId: 'profile-77',
+        revision: 3,
+        label: 'backup',
+        enabled: true,
+        weight: 20,
+        primary: false,
+        credentialConfigured: true,
+        supportedModels: [],
+      },
+    ];
+    const calls: string[] = [];
+    deps.profiles = {
+      list: async () => ({
+        connectionRevision: 5,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [...profiles],
+      }),
+      create: async () => {
+        calls.push('create');
+      },
+      update: async (_slug, input) => {
+        calls.push(`update:${input.profileId}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) {
+          target.label = input.label ?? target.label;
+          target.weight = input.weight ?? target.weight;
+          target.revision += 1;
+        }
+      },
+      setEnabled: async (_slug, input) => {
+        calls.push(`setEnabled:${input.profileId}:${input.enabled}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) target.enabled = input.enabled;
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async (_slug, input) => {
+        calls.push(`credential:${input.profileId}`);
+      },
+      test: async (_slug, input) => {
+        calls.push(`test:${input.profileId}`);
+        return { ok: false };
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('deepseek-main'),
+            credentialProfiles: [
+              { profileRef: 'secondary-0', profileId: 'profile-77', label: 'backup', enabled: true, weight: 20, primary: false },
+            ],
+            routingMode: 'legacy_primary',
+          },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'overwrite', deps);
+
+    // The re-test failed: fail-closed — the profile stays disabled and is
+    // reported, never silently re-enabled by the quiesce restore.
+    assert.deepEqual(calls, [
+      'setEnabled:profile-77:false',
+      'update:profile-77',
+      'test:profile-77',
+    ]);
+    assert.deepEqual(result.profiles?.restoredEnabled, 0);
+    assert.deepEqual(result.profiles?.verificationFailed, ['deepseek-main/backup']);
+  });
+
   it('routes a parsed v1 bundle through the legacy import path', async () => {
     const { deps, setCreds } = makeDeps();
     const raw = serializeConfigBundle({
