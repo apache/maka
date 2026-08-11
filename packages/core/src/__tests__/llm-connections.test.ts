@@ -10,9 +10,7 @@ import {
   PROVIDER_REGISTRY,
   backendKindOf,
   effectiveBaseUrl,
-  migrateConnectionV1ToV2,
   normalizeConnectionBaseUrl,
-  normalizeProviderType,
   persistedBaseUrl,
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
@@ -108,24 +106,6 @@ test('unknown provider ids fail closed without breaking persisted connections', 
   assert.equal(persistedBaseUrl(unknown, '  '), undefined);
   assert.equal(providerAuthRequiresSecret(unknown), false);
   assert.equal(providerAuthSupportsApiKey(unknown), false);
-});
-
-test('persisted provider aliases migrate without rewriting identity', () => {
-  assert.equal(normalizeProviderType('codex-subscription'), 'openai-codex');
-  assert.equal(normalizeProviderType('anthropic'), 'anthropic');
-  assert.equal(normalizeProviderType('branch-only-provider'), 'branch-only-provider');
-
-  const migrated = migrateConnectionV1ToV2({
-    slug: 'codex-subscription',
-    name: 'OpenAI OAuth',
-    providerType: 'codex-subscription',
-    defaultModel: 'gpt-5.5',
-    enabled: true,
-    createdAt: 1,
-    updatedAt: 1,
-  });
-  assert.equal(migrated.providerType, 'openai-codex');
-  assert.equal(migrated.slug, 'codex-subscription');
 });
 
 test('model reconciliation keeps live choices and repairs stale defaults', () => {

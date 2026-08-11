@@ -52,17 +52,9 @@ export type WorkspacePrivacyContextResult =
   | { ok: true; value: WorkspacePrivacyContext }
   | { ok: false; reason: WorkspacePrivacyContextInvalidReason; message: string };
 
-/**
- * Closed enum of reject reasons. Kept narrow so consumers can pattern
- * match without leaking implementation detail. Adding a reason is a
- * contract change.
- */
-export const WORKSPACE_PRIVACY_CONTEXT_INVALID_REASONS = [
-  'not_object',
-  'incognito_active_invalid',
-] as const;
 export type WorkspacePrivacyContextInvalidReason =
-  (typeof WORKSPACE_PRIVACY_CONTEXT_INVALID_REASONS)[number];
+  | 'not_object'
+  | 'incognito_active_invalid';
 
 // ---------------------------------------------------------------------------
 // Type guard + validator

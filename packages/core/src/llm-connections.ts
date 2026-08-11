@@ -21,7 +21,6 @@ import {
   READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
   isWiredOAuthProvider,
-  normalizeProviderType,
   type ApplyPatchProtocol,
   type ProviderCatalogGroup,
   type ProviderCategory,
@@ -40,7 +39,6 @@ export {
   READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
   isWiredOAuthProvider,
-  normalizeProviderType,
 };
 export type {
   ApplyPatchProtocol,
@@ -622,7 +620,7 @@ export function migrateConnectionV1ToV2(old: unknown): LlmConnection {
   if (value.providerType) {
     return {
       ...value,
-      providerType: normalizeProviderType(value.providerType),
+      providerType: value.providerType as ProviderType,
       enabledModelIds: connectionEnabledModelIds(value),
     } as LlmConnection;
   }

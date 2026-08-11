@@ -1025,7 +1025,6 @@ export type {
   WorkspacePrivacyContextResult,
 } from './incognito.js';
 export {
-  WORKSPACE_PRIVACY_CONTEXT_INVALID_REASONS,
   defaultWorkspacePrivacyContext,
   isWorkspacePrivacyContext,
   validateWorkspacePrivacyContext,
@@ -1418,7 +1417,6 @@ export {
   effectiveBaseUrl,
   migrateConnectionV1ToV2,
   normalizeConnectionBaseUrl,
-  normalizeProviderType,
   persistedBaseUrl,
   providerSupportsModelDiscovery,
   validateConnectionBaseUrl,
