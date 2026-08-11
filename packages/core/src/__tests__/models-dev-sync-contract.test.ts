@@ -55,6 +55,7 @@ const NOT_IN_MODELS_DEV: Readonly<Record<string, string>> = {
   'volcengine-ark': 'models.dev does not cover Volcengine Ark',
   'volcengine-coding-plan': 'models.dev does not cover Volcengine Ark',
   'volcengine-agent-plan': 'models.dev does not cover Volcengine Ark',
+  atlascloud: 'models.dev does not cover Atlas Cloud',
   ollama: 'local runtime, not an upstream service',
   'lm-studio': 'local runtime, not an upstream service',
   localai: 'local runtime, not an upstream service',

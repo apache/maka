@@ -58,6 +58,28 @@ test('provider registry satisfies shared structural invariants', () => {
   }
 });
 
+test('Atlas Cloud is wired as a ready OpenAI-compatible provider', () => {
+  assert.deepEqual(PROVIDER_REGISTRY.atlascloud, {
+    label: 'Atlas Cloud',
+    description: 'Hosted open-model inference with OpenAI-compatible chat and tool use.',
+    baseUrl: 'https://api.atlascloud.ai/v1',
+    authKind: 'api_key',
+    backendKind: 'ai-sdk',
+    fallbackModels: ['qwen/qwen3.8-max'],
+    status: 'ready',
+    protocol: 'openai',
+    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    category: 'overseas',
+    catalogGroup: 'api',
+    catalogBadge: 'API',
+    readyOrder: 29.5,
+    catalogOrder: 29.5,
+  });
+  assert.equal(READY_PROVIDER_TYPES.includes('atlascloud'), true);
+  assert.equal(CATALOG_PROVIDER_TYPES.includes('atlascloud'), true);
+});
+
 test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs', () => {
   for (const value of [
     undefined,
