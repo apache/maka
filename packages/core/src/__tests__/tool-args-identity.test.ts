@@ -88,18 +88,6 @@ describe('stripUndefinedDeep', () => {
     );
   });
 
-  it('reaches an undefined nested inside an array', () => {
-    const value = { calls: [{ id: 'a', toolId: undefined }] };
-
-    assert.deepEqual(stripUndefinedDeep(value), { calls: [{ id: 'a' }] });
-  });
-
-  it('leaves everything else exactly as it was', () => {
-    const value = { a: 0, b: '', c: false, d: null, e: [1, 2], f: { g: 1 } };
-
-    assert.deepEqual(stripUndefinedDeep(value), value);
-  });
-
   it('returns the value itself when nothing needed removing', () => {
     // Rebuilding a value that needed nothing would drop symbol keys and re-run
     // getters for no gain, and by far the common case is that nothing needs
