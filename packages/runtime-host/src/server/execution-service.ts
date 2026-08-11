@@ -11,7 +11,6 @@ import type { StartRuntimeHostWebSocketListenerOptions } from './websocket-liste
 
 export interface ExecutionRuntimeHostServiceOptions {
   readonly rootPath: string;
-  readonly legacyConfigurationRoot?: string;
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly bundledGitResourcesRoot?: string;
   readonly handshakeTimeoutMs?: number;

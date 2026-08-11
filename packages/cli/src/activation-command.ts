@@ -88,7 +88,7 @@ export interface MakaActivationRuntime {
 
 export interface MakaActivationDeps {
   createContext(input: MakaActivationContextInput): Promise<MakaActivationContext>;
-  listSessions(stateRoot: string, configRoot: string): Promise<SessionSummary[]>;
+  listSessions(stateRoot: string): Promise<SessionSummary[]>;
   workspaceRoot(): string;
   processCwd(): string;
   stdinIsTTY(): boolean;
@@ -341,7 +341,7 @@ export async function runMakaActivationCli(
   let sessions: SessionSummary[] = [];
   let existing: SessionSummary | undefined;
   try {
-    sessions = await deps.listSessions(roots.stateRoot, roots.configRoot);
+    sessions = await deps.listSessions(roots.stateRoot);
     existing = request.makaSessionId
       ? sessions.find((session) => session.id === request.makaSessionId)
       : undefined;
@@ -812,7 +812,6 @@ async function createRuntimeHostActivationContext(
   const connected = await connectRuntimeHostCli({
     rootPath: input.stateRoot,
     surface: 'activation',
-    legacyConfigurationRoot: input.configRoot,
   });
   try {
     const target = resolveRuntimeHostCliTarget(connected.catalog, {
@@ -853,14 +852,10 @@ async function createRuntimeHostActivationContext(
   }
 }
 
-async function listRuntimeHostActivationSessions(
-  stateRoot: string,
-  configRoot: string,
-): Promise<SessionSummary[]> {
+async function listRuntimeHostActivationSessions(stateRoot: string): Promise<SessionSummary[]> {
   const connected = await connectRuntimeHostCli({
     rootPath: stateRoot,
     surface: 'activation',
-    legacyConfigurationRoot: configRoot,
   });
   try {
     return (await readRuntimeHostSessions(connected.connection)).flatMap((session) =>

@@ -13,7 +13,6 @@ import {
 export interface ExecutionRuntimeHostCompositionSourceOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly bundledGitResourcesRoot?: string;
-  readonly legacyConfigurationRoot?: string;
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
@@ -35,9 +34,6 @@ export async function createExecutionRuntimeHostCompositionSource(
     : options.managedWorkspaceGitRuntime;
   const compositionOptions = {
     ...(managedWorkspaceGitRuntime ? { managedWorkspaceGitRuntime } : {}),
-    ...(options.legacyConfigurationRoot
-      ? { legacyConfigurationRoot: options.legacyConfigurationRoot }
-      : {}),
   };
   const createComposition = dependencies.createComposition ?? createExecutionRuntimeHostComposition;
   return defineInteractiveRuntimeHostComposition((context) =>
