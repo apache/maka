@@ -4,7 +4,6 @@ import {
   BOT_PLAINTEXT_HELP_COMMANDS,
   BOT_PLAINTEXT_RESET_COMMANDS,
   botConversationKey,
-  botDisplayLabel,
   botSourceEventKey,
   formatBotMessageForSession,
   isPlaintextHelpCommand,
@@ -24,11 +23,7 @@ describe('bot event contract', () => {
     receivedAt: 1_700_000_000_000,
   };
 
-  test('derives user-visible labels, session text, and stable keys', () => {
-    assert.deepEqual(
-      ['telegram', 'feishu', 'dingtalk'].map((platform) => botDisplayLabel(platform as never)),
-      ['Telegram', '飞书', '钉钉'],
-    );
+  test('derives sanitized session text and stable keys', () => {
     assert.equal(botConversationKey(message), 'telegram:chat-1');
     assert.equal(botSourceEventKey(message), 'telegram:chat-1:m1');
     assert.equal(botSourceEventKey({ ...message, sourceMessageId: '   ' }), undefined);

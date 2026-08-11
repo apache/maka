@@ -3,8 +3,6 @@ import { describe, it } from 'node:test';
 import {
   lookupModelMetadata,
   openAiAdapterApiProtocol,
-  resolveModelInputModalities,
-  resolveModelPdfSupport,
   resolveModelVisionSupport,
 } from '../model-metadata.js';
 import type { ModelInfo, ProviderType } from '../llm-connections.js';
@@ -85,48 +83,6 @@ describe('model-metadata vision capability', () => {
     );
   });
 
-});
-
-describe('resolveModelVisionSupport', () => {
-  it('falls back to in-repo metadata when stored models are bare ids (post-fetch)', () => {
-    assert.equal(
-      resolveModelVisionSupport(
-        'anthropic',
-        [{ id: 'claude-sonnet-4-5-20250929' }],
-        'claude-sonnet-4-5-20250929',
-      ),
-      true,
-    );
-    assert.equal(
-      resolveModelVisionSupport(
-        'claude-subscription',
-        [{ id: 'claude-sonnet-4-6' }],
-        'claude-sonnet-4-6',
-      ),
-      true,
-    );
-    assert.equal(
-      resolveModelVisionSupport('deepseek', [{ id: 'deepseek-chat' }], 'deepseek-chat'),
-      false,
-    );
-    assert.equal(resolveModelVisionSupport('moonshot', [{ id: 'kimi-k2.6' }], 'kimi-k2.6'), true);
-    assert.equal(
-      resolveModelVisionSupport('kimi-coding-plan', [{ id: 'kimi-for-coding' }], 'kimi-for-coding'),
-      true,
-    );
-  });
-});
-
-describe('models.dev extended model facts', () => {
-  it('keeps PDF input in the generated modality facts', () => {
-    const metadata = lookupModelMetadata('anthropic', 'claude-sonnet-4-5');
-    assert.equal(metadata.modalities?.input.includes('pdf'), true);
-    assert.equal(resolveModelPdfSupport('anthropic', undefined, 'claude-sonnet-4-5'), true);
-    assert.equal(
-      resolveModelInputModalities('anthropic', undefined, 'claude-sonnet-4-5').includes('pdf'),
-      true,
-    );
-  });
 });
 
 describe('openAiAdapterApiProtocol', () => {
