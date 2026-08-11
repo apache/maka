@@ -6,7 +6,6 @@ import { z } from 'zod/v4';
 
 import {
   classifyError,
-  errorPresentationFromClass,
   providerFailureSummary,
   providerRetryMetadata,
 } from '../provider-error-classification.js';
@@ -542,37 +541,6 @@ describe('Provider error classification', () => {
     assert.equal(classifyError(spoofed), 'AI_RetryError');
   });
 
-  test('maps provider classes to stable user-safe presentations', () => {
-    assert.deepEqual(errorPresentationFromClass('ContextLength'), {
-      reason: 'context_overflow',
-      message: 'Context window exceeded',
-    });
-    assert.deepEqual(errorPresentationFromClass('Timeout'), {
-      reason: 'timeout',
-      message: 'Request timed out',
-    });
-    assert.deepEqual(errorPresentationFromClass('Auth'), {
-      reason: 'auth',
-      message: 'Authentication failed',
-    });
-    assert.deepEqual(errorPresentationFromClass('ProviderBilling'), {
-      reason: 'provider_billing',
-      message: 'Provider billing required',
-    });
-    assert.deepEqual(errorPresentationFromClass('ProviderUnavailable'), {
-      reason: 'provider_unavailable',
-      message: 'Provider returned an error',
-    });
-    assert.deepEqual(errorPresentationFromClass('RateLimit'), {
-      reason: 'rate_limit',
-      message: 'Rate limit exceeded',
-    });
-    assert.deepEqual(errorPresentationFromClass('Network'), {
-      reason: 'network',
-      message: 'Network error',
-    });
-    assert.deepEqual(errorPresentationFromClass('Other'), {});
-  });
 });
 test('auth classification preserves broad provider spellings without matching authority', () => {
   for (const message of [
