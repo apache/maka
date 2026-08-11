@@ -24,21 +24,6 @@ describe('provider connection slug derivation contract', () => {
 
 describe('provider catalog contract — structural invariants over CATALOG_PROVIDER_TYPES', () => {
   it('exposes an endpoint source that passes the production baseUrl gate', () => {
-    // A provider must be able to name where its base URL comes from:
-    //   - a concrete baseUrl, or
-    //   - a baseUrlTemplate whose placeholders resolve to a concrete URL
-    //     (account-scoped endpoints), or
-    //   - a custom relay connection where the user supplies the URL
-    //     at connect time.
-    // Concrete URLs are judged by validateConnectionBaseUrl — the same gate the
-    // connection IPC applies — so a registry default can never be something
-    // production would reject (a bare `new URL()` check would still admit
-    // `javascript:` or `file:` schemes). The validator alone cannot decide
-    // blank-vs-concrete, though: it deliberately returns null for blank input,
-    // whose semantics there are "no override, fall back to the provider
-    // default" — but here the registry value IS the default, so a whitespace
-    // baseUrl means no usable endpoint. An explicit trim check routes blank
-    // values away from the validator.
     for (const type of CATALOG_PROVIDER_TYPES) {
       const def = PROVIDER_REGISTRY[type];
       if (def.baseUrl.trim() !== '') {
@@ -69,5 +54,4 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
       );
     }
   });
-
 });

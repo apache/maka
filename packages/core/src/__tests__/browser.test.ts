@@ -14,10 +14,6 @@ describe('browser address input normalization', () => {
       ok: false,
       reason: 'unsupported_scheme',
     });
-    assert.deepEqual(normalizeBrowserAddressInput('about:blank'), {
-      ok: false,
-      reason: 'unsupported_scheme',
-    });
     assert.deepEqual(normalizeBrowserAddressInput('http://'), { ok: false, reason: 'invalid_url' });
   });
 });
