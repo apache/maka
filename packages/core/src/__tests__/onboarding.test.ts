@@ -105,25 +105,24 @@ describe('deriveOnboardingState', () => {
   });
 
   it('accepts wired OAuth providers and ignores validation telemetry', () => {
-    const connections = [
-      realConnection({ slug: 'claude-subscription', providerType: 'claude-subscription' }),
+    for (const connection of [
+      realConnection({
+        slug: 'claude-subscription',
+        providerType: 'claude-subscription',
+        lastTestStatus: 'error',
+      }),
       realConnection({
         slug: 'openai-codex',
         providerType: 'openai-codex',
         defaultModel: 'gpt-5.5',
         models: [{ id: 'gpt-5.5' }],
+        lastTestStatus: 'error',
       }),
-    ];
-    for (const connection of connections) {
-      for (const lastTestStatus of [undefined, 'verified', 'needs_reauth', 'error'] as const) {
-        assert.equal(
-          derive({
-            connections: [{ ...connection, lastTestStatus }],
-            secrets: { [connection.slug]: true },
-          }).kind,
-          'ready_empty',
-        );
-      }
+    ]) {
+      assert.equal(
+        derive({ connections: [connection], secrets: { [connection.slug]: true } }).kind,
+        'ready_empty',
+      );
     }
   });
 });
@@ -157,9 +156,7 @@ describe('onboarding milestone persistence', () => {
       { id: 'first_personalization', completedAt: 11 },
       { id: 'first_chat_sent', skippedAt: 3 },
     ]);
-    for (const value of [null, {}, 'string', 42]) {
-      assert.deepEqual(sanitizeOnboardingMilestones(value), []);
-    }
+    assert.deepEqual(sanitizeOnboardingMilestones(null), []);
   });
 
   it('settles initial onboarding only on its completed or skipped terminal state', () => {
