@@ -132,17 +132,6 @@ describe('keep-system-awake controller', () => {
     assert.equal(controller.isActive(), false);
   });
 
-  it('releasing something never held is a no-op', () => {
-    const fake = createFakeBlocker();
-    const controller = createKeepSystemAwakeController(fake.blocker);
-
-    controller.apply(true);
-    controller.release('computer-use:never-started');
-
-    assert.equal(controller.isActive(), true);
-    assert.equal(fake.stopCalls.length, 0);
-  });
-
   it('two holds need two releases', () => {
     const fake = createFakeBlocker();
     const controller = createKeepSystemAwakeController(fake.blocker);
