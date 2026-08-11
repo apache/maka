@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
+import { MCP_CONFIG_VERSION, type McpConfigFile, type McpServerStatus } from '@maka/core/mcp';
 import { registerMcpIpcMain } from '../mcp-ipc-main.js';
 
 test('MCP IPC commits config before publishing capabilities and emitting status', async () => {
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
-  let config: McpConfigFile = { version: 1, mcpServers: {} };
+  let config: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
   const calls: string[] = [];
   const connected: McpServerStatus = {
     serverId: 'fixture', state: 'connected', transport: 'stdio', toolCount: 1,
@@ -18,12 +18,12 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
       set: async (next) => { calls.push('store'); config = next; return next; },
       upsert: async (serverId, server) => {
         calls.push('store');
-        config = { version: 1, mcpServers: { ...config.mcpServers, [serverId]: server } };
+        config = { version: MCP_CONFIG_VERSION, mcpServers: { ...config.mcpServers, [serverId]: server } };
         return config;
       },
       remove: async (serverId) => {
         const { [serverId]: _removed, ...mcpServers } = config.mcpServers;
-        config = { version: 1, mcpServers };
+        config = { version: MCP_CONFIG_VERSION, mcpServers };
         return config;
       },
     },
@@ -49,7 +49,7 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   const setConfig = handlers.get('mcp:setConfig');
   assert.ok(setConfig);
   const imported = await setConfig({}, {
-    version: 1,
+    version: MCP_CONFIG_VERSION,
     mcpServers: { remote: { url: 'https://example.com/mcp', enabled: false } },
   });
   assert.deepEqual(imported.mcpServers, {
@@ -64,7 +64,7 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   assert.deepEqual(calls, ['ready', 'emit']);
 
   calls.length = 0;
-  config = { version: 1, mcpServers: { fixture: { command: 'node' } } };
+  config = { version: MCP_CONFIG_VERSION, mcpServers: { fixture: { command: 'node' } } };
   const cancelInstall = handlers.get('mcp:cancelInstall');
   assert.ok(cancelInstall);
   const cancelled = await cancelInstall({}, 'fixture');
@@ -74,7 +74,7 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
 
 test('MCP market cancellation waits for an in-flight config write before rolling it back', async () => {
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
-  let config: McpConfigFile = { version: 1, mcpServers: {} };
+  let config: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
   let releaseWrite!: () => void;
   let markWriteStarted!: () => void;
   const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
@@ -90,14 +90,14 @@ test('MCP market cancellation waits for an in-flight config write before rolling
         calls.push('write:start');
         markWriteStarted();
         await writeGate;
-        config = { version: 1, mcpServers: { ...config.mcpServers, [serverId]: server } };
+        config = { version: MCP_CONFIG_VERSION, mcpServers: { ...config.mcpServers, [serverId]: server } };
         calls.push('write:end');
         return config;
       },
       remove: async (serverId) => {
         calls.push('remove');
         const { [serverId]: _removed, ...mcpServers } = config.mcpServers;
-        config = { version: 1, mcpServers };
+        config = { version: MCP_CONFIG_VERSION, mcpServers };
         return config;
       },
     },
@@ -131,7 +131,7 @@ test('MCP market cancellation waits for an in-flight config write before rolling
 
 test('MCP config commit is not rolled back by a capability publication failure', async () => {
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
-  let config: McpConfigFile = { version: 1, mcpServers: {} };
+  let config: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
   const publicationErrors: unknown[] = [];
   registerMcpIpcMain({
     ipcMain: {
@@ -146,7 +146,10 @@ test('MCP config commit is not rolled back by a capability publication failure',
         return next;
       },
       upsert: async (serverId, server) => {
-        config = { version: 1, mcpServers: { ...config.mcpServers, [serverId]: server } };
+        config = {
+          version: MCP_CONFIG_VERSION,
+          mcpServers: { ...config.mcpServers, [serverId]: server },
+        };
         return config;
       },
       remove: async () => config,

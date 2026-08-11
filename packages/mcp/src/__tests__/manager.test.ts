@@ -5,7 +5,7 @@ import { afterEach, describe, test } from 'node:test';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import { Server as McpServer } from '@modelcontextprotocol/server';
 import { SSEServerTransport } from '@modelcontextprotocol/server-legacy/sse';
-import type { McpConfigFile, McpToolBinding } from '@maka/core/mcp';
+import { MCP_CONFIG_VERSION, type McpConfigFile, type McpToolBinding } from '@maka/core/mcp';
 import { buildStdioEnvironment, McpClientManager, McpToolCallError } from '../index.js';
 
 const fixturePath = fileURLToPath(new URL('../__fixtures__/stdio-server.js', import.meta.url));
@@ -50,7 +50,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       const manager = createManager();
 
       await manager.sync({
-        version: 1,
+        version: MCP_CONFIG_VERSION,
         mcpServers: {
           [serverId]: { url: fixture.url, transport: 'streamable-http' },
         },
@@ -351,7 +351,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       const fixture = await createRemoteFixture('streamable-http');
       const manager = createManager();
       await manager.sync({
-        version: 1,
+        version: MCP_CONFIG_VERSION,
         mcpServers: {
           first: { url: fixture.url, transport: 'streamable-http' },
           second: { url: fixture.url, transport: 'streamable-http' },
@@ -565,7 +565,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       await fixture.notifyToolListChanged();
       await gate.started;
 
-      const removal = manager.sync({ version: 1, mcpServers: {} });
+      const removal = manager.sync({ version: MCP_CONFIG_VERSION, mcpServers: {} });
       let removedBeforeRelease: boolean;
       try {
         removedBeforeRelease = await settlesWithin(removal, 1_000);
@@ -814,7 +814,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       await waitFor(() => manager.status('fixture')?.state === 'connecting');
       assert.equal(manager.cancelConnect('fixture'), true);
       await sync;
-      await manager.sync({ version: 1, mcpServers: {} });
+      await manager.sync({ version: MCP_CONFIG_VERSION, mcpServers: {} });
       assert.equal(manager.status('fixture'), undefined);
       assert.deepEqual(manager.toolSnapshot().tools, []);
     });
@@ -920,7 +920,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       const manager = createManager();
       await manager.sync(fixtureConfig());
       await manager.sync({
-        version: 1,
+        version: MCP_CONFIG_VERSION,
         mcpServers: {
           fixture: { ...fixtureConfig().mcpServers.fixture, enabled: false },
         },
@@ -928,7 +928,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.equal(manager.status('fixture')?.state, 'disabled');
       assert.deepEqual(manager.toolSnapshot().tools, []);
       assert.equal((await manager.test('fixture')).ok, false);
-      await manager.sync({ version: 1, mcpServers: {} });
+      await manager.sync({ version: MCP_CONFIG_VERSION, mcpServers: {} });
       assert.equal(manager.status('fixture'), undefined);
     });
   });
@@ -979,7 +979,7 @@ function bindingFor(manager: McpClientManager, serverId: string, toolName: strin
 
 function fixtureConfig(extraArgs: string[] = []): McpConfigFile {
   return {
-    version: 1,
+    version: MCP_CONFIG_VERSION,
     mcpServers: {
       fixture: {
         command: process.execPath,
@@ -994,7 +994,7 @@ function remoteConfig(
   transport: 'auto' | 'streamable-http' = 'streamable-http',
 ): McpConfigFile {
   return {
-    version: 1,
+    version: MCP_CONFIG_VERSION,
     mcpServers: {
       remote: {
         url,

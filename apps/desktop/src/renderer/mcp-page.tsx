@@ -18,7 +18,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { McpConfigFile, McpServerConfig, McpServerStatus } from '@maka/core/mcp';
-import { isMcpStdioConfig } from '@maka/core/mcp';
+import { MCP_CONFIG_VERSION, isMcpStdioConfig } from '@maka/core/mcp';
 import {
   Banner,
   Button,
@@ -76,6 +76,14 @@ import {
 import { getMcpCatalog, catalogEntryMatches, type McpCatalogEntry } from './mcp-catalog';
 import { McpBrandMark, hasMcpBrandMark } from './mcp-brand-marks';
 import { parseMcpImport } from './mcp-import';
+import {
+  createEmptyMcpDraft,
+  mcpConfigFromDraft,
+  mcpDraftFromConfig,
+  presentMcpNegotiatedProtocol,
+  withMcpDraftTransport,
+  type McpEditorDraft,
+} from './mcp-page-model';
 import { settingsActionErrorMessage } from './settings/settings-error-copy';
 import { getMcpCopy, type McpCopy } from './locales/mcp-copy';
 import { formatCommandLine, parseCommandLine } from './mcp-command-line';
@@ -84,24 +92,12 @@ import {
   type McpEditorErrors,
 } from './mcp-editor-validation';
 
-type Draft = {
-  id: string;
-  kind: 'stdio' | 'remote';
-  enabled: boolean;
-  commandLine: string;
-  cwd: string;
-  env: string;
-  url: string;
-  transport: 'auto' | 'streamable-http' | 'sse';
-  headers: string;
-};
-
 type EditorState =
-  | { mode: 'manual'; draft: Draft; editingId: string | null }
+  | { mode: 'manual'; draft: McpEditorDraft; editingId: string | null }
   | { mode: 'json'; source: string }
   | null;
 
-const EMPTY_CONFIG: McpConfigFile = { version: 1, mcpServers: {} };
+const EMPTY_CONFIG: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
 const MIN_INSTALL_INDICATOR_MS = 500;
 
 type InstallPhase = 'installing' | 'cancelling';
@@ -224,14 +220,14 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     });
   }
 
-  function openManual(draft: Draft = emptyDraft()) {
+  function openManual(draft: McpEditorDraft = createEmptyMcpDraft()) {
     openEditor({ mode: 'manual', draft: { ...draft }, editingId: null });
   }
 
   function openEdit(serverId: string, server: McpServerConfig) {
     openEditor({
       mode: 'manual',
-      draft: draftFromConfig(serverId, server),
+      draft: mcpDraftFromConfig(serverId, server),
       editingId: serverId,
     });
   }
@@ -295,7 +291,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     setEditorErrors({});
     setBusy('save');
     try {
-      const next = await window.maka.mcp.upsert(editor.draft.id.trim(), configFromDraft(editor.draft, copy));
+      const next = await window.maka.mcp.upsert(editor.draft.id.trim(), mcpConfigFromDraft(editor.draft, copy));
       if (!mounted.current) return;
       setConfig(next);
       closeEditor();
@@ -315,7 +311,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     try {
       const imported = parseMcpImport(editor.source, locale);
       const next = await window.maka.mcp.setConfig({
-        version: 1,
+        version: MCP_CONFIG_VERSION,
         mcpServers: { ...config.mcpServers, ...imported.mcpServers },
       });
       if (!mounted.current) return;
@@ -719,6 +715,7 @@ function McpServerInspector(props: {
   const transportLabel = isMcpStdioConfig(server)
     ? copy.page.localStdio
     : server.transport ?? 'auto';
+  const negotiatedProtocol = presentMcpNegotiatedProtocol(status, copy);
   return (
     <VStack className="maka-mcp-inspector" gap={4}>
       <VStack gap={2}>
@@ -787,6 +784,11 @@ function McpServerInspector(props: {
         <MetadataListItem label={copy.detail.statusLabel}>
           <Text type="body">{state.label}</Text>
         </MetadataListItem>
+        {negotiatedProtocol ? (
+          <MetadataListItem label={copy.detail.protocolLabel}>
+            <Text type="body">{negotiatedProtocol}</Text>
+          </MetadataListItem>
+        ) : null}
       </MetadataList>
 
       {status?.tools.length ? (
@@ -835,7 +837,7 @@ function McpEditorDialog(props: {
   saving: boolean;
   onChange(
     next: Exclude<EditorState, null>,
-    changedKey?: keyof Draft,
+    changedKey?: keyof McpEditorDraft,
   ): void;
   onOpenChange(isOpen: boolean): void;
   onSave(event: React.FormEvent): void;
@@ -843,12 +845,19 @@ function McpEditorDialog(props: {
 }) {
   const editing = props.state.mode === 'manual' && Boolean(props.state.editingId);
 
-  const updateDraft = <K extends keyof Draft>(key: K, value: Draft[K]) => {
+  const updateDraft = <K extends keyof McpEditorDraft>(key: K, value: McpEditorDraft[K]) => {
     if (props.state.mode !== 'manual') return;
     props.onChange(
       { ...props.state, draft: { ...props.state.draft, [key]: value } },
       key,
     );
+  };
+  const updateTransport = (transport: McpEditorDraft['transport']) => {
+    if (props.state.mode !== 'manual') return;
+    props.onChange({
+      ...props.state,
+      draft: withMcpDraftTransport(props.state.draft, transport),
+    });
   };
   return (
     <Dialog
@@ -882,7 +891,7 @@ function McpEditorDialog(props: {
                   ? { mode: 'json', source: exampleJson() }
                   : {
                       mode: 'manual',
-                      draft: emptyDraft(),
+                      draft: createEmptyMcpDraft(),
                       editingId: null,
                     },
               );
@@ -920,7 +929,7 @@ function McpEditorDialog(props: {
               label={props.copy.editor.transportAria}
               value={props.state.draft.kind}
               orientation="horizontal"
-              onChange={(kind) => updateDraft('kind', kind as Draft['kind'])}
+              onChange={(kind) => updateDraft('kind', kind as McpEditorDraft['kind'])}
             >
               <RadioListItem
                 value="stdio"
@@ -956,8 +965,23 @@ function McpEditorDialog(props: {
                       { value: 'streamable-http', label: props.copy.editor.transportStreamableHttp },
                       { value: 'sse', label: props.copy.editor.transportLegacySse },
                     ]}
-                    onChange={(value) => updateDraft('transport', value as Draft['transport'])}
+                    onChange={(value) => updateTransport(value as McpEditorDraft['transport'])}
                     label={props.copy.editor.transportLabel}
+                    width="100%"
+                  />
+                  <Selector
+                    value={props.state.draft.protocol}
+                    options={[
+                      { value: 'legacy', label: props.copy.editor.protocolLegacy },
+                      { value: 'auto', label: props.copy.editor.protocolAuto },
+                      { value: '2026-07-28', label: props.copy.editor.protocolModern },
+                    ]}
+                    onChange={(value) => updateDraft('protocol', value as McpEditorDraft['protocol'])}
+                    label={props.copy.editor.protocolLabel}
+                    description={props.state.draft.transport === 'sse'
+                      ? props.copy.editor.sseProtocolHelp
+                      : props.copy.editor.protocolHelp}
+                    isDisabled={props.state.draft.transport === 'sse'}
                     width="100%"
                   />
                   <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
@@ -974,46 +998,6 @@ function McpEditorDialog(props: {
       />
     </Dialog>
   );
-}
-
-function emptyDraft(): Draft {
-  return { id: '', kind: 'stdio', enabled: true, commandLine: '', cwd: '', env: '', url: '', transport: 'auto', headers: '' };
-}
-
-function draftFromConfig(id: string, config: McpServerConfig): Draft {
-  if (isMcpStdioConfig(config)) {
-    return { ...emptyDraft(), id, enabled: config.enabled !== false, commandLine: formatCommandLine(config.command, config.args ?? []), cwd: config.cwd ?? '', env: formatMap(config.env) };
-  }
-  return { ...emptyDraft(), id, kind: 'remote', enabled: config.enabled !== false, url: config.url, transport: config.transport ?? 'auto', headers: formatMap(config.headers) };
-}
-
-function configFromDraft(draft: Draft, copy: McpCopy): McpServerConfig {
-  if (draft.kind === 'stdio') {
-    const parsed = parseCommandLine(draft.commandLine);
-    // Validation runs before save, so an unbalanced quote cannot reach here
-    // through the dialog; the throw keeps other callers honest.
-    if (!parsed.ok) throw new Error(copy.editor.unbalancedQuote);
-    return {
-      enabled: draft.enabled,
-      command: parsed.command,
-      args: parsed.args,
-      ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}),
-      env: parseMap(draft.env, copy),
-    };
-  }
-  return { enabled: draft.enabled, url: draft.url.trim(), transport: draft.transport, headers: parseMap(draft.headers, copy) };
-}
-
-function parseMap(value: string, copy: McpCopy): Record<string, string> {
-  return Object.fromEntries(value.split(/\r?\n/u).filter((line) => line.trim()).map((line, index) => {
-    const separator = line.indexOf('=');
-    if (separator <= 0) throw new Error(copy.errors.mapLine(index + 1));
-    return [line.slice(0, separator).trim(), line.slice(separator + 1)];
-  }));
-}
-
-function formatMap(value?: Record<string, string>): string {
-  return Object.entries(value ?? {}).map(([key, item]) => `${key}=${item}`).join('\n');
 }
 
 function endpointFor(server: McpServerConfig): string {
@@ -1046,6 +1030,7 @@ function presentStatus(status: McpServerStatus | undefined, enabled: boolean, co
 
 function exampleJson(): string {
   return JSON.stringify({
+    version: MCP_CONFIG_VERSION,
     mcpServers: {
       filesystem: {
         command: 'npx',
