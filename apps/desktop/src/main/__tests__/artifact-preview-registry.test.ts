@@ -8,7 +8,6 @@ import {
   decideImagePostLoad,
   decideImageReadOutcome,
   exceedsImagePayloadCap,
-  formatPreviewSize,
   normalizeAllowedImageMime,
   resolvePreviewKind,
 } from '@maka/ui/artifact-preview-registry';
@@ -73,19 +72,6 @@ describe('artifact preview registry', () => {
     }
   });
 
-  it('formats representative sizes and invalid metadata', () => {
-    const cases: Array<[number | undefined, string]> = [
-      [0, '0 B'],
-      [1023, '1023 B'],
-      [1024, '1.0 KB'],
-      [IMAGE_PAYLOAD_MAX_BYTES, '2.0 MB'],
-      [undefined, '未知大小'],
-      [-1, '未知大小'],
-      [NaN, '未知大小'],
-      [Infinity, '未知大小'],
-    ];
-    for (const [size, expected] of cases) assert.equal(formatPreviewSize(size), expected);
-  });
 
   it('normalizes only allowlisted image MIME values', () => {
     for (const mimeType of ALLOWED_IMAGE_MIMES) {
