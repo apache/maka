@@ -3,7 +3,7 @@
 Maka's Computer Use surface was built against other people's work in three
 materially different ways. They are separated here because the obligations
 differ: redistribution under a license, adaptation or reference use of licensed
-source, and product-level compatibility observations.
+source, and inspection of a proprietary implementation for compatibility.
 
 Paths are Maka's unless they carry the upstream repository name, as in
 `open-codex-computer-use/...`.
@@ -78,24 +78,22 @@ Removing the cua-driver binary from this tree changes nothing about that path:
 what was borrowed was a published recipe, not the artifact or proprietary Codex
 implementation.
 
-## 3. Product compatibility observations
+## 3. Proprietary implementation inspected for compatibility
 
-Codex Desktop was used as a product-level compatibility reference. These
-observations did not provide a source-code license, and no OpenAI source code or
-executable is included or redistributed by Maka.
+The signed Codex Desktop Computer Use executable was statically inspected. No
+OpenAI source code or executable is included or redistributed by Maka, but
+specific geometry, numeric constants, and control-flow facts recovered from the
+binary were transcribed into the cursor implementation.
 
-Earlier comments in pull requests #1255 and #1883 overstated this relationship
-by describing the Maka scorer as a term-for-term binary recovery and several
-implementation values as exact copies. Repository history shows that the cursor
-originated as the attributed MIT `trycua/cua` adaptation in §2 and was then
-rewritten and extended in Maka. Codex Desktop supplied compatibility
-expectations and validation observations, not source code incorporated into
-this repository. The detailed cursor lineage and validation boundary live in
+This inspection provides evidence, not a license grant. Pull requests #1255 and
+#1883 accurately recorded most of the binary-derived inputs, but #1883's
+"term-for-term" phrase was broader than the current mixed scorer. The detailed
+artifact, retained facts, and Maka-authored divergences are recorded in
 `docs/computer-use-cursor-provenance.md`.
 
-| Compatibility observation | Informed area |
+| Binary-derived or observed fact | Informed area |
 |---|---|
-| A readable virtual pointer, center-aligned presentation, curved motion, and settling before action release | `apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts` |
+| Exact cursor geometry, center hotspot, motion configuration, close-enough thresholds, path measurement, and core scoring weights | `apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts` |
 | Overlay level policy — an occluded target raises the cursor rather than hiding it | same file, and `apps/desktop/src/main/computer-use/cursor-overlay-window.ts` |
 | The observation text shape | `packages/runtime/src/computer-use-tools.ts`, corroborated by the archived capture in §2 |
 | OOP WebContent targeting, retained-element unique refetch, and renderer-generation fencing | Reimplemented in the pinned `maka-cu` source; this repository records the exact source commit and binary digest in `apps/desktop/bundled-tools.json` |

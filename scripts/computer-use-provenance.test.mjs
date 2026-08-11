@@ -17,6 +17,10 @@ const cursorSource = await readFile(
   new URL('apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts', repoRoot),
   'utf8',
 );
+const cursorDocument = await readFile(
+  new URL('docs/computer-use-cursor-provenance.md', repoRoot),
+  'utf8',
+);
 
 test('every repository path the provenance record names still exists', async () => {
   // Backticked spans that look like repository paths: a slash, and a file
@@ -55,20 +59,27 @@ test('every repository path the provenance record names still exists', async () 
   assert.deepEqual(missing, [], `provenance record points at paths that do not exist: ${missing}`);
 });
 
-test('the record keeps redistribution, licensed source, and compatibility separate', () => {
+test('the record keeps redistribution, licensed source, and proprietary inspection separate', () => {
   // The three cases carry different obligations. Collapsing them is how a
-  // compatibility observation ends up described as if it were licensed source.
+  // binary-derived fact ends up described as if it were licensed source.
   assert.match(document, /^## 1\. Redistributed under license$/m);
   assert.match(document, /^## 2\. Licensed source adapted or read as reference$/m);
-  assert.match(document, /^## 3\. Product compatibility observations$/m);
+  assert.match(document, /^## 3\. Proprietary implementation inspected for compatibility$/m);
   assert.match(document, /8c921b2b3bf13494724ead4f0a814d80c56a7e8b/);
-  assert.match(document, /no OpenAI source code or\s+executable is included or redistributed/i);
+  assert.match(document, /no\s+OpenAI source code or executable is included or redistributed/i);
+  assert.match(document, /provides evidence, not a license grant/i);
 });
 
-test('the cursor provenance correction does not regress to binary-copy claims', () => {
-  assert.match(cursorSource, /MIT-licensed trycua\/cua cursor-overlay/);
-  assert.match(cursorSource, /authored in this repository/);
-  assert.doesNotMatch(cursorSource, /0x1000972ec|0x100d68cd0|term for term/i);
+test('the cursor provenance record preserves the mixed source boundary', () => {
+  assert.match(cursorSource, /MIT-licensed/);
+  assert.match(cursorSource, /trycua\/cua cursor-overlay/);
+  assert.match(cursorSource, /0x1000972ec/);
+  assert.match(cursorSource, /not term-for-term/i);
+  assert.match(cursorSource, /additional score terms/);
+  assert.match(cursorSource, /backwards-arrival/);
+  assert.match(cursorDocument, /44320516c4c400fb5459b203498c78e4af318b0096464f16c4445a47f2b8b8f4/);
+  assert.match(cursorDocument, /^### Binary-derived facts still retained$/m);
+  assert.match(cursorDocument, /^### Maka-authored or Maka-adjusted behavior$/m);
 });
 
 test('the record accounts for every executor the manifest pins', async () => {

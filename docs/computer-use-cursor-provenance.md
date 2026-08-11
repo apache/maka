@@ -1,52 +1,109 @@
 # Computer Use cursor provenance and compatibility evidence
 
-This document records the source lineage and compatibility evidence for Maka's
-agent-cursor overlay.
+This document records the exact source boundary for Maka's agent-cursor overlay
+and corrects the first revision of pull request #2676, which incorrectly
+reclassified binary-derived facts as compatibility observations or local
+implementation choices.
 
-Earlier revisions overstated the relationship between compatibility analysis
-and source provenance. In particular, they described the current scorer as a
-term-for-term recovery from a shipped executable and described several values
-as exact copies. The repository history supports a different and more precise
-account: the cursor began as a TypeScript adaptation of MIT-licensed
-`trycua/cua`, then Maka replaced and extended its planner, timing, hotspot,
-rendering, and presentation lifecycle while using Codex Desktop as a
-compatibility target.
+## Inspected artifact
 
-## Source lineage
+- Application: `~/.codex/computer-use/Codex Computer Use.app`
+- Executable: `Contents/MacOS/SkyComputerUseService`
+- Bundle identifier: `com.openai.sky.CUAService`
+- Signed build date: 2026-07-16
+- SHA-256: `44320516c4c400fb5459b203498c78e4af318b0096464f16c4445a47f2b8b8f4`
 
-| Stage | Source | What entered Maka |
+Every address and exact value below is scoped to that artifact. A later signed
+build may move functions or change defaults.
+
+## 1. Were the binary-recovery descriptions in #1255 and #1883 accurate?
+
+Mostly yes.
+
+Pull request #1255 accurately stated that the normalized glyph path,
+center-hotspot convention, and the 30 `MotionConfiguration.live` values came
+from static inspection of the artifact above. Its planner was not an exact
+translation: it used a Maka-authored single-segment cubic candidate family and a
+placeholder scorer built around recovered handle and arc constants.
+
+Pull request #1883 accurately stated that the scorer was present inline in the
+inspected build and that its core measurement and cost composition were
+recovered. The phrase "term-for-term reproduction" was too broad for the whole
+Maka function: the current score retains the recovered core coefficients but
+also includes Maka-specific terms, and the current candidate generator is not
+the binary's generator.
+
+## 2. Why were a binary address and "term-for-term" recorded?
+
+The address `0x1000972ec` identified the scorer in the inspected artifact.
+Static analysis recovered a 24-step path measurement and the following core
+costs:
+
+```text
+320 * excessLengthRatio
++ 140 * angleChangeEnergy
++ 180 * maxAngleChange
++ 18 * totalTurn
++ (staysInBounds ? 0 : 45)
+```
+
+The implementation added those coefficients and replaced the earlier
+arc-preference placeholder. The PR description used "term-for-term" for that
+recovered core. It did not distinguish the additional raw-length cost,
+backwards-arrival penalty, or the locally generated candidate family, so the
+phrase overstated the scope of equivalence.
+
+The `0.995` progress and `3.157` distance thresholds were likewise read from
+the inspected artifact at `0x100d68cd0` and `0x100d68cd8`. They are retained as
+build-specific input facts, not values independently tuned by Maka.
+
+## 3. Current source classification
+
+### Binary-derived facts still retained
+
+| Component | Evidence from the inspected artifact | Current location |
 |---|---|---|
-| Initial cursor renderer | `trycua/cua` cursor-overlay, MIT, upstream commit `8c921b2b3bf13494724ead4f0a814d80c56a7e8b` | A TypeScript adaptation of the public cursor-overlay motion and rendering design, introduced in Maka commit `025d0c628a2162d0a7daf49e97d104c36a4431c6`. |
-| Maka implementation | Commits beginning with `6a0a4fe8254a0bfab8e757d5562c23ab0244fb7f`, then `5551d6cd1c730542d8584ef295584607f9ae4428` and `cbb03172fcb499ced4c186b7c3437583cf524e28` | Direct-motion semantics, the cubic planner and scorer, spring timing, hotspot behavior, target-relative window ordering, rendering, presentation fences, and tests. |
-| Compatibility reference | Codex Desktop behavior observed on the 2026-07-16 build | Product-level expectations for pointer readability, center-aligned presentation, curved motion, target-window ordering, and settling before an action is released. |
+| Glyph geometry | Normalized `AgentCursor.path(in:)` coordinates | `CODEX_CURSOR_GLYPH` |
+| Hotspot convention | Hosting-view center returned as the action hotspot | Cursor destination and completion semantics |
+| Motion configuration | The 30 `MotionConfiguration.live` values | `CODEX_CURSOR_MOTION` |
+| Close-enough gate | Progress `0.995`, distance `3.157` | `CURSOR_CLOSE_ENOUGH` |
+| Path measurement | Fixed 24-step sampling, length, angle energy, max angle, total turn, and in-bounds state | `measureCursorPath` |
+| Core score | Weights `320`, `140`, `180`, `18`, and out-of-bounds penalty `45` | `scoreCursorPath` |
+| Terminal heading blend | Build-specific click angle and terminal blend behavior | `cursorHeadingAt` |
 
-The current TypeScript planner, scorer, rendering, and Maka-specific
-integration are maintained in this repository. No OpenAI source code or
-executable is included or redistributed.
+### MIT-licensed source lineage
 
-## Implementation boundary
+The first Maka cursor renderer was a TypeScript adaptation of
+`trycua/cua`'s MIT-licensed `cursor-overlay`, introduced in Maka commit
+`025d0c628a2162d0a7daf49e97d104c36a4431c6`. The fixed upstream commit recorded
+by Maka was `8c921b2b3bf13494724ead4f0a814d80c56a7e8b`.
 
-The current implementation uses a deterministic cubic candidate planner,
-spring-based progress and style motion, a stable normalized cursor shape, and
-an explicit close-enough release gate. These are Maka implementation contracts,
-not a claim of instruction-for-instruction equivalence with Codex Desktop.
+Pull request #1255 replaced most of that motion and glyph implementation. The
+MIT lineage remains relevant to the renderer's introduction and surrounding
+overlay design, but it is not the source of the exact values listed above.
 
-The parameters live next to the implementation in
-`apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts`. Their
-release behavior is covered by cursor-engine, presentation-fence, frame-rate,
-viewport, and real-window landing tests.
+### Maka-authored or Maka-adjusted behavior
 
-## Compatibility validation
+- the single-segment cubic candidate family in `planCursorPath`;
+- `MAX_DESIRED_ARC`, `DEPARTURE_FAN`, and the odd candidate grid;
+- the raw path-length cost and backwards-arrival score term;
+- viewport widening and edge behavior;
+- the spring deadline derivation, frame-clock ownership, and low-frame-rate
+  sub-stepping;
+- target-window ordering, semantic element-center presentation, cancellation,
+  completion, and presentation fences;
+- Maka palette, click pulse, shadow, and host integration.
 
-Validation compares externally visible behavior:
+These changes mean the current renderer is neither a straight port of
+`trycua/cua` nor an instruction-for-instruction translation of
+`SkyComputerUseService`. It is a mixed implementation with the exact retained
+binary-derived facts identified above.
 
-- the pointer remains readable on light and dark surfaces;
-- the presented hotspot lands at the action coordinate;
-- long moves remain inside the viewport and do not curl away from the target;
-- progress remains tied to wall-clock time across supported frame rates;
-- the action is not released while the cursor is visibly short of the target;
-- the overlay is ordered relative to the target window rather than globally
-  above unrelated applications.
+## Distribution and review boundary
 
-PR visual evidence belongs on the pull request or issue rather than under
-`docs/`.
+No OpenAI source code or executable is stored or redistributed in Maka. Static
+inspection and transcription of facts from a proprietary executable do not
+provide a license grant. This record identifies what happened; it does not make
+the licensing conclusion. An independent human reviewer must decide whether the
+retained binary-derived material is acceptable for an ASF release or must be
+replaced.
