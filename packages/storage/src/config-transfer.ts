@@ -125,7 +125,10 @@ export function parseConfigBundle(raw: string): ConfigParseResult {
     if (rawData[category] !== undefined) data[category] = rawData[category];
   }
   const bundle: ConfigBundle = {
-    schemaVersion: CONFIG_TRANSFER_SCHEMA_VERSION,
+    // Keep the validated SOURCE version, not the current writer version: the
+    // importer dispatches legacy v1 vs profile-aware v2 on this value, so a
+    // v1 file must never be rewritten into the v2 import path.
+    schemaVersion: version,
     exportedAt: typeof parsed.exportedAt === 'string' ? parsed.exportedAt : '',
     appVersion: typeof parsed.appVersion === 'string' ? parsed.appVersion : '',
     includedData: includedData.filter((c) => data[c] !== undefined),

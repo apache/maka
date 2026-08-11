@@ -3397,14 +3397,15 @@ describe('runtime policy stores', () => {
         (profile) => profile.profileId !== connection.connectionId,
       )!;
 
-      // Newly created profiles are disabled: a disabled profile cannot test.
-      const disabled = await stores.operations.beginConnectionProfileTest(
+      // Newly created profiles are disabled. A disabled profile can be tested
+      // once its credential is configured (RFC 11.1: verify first, enable
+      // later), but without a credential it is refused.
+      const unconfigured = await stores.operations.beginConnectionProfileTest(
         connection.connectionId,
         secondary.profileId,
         'gpt-5',
       );
-      assert.equal(disabled.kind, 'profile_disabled');
-      if (disabled.kind !== 'profile_disabled') return;
+      assert.equal(unconfigured.kind, 'credential_not_configured');
 
       await stores.credentialVault.set({
         locator: connectionCredential(connection, 'api_key'),
@@ -3421,18 +3422,9 @@ describe('runtime policy stores', () => {
         expected: null,
         secret: '[redacted]',
       });
-      const enabled = await stores.operations.setCredentialProfileEnabled({
-        expected: {
-          connectionId: connection.connectionId,
-          connectionRevision: created.snapshot.revision,
-          profileId: secondary.profileId,
-          profileRevision: secondary.revision,
-        },
-        enabled: true,
-      });
-      assert.equal(enabled.kind, 'committed');
-      if (enabled.kind !== 'committed') return;
 
+      // Still disabled: a test now succeeds and writes verification evidence
+      // without changing the enabled state.
       const prepared = await stores.operations.beginConnectionProfileTest(
         connection.connectionId,
         secondary.profileId,
@@ -3446,6 +3438,39 @@ describe('runtime policy stores', () => {
         modelId: 'gpt-5',
       });
       assert.deepEqual(completed, { kind: 'committed', verification: 'recorded' });
+      const stillDisabled = await stores.connectionCatalog.getSnapshot();
+      assert.equal(
+        stillDisabled.connections
+          .find((item) => item.connectionId === connection.connectionId)!
+          .credentialRouting!.profiles.find(
+            (profile) => profile.profileId === secondary.profileId,
+          )!.enabled,
+        false,
+      );
+
+      const enabled = await stores.operations.setCredentialProfileEnabled({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: created.snapshot.revision,
+          profileId: secondary.profileId,
+          profileRevision: secondary.revision,
+        },
+        enabled: true,
+      });
+      assert.equal(enabled.kind, 'committed');
+      if (enabled.kind !== 'committed') return;
+
+      const preparedAgain = await stores.operations.beginConnectionProfileTest(
+        connection.connectionId,
+        secondary.profileId,
+        'gpt-5',
+      );
+      assert.equal(preparedAgain.kind, 'ready');
+      if (preparedAgain.kind !== 'ready') return;
+      await stores.operations.completeConnectionProfileTest(preparedAgain.ticket, {
+        summary: { status: 'verified', checkedAt },
+        modelId: 'gpt-5',
+      });
 
       const readiness = await stores.operations.readCredentialProfileReadiness(
         connection.connectionId,
@@ -3663,13 +3688,14 @@ describe('runtime policy stores', () => {
       const secondary = routing.profiles.find(
         (profile) => profile.profileId !== connection.connectionId,
       )!;
-      // Default: disabled and unconfigured -> profile_disabled wins first.
-      const disabled = await stores.operations.beginConnectionProfileTest(
+      // Default: disabled and unconfigured -> refused for the missing
+      // credential; the disabled state alone never blocks a test.
+      const unconfigured = await stores.operations.beginConnectionProfileTest(
         connection.connectionId,
         secondary.profileId,
         'gpt-5',
       );
-      assert.equal(disabled.kind, 'profile_disabled');
+      assert.equal(unconfigured.kind, 'credential_not_configured');
 
       await stores.credentialVault.set({
         locator: {
@@ -3690,12 +3716,12 @@ describe('runtime policy stores', () => {
         },
         enabled: true,
       });
-      const unconfigured = await stores.operations.beginConnectionProfileTest(
+      const ghostConnection = await stores.operations.beginConnectionProfileTest(
         '00000000-0000-4000-8000-000000000077',
         '00000000-0000-4000-8000-000000000077',
         'gpt-5',
       );
-      assert.equal(unconfigured.kind, 'connection_not_found');
+      assert.equal(ghostConnection.kind, 'connection_not_found');
 
       // A non-canonical test model is a codec rejection.
       await assert.rejects(
@@ -3985,6 +4011,236 @@ describe('runtime policy stores', () => {
       const primary = readiness.profiles.find((profile) => profile.primary);
       assert.ok(primary);
       assert.equal(primary.profileId, connection.connectionId);
+    });
+  });
+
+  test('profile test completion must match the ticket model basis', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        {
+          ...connectionDraft('profile-forge', 'openai', 'Profile forge'),
+          enabledModelIds: ['gpt-5', 'gpt-6'],
+        },
+      );
+      const created = await stores.operations.createCredentialProfile({
+        expected: connectionBasis(connection),
+        label: 'backup',
+        weight: 1,
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      const routing = created.snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!.credentialRouting!;
+      const secondary = routing.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      )!;
+      await stores.credentialVault.set({
+        locator: {
+          scope: 'connection_profile',
+          connectionId: connection.connectionId,
+          profileId: secondary.profileId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret: '[redacted]',
+      });
+
+      // A ticket pinned to gpt-5 must not accept evidence for gpt-6.
+      const prepared = await stores.operations.beginConnectionProfileTest(
+        connection.connectionId,
+        secondary.profileId,
+        'gpt-5',
+      );
+      assert.equal(prepared.kind, 'ready');
+      if (prepared.kind !== 'ready') return;
+      const forged = await stores.operations.completeConnectionProfileTest(prepared.ticket, {
+        summary: { status: 'verified', checkedAt: '2024-06-01T00:00:00.000Z' },
+        modelId: 'gpt-6',
+      });
+      assert.equal(forged.kind, 'invalid_request');
+      const readiness = await stores.operations.readCredentialProfileReadiness(
+        connection.connectionId,
+      );
+      assert.equal(readiness.kind, 'found');
+      if (readiness.kind !== 'found') return;
+      const secondaryReadiness = readiness.profiles.find(
+        (profile) => profile.profileId === secondary.profileId,
+      );
+      assert.deepEqual(secondaryReadiness?.supportedModels, []);
+
+      // A default-model ticket still must not accept a non-canonical model.
+      const defaultTicket = await stores.operations.beginConnectionProfileTest(
+        connection.connectionId,
+        secondary.profileId,
+        null,
+      );
+      assert.equal(defaultTicket.kind, 'ready');
+      if (defaultTicket.kind !== 'ready') return;
+      const nonCanonical = await stores.operations.completeConnectionProfileTest(
+        defaultTicket.ticket,
+        {
+          summary: { status: 'verified', checkedAt: '2024-06-01T00:00:00.000Z' },
+          modelId: 'injected-model',
+        },
+      );
+      assert.equal(nonCanonical.kind, 'invalid_request');
+    });
+  });
+
+  test('authoritative discovery revokes evidence across digest groups and empty intersections', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        {
+          ...connectionDraft('profile-auth2', 'openai', 'Profile auth2'),
+          enabledModelIds: ['gpt-5', 'gpt-6'],
+        },
+      );
+      await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'api_key'),
+        expected: null,
+        secret: '[redacted]',
+      });
+      const created = await stores.operations.createCredentialProfile({
+        expected: connectionBasis(connection),
+        label: 'backup',
+        weight: 1,
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      const routing = created.snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!.credentialRouting!;
+      const secondary = routing.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      )!;
+      await stores.credentialVault.set({
+        locator: {
+          scope: 'connection_profile',
+          connectionId: connection.connectionId,
+          profileId: secondary.profileId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret: '[redacted]',
+      });
+      const first = await stores.operations.beginConnectionProfileModelFetch(
+        connection.connectionId,
+        secondary.profileId,
+      );
+      assert.equal(first.kind, 'ready');
+      if (first.kind !== 'ready') return;
+      await stores.operations.completeConnectionProfileModelFetch(
+        first.ticket,
+        { models: [{ id: 'gpt-5' }, { id: 'gpt-6' }], source: 'fetched', fetchedAt: 2000 },
+        'authoritative',
+      );
+
+      // An authoritative discovery whose intersection with the enabled set is
+      // EMPTY must still clear the previous evidence, not keep it alive.
+      const empty = await stores.operations.beginConnectionProfileModelFetch(
+        connection.connectionId,
+        secondary.profileId,
+      );
+      assert.equal(empty.kind, 'ready');
+      if (empty.kind !== 'ready') return;
+      await stores.operations.completeConnectionProfileModelFetch(
+        empty.ticket,
+        { models: [{ id: 'gpt-7' }], source: 'fetched', fetchedAt: 3000 },
+        'authoritative',
+      );
+      const cleared = await stores.operations.readCredentialProfileReadiness(
+        connection.connectionId,
+      );
+      assert.equal(cleared.kind, 'found');
+      if (cleared.kind !== 'found') return;
+      const clearedSecondary = cleared.profiles.find(
+        (profile) => profile.profileId === secondary.profileId,
+      );
+      assert.deepEqual(clearedSecondary?.supportedModels, []);
+    });
+  });
+
+  test('readiness matches the current execution digest and surfaces global circuits', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('profile-digest', 'openai', 'Profile digest'),
+      );
+      const created = await stores.operations.createCredentialProfile({
+        expected: connectionBasis(connection),
+        label: 'backup',
+        weight: 1,
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      const routing = created.snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!.credentialRouting!;
+      const secondary = routing.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      )!;
+      const locator = {
+        scope: 'connection_profile',
+        connectionId: connection.connectionId,
+        profileId: secondary.profileId,
+        kind: 'api_key',
+      } as const;
+      await stores.credentialVault.set({ locator, expected: null, secret: '[redacted]' });
+      await stores.operations.setCredentialProfileEnabled({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: created.snapshot.revision,
+          profileId: secondary.profileId,
+          profileRevision: secondary.revision,
+        },
+        enabled: true,
+      });
+      const prepared = await stores.operations.beginConnectionProfileTest(
+        connection.connectionId,
+        secondary.profileId,
+        'gpt-5',
+      );
+      assert.equal(prepared.kind, 'ready');
+      if (prepared.kind !== 'ready') return;
+      await stores.operations.completeConnectionProfileTest(prepared.ticket, {
+        summary: { status: 'verified', checkedAt: '2024-06-01T00:00:00.000Z' },
+        modelId: 'gpt-5',
+      });
+      const ready = await stores.operations.readCredentialProfileReadiness(
+        connection.connectionId,
+      );
+      assert.equal(ready.kind, 'found');
+      if (ready.kind !== 'found') return;
+      assert.deepEqual(
+        ready.profiles.find((profile) => profile.profileId === secondary.profileId)
+          ?.supportedModels,
+        ['gpt-5'],
+      );
+
+      // Changing the request-body overlay changes the execution basis digest:
+      // the old supported evidence no longer matches and must disappear from
+      // readiness, exactly as the Router would refuse to dispatch on it.
+      await stores.operations.replaceConnectionRequestHeaders(
+        connection.connectionId,
+        [{ name: 'X-Tenant', value: 'tenant-b' }],
+      );
+      const stale = await stores.operations.readCredentialProfileReadiness(
+        connection.connectionId,
+      );
+      assert.equal(stale.kind, 'found');
+      if (stale.kind !== 'found') return;
+      assert.deepEqual(
+        stale.profiles.find((profile) => profile.profileId === secondary.profileId)
+          ?.supportedModels,
+        [],
+      );
+      assert.equal(stale.readyCandidateCount, 0);
     });
   });
 });

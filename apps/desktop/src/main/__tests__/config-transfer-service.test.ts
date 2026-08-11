@@ -2,7 +2,11 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { AppSettings } from '@maka/core/settings';
 import type { LlmConnection } from '@maka/core/llm-connections';
-import type { CredentialKind } from '@maka/storage';
+import {
+  parseConfigBundle,
+  serializeConfigBundle,
+  type CredentialKind,
+} from '@maka/storage';
 import { applyConfigImport, gatherConfigExport, type ConfigTransferDeps } from '../config-transfer-service.js';
 
 function conn(slug: string): LlmConnection {
@@ -202,7 +206,18 @@ describe('config-transfer-service', () => {
       primary: boolean;
       credentialConfigured: boolean;
       supportedModels: string[];
-    }> = [];
+    }> = [
+      {
+        profileId: 'primary',
+        revision: 1,
+        label: 'primary',
+        enabled: true,
+        weight: 1,
+        primary: true,
+        credentialConfigured: true,
+        supportedModels: [],
+      },
+    ];
     const calls: string[] = [];
     let nextProfileId = 900;
     deps.profiles = {
@@ -283,14 +298,17 @@ describe('config-transfer-service', () => {
       skipped: 0,
       labelConflicts: [],
       verificationFailed: [],
-      restoredEnabled: 1,
+      restoredEnabled: 2,
       balancedRestored: true,
       balancedPending: false,
     });
-    // Created disabled first, then the secret, then re-verified, then enabled.
+    // Created disabled first, then the secret, then BOTH the primary and the
+    // secondary are re-tested, then the verified secondary is enabled, then
+    // balanced is restored.
     assert.deepEqual(calls, [
       'create:backup',
       'credential:profile-900',
+      'test:primary',
       'test:profile-900',
       'setEnabled:profile-900:true',
       'routing:balanced',
@@ -541,5 +559,127 @@ describe('config-transfer-service', () => {
     assert.deepEqual(result.profiles?.balancedRestored, false);
     assert.deepEqual(result.profiles?.balancedPending, true);
     assert.ok(calls.includes('routing:balanced'));
+  });
+
+  it('v2 overwrite quiesces balanced routing and disables enabled secondaries before replacing credentials', async () => {
+    const { deps } = makeDeps();
+    const profiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [
+      {
+        profileId: 'profile-77',
+        revision: 3,
+        label: 'backup',
+        enabled: true,
+        weight: 20,
+        primary: false,
+        credentialConfigured: true,
+        supportedModels: [],
+      },
+    ];
+    const calls: string[] = [];
+    deps.profiles = {
+      list: async () => ({
+        connectionRevision: 5,
+        routingMode: 'balanced',
+        readyCandidateCount: 1,
+        profiles: [...profiles],
+      }),
+      create: async () => {
+        calls.push('create');
+      },
+      update: async (_slug, input) => {
+        calls.push(`update:${input.profileId}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) {
+          target.label = input.label ?? target.label;
+          target.weight = input.weight ?? target.weight;
+          target.revision += 1;
+        }
+      },
+      setEnabled: async (_slug, input) => {
+        calls.push(`setEnabled:${input.profileId}:${input.enabled}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) target.enabled = input.enabled;
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async (_slug, input) => {
+        calls.push(`credential:${input.profileId}`);
+      },
+      test: async (_slug, input) => {
+        calls.push(`test:${input.profileId}`);
+        return { ok: true };
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections', 'credentials'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('deepseek-main'),
+            credentialProfiles: [
+              { profileRef: 'secondary-0', profileId: 'profile-77', label: 'backup', enabled: true, weight: 40, primary: false },
+            ],
+            routingMode: 'balanced',
+          },
+        ],
+        credentials: [
+          { slug: 'deepseek-main', profileRef: 'secondary-0', kind: 'api_key', value: 'sk-new' },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'overwrite', deps);
+
+    // Quiesce first (balanced -> legacy_primary, secondary disabled), then the
+    // exact-ID update, credential replacement, re-test, re-enable, balanced
+    // restore — never "balanced declared + credentials replaced".
+    assert.deepEqual(calls, [
+      'routing:legacy_primary',
+      'setEnabled:profile-77:false',
+      'update:profile-77',
+      'credential:profile-77',
+      'test:profile-77',
+      'setEnabled:profile-77:true',
+      'routing:balanced',
+    ]);
+    assert.deepEqual(result.profiles?.balancedRestored, true);
+    assert.deepEqual(result.profiles?.restoredEnabled, 1);
+  });
+
+  it('routes a parsed v1 bundle through the legacy import path', async () => {
+    const { deps, setCreds } = makeDeps();
+    const raw = serializeConfigBundle({
+      schemaVersion: 1,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections', 'credentials'] as const,
+      data: {
+        connections: [conn('brand-new')],
+        credentials: [{ slug: 'brand-new', kind: 'api_key', value: 'sk-v1' }],
+      },
+    });
+    const parsed = parseConfigBundle(raw);
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) return;
+    // The parser must preserve the SOURCE version: a v1 file must never be
+    // rewritten into the v2 profile-aware import path.
+    assert.equal(parsed.bundle.schemaVersion, 1);
+    const result = await applyConfigImport(parsed.bundle, 'skip', deps);
+    assert.deepEqual(result.credentials, { applied: 1, skipped: 0 });
+    assert.equal(result.profiles, undefined, 'legacy import must not touch profiles');
+    assert.deepEqual(setCreds, [{ slug: 'brand-new', kind: 'api_key', value: 'sk-v1' }]);
   });
 });

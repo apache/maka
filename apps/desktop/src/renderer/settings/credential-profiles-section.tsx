@@ -149,7 +149,9 @@ export function CredentialProfilesSection(props: CredentialProfilesSectionProps)
 
   async function saveLabelEdit(profile: ReadinessProfile): Promise<void> {
     const label = labelDraft.trim();
-    if (label.length === 0 || label === profile.label) {
+    const labelChanged = label.length > 0 && label !== profile.label;
+    const weightChanged = weightDraft !== null && weightDraft !== profile.weight;
+    if (!labelChanged && !weightChanged) {
       setEditingLabelFor(null);
       setWeightDraft(null);
       return;
@@ -158,10 +160,8 @@ export function CredentialProfilesSection(props: CredentialProfilesSectionProps)
       await props.onUpdate({
         profileId: profile.profileId,
         profileRevision: profile.revision,
-        label,
-        ...(weightDraft === null || weightDraft === profile.weight
-          ? {}
-          : { weight: weightDraft }),
+        ...(labelChanged ? { label } : {}),
+        ...(weightChanged ? { weight: weightDraft as number } : {}),
       })
     ) {
       setEditingLabelFor(null);

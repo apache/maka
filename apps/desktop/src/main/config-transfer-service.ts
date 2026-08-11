@@ -314,6 +314,27 @@ async function applyV2ConfigImport(
       skipped: plan.skipped.length,
     };
 
+    // Quiesce before touching any credential: an overwritten connection that
+    // still declares balanced routing must drop to legacy_primary and every
+    // enabled secondary must be disabled FIRST, so a partial failure can never
+    // leave "balanced declared + credentials partially replaced". Newly
+    // created connections have no routing declaration and skip this pass.
+    for (const connection of plan.overwrite) {
+      const current = await profiles.list(connection.slug);
+      if (current.routingMode === 'balanced') {
+        await profiles.setRoutingMode(connection.slug, { mode: 'legacy_primary' });
+      }
+      for (const secondary of current.profiles.filter(
+        (candidate) => !candidate.primary && candidate.enabled,
+      )) {
+        await profiles.setEnabled(connection.slug, {
+          profileId: secondary.profileId,
+          profileRevision: secondary.revision,
+          enabled: false,
+        });
+      }
+    }
+
     for (const connection of [...plan.create, ...plan.overwrite]) {
       const source =
         (incoming.find((candidate) => candidate.slug === connection.slug) ??
@@ -423,29 +444,34 @@ async function applyV2ConfigImport(
     result.memory = { applied: true };
   }
 
-  // Re-verify and restore enable state for Profiles the bundle had enabled.
+  // Re-verify and restore enable state for Profiles the bundle had enabled —
+  // the primary is re-tested too, because a clean target starts with no
+  // verification evidence and the balanced gate needs two verified profiles.
   if (Array.isArray(bundle.data.connections)) {
     for (const connection of bundle.data.connections as V2ExportedConnection[]) {
       if (!appliedConnectionSlugs.has(connection.slug)) continue;
       const slugMapping = mappings.get(connection.slug);
       if (!slugMapping) continue;
       for (const profile of connection.credentialProfiles ?? []) {
-        if (profile.primary || !profile.enabled) continue;
+        if (!profile.enabled) continue;
         const targetProfileId = slugMapping.get(profile.profileRef);
-        if (!targetProfileId || targetProfileId === 'primary') continue;
+        if (!targetProfileId) continue;
         const tested = await profiles.test(connection.slug, {
           profileId: targetProfileId,
         });
         const fresh = await profiles.list(connection.slug);
-        const target = fresh.profiles.find(
-          (candidate) => candidate.profileId === targetProfileId,
-        );
+        const target =
+          targetProfileId === EXPORT_PRIMARY_PROFILE_REF
+            ? fresh.profiles.find((candidate) => candidate.primary)
+            : fresh.profiles.find((candidate) => candidate.profileId === targetProfileId);
         if (tested.ok && target) {
-          await profiles.setEnabled(connection.slug, {
-            profileId: target.profileId,
-            profileRevision: target.revision,
-            enabled: true,
-          });
+          if (!target.primary) {
+            await profiles.setEnabled(connection.slug, {
+              profileId: target.profileId,
+              profileRevision: target.revision,
+              enabled: true,
+            });
+          }
           restoredEnabled += 1;
         } else {
           verificationFailed.push(`${connection.slug}/${profile.label}`);

@@ -347,7 +347,9 @@ function profileTransferDeps(
       const connection = await requireConnection(slug);
       const tested = await deps.client.testConnectionProfile(
         connection.connectionId,
-        input.profileId,
+        input.profileId === EXPORT_PRIMARY_PROFILE_REF
+          ? connection.connectionId
+          : input.profileId,
       );
       if (tested.kind !== 'committed') {
         return { ok: false };

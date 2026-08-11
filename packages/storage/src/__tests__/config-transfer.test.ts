@@ -81,6 +81,30 @@ describe('config-transfer', () => {
     assert.equal(parsed.ok === false && parsed.reason, 'unsupported_version');
   });
 
+  it('preserves the source schema version so v1 bundles stay on the legacy path', () => {
+    const raw = JSON.stringify({
+      schemaVersion: 1,
+      includedData: ['connections'],
+      data: { connections: [conn('deepseek-main')] },
+    });
+    const parsed = parseConfigBundle(raw);
+    assert.ok(parsed.ok);
+    if (!parsed.ok) return;
+    // The importer dispatches legacy v1 vs profile-aware v2 on this value; a
+    // v1 file must never be rewritten into the v2 import path.
+    assert.equal(parsed.bundle.schemaVersion, 1);
+    const v2 = parseConfigBundle(
+      JSON.stringify({
+        schemaVersion: 2,
+        includedData: ['connections'],
+        data: { connections: [conn('deepseek-main')] },
+      }),
+    );
+    assert.ok(v2.ok);
+    if (!v2.ok) return;
+    assert.equal(v2.bundle.schemaVersion, 2);
+  });
+
   it('rejects non-JSON and malformed payloads', () => {
     assert.equal((parseConfigBundle('not json') as { reason: string }).reason, 'not_json');
     assert.equal(

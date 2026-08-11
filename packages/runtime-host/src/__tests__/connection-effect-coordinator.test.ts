@@ -934,6 +934,101 @@ test('profile model fetch through the host coordinator records verification and 
   });
 });
 
+test('clean-target import journey: disabled profile test, enable and balanced activation against the real coordinator', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(stores, 0, connectionDraft('import-journey', 'openai'));
+    await setConnectionCredential(stores, connection, 'primary-secret');
+    const created = await stores.operations.createCredentialProfile({
+      expected: { connectionId: connection.connectionId, revision: connection.revision },
+      label: 'backup',
+      weight: 25,
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const routing = created.snapshot.connections.find(
+      (item) => item.connectionId === connection.connectionId,
+    )!.credentialRouting!;
+    const secondary = routing.profiles.find(
+      (profile) => profile.profileId !== connection.connectionId,
+    )!;
+    const secondaryLocator = {
+      scope: 'connection_profile',
+      connectionId: connection.connectionId,
+      profileId: secondary.profileId,
+      kind: 'api_key',
+    } as const;
+    await stores.credentialVault.set({ locator: secondaryLocator, expected: null, secret: 'backup-secret' });
+
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => Date.parse('2026-07-29T12:00:00.000Z'),
+      createTransport: () => recordingTransport(() => undefined),
+      runConnectionTest: async () => ({ ok: true, modelId: 'gpt-5', latencyMs: 6 }),
+    });
+
+    // Import order: the newly created profile is DISABLED; the re-test runs
+    // before any enable and must still write verification evidence.
+    const tested = await coordinator.handlers['connection.profile.test.run'](
+      { connectionId: connection.connectionId, profileId: secondary.profileId, modelId: 'gpt-5' },
+      context,
+    );
+    assert.equal(tested.ok, true);
+    if (!tested.ok || tested.result.kind !== 'committed') {
+      throw new Error('disabled profile test did not commit');
+    }
+    assert.equal(tested.result.verification, 'recorded');
+
+    const beforeEnable = await stores.connectionCatalog.getSnapshot();
+    assert.equal(
+      beforeEnable.connections
+        .find((item) => item.connectionId === connection.connectionId)!
+        .credentialRouting!.profiles.find(
+          (profile) => profile.profileId === secondary.profileId,
+        )!.enabled,
+      false,
+    );
+
+    // Enable the verified profile, verify the primary, then activate balanced.
+    const enabled = await stores.operations.setCredentialProfileEnabled({
+      expected: {
+        connectionId: connection.connectionId,
+        connectionRevision: beforeEnable.revision,
+        profileId: secondary.profileId,
+        profileRevision: secondary.revision,
+      },
+      enabled: true,
+    });
+    assert.equal(enabled.kind, 'committed');
+    const primaryTested = await coordinator.handlers['connection.profile.test.run'](
+      { connectionId: connection.connectionId, profileId: connection.connectionId, modelId: 'gpt-5' },
+      context,
+    );
+    assert.equal(primaryTested.ok, true);
+    if (!primaryTested.ok || primaryTested.result.kind !== 'committed') {
+      throw new Error('primary profile test did not commit');
+    }
+    const activated = await stores.operations.setCredentialRoutingMode({
+      expected: { connectionId: connection.connectionId, revision: enabled.snapshot.revision },
+      mode: 'balanced',
+    });
+    assert.equal(activated.kind, 'committed');
+
+    const readiness = await stores.operations.readCredentialProfileReadiness(
+      connection.connectionId,
+    );
+    assert.equal(readiness.kind, 'found');
+    if (readiness.kind !== 'found') return;
+    assert.equal(readiness.routingMode, 'balanced');
+    assert.equal(readiness.readyCandidateCount, 1);
+    assert.deepEqual(
+      readiness.profiles.filter((profile) => !profile.primary).map((profile) => profile.supportedModels),
+      [['gpt-5']],
+    );
+  });
+});
+
 type Writer = RuntimePolicyStoresWriter;
 
 async function withFixture(

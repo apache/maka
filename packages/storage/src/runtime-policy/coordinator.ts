@@ -209,7 +209,7 @@ type SemanticConnectionBasis =
 
 interface ProfileSemanticConnectionBasisFields {
   readonly profileId: string;
-  readonly profileEnabled: true;
+  readonly profileEnabled: boolean;
   readonly profileRevision: number;
 }
 
@@ -1548,6 +1548,20 @@ export class RuntimePolicyCoordinator {
           return deepFreeze({ kind: 'superseded' as const, changed: checked.changed });
         }
         const summary = decodeConnectionInput(() => decodeConnectionTestSummary(result.summary));
+        if (summary.status === 'verified' && result.modelId !== null) {
+          if (claimed.basis.modelId !== null && result.modelId !== claimed.basis.modelId) {
+            return deepFreeze({
+              kind: 'invalid_request' as const,
+              reason: 'profile test completed for a different model than the ticket pinned',
+            });
+          }
+          if (!isCanonicalConnectionTestModel(checked.connection, result.modelId)) {
+            return deepFreeze({
+              kind: 'invalid_request' as const,
+              reason: 'profile test completed outside the frozen canonical model basis',
+            });
+          }
+        }
         if (
           summary.status === 'verified' &&
           result.modelId !== null &&
@@ -1662,58 +1676,63 @@ export class RuntimePolicyCoordinator {
         const supportedModelIds = discovery.models
           .map((model) => model.id)
           .filter((modelId) => connection.enabledModelIds.includes(modelId));
-        if (supportedModelIds.length > 0) {
-          const store = this.routingStoreFor(root);
-          if (evidence === 'authoritative') {
-            // Atomically replace each basis group: rows the current
-            // authoritative discovery dropped (same credential + digest) are
-            // removed, other digest groups are untouched.
-            const modelIdsByDigest = new Map<string, string[]>();
-            for (const modelId of supportedModelIds) {
-              const digest = await this.connectionExecutionBasisDigest(root, vault, connection, modelId);
-              const group = modelIdsByDigest.get(digest) ?? [];
-              group.push(modelId);
-              modelIdsByDigest.set(digest, group);
-            }
-            for (const [digest, modelIds] of modelIdsByDigest) {
-              await store.replaceVerificationBasis(
-                connection.connectionId,
-                claimed.basis.profileId,
-                credential.credentialId,
-                credential.revision,
-                digest,
-                modelIds.map(
-                  (modelId): CredentialProfileVerificationRecord => ({
-                    connectionId: connection.connectionId,
-                    profileId: claimed.basis.profileId,
-                    credentialId: credential.credentialId,
-                    credentialRevision: credential.revision,
-                    executionBasisDigest: digest,
-                    modelId,
-                    status: 'supported',
-                    source: 'discovered',
-                    evidence: 'authoritative',
-                    checkedAt: discovery.fetchedAt,
-                  }),
-                ),
+        const store = this.routingStoreFor(root);
+        if (evidence === 'authoritative') {
+          // The replacement scope is EVERY current enabled-model digest group,
+          // not just the newly supported ones: an authoritative discovery
+          // declares the Profile's full support set, so models it dropped (or
+          // that were removed from the enabled set) lose their evidence even
+          // when their apiProtocol put them in a different digest group. An
+          // empty intersection still clears the previous basis rows.
+          const modelIdsByDigest = new Map<string, string[]>();
+          for (const modelId of connection.enabledModelIds) {
+            const digest = await this.connectionExecutionBasisDigest(root, vault, connection, modelId);
+            const group = modelIdsByDigest.get(digest) ?? [];
+            group.push(modelId);
+            modelIdsByDigest.set(digest, group);
+          }
+          const supported = new Set(supportedModelIds);
+          for (const [digest, modelIds] of modelIdsByDigest) {
+            const records = modelIds
+              .filter((modelId) => supported.has(modelId))
+              .map(
+                (modelId): CredentialProfileVerificationRecord => ({
+                  connectionId: connection.connectionId,
+                  profileId: claimed.basis.profileId,
+                  credentialId: credential.credentialId,
+                  credentialRevision: credential.revision,
+                  executionBasisDigest: digest,
+                  modelId,
+                  status: 'supported',
+                  source: 'discovered',
+                  evidence: 'authoritative',
+                  checkedAt: discovery.fetchedAt,
+                }),
               );
-            }
-          } else {
-            for (const modelId of supportedModelIds) {
-              const digest = await this.connectionExecutionBasisDigest(root, vault, connection, modelId);
-              await store.upsertVerification({
-                connectionId: connection.connectionId,
-                profileId: claimed.basis.profileId,
-                credentialId: credential.credentialId,
-                credentialRevision: credential.revision,
-                executionBasisDigest: digest,
-                modelId,
-                status: 'supported',
-                source: 'discovered',
-                evidence: 'positive_only',
-                checkedAt: discovery.fetchedAt,
-              });
-            }
+            await store.replaceVerificationBasis(
+              connection.connectionId,
+              claimed.basis.profileId,
+              credential.credentialId,
+              credential.revision,
+              digest,
+              records,
+            );
+          }
+        } else {
+          for (const modelId of supportedModelIds) {
+            const digest = await this.connectionExecutionBasisDigest(root, vault, connection, modelId);
+            await store.upsertVerification({
+              connectionId: connection.connectionId,
+              profileId: claimed.basis.profileId,
+              credentialId: credential.credentialId,
+              credentialRevision: credential.revision,
+              executionBasisDigest: digest,
+              modelId,
+              status: 'supported',
+              source: 'discovered',
+              evidence: 'positive_only',
+              checkedAt: discovery.fetchedAt,
+            });
           }
         }
         // Verification is persisted first; the Catalog metadata merge runs
@@ -1767,6 +1786,17 @@ export class RuntimePolicyCoordinator {
       const vault = await this.vault.read(root);
       const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
       const store = this.routingStoreFor(root);
+      // Cache the current execution digest per enabled model: verification
+      // records are only "supported" while their digest matches the current
+      // endpoint/headers/overlay/protocol basis (RFC 8.4), exactly as the
+      // balanced activation gate and the Router read them.
+      const digestByModel = new Map<string, string>();
+      for (const modelId of connection.enabledModelIds) {
+        digestByModel.set(
+          modelId,
+          await this.connectionExecutionBasisDigest(root, vault, connection, modelId),
+        );
+      }
       const entries: CredentialProfileReadinessEntry[] = [];
       const readyProfileIdsByModel = new Map<string, string[]>();
       for (const profile of routing.profiles) {
@@ -1793,7 +1823,12 @@ export class RuntimePolicyCoordinator {
             ) {
               continue;
             }
-            if (connection.enabledModelIds.includes(record.modelId)) {
+            const currentDigest = digestByModel.get(record.modelId);
+            if (
+              connection.enabledModelIds.includes(record.modelId) &&
+              currentDigest !== undefined &&
+              record.executionBasisDigest === currentDigest
+            ) {
               supportedModels.push(record.modelId);
             }
             if (
@@ -1806,7 +1841,8 @@ export class RuntimePolicyCoordinator {
           }
           const digestModels = new Map<string, string[]>();
           for (const modelId of supportedModels) {
-            const digest = await this.connectionExecutionBasisDigest(root, vault, connection, modelId);
+            const digest = digestByModel.get(modelId);
+            if (digest === undefined) continue;
             const group = digestModels.get(digest) ?? [];
             group.push(modelId);
             digestModels.set(digest, group);
@@ -1820,7 +1856,9 @@ export class RuntimePolicyCoordinator {
               digest,
             );
             for (const row of health) {
-              if (!modelIds.includes(row.modelId)) continue;
+              // The credential-global row (model_id='') applies to every
+              // model on this basis; per-model rows apply to their model.
+              if (row.modelId !== '' && !modelIds.includes(row.modelId)) continue;
               if (row.circuitState === 'closed') continue;
               const severity =
                 row.circuitState === 'invalid'
@@ -1861,7 +1899,11 @@ export class RuntimePolicyCoordinator {
           }),
         );
         if (profile.enabled && credential) {
-          const ready = (circuit === null || circuit.state === 'closed' || circuit.state === 'half_open') && supportedModels.length > 0;
+          // half_open is a probe in flight, not a dispatchable candidate: it
+          // must not count toward the ready set even though the UI shows it as
+          // a transient cooldown state.
+          const ready =
+            (circuit === null || circuit.state === 'closed') && supportedModels.length > 0;
           if (ready) {
             for (const modelId of supportedModels) {
               const list = readyProfileIdsByModel.get(modelId) ?? [];
@@ -1900,7 +1942,10 @@ export class RuntimePolicyCoordinator {
     const routing = connection.credentialRouting;
     const profile = routing?.profiles.find((candidate) => candidate.profileId === profileId);
     if (!profile) return deepFreeze({ kind: 'profile_not_found' as const });
-    if (!profile.enabled) return deepFreeze({ kind: 'profile_disabled' as const });
+    // A configured-but-disabled Profile can be tested or discovered (RFC 11.1:
+    // evidence is gathered BEFORE a Profile is enabled). The ticket pins the
+    // actual enabled state so a completion landing after an enable/disable
+    // toggle supersedes instead of writing evidence against a changed basis.
 
     const contract = deriveProviderAuthContract({
       providerType: connection.providerType,
@@ -2112,7 +2157,12 @@ export class RuntimePolicyCoordinator {
       const profile = routing?.profiles.find(
         (candidate) => candidate.profileId === basis.profileId,
       );
-      if (!connection || !profile || !profile.enabled || profile.revision !== basis.profileRevision) {
+      if (
+        !connection ||
+        !profile ||
+        profile.enabled !== basis.profileEnabled ||
+        profile.revision !== basis.profileRevision
+      ) {
         changed.push('connection');
       }
     }
@@ -2342,7 +2392,7 @@ function profileSemanticBasisFields(
   }
   return {
     profileId: profile.profileId,
-    profileEnabled: true,
+    profileEnabled: profile.enabled,
     profileRevision: profile.revision,
   };
 }

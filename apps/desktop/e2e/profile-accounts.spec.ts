@@ -40,18 +40,20 @@ test('profile accounts journey reaches ready accounts and balanced routing', asy
   await accounts.getByRole('button', { name: '保存密钥' }).click();
   await expect(accounts.getByText('未配置密钥', { exact: true })).toHaveCount(0);
 
-  // 3. Enable the secondary so it can carry verified traffic.
-  await accounts.getByRole('button', { name: '启用', exact: true }).click();
-  await expect(accounts.getByText('未验证', { exact: true })).toBeVisible();
+  // 3. Test the DISABLED profile first: the lifecycle is verify-first,
+  // enable-later (RFC 11.1), and the production authority accepts a test for
+  // a configured-but-disabled profile. Evidence is written without flipping
+  // the enable state.
+  await accounts.getByRole('button', { name: '测试' }).nth(1).click();
+  await expect(accounts.getByText('已停用', { exact: true })).toBeVisible();
 
-  // 4. Test the primary profile first: balanced activation needs TWO verified
-  // profiles on one enabled model. The primary row carries a test button too.
-  await accounts.getByRole('button', { name: '测试' }).first().click();
+  // 4. Enable the verified secondary: it now shows as ready.
+  await accounts.getByRole('button', { name: '启用', exact: true }).click();
   await expect(accounts.getByText('可用', { exact: true })).toBeVisible();
 
-  // 5. Test the secondary: the fake runner verifies the model, which writes
-  // the verification evidence through the production authority.
-  await accounts.getByRole('button', { name: '测试' }).nth(1).click();
+  // 5. Test the primary profile: balanced activation needs TWO verified
+  // profiles on one enabled model. The primary row carries a test button too.
+  await accounts.getByRole('button', { name: '测试' }).first().click();
   await expect(accounts.getByText('可用', { exact: true })).toHaveCount(2);
 
   // 6. Explicit balanced activation — adding a profile never flipped this.
