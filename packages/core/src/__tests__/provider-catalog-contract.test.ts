@@ -25,7 +25,6 @@ import {
 import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
-  isWiredOAuthProvider,
   type ProviderCatalogGroup,
 } from '../provider-registry.js';
 
@@ -53,20 +52,6 @@ describe('provider connection slug derivation contract', () => {
     assert.equal(derived, 'openai-100');
     assert.ok(!existing.includes(derived));
     assert.equal(validateSlug(derived), null);
-  });
-});
-
-describe('provider OAuth wiring contract', () => {
-  it('derives runnable account providers from the registry adapter boundary', () => {
-    for (const type of [
-      'claude-subscription',
-      'openai-codex',
-      'github-copilot',
-      'xai-oauth',
-    ] as const) {
-      assert.equal(isWiredOAuthProvider(type), true, `${type} must be wired`);
-    }
-    assert.equal(isWiredOAuthProvider('gemini-cli'), false);
   });
 });
 

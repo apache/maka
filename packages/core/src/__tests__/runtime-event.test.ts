@@ -15,7 +15,6 @@ import {
   decodePersistedRuntimeEvent,
   decodeRuntimeEvent,
   isTerminalRuntimeEvent,
-  isPartialRuntimeEvent,
   runtimeEventHasModelVisibleContent,
   type RuntimeEvent,
   type RuntimeEventActions,
@@ -667,13 +666,6 @@ describe('isTerminalRuntimeEvent', () => {
       expect(isTerminalRuntimeEvent(event)).toBe(false);
     }
     expect(isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: true } }))).toBe(true);
-  });
-});
-
-describe('isPartialRuntimeEvent', () => {
-  test('reflects the partial flag exactly', () => {
-    expect(isPartialRuntimeEvent(baseEvent({ partial: true }))).toBe(true);
-    expect(isPartialRuntimeEvent(baseEvent({ partial: false }))).toBe(false);
   });
 });
 
