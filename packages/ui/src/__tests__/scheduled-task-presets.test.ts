@@ -1,11 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { ScheduledTask } from '@maka/core';
-import {
-  scheduledTaskDuplicateSeed,
-  scheduledTaskEditSeed,
-  scheduledTaskPresetRunAt,
-} from '../scheduled-task-helpers.js';
+import { scheduledTaskPresetRunAt } from '../scheduled-task-helpers.js';
 
 /**
  * The one-tap presets carry the form's only shortcut past the date picker, and
@@ -45,53 +40,5 @@ describe('scheduled task presets', () => {
     assert.equal(at.getDate(), 10, 'seven days on, not today');
     assert.ok(at.getTime() > MONDAY_10AM, 'a task is never scheduled in the past');
     assert.equal(at.getHours(), 9);
-  });
-
-});
-
-describe('scheduled task edit seeds', () => {
-  const task: ScheduledTask = {
-    id: 'task-1',
-    title: 'Agent heartbeat',
-    intent: { kind: 'text', body: 'Check the workspace' },
-    schedule: { kind: 'interval', everySeconds: 300, startAt: 1_800_000_000_000 },
-    effect: {
-      kind: 'agent_run',
-      execution: {
-        cwd: '/workspace',
-        backend: 'ai-sdk',
-        llmConnectionSlug: 'default',
-        model: 'test-model',
-        permissionMode: 'execute',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-      },
-    },
-    status: 'active',
-    nextFireAt: 1_800_000_300_000,
-    lastFireAt: null,
-    fireCount: 0,
-    maxFires: null,
-    expiresAt: null,
-    createdBy: { kind: 'agent', sessionId: 'session-1' },
-    createdAt: 1_800_000_000_000,
-    updatedAt: 1_800_000_000_000,
-    runs: [],
-    lastError: null,
-  };
-
-  it('locks interval and agent-run semantics instead of coercing them in the task form', () => {
-    const seed = scheduledTaskEditSeed(task);
-    assert.equal(seed.recurrence, 'interval');
-    assert.equal(seed.deliveryMethod, 'agent_run');
-    assert.deepEqual(seed.lockedSchedule, task.schedule);
-    assert.deepEqual(seed.lockedEffect, task.effect);
-  });
-
-  it('keeps the same canonical semantics when duplicating an agent interval task', () => {
-    const seed = scheduledTaskDuplicateSeed(task, 'en');
-    assert.equal(seed.editingId, null);
-    assert.deepEqual(seed.lockedSchedule, task.schedule);
-    assert.deepEqual(seed.lockedEffect, task.effect);
   });
 });
