@@ -123,8 +123,6 @@ import type { AgentGraphRunnableIntent } from '../stream-graph-readiness.js';
  * before a turn starts and after it ends, and a crash between a turn's end and
  * its status write leaves `running` in storage forever.
  */
-describe('SessionManager running-turn projection', () => {});
-
 describe('SessionManager Plan control boundaries', () => {
   test('an exact approval retry completes Session side effects after a partial failure', async () => {
     const store = new MemorySessionStore();
@@ -357,8 +355,6 @@ describe('SessionManager Plan control boundaries', () => {
     assert.equal((await store.readHeader(child.id)).collaborationMode, 'agent');
   });
 });
-
-describe('SessionManager child-session read model', () => {});
 
 describe('SessionManager graph operator provisioning', () => {
   test('provisions a graph operator before its active supervisor turn returns', async () => {
