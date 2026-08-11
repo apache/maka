@@ -7,6 +7,7 @@ import {
   activeToolResultLineageIdentity,
   rewriteActiveToolResultsInMessages,
 } from '../active-tool-result-prune.js';
+import { planActiveToolResultSupersession } from '../active-tool-result-working-set.js';
 import { composeRequestProjection } from '../request-projection.js';
 import { ToolAvailabilityRuntime, LOAD_TOOLS_NAME } from '../tool-availability.js';
 import type { MakaTool } from '../tool-runtime.js';
@@ -467,6 +468,56 @@ describe('active current-turn tool-result pruning', () => {
     assert.match(JSON.stringify(rewritten.messages), /newer_read_covers_range/);
     assert.doesNotMatch(JSON.stringify(rewritten.messages), /OLD_FILE_CONTENT/);
     assert.match(JSON.stringify(rewritten.messages), /NEW_FILE_CONTENT/);
+  });
+
+  test('keeps platform-dependent filesystem path spellings as distinct subjects', () => {
+    const cases = [
+      {
+        toolName: 'Read',
+        first: { path: ' target.ts' },
+        second: { path: 'target.ts' },
+      },
+      {
+        toolName: 'Read',
+        first: { path: 'dir\\target.ts' },
+        second: { path: 'dir/target.ts' },
+      },
+      {
+        toolName: 'Glob',
+        first: { pattern: '**/*.ts', cwd: '//server/share' },
+        second: { pattern: '**/*.ts', cwd: '/server/share' },
+      },
+      {
+        toolName: 'Grep',
+        first: { pattern: 'TODO', path: '\\\\server\\share' },
+        second: { pattern: 'TODO', path: '//server/share' },
+      },
+    ] as const;
+
+    for (const [index, testCase] of cases.entries()) {
+      const decisions = planActiveToolResultSupersession([
+        {
+          toolCallId: `old-${index}`,
+          toolName: testCase.toolName,
+          input: testCase.first,
+          stepNumber: 0,
+          bodySha256: `old-body-${index}`,
+          isError: false,
+          eligible: true,
+        },
+        {
+          toolCallId: `new-${index}`,
+          toolName: testCase.toolName,
+          input: testCase.second,
+          stepNumber: 1,
+          bodySha256: `new-body-${index}`,
+          isError: false,
+          eligible: true,
+        },
+      ]);
+
+      assert.equal(decisions.size, 0, `${testCase.toolName} case ${index} must fail open`);
+    }
   });
 
   test('does not merge parallel or non-covering Read observations', async () => {

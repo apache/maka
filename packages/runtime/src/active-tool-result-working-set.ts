@@ -142,7 +142,7 @@ function describeObservation(toolName: string, input: unknown): ObservationDescr
 
 function describeRead(input: unknown): ReadDescriptor | undefined {
   const record = asRecord(input);
-  if (!record || typeof record.path !== 'string' || record.path.trim().length === 0) {
+  if (!record || typeof record.path !== 'string' || record.path.length === 0) {
     return undefined;
   }
   const start = nonNegativeInteger(record.offset) ?? 0;
@@ -225,11 +225,16 @@ function readCovers(candidate: ReadDescriptor, original: ReadDescriptor): boolea
 }
 
 function normalizeSubjectPath(value: string): string {
-  const normalized = value
-    .trim()
-    .replaceAll('\\', '/')
-    .replace(/\/{2,}/g, '/');
-  return normalized.startsWith('./') ? normalized.slice(2) : normalized;
+  // Keep identity lexical and platform-independent. Leading whitespace and
+  // backslashes are valid POSIX filename characters, repeated leading slashes
+  // can carry implementation-defined meaning, and a Windows UNC prefix must
+  // not collapse into a POSIX-looking path. Removing an explicit leading `./`
+  // segment is the only equivalence shared by the supported executors. Prefer
+  // false negatives here: semantic supersession must never merge distinct
+  // filesystem subjects.
+  let normalized = value;
+  while (normalized.startsWith('./')) normalized = normalized.slice(2);
+  return normalized.length === 0 ? '.' : normalized;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
