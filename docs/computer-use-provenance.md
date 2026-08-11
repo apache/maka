@@ -5,6 +5,17 @@ materially different ways. They are separated here because the obligations
 differ: redistribution under a license, adaptation or reference use of licensed
 source, and inspection of a proprietary implementation for compatibility.
 
+At a high level, Maka's Computer Use implementation was informed by the
+MIT-licensed `trycua/cua` and `iFurySt/open-codex-computer-use` projects and by
+comparison with Codex Desktop's implementation and externally visible
+behavior. Maka integrated and adjusted those inputs through its own testing,
+safety boundaries, and product requirements.
+
+That summary does not collapse the source categories below. Licensed source,
+behavior observations, exact facts recovered from a binary, and Maka-authored
+work remain separate because their evidence and release-review obligations are
+different.
+
 Paths are Maka's unless they carry the upstream repository name, as in
 `open-codex-computer-use/...`.
 

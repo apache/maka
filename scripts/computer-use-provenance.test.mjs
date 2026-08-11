@@ -62,6 +62,10 @@ test('every repository path the provenance record names still exists', async () 
 test('the record keeps redistribution, licensed source, and proprietary inspection separate', () => {
   // The three cases carry different obligations. Collapsing them is how a
   // binary-derived fact ends up described as if it were licensed source.
+  assert.match(document, /MIT-licensed `trycua\/cua`/);
+  assert.match(document, /`iFurySt\/open-codex-computer-use`/);
+  assert.match(document, /comparison with Codex Desktop's implementation/);
+  assert.match(document, /Maka integrated and adjusted those inputs through its own testing/);
   assert.match(document, /^## 1\. Redistributed under license$/m);
   assert.match(document, /^## 2\. Licensed source adapted or read as reference$/m);
   assert.match(document, /^## 3\. Proprietary implementation inspected for compatibility$/m);
