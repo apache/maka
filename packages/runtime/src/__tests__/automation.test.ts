@@ -70,7 +70,6 @@ describe('AutomationManager', () => {
   });
 
   describe('markFired', () => {
-
     test('maxFires completes on the successful fire that reaches the cap', () => {
       const mgr = createManager();
       const auto = mgr.create({
@@ -177,11 +176,9 @@ describe('AutomationManager', () => {
       mgr.attemptFailed(auto.id, '');
       assert.equal(mgr.get(auto.id)?.lastError, 'Automation run failed');
     });
-
   });
 
-  describe('removeAllForSession', () => {
-  });
+  describe('removeAllForSession', () => {});
 
   describe('registerAll — restart recovery', () => {
     function load(mgr: ReturnType<typeof createManager>, over: Partial<Record<string, unknown>>) {
@@ -390,7 +387,6 @@ describe('computeJitter', () => {
       }
     }
   });
-
 });
 
 describe('schedule jitter wiring (AutomationManager.computeNextFire)', () => {
@@ -400,7 +396,6 @@ describe('schedule jitter wiring (AutomationManager.computeNextFire)', () => {
     let idc = 0;
     return new AutomationManager({ generateId: () => `j-${++idc}`, now: () => NOW, random });
   }
-
 
   test('cron schedules get positive recurring jitter (never fire before the mark)', () => {
     const zero = managerWithRandom(() => 0);

@@ -20,7 +20,6 @@ describe('model-metadata vision capability', () => {
     assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-fable-1'), true);
   });
 
-
   it('still fails closed for the Claude generation that cannot read images', () => {
     // claude-2.x and claude-instant carry no family segment, so widening the
     // default to the pre-4 id shape must not reach them.
@@ -28,8 +27,6 @@ describe('model-metadata vision capability', () => {
       assert.equal(resolveModelVisionSupport('anthropic', undefined, id), false, id);
     }
   });
-
-
 
   it('confines the default to the providers that serve Anthropic their own models', () => {
     // A claude-prefixed id on somebody else's provider says nothing about what
@@ -88,9 +85,6 @@ describe('model-metadata vision capability', () => {
     );
   });
 
-
-
-
   it('uses synchronized facts while preserving access-path overrides', () => {
     const metadata = lookupModelMetadata('anthropic', 'claude-sonnet-4-5');
     assert.equal(metadata.contextWindow, 200_000);
@@ -103,7 +97,6 @@ describe('model-metadata vision capability', () => {
       offBehavior: 'anthropic-thinking-disabled',
     });
   });
-
 
   it('reports vision false for text-only models', () => {
     assert.equal(lookupModelMetadata('deepseek', 'deepseek-chat').capabilities?.vision, false);
@@ -132,7 +125,6 @@ describe('model-metadata vision capability', () => {
 });
 
 describe('resolveModelVisionSupport', () => {
-
   it('falls back to in-repo metadata when stored models are bare ids (post-fetch)', () => {
     assert.equal(
       resolveModelVisionSupport(
@@ -160,7 +152,6 @@ describe('resolveModelVisionSupport', () => {
       true,
     );
   });
-
 });
 
 describe('models.dev extended model facts', () => {
@@ -208,5 +199,4 @@ describe('openAiAdapterApiProtocol', () => {
     assert.equal(openAiAdapterApiProtocol('deepseek-v4-pro', 'deepseek'), 'openai-chat');
     assert.equal(openAiAdapterApiProtocol('deepseek-chat', 'deepseek'), 'openai-chat');
   });
-
 });

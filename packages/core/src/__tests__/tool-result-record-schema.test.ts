@@ -5,15 +5,12 @@ import { decodeStoredMessageForRead, decodeStoredMessageForRecovery } from '../s
 import { decodeCanonicalToolResultContent } from '../tool-result-record-schema.js';
 
 describe('legacy subagent tool result compatibility', () => {
-
   test('keeps the public canonical decoder strict', () => {
     assert.throws(
       () => decodeCanonicalToolResultContent(legacySubagentResult()),
       /Invalid tool result content/,
     );
   });
-
-
 });
 
 describe('sandbox denial tool result metadata', () => {

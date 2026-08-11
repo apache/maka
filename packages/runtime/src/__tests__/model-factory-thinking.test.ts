@@ -132,7 +132,6 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
-
   test('google effort model (gemini-3) sends thinkingLevel; Gemini 2.5 Flash off sends thinkingBudget 0; safetySettings always present', () => {
     const g3 = buildProviderOptions(conn('google'), 'gemini-3-pro-preview', 'high');
     assert.equal(
@@ -300,7 +299,6 @@ describe('buildProviderOptions: thinking level', () => {
     // changing the UI.
     assert.deepEqual([...thinkingVariantsForModel('stepfun-step-plan', 'step-router-v1')], []);
   });
-
 
   test('Volcengine Ark sends its official thinking object and optional reasoning effort', () => {
     const modelId = 'doubao-seed-2-0-pro-260215';
@@ -594,14 +592,11 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
   });
 });
 
-
 describe('changesBackendConfig', () => {
   test('thinkingLevel change triggers backend reconfiguration', () => {
     assert.equal(changesBackendConfig({ thinkingLevel: 'high' }), true);
     assert.equal(changesBackendConfig({ thinkingLevel: undefined }), true);
   });
-
-
 
   test('permissionMode triggers, so a mode change is enforced and not merely stored', () => {
     // The backend snapshots the header at construction and decides every

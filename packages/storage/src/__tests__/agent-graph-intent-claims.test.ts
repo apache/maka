@@ -125,7 +125,6 @@ describe('SQLite agent graph intent claims', () => {
       store.close();
     }
   });
-
 });
 
 function request(

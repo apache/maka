@@ -96,7 +96,6 @@ describe('subagent session parent relation', () => {
     assert.equal(isSubagentSessionParent({ ...relation, unexpected: true }), false);
   });
 
-
   test('strictly decodes the initial child-spawn identity', () => {
     assert.equal(isSubagentSessionSpawn(spawn), true);
     assert.equal(isSubagentSessionSpawn({ ...spawn, requestFingerprint: 'not-a-hash' }), false);

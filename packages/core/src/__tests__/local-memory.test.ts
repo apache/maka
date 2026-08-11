@@ -203,7 +203,6 @@ describe('local MEMORY.md contract', () => {
     assert.doesNotMatch(body ?? '', /pending|rejected|unknown future/i);
   });
 
-
   it('does not apply UI preview truncation to the prompt body', () => {
     const longPreference = `${'a'.repeat(520)}tail-marker`;
     const body = buildLocalMemoryPromptBody(
@@ -424,7 +423,6 @@ describe('local MEMORY.md contract', () => {
     assert.match(renamed.draft, /## Updated writing style/);
   });
 
-
   it('archives and restores a memory entry by updating visible metadata', () => {
     const source = [
       '# Maka Memory',
@@ -458,8 +456,6 @@ describe('local MEMORY.md contract', () => {
     assert.equal(parseLocalMemoryMarkdown(restored.draft).activeEntries[0]?.id, 'keep');
     assert.match(buildLocalMemoryPromptBody(restored.draft) ?? '', /Prefer concise answers/);
   });
-
-
 
   it('rejects entry status updates for invalid or missing ids', () => {
     assert.deepEqual(setLocalMemoryEntryStatusDraft('', { id: ' ', status: 'active', now: 1 }), {

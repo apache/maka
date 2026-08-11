@@ -29,10 +29,6 @@ function lines(text: string): string[] {
   return text.split('\n');
 }
 
-
-
-
-
 test('an element whose parent was pruned away is still written', () => {
   // The driver prunes, so a reported child can outlive its reported parent.
   // Hiding it to keep the tree tidy would hide a real target.
@@ -163,8 +159,6 @@ test('an oversized value is shortened visibly, not silently', () => {
   assert.ok((lines(text)[1] ?? '').length < 320);
 });
 
-
-
 test('a cut tree says so, in the header, in words that change what the model does', () => {
   // The executor bounds its walk by element count and by a clock. An
   // open/save panel reaches both — 1,500 elements in 35s was measured — so a
@@ -183,7 +177,6 @@ test('a cut tree says so, in the header, in words that change what the model doe
   const whole = renderObservationForModel(observation([]));
   assert.doesNotMatch(lines(whole)[0] ?? '', /truncated/);
 });
-
 
 test('an empty field shows what it is prompting for, marked as not a value', () => {
   // Placeholder text reads like content while the field holds nothing, so it
@@ -212,9 +205,6 @@ test('an empty field shows what it is prompting for, marked as not a value', () 
   assert.doesNotMatch(rows[2] ?? '', /~/);
   assert.doesNotMatch(rows[3] ?? '', /~/);
 });
-
-
-
 
 // ---------------------------------------------------------------------------
 // The offline evaluator's entry point

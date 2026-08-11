@@ -215,7 +215,6 @@ describe('Daily Review range contract', () => {
     assert.equal(parseDailyReviewArchiveId('2026-08-03-deep'), null);
   });
 
-
   it('rejects structurally invalid canonical archives', () => {
     const valid = {
       id: '2026-08-03-1d',

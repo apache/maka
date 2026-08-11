@@ -55,7 +55,6 @@ function event(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
 }
 
 describe('session trace projection', () => {
-
   test('a session of entirely unpriced calls totals to no price, not to zero', () => {
     const trace = projectSessionTrace({
       sessionId: 'session-1',
@@ -67,9 +66,6 @@ describe('session trace projection', () => {
     assert.equal(trace.totals.unpricedAttempts, 1);
     assert.equal(trace.turns[0]?.steps[0]?.kind, 'model_call');
   });
-
-
-
 
   test('attributes a turn failure to what failed first, not to the terminal error', () => {
     const trace = projectSessionTrace({
@@ -237,7 +233,6 @@ describe('session trace projection', () => {
     assert.deepEqual(trace.coverage.turnsWithFewerModelCallsThanSteps, []);
   });
 
-
   test('a tool failure the turn recovered from does not fail the turn', () => {
     // The ledger's terminal verdict decides whether the turn failed; the failed
     // step only locates a cause once that is established.
@@ -289,8 +284,6 @@ describe('session trace projection', () => {
       'the step still failed',
     );
   });
-
-
 
   test('an unreadable record is a known gap even with no other evidence of one', () => {
     // The reader counts what it could not decode; the projection has to carry

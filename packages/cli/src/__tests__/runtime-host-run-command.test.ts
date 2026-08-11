@@ -342,7 +342,6 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(observed[0]?.finalOutput, 'Host answer');
   });
 
-
   test('applies the requested step cap through the Host turn', async () => {
     const fixture = runFixture({ maxSteps: 3 });
     const session = await fixture.context.runtime.createSession({

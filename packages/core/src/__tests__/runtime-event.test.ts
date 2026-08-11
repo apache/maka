@@ -581,7 +581,6 @@ describe('RuntimeEvent content variants', () => {
 });
 
 describe('RuntimeEvent actions', () => {
-
   test('a terminal action can carry endInvocation + tokenUsage', () => {
     const actions: RuntimeEventActions = {
       endInvocation: true,

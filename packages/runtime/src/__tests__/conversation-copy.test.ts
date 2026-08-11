@@ -451,7 +451,6 @@ test('conversation copy rewrites owned references without changing opaque tool p
   );
 });
 
-
 test('conversation copy rejects continuation authority selected through the child-run closure', async () => {
   const parent = agentRunHeader({ runId: 'run-parent', turnId: 'turn-parent' });
   const child = agentRunHeader({
@@ -504,7 +503,6 @@ test('conversation copy rejects continuation authority selected through the chil
     /typed identity rewriting/i,
   );
 });
-
 
 test('conversation copy rejects a retained AgentRun without RuntimeEvent facts', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-missing-runtime-copy-'));

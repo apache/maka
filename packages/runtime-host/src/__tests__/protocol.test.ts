@@ -46,7 +46,6 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(() => negotiateProtocol({ min: -1, max: 0 }, { min: 0, max: 0 }), isInvalidFrame);
   });
 
-
   test('keeps subscription operations closed, ready-only, and queue Epoch correlated', () => {
     assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 3);
     assert.deepEqual(
@@ -402,7 +401,6 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-
   test('allows larger credential frames only for validated custom request headers', () => {
     const secret = JSON.stringify(
       Object.fromEntries(
@@ -594,7 +592,6 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES);
     assert.deepEqual(decodeHostFrame(JSON.parse(encoded.toString('utf8'))), canonical);
   });
-
 
   test('keeps the operation registry closed at request and response boundaries', () => {
     assert.throws(
@@ -810,7 +807,6 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(decodeHostFrame(response), response);
     assert.throws(() => decodeHostFrame({ ...response, operation: 'turn.query' }), isInvalidFrame);
   });
-
 
   test('accepts bounded explicit Skill identities on turn.start', () => {
     const start = (skillIds: unknown, text = '') =>

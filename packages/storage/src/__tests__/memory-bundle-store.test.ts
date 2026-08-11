@@ -123,7 +123,6 @@ describe('interactive Memory bundle storage authority', () => {
     });
   });
 
-
   test('restores a selected backup, preserves PENDING.md, and rotates restore undo history', async () => {
     await withInteractiveOwner(async ({ root, owner }) => {
       const store = await openInteractiveMemoryBundleStoreForWrite(owner.lease);

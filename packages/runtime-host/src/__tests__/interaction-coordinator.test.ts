@@ -535,7 +535,6 @@ describe('HostInteractionCoordinator', () => {
     });
   });
 
-
   test('drain permits only an exact Run preclaimed by its stop closure to bind', async () => {
     await withStore(async ({ store }) => {
       const gate = new SessionAdmissionGate();

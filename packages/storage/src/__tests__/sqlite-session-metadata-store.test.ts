@@ -29,7 +29,6 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
-
   test('round-trips every SessionHeader field and reopens the same schema', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-'));
     const path = join(root, 'state.sqlite');
@@ -219,7 +218,6 @@ describe('SqliteSessionMetadataStore', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
-
 
   test('creates a deterministic revision-zero execution boundary for every legacy mode', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
@@ -934,7 +932,6 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-
   test('lists only pending sandbox boundary requests for resume', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
@@ -964,7 +961,6 @@ describe('SqliteSessionMetadataStore', () => {
       store.close();
     }
   });
-
 
   test('filters indexed flags, archive state, and normalized labels in recency order', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
@@ -1236,7 +1232,6 @@ describe('SqliteSessionMetadataStore', () => {
       store.close();
     }
   });
-
 
   test('updates metadata and labels with a compare-and-set version', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(10) });
@@ -1818,7 +1813,6 @@ describe('SQLite agent graph operator provisions', () => {
       store.close();
     }
   });
-
 
   test('rolls back child and topology together on a provision failure', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', {

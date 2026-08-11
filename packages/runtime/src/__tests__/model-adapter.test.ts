@@ -729,7 +729,6 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-
   test('preserves DeepSeek and OpenAI-compatible raw usage fields', () => {
     assert.deepEqual(
       normalizeAiSdkUsage(

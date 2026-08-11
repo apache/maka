@@ -97,7 +97,6 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
   MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
 const execFileAsync = promisify(execFile);
 
-
 test('backend creation aborts a stalled canonical connection read', async () => {
   const abort = new AbortController();
   const creating = createHostAiSdkBackend(
@@ -179,7 +178,6 @@ test('provider dispatch fails closed when the Run Composition commit fails', asy
     await provider.close();
   }
 });
-
 
 test('backend abort cannot cancel the authority-owned OAuth refresh used by its successor', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-oauth-backend-'));
@@ -345,7 +343,6 @@ test('backend creation does not acquire Client Capabilities beyond a bound tool 
     await backend.dispose();
   }
 });
-
 
 test('production backend creation continues after a Session Client Capability is lost', async () => {
   const coordinator = new HostClientCapabilityCoordinator({
@@ -2246,11 +2243,6 @@ test('one composer freezes Runtime Policy while each Run freezes its remaining p
   );
 });
 
-
-
-
-
-
 test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
   const boundTool: MakaTool = {
     name: 'bounded_tool',
@@ -2300,7 +2292,6 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     false,
   );
 });
-
 
 function skillFixture(id: string, description: string, content: string): ScannedSkill {
   return {

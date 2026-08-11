@@ -261,7 +261,6 @@ describe('shared skill preference semantics', () => {
       ok: true,
       target: inventory[2],
     });
-
   });
 
   it('patches one stable ref and clears review only after every collision is explicit', () => {
@@ -294,8 +293,6 @@ describe('shared skill preference semantics', () => {
     assert.equal(second.preferences.get(inventory[0].ref)?.pinned, true);
     assert.equal(second.preferences.get(inventory[1].ref)?.enabled, true);
   });
-
-
 
   it('resolves case-only stable refs exactly while keeping bare ids normalized', () => {
     const caseInventory = [

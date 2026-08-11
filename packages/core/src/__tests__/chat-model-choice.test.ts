@@ -36,7 +36,6 @@ test('projects enabled chat models with display, models.dev facts, and thinking 
   ]);
 });
 
-
 test('openai-compatible relay choices carry the thinking levels declared per model', () => {
   const [declared, undeclared] = buildChatModelChoices([
     connection({

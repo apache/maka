@@ -240,10 +240,6 @@ describe('prepared provider request capture', () => {
     assert.notEqual(anthropicMax, hash({ kimiCodingPlan: { reasoningEffort: 'none' } }, 32_768));
   });
 
-
-
-
-
   test('normalizes Anthropic thinking budget into the protocol-independent output limit', () => {
     const capture = (providerOptions: Record<string, unknown>, maxOutputTokens: number) =>
       requestShape.capturePreparedProviderRequest({

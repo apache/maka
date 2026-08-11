@@ -816,8 +816,6 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     expect(collectToolActivityTurnIds(events).size).toBe(0);
   });
 
-
-
   test('runtime replay plan carries thinking separately and text replay never leaks it', () => {
     const events: RuntimeEvent[] = [
       ev({
@@ -1164,5 +1162,4 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
 // Adapter + projection integration
 // ============================================================================
 
-describe('adapter → projection integration', () => {
-});
+describe('adapter → projection integration', () => {});

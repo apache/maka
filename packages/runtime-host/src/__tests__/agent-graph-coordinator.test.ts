@@ -10,10 +10,7 @@ import {
   type AgentGraphCoordinator,
   type AgentGraphOperatorInspection as RuntimeAgentGraphOperatorInspection,
 } from '@maka/runtime';
-import {
-  AGENT_GRAPH_RESULT_MAX_BYTES,
-  decodeAgentGraphClientSnapshot,
-} from '../protocol/index.js';
+import { AGENT_GRAPH_RESULT_MAX_BYTES, decodeAgentGraphClientSnapshot } from '../protocol/index.js';
 import {
   HostAgentGraphCoordinator,
   projectAgentGraphClientSnapshot,

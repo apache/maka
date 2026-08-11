@@ -117,7 +117,6 @@ describe('Session retirement protocol', () => {
       },
     );
   });
-
 });
 
 function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionCatalogProjection {

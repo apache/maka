@@ -45,9 +45,6 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe('runtime policy stores', () => {
-
-
-
   test('persists extra request bodies and resolves custom headers as secret execution material', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(stores, 0, {

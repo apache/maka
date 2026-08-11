@@ -113,7 +113,6 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     assert.equal(closeCalls, 1);
   });
 
-
   test('explicit stop starts backend cleanup before deferred close settles and reports both failures', async () => {
     const stopFailure = new Error('backend stop rejected');
     const fixture = runtimeFixture({ deferredClose: true, stopFailure });

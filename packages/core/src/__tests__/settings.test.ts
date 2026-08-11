@@ -120,7 +120,6 @@ describe('appearance settings boundaries', () => {
       mergeSettings(createDefaultSettings(), { appearance: { palette: 'onedark' } }).appearance,
     ).toMatchObject({ theme: 'auto', palette: 'onedark' });
   });
-
 });
 
 describe('custom pet selection settings', () => {

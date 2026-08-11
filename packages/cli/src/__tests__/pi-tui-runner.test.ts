@@ -515,8 +515,6 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-
-
   test('first-run setup save closes the TUI so the host re-resolves the new default', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -946,7 +944,6 @@ describe('Maka Pi TUI runner', () => {
       }),
     ]);
   });
-
 
   test('freezes and preserves the editor draft while a boundary request owns input', async () => {
     const terminal = new FakeTerminal();
@@ -2768,8 +2765,6 @@ describe('Maka Pi TUI runner', () => {
     }
   });
 
-
-
   test('rejects removed permission modes without sending a prompt', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -3027,7 +3022,6 @@ describe('Maka Pi TUI runner', () => {
     exitMaka(terminal);
     await run;
   });
-
 
   test('rejects unsupported /thinking levels with usage instead of sending an update', async () => {
     const terminal = new FakeTerminal();
@@ -3421,8 +3415,6 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-
-
   test('preserves repeated whitespace in a quoted /move path', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -3553,7 +3545,6 @@ describe('Maka Pi TUI runner', () => {
     exitMaka(terminal);
     await run;
   });
-
 
   test('nests linked child sessions in the picker and allows opening one directly', async () => {
     const terminal = new FakeTerminal();
@@ -4374,7 +4365,6 @@ describe('Maka Pi TUI runner', () => {
       ]);
     }
   });
-
 
   test('/new cancels hydration retries owned by the previous session', async () => {
     const terminal = new FakeTerminal();
@@ -5861,7 +5851,6 @@ describe('Maka Pi TUI runner', () => {
     });
   });
 
-
   test('"quit now" and "请 exit" are sent as ordinary prompts, not the exit word', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -5893,7 +5882,6 @@ describe('Maka Pi TUI runner', () => {
       }),
     ]);
   });
-
 
   test('relocates a moved session before resuming it at startup', async () => {
     const terminal = new FakeTerminal();

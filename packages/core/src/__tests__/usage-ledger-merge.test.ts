@@ -192,7 +192,6 @@ describe('usage ledger merge', () => {
     ]);
   });
 
-
   test('log pages interleave both sources newest first and page across the boundary', () => {
     const legacyRows = [legacyLog('legacy-new', NOW - 100), legacyLog('legacy-old', NOW - 900)];
     const canonical = {
