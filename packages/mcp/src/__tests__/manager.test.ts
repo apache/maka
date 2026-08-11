@@ -5,7 +5,12 @@ import { afterEach, describe, test } from 'node:test';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import { Server as McpServer } from '@modelcontextprotocol/server';
 import { SSEServerTransport } from '@modelcontextprotocol/server-legacy/sse';
-import { MCP_CONFIG_VERSION, type McpConfigFile, type McpToolBinding } from '@maka/core/mcp';
+import {
+  MCP_CONFIG_VERSION,
+  type McpConfigFile,
+  type McpProtocolPreference,
+  type McpToolBinding,
+} from '@maka/core/mcp';
 import { buildStdioEnvironment, McpClientManager, McpToolCallError } from '../index.js';
 
 const fixturePath = fileURLToPath(new URL('../__fixtures__/stdio-server.js', import.meta.url));
@@ -25,6 +30,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       await manager.sync(remoteConfig(fixture.url));
 
       assert.equal(manager.status('remote')?.transport, 'streamable-http');
+      assert.deepEqual(manager.status('remote')?.negotiatedProtocol, {
+        era: 'legacy',
+        revision: '2025-11-25',
+      });
       assert.doesNotMatch(JSON.stringify(manager.status('remote')), /mcpb1\./u);
       assert.deepEqual(
         await manager.callTool(bindingFor(manager, 'remote', 'echo'), {
@@ -41,6 +50,37 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         ),
       );
       assertLegacyHandshake(fixture);
+    });
+
+    test('auto probes before negotiating a legacy Streamable HTTP server', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+
+      await manager.sync(remoteConfig(fixture.url, 'streamable-http', 'auto'));
+
+      assert.equal(manager.status('remote')?.state, 'connected');
+      assert.deepEqual(manager.status('remote')?.negotiatedProtocol, {
+        era: 'legacy',
+        revision: '2025-11-25',
+      });
+      const methods = fixture.requests.flatMap((request) => request.protocolMethods);
+      assert.equal(methods[0], 'server/discover');
+      assert.ok(methods.indexOf('initialize') > 0);
+      assert.ok(methods.indexOf('tools/list') > methods.indexOf('initialize'));
+    });
+
+    test('does not downgrade an exact modern pin to a legacy Streamable HTTP server', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+
+      await manager.sync(remoteConfig(fixture.url, 'streamable-http', '2026-07-28'));
+
+      assert.equal(manager.status('remote')?.state, 'error');
+      assert.equal(manager.status('remote')?.negotiatedProtocol, undefined);
+      assert.deepEqual(manager.toolSnapshot().tools, []);
+      const methods = fixture.requests.flatMap((request) => request.protocolMethods);
+      assert.equal(methods[0], 'server/discover');
+      assert.equal(methods.includes('initialize'), false);
     });
 
     test('bounds and sanitizes connection errors before publishing status', async () => {
@@ -992,6 +1032,7 @@ function fixtureConfig(extraArgs: string[] = []): McpConfigFile {
 function remoteConfig(
   url: string,
   transport: 'auto' | 'streamable-http' = 'streamable-http',
+  protocol?: McpProtocolPreference,
 ): McpConfigFile {
   return {
     version: MCP_CONFIG_VERSION,
@@ -999,6 +1040,7 @@ function remoteConfig(
       remote: {
         url,
         transport,
+        ...(protocol === undefined ? {} : { protocol }),
         headers: { Authorization: 'Bearer remote-test' },
       },
     },
