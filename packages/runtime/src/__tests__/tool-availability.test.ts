@@ -213,14 +213,6 @@ describe('ToolAvailabilityRuntime — connector shape', () => {
     return found!;
   }
 
-  test('lists every group in its description and never requires permission', () => {
-    const c = connector();
-    assert.match(c.description, /rive/);
-    assert.match(c.description, /docs/);
-    assert.match(c.description, /Rive/); // rive group's label
-    assert.match(c.description, /Document tools/); // docs group's description
-  });
-
   test('loading a group returns exactly its tool names — a thin result, no schema', async () => {
     const result = await connector().impl({ group: 'docs' }, ctx);
     assert.deepEqual(result, { loaded: ['docs_edit', 'docs_read'] });

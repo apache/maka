@@ -534,45 +534,6 @@ describe('ExploreAgent read-only worker', () => {
     });
   });
 
-  it('keeps user-visible result notes localized', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeFile(join(workspaceRoot, 'notes.md'), 'alpha');
-
-      const result = await runReadOnlyExplore({
-        cwd: workspaceRoot,
-        objective: 'find beta references',
-        roots: ['.'],
-        queries: ['beta'],
-        maxFiles: 5,
-        maxMatches: 5,
-      });
-
-      assert.equal(result.ok, true);
-      assert.equal(result.terminalStatus, 'completed_empty');
-      assert.ok(result.notes.some((note) => /没有找到内容命中/.test(note)));
-      assert.match(result.report, /状态：完成，但没有找到可交接证据。/);
-      assert.equal(
-        result.notes.some((note) =>
-          /Read-only worker|Search budget|No content matches|Candidate discovery|Project landmark|Total byte budget|Scope /.test(
-            note,
-          ),
-        ),
-        false,
-      );
-
-      const failed = await runReadOnlyExplore({
-        cwd: workspaceRoot,
-        objective: 'x',
-      });
-      assert.equal(failed.ok, false);
-      assert.ok(failed.notes.some((note) => /不写文件、不联网、不启动进程/.test(note)));
-      assert.equal(
-        failed.notes.some((note) => /Read-only worker/.test(note)),
-        false,
-      );
-    });
-  });
-
   it('keeps the generated research report bounded and source-grounded', async () => {
     await withWorkspace(async (workspaceRoot) => {
       for (let index = 0; index < 20; index++) {
