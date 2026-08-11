@@ -39,7 +39,6 @@
     "./network/proxy-parser": "./dist/network/proxy-parser.js",
     "./telemetry": "./dist/telemetry/index.js",
     "./bots": "./dist/bots/index.js",
-    "./runtime-event-adapters": "./dist/runtime-event-adapters.js",
     "./runtime-event-read-model": "./dist/runtime-event-read-model.js",
     "./runtime-resume": "./dist/runtime-resume.js",
     "./recovery-resolver": "./dist/recovery-resolver.js",

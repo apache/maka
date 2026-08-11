@@ -1289,18 +1289,6 @@ export type {
   RuntimeRunnerDeps,
 } from './runtime-runner.js';
 
-// runtime-event-adapters.ts — legacy StoredMessage ↔ RuntimeEvent bridge.
-export {
-  storedMessageToRuntimeEvent,
-  storedMessageToRuntimeEvents,
-  runtimeEventToStoredMessageDraft,
-  createRuntimeEventId,
-} from './runtime-event-adapters.js';
-export type {
-  StoredMessageEventContext,
-  RuntimeEventToDraftOptions,
-} from './runtime-event-adapters.js';
-
 // session-trace-projection.ts — per-session causal trace for the Inspector (#1625).
 export { projectSessionTrace, attributeTurnFailure } from './session-trace-projection.js';
 export type { SessionTraceInput } from './session-trace-projection.js';
