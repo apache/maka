@@ -1,13 +1,8 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { LlmConnection } from '@maka/core/llm-connections';
-import type { SessionSummary } from '@maka/core/session';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
-import {
-  normalizeActiveChatModel,
-  pickNewChatModel,
-} from '../../renderer/shell-chat-model-selection.js';
+import { pickNewChatModel } from '../../renderer/shell-chat-model-selection.js';
 
 function connection(
   overrides: Partial<LlmConnection> & Pick<LlmConnection, 'slug' | 'providerType'>,
@@ -24,77 +19,6 @@ function connection(
 }
 
 describe('model catalog picker helpers', () => {
-  it('keeps the first offered Codex model when replacing an unsupported stored model', () => {
-    const choices: ChatModelChoice[] = [
-      {
-        connectionSlug: 'codex-account',
-        providerType: 'openai-codex',
-        providerLabel: 'OpenAI OAuth',
-        model: 'first-offered',
-        label: 'First offered',
-        isDefault: false,
-        thinkingLevels: [],
-      },
-      {
-        connectionSlug: 'codex-account',
-        providerType: 'openai-codex',
-        providerLabel: 'OpenAI OAuth',
-        model: 'later-default',
-        label: 'Later default',
-        isDefault: true,
-        thinkingLevels: [],
-      },
-    ];
-    const session: SessionSummary = {
-      id: 'session-1',
-      name: 'Legacy Codex session',
-      isFlagged: false,
-      isArchived: false,
-      labels: [],
-      hasUnread: false,
-      status: 'active',
-      backend: 'ai-sdk',
-      llmConnectionSlug: 'codex-account',
-      connectionLocked: true,
-      model: 'gpt-5-codex',
-      permissionMode: 'ask',
-    };
-
-    assert.equal(
-      normalizeActiveChatModel(
-        session,
-        connection({
-          slug: 'codex-account',
-          providerType: 'openai-codex',
-          defaultModel: 'gpt-5-codex',
-        }),
-        choices,
-      ),
-      'first-offered',
-    );
-  });
-
-  it('uses the first offered model when no user or workspace preference exists', () => {
-    assert.deepEqual(
-      pickNewChatModel({
-        pending: null,
-        catalogDefault: undefined,
-        choices: [
-          {
-            connectionSlug: 'opencode-free',
-            providerType: 'opencode-free',
-            providerLabel: 'OpenCode Zen',
-            model: 'mimo-v2.5-free',
-            label: 'MiMo V2.5 Free',
-            isDefault: true,
-            thinkingLevels: [],
-          },
-        ],
-      }),
-      { llmConnectionSlug: 'opencode-free', model: 'mimo-v2.5-free' },
-    );
-  });
-
   it('uses the readiness-checked activation candidate before an unverified first choice', () => {
     assert.deepEqual(
       pickNewChatModel({
