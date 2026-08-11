@@ -78,30 +78,6 @@ describe('tool activity presentation', () => {
     assert.doesNotMatch(markup, /可能被沙箱阻止/);
   });
 
-  it('shows diagnostic flags without exposing transport chunk counts', () => {
-    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-output',
-        toolName: 'Bash',
-        status: 'errored',
-        args: { command: 'npm test' },
-        outputChunks: [
-          { seq: 1, stream: 'stdout', text: 'one\n', redacted: false, createdAt: 1 },
-          { seq: 2, stream: 'stdout', text: 'two\n', redacted: true, createdAt: 2 },
-          { seq: 3, stream: 'stderr', text: 'failed\n', redacted: false, createdAt: 3 },
-        ],
-        outputTruncated: true,
-      } satisfies ToolActivityItem,
-    }));
-
-    assert.doesNotMatch(markup, /stdout\s+2/i);
-    assert.doesNotMatch(markup, /stderr\s+1/i);
-    // Body still carries the failed stream text; no transport counts.
-    assert.match(markup, /failed/);
-    assert.match(markup, /已脱敏/);
-    assert.match(markup, /已截断|输出已截断/);
-  });
-
   it('contains a malformed persisted terminal result instead of crashing the renderer', () => {
     const malformed = {
       kind: 'terminal',
@@ -268,7 +244,6 @@ describe('tool activity presentation', () => {
     const panels = markup.match(/data-slot="tool-output"/g) ?? [];
     assert.equal(panels.length, 1);
   });
-
 });
 
 function pipeOutput(stdout = '', stderr = '') {

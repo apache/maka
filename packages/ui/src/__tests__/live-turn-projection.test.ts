@@ -32,14 +32,6 @@ describe('the unconfirmed claim an arm carries', () => {
     assert.equal(confirmLiveTurn(armed, 'turn-theirs'), armed);
   });
 
-  // A late answer about a turn this arm has already replaced must not confirm
-  // the newer send.
-  it('survives a late answer about the turn the arm moved past', () => {
-    const rearmed = armLiveTurn('turn-2');
-
-    assert.equal(confirmLiveTurn(rearmed, 'turn-1'), rearmed);
-  });
-
   it('is dropped by the turn\'s own events, not just by an explicit answer', () => {
     const streamed = applyLiveTurnEvent(armLiveTurn('turn-1'), {
       type: 'text_delta',

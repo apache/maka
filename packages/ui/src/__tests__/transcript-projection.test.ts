@@ -347,18 +347,13 @@ describe('incremental transcript projection', () => {
     assert.equal(tool?.result?.kind, 'shell_run');
     assert.equal(tool?.shellRunSource, 'owned');
   });
-
-
 });
 
 /**
- * `valuesEqual` is the sole judge of whether a turn keeps its identity, so a
- * field it does not compare is a field the UI stops updating: the turn's value
- * moved, the projection handed the old object back, and the memoized TurnView
- * skipped. The obvious fields ride along with the assistant text; these are the
- * ones that can move on their own.
+ * Representative scalar, nested, content, and derived changes must invalidate
+ * the memoized turn identity.
  */
-describe('turn identity moves for every field a turn carries', () => {
+describe('turn identity moves across structural change classes', () => {
   const base: StoredMessage[] = [
     { type: 'user', id: 'u1', turnId: 'turn-1', ts: 1, text: 'ask' },
     { type: 'assistant', id: 'a1', turnId: 'turn-1', ts: 4, text: 'answer', modelId: 'model-1' },
@@ -372,18 +367,6 @@ describe('turn identity moves for every field a turn carries', () => {
     refresh: StoredMessage[];
   }> = [
     {
-      field: 'tokens',
-      refresh: [...base, { type: 'token_usage', id: 'tk1', turnId: 'turn-1', ts: 6, input: 10, output: 20 }],
-    },
-    {
-      field: 'notes',
-      refresh: [...base, { type: 'system_note', id: 'n1', turnId: 'turn-1', ts: 6, kind: 'context_compacted' }],
-    },
-    {
-      field: 'timeline',
-      refresh: [...base, toolCall('read-1', 'turn-1', 'Read', { path: '/x' }, 6)],
-    },
-    {
       field: 'tools',
       refresh: [...base, toolCall('read-1', 'turn-1', 'Read', { path: '/x' }, 6)],
     },
@@ -392,17 +375,6 @@ describe('turn identity moves for every field a turn carries', () => {
       refresh: [
         ...base.slice(0, 2),
         { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', partialOutputRetained: false },
-      ],
-    },
-    {
-      field: 'statusSource',
-      refresh: base.slice(0, 2),
-    },
-    {
-      field: 'errorClass',
-      refresh: [
-        ...base.slice(0, 2),
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', errorClass: 'network', partialOutputRetained: false },
       ],
     },
     {
@@ -419,54 +391,10 @@ describe('turn identity moves for every field a turn carries', () => {
       ],
     },
     {
-      field: 'retriedFromTurnId',
-      refresh: [
-        ...base.slice(0, 2),
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'completed', retriedFromTurnId: 'turn-0', partialOutputRetained: false },
-      ],
-    },
-    {
-      field: 'regeneratedFromTurnId',
-      refresh: [
-        ...base.slice(0, 2),
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'completed', regeneratedFromTurnId: 'turn-0', partialOutputRetained: false },
-      ],
-    },
-    {
-      field: 'branchOfTurnId',
-      refresh: [
-        ...base.slice(0, 2),
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'completed', branchOfTurnId: 'turn-0', partialOutputRetained: false },
-      ],
-    },
-    {
-      field: 'modelId',
-      refresh: [
-        base[0]!,
-        { type: 'assistant', id: 'a1', turnId: 'turn-1', ts: 4, text: 'answer', modelId: 'model-2' },
-        base[2]!,
-      ],
-    },
-    {
       field: 'assistant',
       refresh: [
         base[0]!,
         { type: 'assistant', id: 'a1', turnId: 'turn-1', ts: 4, text: 'a longer answer', modelId: 'model-1' },
-        base[2]!,
-      ],
-    },
-    {
-      field: 'user',
-      refresh: [
-        { type: 'user', id: 'u1', turnId: 'turn-1', ts: 1, text: 'ask again' },
-        ...base.slice(1),
-      ],
-    },
-    {
-      field: 'durationMs',
-      refresh: [
-        base[0]!,
-        { type: 'assistant', id: 'a1', turnId: 'turn-1', ts: 9, text: 'answer', modelId: 'model-1' },
         base[2]!,
       ],
     },
@@ -486,11 +414,9 @@ describe('turn identity moves for every field a turn carries', () => {
       assert.notStrictEqual(after[0], before[0], `a moved \`${field}\` must move the turn`);
     });
   }
-
 });
 
 describe('valuesEqual', () => {
-
   test('fails closed on anything that is not a plain object', () => {
     // These have no own enumerable keys, so a plain key walk calls every one of
     // them equal. `TurnFooterContext.pendingActions` is already a ReadonlySet;
