@@ -116,6 +116,7 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
   let closeCount = 0;
   const handle: DesktopRuntimeHostSession = {
     snapshot: continuitySnapshot(null),
+    activeAssistantStreams: [],
     transcript: Promise.resolve([]),
     events,
     async close() {
@@ -171,6 +172,7 @@ test('returns blocked Skill feedback without waiting for a Turn that was not cre
     client: botClient({
       openSession: async () => ({
         snapshot: continuitySnapshot(null),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,
         async close() {
@@ -224,6 +226,7 @@ async function runProjectedTurn(rootTurn: TurnSnapshot) {
     client: botClient({
       openSession: async () => ({
         snapshot: continuitySnapshot(null),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,
         async close() {

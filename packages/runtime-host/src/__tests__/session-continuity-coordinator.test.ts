@@ -79,6 +79,135 @@ test('open snapshot includes pending Interactions from the canonical projection'
   coordinator.close();
 });
 
+test('open identifies only assistant streams that are still active', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  coordinator.attachConnection('connection-1', new RecordingSink());
+  await open(coordinator, 'connection-1');
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+
+  coordinator.attachConnection('connection-2', new RecordingSink());
+  const active = await open(coordinator, 'connection-2');
+  assert.deepEqual(active.activeAssistantStreams, [
+    { kind: 'text', turnId: 'turn-1', messageId: 'message-1' },
+  ]);
+
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', 'chunk-1'),
+  );
+  coordinator.attachConnection('connection-3', new RecordingSink());
+  const completed = await open(coordinator, 'connection-3');
+  assert.deepEqual(completed.activeAssistantStreams, []);
+  coordinator.close();
+});
+
+test('publishes a non-prefix final value as an authoritative replacement', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textEvent(1),
+    text: 'draft',
+  });
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', 'final'),
+  );
+  await waitFor(() => sink.frames.length === 3);
+
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.session_delta'
+        ? {
+            startOffset: frame.delta.startOffset,
+            text: frame.delta.text,
+            reset: frame.delta.reset === true,
+            complete: frame.delta.complete === true,
+          }
+        : frame.kind,
+    ),
+    [
+      { startOffset: 0, text: 'draft', reset: false, complete: false },
+      { startOffset: 0, text: 'final', reset: true, complete: false },
+      { startOffset: 5, text: '', reset: false, complete: true },
+    ],
+  );
+  coordinator.close();
+});
+
+test('coalesces reasoning parts and completes the step before later steps continue', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_delta', 'step-1', 'first'),
+  );
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_delta', 'step-1', 'second'),
+  );
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_complete', 'step-1', 'first'),
+  );
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_complete', 'step-1', 'second'),
+  );
+  assert.equal(sink.frames.length, 2);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textCompleteEvent('step-1', ''));
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_delta', 'step-2', 'second'),
+  );
+  await waitFor(() => sink.frames.length === 4);
+
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.session_delta'
+        ? {
+            messageId: frame.delta.messageId,
+            text: frame.delta.text,
+            complete: frame.delta.complete === true,
+          }
+        : frame.kind,
+    ),
+    [
+      { messageId: 'step-1', text: 'first', complete: false },
+      { messageId: 'step-1', text: 'second', complete: false },
+      { messageId: 'step-1', text: '', complete: true },
+      { messageId: 'step-2', text: 'second', complete: false },
+    ],
+  );
+  coordinator.close();
+});
+
 test('terminal fence suppresses ordinary refresh until the exact terminal cut publishes', async () => {
   let projection = canonical({
     rootTurn: { sessionId: SESSION_ID, turnId: 'turn-1', runId: 'run-1', status: 'running' },
@@ -771,6 +900,17 @@ class RecordingSink implements SessionContinuityFrameSink {
   }
 }
 
+function textCompleteEvent(messageId: string, text: string) {
+  return {
+    type: 'text_complete' as const,
+    id: `text_complete-${messageId}`,
+    turnId: 'turn-1',
+    ts: 1,
+    messageId,
+    text,
+  };
+}
+
 async function open(coordinator: SessionContinuityCoordinator, connectionId: string) {
   const outcome = await coordinator.handlers['subscription.open'](
     { sessionId: SESSION_ID },
@@ -917,6 +1057,21 @@ function textEvent(index: number) {
     ts: index,
     messageId: 'message-1',
     text: `chunk-${index}`,
+  };
+}
+
+function thinkingEvent(
+  type: 'thinking_delta' | 'thinking_complete',
+  messageId: string,
+  text: string,
+) {
+  return {
+    type,
+    id: `${type}-${messageId}`,
+    turnId: 'turn-1',
+    ts: 1,
+    messageId,
+    text,
   };
 }
 

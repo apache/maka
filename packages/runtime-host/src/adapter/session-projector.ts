@@ -4,6 +4,7 @@ import type {
   InteractionPendingSnapshot,
   SessionContinuitySnapshot,
   SessionAssistantDelta,
+  SessionAssistantStreamIdentity,
   SessionMessageQueueProjection,
   SteeringMessageSnapshot,
   SubscriptionFrame,
@@ -15,6 +16,9 @@ interface AssistantAccumulator {
   turnId: string;
   messageId: string;
   text: string;
+  complete: boolean;
+  completionEmitted: boolean;
+  replacing: boolean;
 }
 
 export type RuntimeHostTerminalTurn = Extract<
@@ -40,6 +44,7 @@ export class RuntimeHostSessionProjector {
     snapshot: SessionContinuitySnapshot,
     transcript: readonly StoredMessage[],
     now: () => number = Date.now,
+    activeAssistantStreams: readonly SessionAssistantStreamIdentity[] = [],
   ) {
     this.#snapshot = structuredClone(snapshot);
     this.#now = now;
@@ -54,6 +59,9 @@ export class RuntimeHostSessionProjector {
           turnId: root.turnId,
           messageId: message.id,
           text: message.thinking.text,
+          complete: true,
+          completionEmitted: false,
+          replacing: false,
         });
       }
       if (message.text) {
@@ -62,8 +70,25 @@ export class RuntimeHostSessionProjector {
           turnId: root.turnId,
           messageId: message.id,
           text: message.text,
+          complete: true,
+          completionEmitted: false,
+          replacing: false,
         });
       }
+    }
+    for (const stream of activeAssistantStreams) {
+      if (stream.turnId !== root.turnId) continue;
+      const key = accumulatorKey(stream.kind, stream.messageId);
+      const current = this.#accumulators.get(key);
+      this.#accumulators.set(key, {
+        kind: stream.kind,
+        turnId: stream.turnId,
+        messageId: stream.messageId,
+        text: current?.text ?? '',
+        complete: false,
+        completionEmitted: false,
+        replacing: false,
+      });
     }
   }
 
@@ -77,6 +102,7 @@ export class RuntimeHostSessionProjector {
     const events: SessionEvent[] = [];
     if (includeAssistantText) {
       for (const accumulator of this.#accumulators.values()) {
+        if (accumulator.complete) continue;
         events.push({
           type: accumulator.kind === 'text' ? 'text_delta' : 'thinking_delta',
           id: `host-seed:${root.runId}:${accumulator.kind}:${accumulator.messageId}`,
@@ -183,14 +209,27 @@ export class RuntimeHostSessionProjector {
       const delta = frame.delta;
       const key = accumulatorKey(delta.kind, delta.messageId);
       const current = this.#accumulators.get(key);
-      const folded = foldRuntimeHostAssistantDelta(current?.text ?? '', delta);
+      const folded = foldRuntimeHostAssistantDelta(delta.reset ? '' : (current?.text ?? ''), delta);
+      const replacing = delta.reset === true || (current?.replacing ?? false);
       this.#accumulators.set(key, {
         kind: delta.kind,
         turnId: delta.turnId,
         messageId: delta.messageId,
         text: folded.text,
+        complete: delta.complete === true,
+        completionEmitted: delta.complete === true,
+        replacing: delta.complete === true ? false : replacing,
       });
-      if (folded.tail) {
+      if (delta.complete === true) {
+        events.push({
+          type: delta.kind === 'text' ? 'text_complete' : 'thinking_complete',
+          id: frameIdentity(frame),
+          turnId: delta.turnId,
+          messageId: delta.messageId,
+          ts: this.#now(),
+          text: folded.text,
+        });
+      } else if (folded.tail && !replacing) {
         events.push({
           type: delta.kind === 'text' ? 'text_delta' : 'thinking_delta',
           id: frameIdentity(frame),
@@ -246,7 +285,7 @@ export class RuntimeHostSessionProjector {
   #terminalEvents(root: RuntimeHostTerminalTurn): SessionEvent[] {
     const events: SessionEvent[] = [];
     for (const accumulator of this.#accumulators.values()) {
-      if (accumulator.turnId !== root.turnId) continue;
+      if (accumulator.turnId !== root.turnId || accumulator.completionEmitted) continue;
       events.push({
         type: accumulator.kind === 'text' ? 'text_complete' : 'thinking_complete',
         id: `${root.terminalEventId}:${accumulator.kind}:${accumulator.messageId}`,

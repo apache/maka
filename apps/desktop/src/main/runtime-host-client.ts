@@ -79,6 +79,7 @@ import {
   type SessionCatalogItem,
   type SessionCatalogProjection,
   type SessionConfiguration,
+  type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
   type SessionConversationCopyInput,
   type SessionConversationCopyResult,
@@ -134,6 +135,7 @@ export class DesktopRuntimeHostClientError extends Error {
 
 export interface DesktopRuntimeHostSession {
   readonly snapshot: SessionContinuitySnapshot;
+  readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcript: Promise<StoredMessage[]>;
   readonly events: AsyncIterable<SubscriptionFrame>;
   close(): Promise<void>;
@@ -1545,6 +1547,7 @@ export class DesktopRuntimeHostClient {
 
 class DesktopSessionHandle implements DesktopRuntimeHostSession {
   readonly snapshot: SessionContinuitySnapshot;
+  readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcript: Promise<StoredMessage[]>;
   readonly events: AsyncIterable<SubscriptionFrame>;
   #closeTask: Promise<void> | undefined;
@@ -1554,6 +1557,7 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
     private readonly onClose: () => void,
   ) {
     this.snapshot = subscription.snapshot;
+    this.activeAssistantStreams = subscription.activeAssistantStreams;
     this.events = subscription;
     this.transcript = subscription.loadTranscript(decodeStoredMessageForRead);
     void this.transcript.catch(() => undefined);
