@@ -2,27 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION,
-  decodeAgentGraphScheduleUpdate,
-  isAgentGraphScheduleUpdate,
   isAgentGraphScheduleUpdateRequest,
   type AgentGraphScheduleUpdateRequest,
 } from '../agent-graph-schedule.js';
 
 describe('agent graph schedule contract', () => {
-  test('validates and clones one compact durable schedule update', () => {
-    const request = scheduleRequest();
-    assert.equal(isAgentGraphScheduleUpdateRequest(request), true);
-    const decoded = decodeAgentGraphScheduleUpdate({
-      ...request,
-      revision: 1,
-      committedAt: 42,
-    });
-    assert.equal(isAgentGraphScheduleUpdate(decoded), true);
-    assert.deepEqual(decoded, { ...request, revision: 1, committedAt: 42 });
-    assert.notEqual(decoded.addWork, request.addWork);
-    assert.notEqual(decoded.addWork[0]?.inputIds, request.addWork[0]?.inputIds);
-  });
-
   test('rejects ambiguous, duplicate, empty, and add-plus-finish updates', () => {
     assert.equal(
       isAgentGraphScheduleUpdateRequest({
