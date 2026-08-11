@@ -398,8 +398,10 @@ describe('Runtime Host Skill catalog protocol', () => {
       const bundledItems = result.items.filter(
         (item): item is SkillCatalogBundledItem => item.kind === 'bundled',
       );
-      assert.ok(bundledItems.length > 0);
-      assert.ok(bundledItems.some((item) => item.id === 'deep-research'));
+      assert.deepEqual(
+        bundledItems.map((item) => item.id),
+        ['computer-use'],
+      );
       assert.equal(
         bundledItems.every((item) => item.category.length > 0),
         true,
