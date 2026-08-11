@@ -89,6 +89,7 @@ export type {
   ArtifactTextPreview,
 } from './artifact.js';
 export {
+  TURN_FAILURE_MESSAGE_MAX_BYTES,
   TURN_MESSAGE_CONTENT_MAX_BYTES,
   TURN_MESSAGE_TEXT_MAX_BYTES,
   TURN_RESUME_PARK_REASONS,

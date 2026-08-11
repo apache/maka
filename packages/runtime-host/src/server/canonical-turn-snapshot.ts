@@ -1,7 +1,8 @@
 import type { AgentRunHeader } from '@maka/core/agent-run';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { classifyTerminalRuntimeLedger } from '@maka/runtime';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
-import type { TurnSnapshot } from '../protocol/index.js';
+import { TURN_FAILURE_MESSAGE_MAX_BYTES, type TurnSnapshot } from '../protocol/index.js';
 
 type CanonicalTurnStores = Pick<
   ExecutionStoresWriter<'interactive'>,
@@ -51,6 +52,11 @@ export async function readCanonicalTurnSnapshot(
         status: 'failed',
         terminalEventId: fact.terminalEvent.id,
         failureClass: fact.failureClass,
+        ...(run.failureMessage
+          ? {
+              failureMessage: truncateUtf8(run.failureMessage, TURN_FAILURE_MESSAGE_MAX_BYTES, '…'),
+            }
+          : {}),
       };
     }
     if (!fact.abortSource) throw new Error('Cancelled terminal fact has no abort source');

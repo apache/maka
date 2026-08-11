@@ -26,6 +26,7 @@ import {
   MESSAGE_QUEUE_PROJECTION_MAX_BYTES,
   MESSAGE_OPERATION_RESULT_MAX_BYTES,
   MESSAGE_OPERATION_SPECS,
+  TURN_FAILURE_MESSAGE_MAX_BYTES,
   type MessagePlacement,
   type QueueRetractInput,
   type QueueRetractResult,
@@ -1597,6 +1598,7 @@ function interruptResultFits(
     status: 'failed',
     terminalEventId: 'x'.repeat(128),
     failureClass: '\0'.repeat(128),
+    failureMessage: '\0'.repeat(TURN_FAILURE_MESSAGE_MAX_BYTES),
   };
   return fitsEncodedByteLimit(
     { queueRevision: Number.MAX_SAFE_INTEGER, retracted, turn: worstCaseTurn },

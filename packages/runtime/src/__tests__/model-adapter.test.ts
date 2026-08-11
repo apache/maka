@@ -603,11 +603,24 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(event.message, 'Network error');
   });
 
-  test('keeps an unknown structured provider error generic', () => {
-    const event = newAdapter().makeErrorEvent('turn-1', { message: 'provider exploded' });
+  test('retains a safe bounded summary from an unknown structured provider error', () => {
+    const adapter = newAdapter();
+    const failure = adapter.normalizeFailure({
+      type: 'error',
+      error: {
+        code: 'provider_error',
+        message: `provider exploded api_key=sk-live-secret-token-value ${'x'.repeat(4_000)}`,
+      },
+      request_id: 'req-123',
+    });
+    const event = adapter.makeErrorEvent('turn-1', failure);
 
     assert.equal(event.reason, undefined);
-    assert.equal(event.message, 'Operation failed');
+    assert.equal(event.code, 'provider_error');
+    assert.match(event.message, /^provider exploded api_key=\[redacted\]/);
+    assert.match(event.message, /… \(code=provider_error, requestId=req-123\)$/);
+    assert.equal(Buffer.byteLength(event.message, 'utf8') <= 2 * 1024, true);
+    assert.equal(event.message.includes('sk-live-secret-token-value'), false);
   });
 
   test('normalizes cache and reasoning usage variants in the adapter module', () => {

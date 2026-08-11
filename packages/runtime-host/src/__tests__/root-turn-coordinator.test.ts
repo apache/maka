@@ -4184,6 +4184,15 @@ test('post-start backend AggregateError is contained after its failed terminal t
     const terminal = classifyTerminalRuntimeLedger(run, events);
     assert.equal(terminal.kind, 'fact');
     if (terminal.kind === 'fact') assert.equal(terminal.fact.runStatus, 'failed');
+    const queried = await fixture.turnControl.handlers['turn.query'](
+      { sessionId: fixture.sessionId, turnId },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(queried.ok, true);
+    if (queried.ok && queried.result.status === 'failed') {
+      assert.equal(queried.result.failureMessage, run.failureMessage);
+      assert.ok(queried.result.failureMessage);
+    }
 
     await fixture.coordinator.close();
     await fixture.messages.close();

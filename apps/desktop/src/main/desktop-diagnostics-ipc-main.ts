@@ -1,6 +1,7 @@
 import type { IpcMain } from 'electron';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
+import type { TurnTrace } from '@maka/core/session-trace';
 import type { HostDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type { DesktopDiagnosticCopyResult } from '../preload/diagnostics-contract.js';
 import {
@@ -8,6 +9,7 @@ import {
   parseDesktopErrorDiagnosticInput,
   type DesktopDiagnosticEnvironment,
   type RuntimeHostDiagnosticRead,
+  type RuntimeHostExecutionDiagnosticRead,
 } from './main-process-diagnostics.js';
 
 export interface DesktopDiagnosticsIpcDeps {
@@ -15,6 +17,7 @@ export interface DesktopDiagnosticsIpcDeps {
   readonly environment: () => DesktopDiagnosticEnvironment;
   readonly mainLogs: () => readonly string[];
   readonly getRuntimeHostDiagnostics: () => Promise<HostDiagnosticsResult>;
+  readonly getRuntimeHostTurnTrace: (sessionId: string, turnId: string) => Promise<TurnTrace | undefined>;
   readonly writeClipboard: (value: string) => void;
 }
 
@@ -35,11 +38,32 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
           ),
         };
       }
+      let runtimeExecution: RuntimeHostExecutionDiagnosticRead | undefined;
+      if (input.execution) {
+        try {
+          const turn = await deps.getRuntimeHostTurnTrace(
+            input.execution.sessionId,
+            input.execution.turnId,
+          );
+          runtimeExecution = turn
+            ? { ok: true, value: turn }
+            : { ok: false, error: 'Execution evidence was not found' };
+        } catch (error) {
+          runtimeExecution = {
+            ok: false,
+            error: truncateUtf8(
+              redactSecrets(error instanceof Error ? error.message : String(error)),
+              1024,
+            ),
+          };
+        }
+      }
       const report = formatDesktopErrorDiagnosticReport(
         input,
         deps.environment(),
         deps.mainLogs(),
         runtimeHost,
+        runtimeExecution,
       );
       try {
         deps.writeClipboard(report);

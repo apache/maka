@@ -2484,7 +2484,7 @@ export class AiSdkBackend implements AgentBackend {
               // Unrecoverable (not context-length, latch spent, no seam, or no
               // safe fold): surface the real provider error via the terminal
               // handler — never a fabricated success.
-              throw attemptFailure;
+              throw failure;
             }
             break;
           }

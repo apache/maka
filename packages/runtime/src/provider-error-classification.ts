@@ -1,5 +1,6 @@
 import { RetryError } from 'ai';
-import { isAuthenticationErrorText } from '@maka/core/redaction';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { isAuthenticationErrorText, redactSecrets } from '@maka/core/redaction';
 
 /**
  * Structured provider error identifiers that mean the INPUT exceeded the
@@ -38,6 +39,14 @@ export interface ProviderRetryMetadata {
   retryable: boolean;
   retryAfterMs?: number;
 }
+
+interface ProviderFailureSummary {
+  message: string;
+  code?: string;
+}
+
+const PROVIDER_FAILURE_SUMMARY_MAX_BYTES = 2 * 1024;
+const PROVIDER_FAILURE_FIELD_MAX_BYTES = 256;
 
 const MAX_SAFE_TIMER_DELAY_MS = 2_147_483_647;
 const OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR = 'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR';
@@ -190,6 +199,126 @@ function normalizeErrorEvidence(error: unknown): ProviderErrorEvidence | undefin
     };
   }
   return undefined;
+}
+
+/**
+ * Retains only allowlisted provider failure fields. The provider value may also
+ * contain request bodies, headers, or credentials, so it must never be copied
+ * or serialized as diagnostic output wholesale.
+ */
+export function providerFailureSummary(error: unknown): ProviderFailureSummary | undefined {
+  const target = providerErrorTarget(error);
+  const sources = providerFailureSources(target);
+  const message = firstProviderMessage(target, sources);
+  const code = firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
+  const statusCode = firstProviderField(sources, ['statusCode', 'status']);
+  const requestId =
+    firstProviderField(sources, ['requestId', 'request_id']) ??
+    boundedProviderField(responseHeadersFromError(target)?.['x-request-id']);
+  const metadata = [
+    ...(code ? [`code=${code}`] : []),
+    ...(statusCode && statusCode !== code ? [`status=${statusCode}`] : []),
+    ...(requestId ? [`requestId=${requestId}`] : []),
+  ];
+  if (!message && metadata.length === 0) return undefined;
+  const suffix = metadata.length > 0 ? ` (${metadata.join(', ')})` : '';
+  const messageBudget = Math.max(
+    1,
+    PROVIDER_FAILURE_SUMMARY_MAX_BYTES - Buffer.byteLength(suffix, 'utf8'),
+  );
+  const summary = `${truncateUtf8(
+    redactSecrets(message ?? 'Provider request failed'),
+    messageBudget,
+    '…',
+  )}${suffix}`;
+  return {
+    message: truncateUtf8(summary, PROVIDER_FAILURE_SUMMARY_MAX_BYTES, '…'),
+    ...(code || statusCode ? { code: code ?? statusCode } : {}),
+  };
+}
+
+interface ProviderFailureSources {
+  records: readonly Record<string, unknown>[];
+  stringErrors: readonly unknown[];
+}
+
+function providerFailureSources(error: unknown): ProviderFailureSources {
+  const record = objectRecord(error);
+  if (!record) return { records: [], stringErrors: [] };
+  const data = objectRecord(safeField(record, 'data'));
+  const nestedError = objectRecord(safeField(record, 'error'));
+  const dataError = objectRecord(data ? safeField(data, 'error') : undefined);
+  const parsedBody = parsedProviderBody(safeField(record, 'responseBody'));
+  const parsedBodyError = objectRecord(parsedBody ? safeField(parsedBody, 'error') : undefined);
+  return {
+    records: [dataError, data, parsedBodyError, parsedBody, nestedError, record].filter(
+      (source): source is Record<string, unknown> => source !== undefined,
+    ),
+    stringErrors: [
+      data ? safeField(data, 'error') : undefined,
+      parsedBody ? safeField(parsedBody, 'error') : undefined,
+      safeField(record, 'error'),
+    ],
+  };
+}
+
+function firstProviderMessage(error: unknown, sources: ProviderFailureSources): string | undefined {
+  if (typeof error === 'string') return boundedProviderMessage(error);
+  const candidates = [
+    ...sources.records.map((source) => safeField(source, 'message')),
+    ...sources.stringErrors,
+  ];
+  return candidates.map(boundedProviderMessage).find((value) => value !== undefined);
+}
+
+function firstProviderField(
+  sources: ProviderFailureSources,
+  keys: readonly string[],
+): string | undefined {
+  for (const key of keys) {
+    for (const source of sources.records) {
+      const value = boundedProviderField(safeField(source, key));
+      if (value !== undefined) return value;
+    }
+  }
+  return undefined;
+}
+
+function parsedProviderBody(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'string') return undefined;
+  try {
+    return objectRecord(JSON.parse(value));
+  } catch {
+    return undefined;
+  }
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function safeField(record: Record<string, unknown>, key: string): unknown {
+  try {
+    return record[key];
+  } catch {
+    return undefined;
+  }
+}
+
+function boundedProviderField(value: unknown): string | undefined {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  const normalized = String(value).trim();
+  if (!normalized) return undefined;
+  return truncateUtf8(redactSecrets(normalized), PROVIDER_FAILURE_FIELD_MAX_BYTES, '…');
+}
+
+function boundedProviderMessage(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  return truncateUtf8(redactSecrets(normalized), PROVIDER_FAILURE_SUMMARY_MAX_BYTES, '…');
 }
 
 /**

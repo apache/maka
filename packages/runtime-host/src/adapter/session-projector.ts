@@ -272,7 +272,7 @@ export class RuntimeHostSessionProjector {
         ts: this.#now(),
         recoverable: false,
         reason: root.failureClass,
-        message: `Turn failed: ${root.failureClass}`,
+        message: root.failureMessage ?? `Turn failed: ${root.failureClass}`,
       });
     } else {
       events.push({

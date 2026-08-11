@@ -23,7 +23,12 @@ type RefBox<T> = { current: T };
 type StateUpdater<T> = (updater: (current: T) => T) => void;
 
 type ToastApi = {
-  error(title: string, description?: string, diagnosticDetails?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string; turnId: string; eventId: string },
+  ): void;
 };
 
 export interface AppShellSessionEventHandlers {
@@ -164,6 +169,7 @@ export function createAppShellSessionEventHandlers(options: {
               copy.conversationErrorTitle,
               sessionEventErrorMessage(event, uiLocale),
               sessionEventDiagnosticDetails(sessionId, event),
+              { sessionId, turnId: event.turnId, eventId: event.id },
             );
           }
         }
