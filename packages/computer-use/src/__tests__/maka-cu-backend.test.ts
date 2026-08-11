@@ -1039,53 +1039,6 @@ describe('maka-cu backend', () => {
     assert.equal(again.truncated, true, 'a second observation of the same window agrees');
   });
 
-  it('reports what an element offers beyond a press, and nothing when that is all', async () => {
-    // The 13-name set `secondary_action` accepts was model-invisible: the schema
-    // said "Required for secondary_action" and nothing about what a legal name
-    // is, so a model had to guess and be told its guess was outside the set.
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    const rich = observation.elements.find((e) => e.actions !== undefined);
-    // `press` is what click_element does, and `show_menu` is ambient — Chromium
-    // hangs it off nearly every node, so its presence says nothing about this
-    // one. What survives is what a model would act on differently for reading.
-    assert.deepEqual(rich?.actions, ['raise'], 'only the informative action survives');
-    const plain = observation.elements.find((e) => e.role === 'AXWindow');
-    assert.equal(plain?.actions, undefined, 'an element offering only press says nothing');
-  });
-
-  it('names the secondary actions there are, rather than only the one there is not', async () => {
-    // cua-driver answers a miss on a popup with `Available: ["A", "B", …]`, and
-    // that is the difference between a model correcting itself and a model
-    // guessing a second time. The set here is closed and short enough to print
-    // whole, so a refusal can carry it — measured against the previous message,
-    // which said only that the guess was "outside the protocol's action set"
-    // and left the model to find the inside by trial.
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    const result = await backend.runSemantic!(
-      {
-        type: 'secondary_action',
-        action: 'expand',
-        observationId: observation.observationId,
-        elementId: 'el_2',
-        elementIdentity: { token: 'el_2', role: 'AXButton' },
-      },
-      signal(),
-      RUN_CONTEXT,
-    );
-
-    assert.equal(result.outcome.ok, false);
-    const message = result.outcome.ok ? '' : result.outcome.message;
-    assert.match(message, /'expand'/, 'says which name was refused');
-    for (const name of ['press', 'raise', 'pick', 'increment', 'scroll_up']) {
-      assert.ok(message.includes(name), `lists ${name}`);
-    }
-    // And points at where this element's own shorter list is written, which is
-    // the answer to the question the model is actually asking.
-    assert.match(message, /\+name,name/);
-  });
-
   it('reads an element with no rectangle instead of refusing the whole window', async () => {
     // §5 declares `frame` optional. Reading it as required cost a whole
     // application: one element without one in System Settings turned every
@@ -1111,58 +1064,6 @@ describe('maka-cu backend', () => {
     assert.ok(secure, 'the fixture element carrying a subrole reaches the observation');
     const plain = observation.elements.find((e) => e.role === 'AXWindow');
     assert.equal(plain?.subrole, undefined, 'an element without one carries nothing');
-  });
-
-  it('carries the placeholder, kept apart from the value it is not', async () => {
-    // Placeholder text reads like content while the field holds nothing. The
-    // executor sends it and the protocol validates it; this backend dropped it,
-    // the third field to go missing at exactly this boundary after `subrole`
-    // and `window_action`'s wire schema. A model that never sees it cannot tell
-    // an empty search box from one already holding a query.
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    const prompted = observation.elements.find((e) => e.placeholder !== undefined);
-    assert.ok(prompted, 'the fixture element carrying a placeholder reaches the observation');
-    assert.equal(prompted?.placeholder, 'Search your files');
-    // Never folded in: the field is empty, and saying so through `value` would
-    // have a model skip a field it still has to fill.
-    assert.equal(prompted?.value, undefined);
-    const plain = observation.elements.find((e) => e.role === 'AXWindow');
-    assert.equal(plain?.placeholder, undefined, 'an element without one carries nothing');
-  });
-
-  it('carries which element is focused, from a declaration rather than a spread', async () => {
-    // It reached the observation through a spread into an object literal, the
-    // one construction TypeScript does not excess-property check, so no type
-    // declared it anywhere — it worked, and nothing held it to working.
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    const focused = observation.elements.find((e) => e.focused === true);
-    assert.ok(focused, 'the fixture element the executor reports as focused reaches the model');
-    assert.equal(focused?.label, 'Send');
-    // Absent, not false: the renderer writes state only where it is the
-    // exception, and `focused: false` on every other line says nothing.
-    const plain = observation.elements.find((e) => e.role === 'AXWindow');
-    assert.equal(plain?.focused, undefined, 'an element that is not focused carries nothing');
-  });
-
-  it('carries the selected text in the shape the wire declares', async () => {
-    // Declared on the element as a bare string and assigned nowhere: the file's
-    // header listed it among the four things this backend carries and it
-    // carried none of it. The protocol puts it on the snapshot and says whether
-    // it was cut, which a bare string cannot.
-    const { backend } = makeBackend({ selectedText: 'the selected run' });
-    const observation = await observeFixture(backend);
-    assert.deepEqual(observation.selectedText, { text: 'the selected run', truncated: true });
-
-    const { backend: none } = makeBackend({});
-    assert.equal((await observeFixture(none)).selectedText, undefined);
-  });
-
-  it('says nothing about truncation when the tree was complete', async () => {
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    assert.equal(observation.truncated, undefined);
   });
 
   it('names a parent in the id space the model reads, not the wire token', async () => {

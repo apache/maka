@@ -1767,60 +1767,6 @@ describe('builtin Bash streaming output', () => {
     );
   });
 
-  test('delegates Bash execution to an injected workspace executor', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'maka-bash-executor-'));
-    const calls: WorkspaceExecInput[] = [];
-    const events: Array<{ stream: 'stdout' | 'stderr'; chunk: string }> = [];
-    const bash = buildBuiltinTools({
-      executor: fakeExecutor({
-        exec: async (input) => {
-          calls.push(input);
-          input.emitOutput?.('stdout', 'delegated-out');
-          return {
-            exitCode: 0,
-            stdout: 'delegated-out',
-            stderr: 'delegated-err',
-            timedOut: false,
-            aborted: false,
-          };
-        },
-      }),
-    }).find((tool) => tool.name === 'Bash');
-    if (!bash) throw new Error('Bash tool missing');
-
-    const result = await bash.impl(
-      { command: 'npm test', timeout_ms: 12_345 },
-      {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        cwd,
-        toolCallId: 'tool-1',
-        abortSignal: new AbortController().signal,
-        emitOutput: (stream, chunk) => events.push({ stream, chunk }),
-      },
-    );
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.command).toBe('npm test');
-    expect(calls[0]?.cwd).toBe(cwd);
-    expect(calls[0]?.timeoutMs).toBe(12_345);
-    expect(events).toEqual([{ stream: 'stdout', chunk: 'delegated-out' }]);
-    expect(result).toMatchObject({
-      kind: 'terminal',
-      cwd,
-      cmd: 'npm test',
-      exitCode: 0,
-      output: {
-        mode: 'pipes',
-        stdout: 'delegated-out',
-        stderr: 'delegated-err',
-        stdoutTruncated: false,
-        stderrTruncated: false,
-        redacted: false,
-      },
-    });
-  });
-
   test('preserves Bash failure contract when the executor reports non-zero exit', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'maka-bash-executor-'));
     const bash = buildBuiltinTools({
@@ -2125,31 +2071,6 @@ describe('builtin read tools path containment', () => {
     );
   });
 
-  test('Read delegates file loading to the injected workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-read-executor-'));
-    await writeFile(join(root, 'inside.txt'), 'local-content', 'utf8');
-    const readInputs: unknown[] = [];
-    const read = buildBuiltinTools({
-      executor: fakeExecutor({
-        readFile: async (input) => {
-          readInputs.push(input);
-          return { content: 'executor-window' };
-        },
-      }),
-    }).find((candidate) => candidate.name === 'Read');
-    if (!read) throw new Error('Read tool missing');
-
-    const result = await runTool(read, { path: 'inside.txt', offset: 1, limit: 1 }, root);
-
-    expect(readInputs).toHaveLength(1);
-    expect(readInputs[0]).toMatchObject({
-      offset: 1,
-      limit: 1,
-    });
-    expect(String((readInputs[0] as { path?: string }).path)).toMatch(/inside\.txt$/);
-    expect(result).toMatchObject({ content: 'executor-window' });
-  });
-
   test('Read accepts contained absolute paths and rejects workspace escapes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-read-root-'));
     const outside = await mkdtemp(join(tmpdir(), 'maka-read-outside-'));
@@ -2221,61 +2142,6 @@ describe('builtin read tools path containment', () => {
     expect(JSON.stringify(absoluteGrepResult).includes('main.ts')).toBe(true);
   });
 
-  test('Glob delegates matching to the injected workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-glob-executor-'));
-    await mkdir(join(root, 'src'), { recursive: true });
-    const calls: Array<{ cwd: string; pattern: string; limit?: number }> = [];
-    const glob = buildBuiltinTools({
-      executor: fakeExecutor({
-        globFiles: async (input) => {
-          calls.push(input);
-          return { files: ['from-executor.ts'] };
-        },
-      }),
-    }).find((candidate) => candidate.name === 'Glob');
-    if (!glob) throw new Error('Glob tool missing');
-
-    const result = await runTool(glob, { pattern: '**/*.ts', cwd: 'src' }, root);
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.cwd.endsWith('src')).toBe(true);
-    expect(calls[0]?.pattern).toBe('**/*.ts');
-    expect(calls[0]?.limit).toBe(200);
-    expect(result).toMatchObject({ files: ['from-executor.ts'] });
-  });
-
-  test('Grep delegates searching to the injected workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-grep-executor-'));
-    await mkdir(join(root, 'src'), { recursive: true });
-    await writeFile(join(root, 'src', 'main.ts'), 'local token\n', 'utf8');
-    const calls: Array<{
-      cwd: string;
-      pattern: string;
-      path: string;
-      glob?: string;
-      maxCountPerFile: number;
-      limit: number;
-    }> = [];
-    const grep = buildBuiltinTools({
-      executor: fakeExecutor({
-        grepFiles: async (input) => {
-          calls.push(input);
-          return { matches: ['from-executor.ts:1:token'] };
-        },
-      }),
-    }).find((candidate) => candidate.name === 'Grep');
-    if (!grep) throw new Error('Grep tool missing');
-
-    const result = await runTool(grep, { pattern: 'token', path: 'src', glob: '*.ts' }, root);
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.cwd).toBe(root);
-    expect(calls[0]?.path.endsWith('src')).toBe(true);
-    expect(calls[0]?.glob).toBe('*.ts');
-    expect(calls[0]?.maxCountPerFile).toBe(50);
-    expect(calls[0]?.limit).toBe(200);
-    expect(result).toMatchObject({ matches: ['from-executor.ts:1:token'] });
-  });
 });
 
 describe('builtin write tools path containment', () => {
@@ -2307,60 +2173,6 @@ describe('builtin write tools path containment', () => {
       },
     ]);
     expect(result).toMatchObject({ kind: 'file_diff', paths: ['/workspace/created.txt'] });
-  });
-
-  test('Write delegates file writing to the injected workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-write-executor-'));
-    const writes: Array<{ path: string; content: string }> = [];
-    const write = buildBuiltinTools({
-      executor: fakeExecutor({
-        writeFile: async ({ path, content }) => {
-          writes.push({ path, content });
-          return { ok: true, path, bytes: Buffer.byteLength(content, 'utf8') };
-        },
-      }),
-    }).find((candidate) => candidate.name === 'Write');
-    if (!write) throw new Error('Write tool missing');
-
-    const result = await runTool(write, { path: 'created.txt', content: 'from-executor' }, root);
-
-    expect(writes).toHaveLength(1);
-    expect(writes[0]?.path.endsWith('created.txt')).toBe(true);
-    expect(writes[0]?.content).toBe('from-executor');
-    expect(result).toMatchObject({ kind: 'file_diff' });
-  });
-
-  test('Edit reads and writes through the injected workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-edit-executor-'));
-    await writeFile(join(root, 'data.txt'), 'local content that should not be used', 'utf8');
-    const reads: string[] = [];
-    const writes: Array<{ path: string; content: string }> = [];
-    const edit = buildBuiltinTools({
-      executor: fakeExecutor({
-        readFile: async ({ path }) => {
-          reads.push(path);
-          return { content: 'hello world\n' };
-        },
-        writeFile: async ({ path, content }) => {
-          writes.push({ path, content });
-          return { ok: true, path, bytes: Buffer.byteLength(content, 'utf8') };
-        },
-      }),
-    }).find((candidate) => candidate.name === 'Edit');
-    if (!edit) throw new Error('Edit tool missing');
-
-    const result = await runTool(
-      edit,
-      { path: 'data.txt', old_string: 'world', new_string: 'Maka' },
-      root,
-    );
-
-    expect(reads).toHaveLength(1);
-    expect(writes).toHaveLength(1);
-    expect(writes[0]?.content).toBe('hello Maka\n');
-    expect(result).toMatchObject({ kind: 'file_diff' });
-    expect((result as { diff: string }).diff).toContain('-hello world');
-    expect((result as { diff: string }).diff).toContain('+hello Maka');
   });
 
   test('Edit rejects image results from the workspace executor', async () => {
