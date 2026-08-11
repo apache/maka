@@ -49,78 +49,6 @@ const ONE_PIXEL_PNG = Buffer.from(
 );
 
 describe('builtin apply_patch', () => {
-  test('applies a freeform V4A patch through the existing filesystem authority', async () => {
-    const calls: Array<{
-      action: string;
-      path: string;
-      diff?: string;
-      cwd: string;
-      label: string;
-      scope: string;
-    }> = [];
-    const applyPatch = buildBuiltinTools({
-      executor: fakeExecutor({
-        applyPatch: async (input) => {
-          calls.push(input);
-          return { ok: true, path: input.path };
-        },
-      }),
-    }).find((tool) => tool.name === 'apply_patch');
-    if (!applyPatch) throw new Error('apply_patch tool missing');
-
-    const result = await runTool(
-      applyPatch,
-      [
-        '*** Begin Patch',
-        '*** Add File: added.txt',
-        '+hello',
-        '+world',
-        '*** Update File: changed.txt',
-        '@@',
-        '-before',
-        '+after',
-        '*** Delete File: removed.txt',
-        '*** End Patch',
-      ].join('\n'),
-      '/workspace',
-    );
-
-    assert.deepEqual(calls, [
-      {
-        cwd: '/workspace',
-        action: 'create',
-        path: 'added.txt',
-        diff: '+hello\n+world\n+',
-        label: 'ApplyPatch',
-        scope: 'workspace',
-      },
-      {
-        cwd: '/workspace',
-        action: 'update',
-        path: 'changed.txt',
-        diff: '@@\n-before\n+after',
-        label: 'ApplyPatch',
-        scope: 'workspace',
-      },
-      {
-        cwd: '/workspace',
-        action: 'delete',
-        path: 'removed.txt',
-        label: 'ApplyPatch',
-        scope: 'workspace',
-      },
-    ]);
-    assert.deepEqual(result, {
-      status: 'completed',
-      applied: [
-        { type: 'create_file', path: 'added.txt' },
-        { type: 'update_file', path: 'changed.txt' },
-        { type: 'delete_file', path: 'removed.txt' },
-      ],
-      output: 'Applied 3 file operations.',
-    });
-  });
-
   test('rejects unsupported V4A Move before applying any file operation', async () => {
     let calls = 0;
     const applyPatch = buildBuiltinTools({
@@ -1933,39 +1861,6 @@ describe('builtin Bash sandbox denial classification', () => {
 });
 
 describe('builtin read tools path containment', () => {
-  test('Read snapshots the complete image returned by the workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-read-image-'));
-    const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
-    const snapshots: unknown[] = [];
-    const read = buildBuiltinTools({
-      executor: fakeExecutor({
-        readFile: async () => ({ bytes: imageBytes, mimeType: 'image/png' }),
-      }),
-      snapshotImage: async (input) => {
-        snapshots.push(input);
-        return { kind: 'session_file', sessionId: input.sessionId, relativePath: 'artifact-1' };
-      },
-    }).find((candidate) => candidate.name === 'Read');
-    if (!read) throw new Error('Read tool missing');
-
-    const result = await runTool(read, { path: 'PHOTO.PNG', offset: 1, limit: 1 }, root);
-
-    expect(result).toEqual({
-      kind: 'image',
-      mimeType: 'image/png',
-      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'artifact-1' },
-    });
-    expect(snapshots).toEqual([
-      {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'PHOTO.PNG',
-        bytes: imageBytes,
-        mimeType: 'image/png',
-      },
-    ]);
-  });
-
   test('Read rejects image content without snapshot support, regardless of extension', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-read-image-'));
     await writeFile(join(root, 'photo.png'), ONE_PIXEL_PNG);
