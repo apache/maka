@@ -46,7 +46,7 @@ describe('Artifact turn key', () => {
 });
 
 describe('Artifact user-delete policy', () => {
-  test('protects durable evidence while allowing ordinary and legacy artifacts', () => {
+  test('protects durable evidence while allowing ordinary and unattributed artifacts', () => {
     for (const source of [
       'deep_research',
       'subagent_writeback',
