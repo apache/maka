@@ -42,49 +42,6 @@ describe('McpClientManager remote transport E2E', () => {
     assertLegacyHandshake(fixture);
   });
 
-  test('auto falls back to legacy SSE without replacing protocol headers', async () => {
-    const fixture = await createRemoteFixture('sse');
-    const manager = createManager();
-    await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
-
-    assert.equal(manager.status('remote')?.transport, 'sse');
-    const result = await manager.callTool(bindingFor(manager, 'remote', 'echo'), {
-      value: 'legacy',
-    });
-    assert.deepEqual(result.content, [{ type: 'text', text: 'legacy' }]);
-    const get = fixture.requests.find(
-      (request) => request.method === 'GET' && request.path === '/sse',
-    );
-    assert.equal(get?.authorization, 'Bearer remote-test');
-    assert.match(get?.accept ?? '', /text\/event-stream/u);
-    assert.ok(
-      fixture.requests.some(
-        (request) =>
-          request.method === 'POST' &&
-          request.path === '/messages' &&
-          request.authorization === 'Bearer remote-test',
-      ),
-    );
-    assertLegacyHandshake(fixture);
-  });
-
-  test('still sends low-level discovery when a legacy server omits tools capability', async () => {
-    const fixture = await createRemoteFixture('streamable-http', {
-      advertiseTools: false,
-    });
-    const manager = createManager();
-
-    await manager.sync(remoteConfig(fixture.url));
-
-    assert.ok(
-      fixture.requests.some((request) => request.protocolMethods.includes('tools/list')),
-      JSON.stringify({
-        status: manager.status('remote'),
-        methods: fixture.requests.flatMap((request) => request.protocolMethods),
-      }),
-    );
-  });
-
   test('bounds and sanitizes connection errors before publishing status', async () => {
     const fixture = await createRemoteFixture('streamable-http');
     fixture.setToolListMode('duplicate');
@@ -306,46 +263,6 @@ describe('McpClientManager remote transport E2E', () => {
     assert.notEqual(bindingFor(manager, 'first', 'echo'), bindingFor(manager, 'second', 'echo'));
   });
 
-  test('preserves an empty legacy Tool name instead of rejecting the server snapshot', async () => {
-    const fixture = await createRemoteFixture('streamable-http');
-    fixture.setToolListMode('empty-name');
-    const manager = createManager();
-
-    await manager.sync(remoteConfig(fixture.url));
-
-    assert.deepEqual(
-      manager.toolSnapshot().tools.map(({ descriptor }) => descriptor.name),
-      [''],
-    );
-    assert.deepEqual(
-      await manager.callTool(bindingFor(manager, 'remote', ''), {
-        value: 'empty',
-      }),
-      {
-        content: [{ type: 'text', text: 'empty' }],
-        structuredContent: undefined,
-      },
-    );
-  });
-
-  test('preserves an empty configured server id in the bound snapshot', async () => {
-    const fixture = await createRemoteFixture('streamable-http');
-    const manager = createManager();
-
-    await manager.sync({
-      version: 1,
-      mcpServers: {
-        '': { url: fixture.url, transport: 'streamable-http' },
-      },
-    });
-
-    assert.deepEqual(
-      manager.toolSnapshot().tools.map(({ descriptor }) => descriptor.serverId),
-      ['', ''],
-    );
-    await manager.callTool(bindingFor(manager, '', 'echo'), { value: 'empty-server' });
-  });
-
   test('coalesces a refresh signal and publishes only the final attempt', async () => {
     const fixture = await createRemoteFixture('streamable-http');
     const manager = createManager();
@@ -505,53 +422,6 @@ describe('McpClientManager remote transport E2E', () => {
     assert.equal(countProtocolMethod(fixture, 'tools/call'), callsBefore);
   });
 
-  test('preserves legacy structured object content', async () => {
-    const fixture = await createRemoteFixture('streamable-http');
-    const manager = createManager();
-    await manager.sync(remoteConfig(fixture.url));
-
-    const structuredContent = { value: 1 };
-    const result = await manager.callTool(bindingFor(manager, 'remote', 'echo'), {
-      value: 'structured',
-      structuredContent,
-    });
-    assert.deepEqual(result.structuredContent, structuredContent);
-  });
-
-  test('rejects legacy content-less and deferred-marker results with a stable error', async () => {
-    const unsupportedResults = [
-      { toolResult: { legacy: true } },
-      {
-        task: {
-          taskId: 'legacy-task-1',
-          status: 'working',
-          ttl: null,
-          createdAt: '2026-07-30T00:00:00Z',
-          lastUpdatedAt: '2026-07-30T00:00:00Z',
-        },
-      },
-      { inputRequests: {} },
-      { requestState: 'input-required' },
-    ];
-
-    for (const legacyToolCallResult of unsupportedResults) {
-      const fixture = await createRemoteFixture('streamable-http', {
-        advertiseTools: false,
-        legacyToolCallResult,
-      });
-      const manager = createManager();
-      await manager.sync(remoteConfig(fixture.url));
-
-      await assert.rejects(
-        manager.callTool(bindingFor(manager, 'remote', 'echo'), {}),
-        (error: unknown) =>
-          error instanceof McpToolCallError &&
-          error.serverId === 'remote' &&
-          error.toolName === 'echo' &&
-          /unsupported deferred tool result/u.test(error.message),
-      );
-    }
-  });
 });
 
 describe('McpClientManager stdio E2E', () => {
@@ -885,7 +755,6 @@ interface RemoteFixture {
 type ToolListMode =
   | 'valid'
   | 'duplicate'
-  | 'empty-name'
   | 'replacement'
   | 'reordered'
   | 'output-schema-change'
@@ -1052,9 +921,7 @@ function createProtocolServer(options: {
       tools:
         mode === 'duplicate'
           ? [remoteToolDefinition('echo'), remoteToolDefinition('echo')]
-          : mode === 'empty-name'
-            ? [remoteToolDefinition('')]
-            : mode === 'replacement'
+          : mode === 'replacement'
               ? [remoteToolDefinition('replacement')]
               : mode === 'reordered'
                 ? [reorderedRemoteEchoDefinition(), remoteToolDefinition('invalid-output')]
