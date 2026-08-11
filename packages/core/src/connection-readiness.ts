@@ -176,26 +176,6 @@ export function normalizeOpenAiCodexConnection(connection: LlmConnection): LlmCo
 }
 
 /**
- * The requested model as the readiness gate should see it: a requested
- * ChatGPT-subscription-unsupported model on a Codex connection is
- * dropped so the gate validates the connection's (normalized) default
- * instead of a model the subscription cannot serve.
- */
-export function normalizeRequestedModelForReadiness(
-  connection: LlmConnection,
-  requestedModel: string | undefined,
-): string | undefined {
-  if (
-    connection.providerType === 'openai-codex' &&
-    requestedModel &&
-    CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(requestedModel)
-  ) {
-    return undefined;
-  }
-  return requestedModel;
-}
-
-/**
  * Whether a connection is backed by a real LLM provider (anything
  * whose `backendKind === 'ai-sdk'`), as opposed to the in-process
  * `fake` backend or an unrecognized legacy provider type.

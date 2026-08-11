@@ -12,7 +12,7 @@
  *
  * The logic mirrors the send path exactly:
  *   1. The session's own connection must pass `isConnectionReady` with
- *      the sticky session model (after codex normalization).
+ *      the sticky session model.
  *   2. A locked session (has user messages) can never rebind — any
  *      failure of its own connection blocks the send.
  *   3. An unlocked session may silently rebind only for reasons in
@@ -28,7 +28,6 @@
 import {
   isConnectionReady,
   normalizeOpenAiCodexConnection,
-  normalizeRequestedModelForReadiness,
   type ChatConfigurationReason,
 } from './connection-readiness.js';
 import type { LlmConnection } from './llm-connections.js';
@@ -124,7 +123,7 @@ export function sessionOwnConnectionBlockReason(
   const verdict = isConnectionReady({
     connection: normalized,
     hasSecret: hasSecret(normalized.slug),
-    requestedModel: normalizeRequestedModelForReadiness(ownConnection, session.model),
+    requestedModel: session.model,
   });
   return verdict.ready ? undefined : verdict.reason;
 }
