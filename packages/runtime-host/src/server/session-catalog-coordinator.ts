@@ -583,7 +583,7 @@ export class HostSessionCatalogCoordinator {
         'Session model connection is unavailable',
       );
     }
-    if (readiness.kind === 'credential_not_configured') {
+    if (readiness.kind === 'profile_disabled' || readiness.kind === 'credential_not_configured') {
       throw new SessionOperationFailure(
         'operation_unavailable',
         'Session model connection is not ready',

@@ -302,13 +302,14 @@ describe('config-transfer-service', () => {
       balancedRestored: true,
       balancedPending: false,
     });
-    // Created disabled first, then the secret, then BOTH the primary and the
-    // secondary are re-tested, then the verified secondary is enabled, then
+    // Created disabled first, then the secret, then each bundle profile is
+    // re-tested and re-enabled in order (primary, then secondary), then
     // balanced is restored.
     assert.deepEqual(calls, [
       'create:backup',
       'credential:profile-900',
       'test:primary',
+      'setEnabled:primary:true',
       'test:profile-900',
       'setEnabled:profile-900:true',
       'routing:balanced',
@@ -851,6 +852,283 @@ describe('config-transfer-service', () => {
     ]);
     assert.deepEqual(result.profiles?.restoredEnabled, 0);
     assert.deepEqual(result.profiles?.verificationFailed, ['deepseek-main/backup']);
+  });
+
+  it('v2 overwrite keeps the primary disabled when the bundle disables it', async () => {
+    const { deps } = makeDeps();
+    const profiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [
+      {
+        profileId: 'primary-id',
+        revision: 2,
+        label: 'primary',
+        enabled: true,
+        weight: 1,
+        primary: true,
+        credentialConfigured: true,
+        supportedModels: [],
+      },
+    ];
+    const calls: string[] = [];
+    deps.profiles = {
+      list: async () => ({
+        connectionRevision: 5,
+        routingMode: 'balanced',
+        readyCandidateCount: 1,
+        profiles: [...profiles],
+      }),
+      create: async () => {
+        calls.push('create');
+      },
+      update: async () => {
+        calls.push('update');
+      },
+      setEnabled: async (_slug, input) => {
+        calls.push(`setEnabled:${input.profileId}:${input.enabled}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) target.enabled = input.enabled;
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async () => {
+        calls.push('credential');
+      },
+      test: async () => {
+        calls.push('test');
+        return { ok: true };
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('deepseek-main'),
+            credentialProfiles: [
+              { profileRef: 'primary', profileId: 'primary-id', label: 'primary', enabled: false, weight: 1, primary: true },
+            ],
+            routingMode: 'legacy_primary',
+          },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'overwrite', deps);
+
+    // The primary is quiesced BEFORE any credential replacement, and the
+    // bundle's explicit disabled state is respected — the absent-profile
+    // restore must not re-enable a bundle-declared primary.
+    assert.deepEqual(calls, [
+      'routing:legacy_primary',
+      'setEnabled:primary-id:false',
+    ]);
+    assert.deepEqual(result.profiles?.restoredEnabled, 0);
+    assert.deepEqual(result.profiles?.verificationFailed, []);
+  });
+
+  it('v2 overwrite keeps the primary disabled when re-verification fails', async () => {
+    const { deps } = makeDeps();
+    const profiles: Array<{
+      profileId: string;
+      revision: number;
+      label: string;
+      enabled: boolean;
+      weight: number;
+      primary: boolean;
+      credentialConfigured: boolean;
+      supportedModels: string[];
+    }> = [
+      {
+        profileId: 'primary-id',
+        revision: 2,
+        label: 'primary',
+        enabled: true,
+        weight: 1,
+        primary: true,
+        credentialConfigured: true,
+        supportedModels: [],
+      },
+    ];
+    const calls: string[] = [];
+    deps.profiles = {
+      list: async () => ({
+        connectionRevision: 5,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [...profiles],
+      }),
+      create: async () => {
+        calls.push('create');
+      },
+      update: async () => {
+        calls.push('update');
+      },
+      setEnabled: async (_slug, input) => {
+        calls.push(`setEnabled:${input.profileId}:${input.enabled}`);
+        const target = profiles.find((p) => p.profileId === input.profileId);
+        if (target) target.enabled = input.enabled;
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async () => {
+        calls.push('credential');
+      },
+      test: async (_slug, input) => {
+        calls.push(`test:${input.profileId}`);
+        return { ok: false };
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('deepseek-main'),
+            credentialProfiles: [
+              { profileRef: 'primary', profileId: 'primary-id', label: 'primary', enabled: true, weight: 1, primary: true },
+            ],
+            routingMode: 'legacy_primary',
+          },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'overwrite', deps);
+
+    // Re-verification failed: the primary stays disabled (fail-closed) and is
+    // reported, never silently re-enabled around the verification flow.
+    assert.deepEqual(calls, ['setEnabled:primary-id:false', 'test:primary']);
+    assert.deepEqual(result.profiles?.restoredEnabled, 0);
+    assert.deepEqual(result.profiles?.verificationFailed, ['deepseek-main/primary']);
+  });
+
+  it('scopes listed target ids per connection when two connections reuse a profile id', async () => {
+    const { deps } = makeDeps();
+    const profilesBySlug = new Map<
+      string,
+      Array<{
+        profileId: string;
+        revision: number;
+        label: string;
+        enabled: boolean;
+        weight: number;
+        primary: boolean;
+        credentialConfigured: boolean;
+        supportedModels: string[];
+      }>
+    >();
+    profilesBySlug.set('slug-a', [
+      {
+        profileId: 'shared-id',
+        revision: 1,
+        label: 'backup-a',
+        enabled: true,
+        weight: 10,
+        primary: false,
+        credentialConfigured: true,
+        supportedModels: [],
+      },
+    ]);
+    profilesBySlug.set('slug-b', [
+      {
+        profileId: 'shared-id',
+        revision: 1,
+        label: 'backup-b',
+        enabled: true,
+        weight: 10,
+        primary: false,
+        credentialConfigured: true,
+        supportedModels: [],
+      },
+    ]);
+    const calls: string[] = [];
+    deps.connectionStore = {
+      list: async () => [conn('slug-a'), conn('slug-b')],
+      save: async (c) => c,
+    };
+    deps.profiles = {
+      list: async (slug) => ({
+        connectionRevision: 3,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [...(profilesBySlug.get(slug) ?? [])],
+      }),
+      create: async () => {
+        calls.push('create');
+      },
+      update: async () => {
+        calls.push('update');
+      },
+      setEnabled: async (slug, input) => {
+        calls.push(`setEnabled:${slug}:${input.profileId}:${input.enabled}`);
+        const target = profilesBySlug
+          .get(slug)
+          ?.find((p) => p.profileId === input.profileId);
+        if (target) target.enabled = input.enabled;
+      },
+      setRoutingMode: async (_slug, input) => {
+        calls.push(`routing:${input.mode}`);
+      },
+      setCredential: async () => {
+        calls.push('credential');
+      },
+      test: async () => {
+        calls.push('test');
+        return { ok: true };
+      },
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('slug-a'),
+            credentialProfiles: [
+              { profileRef: 'secondary-0', profileId: 'shared-id', label: 'backup-a', enabled: false, weight: 10, primary: false },
+            ],
+            routingMode: 'legacy_primary',
+          },
+          {
+            ...conn('slug-b'),
+            credentialProfiles: [],
+            routingMode: 'legacy_primary',
+          },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'overwrite', deps);
+
+    // slug-a listed shared-id (disabled) -> its exact-id match is updated and
+    // stays disabled; slug-b did not list its shared-id -> the per-slug
+    // scoping restores it, even though the profile id collides across
+    // connections.
+    assert.deepEqual(calls, [
+      'setEnabled:slug-a:shared-id:false',
+      'setEnabled:slug-b:shared-id:false',
+      'update',
+      'setEnabled:slug-b:shared-id:true',
+    ]);
+    assert.deepEqual(result.profiles?.restoredEnabled, 1);
   });
 
   it('routes a parsed v1 bundle through the legacy import path', async () => {

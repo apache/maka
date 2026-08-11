@@ -1052,6 +1052,18 @@ export class RuntimePolicyCoordinator {
         hasSecret: true,
         lastTestStatus: connection.lastTest?.status,
       });
+      const routing = connection.credentialRouting;
+      if (routing?.mode === 'legacy_primary') {
+        const primary = routing.profiles.find(
+          (profile) => profile.profileId === connection.connectionId,
+        );
+        // A legacy_primary connection dispatches the primary identity only:
+        // an explicitly disabled primary must fail closed instead of letting
+        // the legacy fast path keep using it (RFC 4.1/7.3).
+        if (!primary || !primary.enabled) {
+          return deepFreeze({ kind: 'profile_disabled' as const });
+        }
+      }
       const prepared = await this.prepareConnectionMaterial(
         root,
         connection,

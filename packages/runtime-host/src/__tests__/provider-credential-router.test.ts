@@ -114,6 +114,27 @@ describe('ProviderCredentialRouter', () => {
     assert.equal(lease2.selectionReason, 'legacy_single');
   });
 
+  test('legacy_primary fast path fails closed when the primary profile is disabled', async () => {
+    const provider = createProvider({
+      routing: {
+        mode: 'legacy_primary',
+        strategy: 'smooth_weighted_round_robin',
+        profiles: [
+          { profileId: 'connection-1', revision: 2, label: 'primary', enabled: false, weight: 1 },
+          { profileId: 'secondary-1', revision: 1, label: 'backup', enabled: true, weight: 1 },
+        ],
+      },
+    });
+    const router = new ProviderCredentialRouter(provider);
+    // A legacy_primary connection dispatches the primary identity only; an
+    // explicitly disabled primary must not keep the fast path usable, and a
+    // configured secondary must never be used as a silent failover.
+    await assert.rejects(
+      router.acquireAttempt(context()),
+      /primary profile is disabled/,
+    );
+  });
+
   test('single eligible candidate in balanced mode uses single_eligible', async () => {
     const provider = createProvider({
       routing: routing([

@@ -297,12 +297,17 @@ async function applyV2ConfigImport(
   let balancedRestored = false;
   let balancedPending = false;
   // slug -> profileIds the quiesce disabled; the restore pass re-enables the
-  // ones the bundle did not list.
-  const quiescedSecondaries = new Map<string, Set<string>>();
-  // Every target profile the bundle claimed (mapped, regardless of enabled
-  // state or verification outcome): the quiesce restore must never re-enable
-  // a profile the bundle deliberately disabled or that failed re-verification.
-  const listedTargetProfileIds = new Set<string>();
+  // ones the bundle did not list. The primary is quiesced too: overwrite
+  // credential replacement must never happen while the primary is dispatchable
+  // (RFC 13.4 lifecycle applies to every profile).
+  const quiescedProfiles = new Map<string, Set<string>>();
+  // slug -> target profile ids the bundle claimed (mapped, regardless of
+  // enabled state or verification outcome). Profile identity is scoped per
+  // Connection, so the set is per slug: the quiesce restore must never
+  // re-enable a profile the bundle deliberately disabled or that failed
+  // re-verification, and one connection's listing must not block another
+  // connection's absent-profile restore.
+  const listedTargetProfileIds = new Map<string, Set<string>>();
 
   if (Array.isArray(bundle.data.connections)) {
     const incoming = bundle.data.connections as V2ExportedConnection[];
@@ -323,29 +328,28 @@ async function applyV2ConfigImport(
 
     // Quiesce before touching any credential: an overwritten connection that
     // still declares balanced routing must drop to legacy_primary and every
-    // enabled secondary must be disabled FIRST, so a partial failure can never
-    // leave "balanced declared + credentials partially replaced". Newly
-    // created connections have no routing declaration and skip this pass. The
-    // disabled set is remembered (function scope) so profiles NOT listed in
-    // the bundle can be restored to their previous enabled state after the
-    // import (RFC 13.4: absent profiles are kept).
+    // enabled profile — including the primary — must be disabled FIRST, so a
+    // partial failure can never leave "balanced declared + credentials
+    // partially replaced" nor a dispatchable primary with a replaced
+    // credential. Newly created connections have no routing declaration and
+    // skip this pass. The disabled set is remembered (function scope) so
+    // profiles NOT listed in the bundle can be restored to their previous
+    // enabled state after the import (RFC 13.4: absent profiles are kept).
     for (const connection of plan.overwrite) {
       const current = await profiles.list(connection.slug);
       if (current.routingMode === 'balanced') {
         await profiles.setRoutingMode(connection.slug, { mode: 'legacy_primary' });
       }
       const disabled = new Set<string>();
-      for (const secondary of current.profiles.filter(
-        (candidate) => !candidate.primary && candidate.enabled,
-      )) {
+      for (const profile of current.profiles.filter((candidate) => candidate.enabled)) {
         await profiles.setEnabled(connection.slug, {
-          profileId: secondary.profileId,
-          profileRevision: secondary.revision,
+          profileId: profile.profileId,
+          profileRevision: profile.revision,
           enabled: false,
         });
-        disabled.add(secondary.profileId);
+        disabled.add(profile.profileId);
       }
-      if (disabled.size > 0) quiescedSecondaries.set(connection.slug, disabled);
+      if (disabled.size > 0) quiescedProfiles.set(connection.slug, disabled);
     }
     for (const connection of [...plan.create, ...plan.overwrite]) {
       const source =
@@ -364,7 +368,21 @@ async function applyV2ConfigImport(
           .map((profile) => [profile.label.toLowerCase(), profile]),
       );
       for (const profile of meta) {
-        if (profile.primary) continue;
+        if (profile.primary) {
+          // The primary has no separate mutation here, but the bundle DID
+          // declare it: it must count as listed so the quiesce restore never
+          // re-enables a bundle-disabled primary.
+          const primary = current.profiles.find((candidate) => candidate.primary);
+          if (primary) {
+            let listed = listedTargetProfileIds.get(connection.slug);
+            if (!listed) {
+              listed = new Set<string>();
+              listedTargetProfileIds.set(connection.slug, listed);
+            }
+            listed.add(primary.profileId);
+          }
+          continue;
+        }
         const exact = byId.get(profile.profileId);
         if (strategy === 'overwrite' && exact) {
           // In-place update only for an exact profile-ID match.
@@ -375,7 +393,12 @@ async function applyV2ConfigImport(
             weight: profile.weight,
           });
           slugMapping.set(profile.profileRef, exact.profileId);
-          listedTargetProfileIds.add(exact.profileId);
+          let listed = listedTargetProfileIds.get(connection.slug);
+          if (!listed) {
+            listed = new Set<string>();
+            listedTargetProfileIds.set(connection.slug, listed);
+          }
+          listed.add(exact.profileId);
           updatedProfiles += 1;
           continue;
         }
@@ -399,7 +422,12 @@ async function applyV2ConfigImport(
         );
         if (createdTarget) {
           slugMapping.set(profile.profileRef, createdTarget.profileId);
-          listedTargetProfileIds.add(createdTarget.profileId);
+          let listed = listedTargetProfileIds.get(connection.slug);
+          if (!listed) {
+            listed = new Set<string>();
+            listedTargetProfileIds.set(connection.slug, listed);
+          }
+          listed.add(createdTarget.profileId);
         }
       }
     }
@@ -469,25 +497,34 @@ async function applyV2ConfigImport(
       const slugMapping = mappings.get(connection.slug);
       if (!slugMapping) continue;
       for (const profile of connection.credentialProfiles ?? []) {
-        if (!profile.enabled) continue;
         const targetProfileId = slugMapping.get(profile.profileRef);
         if (!targetProfileId) continue;
-        const tested = await profiles.test(connection.slug, {
-          profileId: targetProfileId,
-        });
         const fresh = await profiles.list(connection.slug);
         const target =
           targetProfileId === EXPORT_PRIMARY_PROFILE_REF
             ? fresh.profiles.find((candidate) => candidate.primary)
             : fresh.profiles.find((candidate) => candidate.profileId === targetProfileId);
-        if (tested.ok && target) {
-          if (!target.primary) {
+        if (!profile.enabled) {
+          // The bundle explicitly disabled this profile: enforce it even on
+          // freshly created connections, whose primary defaults to enabled.
+          if (target && target.enabled) {
             await profiles.setEnabled(connection.slug, {
               profileId: target.profileId,
               profileRevision: target.revision,
-              enabled: true,
+              enabled: false,
             });
           }
+          continue;
+        }
+        const tested = await profiles.test(connection.slug, {
+          profileId: targetProfileId,
+        });
+        if (tested.ok && target) {
+          await profiles.setEnabled(connection.slug, {
+            profileId: target.profileId,
+            profileRevision: target.revision,
+            enabled: true,
+          });
           restoredEnabled += 1;
         } else {
           verificationFailed.push(`${connection.slug}/${profile.label}`);
@@ -499,15 +536,15 @@ async function applyV2ConfigImport(
       // bundle DID claim are never restored here: the ones it disabled stay
       // disabled and the ones that failed re-verification stay disabled
       // (fail-closed) — only the restore loop above re-enables them.
-      const quiesced = quiescedSecondaries.get(connection.slug);
+      const quiesced = quiescedProfiles.get(connection.slug);
+      const listed = listedTargetProfileIds.get(connection.slug);
       if (quiesced) {
         const fresh = await profiles.list(connection.slug);
         for (const profile of fresh.profiles) {
           if (
-            !profile.primary &&
             !profile.enabled &&
             quiesced.has(profile.profileId) &&
-            !listedTargetProfileIds.has(profile.profileId)
+            !listed?.has(profile.profileId)
           ) {
             await profiles.setEnabled(connection.slug, {
               profileId: profile.profileId,

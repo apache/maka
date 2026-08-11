@@ -195,9 +195,23 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     routing: ConnectionCredentialRouting | null,
   ): Promise<ProviderCredentialLease> {
     const profileId =
-      routing?.mode === 'legacy_primary' ? routing.profiles[0]?.profileId : context.connectionId;
+      routing?.mode === 'legacy_primary'
+        ? routing.profiles.find((profile) => profile.profileId === context.connectionId)
+            ?.profileId
+        : context.connectionId;
     if (!profileId) {
       throw new RouterPoolExhaustedError('primary profile is missing', {});
+    }
+    if (routing?.mode === 'legacy_primary') {
+      const primary = routing.profiles.find(
+        (profile) => profile.profileId === context.connectionId,
+      );
+      // A legacy_primary connection dispatches the primary identity only: an
+      // explicitly disabled primary must fail closed instead of keeping the
+      // legacy fast path usable (RFC 4.1/7.3).
+      if (!primary || !primary.enabled) {
+        throw new RouterPoolExhaustedError('primary profile is disabled', {});
+      }
     }
     const material = await this.#provider.resolveCredential(context.connectionId, profileId);
     if (!material) {

@@ -391,6 +391,7 @@ export type CommitConnectionOnboardingResult =
 export type ResolveExecutionConnectionResult =
   | { readonly kind: 'not_found' }
   | { readonly kind: 'disabled' }
+  | { readonly kind: 'profile_disabled' }
   | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
   | {
       readonly kind: 'ready';

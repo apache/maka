@@ -694,7 +694,6 @@ describe('runtime policy stores', () => {
       assert.deepEqual(await stores.operations.resolveExecutionConnection(disabled.slug), {
         kind: 'disabled',
       });
-
       const missingRequired = await stores.operations.resolveExecutionConnection(required.slug);
       assert.equal(missingRequired.kind, 'credential_not_configured');
       if (missingRequired.kind === 'credential_not_configured') {
@@ -4241,6 +4240,70 @@ describe('runtime policy stores', () => {
         [],
       );
       assert.equal(stale.readyCandidateCount, 0);
+    });
+  });
+
+  test('legacy_primary execution resolve fails closed on an explicitly disabled primary', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('legacy-primary-off', 'openai', 'Legacy primary off'),
+      );
+      await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'api_key'),
+        expected: null,
+        secret: '[redacted]',
+      });
+      const created = await stores.operations.createCredentialProfile({
+        expected: connectionBasis(connection),
+        label: 'backup',
+        weight: 1,
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      const routing = created.snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!.credentialRouting!;
+      const secondary = routing.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      )!;
+      await stores.credentialVault.set({
+        locator: {
+          scope: 'connection_profile',
+          connectionId: connection.connectionId,
+          profileId: secondary.profileId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret: '[redacted]',
+      });
+
+      // Enabled primary resolves normally through the legacy path.
+      const ready = await stores.operations.resolveExecutionConnection(connection.slug);
+      assert.equal(ready.kind, 'ready');
+
+      // Explicitly disable the primary: the legacy fast path must fail closed
+      // instead of dispatching the primary or silently using the secondary.
+      const snapshot = await stores.connectionCatalog.getSnapshot();
+      const current = snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!;
+      const disabled = await stores.operations.setCredentialProfileEnabled({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: current.revision,
+          profileId: connection.connectionId,
+          profileRevision: current.credentialRouting!.profiles.find(
+            (profile) => profile.profileId === connection.connectionId,
+          )!.revision,
+        },
+        enabled: false,
+      });
+      assert.equal(disabled.kind, 'committed');
+      assert.deepEqual(await stores.operations.resolveExecutionConnection(connection.slug), {
+        kind: 'profile_disabled',
+      });
     });
   });
 });
