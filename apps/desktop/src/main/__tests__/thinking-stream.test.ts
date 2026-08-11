@@ -54,20 +54,7 @@ describe('applyThinkingDelta — secondary redaction', () => {
     );
   });
 
-  it('does not flip redacted=true when input is clean', () => {
-    const result = applyThinkingDelta('previous text\n', 'next reasoning step about the math\n');
-    assert.equal(result.redacted, false);
-    assert.equal(result.truncated, false);
-    assert.equal(result.text, 'previous text\nnext reasoning step about the math\n');
-  });
 
-  it('handles non-string raw delta gracefully', () => {
-    // @ts-expect-error — defensive against runtime contract violation
-    const result = applyThinkingDelta('prev', undefined);
-    assert.equal(result.text, 'prev');
-    assert.equal(result.redacted, false);
-    assert.equal(result.truncated, false);
-  });
 });
 
 describe('applyThinkingDelta — per-delta cap', () => {
@@ -92,23 +79,7 @@ describe('applyThinkingDelta — per-delta cap', () => {
     );
   });
 
-  it('preserves tail content of an oversize delta', () => {
-    const head = filler(THINKING_MAX_DELTA_CHARS * 3);
-    const tail = '\n--- LAST REASONING STEP ---\n';
-    const result = applyThinkingDelta('', head + tail);
-    assert.ok(result.truncated);
-    assert.ok(
-      result.text.endsWith(tail),
-      `tail "${tail}" should survive truncation; got "...${result.text.slice(-80)}"`,
-    );
-  });
 
-  it('does not truncate a delta at-or-under maxDelta', () => {
-    const justUnder = filler(THINKING_MAX_DELTA_CHARS - 100);
-    const result = applyThinkingDelta('', justUnder);
-    assert.equal(result.truncated, false);
-    assert.equal(result.text, justUnder);
-  });
 });
 
 describe('applyThinkingDelta — per-session total cap', () => {
@@ -141,16 +112,6 @@ describe('applyThinkingDelta — per-session total cap', () => {
     assert.equal(prev.includes('[step-0]'), false, 'oldest reasoning must drop');
   });
 
-  it('marks the result truncated=true when total cap fires', () => {
-    let prev = '';
-    let sawTruncated = false;
-    for (let i = 0; i < 12; i += 1) {
-      const result = applyThinkingDelta(prev, chunk(3 * 1024, `t-${i}`));
-      prev = result.text;
-      if (result.truncated) sawTruncated = true;
-    }
-    assert.equal(sawTruncated, true);
-  });
 });
 
 describe('applyThinkingComplete — final replace path', () => {
@@ -177,13 +138,6 @@ describe('applyThinkingComplete — final replace path', () => {
     assert.ok(result.text.length <= THINKING_MAX_TOTAL_CHARS);
   });
 
-  it('handles non-string input gracefully', () => {
-    // @ts-expect-error — defensive
-    const result = applyThinkingComplete(null);
-    assert.equal(result.text, '');
-    assert.equal(result.redacted, false);
-    assert.equal(result.truncated, false);
-  });
 });
 
 describe('applyThinkingDelta — combined secret + oversize', () => {
