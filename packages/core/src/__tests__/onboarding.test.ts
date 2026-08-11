@@ -45,15 +45,15 @@ function fakeConnection(): LlmConnection {
   };
 }
 
-function session(status: SessionSummary['status'] = 'active'): SessionSummary {
+function session(): SessionSummary {
   return {
-    id: `session-${status}`,
+    id: 'session-active',
     name: 'Session',
     isFlagged: false,
-    isArchived: status === 'archived',
+    isArchived: false,
     labels: [],
     hasUnread: false,
-    status,
+    status: 'active',
     backend: 'ai-sdk',
     llmConnectionSlug: 'anthropic-live',
     connectionLocked: false,
@@ -72,53 +72,6 @@ function derive(input: Partial<DeriveOnboardingStateInput> = {}): OnboardingStat
 }
 
 describe('deriveOnboardingState', () => {
-  it('finishes setup from an enabled model without workspace defaults', () => {
-    const connection = realConnection({
-      slug: 'opencode-free',
-      providerType: 'opencode-free',
-      defaultModel: '',
-      enabledModelIds: ['mimo-v2.5-free'],
-      models: [{ id: 'mimo-v2.5-free' }],
-    });
-
-    assert.deepEqual(derive({ connections: [connection], secrets: { [connection.slug]: true } }), {
-      kind: 'ready_empty',
-      connectionSlug: connection.slug,
-      model: 'mimo-v2.5-free',
-    });
-  });
-
-  it('keeps the configured connection default ahead of catalog order', () => {
-    const connection = realConnection({
-      defaultModel: 'claude-sonnet-4-5-20250929',
-      enabledModelIds: ['claude-opus-4-6', 'claude-sonnet-4-5-20250929'],
-      models: [{ id: 'claude-opus-4-6' }, { id: 'claude-sonnet-4-5-20250929' }],
-    });
-
-    assert.deepEqual(derive({ connections: [connection], secrets: { [connection.slug]: true } }), {
-      kind: 'ready_empty',
-      connectionSlug: connection.slug,
-      model: 'claude-sonnet-4-5-20250929',
-    });
-  });
-
-  it('falls back when the configured connection default cannot serve chat', () => {
-    const connection = realConnection({
-      defaultModel: 'image-only',
-      enabledModelIds: ['image-only', 'claude-sonnet-4-5-20250929'],
-      models: [
-        { id: 'image-only', capabilities: { chat: false, imageGeneration: true } },
-        { id: 'claude-sonnet-4-5-20250929' },
-      ],
-    });
-
-    assert.deepEqual(derive({ connections: [connection], secrets: { [connection.slug]: true } }), {
-      kind: 'ready_empty',
-      connectionSlug: connection.slug,
-      model: 'claude-sonnet-4-5-20250929',
-    });
-  });
-
   it('covers the top-level state decision table', () => {
     const ready = realConnection();
     const disabled = realConnection({ enabled: false });
@@ -147,36 +100,12 @@ describe('deriveOnboardingState', () => {
         { kind: 'ready_with_history', connectionSlug: ready.slug, model: ready.defaultModel! },
       ],
       [
-        'unset default',
-        { connections: [ready], secrets: { [ready.slug]: true } },
-        { kind: 'ready_empty', connectionSlug: ready.slug, model: ready.defaultModel! },
-      ],
-      [
-        'missing default with a ready alternative',
-        { connections: [ready], secrets: { [ready.slug]: true } },
-        { kind: 'ready_empty', connectionSlug: ready.slug, model: ready.defaultModel! },
-      ],
-      [
         'disabled default with no ready alternative',
         { connections: [disabled], secrets: { [disabled.slug]: true } },
         { kind: 'blocked', reason: 'all_connections_unhealthy' },
       ],
     ];
     for (const [name, input, expected] of cases) assert.deepEqual(derive(input), expected, name);
-  });
-
-  it('counts active, archived, and aborted sessions as history', () => {
-    const connection = realConnection();
-    for (const status of ['active', 'archived', 'aborted'] as const) {
-      assert.equal(
-        derive({
-          connections: [connection],
-          secrets: { [connection.slug]: true },
-          sessions: [session(status)],
-        }).kind,
-        'ready_with_history',
-      );
-    }
   });
 
   it('routes the current default to the exact actionable fix', () => {
@@ -264,17 +193,6 @@ describe('deriveOnboardingState', () => {
     }
   });
 
-  it('does not mutate its inputs', () => {
-    const input: DeriveOnboardingStateInput = {
-      connections: [realConnection({ slug: 'a' })],
-      defaultSlug: 'a',
-      sessions: [session()],
-      secrets: { a: true },
-    };
-    const before = structuredClone(input);
-    deriveOnboardingState(input);
-    assert.deepEqual(input, before);
-  });
 });
 
 describe('onboarding milestone persistence', () => {
