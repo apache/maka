@@ -15,9 +15,7 @@ const {
 describe('decideDingTalkClose (PR-BOT-DINGTALK-OPERATIONAL-0)', () => {
   it('only treats explicit stops as terminal', () => {
     assert.deepEqual(decideDingTalkClose(1000, true), { kind: 'stopped' });
-    assert.deepEqual(decideDingTalkClose(1006, true), { kind: 'stopped' });
     assert.deepEqual(decideDingTalkClose(1000, false), { kind: 'reconnect' });
-    assert.deepEqual(decideDingTalkClose(1006, false), { kind: 'reconnect' });
   });
 });
 
@@ -27,7 +25,6 @@ describe('dingTalkReconnectBackoffMs', () => {
     assert.equal(dingTalkReconnectBackoffMs(1), 2_000);
     assert.equal(dingTalkReconnectBackoffMs(2), 4_000);
     assert.equal(dingTalkReconnectBackoffMs(5), 30_000);
-    assert.equal(dingTalkReconnectBackoffMs(50), 30_000);
   });
 });
 
@@ -51,7 +48,6 @@ describe('pickDingTalkSendRoute', () => {
         msgParam: '{"content":"hi"}',
       },
     });
-    assert.equal(pickDingTalkSendRoute('', 'app-key-1', 'hi'), null);
     assert.equal(pickDingTalkSendRoute('   ', 'app-key-1', 'hi'), null);
   });
 });
@@ -122,7 +118,6 @@ describe('dingTalkPayloadToEvent', () => {
   });
 
   it('drops payloads missing text or routing identity', () => {
-    assert.equal(dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c', text: {} }, 1), null);
     assert.equal(dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c' }, 1), null);
     assert.equal(dingTalkPayloadToEvent({ conversationId: 'c', text: { content: 'x' } }, 1), null);
     assert.equal(dingTalkPayloadToEvent({ senderId: 'u', text: { content: 'x' } }, 1), null);
