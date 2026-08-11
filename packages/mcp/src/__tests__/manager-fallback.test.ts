@@ -92,18 +92,26 @@ describe('McpClientManager Streamable HTTP fallback contract', () => {
     assert.equal(fixture.sseGets, 0);
   });
 
-  test('does not fall back after the caller aborts the Streamable HTTP attempt', async () => {
-    const fixture = await createFallbackFixture({ streamable: { kind: 'hang' } });
-    const manager = createManager();
+  test('aborts a hanging auto or pinned probe without waiting for the server', async () => {
+    for (const protocol of ['auto', '2026-07-28'] as const) {
+      const fixture = await createFallbackFixture({ streamable: { kind: 'hang' } });
+      const manager = createManager();
 
-    const sync = manager.sync(remoteConfig(fixture.url, 'auto'));
-    await waitFor(() => fixture.streamablePosts === 1);
-    assert.equal(manager.cancelConnect('remote'), true);
-    fixture.releaseStreamable();
-    await sync;
+      const sync = manager.sync(remoteConfig(fixture.url, protocol));
+      await waitFor(() => fixture.streamablePosts === 1);
+      assert.equal(manager.cancelConnect('remote'), true);
+      try {
+        await settlesWithin(sync);
+      } finally {
+        fixture.releaseStreamable();
+      }
 
-    assert.equal(manager.status('remote')?.state, 'disconnected');
-    assert.equal(fixture.sseGets, 0);
+      assert.equal(manager.status('remote')?.state, 'disconnected');
+      assert.equal(fixture.sseGets, 0);
+
+      await manager.close();
+      await fixture.close();
+    }
   });
 
   test('does not fall back after the Streamable HTTP probe times out', async () => {
@@ -438,5 +446,22 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error('condition was not reached');
     await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+async function settlesWithin<T>(promise: Promise<T>, timeoutMs = 500): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('operation did not settle after abort')),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

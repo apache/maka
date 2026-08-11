@@ -160,10 +160,7 @@ interface OpenedMcpClient {
 }
 
 interface McpClientEventBridge {
-  activate(handlers: {
-    onClientError(error: Error): void;
-    onToolsChanged(error: Error | null): void;
-  }): {
+  activate(handlers: { onToolsChanged(error: Error | null): void }): {
     clientErrors: Error[];
     pendingToolsChanged?: { error: Error | null };
   };
@@ -618,7 +615,10 @@ export class McpClientManager {
         | { reason: 'unhonored' }
         | undefined;
       if (subscription && subscription.honoredFilter.toolsListChanged !== true) {
-        await subscription.close().catch(() => {});
+        // close() settles the handle locally before sending its cancellation
+        // notification. Do not let an uncooperative server hold setup open by
+        // never answering that best-effort notification.
+        void subscription.close().catch(() => {});
         subscription = undefined;
         subscriptionFailure = { reason: 'unhonored' };
       }
@@ -632,16 +632,6 @@ export class McpClientManager {
         connected.kind === 'streamable-http' && negotiatedProtocol.era === 'modern';
 
       const bufferedEvents = connected.events.activate({
-        onClientError: (error) => {
-          if (!expectsToolListSubscription) return;
-          this.recordSubscriptionDiagnostic(
-            serverId,
-            entry,
-            connectedClient,
-            connectionGeneration,
-            formatSubscriptionDiagnostic(serverId, 'reported an error', error),
-          );
-        },
         onToolsChanged: (error) => {
           this.handleToolsChanged(serverId, entry, connectedClient, connectionGeneration, error);
         },
@@ -811,7 +801,7 @@ export class McpClientManager {
       });
       const isClosed = this.watchClientClose(serverId, entry, client);
       try {
-        await client.connect(transport, { timeout: this.timeouts.remoteConnectMs, signal });
+        await connectRemoteCandidate(client, transport, this.timeouts.remoteConnectMs, signal);
         return { client, events, transport, kind: 'streamable-http', isClosed };
       } catch (error) {
         const producedProtocolEvidence =
@@ -838,7 +828,7 @@ export class McpClientManager {
     });
     const isClosed = this.watchClientClose(serverId, entry, client);
     try {
-      await client.connect(transport, { timeout: this.timeouts.remoteConnectMs, signal });
+      await connectRemoteCandidate(client, transport, this.timeouts.remoteConnectMs, signal);
       return { client, events, transport, kind: 'sse', isClosed };
     } catch (error) {
       await safeClose(client, transport);
@@ -860,7 +850,6 @@ export class McpClientManager {
     let pendingToolsChanged: { error: Error | null } | undefined;
     let liveHandlers:
       | {
-          onClientError(error: Error): void;
           onToolsChanged(error: Error | null): void;
         }
       | undefined;
@@ -887,11 +876,10 @@ export class McpClientManager {
       },
     );
     client.onerror = (error) => {
-      if (liveHandlers) {
-        liveHandlers.onClientError(error);
-      } else {
-        bufferedClientError = error;
-      }
+      // client.onerror is a client-wide transport channel. It can explain why
+      // the SDK failed to auto-open a subscription during connect, but after
+      // activation it cannot safely be attributed to that subscription.
+      if (!liveHandlers) bufferedClientError = error;
     };
     return {
       client,
@@ -1632,9 +1620,33 @@ async function safeClose(
   transport?: Transport,
   subscription?: McpSubscription,
 ): Promise<void> {
-  await subscription?.close().catch(() => {});
-  await client?.close().catch(() => {});
-  await transport?.close().catch(() => {});
+  const subscriptionClose = subscription?.close().catch(() => {});
+  await Promise.all([
+    subscriptionClose,
+    client?.close().catch(() => {}),
+    transport?.close().catch(() => {}),
+  ]);
+}
+
+async function connectRemoteCandidate(
+  client: Client,
+  transport: Transport,
+  timeout: number,
+  signal: AbortSignal,
+): Promise<void> {
+  const closeOnAbort = () => {
+    // SDK v2's server/discover probe currently uses its timeout but not the
+    // Client.connect signal. Closing the candidate transport aborts that probe
+    // instead of leaving a late handshake running after manager cancellation.
+    void transport.close().catch(() => {});
+  };
+  if (signal.aborted) closeOnAbort();
+  else signal.addEventListener('abort', closeOnAbort, { once: true });
+  try {
+    await client.connect(transport, { timeout, signal });
+  } finally {
+    signal.removeEventListener('abort', closeOnAbort);
+  }
 }
 
 function stableConfigFingerprint(config: McpServerConfig): string {

@@ -93,6 +93,65 @@ describe('McpClientManager modern tool-list subscriptions', () => {
     });
   }
 
+  test('does not wait for an unhonored subscription cancellation response during setup', async () => {
+    const fixture = await createSubscriptionFixture({
+      subscriptionMode: 'unhonored',
+      hangCancellation: true,
+    });
+    const manager = createManager();
+
+    try {
+      await settlesWithin(manager.sync(modernConfig(fixture.url)));
+    } finally {
+      fixture.releaseCancellation();
+    }
+
+    assert.equal(manager.status('remote')?.state, 'connected');
+    assert.match(manager.status('remote')?.error ?? '', /did not honor/u);
+  });
+
+  for (const operation of ['disconnect', 'close'] as const) {
+    test(`${operation} aborts an unanswered subscription cancellation request`, async () => {
+      const fixture = await createSubscriptionFixture({ hangCancellation: true });
+      const manager = createManager();
+      await manager.sync(modernConfig(fixture.url));
+
+      try {
+        await settlesWithin(
+          operation === 'disconnect' ? manager.disconnect('remote') : manager.close(),
+        );
+      } finally {
+        fixture.releaseCancellation();
+      }
+
+      if (operation === 'disconnect') {
+        assert.equal(manager.status('remote')?.state, 'disconnected');
+      }
+    });
+  }
+
+  test('does not attribute a normal tool transport failure to the subscription', async () => {
+    const fixture = await createSubscriptionFixture();
+    const manager = createManager();
+    await manager.sync(modernConfig(fixture.url));
+    const tool = manager.toolSnapshot().tools[0];
+    assert.ok(tool);
+
+    fixture.failToolCalls(true);
+    await assert.rejects(manager.callTool(tool.binding, {}));
+
+    assert.equal(manager.status('remote')?.state, 'connected');
+    assert.equal(manager.status('remote')?.error, undefined);
+    assert.equal(fixture.subscriptionListeners, 1);
+
+    fixture.failToolCalls(false);
+    assert.deepEqual(await manager.callTool(tool.binding, {}), {
+      content: [{ type: 'text', text: 'ok' }],
+      structuredContent: undefined,
+    });
+    assert.equal(manager.status('remote')?.error, undefined);
+  });
+
   test('keeps subscription and refresh diagnostics in separate lifecycle slots', async () => {
     const fixture = await createSubscriptionFixture();
     const manager = createManager();
@@ -182,23 +241,30 @@ interface SubscriptionFixture {
   readonly subscriptionListeners: number;
   setTools(names: string[]): void;
   failToolLists(value: boolean): void;
+  failToolCalls(value: boolean): void;
   blockNextToolList(): ToolListGate;
   notifyToolsChanged(): void;
   rotateHandler(): Promise<void>;
+  releaseCancellation(): void;
   close(): Promise<void>;
 }
 
 async function createSubscriptionFixture(
-  options: { subscriptionMode?: SubscriptionMode } = {},
+  options: { subscriptionMode?: SubscriptionMode; hangCancellation?: boolean } = {},
 ): Promise<SubscriptionFixture> {
   const subscriptionMode = options.subscriptionMode ?? 'honored';
   let tools = ['initial'];
   let shouldFailToolLists = false;
+  let shouldFailToolCalls = false;
   let toolListCalls = 0;
   let nextToolListGate: InternalGate | undefined;
   const toolListGates = new Set<InternalGate>();
   const rawSubscriptions = new Set<ServerResponse>();
   const handlers = new Set<ReturnType<typeof createMcpHandler>>();
+  let releaseCancellation = () => {};
+  const cancellationRelease = new Promise<void>((resolve) => {
+    releaseCancellation = resolve;
+  });
 
   const createHandlerGeneration = () => {
     const bus = new InMemoryServerEventBus();
@@ -227,6 +293,9 @@ async function createSubscriptionFixture(
           if (shouldFailToolLists) throw new Error('fixture tool list failed');
           return { tools: result };
         });
+        server.setRequestHandler('tools/call', async () => ({
+          content: [{ type: 'text', text: 'ok' }],
+        }));
         return server;
       },
       {
@@ -248,9 +317,21 @@ async function createSubscriptionFixture(
         return;
       }
       const body = await readJsonBody(req);
+      const method = requestMethod(body);
+      if (options.hangCancellation && method === 'notifications/cancelled') {
+        await cancellationRelease;
+        res.writeHead(204).end();
+        return;
+      }
+      if (shouldFailToolCalls && method === 'tools/call') {
+        res
+          .writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+          .end('tool failed upstream');
+        return;
+      }
       if (
         (subscriptionMode === 'missing' || subscriptionMode === 'unhonored') &&
-        requestMethod(body) === 'subscriptions/listen'
+        method === 'subscriptions/listen'
       ) {
         serveRawSubscription(res, body, subscriptionMode, rawSubscriptions);
         return;
@@ -282,6 +363,9 @@ async function createSubscriptionFixture(
     failToolLists(value) {
       shouldFailToolLists = value;
     },
+    failToolCalls(value) {
+      shouldFailToolCalls = value;
+    },
     blockNextToolList() {
       if (nextToolListGate) throw new Error('a tool-list gate is already pending');
       const gate = createGate();
@@ -297,7 +381,9 @@ async function createSubscriptionFixture(
       current = createHandlerGeneration();
       await previous.handler.close();
     },
+    releaseCancellation,
     async close() {
+      releaseCancellation();
       for (const gate of toolListGates) gate.release();
       toolListGates.clear();
       for (const response of rawSubscriptions) response.end();
@@ -399,4 +485,21 @@ async function settleEventLoop(): Promise<void> {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   await new Promise((resolve) => setTimeout(resolve, 150));
+}
+
+async function settlesWithin<T>(promise: Promise<T>, timeoutMs = 500): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('subscription lifecycle did not settle')),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
