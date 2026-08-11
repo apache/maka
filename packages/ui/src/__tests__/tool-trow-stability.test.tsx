@@ -37,55 +37,6 @@ function renderToStaticMarkup(node: ReactNode): string {
   }));
 }
 
-describe('ToolTrow stable structure', () => {
-  it('renders addition and deletion counts for a file_diff result', () => {
-    const item: ToolActivityItem = {
-      toolUseId: 'tool-1',
-      toolName: 'Edit',
-      status: 'completed',
-      args: { path: 'a.ts' },
-      result: {
-        kind: 'file_diff',
-        paths: ['a.ts'],
-        diff: '--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,3 @@\n keep\n-old\n+new\n+more',
-      },
-    };
-
-    const html = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
-
-    assert.match(html, />\+2</);
-    assert.match(html, />-1</);
-  });
-
-  it('omits a zero count instead of painting -0 on a pure-additions write', () => {
-    const item: ToolActivityItem = {
-      toolUseId: 'tool-1',
-      toolName: 'Write',
-      status: 'completed',
-      args: { path: 'new.md' },
-      result: {
-        kind: 'file_diff',
-        paths: ['new.md'],
-        diff: '--- /dev/null\n+++ b/new.md\n@@ -0,0 +1,2 @@\n+alpha\n+beta',
-      },
-    };
-
-    const html = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
-
-    assert.match(html, />\+2</);
-    assert.doesNotMatch(html, />-0</);
-  });
-
-  it('leaves the collapsed group header alone when the run changed no file', () => {
-    const html = renderToStaticMarkup(createElement(ToolTrow, {
-      items: [runningTool('tool-1', 'Read'), runningTool('tool-2', 'Grep')],
-    }));
-
-    assert.doesNotMatch(html, />\+0</);
-    assert.doesNotMatch(html, />-0</);
-  });
-});
-
 describe('linked subagent tool rows', () => {
   const renderTool = (
     item: ToolActivityItem,

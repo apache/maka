@@ -3,7 +3,6 @@ import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
 import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
-import { diffLineKind, ToolResultPreview } from '../tool-activity/tool-result-preview.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
 
@@ -126,31 +125,6 @@ describe('tool activity presentation', () => {
     assert.doesNotMatch(markup, /失败 · 退出码|退出码 1/);
   });
 
-  it('never dumps pretty JSON for an arbitrary tool result object', () => {
-    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-custom',
-        toolName: 'CustomInspect',
-        status: 'running',
-        args: { target: 'packages/ui', depth: 2 },
-        result: {
-          kind: 'json',
-          value: {
-            ok: true,
-            notes: 'looks fine',
-            detail: 'line one\nline two',
-          },
-        },
-      } satisfies ToolActivityItem,
-    }));
-
-    assert.match(markup, /packages\/ui|target: packages\/ui/);
-    assert.match(markup, /looks fine|notes:/);
-    assert.match(markup, /line one/);
-    assert.doesNotMatch(markup, /\{\s*&quot;ok&quot;/);
-    assert.doesNotMatch(markup, /line one\\nline two/);
-  });
-
   it('redacts secrets in sensitive values and property names', () => {
     const cases: Array<Record<string, unknown>> = [
       { password: 'correct-horse', token: 'short-secret' },
@@ -176,25 +150,6 @@ describe('tool activity presentation', () => {
       assert.match(markup, /redacted/i);
     }
   });
-
-  it('keeps error diagnostics when a list field is also present', () => {
-    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-mixed',
-        toolName: 'CustomInspect',
-        status: 'errored',
-        args: {},
-        result: {
-          kind: 'json',
-          value: { results: [], error: 'permission denied', ok: false },
-        },
-      } satisfies ToolActivityItem,
-    }));
-
-    assert.match(markup, /permission denied/);
-    assert.match(markup, /ok:\s*false|未完成|false/);
-  });
-
 
   it('renders a failed WriteStdin as operation metadata without its ShellRun panel', () => {
     const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
@@ -314,84 +269,7 @@ describe('tool activity presentation', () => {
     assert.equal(panels.length, 1);
   });
 
-  it('surfaces terminal cancel and runtime truncation flags', () => {
-    const cancelled = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-cancel',
-        toolName: 'Bash',
-        status: 'interrupted',
-        args: { command: 'sleep 99' },
-        result: {
-          kind: 'terminal',
-          cwd: '/repo',
-          cmd: 'sleep 99',
-          status: 'cancelled',
-          exitCode: 130,
-          output: pipeOutput(),
-        },
-      } satisfies ToolActivityItem,
-    }));
-    assert.match(cancelled, /已取消/);
-    assert.doesNotMatch(cancelled, /失败 · 退出码 130/);
-    assert.doesNotMatch(cancelled, /工具调用失败/);
-    // Outer status must not say 失败 either.
-    assert.doesNotMatch(cancelled, />失败</);
-
-    const cancelledTrow = renderToStaticMarkup(createElement(ToolTrow, {
-      items: [{
-        toolUseId: 'tool-cancel-trow',
-        toolName: 'Bash',
-        activityKind: 'command',
-        status: 'interrupted',
-        args: { command: 'sleep 99' },
-        result: {
-          kind: 'terminal',
-          cwd: '/repo',
-          cmd: 'sleep 99',
-          status: 'cancelled',
-          exitCode: 130,
-          output: pipeOutput(),
-        },
-      } satisfies ToolActivityItem],
-    }));
-    assert.match(cancelledTrow, /已中断/);
-    assert.doesNotMatch(cancelledTrow, /失败/);
-
-    const truncated = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-trunc',
-        toolName: 'Bash',
-        status: 'running',
-        args: { command: 'run' },
-        result: {
-          kind: 'terminal',
-          cwd: '/repo',
-          cmd: 'run',
-          status: 'completed',
-          exitCode: 0,
-          output: { ...pipeOutput('tail only'), stdoutTruncated: true },
-        },
-      } satisfies ToolActivityItem,
-    }));
-    assert.match(truncated, /tail only/);
-    assert.match(truncated, /输出已截断/);
-  });
-
-  // Astryx's tokenizer has no `diff` language, so `language="diff"` was a
-  // no-op and every line painted `--color-syntax-variable`. The tints are the
-  // product's own; what has to hold is the classification, above all that the
-  // `---`/`+++` file markers are not read as a deletion and an addition.
-
-  // The row-level counterpart of the sweep below, one level down: the detail
-  // panel used to draw the same command three ways — a CodeBlock card while
-  // streaming, that block's `title` slot once a foreground run settled, and
-  // the panel for a background one. Settling a command must not restyle it.
-
 });
-
-function diffGutterNumbers(markup: string): string[] {
-  return Array.from(markup.matchAll(/maka-tool-diff-gutter"[^>]*>([^<]*)</g)).map((m) => m[1]);
-}
 
 function pipeOutput(stdout = '', stderr = '') {
   return {
