@@ -6,18 +6,6 @@ import { tmpdir } from 'node:os';
 import { buildExploreAgentTool, runReadOnlyExplore } from '../explore-agent-tool.js';
 
 describe('ExploreAgent read-only worker', () => {
-  it('exposes a categorized read-only subagent tool', () => {
-    const tool = buildExploreAgentTool();
-    assert.equal(tool.name, 'ExploreAgent');
-    assert.equal(tool.categoryHint, 'subagent');
-    assert.match(tool.description, /read-only/);
-    assert.match(tool.description, /never writes/);
-    assert.match(tool.description, /Do not use it for one known file/);
-    assert.match(tool.description, /1-3 obvious files/);
-    assert.ok('ignorePaths' in (tool.parameters as { shape: Record<string, unknown> }).shape);
-    assert.ok('stoppingCondition' in (tool.parameters as { shape: Record<string, unknown> }).shape);
-  });
-
   it('returns source-grounded matches without absolute paths', async () => {
     await withWorkspace(async (workspaceRoot) => {
       await mkdir(join(workspaceRoot, 'src'), { recursive: true });

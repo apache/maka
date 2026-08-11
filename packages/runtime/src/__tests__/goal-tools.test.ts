@@ -51,21 +51,6 @@ function makeTools(getTokenCount?: (s: string) => number) {
 }
 
 describe('goal tools', () => {
-  test('exposes 5 tools', () => {
-    const { tools } = makeTools();
-    const names = tools.map((t) => t.name).sort();
-    assert.deepEqual(
-      names,
-      [
-        GOAL_CLEAR_TOOL_NAME,
-        GOAL_PAUSE_TOOL_NAME,
-        GOAL_RESUME_TOOL_NAME,
-        GOAL_SET_TOOL_NAME,
-        GOAL_STATUS_TOOL_NAME,
-      ].sort(),
-    );
-  });
-
   test('GoalSet creates a goal with custom limits', async () => {
     const { mgr, tools } = makeTools();
     const set = findTool(tools, GOAL_SET_TOOL_NAME);

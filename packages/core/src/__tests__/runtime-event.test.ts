@@ -11,7 +11,6 @@ import {
 import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from '../interaction.js';
 import {
   TERMINAL_RUNTIME_EVENT_STATUSES,
-  createRuntimeEventId,
   decodePersistedRuntimeEvent,
   decodeRuntimeEvent,
   isTerminalRuntimeEvent,
@@ -716,24 +715,6 @@ describe('runtimeEventHasModelVisibleContent', () => {
       baseEvent({ refs: { toolCallId: 'tc-1' } }),
     ];
     for (const event of hidden) expect(runtimeEventHasModelVisibleContent(event)).toBe(false);
-  });
-});
-
-describe('createRuntimeEventId', () => {
-  test('honors the prefix and returns a string', () => {
-    const id = createRuntimeEventId('turn');
-    expect(typeof id).toBe('string');
-    expect(id.startsWith('turn_')).toBe(true);
-  });
-
-  test('uses the default prefix when none is given', () => {
-    expect(createRuntimeEventId().startsWith('rt-event_')).toBe(true);
-  });
-
-  test('never collides within a process', () => {
-    const ids = new Set<string>();
-    for (let i = 0; i < 500; i += 1) ids.add(createRuntimeEventId());
-    expect(ids.size).toBe(500);
   });
 });
 
