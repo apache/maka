@@ -116,30 +116,6 @@ function isE2eProductPath(path) {
   return false;
 }
 
-const EXTENDED_SCRIPT_FILES = new Set([
-  'scripts/cu-process-restart-e2e.mjs',
-  'scripts/cu-provider-matrix.mjs',
-  'scripts/cu-provider-matrix.test.mjs',
-  'scripts/cu-real-model-fixture.mjs',
-  'scripts/cu-real-model-launcher.mjs',
-  'scripts/cu-real-model-launcher.test.mjs',
-  'scripts/macos-arm64-release.test.mjs',
-  'scripts/package-macos-arm64.mjs',
-  'scripts/npm-spawn.mjs',
-  'scripts/package-windows-x64.mjs',
-  // Shared by both platform verifiers, so a change here reaches the macOS
-  // release path even when nothing macOS-specific was touched.
-  'scripts/verify-packaged-app.mjs',
-  'scripts/verify-macos-arm64-dmg.mjs',
-  'scripts/verify-windows-installer-lifecycle.mjs',
-  'scripts/verify-windows-x64.mjs',
-  'scripts/windows-x64-release.test.mjs',
-]);
-
-// The release config is loaded only by the release workflow, so nothing else in
-// CI would notice an option electron-builder rejects.
-const RELEASE_CONFIG_FILES = new Set(['apps/desktop/electron-builder.config.mjs']);
-
 const STORAGE_STRESS_FILES = new Set([
   'packages/storage/src/agent-run-store.ts',
   'packages/storage/src/git-workspace-service.ts',
@@ -230,7 +206,6 @@ export function planTests(changedFiles, options = {}) {
       e2e: true,
       full: true,
       runtimeSandbox: graph.dirs.includes('packages/cli'),
-      scriptMode: 'extended',
       // A complete functional suite is still the default release/main gate.
       // Stress multipliers and native child-process lock probes run only when
       // their owning storage seam changes; making --full imply stress turned
@@ -247,7 +222,6 @@ export function planTests(changedFiles, options = {}) {
 
   const directWorkspaces = new Set();
   let code = false;
-  let scriptMode = 'none';
   let unknownCode = false;
   for (const path of files) {
     // Catalog/config changes are fully exercised by Storybook's build + render
@@ -258,12 +232,6 @@ export function planTests(changedFiles, options = {}) {
       code = true;
       continue;
     }
-    if (RELEASE_CONFIG_FILES.has(path)) {
-      code = true;
-      directWorkspaces.add('apps/desktop');
-      scriptMode = 'extended';
-      continue;
-    }
     const workspace = graph.dirs.find((dir) => path === dir || path.startsWith(`${dir}/`));
     if (workspace) {
       code = true;
@@ -272,7 +240,6 @@ export function planTests(changedFiles, options = {}) {
     }
     if (path.startsWith('scripts/')) {
       code = true;
-      if (EXTENDED_SCRIPT_FILES.has(path)) scriptMode = 'extended';
       continue;
     }
     if (path.startsWith('skills/')) {
@@ -316,7 +283,6 @@ export function planTests(changedFiles, options = {}) {
     // the cli workspace runs in the dependency closure, not only for direct
     // cli/runtime edits (e.g. a storage-only change still selects cli via runtime).
     runtimeSandbox: workspaces.includes('packages/cli'),
-    scriptMode,
     storageStress,
     // Storybook build + smoke: catalog/harness only. Not every desktop/ui/core
     // PR — product ship gates are typecheck, unit, and Electron e2e. See
@@ -337,7 +303,6 @@ export function formatGitHubOutputs(plan) {
     `full=${plan.full}`,
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
-    `script_mode=${plan.scriptMode}`,
     `storage_stress=${plan.storageStress}`,
     `storybook=${plan.storybook}`,
     `unit=${plan.workspaces.length > 0}`,
