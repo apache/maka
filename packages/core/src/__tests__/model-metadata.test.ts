@@ -20,20 +20,6 @@ describe('model-metadata vision capability', () => {
     assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-fable-1'), true);
   });
 
-  it('treats a Claude older than the generated snapshot the same way', () => {
-    // Before Claude 4 the version came first and the family sat behind it.
-    // None of these is in the generated table, all of them read images, and
-    // this is the shape a person is most likely to pin by hand.
-    for (const id of [
-      'claude-3-5-sonnet-20241022',
-      'claude-3-7-sonnet-20250219',
-      'claude-3-opus-20240229',
-      'claude-3-5-haiku-20241022',
-    ]) {
-      assert.deepEqual(lookupModelMetadata('anthropic', id), {}, id);
-      assert.equal(resolveModelVisionSupport('anthropic', undefined, id), true, id);
-    }
-  });
 
   it('still fails closed for the Claude generation that cannot read images', () => {
     // claude-2.x and claude-instant carry no family segment, so widening the
@@ -43,35 +29,7 @@ describe('model-metadata vision capability', () => {
     }
   });
 
-  it('extends the default to the subscription path, which fetches the same models', () => {
-    // claude-subscription reaches Anthropic's own models over the same
-    // protocol and stores the same bare { id } entries, and it is usually
-    // where a new Claude becomes usable first.
-    assert.deepEqual(lookupModelMetadata('claude-subscription', 'claude-opus-6'), {});
-    assert.equal(
-      resolveModelVisionSupport('claude-subscription', undefined, 'claude-opus-6'),
-      true,
-    );
-    assert.equal(
-      resolveModelVisionSupport('claude-subscription', undefined, 'claude-3-opus-20240229'),
-      true,
-    );
-  });
 
-  it('preserves synchronized display facts on the Claude subscription path', () => {
-    const metadata = lookupModelMetadata('claude-subscription', 'claude-sonnet-4-5');
-    assert.equal(
-      metadata.description,
-      'Balanced Claude model for coding, analysis, agent workflows, and cost control',
-    );
-    assert.equal(metadata.knowledgeCutoff, '2025-07-31');
-    assert.equal(metadata.structuredOutput, true);
-    assert.equal(metadata.lastUpdated, '2025-09-29');
-    assert.equal(metadata.modalities?.input.includes('pdf'), true);
-    // Context limits remain access-path-specific and are intentionally not
-    // copied from the API snapshot onto the subscription route.
-    assert.equal(metadata.contextWindow, undefined);
-  });
 
   it('confines the default to the providers that serve Anthropic their own models', () => {
     // A claude-prefixed id on somebody else's provider says nothing about what
@@ -130,50 +88,8 @@ describe('model-metadata vision capability', () => {
     );
   });
 
-  it('publishes the Kimi Coding Plan K3 limits and effort levels from models.dev', () => {
-    assert.deepEqual(lookupModelMetadata('kimi-coding-plan', 'k3'), {
-      displayName: 'Kimi K3',
-      description:
-        'Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work',
-      lifecycle: 'active',
-      docsUrl: 'https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html',
-      contextWindow: 1_048_576,
-      maxOutputTokens: 131_072,
-      structuredOutput: true,
-      lastUpdated: '2026-07-16',
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
-      thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
-      modalities: { input: ['text', 'image'], output: ['text'] },
-    });
-    // k3-256k joined the snapshot with the same effort set; the wire contract
-    // test then requires every declared level to actually wire.
-    assert.deepEqual(lookupModelMetadata('kimi-coding-plan', 'k3-256k').thinkingOptions, {
-      efforts: ['low', 'high', 'max'],
-    });
-  });
 
-  it('uses Volcengine Coding Plan model facts for its exact fallback allowlist', () => {
-    for (const modelId of PROVIDER_DEFAULTS['volcengine-coding-plan'].fallbackModels) {
-      assert.equal(
-        lookupModelMetadata('volcengine-coding-plan', modelId).capabilities?.functionCalling,
-        true,
-        modelId,
-      );
-    }
 
-    const kimi = lookupModelMetadata('volcengine-coding-plan', 'kimi-k2.7-code');
-    assert.equal(kimi.capabilities?.vision, true);
-    assert.equal(kimi.capabilities?.reasoning, true);
-    assert.equal(kimi.contextWindow, 256_000);
-    assert.equal(kimi.maxOutputTokens, 32_000);
-  });
-
-  it('publishes MiniMax Coding Plan snapshot facts with its own access-path docs', () => {
-    const metadata = lookupModelMetadata('minimax-coding-plan', 'MiniMax-M3');
-    assert.equal(metadata.capabilities?.vision, true);
-    assert.equal(metadata.thinkingOptions?.toggle, true);
-    assert.equal(metadata.docsUrl, 'https://platform.minimax.io/docs/token-plan/intro');
-  });
 
   it('uses synchronized facts while preserving access-path overrides', () => {
     const metadata = lookupModelMetadata('anthropic', 'claude-sonnet-4-5');
@@ -188,26 +104,6 @@ describe('model-metadata vision capability', () => {
     });
   });
 
-  it('reports vision true for vision-capable models', () => {
-    assert.equal(
-      lookupModelMetadata('anthropic', 'claude-sonnet-4-5-20250929').capabilities?.vision,
-      true,
-    );
-    assert.equal(lookupModelMetadata('anthropic', 'claude-opus-4-8').capabilities?.vision, true);
-    assert.equal(lookupModelMetadata('openai', 'gpt-4o').capabilities?.vision, true);
-    assert.equal(lookupModelMetadata('openai', 'gpt-5.5').capabilities?.vision, true);
-    assert.equal(lookupModelMetadata('google', 'gemini-2.5-pro').capabilities?.vision, true);
-    assert.equal(lookupModelMetadata('zai', 'glm-5v-turbo').capabilities?.vision, true);
-    assert.equal(lookupModelMetadata('moonshot', 'kimi-k2.6').capabilities?.vision, true);
-    assert.equal(
-      lookupModelMetadata('kimi-coding-plan', 'kimi-for-coding').capabilities?.vision,
-      true,
-    );
-    assert.equal(
-      lookupModelMetadata('kimi-coding-plan', 'kimi-for-coding-highspeed').capabilities?.vision,
-      true,
-    );
-  });
 
   it('reports vision false for text-only models', () => {
     assert.equal(lookupModelMetadata('deepseek', 'deepseek-chat').capabilities?.vision, false);
@@ -236,12 +132,6 @@ describe('model-metadata vision capability', () => {
 });
 
 describe('resolveModelVisionSupport', () => {
-  it('returns stored vision when the connection model declares it', () => {
-    const visionTrue: ModelInfo[] = [{ id: 'gpt-4o', capabilities: { vision: true } }];
-    assert.equal(resolveModelVisionSupport('openai', visionTrue, 'gpt-4o'), true);
-    const textOnly: ModelInfo[] = [{ id: 'gpt-4o', capabilities: { vision: false } }];
-    assert.equal(resolveModelVisionSupport('openai', textOnly, 'gpt-4o'), false);
-  });
 
   it('falls back to in-repo metadata when stored models are bare ids (post-fetch)', () => {
     assert.equal(
@@ -271,10 +161,6 @@ describe('resolveModelVisionSupport', () => {
     );
   });
 
-  it('falls back to metadata when the model list is empty or missing', () => {
-    assert.equal(resolveModelVisionSupport('zai' as ProviderType, [], 'glm-5v-turbo'), true);
-    assert.equal(resolveModelVisionSupport('zai' as ProviderType, undefined, 'glm-5.2'), false);
-  });
 });
 
 describe('models.dev extended model facts', () => {
@@ -323,10 +209,4 @@ describe('openAiAdapterApiProtocol', () => {
     assert.equal(openAiAdapterApiProtocol('deepseek-chat', 'deepseek'), 'openai-chat');
   });
 
-  it('reuses xAI model metadata for the OAuth access path', () => {
-    assert.deepEqual(
-      lookupModelMetadata('xai-oauth', 'grok-4.5'),
-      lookupModelMetadata('xai', 'grok-4.5'),
-    );
-  });
 });

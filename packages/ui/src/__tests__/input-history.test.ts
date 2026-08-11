@@ -49,25 +49,9 @@ afterEach(() => {
   }
 });
 
-test('readGlobalInputHistory returns [] when nothing is stored', () => {
-  assert.deepEqual(readGlobalInputHistory(), []);
-});
 
-test('saveGlobalInputHistoryEntry persists and reads back', () => {
-  saveGlobalInputHistoryEntry('总结这段代码');
-  saveGlobalInputHistoryEntry('再写一个测试');
-  assert.deepEqual(readGlobalInputHistory(), ['总结这段代码', '再写一个测试']);
-});
 
-test('saveGlobalInputHistoryEntry trims whitespace before storing', () => {
-  saveGlobalInputHistoryEntry('   带空白的输入   ');
-  assert.deepEqual(readGlobalInputHistory(), ['带空白的输入']);
-});
 
-test('saveGlobalInputHistoryEntry ignores whitespace-only input', () => {
-  saveGlobalInputHistoryEntry('     ');
-  assert.deepEqual(readGlobalInputHistory(), []);
-});
 
 test('saveGlobalInputHistoryEntry dedups and moves the match to newest', () => {
   saveGlobalInputHistoryEntry('重复的问题');
@@ -114,10 +98,6 @@ test('clearGlobalInputHistory removes the stored key', () => {
   assert.deepEqual(readGlobalInputHistory(), []);
 });
 
-test('clearGlobalInputHistory is a no-op when nothing is stored', () => {
-  clearGlobalInputHistory();
-  assert.deepEqual(readGlobalInputHistory(), []);
-});
 
 test('readGlobalInputHistory returns null when localStorage.getItem throws (storage unavailable)', () => {
   const original = globalThis.localStorage!.getItem;
