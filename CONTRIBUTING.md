@@ -101,7 +101,6 @@ trees, which fail on imports that no longer resolve.
 ```sh
 npm test                                 # all workspaces
 npm --workspace @maka/core test          # one workspace
-npm run test:scripts                     # repository scripts
 npm --workspace @maka/desktop run e2e    # Playwright
 ```
 

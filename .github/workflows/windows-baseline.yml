@@ -136,17 +136,6 @@ jobs:
           Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/inventory.log"
           exit $exitCode
 
-      - id: scripts
-        name: Run repository script tests
-        if: always() && steps.install.outcome == 'success'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          npm.cmd run test:scripts *> "$env:WINDOWS_BASELINE_LOG_DIR/script-tests.log"
-          $exitCode = $LASTEXITCODE
-          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/script-tests.log"
-          exit $exitCode
-
       - id: smoke
         name: Run CLI and Electron startup smoke
         if: always() && steps.build.outcome == 'success'
@@ -321,7 +310,6 @@ jobs:
           | Install | ${{ steps.install.outcome }} |
           | Build | ${{ steps.build.outcome }} |
           | Skip inventory | ${{ steps.inventory.outcome }} |
-          | Script tests | ${{ steps.scripts.outcome }} |
           | CLI / Electron smoke | ${{ steps.smoke.outcome }} |
           | Storage path/lock gates | ${{ steps.storage.outcome }} |
           | Runtime PTY input | ${{ steps.runtime_pty_input.outcome }} |

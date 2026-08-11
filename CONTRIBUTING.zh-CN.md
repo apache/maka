@@ -92,7 +92,6 @@ npm --workspace @maka/desktop run build:renderer  # 渲染层
 ```sh
 npm test                                 # 全部 workspace
 npm --workspace @maka/core test          # 单个 workspace
-npm run test:scripts                     # 仓库脚本
 npm --workspace @maka/desktop run e2e    # Playwright
 ```
 

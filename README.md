@@ -247,7 +247,6 @@ Use the following commands to update `packages/core/src/model-metadata.generated
 
 ```sh
 npm run sync:model-metadata
-npm run test:scripts
 npm --workspace @maka/core test
 ```
 
