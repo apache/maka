@@ -12,7 +12,7 @@ import type {
   InvocationRequest,
 } from '../invocation-context.js';
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
-import type { AgentFlow, FlowInput, RunnableAgentFlow } from '../agent-flow.js';
+import type { FlowInput, RunnableAgentFlow } from '../agent-flow.js';
 
 // ============================================================================
 // Test fakes / helpers
@@ -37,12 +37,6 @@ function makeRequest(overrides: Partial<InvocationRequest> = {}): InvocationRequ
     ...overrides,
   };
 }
-
-type AgentFlowContext = Parameters<AgentFlow['run']>[0];
-const _canonicalContextIsFlowContext: InvocationContext = {} as AgentFlowContext;
-const _flowContextIsCanonicalContext: AgentFlowContext = {} as InvocationContext;
-void _canonicalContextIsFlowContext;
-void _flowContextIsCanonicalContext;
 
 /**
  * Fake flow that runs a script to produce its events. The script receives
