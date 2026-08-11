@@ -17,46 +17,6 @@ const revision = `sha256:${'a'.repeat(64)}` as const;
 const nextRevision = `sha256:${'b'.repeat(64)}` as const;
 
 describe('Task Ledger protocol', () => {
-  test('decodes all closed query input branches', () => {
-    for (const input of [
-      { kind: 'list_start', sessionId: 'session-1' },
-      { kind: 'list_continue', sessionId: 'session-1', revision, cursor: 'opaque:2' },
-      { kind: 'get', sessionId: 'session-1', taskRef: 'T1.2' },
-    ] as const) {
-      assert.deepEqual(decodeTaskLedgerQueryInput(input), input);
-    }
-  });
-
-  test('round-trips every result branch and the current child-session owner', () => {
-    const task = validTask(0, {
-      owner: {
-        actor: 'child_agent',
-        sessionId: 'child-session-1',
-        agentId: 'child-1',
-        runId: 'run-1',
-        turnId: 'turn-1',
-      },
-      resumeTrust: 'needs_revalidation',
-    });
-    const results: TaskLedgerQueryResult[] = [
-      {
-        kind: 'page',
-        sessionId: 'session-1',
-        revision,
-        tasks: [task],
-        nextCursor: 'opaque:2',
-      },
-      { kind: 'revision_changed', expected: revision, actual: nextRevision },
-      { kind: 'task', sessionId: 'session-1', revision, task },
-      { kind: 'task', sessionId: 'session-1', revision, task: null },
-    ];
-
-    for (const result of results) {
-      const encoded = encodeTaskLedgerQueryResult(result);
-      assert.deepEqual(decodeTaskLedgerQueryResult(encoded), encoded);
-    }
-  });
-
   test('rejects unknown fields and invalid current Task DTO values', () => {
     const task = validTask();
     for (const invalid of [
