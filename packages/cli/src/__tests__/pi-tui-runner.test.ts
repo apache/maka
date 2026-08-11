@@ -155,6 +155,37 @@ function fakeOnboardingSurface(opts: FakeOnboardingOpts = {}): MakaOnboardingSur
 }
 
 describe('Maka Pi TUI runner', () => {
+  test('/help uses the resolved locale for headings and command descriptions', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'zh',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/help');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('快捷键'));
+    const output = plainTerminalOutput(terminal.output());
+    assert.match(output, /\/compact\s+— 压缩会话上下文/);
+    assert.match(output, /Ctrl\+D — 输入为空时退出/);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('disables taskbar progress on Windows and Windows Terminal by default', () => {
     assert.equal(resolveTaskbarProgress(undefined, { platform: 'win32' }), false);
     assert.equal(

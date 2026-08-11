@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { formatMakaResumeHint } from './cli-invocation.js';
 import { resolveMakaDataRoots } from './workspace-root.js';
 import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
+import { resolveCliUiLocale } from './cli-ui-locale.js';
 
 export type MakaCliCommand =
   | {
@@ -271,11 +272,17 @@ export async function runMakaCli(
       process.stderr.write(`${command.message}\n\n${helpText(options.cliCommand)}\n`);
       return command.exitCode;
     case 'tui': {
+      const locale = resolveCliUiLocale(process.env);
+      if (!locale.ok) {
+        process.stderr.write(`${locale.message}\n`);
+        return 2;
+      }
       const { runRuntimeHostTui } = await import('./runtime-host-tui-command.js');
       return runRuntimeHostTui({
         cliCommand: options.cliCommand,
         clientDataRoot: dataRoots.clientDataRoot,
         workspaceRoot: dataRoots.workspaceRoot,
+        locale: locale.locale,
         cwd: process.cwd(),
         onProcessExit: handleMakaCliProcessExit,
         ...(command.resumeSessionId ? { resumeSessionId: command.resumeSessionId } : {}),

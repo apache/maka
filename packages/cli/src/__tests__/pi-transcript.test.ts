@@ -40,6 +40,24 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('renders fresh-session guidance in the resolved locale', () => {
+    const state = createMakaPiTranscriptState();
+
+    const english = renderMakaPiTranscript(state, { ...meta(), uiLocale: 'en' }, 100)
+      .map(stripAnsi)
+      .join('\n');
+    assert.match(english, /Get things done together/);
+    assert.match(english, /Type a message to start/);
+    assert.match(english, /\/session\s+Switch or resume a session/);
+
+    const chinese = renderMakaPiTranscript(state, { ...meta(), uiLocale: 'zh' }, 100)
+      .map(stripAnsi)
+      .join('\n');
+    assert.match(chinese, /陪你把事做完/);
+    assert.match(chinese, /输入消息开始对话/);
+    assert.match(chinese, /\/session\s+切换或恢复会话/);
+  });
+
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'inspect the package');

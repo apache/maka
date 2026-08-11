@@ -1,4 +1,5 @@
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { createInterface } from 'node:readline/promises';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
@@ -16,6 +17,7 @@ export interface RunRuntimeHostTuiInput {
   readonly clientDataRoot: string;
   readonly workspaceRoot: string;
   readonly cwd: string;
+  readonly locale: UiLocale;
   readonly resumeSessionId?: string;
   readonly resumeCwd?: string;
   readonly hostProfileId?: string;
@@ -43,6 +45,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       input.clientDataRoot,
       input.workspaceRoot,
       input.cwd,
+      input.locale,
       input.hostProfileId,
     );
     if (!configured) throw error;
@@ -53,6 +56,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       driver: context.driver,
       title: context.profile.kind === 'local' ? 'Maka' : `Maka — ${context.profile.name}`,
       cwd: context.cwd,
+      locale: input.locale,
       model: context.model,
       models: context.modelChoices
         .filter((choice) => choice.connectionSlug === context.connectionSlug)
@@ -130,6 +134,7 @@ async function runFirstRunOnboarding(
   clientDataRoot: string,
   rootPath: string,
   cwd: string,
+  locale: UiLocale,
   hostProfileId?: string,
 ): Promise<boolean> {
   const connected = await connectRuntimeHostCli({
@@ -143,6 +148,7 @@ async function runFirstRunOnboarding(
       driver: createFirstRunSessionDriver(),
       title: 'Maka',
       cwd,
+      locale,
       model: '',
       connectionSlug: '',
       permissionMode: 'ask',

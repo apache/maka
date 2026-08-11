@@ -14,6 +14,7 @@ import {
 } from '@maka/core/session';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
@@ -36,6 +37,7 @@ import {
   renderIndented,
 } from './pi-transcript-format.js';
 import { renderToolBlock } from './pi-transcript-tools.js';
+import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
 
 export interface MakaPiUsageSummary {
   /** Cumulative cost in USD across the session. */
@@ -190,6 +192,8 @@ export interface MakaPiTranscriptMetadata {
   /** Elapsed milliseconds of the running agent turn, for the activity strip. */
   turnElapsedMs?: number;
   providerRetry?: ProviderRetryEvent;
+  /** Resolved locale for primary TUI guidance. Defaults to English for direct embeddings. */
+  uiLocale?: UiLocale;
 }
 
 export function createMakaPiTranscriptState(): MakaPiTranscriptState {
@@ -1091,7 +1095,7 @@ export function renderMakaPiTranscript(
   // first screen greets and orients instead of showing an empty pane. Once the
   // first prompt lands, entries take over and it never renders again.
   if (state.entries.length === 0 && !state.pendingInteraction) {
-    return renderWelcomeBlock(safeWidth);
+    return renderWelcomeBlock(safeWidth, metadata.uiLocale ?? 'en');
   }
 
   const entryFirstLine = new Map<MakaPiTranscriptEntry, number>();
@@ -1695,16 +1699,17 @@ const MAKA_WORDMARK_LINES = [
 ];
 const MAKA_WORDMARK_WIDTH = Math.max(...MAKA_WORDMARK_LINES.map((line) => line.length));
 
-function renderWelcomeBlock(width: number): string[] {
-  // The branded home greets with the maka wordmark, a short Chinese-first
-  // tagline, and the command-center entry points (direct input, /session,
+function renderWelcomeBlock(width: number, locale: UiLocale): string[] {
+  // The branded home greets with the maka wordmark, a short localized tagline,
+  // and the command-center entry points (direct input, /session,
   // /model, /setup) so a fresh session shows the main actions without typing
   // `/`. The active model and connection live in the statusline, so the
   // welcome does not repeat them.
+  const copy = getTuiPrimaryGuidance(locale).welcome;
   const hints: [string, string][] = [
-    ['/session', '切换或恢复任务'],
-    ['/model', '切换模型'],
-    ['/setup', '配置模型提供商'],
+    ['/session', copy.session],
+    ['/model', copy.model],
+    ['/setup', copy.setup],
   ];
   const keyWidth = Math.max(...hints.map(([key]) => key.length));
   const lines: string[] = [];
@@ -1716,9 +1721,9 @@ function renderWelcomeBlock(width: number): string[] {
     }
   }
   lines.push('');
-  lines.push(fitLine(ansi.dim('陪你把事做完'), width));
+  lines.push(fitLine(ansi.dim(copy.tagline), width));
   lines.push('');
-  lines.push(fitLine('  输入消息开始对话', width));
+  lines.push(fitLine(`  ${copy.start}`, width));
   for (const [key, description] of hints) {
     lines.push(fitLine(ansi.dim(`  ${key.padEnd(keyWidth)}  ${description}`), width));
   }

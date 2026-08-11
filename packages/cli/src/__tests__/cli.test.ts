@@ -73,6 +73,14 @@ describe('Maka CLI args', () => {
     );
   });
 
+  test('does not add a discoverable global locale flag', () => {
+    assert.deepEqual(parseMakaCliArgs(['--locale', 'zh'], '0.1.0'), {
+      kind: 'error',
+      message: 'Unexpected argument: --locale',
+      exitCode: 2,
+    });
+  });
+
   test('establishes the fatal exit before reporting can throw', async () => {
     const cliUrl = new URL('../cli-core.js', import.meta.url).href;
     const childSource = `

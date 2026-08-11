@@ -33,6 +33,7 @@ import {
   type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   buildForeignSessionHandoffMessage,
   foreignSessionHandoffDisplayText,
@@ -114,11 +115,14 @@ import {
   type MakaSlashCommand,
 } from './pi-tui-pickers.js';
 import { formatMakaResumeCommand } from './cli-invocation.js';
+import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
 
 export interface MakaPiTuiInput {
   /** Launcher command used in resume and recovery instructions. */
   cliCommand?: string;
   title: string;
+  /** Resolved locale for human-facing TUI guidance. Direct embeddings default to English. */
+  locale?: UiLocale;
   driver: MakaSessionDriver;
   cwd: string;
   model: string;
@@ -231,6 +235,8 @@ export function resolveTaskbarProgress(
 }
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
+  const locale = input.locale ?? 'en';
+  const primaryGuidance = getTuiPrimaryGuidance(locale);
   const terminal = input.terminal ?? new ProcessTerminal();
   const taskbarProgress = resolveTaskbarProgress(input.taskbarProgress);
   const setTaskbarProgress = (active: boolean): void => {
@@ -344,6 +350,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     modelContextWindow,
     turnElapsedMs: turnStartedAt !== undefined ? Date.now() - turnStartedAt : undefined,
     providerRetry: state.providerRetry,
+    uiLocale: locale,
   });
 
   const transcript = new MakaTranscriptComponent(state, metadata);
@@ -2049,22 +2056,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         return `  /${command.name}${aliasSuffix} — ${command.description}`;
       })
       .join('\n');
-    const keybindings = [
-      '  Ctrl+O — expand or collapse all tool output',
-      '  Ctrl+T — expand or collapse the latest thinking block',
-      '  Scroll the transcript with your terminal or trackpad',
-      '  Enter (during a turn) — steer: inject a message into the running turn',
-      '  Alt+Enter (during a turn) — queue a message for the next turn',
-      '  Alt+↑ — take queued messages back into the editor to re-edit',
-      '  Esc Esc (during a turn) — interrupt the turn',
-      '  Esc Esc (when idle) — rewind to an earlier turn',
-      '  Ctrl+C — stop the turn, clear input, or press twice to exit',
-      '  Ctrl+D — exit when input is empty',
-    ].join('\n');
+    const keybindings = primaryGuidance.help.keybindings.join('\n');
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `Commands\n${commands}\n\nKeybindings\n${keybindings}`,
+      text: `${primaryGuidance.help.commandsHeading}\n${commands}\n\n${primaryGuidance.help.keybindingsHeading}\n${keybindings}`,
     });
     requestRender();
   };
@@ -2393,7 +2389,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const slashCommandHandlers = {
     context: {
-      description: 'Show latest request context usage',
+      description: primaryGuidance.commands.context,
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2418,7 +2414,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     compact: {
-      description: 'Compact session context',
+      description: primaryGuidance.commands.compact,
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2433,25 +2429,25 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     exit: {
-      description: 'Exit Maka',
+      description: primaryGuidance.commands.exit,
       run: () => {
         beginGracefulClose();
       },
     },
     help: {
-      description: 'Show commands and keybindings',
+      description: primaryGuidance.commands.help,
       run: () => {
         void runControl(async () => showHelp());
       },
     },
     new: {
-      description: 'Start a new session',
+      description: primaryGuidance.commands.new,
       run: () => {
         void runControl(async () => newSession());
       },
     },
     skill: {
-      description: 'Invoke a skill (or type /skill:<name> inline)',
+      description: primaryGuidance.commands.skill,
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2466,7 +2462,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     setup: {
-      description: 'Set up a model provider (API key)',
+      description: primaryGuidance.commands.setup,
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2481,7 +2477,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     model: {
-      description: 'Select model',
+      description: primaryGuidance.commands.model,
       run: (parts: string[]) => {
         if (parts.length === 1) {
           showModelList();
@@ -2501,7 +2497,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     move: {
-      description: 'Move current session to another directory',
+      description: primaryGuidance.commands.move,
       run: (parts: string[], rawTail?: string) => {
         const targetCwd = (rawTail ?? parts.slice(1).join(' ')).trim();
         if (targetCwd) {
@@ -2512,7 +2508,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     thinking: {
-      description: 'Set thinking level',
+      description: primaryGuidance.commands.thinking,
       run: (parts: string[]) => {
         if (parts.length === 1) {
           if (thinkingLevels.length === 0) {
@@ -2550,7 +2546,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     permissions: {
-      description: 'Set session permissions',
+      description: primaryGuidance.commands.permissions,
       run: (parts: string[]) => {
         if (parts.length === 1) {
           showPermissionModeList();
@@ -2570,13 +2566,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     recap: {
-      description: 'One-sentence recap of the session so far',
+      description: primaryGuidance.commands.recap,
       run: () => {
         void runRecap('manual');
       },
     },
     rename: {
-      description: 'Rename current session',
+      description: primaryGuidance.commands.rename,
       run: (parts: string[]) => {
         const name = parts.slice(1).join(' ').trim();
         if (!name) {
@@ -2601,7 +2597,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     resume: {
-      description: 'Resume latest interrupted run at a safe boundary',
+      description: primaryGuidance.commands.resume,
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2616,13 +2612,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     rewind: {
-      description: 'Rewind to an earlier turn',
+      description: primaryGuidance.commands.rewind,
       run: () => {
         void runControl(showRewindPicker);
       },
     },
     session: {
-      description: 'Resume session',
+      description: primaryGuidance.commands.session,
       run: (parts: string[]) => {
         if (parts.length === 1) {
           void runControl(showSessionList);
@@ -2642,14 +2638,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     graph: {
-      description: 'Show, enable, disable, or run one Graph turn',
+      description: primaryGuidance.commands.graph,
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseGraphCommand(`/graph${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runGraphCommand(parsed, context.idleMs);
       },
     },
     swarm: {
-      description: 'Show, enable, disable, or run one Swarm turn',
+      description: primaryGuidance.commands.swarm,
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseSwarmCommand(`/swarm${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runSwarmCommand(parsed, context.idleMs);
