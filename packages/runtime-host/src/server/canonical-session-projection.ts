@@ -13,7 +13,11 @@ import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES,
 } from '../protocol/index.js';
-import { isMissingFile, readCanonicalTurnSnapshot } from './canonical-turn-snapshot.js';
+import {
+  isMissingFile,
+  readCanonicalTurnSnapshot,
+  worstCaseFailedTurnSnapshot,
+} from './canonical-turn-snapshot.js';
 import type { HostMessageCoordinator } from './message-coordinator.js';
 import { worstCaseMessageQueueProjection } from './message-queue-capacity.js';
 import { projectSessionInteractions } from './interaction-projection.js';
@@ -115,6 +119,13 @@ export class CanonicalSessionProjectionReader {
     const candidateProjection = {
       ...canonical,
       ...candidate,
+      rootTurn:
+        canonical.rootTurn &&
+        canonical.rootTurn.status !== 'completed' &&
+        canonical.rootTurn.status !== 'failed' &&
+        canonical.rootTurn.status !== 'cancelled'
+          ? worstCaseFailedTurnSnapshot(canonical.rootTurn)
+          : canonical.rootTurn,
       goal: worstCaseGoalProjection(sessionId),
       queue: worstCaseMessageQueueProjection(candidate.queue ?? canonical.queue),
     };

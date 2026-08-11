@@ -1,5 +1,6 @@
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { redactSecrets } from '@maka/core/redaction';
 import { classifyTerminalRuntimeLedger } from '@maka/runtime';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import { TURN_FAILURE_MESSAGE_MAX_BYTES, type TurnSnapshot } from '../protocol/index.js';
@@ -45,6 +46,14 @@ export async function readCanonicalTurnSnapshot(
     }
     if (fact.runStatus === 'failed') {
       if (!fact.failureClass) throw new Error('Failed terminal fact has no failure class');
+      const failureMessage =
+        fact.terminalEvent.content?.kind === 'error'
+          ? truncateUtf8(
+              redactSecrets(fact.terminalEvent.content.message),
+              TURN_FAILURE_MESSAGE_MAX_BYTES,
+              '…',
+            )
+          : undefined;
       return {
         sessionId,
         turnId,
@@ -52,11 +61,7 @@ export async function readCanonicalTurnSnapshot(
         status: 'failed',
         terminalEventId: fact.terminalEvent.id,
         failureClass: fact.failureClass,
-        ...(run.failureMessage
-          ? {
-              failureMessage: truncateUtf8(run.failureMessage, TURN_FAILURE_MESSAGE_MAX_BYTES, '…'),
-            }
-          : {}),
+        ...(failureMessage ? { failureMessage } : {}),
       };
     }
     if (!fact.abortSource) throw new Error('Cancelled terminal fact has no abort source');
@@ -79,6 +84,17 @@ export async function readCanonicalTurnSnapshot(
     throw new Error('Non-created Run has no durable start fact');
   }
   return { sessionId, turnId, runId, status: run.status };
+}
+
+/** Maximizes the encoded size of a protocol-valid failed Turn snapshot. */
+export function worstCaseFailedTurnSnapshot(identity: CanonicalTurnIdentity): TurnSnapshot {
+  return {
+    ...identity,
+    status: 'failed',
+    terminalEventId: 'x'.repeat(128),
+    failureClass: '\0'.repeat(128),
+    failureMessage: '\0'.repeat(TURN_FAILURE_MESSAGE_MAX_BYTES),
+  };
 }
 
 async function readRunIfPresent(

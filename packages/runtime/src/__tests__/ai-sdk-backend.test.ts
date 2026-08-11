@@ -11593,6 +11593,7 @@ describe('AiSdkBackend RunTrace', () => {
 
   test('does not retry an idle watchdog timeout after partial answer text', async () => {
     const timers = manualWatchdogTimer();
+    const traces: RunTraceEvent[] = [];
     let calls = 0;
     const model = new MockLanguageModelV4({
       doStream: async (options) => {
@@ -11622,6 +11623,7 @@ describe('AiSdkBackend RunTrace', () => {
       now: monotonicClock(),
       streamWatchdogTimer: timers.clock,
       providerRetrySleep: async () => {},
+      recordRunTrace: (event) => traces.push(event),
     });
 
     const events: SessionEvent[] = [];
@@ -11637,6 +11639,10 @@ describe('AiSdkBackend RunTrace', () => {
     );
     assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    const failureTrace = traces.find((event) => event.type === 'model_stream_failed');
+    assert.equal(failureTrace?.data?.rawErrorName, 'Error');
+    assert.match(String(failureTrace?.data?.redactedErrorMessage), /stream idle timeout/);
+    assert.equal(typeof failureTrace?.data?.redactedErrorStackSha256, 'string');
   });
 
   test('does not retry an idle watchdog timeout after provider continuation metadata', async () => {

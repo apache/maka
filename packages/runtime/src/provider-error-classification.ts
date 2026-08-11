@@ -35,6 +35,14 @@ interface ProviderErrorEvidence {
   structuredCodes: string[];
 }
 
+interface ProviderErrorFacts {
+  target: unknown;
+  evidence: ProviderErrorEvidence;
+  summarySources: ProviderFailureSources;
+  bareMessage?: string;
+  responseHeaders?: Record<string, string>;
+}
+
 export interface ProviderRetryMetadata {
   retryable: boolean;
   retryAfterMs?: number;
@@ -93,14 +101,14 @@ function parseRetryAfterMs(headers: Record<string, string>): number | null | und
  * response headers across the ModelAdapter boundary.
  */
 export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
-  const target = providerErrorTarget(error);
-  const evidence = normalizeErrorEvidence(target);
-  if (!evidence) return { retryable: false };
+  const facts = normalizeProviderError(error);
+  if (!facts) return { retryable: false };
+  const { evidence } = facts;
 
   if (RUNTIME_RETRYABLE_ERROR_CODES.has(evidence.code)) return { retryable: true };
 
   const status = Number(evidence.statusCode || evidence.code);
-  const errorClass = classifyError(target);
+  const errorClass = classifyProviderFacts(facts);
   const retryable =
     errorClass === 'Network' ||
     status === 408 ||
@@ -109,7 +117,7 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
     (status >= 500 && status <= 599);
   if (!retryable) return { retryable: false };
 
-  const retryAfterMs = parseRetryAfterMs(responseHeadersFromError(target) ?? {});
+  const retryAfterMs = parseRetryAfterMs(facts.responseHeaders ?? {});
   if (retryAfterMs === null) return { retryable: false };
   return {
     retryable: true,
@@ -119,32 +127,33 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
 
 /** Collects `code`/`type` strings from a payload and from its `error` wrapper. */
 function collectStructuredCodes(payload: unknown, out: string[]): void {
-  const fromRecord = (record: unknown) => {
-    if (typeof record !== 'object' || record === null) return;
+  const fromRecord = (record: Record<string, unknown> | undefined) => {
+    if (!record) return;
     for (const key of ['code', 'type'] as const) {
-      const value = (record as Record<string, unknown>)[key];
+      const value = safeField(record, key);
       if (typeof value === 'string' && value) out.push(value.toLowerCase());
     }
   };
-  fromRecord(payload);
-  if (typeof payload === 'object' && payload !== null) {
-    fromRecord((payload as { error?: unknown }).error);
-  }
+  const record = providerRecord(payload);
+  fromRecord(record);
+  fromRecord(record ? providerRecord(safeField(record, 'error')) : undefined);
 }
 
-function normalizeErrorEvidence(error: unknown): ProviderErrorEvidence | undefined {
-  if (error instanceof Error) {
-    const code = 'code' in error ? String((error as { code?: unknown }).code) : '';
+function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined {
+  const target = providerErrorTarget(error);
+  if (target instanceof Error) {
+    const responseHeaders = responseHeadersFromError(target);
+    const code = 'code' in target ? String((target as { code?: unknown }).code) : '';
     const statusCode =
-      'statusCode' in error
-        ? String((error as { statusCode?: unknown }).statusCode)
-        : 'status' in error
-          ? String((error as { status?: unknown }).status)
+      'statusCode' in target
+        ? String((target as { statusCode?: unknown }).statusCode)
+        : 'status' in target
+          ? String((target as { status?: unknown }).status)
           : '';
-    const rawBody = (error as { responseBody?: unknown }).responseBody;
+    const rawBody = (target as { responseBody?: unknown }).responseBody;
     const body = typeof rawBody === 'string' ? rawBody : '';
     const structuredCodes: string[] = [];
-    collectStructuredCodes((error as { data?: unknown }).data, structuredCodes);
+    collectStructuredCodes((target as { data?: unknown }).data, structuredCodes);
     if (structuredCodes.length === 0 && body) {
       // The failed-response handler keeps the raw body even when the provider
       // JSON failed the schema (which is exactly when `data` is absent).
@@ -155,28 +164,40 @@ function normalizeErrorEvidence(error: unknown): ProviderErrorEvidence | undefin
       }
     }
     return {
+      target,
       // The raw body joins the text evidence: when the provider JSON fails
       // the error schema, `message` degrades to the statusText and the body
       // is the ONLY carrier of the provider's wording (e.g. an
       // OpenAI-compatible `{error: string}` overflow). Positives and vetoes
       // both run over the same full text.
-      text: `${error.name} ${code} ${statusCode} ${error.message}${body ? ` ${body}` : ''}`.toLowerCase(),
-      statusCode,
-      code,
-      structuredCodes,
+      evidence: {
+        text: `${target.name} ${code} ${statusCode} ${target.message}${body ? ` ${body}` : ''}`.toLowerCase(),
+        statusCode,
+        code,
+        structuredCodes,
+      },
+      summarySources: providerFailureSources(target),
+      ...(responseHeaders ? { responseHeaders } : {}),
     };
   }
-  if (typeof error === 'string') {
+  if (typeof target === 'string') {
+    const parsed = parsedProviderValue(target);
     const structuredCodes: string[] = [];
-    try {
-      collectStructuredCodes(JSON.parse(error), structuredCodes);
-    } catch {
-      // A plain message string — text evidence only.
-    }
-    return { text: error.toLowerCase(), statusCode: '', code: '', structuredCodes };
+    if (parsed !== undefined) collectStructuredCodes(parsed, structuredCodes);
+    return {
+      target,
+      evidence: { text: target.toLowerCase(), statusCode: '', code: '', structuredCodes },
+      summarySources: providerFailureSources(parsed),
+      ...(parsed === undefined
+        ? { bareMessage: target }
+        : typeof parsed === 'string'
+          ? { bareMessage: parsed }
+          : {}),
+    };
   }
-  if (typeof error === 'object' && error !== null) {
-    const record = error as Record<string, unknown>;
+  if (typeof target === 'object' && target !== null) {
+    const record = target as Record<string, unknown>;
+    const responseHeaders = responseHeadersFromError(target);
     const field = (key: string): string => {
       const value = record[key];
       return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
@@ -187,15 +208,20 @@ function normalizeErrorEvidence(error: unknown): ProviderErrorEvidence | undefin
     try {
       // Serialize the whole value so message/code text is evidence no matter
       // which of the known provider shapes carried it.
-      text = JSON.stringify(error).toLowerCase();
+      text = JSON.stringify(target).toLowerCase();
     } catch {
-      text = String(error).toLowerCase();
+      text = String(target).toLowerCase();
     }
     return {
-      text,
-      statusCode: field('statusCode') || field('status'),
-      code: field('code'),
-      structuredCodes,
+      target,
+      evidence: {
+        text,
+        statusCode: field('statusCode') || field('status'),
+        code: field('code'),
+        structuredCodes,
+      },
+      summarySources: providerFailureSources(target),
+      ...(responseHeaders ? { responseHeaders } : {}),
     };
   }
   return undefined;
@@ -207,14 +233,15 @@ function normalizeErrorEvidence(error: unknown): ProviderErrorEvidence | undefin
  * or serialized as diagnostic output wholesale.
  */
 export function providerFailureSummary(error: unknown): ProviderFailureSummary | undefined {
-  const target = providerErrorTarget(error);
-  const sources = providerFailureSources(target);
-  const message = firstProviderMessage(target, sources);
+  const facts = normalizeProviderError(error);
+  if (!facts) return undefined;
+  const sources = facts.summarySources;
+  const message = firstProviderMessage(facts);
   const code = firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
   const statusCode = firstProviderField(sources, ['statusCode', 'status']);
   const requestId =
     firstProviderField(sources, ['requestId', 'request_id']) ??
-    boundedProviderField(responseHeadersFromError(target)?.['x-request-id']);
+    boundedProviderField(facts.responseHeaders?.['x-request-id']);
   const metadata = [
     ...(code ? [`code=${code}`] : []),
     ...(statusCode && statusCode !== code ? [`status=${statusCode}`] : []),
@@ -246,10 +273,10 @@ function providerFailureSources(error: unknown): ProviderFailureSources {
   const record = objectRecord(error);
   if (!record) return { records: [], stringErrors: [] };
   const data = objectRecord(safeField(record, 'data'));
-  const nestedError = objectRecord(safeField(record, 'error'));
-  const dataError = objectRecord(data ? safeField(data, 'error') : undefined);
+  const nestedError = providerRecord(safeField(record, 'error'));
+  const dataError = providerRecord(data ? safeField(data, 'error') : undefined);
   const parsedBody = parsedProviderBody(safeField(record, 'responseBody'));
-  const parsedBodyError = objectRecord(parsedBody ? safeField(parsedBody, 'error') : undefined);
+  const parsedBodyError = providerRecord(parsedBody ? safeField(parsedBody, 'error') : undefined);
   return {
     records: [dataError, data, parsedBodyError, parsedBody, nestedError, record].filter(
       (source): source is Record<string, unknown> => source !== undefined,
@@ -262,13 +289,20 @@ function providerFailureSources(error: unknown): ProviderFailureSources {
   };
 }
 
-function firstProviderMessage(error: unknown, sources: ProviderFailureSources): string | undefined {
-  if (typeof error === 'string') return boundedProviderMessage(error);
+function providerRecord(value: unknown): Record<string, unknown> | undefined {
+  return objectRecord(typeof value === 'string' ? (parsedProviderValue(value) ?? value) : value);
+}
+
+function firstProviderMessage(facts: ProviderErrorFacts): string | undefined {
+  if (facts.bareMessage !== undefined) return boundedProviderMessage(facts.bareMessage);
+  const sources = facts.summarySources;
   const candidates = [
     ...sources.records.map((source) => safeField(source, 'message')),
     ...sources.stringErrors,
   ];
-  return candidates.map(boundedProviderMessage).find((value) => value !== undefined);
+  return candidates
+    .map((candidate) => boundedProviderMessage(candidate))
+    .find((value) => value !== undefined);
 }
 
 function firstProviderField(
@@ -286,8 +320,12 @@ function firstProviderField(
 
 function parsedProviderBody(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'string') return undefined;
+  return objectRecord(parsedProviderValue(value));
+}
+
+function parsedProviderValue(value: string): unknown {
   try {
-    return objectRecord(JSON.parse(value));
+    return JSON.parse(value);
   } catch {
     return undefined;
   }
@@ -314,9 +352,27 @@ function boundedProviderField(value: unknown): string | undefined {
   return truncateUtf8(redactSecrets(normalized), PROVIDER_FAILURE_FIELD_MAX_BYTES, '…');
 }
 
-function boundedProviderMessage(value: unknown): string | undefined {
+function boundedProviderMessage(value: unknown, parseJson = true): string | undefined {
   if (typeof value !== 'string') return undefined;
-  const normalized = value.trim();
+  let normalized = value.trim();
+  if (!normalized) return undefined;
+  if (parseJson) {
+    const parsed = parsedProviderValue(normalized);
+    if (parsed !== undefined) {
+      if (typeof parsed === 'string') {
+        normalized = parsed.trim();
+      } else {
+        const sources = providerFailureSources(parsed);
+        const candidates = [
+          ...sources.records.map((source) => safeField(source, 'message')),
+          ...sources.stringErrors,
+        ];
+        return candidates
+          .map((candidate) => boundedProviderMessage(candidate, false))
+          .find((candidate) => candidate !== undefined);
+      }
+    }
+  }
   if (!normalized) return undefined;
   return truncateUtf8(redactSecrets(normalized), PROVIDER_FAILURE_SUMMARY_MAX_BYTES, '…');
 }
@@ -425,9 +481,12 @@ export function isContextOverflowErrorText(text: string): boolean {
  */
 export function classifyError(error: unknown): string {
   if (RetryError.isInstance(error) && error.reason === 'abort') return 'Abort';
-  const classificationTarget = providerErrorTarget(error);
-  const evidence = normalizeErrorEvidence(classificationTarget);
-  if (!evidence) return 'Other';
+  const facts = normalizeProviderError(error);
+  return facts ? classifyProviderFacts(facts) : 'Other';
+}
+
+function classifyProviderFacts(facts: ProviderErrorFacts): string {
+  const { target: classificationTarget, evidence } = facts;
   const { text, statusCode, code, structuredCodes } = evidence;
   if (text.includes('abort')) return 'Abort';
   if (code === OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR) return 'Network';
