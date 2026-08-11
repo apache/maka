@@ -15,6 +15,7 @@ import {
   publicManagedSecretMetadata,
   type AuthorizeManagedSecretSessionInput,
   type CreateManagedSecretInput,
+  type GetManagedSecretMetadataInput,
   type ManagedSecretActivationContext,
   type ManagedSecretMaterial,
   type ManagedSecretMetadata,
@@ -153,12 +154,9 @@ class EncryptedFileManagedSecretStore implements ManagedSecretStore {
     });
   }
 
-  getSecretMetadata(
-    principalId: string,
-    reference: ManagedSecretReference,
-  ): Promise<ManagedSecretMetadata | null> {
-    const principal = managedSecretIdentifier(principalId, 'principalId');
-    const normalized = decodeManagedSecretReference(reference);
+  getSecretMetadata(input: GetManagedSecretMetadataInput): Promise<ManagedSecretMetadata | null> {
+    const principal = managedSecretIdentifier(input.principalId, 'principalId');
+    const normalized = decodeManagedSecretReference(input.reference);
     return this.#locked(async (document) => {
       const record = document.secrets.find((item) => item.secretId === normalized.secretId);
       if (!record || record.status === 'deleted') return null;

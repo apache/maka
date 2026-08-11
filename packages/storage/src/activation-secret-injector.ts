@@ -62,6 +62,7 @@ export class ActivationEnvironmentSecretSink implements ActivationSecretSink {
 }
 
 export interface PrepareActivationSecretInjectionInput {
+  /** Trusted, owner-checked context supplied out of band by the control plane. */
   readonly context: ManagedSecretActivationContext;
   readonly bindings: readonly ActivationSecretEnvironmentBinding[];
   readonly sink: ActivationSecretSink;

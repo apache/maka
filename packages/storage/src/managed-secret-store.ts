@@ -27,10 +27,30 @@ export interface ManagedSecretMetadata {
   readonly updatedAt: number;
 }
 
-export interface ManagedSecretActivationContext {
-  /** A trusted identity supplied by the control-plane authentication layer. */
+/**
+ * Trusted internal identity established before entering the Secret Store.
+ *
+ * The store does not authenticate this value. A control-plane composition must
+ * derive it from its authenticated request context; it must never decode it
+ * directly from an Activation payload, Renderer message, or other client input.
+ * V1 uses one principal as the ownership boundary. Organization/project sharing
+ * requires a separate, explicit authorization model.
+ */
+export interface ManagedSecretPrincipalContext {
   readonly principalId: string;
+}
+
+/**
+ * A Cloud Session authority already checked by the calling control plane.
+ * Constructing this context asserts that `cloudSessionId` belongs to, or has
+ * explicitly been delegated to, `principalId`; the Secret Store does not own
+ * the Cloud Session repository needed to prove that relation.
+ */
+export interface ManagedSecretSessionContext extends ManagedSecretPrincipalContext {
   readonly cloudSessionId: string;
+}
+
+export interface ManagedSecretActivationContext extends ManagedSecretSessionContext {
   readonly activationId: string;
 }
 
@@ -45,13 +65,15 @@ export type ManagedSecretMutationResult =
   | { readonly kind: 'committed'; readonly secret: ManagedSecretMetadata }
   | { readonly kind: 'revision_conflict'; readonly actualRevision: number };
 
-export interface CreateManagedSecretInput {
-  readonly principalId: string;
+export interface CreateManagedSecretInput extends ManagedSecretPrincipalContext {
   readonly value: string;
 }
 
-export interface MutateManagedSecretInput {
-  readonly principalId: string;
+export interface GetManagedSecretMetadataInput extends ManagedSecretPrincipalContext {
+  readonly reference: ManagedSecretReference;
+}
+
+export interface MutateManagedSecretInput extends ManagedSecretPrincipalContext {
   readonly reference: ManagedSecretReference;
   readonly expectedRevision: number;
 }
@@ -60,10 +82,8 @@ export interface RotateManagedSecretInput extends MutateManagedSecretInput {
   readonly value: string;
 }
 
-export interface AuthorizeManagedSecretSessionInput {
-  readonly principalId: string;
+export interface AuthorizeManagedSecretSessionInput extends ManagedSecretSessionContext {
   readonly reference: ManagedSecretReference;
-  readonly cloudSessionId: string;
 }
 
 export interface ResolveManagedSecretsForActivationInput {
@@ -77,13 +97,14 @@ export interface ResolveManagedSecretsForActivationInput {
  * A Session Bundle may carry `ManagedSecretReference` values, but a copied
  * reference is inert until this store has a grant for the target Cloud Session.
  * That is the fork/restore re-authorization boundary.
+ *
+ * This is a trusted internal control-plane interface, not a network, IPC, or
+ * Renderer boundary. Every principal and Session context must be established by
+ * the caller before invoking it.
  */
 export interface ManagedSecretStore {
   createSecret(input: CreateManagedSecretInput): Promise<ManagedSecretMetadata>;
-  getSecretMetadata(
-    principalId: string,
-    reference: ManagedSecretReference,
-  ): Promise<ManagedSecretMetadata | null>;
+  getSecretMetadata(input: GetManagedSecretMetadataInput): Promise<ManagedSecretMetadata | null>;
   rotateSecret(input: RotateManagedSecretInput): Promise<ManagedSecretMutationResult>;
   revokeSecret(input: MutateManagedSecretInput): Promise<ManagedSecretMutationResult>;
   deleteSecret(input: MutateManagedSecretInput): Promise<ManagedSecretMutationResult>;
@@ -161,11 +182,10 @@ export class InMemoryManagedSecretStore implements ManagedSecretStore {
   }
 
   async getSecretMetadata(
-    principalId: string,
-    reference: ManagedSecretReference,
+    input: GetManagedSecretMetadataInput,
   ): Promise<ManagedSecretMetadata | null> {
-    const principal = managedSecretIdentifier(principalId, 'principalId');
-    const normalized = decodeManagedSecretReference(reference);
+    const principal = managedSecretIdentifier(input.principalId, 'principalId');
+    const normalized = decodeManagedSecretReference(input.reference);
     const record = this.#records.get(normalized.secretId);
     if (!record || record.status === 'deleted') return null;
     assertOwner(record, principal);

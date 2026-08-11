@@ -201,7 +201,10 @@ for (const [name, createHarness] of harnesses) {
         });
         assert.equal(deleted.kind, 'committed');
         if (deleted.kind === 'committed') assert.equal(deleted.secret.status, 'deleted');
-        assert.equal(await store.getSecretMetadata(PRINCIPAL, first.reference), null);
+        assert.equal(
+          await store.getSecretMetadata({ principalId: PRINCIPAL, reference: first.reference }),
+          null,
+        );
         await assertRejectCode(
           store.resolveForActivation({
             context: activationContext(SOURCE_SESSION),
@@ -218,13 +221,16 @@ for (const [name, createHarness] of harnesses) {
         const created = await store.createSecret({ principalId: PRINCIPAL, value });
         assert.equal(JSON.stringify(created).includes(value), false);
         assert.equal(
-          JSON.stringify(await store.getSecretMetadata(PRINCIPAL, created.reference)).includes(
-            value,
-          ),
+          JSON.stringify(
+            await store.getSecretMetadata({ principalId: PRINCIPAL, reference: created.reference }),
+          ).includes(value),
           false,
         );
         await assertRejectCode(
-          store.getSecretMetadata('another-user', created.reference),
+          store.getSecretMetadata({
+            principalId: 'another-user',
+            reference: created.reference,
+          }),
           'unauthorized',
         );
       });
@@ -390,8 +396,16 @@ describe('encrypted file ManagedSecretStore security boundary', () => {
         controlPlaneRoot: root,
         keyProvider: provider,
       });
-      assert.equal((await reader.getSecretMetadata(PRINCIPAL, one.reference))?.revision, 1);
-      assert.equal((await reader.getSecretMetadata(PRINCIPAL, two.reference))?.revision, 1);
+      assert.equal(
+        (await reader.getSecretMetadata({ principalId: PRINCIPAL, reference: one.reference }))
+          ?.revision,
+        1,
+      );
+      assert.equal(
+        (await reader.getSecretMetadata({ principalId: PRINCIPAL, reference: two.reference }))
+          ?.revision,
+        1,
+      );
     });
   });
 
@@ -412,9 +426,12 @@ describe('encrypted file ManagedSecretStore security boundary', () => {
         keyProvider: new TestKeyProvider(),
       });
       await assertRejectCode(
-        store.getSecretMetadata(PRINCIPAL, {
-          schemaVersion: 1,
-          secretId: SECRET_ONE,
+        store.getSecretMetadata({
+          principalId: PRINCIPAL,
+          reference: {
+            schemaVersion: 1,
+            secretId: SECRET_ONE,
+          },
         }),
         'integrity_failure',
       );
