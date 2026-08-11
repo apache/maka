@@ -226,6 +226,8 @@ implemented yet; ambiguous tool outcomes remain parked rather than retried.
 
 ## Development and verification
 
+Before sending a change, read [CONTRIBUTING.md](./CONTRIBUTING.md).
+
 Common repository-level commands:
 
 ```sh
