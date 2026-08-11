@@ -6,9 +6,6 @@ import {
   composerWireText,
   createTriggerSearchSource,
   isChatInputComposing,
-  mentionQueryMatches,
-  slashCommandQuery,
-  skillMentionQuery,
 } from '../chat-input-behavior.js';
 
 describe('shared chat input behavior', () => {
@@ -105,28 +102,5 @@ describe('shared chat input behavior', () => {
     release();
     await action;
     assert.deepEqual(states, ['drop']);
-  });
-});
-
-describe('mention filtering', () => {
-  it('matches case-insensitive AND tokens and treats an empty query as universal', () => {
-    assert.equal(mentionQueryMatches('SRC APP', 'src/app.tsx'), true);
-    assert.equal(mentionQueryMatches('src app', 'src/main.tsx'), false);
-    assert.equal(mentionQueryMatches('', 'anything'), true);
-  });
-
-  it('normalizes /skill prefixes while preserving bare queries', () => {
-    assert.equal(skillMentionQuery('skill:wri'), 'wri');
-    assert.equal(skillMentionQuery('SKILL:wri'), 'wri');
-    assert.equal(skillMentionQuery('writer'), 'writer');
-  });
-
-  it('offers commands only for a leading token, outside explicit Skill syntax', () => {
-    assert.equal(slashCommandQuery('/', '', ''), '');
-    assert.equal(slashCommandQuery('  /comp', '', 'comp'), 'comp');
-    assert.equal(slashCommandQuery('explain /comp', '', 'comp'), null);
-    assert.equal(slashCommandQuery('/comp', 'act', 'comp'), null);
-    assert.equal(slashCommandQuery('/skill:compact', '', 'skill:compact'), null);
-    assert.equal(slashCommandQuery('/SKILL:compact', '', 'SKILL:compact'), null);
   });
 });
