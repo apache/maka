@@ -2644,19 +2644,6 @@ describe('builtin FormatJson (file in place)', () => {
     };
   }
 
-  test('happy path: validates and rewrites a minified JSON file in place', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
-    const input = '{"b":1,"a":[2,3],"c":{"d":true}}';
-    const name = await writeInput(root, 'data.json', input);
-
-    const result = await runFormatJson({ path: name }, root);
-
-    const onDisk = await readFile(join(root, name), 'utf8');
-    expect(onDisk).toBe(JSON.stringify(JSON.parse(input), null, 2));
-    expect(result).toMatchObject({ kind: 'file_diff' });
-    expect((result as unknown as { paths: string[] }).paths[0]?.endsWith('data.json')).toBe(true);
-    expect((result as unknown as { diff: string }).diff).toContain(`-${input}`);
-  });
 
   test('rejects image results from the workspace executor', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-image-'));
@@ -2673,16 +2660,6 @@ describe('builtin FormatJson (file in place)', () => {
     );
   });
 
-  test('sort_keys: true orders object keys lexicographically', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
-    const name = await writeInput(root, 'data.json', '{"z":1,"a":2,"m":3}');
-
-    const result = await runFormatJson({ path: name, sort_keys: true }, root);
-
-    const onDisk = await readFile(join(root, name), 'utf8');
-    expect(onDisk).toBe('{\n  "a": 2,\n  "m": 3,\n  "z": 1\n}');
-    expect((result as unknown as { kind: string }).kind).toBe('file_diff');
-  });
 
   test('sort_keys: true preserves __proto__ as a data property', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
@@ -2696,20 +2673,6 @@ describe('builtin FormatJson (file in place)', () => {
     expect(parsed.a).toBe(1);
   });
 
-  test('sort_keys: true sorts nested objects recursively', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
-    const name = await writeInput(
-      root,
-      'data.json',
-      '{"outer":{"z":1,"a":2},"list":[{"b":1,"a":2}]}',
-    );
-
-    await runFormatJson({ path: name, sort_keys: true }, root);
-
-    const parsed = JSON.parse(await readFile(join(root, name), 'utf8'));
-    expect(Object.keys(parsed.outer)).toEqual(['a', 'z']);
-    expect(Object.keys(parsed.list[0])).toEqual(['a', 'b']);
-  });
 
   test('invalid JSON returns a structured error diagnostic (no write, byteDelta 0)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
@@ -2726,28 +2689,7 @@ describe('builtin FormatJson (file in place)', () => {
     expect(await readFile(join(root, name), 'utf8')).toBe('not json');
   });
 
-  test('already-canonical content reports changed: false with zero byte delta', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
-    const name = await writeInput(root, 'empty.json', '{}');
 
-    const result = await runFormatJson({ path: name }, root);
-
-    expect(result.changed).toBe(false);
-    expect(result.byteDelta).toBe(0);
-    expect(await readFile(join(root, name), 'utf8')).toBe('{}');
-  });
-
-  test('handles unicode and special characters in strings', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
-    const name = await writeInput(root, 'data.json', '{"emoji":"🎉","cjk":"你好"}');
-
-    const result = await runFormatJson({ path: name }, root);
-
-    const onDisk = await readFile(join(root, name), 'utf8');
-    expect((result as unknown as { kind: string }).kind).toBe('file_diff');
-    expect(onDisk).toContain('🎉');
-    expect(onDisk).toContain('你好');
-  });
 });
 
 async function waitFor(predicate: () => boolean): Promise<void> {

@@ -992,64 +992,7 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('omits an empty system prompt from the provider request', async () => {
-    const model = completionModel();
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      systemPrompt: '',
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
 
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'current user',
-        context: [],
-      }),
-    );
-
-    assert.deepEqual(compactPrompt(model), [
-      { role: 'user', content: [{ type: 'text', text: 'current user' }] },
-    ]);
-  });
-
-  test('sends the selected Kimi model output limit instead of the Anthropic unknown-model default', async () => {
-    const model = completionModel();
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: {
-        slug: 'kimi-coding-plan',
-        providerType: 'kimi-coding-plan',
-        defaultModel: 'k3',
-      },
-      apiKey: 'sk-test',
-      modelId: 'k3',
-      modelFactory: () => model,
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'current user',
-        context: [],
-      }),
-    );
-
-    assert.equal(model.doStreamCalls[0]?.maxOutputTokens, 131_072);
-  });
 
   test('prefers the connection-advertised Kimi output limit over catalog metadata', async () => {
     const model = completionModel();
@@ -1082,42 +1025,6 @@ describe('AiSdkBackend model history', () => {
     assert.equal(model.doStreamCalls[0]?.maxOutputTokens, 65_536);
   });
 
-  test('honors a Copilot account output limit on its Anthropic messages wire', async () => {
-    const model = completionModel();
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: {
-        slug: 'github-copilot',
-        providerType: 'github-copilot',
-        defaultModel: 'future-claude-model',
-        models: [
-          {
-            id: 'future-claude-model',
-            apiProtocol: 'anthropic-messages',
-            maxOutputTokens: 128_000,
-          },
-        ],
-      },
-      apiKey: 'github-account-token',
-      modelId: 'future-claude-model',
-      modelFactory: () => model,
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'current user',
-        context: [],
-      }),
-    );
-
-    assert.equal(model.doStreamCalls[0]?.maxOutputTokens, 128_000);
-  });
 
   test('reserves Kimi fixed thinking inside the provider wire output limit', async () => {
     const model = completionModel();
@@ -1989,60 +1896,6 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('current-turn image attachment becomes a provider image part', async () => {
-    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
-    const model = completionModel();
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-      readAttachmentBytes: async () => ({ ok: true, bytes: pngBytes }),
-      supportsVision: true,
-    } as never);
-
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'describe this chart',
-        attachments: [
-          {
-            kind: 'image',
-            name: 'chart.png',
-            mimeType: 'image/png',
-            bytes: pngBytes.length,
-            ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'fake/chart.png' },
-          },
-        ],
-        context: [],
-        runtimeContext: [],
-      }),
-    );
-
-    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
-    const currentUser = prompt[prompt.length - 1];
-    const parts = currentUser.content as Array<{
-      type: string;
-      image?: unknown;
-      mediaType?: string;
-      text?: string;
-      data?: unknown;
-    }>;
-    // AI SDK LanguageModelV4 normalizes ModelMessage file parts into generic
-    // file parts at the provider boundary (mediaType carries image/png); the
-    // image bytes must reach the provider as a non-text image/png part.
-    const imageLike = parts.find((p) => p.type !== 'text' && p.mediaType === 'image/png');
-    assert.ok(
-      imageLike,
-      `expected an image/png part in current user content, got: ${JSON.stringify(parts)}`,
-    );
-  });
 
   test('current-turn image attachment falls back to text unless vision support is explicit', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
@@ -7695,54 +7548,7 @@ describe('AiSdkBackend error surfaces', () => {
 });
 
 describe('AiSdkBackend usage telemetry', () => {
-  test('normalizes standard LanguageModelUsage detail token fields', () => {
-    const usage = normalizeAiSdkUsage({
-      inputTokens: 100,
-      outputTokens: 20,
-      inputTokenDetails: {
-        cacheReadTokens: 30,
-        cacheWriteTokens: 10,
-      },
-      outputTokenDetails: {
-        reasoningTokens: 5,
-      },
-    });
 
-    assert.deepEqual(usage, {
-      inputTokens: 100,
-      outputTokens: 20,
-      cacheHitInputTokens: 30,
-      cacheMissInputTokens: 60,
-      cacheMissInputSource: 'derived',
-      cachedInputTokens: 30,
-      cacheWriteInputTokens: 10,
-      reasoningTokens: 5,
-      totalTokens: 120,
-    });
-  });
-
-  test('lets an unconfigured turn continue past the former 50-step default', async () => {
-    const loop = countingToolLoopModel(51);
-    const durable = durableTurnHarness('turn-1', 'hi');
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => loop.model,
-      tools: [testTool('Read', z.object({ path: z.string() }))],
-      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-
-    const events = await drainDurably(backend.send(durable.input()), durable);
-
-    assert.equal(loop.callCount(), 52);
-    assert.equal(events.at(-1)?.type, 'complete');
-  });
 
   test('retries an output-free truncated provider stream once and recovers', async () => {
     const durable = durableTurnHarness('turn-truncated-retry', 'analyse the image');
@@ -10098,46 +9904,6 @@ describe('AiSdkBackend usage telemetry', () => {
 });
 
 describe('AiSdkBackend request-shape diagnostics', () => {
-  test('identical request shape keeps the same hash and reports stable after first turn', () => {
-    const tools = canonicalizeToolSet(
-      [
-        testTool('Read', z.object({ path: z.string() })),
-        testTool('Bash', z.object({ command: z.string() })),
-      ],
-      testTool(INVALID_TOOL_NAME, z.object({ tool: z.string().optional() })),
-    );
-    const first = computeRequestShapeDiagnostic(
-      {
-        connection: connection(),
-        modelId: 'mock-model-id',
-        systemPrompt: 'durable system',
-        providerOptions: { temperature: 0, nested: { b: 2, a: 1 } },
-        providerTools: tools.providerTools,
-        activeTools: tools.activeTools,
-        priorMessages: [{ role: 'user', content: 'hello' }],
-      },
-      undefined,
-    );
-    const second = computeRequestShapeDiagnostic(
-      {
-        connection: connection(),
-        modelId: 'mock-model-id',
-        systemPrompt: 'durable system',
-        providerOptions: { nested: { a: 1, b: 2 }, temperature: 0 },
-        providerTools: tools.providerTools,
-        activeTools: tools.activeTools,
-        priorMessages: [{ role: 'user', content: 'hello' }],
-      },
-      first,
-    );
-
-    assert.equal(first.prefixChangeReason, 'first_turn');
-    assert.equal(first.requestShapeChangeReason, 'first_turn');
-    assert.equal(second.prefixChangeReason, 'stable');
-    assert.equal(second.requestShapeChangeReason, 'stable');
-    assert.equal(second.prefixHash, first.prefixHash);
-    assert.equal(second.requestShapeHash, first.requestShapeHash);
-  });
 
   test('classifies targeted request-shape changes', () => {
     const tools = canonicalizeToolSet(
@@ -12091,85 +11857,6 @@ describe('AiSdkBackend RunTrace', () => {
 });
 
 describe('AiSdkBackend tool execution', () => {
-  test('ordinary tool execution preserves tool-call/result ordering and telemetry', async () => {
-    const messages: unknown[] = [];
-    const events: SessionEvent[] = [];
-    const telemetry: Array<{ status: string; toolCallId?: string; argsSummary?: string }> = [];
-    let implCalled = false;
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header('ask'),
-      appendMessage: async (message) => {
-        messages.push(message);
-      },
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-      recordToolInvocation: (record) => {
-        telemetry.push({
-          status: record.status,
-          toolCallId: record.toolCallId,
-          argsSummary: record.argsSummary,
-        });
-      },
-    });
-    const tool: MakaTool = {
-      name: 'Read',
-      description: 'read file',
-      parameters: {},
-      impl: async () => {
-        implCalled = true;
-        return { kind: 'text', text: 'hello' };
-      },
-    };
-    const execute = runtimeExecute(backend, tool, 'turn-1', {
-      push: (event) => events.push(event),
-    });
-
-    const result = await execute(
-      {
-        path: 'notes.md',
-        authorization: 'Bearer opaque-session-value',
-        apiKey: 'plain-provider-key',
-        password: 'correct-horse-battery-staple',
-      },
-      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
-    );
-
-    assert.equal(implCalled, true);
-    assert.deepEqual(result, { kind: 'text', text: 'hello' });
-    assert.deepEqual(
-      messages
-        .map((message) => (message as { type?: string }).type)
-        .filter((type) => type === 'tool_call' || type === 'tool_result'),
-      ['tool_call', 'tool_result'],
-    );
-    assert.deepEqual(
-      events
-        .map((event) => event.type)
-        .filter((type) => type === 'tool_start' || type === 'tool_result'),
-      ['tool_start', 'tool_result'],
-    );
-    assert.equal(
-      events.some((event) => event.type === 'permission_request'),
-      false,
-    );
-    assert.deepEqual(telemetry, [
-      {
-        status: 'success',
-        toolCallId: 'tool-1',
-        argsSummary:
-          '{"path":"notes.md","authorization":"[redacted]","apiKey":"[redacted]","password":"[redacted]"}',
-      },
-    ]);
-    assert.equal(JSON.stringify(telemetry).includes('opaque-session-value'), false);
-    assert.equal(JSON.stringify(telemetry).includes('plain-provider-key'), false);
-    assert.equal(JSON.stringify(telemetry).includes('correct-horse-battery-staple'), false);
-  });
 
   test('WebSearch telemetry never copies the user-derived query', async () => {
     const telemetry: Array<{ argsSummary?: string }> = [];

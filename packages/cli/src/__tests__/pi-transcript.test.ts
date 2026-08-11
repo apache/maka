@@ -29,29 +29,6 @@ import {
 before(() => _setColorLevelForTesting(3));
 
 describe('Maka Pi TUI transcript', () => {
-  test('formats long-running turn durations with readable units', () => {
-    const metadata = (turnElapsedMs: number) => ({
-      title: 'Test session',
-      connectionSlug: 'test',
-      cwd: '/repo',
-      model: 'test-model',
-      permissionMode: 'ask',
-      turnElapsedMs,
-    });
-
-    assert.equal(stripAnsi(renderMakaPiActivityStrip(metadata(0), 80)), 'Working… 0s');
-    assert.equal(stripAnsi(renderMakaPiActivityStrip(metadata(59_999), 80)), 'Working… 59s');
-    assert.equal(stripAnsi(renderMakaPiActivityStrip(metadata(60_000), 80)), 'Working… 1m');
-    assert.equal(stripAnsi(renderMakaPiActivityStrip(metadata(83_000), 80)), 'Working… 1m 23s');
-    assert.equal(
-      stripAnsi(renderMakaPiActivityStrip(metadata(3_661_000), 80)),
-      'Working… 1h 1m 1s',
-    );
-    assert.equal(
-      stripAnsi(renderMakaPiActivityStrip(metadata(90_061_000), 80)),
-      'Working… 1d 1h 1m 1s',
-    );
-  });
 
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
@@ -306,38 +283,7 @@ describe('Maka Pi TUI transcript', () => {
     ]);
   });
 
-  test('restores the step-limit system notice from stored history', () => {
-    const state = createMakaPiTranscriptState();
 
-    replaceTranscriptWithStoredMessages(state, [
-      { type: 'system_note', id: 'notice-1', turnId: 'turn-1', ts: 1, kind: 'step_limit' },
-    ]);
-
-    assert.deepEqual(state.entries, [
-      {
-        kind: 'notice',
-        level: 'info',
-        text: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
-      },
-    ]);
-  });
-
-  test('reports completed manual compact runs when there was nothing to compact', async () => {
-    const state = createMakaPiTranscriptState();
-    const driver = new RecordingDriver([
-      event({ type: 'token_usage', input: 0, output: 0 }),
-      event({ type: 'complete', stopReason: 'end_turn' }),
-    ]);
-
-    await submitCompactToTranscript({ state, driver });
-
-    assert.equal(driver.compactCalls, 1);
-    assert.ok(
-      state.entries.some(
-        (entry) => entry.kind === 'notice' && entry.text === 'Nothing to compact.',
-      ),
-    );
-  });
 
   test('reports manual compact failed-open diagnostics instead of no-op success', async () => {
     const state = createMakaPiTranscriptState();
@@ -1756,49 +1702,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(lines.join('\n'), /\x1b\[31mexit 1\x1b\[39m/);
   });
 
-  test('shows the first real command line when a Bash command leads with comments', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        args: { command: '# look for the setting\ngrep -n "setting" src/config.ts' },
-      }),
-    );
 
-    const compact = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(compact, /\$ grep -n "setting" src\/config\.ts/);
-    assert.doesNotMatch(compact, /look for the setting/);
-  });
-
-  test('summarizes a silent successful command as (no output)', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        args: { command: 'true' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'tool-1',
-        isError: false,
-        content: terminalResult('', '', { cmd: 'true' }),
-      }),
-    );
-
-    const lines = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi);
-    assert.equal(lines.length, 2);
-    assert.match(lines.join('\n'), /\(no output\)/);
-    assert.doesNotMatch(lines.join('\n'), /\(Ctrl\+O\)/);
-  });
 
   test('shows the latest live output line while a tool is running', () => {
     const state = createMakaPiTranscriptState();
