@@ -54,6 +54,9 @@ import {
   savedRequestHeaderDrafts,
   type RequestHeaderDraft,
 } from './request-customization-editor';
+import {
+  CredentialProfilesSection,
+} from './credential-profiles-section';
 
 export function ConnectionDetail(props: ConnectionDetailProps) {
   const defaults = PROVIDER_DEFAULTS[props.connection.providerType];
@@ -156,6 +159,23 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     refreshModels,
     remove,
     refreshAfterRelogin,
+    supportsProfiles,
+    profileReadiness,
+    profileReadinessFailed,
+    profileActionId,
+    profileSecretDraft,
+    setProfileSecretDraft,
+    profileNewLabel,
+    setProfileNewLabel,
+    profileNewWeight,
+    setProfileNewWeight,
+    createProfile,
+    updateProfile,
+    setProfileEnabled,
+    removeProfile,
+    setProfileRoutingMode,
+    saveProfileCredential,
+    runProfileTest,
   } = useConnectionDetail(props);
   // Capability switches only exist for openai-compatible relays: built-in
   // providers declare their thinking support in model metadata, a custom
@@ -416,6 +436,31 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           </VStack>
         )}
       </DetailSection>
+      {supportsProfiles && (
+        <>
+          <Divider />
+          <CredentialProfilesSection
+            connection={connection}
+            readiness={profileReadiness}
+            readinessFailed={profileReadinessFailed}
+            actionId={profileActionId}
+            secretDraft={profileSecretDraft}
+            setSecretDraft={setProfileSecretDraft}
+            newLabel={profileNewLabel}
+            setNewLabel={setProfileNewLabel}
+            newWeight={profileNewWeight}
+            setNewWeight={setProfileNewWeight}
+            onCreate={createProfile}
+            onUpdate={updateProfile}
+            onSetEnabled={setProfileEnabled}
+            onRemove={removeProfile}
+            onSetRoutingMode={setProfileRoutingMode}
+            onSaveCredential={saveProfileCredential}
+            onTest={runProfileTest}
+            busy={allActionsBusy}
+          />
+        </>
+      )}
       {/* The rows draw the closing rule themselves; without them the section
           still needs one. Two rules with a gap between them read as an empty
           row, so only ever one. */}

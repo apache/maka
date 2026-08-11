@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
+  projectCredentialProfileReadiness,
   projectHostConnections,
   projectHostConnectionTest,
+  projectHostProfileTest,
   registerRuntimeHostConnectionsIpc,
 } from '../runtime-host-connections-ipc-main.js';
 
@@ -332,6 +334,172 @@ test('preserves the Host-tested model and diagnostics for the existing Desktop U
       statusCode: 503,
       errorClass: 'provider_unavailable',
     },
+  );
+});
+
+test('projects Profile test outcomes without leaking secrets or provider bodies', () => {
+  assert.deepEqual(
+    projectHostProfileTest({
+      kind: 'committed',
+      verification: 'recorded',
+      test: {
+        kind: 'verified',
+        checkedAt: '2026-08-05T00:00:00.000Z',
+        modelId: 'model-1',
+        latencyMs: 42,
+      },
+    }),
+    { ok: true, modelTested: 'model-1', latencyMs: 42 },
+  );
+  assert.deepEqual(
+    projectHostProfileTest({
+      kind: 'committed',
+      verification: 'not_recorded',
+      test: {
+        kind: 'failed',
+        checkedAt: '2026-08-05T00:00:01.000Z',
+        modelId: 'model-1',
+        latencyMs: null,
+        statusCode: 401,
+        errorClass: 'auth',
+      },
+    }),
+    { ok: false, modelTested: 'model-1', statusCode: 401, errorClass: 'auth' },
+  );
+  assert.deepEqual(
+    projectHostProfileTest({ kind: 'rejected', reason: 'profile_not_found' }),
+    { ok: false, errorMessage: 'Profile test did not run: rejected' },
+  );
+});
+
+test('projects Profile readiness as a secret-free view', () => {
+  const projected = projectCredentialProfileReadiness({
+    kind: 'found',
+    connectionId: 'connection-1',
+    connectionRevision: 7,
+    routingMode: 'balanced',
+    readyCandidateCount: 1,
+    profiles: [
+      {
+        profileId: 'profile-2',
+        revision: 1,
+        label: 'backup',
+        enabled: true,
+        weight: 25,
+        primary: false,
+        credentialConfigured: true,
+        lastTest: { status: 'verified', checkedAt: '2026-08-05T00:00:00.000Z' },
+        supportedModels: ['model-1'],
+        circuit: { state: 'closed', blockedUntil: null, nextProbeAt: null },
+      },
+    ],
+  });
+  assert.equal(projected.routingMode, 'balanced');
+  assert.equal(projected.readyCandidateCount, 1);
+  assert.equal(projected.profiles[0]?.label, 'backup');
+  assert.equal(projected.profiles[0]?.credentialConfigured, true);
+  assert.equal(JSON.stringify(projected).includes('secret'), false);
+});
+
+test('wires Profile CRUD, readiness and test channels against the Host client', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const calls: string[] = [];
+  const readiness = {
+    kind: 'found' as const,
+    connectionId: 'connection-1',
+    connectionRevision: 4,
+    routingMode: 'legacy_primary' as const,
+    readyCandidateCount: 0,
+    profiles: [],
+  };
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async (): Promise<ConnectionCatalogSnapshot> => catalog(),
+      queryCredentialProfileReadiness: async () => readiness,
+      createCredentialProfile: async (input: { label: string; weight: number }) => {
+        calls.push(`create:${input.label}:${input.weight}`);
+        return { kind: 'committed', catalogRevision: 5, connection: { connectionId: 'connection-1', revision: 5 } };
+      },
+      setCredentialProfileEnabled: async (input: {
+        expected: { profileId: string };
+        enabled: boolean;
+      }) => {
+        calls.push(`enabled:${input.expected.profileId}:${input.enabled}`);
+        return { kind: 'committed', catalogRevision: 6, connection: { connectionId: 'connection-1', revision: 6 } };
+      },
+      setCredentialRoutingMode: async (input: { mode: string }) => {
+        calls.push(`mode:${input.mode}`);
+        return { kind: 'committed', catalogRevision: 7, connection: { connectionId: 'connection-1', revision: 7 } };
+      },
+      setCredential: async (input: { locator: { profileId: string }; secret: string }) => {
+        calls.push(`credential:${input.locator.profileId}`);
+        assert.equal(input.secret, 'saved-key');
+        return { kind: 'committed', snapshot: { revision: 2, entries: [] } };
+      },
+      queryCredential: async () => null,
+      testConnectionProfile: async (connectionId: string, profileId: string) => {
+        calls.push(`test:${profileId}`);
+        return {
+          kind: 'committed',
+          verification: 'recorded' as const,
+          test: {
+            kind: 'verified' as const,
+            checkedAt: '2026-08-05T00:00:00.000Z',
+            modelId: 'model-1',
+            latencyMs: 12,
+          },
+        };
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  const queried = await handlers.get('connections:profiles:query')?.({}, 'openrouter');
+  assert.deepEqual(queried, {
+    connectionRevision: 4,
+    routingMode: 'legacy_primary',
+    readyCandidateCount: 0,
+    profiles: [],
+  });
+
+  await handlers.get('connections:profiles:create')?.({}, 'openrouter', { label: 'backup', weight: 30 });
+  assert.ok(calls.includes('create:backup:30'));
+
+  await handlers.get('connections:profiles:setEnabled')?.({}, 'openrouter', {
+    profileId: 'profile-2',
+    profileRevision: 1,
+    enabled: true,
+  });
+  assert.ok(calls.includes('enabled:profile-2:true'));
+
+  await handlers.get('connections:profiles:setRoutingMode')?.({}, 'openrouter', { mode: 'balanced' });
+  assert.ok(calls.includes('mode:balanced'));
+
+  await handlers.get('connections:profiles:setCredential')?.({}, 'openrouter', {
+    profileId: 'profile-2',
+    secret: 'saved-key',
+  });
+  assert.ok(calls.includes('credential:profile-2'));
+
+  const tested = await handlers.get('connections:profiles:test')?.({}, 'openrouter', {
+    profileId: 'profile-2',
+  });
+  assert.deepEqual(tested, { ok: true, modelTested: 'model-1', latencyMs: 12 });
+
+  await assert.rejects(
+    async () =>
+      handlers.get('connections:profiles:create')?.({}, 'openrouter', { label: '', weight: 5 }),
+    /Profile create input/,
+  );
+  await assert.rejects(
+    async () =>
+      handlers.get('connections:profiles:setCredential')?.({}, 'openrouter', { profileId: 'profile-2' }),
+    /Profile credential input/,
   );
 });
 

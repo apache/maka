@@ -18,7 +18,12 @@ import type {
   CredentialLocator,
 } from '@maka/core/runtime-policy';
 import { normalizeRequestHeaderUpdates } from '@maka/core/runtime-policy';
-import type { ConnectionTestRunResult } from '@maka/runtime-host/protocol';
+import type {
+  ConnectionProfileModelFetchResult,
+  ConnectionProfileTestRunResult,
+  ConnectionTestRunResult,
+  CredentialProfileQueryResult,
+} from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import {
   handleReconnectableRead,
@@ -34,18 +39,78 @@ import {
 type HostConnectionsClient = Pick<
   DesktopRuntimeHostClient,
   | 'createConnection'
+  | 'createCredentialProfile'
   | 'deleteCredential'
   | 'fetchConnectionModels'
+  | 'fetchConnectionProfileModels'
   | 'getConnectionRequestHeaders'
   | 'loadConnectionCatalog'
   | 'queryCredential'
+  | 'queryCredentialProfileReadiness'
   | 'removeConnection'
+  | 'removeCredentialProfile'
   | 'replaceConnectionRequestHeaders'
   | 'setCredential'
+  | 'setCredentialProfileEnabled'
+  | 'setCredentialRoutingMode'
   | 'setDefaultConnectionTarget'
   | 'testConnection'
+  | 'testConnectionProfile'
   | 'updateConnection'
+  | 'updateCredentialProfile'
 >;
+
+export interface CredentialProfileReadinessView {
+  readonly connectionRevision: number;
+  readonly routingMode: 'legacy_primary' | 'balanced';
+  readonly readyCandidateCount: number;
+  readonly profiles: ReadonlyArray<{
+    readonly profileId: string;
+    readonly revision: number;
+    readonly label: string;
+    readonly enabled: boolean;
+    readonly weight: number;
+    readonly primary: boolean;
+    readonly credentialConfigured: boolean;
+    readonly lastTest:
+      | {
+          readonly status: 'verified' | 'needs_reauth' | 'error';
+          readonly checkedAt: string;
+          readonly errorClass?: string;
+        }
+      | null;
+    readonly supportedModels: readonly string[];
+    readonly circuit:
+      | {
+          readonly state: 'closed' | 'open' | 'half_open' | 'invalid';
+          readonly blockedUntil: number | null;
+          readonly nextProbeAt: number | null;
+        }
+      | null;
+  }>;
+};
+
+export function projectCredentialProfileReadiness(
+  result: Extract<CredentialProfileQueryResult, { readonly kind: 'found' }>,
+): CredentialProfileReadinessView {
+  return {
+    connectionRevision: result.connectionRevision,
+    routingMode: result.routingMode,
+    readyCandidateCount: result.readyCandidateCount,
+    profiles: result.profiles.map((profile) => ({
+      profileId: profile.profileId,
+      revision: profile.revision,
+      label: profile.label,
+      enabled: profile.enabled,
+      weight: profile.weight,
+      primary: profile.primary,
+      credentialConfigured: profile.credentialConfigured,
+      lastTest: profile.lastTest,
+      supportedModels: [...profile.supportedModels],
+      circuit: profile.circuit,
+    })),
+  };
+}
 
 export interface RuntimeHostConnectionsIpcDeps {
   readonly ipcMain: ReconnectableReadIpcMain;
@@ -277,6 +342,180 @@ export function registerRuntimeHostConnectionsIpc(
       return projectHostConnectionTest(result);
     },
   );
+  deps.ipcMain.handle('connections:profiles:query', async (_event, slug: unknown) => {
+    const current = requireConnection(await snapshot(), slug);
+    const result = await deps.client.queryCredentialProfileReadiness(current.connectionId);
+    if (result.kind !== 'found') throw new Error('Connection no longer exists');
+    return projectCredentialProfileReadiness(result);
+  });
+  deps.ipcMain.handle(
+    'connections:profiles:create',
+    async (_event, slug: unknown, raw: unknown) => {
+      const catalog = await snapshot();
+      const current = requireConnection(catalog, slug);
+      const input = normalizeProfileCreateInput(raw);
+      const created = await deps.client.createCredentialProfile({
+        expected: { connectionId: current.connectionId, revision: current.revision },
+        label: input.label,
+        weight: input.weight,
+      });
+      requireCommitted(created, 'create Profile');
+      deps.emitConnectionListChanged();
+    },
+  );
+  deps.ipcMain.handle(
+    'connections:profiles:update',
+    async (_event, slug: unknown, raw: unknown) => {
+      const current = requireConnection(await snapshot(), slug);
+      const input = normalizeProfileUpdateInput(raw);
+      const updated = await deps.client.updateCredentialProfile({
+        expected: {
+          connectionId: current.connectionId,
+          connectionRevision: current.revision,
+          profileId: input.profileId,
+          profileRevision: input.profileRevision,
+        },
+        ...(input.label === undefined ? {} : { label: input.label }),
+        ...(input.weight === undefined ? {} : { weight: input.weight }),
+      });
+      requireCommitted(updated, 'update Profile');
+      deps.emitConnectionListChanged();
+    },
+  );
+  deps.ipcMain.handle(
+    'connections:profiles:setEnabled',
+    async (_event, slug: unknown, raw: unknown) => {
+      const current = requireConnection(await snapshot(), slug);
+      const input = normalizeProfileBasisInput(raw, 'Profile enable toggle');
+      if (typeof input.enabled !== 'boolean') throw new Error('Invalid Profile enable toggle');
+      const updated = await deps.client.setCredentialProfileEnabled({
+        expected: {
+          connectionId: current.connectionId,
+          connectionRevision: current.revision,
+          profileId: input.profileId,
+          profileRevision: input.profileRevision,
+        },
+        enabled: input.enabled,
+      });
+      requireCommitted(updated, 'update Profile enable state');
+      deps.emitConnectionListChanged();
+    },
+  );
+  deps.ipcMain.handle(
+    'connections:profiles:remove',
+    async (_event, slug: unknown, raw: unknown) => {
+      const current = requireConnection(await snapshot(), slug);
+      const input = normalizeProfileBasisInput(raw, 'Profile delete');
+      const removed = await deps.client.removeCredentialProfile({
+        expected: {
+          connectionId: current.connectionId,
+          connectionRevision: current.revision,
+          profileId: input.profileId,
+          profileRevision: input.profileRevision,
+        },
+      });
+      requireCommitted(removed, 'remove Profile');
+      deps.emitConnectionListChanged();
+    },
+  );
+  deps.ipcMain.handle(
+    'connections:profiles:setRoutingMode',
+    async (_event, slug: unknown, raw: unknown) => {
+      const catalog = await snapshot();
+      const current = requireConnection(catalog, slug);
+      const input = normalizeProfileRoutingModeInput(raw);
+      const updated = await deps.client.setCredentialRoutingMode({
+        expected: { connectionId: current.connectionId, revision: current.revision },
+        mode: input.mode,
+      });
+      if (updated.kind !== 'committed') {
+        throw new Error(`Unable to change Profile routing mode: ${updated.kind}`);
+      }
+      deps.emitConnectionListChanged();
+    },
+  );
+  deps.ipcMain.handle(
+    'connections:profiles:setCredential',
+    async (_event, slug: unknown, raw: unknown) => {
+      const current = requireConnection(await snapshot(), slug);
+      const input = normalizeProfileCredentialInput(raw);
+      const locator = profileCredentialLocator(current, input.profileId);
+      const currentCredential = await deps.client.queryCredential(locator);
+      const result = await deps.client.setCredential({
+        locator,
+        expected: currentCredential?.configured
+          ? {
+              credentialId: currentCredential.credentialId,
+              revision: currentCredential.revision,
+            }
+          : null,
+        secret: input.secret,
+      });
+      if (result.kind !== 'committed') {
+        throw new Error(`Unable to save Profile credential: ${result.kind}`);
+      }
+      deps.emitConnectionListChanged();
+    },
+  );
+  deps.ipcMain.handle(
+    'connections:profiles:test',
+    async (_event, slug: unknown, raw: unknown) => {
+      const current = requireConnection(await snapshot(), slug);
+      const input = normalizeProfileTestInput(raw);
+      const result = await deps.client.testConnectionProfile(
+        current.connectionId,
+        input.profileId,
+        input.modelId,
+      );
+      deps.emitConnectionListChanged();
+      return projectHostProfileTest(result);
+    },
+  );
+  deps.ipcMain.handle(
+    'connections:profiles:fetchModels',
+    async (_event, slug: unknown, raw: unknown) => {
+      const current = requireConnection(await snapshot(), slug);
+      const input = normalizeProfileBasisInput(raw, 'Profile model fetch');
+      const result = await deps.client.fetchConnectionProfileModels(
+        current.connectionId,
+        input.profileId,
+      );
+      if (result.kind !== 'committed') {
+        throw new Error(`Unable to fetch Profile models: ${result.kind}`);
+      }
+      deps.emitConnectionListChanged();
+      const latest = requireConnection(await snapshot(), current.slug);
+      return {
+        models: [...latest.models],
+        source: result.source,
+        fetchedAt: result.fetchedAt,
+      };
+    },
+  );
+}
+
+export function projectHostProfileTest(
+  result: ConnectionProfileTestRunResult,
+): ConnectionTestResult {
+  if (result.kind !== 'committed') {
+    return { ok: false, errorMessage: `Profile test did not run: ${result.kind}` };
+  }
+  if (result.test.kind === 'verified') {
+    return {
+      ok: true,
+      modelTested: result.test.modelId,
+      latencyMs: result.test.latencyMs,
+    };
+  }
+  return {
+    ok: false,
+    ...(result.test.modelId === null ? {} : { modelTested: result.test.modelId }),
+    ...(result.test.latencyMs === null ? {} : { latencyMs: result.test.latencyMs }),
+    ...(result.test.statusCode === null ? {} : { statusCode: result.test.statusCode }),
+    errorClass: result.test.errorClass === 'invalid_response'
+      ? 'unknown'
+      : result.test.errorClass,
+  };
 }
 
 export function projectHostConnectionTest(result: ConnectionTestRunResult): ConnectionTestResult {
@@ -459,4 +698,167 @@ function requireCommitted(
   operation: string,
 ): void {
   if (result.kind !== 'committed') throw new Error(`Unable to ${operation}: ${result.kind}`);
+}
+
+interface ProfileCreateIpcInput {
+  readonly label: string;
+  readonly weight: number;
+}
+
+interface ProfileUpdateIpcInput {
+  readonly profileId: string;
+  readonly profileRevision: number;
+  readonly label?: string;
+  readonly weight?: number;
+}
+
+interface ProfileBasisIpcInput {
+  readonly profileId: string;
+  readonly profileRevision: number;
+  readonly enabled?: boolean;
+}
+
+interface ProfileRoutingModeIpcInput {
+  readonly mode: 'legacy_primary' | 'balanced';
+}
+
+interface ProfileCredentialIpcInput {
+  readonly profileId: string;
+  readonly secret: string;
+}
+
+interface ProfileTestIpcInput {
+  readonly profileId: string;
+  readonly modelId?: string;
+}
+
+function normalizeProfileCreateInput(value: unknown): ProfileCreateIpcInput {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('label' in value) ||
+    !('weight' in value) ||
+    typeof value.label !== 'string' ||
+    value.label.trim().length === 0 ||
+    typeof value.weight !== 'number' ||
+    !Number.isInteger(value.weight) ||
+    value.weight < 1 ||
+    value.weight > 100
+  ) {
+    throw new Error('Profile create input must include a label and a 1-100 weight');
+  }
+  return { label: value.label.trim(), weight: value.weight };
+}
+
+function normalizeProfileUpdateInput(value: unknown): ProfileUpdateIpcInput {
+  const base = normalizeProfileBasisInput(value, 'Profile update');
+  if (typeof value !== 'object' || value === null) throw new Error('Invalid Profile update');
+  const label = 'label' in value ? value.label : undefined;
+  const weight = 'weight' in value ? value.weight : undefined;
+  if (label !== undefined && (typeof label !== 'string' || label.trim().length === 0)) {
+    throw new Error('Profile label must be a non-empty string');
+  }
+  if (
+    weight !== undefined &&
+    (typeof weight !== 'number' ||
+      !Number.isInteger(weight) ||
+      weight < 1 ||
+      weight > 100)
+  ) {
+    throw new Error('Profile weight must be an integer from 1 to 100');
+  }
+  return {
+    profileId: base.profileId,
+    profileRevision: base.profileRevision,
+    ...(label === undefined ? {} : { label: (label as string).trim() }),
+    ...(weight === undefined ? {} : { weight: weight as number }),
+  };
+}
+
+function normalizeProfileBasisInput(value: unknown, label: string): ProfileBasisIpcInput {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('profileId' in value) ||
+    !('profileRevision' in value) ||
+    typeof value.profileId !== 'string' ||
+    value.profileId.length === 0 ||
+    typeof value.profileRevision !== 'number' ||
+    !Number.isSafeInteger(value.profileRevision) ||
+    value.profileRevision < 1
+  ) {
+    throw new Error(`Invalid ${label} basis`);
+  }
+  const enabled = 'enabled' in value ? value.enabled : undefined;
+  if (enabled !== undefined && typeof enabled !== 'boolean') {
+    throw new Error(`Invalid ${label} enable flag`);
+  }
+  return {
+    profileId: value.profileId,
+    profileRevision: value.profileRevision,
+    ...(enabled === undefined ? {} : { enabled: enabled as boolean }),
+  };
+}
+
+function normalizeProfileRoutingModeInput(value: unknown): ProfileRoutingModeIpcInput {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('mode' in value) ||
+    (value.mode !== 'legacy_primary' && value.mode !== 'balanced')
+  ) {
+    throw new Error('Profile routing mode must be legacy_primary or balanced');
+  }
+  return { mode: value.mode };
+}
+
+function normalizeProfileCredentialInput(value: unknown): ProfileCredentialIpcInput {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('profileId' in value) ||
+    !('secret' in value) ||
+    typeof value.profileId !== 'string' ||
+    value.profileId.length === 0 ||
+    typeof value.secret !== 'string'
+  ) {
+    throw new Error('Profile credential input must include a profileId and a secret');
+  }
+  return { profileId: value.profileId, secret: value.secret };
+}
+
+function normalizeProfileTestInput(value: unknown): ProfileTestIpcInput {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('profileId' in value) ||
+    typeof value.profileId !== 'string' ||
+    value.profileId.length === 0
+  ) {
+    throw new Error('Profile test input must include a profileId');
+  }
+  const modelId = 'modelId' in value ? value.modelId : undefined;
+  if (modelId !== undefined && (typeof modelId !== 'string' || modelId.length === 0)) {
+    throw new Error('Profile test model must be a non-empty string');
+  }
+  return {
+    profileId: value.profileId,
+    ...(modelId === undefined ? {} : { modelId: modelId as string }),
+  };
+}
+
+function profileCredentialLocator(
+  connection: ConnectionCatalogEntry,
+  profileId: string,
+): Extract<CredentialLocator, { scope: 'connection_profile' }> {
+  if (profileId === connection.connectionId) {
+    throw new Error('The primary Profile credential uses the Connection credential');
+  }
+  const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+  return {
+    scope: 'connection_profile',
+    connectionId: connection.connectionId,
+    profileId,
+    kind: authKind === 'oauth_token' ? 'oauth_token' : 'api_key',
+  };
 }

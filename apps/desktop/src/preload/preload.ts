@@ -3,6 +3,7 @@ import { encodeIngestItems } from './attachment-ingest-payload.js';
 import { notifyWhenSeeded } from './seed-completion.js';
 import { releaseSessionObservation } from './session-observation-release.js';
 import type {
+  CredentialProfileReadinessView,
   MakaBridge,
   OnboardingSnapshot,
   DesktopTaskSubmissionReadinessRequest,
@@ -990,6 +991,49 @@ const makaBridge = {
     },
     subscribeEvents(handler: (event: ConnectionEvent) => void): () => void {
       return subscribeActiveRuntimeHostEvent('connections:event', handler);
+    },
+    profiles: {
+      query(slug: string): Promise<CredentialProfileReadinessView> {
+        return ipcRenderer.invoke('connections:profiles:query', slug);
+      },
+      create(slug: string, input: { label: string; weight: number }): Promise<void> {
+        return ipcRenderer.invoke('connections:profiles:create', slug, input);
+      },
+      update(
+        slug: string,
+        input: {
+          profileId: string;
+          profileRevision: number;
+          label?: string;
+          weight?: number;
+        },
+      ): Promise<void> {
+        return ipcRenderer.invoke('connections:profiles:update', slug, input);
+      },
+      setEnabled(
+        slug: string,
+        input: { profileId: string; profileRevision: number; enabled: boolean },
+      ): Promise<void> {
+        return ipcRenderer.invoke('connections:profiles:setEnabled', slug, input);
+      },
+      remove(slug: string, input: { profileId: string; profileRevision: number }): Promise<void> {
+        return ipcRenderer.invoke('connections:profiles:remove', slug, input);
+      },
+      setRoutingMode(slug: string, input: { mode: 'legacy_primary' | 'balanced' }): Promise<void> {
+        return ipcRenderer.invoke('connections:profiles:setRoutingMode', slug, input);
+      },
+      setCredential(slug: string, input: { profileId: string; secret: string }): Promise<void> {
+        return ipcRenderer.invoke('connections:profiles:setCredential', slug, input);
+      },
+      test(
+        slug: string,
+        input: { profileId: string; modelId?: string },
+      ): Promise<ConnectionTestResult> {
+        return ipcRenderer.invoke('connections:profiles:test', slug, input);
+      },
+      fetchModels(slug: string, input: { profileId: string }): Promise<ModelDiscoveryResult> {
+        return ipcRenderer.invoke('connections:profiles:fetchModels', slug, input);
+      },
     },
   },
   mcp: {

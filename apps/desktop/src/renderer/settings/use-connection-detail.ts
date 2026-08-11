@@ -31,6 +31,13 @@ import {
   providerPanelActionErrorMessage,
   type ConnectionsBridge,
   type CredentialPresenceStatus,
+  type CredentialProfileReadinessView,
+  type ProfileBasisInput,
+  type ProfileCreateInput,
+  type ProfileCredentialInput,
+  type ProfileRoutingModeInput,
+  type ProfileTestInput,
+  type ProfileUpdateInput,
 } from './provider-panel-shared';
 
 // Maps an OAuth model-connection provider type to the browser-assisted login
@@ -608,6 +615,194 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     await props.onChanged();
   }
 
+  // ---------------------------------------------------------------------------
+  // Credential Profiles ("Accounts / API Keys")
+  //
+  // Readiness is a composite projection from the host (Catalog + Vault +
+  // routing Verification/Health) and never contains secret material. API keys
+  // are written only through `saveProfileCredential` (save-time only), and
+  // profile removal confirms against the label, never a secret.
+  // ---------------------------------------------------------------------------
+  const profilesBridge = props.bridge.profiles;
+  const supportsProfiles = supportsApiKey && profilesBridge !== undefined;
+  const [profileReadiness, setProfileReadiness] = useState<CredentialProfileReadinessView | null>(
+    null,
+  );
+  const [profileReadinessFailed, setProfileReadinessFailed] = useState(false);
+  const [profileActionId, setProfileActionId] = useState<string | null>(null);
+  const [profileSecretDraft, setProfileSecretDraft] = useState<Record<string, string>>({});
+  const [profileNewLabel, setProfileNewLabel] = useState('');
+  const [profileNewWeight, setProfileNewWeight] = useState(25);
+
+  async function refreshProfileReadiness(): Promise<void> {
+    if (!profilesBridge) return;
+    const lifecycle = connectionDetailLifecycleRef.current;
+    try {
+      const next = await profilesBridge.query(connection.slug);
+      if (!isConnectionDetailCurrent(lifecycle)) return;
+      setProfileReadiness(next);
+      setProfileReadinessFailed(false);
+    } catch (error) {
+      if (!isConnectionDetailCurrent(lifecycle)) return;
+      setProfileReadinessFailed(true);
+      toast.error(copy.profileReadFailed, providerPanelActionErrorMessage(error, locale));
+    }
+  }
+
+  useEffect(() => {
+    if (!supportsProfiles) {
+      setProfileReadiness(null);
+      return;
+    }
+    setProfileReadinessFailed(false);
+    void refreshProfileReadiness();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection.slug, profilesBridge, supportsProfiles]);
+
+  // One Profile-scoped action at a time (test / save key / fetch models /
+  // CRUD), serialized across the sheet like the other action families.
+  async function withProfileAction<T>(
+    actionId: string,
+    run: () => Promise<T>,
+  ): Promise<T | undefined> {
+    if (profileActionId !== null) return undefined;
+    const lifecycle = connectionDetailLifecycleRef.current;
+    setProfileActionId(actionId);
+    try {
+      return await run();
+    } finally {
+      if (isConnectionDetailCurrent(lifecycle)) setProfileActionId(null);
+    }
+  }
+
+  function profileEntry(profileId: string) {
+    return profileReadiness?.profiles.find((profile) => profile.profileId === profileId) ?? null;
+  }
+
+  function currentConnectionRevision(): number {
+    return profileReadiness?.connectionRevision ?? 0;
+  }
+
+  async function createProfile(input: ProfileCreateInput): Promise<boolean> {
+    if (!profilesBridge) return false;
+    const outcome = await withProfileAction(`create:${input.label}`, async () => {
+      await profilesBridge.create(connection.slug, input);
+      await props.onChanged();
+      await refreshProfileReadiness();
+    });
+    if (outcome === undefined) return false;
+    if (isConnectionDetailCurrent(connectionDetailLifecycleRef.current)) {
+      setProfileNewLabel('');
+    }
+    return true;
+  }
+
+  async function updateProfile(input: ProfileUpdateInput): Promise<boolean> {
+    if (!profilesBridge) return false;
+    const outcome = await withProfileAction(`update:${input.profileId}`, async () => {
+      await profilesBridge.update(connection.slug, input);
+      await props.onChanged();
+      await refreshProfileReadiness();
+    });
+    return outcome !== undefined;
+  }
+
+  async function setProfileEnabled(input: ProfileBasisInput & { enabled: boolean }): Promise<boolean> {
+    if (!profilesBridge) return false;
+    const outcome = await withProfileAction(`enabled:${input.profileId}`, async () => {
+      await profilesBridge.setEnabled(connection.slug, input);
+      await props.onChanged();
+      await refreshProfileReadiness();
+    });
+    return outcome !== undefined;
+  }
+
+  async function removeProfile(
+    input: ProfileBasisInput,
+    label: string,
+  ): Promise<boolean> {
+    if (!profilesBridge) return false;
+    const lifecycle = connectionDetailLifecycleRef.current;
+    const confirmed = await toast.confirm({
+      title: copy.removeProfileTitle(label),
+      description: copy.removeProfileDescription,
+      confirmLabel: copy.removeProfileConfirm,
+      cancelLabel: copy.cancel,
+      destructive: true,
+    });
+    if (!isConnectionDetailCurrent(lifecycle)) return false;
+    if (!confirmed) return false;
+    const outcome = await withProfileAction(`remove:${input.profileId}`, async () => {
+      await profilesBridge.remove(connection.slug, input);
+      await props.onChanged();
+      await refreshProfileReadiness();
+    });
+    return outcome !== undefined;
+  }
+
+  async function setProfileRoutingMode(input: ProfileRoutingModeInput): Promise<boolean> {
+    if (!profilesBridge) return false;
+    const outcome = await withProfileAction('routing-mode', async () => {
+      await profilesBridge.setRoutingMode(connection.slug, input);
+      await props.onChanged();
+      await refreshProfileReadiness();
+    });
+    return outcome !== undefined;
+  }
+
+  async function saveProfileCredential(input: ProfileCredentialInput): Promise<boolean> {
+    if (!profilesBridge) return false;
+    const lifecycle = connectionDetailLifecycleRef.current;
+    const outcome = await withProfileAction(`credential:${input.profileId}`, async () => {
+      await profilesBridge.setCredential(connection.slug, input);
+      if (isConnectionDetailCurrent(lifecycle)) {
+        setProfileSecretDraft((current) => {
+          const { [input.profileId]: _written, ...rest } = current;
+          return rest;
+        });
+      }
+      await props.onChanged();
+      await refreshProfileReadiness();
+    });
+    return outcome !== undefined;
+  }
+
+  async function runProfileTest(input: ProfileTestInput): Promise<ConnectionTestResult | null> {
+    if (!profilesBridge) return null;
+    const lifecycle = connectionDetailLifecycleRef.current;
+    const result = await withProfileAction(`test:${input.profileId}`, async () => {
+      const tested = await profilesBridge.test(connection.slug, input);
+      if (!isConnectionDetailCurrent(lifecycle)) return null;
+      if (tested.ok) {
+        toast.success(
+          copy.profileTestSuccess(profileEntry(input.profileId)?.label ?? input.profileId),
+          `${tested.modelTested} · ${tested.latencyMs} ms`,
+        );
+      } else {
+        toast.error(
+          copy.profileTestFailed(profileEntry(input.profileId)?.label ?? input.profileId),
+          connectionTestFailureMessage(tested, {
+            auth: copy.authTroubleshooting(credentialTroubleshootingCopy),
+            recheck: copy.recheckTroubleshooting(credentialTroubleshootingCopy),
+          }, locale),
+        );
+      }
+      await refreshProfileReadiness();
+      return tested;
+    });
+    return result ?? null;
+  }
+
+  async function fetchProfileModels(input: ProfileBasisInput): Promise<boolean> {
+    if (!profilesBridge) return false;
+    const outcome = await withProfileAction(`fetch:${input.profileId}`, async () => {
+      await profilesBridge.fetchModels(connection.slug, input);
+      await props.onChanged();
+      await refreshProfileReadiness();
+    });
+    return outcome !== undefined;
+  }
+
   return {
     apiKey,
     setApiKey,
@@ -622,6 +817,24 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     deleting,
     detailActionBusy,
     supportsApiKey,
+    supportsProfiles,
+    profileReadiness,
+    profileReadinessFailed,
+    profileActionId,
+    profileSecretDraft,
+    setProfileSecretDraft,
+    profileNewLabel,
+    setProfileNewLabel,
+    profileNewWeight,
+    setProfileNewWeight,
+    createProfile,
+    updateProfile,
+    setProfileEnabled,
+    removeProfile,
+    setProfileRoutingMode,
+    saveProfileCredential,
+    runProfileTest,
+    fetchProfileModels,
     needsOAuth,
     usesGitHubCopilotLogin,
     oauthLoginService,

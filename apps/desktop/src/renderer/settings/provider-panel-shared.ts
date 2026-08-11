@@ -11,8 +11,43 @@ import {
   type UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { type UiLocale } from '@maka/core/ui-locale';
+import type { CredentialProfileReadinessView } from '../../preload/bridge-contract.js';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
 import { cleanErrorMessage } from '../model-connection-errors.js';
+
+export type { CredentialProfileReadinessView } from '../../preload/bridge-contract.js';
+
+export interface ProfileCreateInput {
+  readonly label: string;
+  readonly weight: number;
+}
+
+export interface ProfileUpdateInput {
+  readonly profileId: string;
+  readonly profileRevision: number;
+  readonly label?: string;
+  readonly weight?: number;
+}
+
+export interface ProfileBasisInput {
+  readonly profileId: string;
+  readonly profileRevision: number;
+  readonly enabled?: boolean;
+}
+
+export interface ProfileRoutingModeInput {
+  readonly mode: 'legacy_primary' | 'balanced';
+}
+
+export interface ProfileCredentialInput {
+  readonly profileId: string;
+  readonly secret: string;
+}
+
+export interface ProfileTestInput {
+  readonly profileId: string;
+  readonly modelId?: string;
+}
 
 export interface ConnectionsBridge {
   list(): Promise<LlmConnection[]>;
@@ -30,6 +65,17 @@ export interface ConnectionsBridge {
     headers: readonly RequestHeaderUpdate[],
   ): Promise<SavedRequestHeaders>;
   subscribeEvents?(handler: () => void): () => void;
+  profiles?: {
+    query(slug: string): Promise<CredentialProfileReadinessView>;
+    create(slug: string, input: ProfileCreateInput): Promise<void>;
+    update(slug: string, input: ProfileUpdateInput): Promise<void>;
+    setEnabled(slug: string, input: ProfileBasisInput & { enabled: boolean }): Promise<void>;
+    remove(slug: string, input: ProfileBasisInput): Promise<void>;
+    setRoutingMode(slug: string, input: ProfileRoutingModeInput): Promise<void>;
+    setCredential(slug: string, input: ProfileCredentialInput): Promise<void>;
+    test(slug: string, input: ProfileTestInput): Promise<ConnectionTestResult>;
+    fetchModels(slug: string, input: ProfileBasisInput): Promise<ModelDiscoveryResult>;
+  };
 }
 
 export type CredentialPresenceStatus = boolean | 'loading' | 'error';

@@ -300,6 +300,41 @@ export interface PetPackChangedEvent {
   readonly ts: number;
 }
 
+/**
+ * Credential Profile readiness projection exposed to the renderer. Never
+ * carries secret material: credential presence is a boolean, API keys are
+ * only ever written through `profiles.setCredential`.
+ */
+export interface CredentialProfileReadinessView {
+  readonly connectionRevision: number;
+  readonly routingMode: 'legacy_primary' | 'balanced';
+  readonly readyCandidateCount: number;
+  readonly profiles: ReadonlyArray<{
+    readonly profileId: string;
+    readonly revision: number;
+    readonly label: string;
+    readonly enabled: boolean;
+    readonly weight: number;
+    readonly primary: boolean;
+    readonly credentialConfigured: boolean;
+    readonly lastTest:
+      | {
+          readonly status: 'verified' | 'needs_reauth' | 'error';
+          readonly checkedAt: string;
+          readonly errorClass?: string;
+        }
+      | null;
+    readonly supportedModels: readonly string[];
+    readonly circuit:
+      | {
+          readonly state: 'closed' | 'open' | 'half_open' | 'invalid';
+          readonly blockedUntil: number | null;
+          readonly nextProbeAt: number | null;
+        }
+      | null;
+  }>;
+}
+
 export interface MakaBridge {
   runtimeHost: {
     query<K extends RendererRuntimeHostQueryOperation>(
@@ -580,6 +615,35 @@ export interface MakaBridge {
       headers: readonly import('@maka/core/llm-connections').RequestHeaderUpdate[],
     ): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     subscribeEvents(handler: (event: ConnectionEvent) => void): () => void;
+    profiles: {
+      query(slug: string): Promise<CredentialProfileReadinessView>;
+      create(slug: string, input: { label: string; weight: number }): Promise<void>;
+      update(
+        slug: string,
+        input: {
+          profileId: string;
+          profileRevision: number;
+          label?: string;
+          weight?: number;
+        },
+      ): Promise<void>;
+      setEnabled(
+        slug: string,
+        input: {
+          profileId: string;
+          profileRevision: number;
+          enabled: boolean;
+        },
+      ): Promise<void>;
+      remove(slug: string, input: { profileId: string; profileRevision: number }): Promise<void>;
+      setRoutingMode(slug: string, input: { mode: 'legacy_primary' | 'balanced' }): Promise<void>;
+      setCredential(slug: string, input: { profileId: string; secret: string }): Promise<void>;
+      test(
+        slug: string,
+        input: { profileId: string; modelId?: string },
+      ): Promise<ConnectionTestResult>;
+      fetchModels(slug: string, input: { profileId: string }): Promise<ModelDiscoveryResult>;
+    };
   };
   mcp: {
     getConfig(): Promise<McpConfigFile>;
