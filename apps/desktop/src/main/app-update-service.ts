@@ -70,7 +70,12 @@ interface AppUpdateServiceDeps {
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
   onStatusChange?: (status: AppUpdateStatus) => void;
-  hasActiveTasks: () => boolean | Promise<boolean>;
+  prepareInstall: (
+    input: AppUpdateInstallRequest,
+  ) => Promise<
+    | { readonly kind: 'active_tasks' }
+    | { readonly kind: 'prepared'; rollback(): void }
+  >;
   clock?: {
     setTimeout(callback: () => void, delayMs: number): unknown;
     clearTimeout(handle: unknown): void;
@@ -164,6 +169,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     cancelledForRetry: boolean;
   } | undefined;
   let checkTimer: unknown;
+  let installHandoff: { rollback(): void } | undefined;
   let started = false;
   let disposed = false;
   // Resolve Electron's singleton lazily so tests can inject an updater without
@@ -201,6 +207,12 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     operation,
     message: error instanceof Error ? error.message : String(error),
   });
+
+  const rollbackInstallHandoff = (): void => {
+    const handoff = installHandoff;
+    installHandoff = undefined;
+    handoff?.rollback();
+  };
 
   const trackAutoDownload = (result: UpdateCheckResult | null): void => {
     if (!result?.downloadPromise) return;
@@ -278,6 +290,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       : status.state === 'available' || status.state === 'downloading'
         ? 'download'
         : 'check';
+    if (operation === 'install') rollbackInstallHandoff();
     publishError(operation, error);
   });
 
@@ -353,26 +366,17 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
 
   async function installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult> {
     if (status.state !== 'downloaded') return { ok: false, reason: 'not_downloaded' };
-    let hasActiveTasks: boolean;
-    try {
-      hasActiveTasks = await deps.hasActiveTasks();
-    } catch (error) {
-      publishError('install', error);
-      return { ok: false, reason: 'install_failed' };
-    }
-    if (typeof hasActiveTasks !== 'boolean') {
-      publishError('install', new Error('Active task status is unavailable'));
-      return { ok: false, reason: 'install_failed' };
-    }
-    if (hasActiveTasks && !input.allowInterruptActiveTasks) {
-      return { ok: false, reason: 'active_tasks' };
-    }
     if (deps.mockLatestVersion) {
       return { ok: true };
     }
-    const version = latestVersion() ?? deps.currentVersion;
-    publish({ state: 'installing', currentVersion: deps.currentVersion, latestVersion: version });
     try {
+      const preparation = await deps.prepareInstall(input);
+      if (preparation.kind === 'active_tasks') {
+        return { ok: false, reason: 'active_tasks' };
+      }
+      installHandoff = preparation;
+      const version = latestVersion() ?? deps.currentVersion;
+      publish({ state: 'installing', currentVersion: deps.currentVersion, latestVersion: version });
       updater.quitAndInstall(false, true);
       const installStatus = currentStatus();
       if (installStatus.state === 'error' && installStatus.operation === 'install') {
@@ -380,6 +384,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       }
       return { ok: true };
     } catch (error) {
+      rollbackInstallHandoff();
       publishError('install', error);
       return { ok: false, reason: 'install_failed' };
     }

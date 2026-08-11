@@ -55,7 +55,8 @@ export function authorizeRuntimeHostOperation(
   frame: RequestFrame,
 ): boolean {
   if (
-    (frame.operation === 'access.credential.issue' ||
+    (frame.operation === 'host.upgrade.prepare' ||
+      frame.operation === 'access.credential.issue' ||
       frame.operation === 'access.credential.revoke') &&
     authority.principalKind !== 'local_owner'
   ) {

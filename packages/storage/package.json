@@ -28,6 +28,7 @@
     "./root-authority": "./dist/root-authority.js",
     "./state-root-composition": "./dist/state-root-composition.js",
     "./runtime-policy-stores": "./dist/runtime-policy-stores.js",
+    "./scheduled-task-store": "./dist/scheduled-task-store.js",
     "./settings-store": "./dist/settings-store.js",
     "./shell-run-authority": "./dist/shell-run-authority.js",
     "./task-ledger-authority": "./dist/task-ledger-authority.js",

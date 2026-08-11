@@ -16,6 +16,7 @@ import {
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type HostRegistration,
   type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
@@ -104,6 +105,8 @@ export interface DesktopRuntimeHostCandidateStartInput extends DesktopRuntimeHos
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
   readonly candidateEntrypoint: string | URL;
+  readonly generation?: string;
+  readonly takeoverHostEpoch?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -118,6 +121,7 @@ export interface DesktopRuntimeHostCandidate {
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
+  readonly hostLifecycleMode: HostRegistration["lifecycleMode"];
   stopSession(sessionId: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -126,6 +130,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
+  readonly hostLifecycleMode: HostRegistration["lifecycleMode"];
   readonly #client: DesktopRuntimeHostClient;
   readonly #observer: RuntimeHostSessionObserver;
   readonly #ipc: ScopedIpcMain;
@@ -150,6 +155,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     detachSessionObservations: () => void;
     closeSessionObservations: () => Promise<void>;
     connectionClosed: Promise<void>;
+    hostLifecycleMode: HostRegistration["lifecycleMode"];
     hasRegisteredCapabilities: () => boolean;
     stopSession: (sessionId: string) => Promise<void>;
   }) {
@@ -166,6 +172,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     this.#hasRegisteredCapabilities = input.hasRegisteredCapabilities;
     this.#stopSession = input.stopSession;
     this.botIncoming = input.botIncoming;
+    this.hostLifecycleMode = input.hostLifecycleMode;
     this.closed = input.connectionClosed.then(() => this.close());
   }
 
@@ -222,6 +229,7 @@ export async function startDesktopRuntimeHostCandidate(
         connection.connection,
         input,
         observationRegistry,
+        connection.registration.lifecycleMode,
       ),
     };
   } catch (error) {
@@ -234,6 +242,7 @@ export async function createDesktopRuntimeHostCandidate(
   connection: RuntimeHostConnection,
   deps: DesktopRuntimeHostCandidateDeps,
   observationRegistry?: RuntimeHostSessionObservationRegistry,
+  hostLifecycleMode?: HostRegistration["lifecycleMode"],
 ): Promise<DesktopRuntimeHostCandidate> {
   const client = new DesktopRuntimeHostClient(connection);
   const ipc = new ScopedIpcMain(deps.ipcMain);
@@ -477,6 +486,7 @@ export async function createDesktopRuntimeHostCandidate(
           ? sessionObservations.close()
           : Promise.resolve(),
       connectionClosed: connection.closed,
+      hostLifecycleMode,
       hasRegisteredCapabilities: () => capabilitiesRegistered,
       stopSession,
     });
@@ -507,6 +517,10 @@ function connectInput(
     },
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
     candidateEntrypoint: input.candidateEntrypoint,
+    ...(input.generation === undefined ? {} : { generation: input.generation }),
+    ...(input.takeoverHostEpoch === undefined
+      ? {}
+      : { takeoverHostEpoch: input.takeoverHostEpoch }),
     ...(input.clientInstanceId === undefined
       ? {}
       : { clientInstanceId: input.clientInstanceId }),

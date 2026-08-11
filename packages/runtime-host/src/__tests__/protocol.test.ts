@@ -33,6 +33,7 @@ import {
   TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH,
   TURN_MESSAGE_QUOTE_MAX_COUNT,
   TURN_MESSAGE_QUOTE_TEXT_MAX_LENGTH,
+  TURN_FAILURE_MESSAGE_MAX_BYTES,
   TURN_SKILL_ID_MAX_COUNT,
   TURN_SKILL_ID_MAX_LENGTH,
 } from '../protocol/turn.js';
@@ -47,7 +48,7 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('declares the current protocol and closed authority operation set', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 15);
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 17);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
       'access.credential.issue',
       'access.credential.revoke',
@@ -90,6 +91,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'goal.query',
       'host.diagnostics.query',
       'host.status',
+      'host.upgrade.prepare',
       'hosted.execution.cancel',
       'hosted.execution.start',
       'interaction.answer',
@@ -117,6 +119,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'runtime.resource.query',
       'runtime.resource.start',
       'runtime.resource.stop',
+      'scheduled-task.mutate',
+      'scheduled-task.query',
       'session.branch.create',
       'session.catalog.query',
       'session.configuration.update',
@@ -226,10 +230,25 @@ describe('Runtime Host bootstrap protocol', () => {
         hostEpoch: 'epoch-1',
         subscriptionId: 'subscription-1',
         nextSequence: 1,
+        activeAssistantStreams: [{ kind: 'thinking', turnId: 'turn-1', messageId: 'message-1' }],
         snapshot: continuitySnapshot('epoch-1'),
       },
     };
     assert.deepEqual(decodeHostFrame(opened), opened);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...opened,
+          result: {
+            ...opened.result,
+            activeAssistantStreams: [
+              ...opened.result.activeAssistantStreams,
+              ...opened.result.activeAssistantStreams,
+            ],
+          },
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         decodeHostFrame({
@@ -365,6 +384,44 @@ describe('Runtime Host bootstrap protocol', () => {
             text: 'private reasoning',
             signature: 'provider-signature',
           },
+        }),
+      isInvalidFrame,
+    );
+    const completion = {
+      kind: 'subscription.session_delta' as const,
+      hostEpoch: 'epoch-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      sessionId: 'session-1',
+      delta: {
+        kind: 'thinking' as const,
+        turnId: 'turn-1',
+        runId: 'run-1',
+        messageId: 'message-1',
+        startOffset: 7,
+        text: '',
+        complete: true as const,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(completion), completion);
+    const replacement = {
+      ...completion,
+      delta: {
+        kind: completion.delta.kind,
+        turnId: completion.delta.turnId,
+        runId: completion.delta.runId,
+        messageId: completion.delta.messageId,
+        startOffset: 0,
+        text: 'final',
+        reset: true as const,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(replacement), replacement);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...replacement,
+          delta: { ...replacement.delta, startOffset: 1 },
         }),
       isInvalidFrame,
     );
@@ -757,6 +814,7 @@ describe('Runtime Host bootstrap protocol', () => {
       compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
       compositionId: 'maka.interactive',
       compositionRevision: '1',
+      lifecycleMode: 'service' as const,
       state: 'ready' as const,
       pid: 42,
       createdAt: '2026-07-23T00:00:00.000Z',
@@ -1540,6 +1598,36 @@ describe('Runtime Host bootstrap protocol', () => {
             status: 'completed',
             terminalEventId: 'event-1',
             abortSource: 'user',
+          },
+        }),
+      isInvalidFrame,
+    );
+  });
+
+  test('carries a bounded failed Turn message without opening the snapshot shape', () => {
+    const response = {
+      requestId: 'request-failed-turn',
+      operation: 'turn.query' as const,
+      ok: true as const,
+      result: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'failed' as const,
+        terminalEventId: 'event-1',
+        failureClass: 'unknown',
+        failureMessage: 'Provider request failed',
+      },
+    };
+
+    assert.deepEqual(decodeHostFrame(response), response);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...response,
+          result: {
+            ...response.result,
+            failureMessage: '界'.repeat(TURN_FAILURE_MESSAGE_MAX_BYTES),
           },
         }),
       isInvalidFrame,

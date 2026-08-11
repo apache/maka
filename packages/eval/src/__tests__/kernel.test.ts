@@ -21,6 +21,133 @@ test('experiment expands task by repetition by subject', () => {
   );
 });
 
+test('all arms of one task repetition start together', async () => {
+  const store = new MemoryStore();
+  let started = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const threeArms: ExperimentSpec = {
+    ...spec(),
+    subjects: ['a', 'b', 'c'].map((id) => ({
+      id,
+      kind: 'maka' as const,
+      credentials: [],
+      config: {},
+    })),
+  };
+  const executor: ExperimentExecutor = {
+    kind: 'executor',
+    runAttempt: async (_input, operation) => {
+      started += 1;
+      await gate;
+      return {
+        kind: 'settled',
+        value: await operation({
+          context: {
+            cwd: '/workspace',
+            taskInput: 'solve',
+            metadata: {},
+            execute: async () => ({ termination: 'exited', exitCode: 0, stdout: '' }),
+          },
+          verify: async () => ({
+            status: 'completed',
+            score: 1,
+            failureReason: null,
+            artifacts: [],
+          }),
+        }),
+      };
+    },
+  };
+  const subject: SubjectAdapter = {
+    kind: 'maka',
+    execute: async () => ({
+      usage: null,
+      costUsd: null,
+      durationMs: 1,
+      status: 'completed',
+      failureReason: null,
+      artifacts: [],
+    }),
+  };
+
+  const running = runExperiment({ spec: threeArms, store, executor, subjects: [subject] });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  try {
+    assert.equal(started, 3);
+  } finally {
+    release();
+    await running;
+  }
+});
+
+test('task-group concurrency never exceeds the frozen limit', async () => {
+  const store = new MemoryStore();
+  let active = 0;
+  let peak = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const threeTasks: ExperimentSpec = {
+    ...spec(),
+    execution: { maxConcurrentTaskGroups: 2 },
+    subjects: [spec().subjects[0]!],
+    tasks: ['one', 'two', 'three'].map((id) => ({ id, input: 'solve', config: {} })),
+    repetitions: 1,
+  };
+  const executor: ExperimentExecutor = {
+    kind: 'executor',
+    runAttempt: async (_input, operation) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      if (active === 2) release();
+      await gate;
+      active -= 1;
+      return {
+        kind: 'settled',
+        value: await operation({
+          context: {
+            cwd: '/workspace',
+            taskInput: 'solve',
+            metadata: {},
+            execute: async () => ({ termination: 'exited', exitCode: 0, stdout: '' }),
+          },
+          verify: async () => ({
+            status: 'completed',
+            score: 1,
+            failureReason: null,
+            artifacts: [],
+          }),
+        }),
+      };
+    },
+  };
+  const subject: SubjectAdapter = {
+    kind: 'maka',
+    execute: async () => ({
+      usage: null,
+      costUsd: null,
+      durationMs: 1,
+      status: 'completed',
+      failureReason: null,
+      artifacts: [],
+    }),
+  };
+
+  const results = await runExperiment({
+    spec: threeTasks,
+    store,
+    executor,
+    subjects: [subject],
+  });
+
+  assert.equal(peak, 2);
+  assert.equal(results.size, 3);
+});
+
 test('cell result is the earliest valid attempt, never a hand-picked replacement', () => {
   assert.equal(
     selectCellResult([attempt(1, 'infra_failed'), attempt(2, 'completed'), attempt(3, 'completed')])
@@ -292,6 +419,7 @@ function spec(): ExperimentSpec {
     id: 'experiment',
     benchmark: { id: 'benchmark', version: 'version', config: {} },
     executor: { kind: 'executor', config: {} },
+    execution: { maxConcurrentTaskGroups: 1 },
     subjects: [
       { id: 'a', kind: 'maka', credentials: [], config: {} },
       { id: 'b', kind: 'external', credentials: [], config: {} },

@@ -82,6 +82,7 @@ export function mapCompleteStopReason(reason: CompleteStopReason): RuntimeEventS
 export interface SessionEventMapMemory {
   toolNameByUseId: Map<string, string>;
   failureClass?: string;
+  failureContent?: Extract<RuntimeEvent['content'], { kind: 'error' }>;
 }
 
 export function createSessionEventMapMemory(): SessionEventMapMemory {
@@ -549,23 +550,26 @@ function mapBackendSessionEvent(
       };
 
     // ── Error ─────────────────────────────────────────────────────────────
-    case 'error':
+    case 'error': {
       // No status here: the backend follows with a terminal `complete(error)`.
       // Keeping status off the error event avoids a double-terminal in the
       // error path; the trailing complete carries the terminal signal.
       memory.failureClass = event.reason ?? event.code ?? 'unknown';
+      const content = {
+        kind: 'error' as const,
+        ...(event.code !== undefined ? { code: event.code } : {}),
+        ...(event.reason !== undefined ? { reason: event.reason } : {}),
+        message: event.message,
+        ...(event.details !== undefined ? { details: event.details } : {}),
+      };
+      memory.failureContent = content;
       return {
         ...base,
         role: 'system',
         author: 'system',
-        content: {
-          kind: 'error',
-          ...(event.code !== undefined ? { code: event.code } : {}),
-          ...(event.reason !== undefined ? { reason: event.reason } : {}),
-          message: event.message,
-          ...(event.details !== undefined ? { details: event.details } : {}),
-        },
+        content,
       };
+    }
 
     // ── Terminal: abort + complete ────────────────────────────────────────
     case 'abort':
@@ -629,6 +633,7 @@ function completeRuntimeEvent(
     role: 'system',
     author: 'system',
     status,
+    ...(status === 'failed' && memory.failureContent ? { content: memory.failureContent } : {}),
     actions: { endInvocation: true, stateDelta },
   };
 }

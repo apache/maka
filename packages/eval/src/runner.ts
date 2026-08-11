@@ -75,6 +75,16 @@ export interface AttemptStore {
   runExclusive<T>(operation: () => Promise<T>): Promise<T>;
 }
 
+export class ExecutorPreparationFailure extends Error {
+  constructor(
+    readonly artifacts: readonly JsonObject[],
+    options?: ErrorOptions,
+  ) {
+    super('executor preparation failed', options);
+    this.name = 'ExecutorPreparationFailure';
+  }
+}
+
 export async function runExperiment(input: {
   readonly spec: ExperimentSpec;
   readonly store: AttemptStore;
@@ -94,19 +104,35 @@ export async function runExperiment(input: {
       const subject = subjects.get(cell.subject.kind);
       if (!subject) throw new Error(`missing subject adapter: ${cell.subject.kind}`);
       subject.validate?.(cell);
-      if (input.signal?.aborted) break;
-      const attempts = await input.store.list(cell.id);
-      if (selectCellResult(attempts)) continue;
-      const startedAt = (input.now ?? Date.now)();
-      const result = await executeCell(input.executor, subject, cell, input.signal);
-      await input.store.append({
-        cellId: cell.id,
-        sequence: (attempts.at(-1)?.sequence ?? 0) + 1,
-        startedAt,
-        completedAt: (input.now ?? Date.now)(),
-        result,
-      });
     }
+    await runTaskGroups(
+      groupTaskCells(selected),
+      input.spec.execution.maxConcurrentTaskGroups,
+      async (group) => {
+        if (input.signal?.aborted) return;
+        await Promise.all(
+          group.map(async (cell) => {
+            if (input.signal?.aborted) return;
+            const attempts = await input.store.list(cell.id);
+            if (selectCellResult(attempts)) return;
+            const startedAt = (input.now ?? Date.now)();
+            const result = await executeCell(
+              input.executor,
+              subjects.get(cell.subject.kind)!,
+              cell,
+              input.signal,
+            );
+            await input.store.append({
+              cellId: cell.id,
+              sequence: (attempts.at(-1)?.sequence ?? 0) + 1,
+              startedAt,
+              completedAt: (input.now ?? Date.now)(),
+              result,
+            });
+          }),
+        );
+      },
+    );
 
     return new Map(
       (
@@ -118,6 +144,36 @@ export async function runExperiment(input: {
       ).flatMap(([cellId, result]) => (result ? [[cellId, result] as const] : [])),
     );
   });
+}
+
+function groupTaskCells(cells: readonly ExperimentCell[]): ExperimentCell[][] {
+  const groups = new Map<string, ExperimentCell[]>();
+  for (const cell of cells) {
+    const key = `${cell.task.id}\u0000${cell.repetition}`;
+    const group = groups.get(key);
+    if (group) group.push(cell);
+    else groups.set(key, [cell]);
+  }
+  return [...groups.values()];
+}
+
+async function runTaskGroups<T>(
+  groups: readonly T[],
+  maximum: number,
+  run: (group: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const group = groups[next];
+      next += 1;
+      if (group === undefined) return;
+      await run(group);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(maximum, groups.length) }, async () => await worker()),
+  );
 }
 
 async function executeCell(
@@ -176,8 +232,13 @@ async function executeCell(
       status: 'indeterminate',
       failureReason: 'executor cleanup did not settle',
     };
-  } catch {
-    return failure('infra_failed', 'executor preparation failed');
+  } catch (error) {
+    return failure(
+      'infra_failed',
+      'executor preparation failed',
+      undefined,
+      error instanceof ExecutorPreparationFailure ? error.artifacts : [],
+    );
   }
 }
 
@@ -292,6 +353,7 @@ function failure(
   status: 'infra_failed' | 'indeterminate',
   failureReason: string,
   subject?: SubjectExecutionResult,
+  artifacts: readonly JsonObject[] = subject?.artifacts ?? [],
 ): EvalResult {
   return {
     score: null,
@@ -300,7 +362,7 @@ function failure(
     durationMs: subject?.durationMs ?? 0,
     status,
     failureReason,
-    artifacts: subject?.artifacts ?? [],
+    artifacts,
   };
 }
 

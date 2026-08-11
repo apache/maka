@@ -249,6 +249,7 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
             title: input.title,
             ...(input.description ? { description: input.description } : {}),
             ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
+            ...(input.diagnosticTarget ? { execution: input.diagnosticTarget } : {}),
             rendererUserAgent: navigator.userAgent,
             rendererLocale: navigator.language,
           })

@@ -617,6 +617,7 @@ function openResult(hostEpoch: string, subscriptionId: string) {
     hostEpoch,
     subscriptionId,
     nextSequence: 1,
+    activeAssistantStreams: [],
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: {

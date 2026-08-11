@@ -73,6 +73,13 @@ export interface SubscriptionOpenResult {
   subscriptionId: string;
   nextSequence: number;
   snapshot: SessionContinuitySnapshot;
+  activeAssistantStreams: SessionAssistantStreamIdentity[];
+}
+
+export interface SessionAssistantStreamIdentity {
+  kind: 'text' | 'thinking';
+  turnId: string;
+  messageId: string;
 }
 
 export interface SubscriptionCloseInput {
@@ -101,6 +108,8 @@ export interface SessionAssistantDelta {
   messageId: string;
   startOffset: number;
   text: string;
+  reset?: true;
+  complete?: true;
 }
 
 export interface SessionDeltaFrame extends SubscriptionEnvelope {
@@ -473,6 +482,7 @@ function decodeSubscriptionOpenResult(value: unknown): SubscriptionOpenResult {
     'subscriptionId',
     'nextSequence',
     'snapshot',
+    'activeAssistantStreams',
   ]);
   const hostEpoch = requireId(record.hostEpoch, 'hostEpoch');
   const snapshot = decodeSessionContinuitySnapshot(record.snapshot);
@@ -482,7 +492,49 @@ function decodeSubscriptionOpenResult(value: unknown): SubscriptionOpenResult {
     subscriptionId: requireId(record.subscriptionId, 'subscriptionId'),
     nextSequence: requirePositiveCount(record.nextSequence, 'nextSequence'),
     snapshot,
+    activeAssistantStreams: decodeActiveAssistantStreams(record.activeAssistantStreams, snapshot),
   };
+}
+
+function decodeActiveAssistantStreams(
+  value: unknown,
+  snapshot: SessionContinuitySnapshot,
+): SessionAssistantStreamIdentity[] {
+  if (!Array.isArray(value)) {
+    throw invalidProtocolFrame('Invalid active Session assistant streams');
+  }
+  const root = snapshot.rootTurn;
+  const identities = value.map((candidate): SessionAssistantStreamIdentity => {
+    const record = requireExactRecord(candidate, 'active Session assistant stream', [
+      'kind',
+      'turnId',
+      'messageId',
+    ]);
+    if (record.kind !== 'text' && record.kind !== 'thinking') {
+      throw invalidProtocolFrame('Invalid active Session assistant stream kind');
+    }
+    const kind = record.kind;
+    const identity: SessionAssistantStreamIdentity = {
+      kind,
+      turnId: requireEntityId(record.turnId, 'turnId'),
+      messageId: requireEntityId(record.messageId, 'messageId'),
+    };
+    if (
+      !root ||
+      root.status === 'completed' ||
+      root.status === 'failed' ||
+      root.status === 'cancelled' ||
+      identity.turnId !== root.turnId
+    ) {
+      throw invalidProtocolFrame('Active Session assistant stream has no active root Turn');
+    }
+    return identity;
+  });
+  const keys = identities.map(({ kind, messageId }) => `${kind}\0${messageId}`);
+  if (new Set(keys).size !== keys.length) {
+    throw invalidProtocolFrame('Duplicate active Session assistant stream');
+  }
+  return identities;
 }
 
 function decodeSubscriptionCloseInput(value: unknown): SubscriptionCloseInput {
@@ -504,7 +556,18 @@ function decodeEnvelope(record: Record<string, unknown>): SubscriptionEnvelope {
 }
 
 function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
-  const record = requireExactRecord(value, 'Session assistant delta', [
+  const record = requireRecord(value, 'Session assistant delta');
+  assertAllowedKeys(record, 'Session assistant delta', [
+    'kind',
+    'turnId',
+    'runId',
+    'messageId',
+    'startOffset',
+    'text',
+    'reset',
+    'complete',
+  ]);
+  assertRequiredKeys(record, 'Session assistant delta', [
     'kind',
     'turnId',
     'runId',
@@ -515,17 +578,34 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
   if (record.kind !== 'text' && record.kind !== 'thinking') {
     throw invalidProtocolFrame('Invalid Session assistant delta kind');
   }
+  if (record.complete !== undefined && record.complete !== true) {
+    throw invalidProtocolFrame('Invalid Session assistant delta completion');
+  }
+  if (record.reset !== undefined && record.reset !== true) {
+    throw invalidProtocolFrame('Invalid Session assistant delta reset');
+  }
+  const startOffset = requireCount(record.startOffset, 'Session assistant delta start offset');
+  if (record.reset === true && startOffset !== 0) {
+    throw invalidProtocolFrame('Session assistant delta reset must start at offset zero');
+  }
   return {
     kind: record.kind,
     turnId: requireEntityId(record.turnId, 'turnId'),
     runId: requireEntityId(record.runId, 'runId'),
     messageId: requireEntityId(record.messageId, 'messageId'),
-    startOffset: requireCount(record.startOffset, 'Session assistant delta start offset'),
-    text: requireUtf8BoundedString(
-      record.text,
-      'Session assistant delta text',
-      SESSION_LIVE_DELTA_MAX_BYTES,
-    ),
+    startOffset,
+    // A completion may have no unseen suffix. Its empty frame closes the
+    // already accumulated content without resending the full assistant text.
+    text:
+      record.complete === true && record.text === ''
+        ? ''
+        : requireUtf8BoundedString(
+            record.text,
+            'Session assistant delta text',
+            SESSION_LIVE_DELTA_MAX_BYTES,
+          ),
+    ...(record.reset === true ? { reset: true as const } : {}),
+    ...(record.complete === true ? { complete: true as const } : {}),
   };
 }
 

@@ -33,6 +33,7 @@ export interface ExperimentSpec {
     readonly config: JsonObject;
   };
   readonly executor: { readonly kind: string; readonly config: JsonObject };
+  readonly execution: { readonly maxConcurrentTaskGroups: number };
   readonly subjects: readonly {
     readonly id: string;
     readonly kind: 'maka' | 'external';

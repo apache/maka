@@ -712,6 +712,48 @@ export class HostClientCapabilityCoordinator
     });
   }
 
+  async callWorkspaceService(
+    input: Omit<ClientCapabilityServiceInvocationInput, 'connectionId'>,
+  ): Promise<Record<string, unknown>> {
+    const candidates = [...this.#providers.values()]
+      .filter((provider) => {
+        const connection = this.#activeConnection(provider);
+        return Boolean(
+          connection &&
+            provider.current?.servicesByContract.has(
+              serviceContract(input.serviceId, input.version),
+            ),
+        );
+      })
+      .sort((left, right) => left.providerId.localeCompare(right.providerId));
+    const provider = candidates[0];
+    const connection = provider ? this.#activeConnection(provider) : undefined;
+    if (!connection) {
+      throw new ClientCapabilityInvocationError(
+        'capability_lost',
+        'No Client Capability provider offers this workspace service',
+      );
+    }
+    return this.callService({
+      connectionId: connection.connectionId,
+      serviceId: input.serviceId,
+      version: input.version,
+      method: input.method,
+      input: input.input,
+      ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+    });
+  }
+
+  hasWorkspaceService(serviceId: string, version: string): boolean {
+    return [...this.#providers.values()].some((provider) => {
+      const connection = this.#activeConnection(provider);
+      return Boolean(
+        connection && provider.current?.servicesByContract.has(serviceContract(serviceId, version)),
+      );
+    });
+  }
+
   hasService(connectionId: string, serviceId: string, version: string): boolean {
     const connection = this.#connections.get(connectionId);
     const provider = connection?.provider;

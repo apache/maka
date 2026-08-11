@@ -51,15 +51,16 @@ flowchart LR
 | Hosted Execution Authority | Root admission, execution identity, stop, terminal reconciliation, and recovery |
 | Run Composer | The immutable prompt, tool, policy, and source-revision basis for one Run |
 
-## Three identities that must stay separate
+## Four identities that must stay separate
 
 | Identity | Meaning | Lifetime |
 |---|---|---|
 | State Root | The canonical directory for durable Host state | Survives Host processes |
 | Host Epoch | One process instance that acquired the root owner | Ends with that process |
 | Composition ID | The static Host composition allowed to use the State Root | Persistently bound to the root |
+| Host Generation | The Runtime Host build requested by a local ephemeral Client | Product build, or one development Client process |
 
-A restart creates a new Host Epoch. It does not change the State Root or its Composition ID.
+A restart creates a new Host Epoch. A software update can also change the Host Generation. Neither changes the State Root or its Composition ID.
 
 ## Ownership boundaries
 
@@ -140,6 +141,16 @@ Skill catalog management is a Host-filesystem operation. It requires Host-path a
 | Close | Close Modules in reverse order, close listeners, then release the State Root owner |
 
 A Client disconnect releases only connection-scoped resources. It does not cancel an admitted execution.
+
+### Local ephemeral upgrade handoff
+
+A Host Generation is separate from protocol compatibility: two builds can speak the same protocol but still require process replacement so the new Runtime code becomes authoritative. A local owner Client may request an exact-Host-Epoch drain. The Kernel then uses the normal drain path, and the successor waits for the existing owner lock to be released.
+
+When startup finds another generation, the Host may return bounded activity counts for connections, operations, and residency categories. These facts explain why the process remains resident; they do not grant termination authority. Only local ephemeral Hosts support takeover. Service Hosts publish their lifecycle explicitly and remain connectable across Client generations; their deployment owner coordinates upgrades.
+
+Choosing Wait stops connection attempts until the observed Host process exits, so waiting does not keep an otherwise idle Host alive.
+
+For an ephemeral Host, update preparation carries the user's interrupt choice into the Host. The Kernel checks existing work and closes admission in one decision, then enters the normal drain path. For a service Host, Desktop quiesces only its own reconnection; it does not drain the deployment-owned Host. Desktop resumes reconnection if installation is rejected.
 
 ## Core invariants
 

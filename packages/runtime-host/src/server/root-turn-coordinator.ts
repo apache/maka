@@ -2737,7 +2737,9 @@ function isRuntimeSessionTransientEvent(
 ): event is RuntimeSessionTransientEvent {
   return (
     event.type === 'text_delta' ||
+    event.type === 'text_complete' ||
     event.type === 'thinking_delta' ||
+    event.type === 'thinking_complete' ||
     event.type === 'tool_start' ||
     event.type === 'tool_output_delta' ||
     event.type === 'tool_progress' ||

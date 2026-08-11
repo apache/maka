@@ -113,6 +113,40 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('treats text_complete as the authoritative assistant text', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'text_delta', messageId: 'message-1', text: 'draft' }),
+    );
+
+    renderMakaPiTranscript(state, meta(), 80);
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'text_complete', messageId: 'message-1', text: 'final' }),
+    );
+
+    assert.equal(
+      state.entries[0]?.kind === 'assistant' ? state.entries[0].text : undefined,
+      'final',
+    );
+    assert.match(renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n'), /final/);
+  });
+
+  test('allows text_complete to replace streamed assistant text with empty text', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'text_delta', messageId: 'message-1', text: 'discard me' }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'text_complete', messageId: 'message-1', text: '' }),
+    );
+
+    assert.equal(state.entries[0]?.kind === 'assistant' ? state.entries[0].text : undefined, '');
+  });
+
   test('reconciles durable tool details without resetting live turn state', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(

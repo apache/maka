@@ -176,6 +176,7 @@ function spec() {
     id: 'cli-test',
     benchmark: { id: 'benchmark', version: 'version', config: {} },
     executor: { kind: 'harbor', config: {} },
+    execution: { maxConcurrentTaskGroups: 1 },
     subjects: [{ id: 'maka', kind: 'maka', credentials: [], config: {} }],
     tasks: [{ id: 'task', input: 'solve', config: {} }],
     repetitions: 1,

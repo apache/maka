@@ -21,7 +21,13 @@ export interface RuntimeHostReconnectLifecycle<T extends RuntimeHostReconnectRes
   readonly current: T | undefined;
   waitForCurrent(previous?: T, signal?: AbortSignal): Promise<T>;
   subscribe(listener: (current: T | undefined) => void): () => void;
+  quiesce(): RuntimeHostReconnectQuiescence<T>;
   close(): Promise<void>;
+}
+
+export interface RuntimeHostReconnectQuiescence<T extends RuntimeHostReconnectResource> {
+  readonly current: T;
+  resume(): void;
 }
 
 export class RuntimeHostPermanentReconnectError extends Error {
@@ -73,6 +79,7 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   #installedAt = 0;
   #failureCount = 0;
   #closed = false;
+  #quiesced = false;
   #terminalError: Error | undefined;
   #reconnectTask: Promise<void> | undefined;
   #discardTask: Promise<void> = Promise.resolve();
@@ -147,6 +154,27 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
     return () => this.#listeners.delete(listener);
   }
 
+  quiesce(): RuntimeHostReconnectQuiescence<T> {
+    if (this.#closed || this.#terminalError) {
+      throw new Error('Runtime Host reconnect lifecycle is closed');
+    }
+    if (this.#quiesced) throw new Error('Runtime Host reconnect lifecycle is already quiesced');
+    const current = this.#current;
+    if (!current) throw new Error('Runtime Host has no current connection to quiesce');
+    this.#quiesced = true;
+    let active = true;
+    return {
+      current,
+      resume: () => {
+        if (!active) return;
+        active = false;
+        if (!this.#quiesced || this.#closed || this.#terminalError) return;
+        this.#quiesced = false;
+        this.#scheduleReconnect();
+      },
+    };
+  }
+
   close(): Promise<void> {
     this.#closeTask ??= this.#close();
     return this.#closeTask;
@@ -155,6 +183,7 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   async #close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#quiesced = false;
     this.#abort.abort();
     const error = new Error('Runtime Host reconnect lifecycle is closed');
     this.#rejectWaiters(error);
@@ -188,11 +217,18 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
     if (this.#now() - this.#installedAt >= this.#stableConnectionMs) this.#failureCount = 0;
     this.#failureCount += 1;
     this.#setCurrent(undefined);
-    this.#scheduleReconnect();
+    if (!this.#quiesced) this.#scheduleReconnect();
   }
 
   #scheduleReconnect(): void {
-    if (this.#closed || this.#terminalError || this.#current || this.#reconnectTask) return;
+    if (
+      this.#closed ||
+      this.#quiesced ||
+      this.#terminalError ||
+      this.#current ||
+      this.#reconnectTask
+    )
+      return;
     const task = this.#reconnect();
     this.#reconnectTask = task;
     const finalize = () => {
@@ -203,7 +239,7 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   }
 
   async #reconnect(): Promise<void> {
-    while (!this.#closed && !this.#terminalError && !this.#current) {
+    while (!this.#closed && !this.#quiesced && !this.#terminalError && !this.#current) {
       const delayMs = reconnectDelayMs(
         this.#failureCount - 1,
         this.#minMs,

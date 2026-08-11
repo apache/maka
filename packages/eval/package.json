@@ -20,7 +20,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run clean && npm run build && npm run test:dist",
-    "test:dist": "node --test \"dist/**/*.test.js\" && python3 harbor/test_relay_agent.py"
+    "test:dist": "node --test \"dist/**/*.test.js\" && python3 harbor/test_relay_agent.py && python3 harbor/test_run_trial.py"
   },
   "dependencies": {
     "@maka/runtime-host": "0.1.0"

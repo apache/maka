@@ -6,6 +6,7 @@ export function parseExperimentSpec(value: unknown): ExperimentSpec {
     'id',
     'benchmark',
     'executor',
+    'execution',
     'subjects',
     'tasks',
     'repetitions',
@@ -15,6 +16,7 @@ export function parseExperimentSpec(value: unknown): ExperimentSpec {
   if (root.schemaVersion !== 'maka.eval.v1') throw new Error('unsupported experiment schema');
   const benchmark = exact(root.benchmark, 'benchmark', ['id', 'version', 'config']);
   const executor = exact(root.executor, 'executor', ['kind', 'config']);
+  const execution = exact(root.execution, 'execution', ['maxConcurrentTaskGroups']);
   const subjects: ExperimentSpec['subjects'][number][] = array(root.subjects, 'subjects').map(
     (value, index) => {
       const subject = exact(value, `subjects[${index}]`, ['id', 'kind', 'credentials', 'config']);
@@ -51,6 +53,12 @@ export function parseExperimentSpec(value: unknown): ExperimentSpec {
     executor: {
       kind: identifier(executor.kind, 'executor.kind'),
       config: decodeJsonObject(executor.config, 'executor.config'),
+    },
+    execution: {
+      maxConcurrentTaskGroups: positiveInteger(
+        execution.maxConcurrentTaskGroups,
+        'execution.maxConcurrentTaskGroups',
+      ),
     },
     subjects,
     tasks,

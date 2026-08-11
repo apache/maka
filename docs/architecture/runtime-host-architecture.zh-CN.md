@@ -51,15 +51,16 @@ flowchart LR
 | Hosted Execution Authority | Root admission、execution identity、stop、terminal reconciliation 与 recovery |
 | Run Composer | 一次 Run 的 immutable prompt、tool、policy 与 source-revision 基线 |
 
-## 三种不能混合的 identity
+## 四种不能混合的 identity
 
 | Identity | 含义 | 生命周期 |
 |---|---|---|
 | State Root | Host durable state 的 canonical 目录 | 跨 Host 进程存在 |
 | Host Epoch | 一次取得 root owner 的进程实例 | 随该进程结束 |
 | Composition ID | 允许使用该 State Root 的静态 Host composition | 持久绑定到 root |
+| Host Generation | 本地 ephemeral Client 请求的 Runtime Host build | Product build，或一个 development Client process |
 
-重启会创建新的 Host Epoch，但不会改变 State Root 或 Composition ID。
+重启会创建新的 Host Epoch；软件更新也可能改变 Host Generation。两者都不会改变 State Root 或 Composition ID。
 
 ## 所有权边界
 
@@ -140,6 +141,16 @@ Skill Catalog 管理属于 Host 文件系统操作。它要求 Host-path authori
 | Close | 反序关闭 Modules，关闭 listeners，最后释放 State Root owner |
 
 Client disconnect 只释放 connection-scoped resources，不取消已经 admission 的 execution。
+
+### 本地 ephemeral upgrade handoff
+
+Host Generation 与 protocol compatibility 是两个事实：两个 build 即使使用相同 protocol，也可能必须替换进程，才能让新版 Runtime code 成为 authority。本地 owner Client 可以针对精确 Host Epoch 请求 drain。Kernel 继续使用正常 drain 路径，successor 则等待现有 owner lock 释放。
+
+Startup 发现另一个 generation 时，Host 可以返回 connection、operation 与 residency category 的 bounded activity count。这些事实用于解释进程为什么仍在驻留，并不授予 termination authority。只有本地 ephemeral Host 支持 takeover。Service Host 会明确发布自己的 lifecycle，并可被不同 Client generation 连接；升级由 deployment owner 协调。
+
+选择等待后，Client 会停止连接尝试，直到所观察的 Host 进程退出。因此，等待本身不会让本应进入 idle exit 的 Host 继续驻留。
+
+对于 ephemeral Host，更新准备会把用户是否允许中断的选择传给 Host。Kernel 在同一个决策点检查现有工作并关闭 admission，然后进入正常 drain。对于 service Host，Desktop 只暂停自己的 reconnect，不会 drain 由部署系统拥有的 Host。安装被拒绝时，Desktop 恢复 reconnect。
 
 ## 核心不变量
 

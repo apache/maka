@@ -132,7 +132,12 @@ export class RuntimeHostSessionChannel {
       return true;
     }
     this.messages.push(...(messages ?? []).map((message) => structuredClone(message)));
-    this.#projector = new RuntimeHostSessionProjector(this.snapshot, this.messages, this.#now);
+    this.#projector = new RuntimeHostSessionProjector(
+      this.snapshot,
+      this.messages,
+      this.#now,
+      subscription.activeAssistantStreams,
+    );
     for (const event of this.#projector.seedActive(false)) this.#emit(event);
     this.#ready = true;
     for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
@@ -337,7 +342,12 @@ export class RuntimeHostSessionChannel {
       ...messages.map((message) => structuredClone(message)),
     );
     this.snapshot = nextSnapshot;
-    this.#projector = new RuntimeHostSessionProjector(nextSnapshot, this.messages, this.#now);
+    this.#projector = new RuntimeHostSessionProjector(
+      nextSnapshot,
+      this.messages,
+      this.#now,
+      this.#subscription.activeAssistantStreams,
+    );
     if (!replacedLiveState) {
       for (const event of this.#projector.seedActive(false)) this.#emit(event);
       return false;

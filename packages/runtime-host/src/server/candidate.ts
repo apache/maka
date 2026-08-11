@@ -8,6 +8,7 @@ export interface InteractiveRuntimeHostCandidateOptions {
   legacyConfigurationRoot?: string;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
+  generation?: string;
 }
 
 export type InteractiveRuntimeHostCandidateResult =
@@ -30,6 +31,7 @@ export async function startInteractiveRuntimeHostCandidate(
     lifecycleMode: 'ephemeral',
     idleGraceMs: options.idleGraceMs,
     handshakeTimeoutMs: options.handshakeTimeoutMs,
+    generation: options.generation,
     composition,
   });
   return { kind: 'winner', host };

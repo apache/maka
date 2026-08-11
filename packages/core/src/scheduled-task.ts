@@ -1,7 +1,7 @@
 /**
  * ScheduledTask — the single product noun for "定时任务".
  *
- * One catalog, one scheduler authority (the initiating Desktop), multiple effects
+ * One catalog, one scheduler authority (the Runtime Host), multiple effects
  * (local/bot notify vs agent session run). Heartbeats are intentionally
  * out of scope: they remain session-scoped Automation.
  */
@@ -19,6 +19,7 @@ export const SCHEDULED_TASK_INTENT_MAX_CHARS = 8_000;
 export const SCHEDULED_TASK_CRON_MAX_CHARS = 80;
 export const SCHEDULED_TASK_CHAT_ID_MAX_CHARS = 160;
 export const SCHEDULED_TASK_RUN_HISTORY_LIMIT = 20;
+export const SCHEDULED_TASK_RUN_MESSAGE_MAX_CHARS = 1_024;
 export const SCHEDULED_TASK_MAX_DELAY_MS = 366 * 24 * 60 * 60 * 1000;
 export const SCHEDULED_TASK_MIN_INTERVAL_SECONDS = 10;
 export const SCHEDULED_TASK_MAX_INTERVAL_SECONDS = 366 * 86_400;

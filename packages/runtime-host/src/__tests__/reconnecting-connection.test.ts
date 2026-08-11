@@ -196,6 +196,32 @@ test('reconnect lifecycle close waits for a resource returned after cancellation
   assert.equal(closeSettled, true);
 });
 
+test('reconnect lifecycle quiescence suppresses replacement until it is resumed', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const replacement = connectionHarness('replacement', () => undefined);
+  const connected = deferred();
+  let connectCalls = 0;
+  const lifecycle = await startRuntimeHostReconnectLifecycle({
+    initial: first.connection,
+    connect: async () => {
+      connectCalls += 1;
+      connected.resolve();
+      return replacement.connection;
+    },
+  });
+
+  const quiescence = lifecycle.quiesce();
+  assert.equal(quiescence.current, first.connection);
+  first.disconnect();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(connectCalls, 0);
+
+  quiescence.resume();
+  await connected.promise;
+  assert.equal(connectCalls, 1);
+  await lifecycle.close();
+});
+
 function connectionHarness(
   id: string,
   request: (operation: DirectRequestOperationKey, input: unknown) => unknown,
@@ -232,6 +258,7 @@ function connectionHarness(
     subscribeConfigurationChanges: () => () => {},
     subscribeProjectCatalogChanges: () => () => {},
     subscribeSessionCatalogChanges: () => () => {},
+    subscribeScheduledTaskChanges: () => () => {},
     close: async () => resolveClosed(),
   } as unknown as RuntimeHostConnection;
   return {

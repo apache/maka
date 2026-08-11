@@ -6,6 +6,7 @@ import {
   type StoredMessage,
 } from "@maka/core/session";
 import type { Task } from "@maka/core/task-ledger";
+import type { ScheduledTask } from "@maka/core/scheduled-task";
 import type {
   ConnectionCatalogSnapshot,
   ConnectionVersionBasis,
@@ -72,9 +73,13 @@ import {
   type QueueRetractResult,
   type SessionCatalogFilter,
   type SessionCatalogChangedFrame,
+  type ScheduledTaskChangedFrame,
+  type ScheduledTaskMutateInput,
+  type ScheduledTaskMutateResult,
   type SessionCatalogItem,
   type SessionCatalogProjection,
   type SessionConfiguration,
+  type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
   type SessionConversationCopyInput,
   type SessionConversationCopyResult,
@@ -130,6 +135,7 @@ export class DesktopRuntimeHostClientError extends Error {
 
 export interface DesktopRuntimeHostSession {
   readonly snapshot: SessionContinuitySnapshot;
+  readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcript: Promise<StoredMessage[]>;
   readonly events: AsyncIterable<SubscriptionFrame>;
   close(): Promise<void>;
@@ -216,6 +222,54 @@ export class DesktopRuntimeHostClient {
   ): () => void {
     this.#assertOpen();
     return this.connection.subscribeSessionCatalogChanges(listener);
+  }
+
+  subscribeScheduledTaskChanges(
+    listener: (frame: ScheduledTaskChangedFrame) => void,
+  ): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeScheduledTaskChanges(listener);
+  }
+
+  async listScheduledTasks(): Promise<ScheduledTask[]> {
+    for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
+      const tasks: ScheduledTask[] = [];
+      let cursor: string | undefined;
+      let revision: number | undefined;
+      let changed = false;
+      do {
+        const result = await this.#request("scheduled-task.query", {
+          kind: "list",
+          ...(cursor === undefined ? {} : { cursor, expectedRevision: revision! }),
+        });
+        if (result.kind === "revision_changed") {
+          changed = true;
+          break;
+        }
+        if (result.kind !== "page") {
+          throw new Error("Runtime Host returned the wrong ScheduledTask projection");
+        }
+        revision ??= result.revision;
+        tasks.push(...result.tasks);
+        cursor = result.nextCursor ?? undefined;
+      } while (cursor !== undefined);
+      if (!changed) return tasks;
+    }
+    throw new DesktopRuntimeHostClientError(
+      "catalog_unstable",
+      "ScheduledTask catalog kept changing while Desktop read it",
+    );
+  }
+
+  getScheduledTask(taskId: string): Promise<ScheduledTask | null> {
+    return this.#request("scheduled-task.query", { kind: "get", taskId }).then((result) => {
+      if (result.kind !== "task") throw new Error("Runtime Host returned the wrong ScheduledTask projection");
+      return result.task;
+    });
+  }
+
+  mutateScheduledTask(input: ScheduledTaskMutateInput): Promise<ScheduledTaskMutateResult> {
+    return this.#request("scheduled-task.mutate", input);
   }
 
   async loadConnectionCatalog(): Promise<ConnectionCatalogSnapshot> {
@@ -991,6 +1045,15 @@ export class DesktopRuntimeHostClient {
     return this.connection.queryHostDiagnostics(2_000);
   }
 
+  prepareHostUpgrade(
+    allowInterruptActiveTasks: boolean,
+  ): Promise<OperationOutput<"host.upgrade.prepare">> {
+    return this.#request("host.upgrade.prepare", {
+      expectedHostEpoch: this.connection.hostEpoch,
+      allowInterruptActiveTasks,
+    });
+  }
+
   stopTurn(
     input: OperationInput<"turn.stop">,
   ): Promise<OperationOutput<"turn.stop">> {
@@ -1484,6 +1547,7 @@ export class DesktopRuntimeHostClient {
 
 class DesktopSessionHandle implements DesktopRuntimeHostSession {
   readonly snapshot: SessionContinuitySnapshot;
+  readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcript: Promise<StoredMessage[]>;
   readonly events: AsyncIterable<SubscriptionFrame>;
   #closeTask: Promise<void> | undefined;
@@ -1493,6 +1557,7 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
     private readonly onClose: () => void,
   ) {
     this.snapshot = subscription.snapshot;
+    this.activeAssistantStreams = subscription.activeAssistantStreams;
     this.events = subscription;
     this.transcript = subscription.loadTranscript(decodeStoredMessageForRead);
     void this.transcript.catch(() => undefined);

@@ -970,8 +970,11 @@ const makaBridge = {
       ipcRenderer.on('scheduled-tasks:changed', listener);
       return () => ipcRenderer.off('scheduled-tasks:changed', listener);
     },
-    subscribeDue(handler: (task: ScheduledTask) => void): () => void {
-      const listener = (_event: Electron.IpcRendererEvent, payload: ScheduledTask) => handler(payload);
+    subscribeDue(handler: (task: Pick<ScheduledTask, 'id' | 'title'>) => void): () => void {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: Pick<ScheduledTask, 'id' | 'title'>,
+      ) => handler(payload);
       ipcRenderer.on('scheduled-tasks:fired', listener);
       return () => ipcRenderer.off('scheduled-tasks:fired', listener);
     },

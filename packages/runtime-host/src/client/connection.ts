@@ -54,6 +54,7 @@ import {
   type RequestFrame,
   type ResponseFrame,
   type SessionCatalogChangedFrame,
+  type ScheduledTaskChangedFrame,
   type SubscriptionFrame,
   type SubscriptionOpenInput,
   type SessionWorkspaceRelocateInput,
@@ -72,6 +73,7 @@ import {
   type TurnStopInput,
   requireClientInstanceId,
   requireHostCompositionId,
+  requireHostGeneration,
   requireHostRootId,
   validateProtocolRange,
 } from '../protocol/index.js';
@@ -99,6 +101,8 @@ export interface ConnectRuntimeHostInput {
   surface: ClientSurface;
   protocol: ProtocolRange;
   compositionId?: string;
+  generation?: string;
+  takeoverHostEpoch?: string;
   clientInstanceId?: string;
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
@@ -137,6 +141,18 @@ export type ConnectRuntimeHostResult =
       kind: 'incompatible';
       handshake: HostIncompatible;
       registration: HostRegistration;
+    }
+  | {
+      kind: 'upgrade_required';
+      registration: HostRegistration;
+      restartable: true;
+      handshake: HostIncompatible;
+    }
+  | {
+      kind: 'upgrade_required';
+      registration: HostRegistration;
+      restartable: false;
+      handshake?: HostIncompatible;
     }
   | { kind: 'draining'; registration: HostRegistration }
   | {
@@ -252,6 +268,7 @@ export interface RuntimeHostConnection {
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void;
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void;
   subscribeSessionCatalogChanges(listener: (frame: SessionCatalogChangedFrame) => void): () => void;
+  subscribeScheduledTaskChanges(listener: (frame: ScheduledTaskChangedFrame) => void): () => void;
 }
 
 export type DirectRequestOperationKey = Exclude<
@@ -339,6 +356,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly #configurationChangeListeners = new Set<(revision: number) => void>();
   readonly #projectCatalogChangeListeners = new Set<(revision: number) => void>();
   readonly #sessionCatalogChangeListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
+  readonly #scheduledTaskChangeListeners = new Set<(frame: ScheduledTaskChangedFrame) => void>();
   #livenessTimer: NodeJS.Timeout | undefined;
   #livenessProbePending = false;
   #inFlightDomainRequests = 0;
@@ -678,6 +696,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return () => this.#sessionCatalogChangeListeners.delete(listener);
   }
 
+  subscribeScheduledTaskChanges(listener: (frame: ScheduledTaskChangedFrame) => void): () => void {
+    this.#scheduledTaskChangeListeners.add(listener);
+    return () => this.#scheduledTaskChangeListeners.delete(listener);
+  }
+
   async #readResponses(): Promise<void> {
     try {
       while (true) {
@@ -697,6 +720,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
               continue;
             case 'session.catalog.changed':
               this.#acceptSessionCatalogChanged(frame);
+              continue;
+            case 'scheduled-task.changed':
+              this.#acceptScheduledTaskChanged(frame);
               continue;
             case 'subscription.session_projection':
             case 'subscription.session_delta':
@@ -778,6 +804,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   #acceptSessionCatalogChanged(frame: SessionCatalogChangedFrame): void {
     for (const listener of this.#sessionCatalogChangeListeners) {
+      try {
+        listener(frame);
+      } catch {
+        // A presentation listener cannot invalidate the Host connection.
+      }
+    }
+  }
+
+  #acceptScheduledTaskChanged(frame: ScheduledTaskChangedFrame): void {
+    for (const listener of this.#scheduledTaskChangeListeners) {
       try {
         listener(frame);
       } catch {
@@ -969,6 +1005,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#clientCapabilities.close(error);
     this.#configurationChangeListeners.clear();
     this.#sessionCatalogChangeListeners.clear();
+    this.#scheduledTaskChangeListeners.clear();
     this.#transport.abort();
   }
 }
@@ -1111,6 +1148,14 @@ export async function connectResolvedRuntimeHost(
 ): Promise<ConnectResolvedRuntimeHostResult> {
   validateProtocolRange(input.protocol);
   requireClientInstanceId(input.clientInstanceId);
+  const generation =
+    input.generation === undefined ? undefined : requireHostGeneration(input.generation);
+  if (input.takeoverHostEpoch !== undefined) {
+    requireHostGeneration(input.takeoverHostEpoch);
+    if (generation === undefined) {
+      throw new TypeError('takeoverHostEpoch requires a Runtime Host generation');
+    }
+  }
   const connectTimeoutMs = requireTimeout(
     input.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
     'connectTimeoutMs',
@@ -1197,6 +1242,10 @@ export async function connectResolvedRuntimeHost(
       helloProtocol,
       clientInstanceId: input.clientInstanceId,
       compositionId,
+      ...(generation === undefined ? {} : { generation }),
+      ...(input.takeoverHostEpoch === undefined
+        ? {}
+        : { takeoverHostEpoch: input.takeoverHostEpoch }),
       expectedHostEpoch: registration.hostEpoch,
       expectedRootId: registration.rootId,
       expectedCompositionRevision: staleCompatibility
@@ -1207,9 +1256,40 @@ export async function connectResolvedRuntimeHost(
       onLivenessProbe: input.onLivenessProbe,
     });
     if (result.kind === 'connected') {
+      if (
+        generation !== undefined &&
+        registration.lifecycleMode !== 'service' &&
+        registration.generation !== generation
+      ) {
+        await result.connection.close().catch(() => undefined);
+        return { kind: 'upgrade_required', registration, restartable: false };
+      }
       return { ...result, registration };
     }
     transport.abort();
+    if (
+      result.kind === 'incompatible' &&
+      generation !== undefined &&
+      result.handshake.compatibilityEpoch === RUNTIME_HOST_COMPATIBILITY_EPOCH &&
+      result.handshake.compositionId === compositionId &&
+      result.handshake.generation !== generation
+    ) {
+      return registration.lifecycleMode === 'ephemeral' &&
+        result.handshake.activity !== undefined &&
+        result.handshake.activity.connections === 0
+        ? {
+            kind: 'upgrade_required',
+            registration,
+            restartable: true,
+            handshake: result.handshake,
+          }
+        : {
+            kind: 'upgrade_required',
+            registration,
+            restartable: false,
+            handshake: result.handshake,
+          };
+    }
     return result.kind === 'incompatible'
       ? { ...result, registration }
       : { kind: 'draining', registration };
@@ -1242,6 +1322,8 @@ interface ExchangeRuntimeHostHandshakeInput {
   readonly hostProtocol?: ProtocolRange;
   readonly clientInstanceId: string;
   readonly compositionId: string;
+  readonly generation?: string;
+  readonly takeoverHostEpoch?: string;
   readonly expectedHostEpoch?: string;
   readonly expectedRootId?: string;
   readonly expectedCompositionRevision?: string;
@@ -1265,6 +1347,10 @@ async function exchangeRuntimeHostHandshake(
     protocolMax: helloProtocol.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
     compositionId: input.compositionId,
+    ...(input.generation === undefined ? {} : { generation: input.generation }),
+    ...(input.takeoverHostEpoch === undefined
+      ? {}
+      : { takeover: { expectedHostEpoch: input.takeoverHostEpoch } }),
   });
   const handshake = decodeHostFrame(await input.transport.read(0));
   if (!('kind' in handshake)) {

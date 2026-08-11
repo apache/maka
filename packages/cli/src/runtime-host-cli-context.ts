@@ -14,7 +14,17 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type ClientSurface,
+  type HostIncompatible,
 } from '@maka/runtime-host/protocol';
+
+export class RuntimeHostCliConflictError extends RuntimeHostPermanentReconnectError {
+  readonly code = 'RUNTIME_HOST_RESTART_REQUIRED';
+
+  constructor(readonly handshake: HostIncompatible) {
+    super(formatRuntimeHostCliConflict(handshake));
+    this.name = 'RuntimeHostCliConflictError';
+  }
+}
 
 export interface RuntimeHostCliConnectionContext {
   readonly connection: RuntimeHostConnection;
@@ -64,13 +74,11 @@ export async function connectRuntimeHostCli(
   const connect = async (signal?: AbortSignal): Promise<RuntimeHostConnection> => {
     const connected = await deps.connectOrSpawn({ ...connectInput, ...(signal ? { signal } : {}) });
     if (connected.kind === 'incompatible') {
-      if (connected.handshake.compatibilityEpoch < RUNTIME_HOST_COMPATIBILITY_EPOCH) {
-        throw new RuntimeHostPermanentReconnectError(
-          'An older Maka Runtime Host is still running and is incompatible with this build. Stop the previous Maka Desktop or CLI process, then try again.',
-        );
-      }
+      throw new RuntimeHostCliConflictError(connected.handshake);
+    }
+    if (connected.kind === 'upgrade_required') {
       throw new RuntimeHostPermanentReconnectError(
-        `Runtime Host protocol is incompatible (Host ${connected.handshake.protocolMin}-${connected.handshake.protocolMax}, CLI ${RUNTIME_HOST_PROTOCOL_VERSION})`,
+        'RUNTIME_HOST_RESTART_REQUIRED: An older Runtime Host build is still running. Restart it, or wait for its background work to finish.',
       );
     }
     if (connected.kind === 'failed') {
@@ -99,6 +107,22 @@ export async function connectRuntimeHostCli(
     await connection.close().catch(() => undefined);
     throw error;
   }
+}
+
+function formatRuntimeHostCliConflict(handshake: HostIncompatible): string {
+  const lines = [
+    'RUNTIME_HOST_RESTART_REQUIRED: An older Runtime Host is still running and cannot accept this client.',
+  ];
+  if (handshake.compatibilityEpoch < RUNTIME_HOST_COMPATIBILITY_EPOCH) {
+    lines.push(
+      'Stop the previous Maka Desktop or CLI process, or wait for it to exit, then try again.',
+    );
+  } else {
+    lines.push(
+      `Host protocol ${handshake.protocolMin}-${handshake.protocolMax}; CLI protocol ${RUNTIME_HOST_PROTOCOL_VERSION}.`,
+    );
+  }
+  return lines.join('\n');
 }
 
 export function resolveRuntimeHostCliTarget(

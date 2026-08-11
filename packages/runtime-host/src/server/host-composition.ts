@@ -241,5 +241,5 @@ export function normalizeHostCompositionDescriptor(
 
 export const INTERACTIVE_HOST_COMPOSITION_DESCRIPTOR = normalizeHostCompositionDescriptor({
   id: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-  revision: '2',
+  revision: '3',
 });

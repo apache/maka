@@ -533,6 +533,7 @@ export class RuntimeHostSessionObserver {
       subscription.snapshot,
       subscription.transcript,
       this.#now,
+      subscription.activeAssistantStreams,
     );
     const replacement =
       previousSnapshot

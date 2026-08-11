@@ -6,6 +6,7 @@ import {
   type ConnectionEvent,
   type SessionChangedEvent,
   type SessionChangedReason,
+  isBotDeliveryProvider,
   resolveSystemUiLocale,
   resolveUiLocale,
 } from "@maka/core";
@@ -15,8 +16,8 @@ import {
 } from "@maka/core/llm-connections";
 import {
   BotRegistry,
-  SCHEDULED_TASK_AUTHORITY_SERVICE_ID,
-  SCHEDULED_TASK_AUTHORITY_SERVICE_VERSION,
+  SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID,
+  SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_VERSION,
   buildMcpTools,
   type BotIncomingMessage,
 } from "@maka/runtime";
@@ -26,7 +27,6 @@ import { McpClientManager } from "@maka/mcp";
 import {
   createSettingsStore,
   createMcpConfigStore,
-  createSqliteScheduledTaskStore,
 } from "@maka/storage";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
 import { registerAppIpc } from "./app-ipc-main.js";
@@ -69,7 +69,6 @@ import {
 } from "./task-submission-readiness-main.js";
 import { registerNotificationsIpc } from "./notifications-ipc-main.js";
 import { registerScheduledTaskIpc } from "./scheduled-tasks-ipc-main.js";
-import { createScheduledTaskMainService } from "./scheduled-tasks-main.js";
 import { registerPetPackIpc } from "./pet-pack-import.js";
 import {
   createPermissionOverlayMain,
@@ -97,9 +96,11 @@ import { registerRuntimeHostInspectorIpc } from "./runtime-host-inspector-ipc-ma
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { DesktopRuntimeHostCandidateControls } from "./runtime-host-desktop-candidate.js";
 import {
+  RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopOwner,
   type RuntimeHostDesktopOwner,
 } from "./runtime-host-desktop-owner.js";
+import { runtimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
@@ -113,7 +114,6 @@ import {
   updateRuntimeHostSettings,
 } from "./runtime-host-settings-ipc-main.js";
 import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js";
-import { hasRuntimeHostInterruptibleWork } from "./runtime-host-update-activity.js";
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
 import { registerRuntimeHostWebSearchIpc } from "./runtime-host-web-search-ipc-main.js";
 import { registerRuntimeHostWorkspaceIpc } from "./runtime-host-workspace-ipc-main.js";
@@ -138,6 +138,7 @@ const userDataDir = app.getPath("userData");
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );
+const runtimeHostGeneration = app.isPackaged ? app.getVersion() : randomUUID();
 const e2eFixture = resolveDesktopE2eFixture();
 const useBotOnboardingFixture = e2eFixture?.scenario === "settings-bots-onboarding";
 const workspaceRoot = join(
@@ -183,7 +184,6 @@ function ensureMcpReady(): Promise<void> {
   }
   return mcpStartup;
 }
-const scheduledTaskStore = createSqliteScheduledTaskStore(workspaceRoot);
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
 const startHidden =
   (Boolean(e2eFixture) || isIsolatedE2e) &&
@@ -331,103 +331,10 @@ const updateService = createAppUpdateService({
   mockState: updateMockState,
   onStatusChange: (status) =>
     mainWindowController.send("app:updateStatusChanged", status),
-  hasActiveTasks: () => {
-    if (!runtimePolicyClient) {
-      throw new Error("Runtime Host activity is unavailable");
-    }
-    return hasRuntimeHostInterruptibleWork(runtimePolicyClient);
+  prepareInstall: async (input) => {
+    if (!owner) throw new Error("Runtime Host owner is unavailable");
+    return owner.prepareForUpdate(input.allowInterruptActiveTasks);
   },
-});
-const scheduledTasks = createScheduledTaskMainService({
-  store: scheduledTaskStore,
-  getPrivacyContext: async () => {
-    if (!runtimePolicyClient) {
-      throw new Error("Runtime Host policy is unavailable");
-    }
-    return {
-      incognitoActive: (await runtimePolicyClient.queryRuntimePolicy()).policy
-        .privacy.incognitoActive,
-    };
-  },
-  sendBotMessage: (platform, chatId, text) =>
-    botRegistry.sendMessage(platform, chatId, text),
-  startAgentRun: async ({ task, sessionId, turnId }) => {
-    if (!runtimePolicyClient) throw new Error("Runtime Host client is unavailable");
-    if (task.effect.kind !== "agent_run") {
-      throw new Error("Task effect is not agent_run");
-    }
-    const execution = task.effect.execution;
-    const hostClient = runtimePolicyClient;
-    const workspace =
-      execution.projectId != null && execution.projectId !== ""
-        ? ({ kind: "project" as const, projectId: execution.projectId })
-        : ({ kind: "host_path" as const, path: execution.cwd });
-    await hostClient.createSession({
-      sessionId,
-      workspace,
-      name: task.title,
-      labels: ["scheduled-task"],
-      modelTarget: {
-        kind: "explicit",
-        connectionSlug: execution.llmConnectionSlug,
-        model: execution.model,
-      },
-      ...(execution.thinkingLevel === undefined
-        ? {}
-        : { thinkingLevel: execution.thinkingLevel }),
-      permissionMode: execution.permissionMode,
-      collaborationMode: execution.collaborationMode,
-      orchestrationMode: execution.orchestrationMode,
-    } as never);
-    const started = await hostClient.startTurn({
-      sessionId,
-      turnId,
-      content: { text: task.intent.body },
-    });
-    if (started.kind !== "started") {
-      throw new Error("Scheduled task agent turn was blocked");
-    }
-    return { sessionId, runId: started.turn.runId };
-  },
-  resolveDefaultAgentExecution: async () => {
-    if (!runtimePolicyClient) return null;
-    const sessions = await runtimePolicyClient.listSessions();
-    const live = sessions.find((session) => !session.isArchived);
-    if (!live) return null;
-    const cwd =
-      "workspace" in live && live.workspace && typeof live.workspace === "object"
-        ? (live.workspace as { hostCwd?: string }).hostCwd
-        : undefined;
-    if (!cwd || typeof live.llmConnectionSlug !== "string" || typeof live.model !== "string") {
-      return null;
-    }
-    const projectId =
-      "projectId" in live && typeof (live as { projectId?: unknown }).projectId === "string"
-        ? (live as { projectId: string }).projectId
-        : undefined;
-    return {
-      cwd,
-      ...(projectId ? { projectId } : {}),
-      backend: (live.backend as "ai-sdk" | "fake" | "pi-agent" | undefined) ?? "ai-sdk",
-      llmConnectionSlug: live.llmConnectionSlug,
-      model: live.model,
-      ...(live.thinkingLevel === undefined
-        ? {}
-        : { thinkingLevel: live.thinkingLevel }),
-      permissionMode: live.permissionMode,
-      collaborationMode: live.collaborationMode ?? "agent",
-      orchestrationMode: live.orchestrationMode ?? "default",
-    };
-  },
-  emitChanged: (reason, task) => {
-    mainWindowController.send("scheduled-tasks:changed", {
-      type: "scheduled_tasks_changed",
-      reason,
-      taskId: task.id,
-      ts: Date.now(),
-    });
-  },
-  emitFired: (task) => mainWindowController.send("scheduled-tasks:fired", task),
 });
 mcpManager.onChange(() => {
   mainWindowController.send("mcp:changed", mcpManager.statuses());
@@ -451,6 +358,7 @@ owner = await startRuntimeHostDesktopOwner(
   {
     rootPath: workspaceRoot,
     clientInstanceId: runtimeHostClientInstanceId,
+    generation: runtimeHostGeneration,
     candidateEntrypoint: new URL(
       import.meta.resolve(
         isE2e
@@ -499,21 +407,29 @@ owner = await startRuntimeHostDesktopOwner(
       },
       additionalServices: () => [
         {
-          serviceId: SCHEDULED_TASK_AUTHORITY_SERVICE_ID,
-          version: SCHEDULED_TASK_AUTHORITY_SERVICE_VERSION,
+          serviceId: SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID,
+          version: SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_VERSION,
           async call(method, input) {
-            if (method === "list") return { tasks: await scheduledTasks.list() };
-            if (method === "create") {
-              return { task: await scheduledTasks.create(input.payload) };
+            if (method === "notify_local") {
+              const taskId = requireScheduledTaskEffectString(input.taskId, "taskId");
+              const title = requireScheduledTaskEffectString(input.title, "title");
+              mainWindowController.send("scheduled-tasks:fired", { id: taskId, title });
+              return { ok: true };
             }
-            if (method !== "pause" && method !== "resume" && method !== "delete") {
-              throw new Error(`Unknown ScheduledTask authority method: ${method}`);
+            if (method === "notify_bot") {
+              const platform = input.platform;
+              if (!isBotDeliveryProvider(platform)) {
+                throw new Error("ScheduledTask bot platform is invalid");
+              }
+              const chatId = requireScheduledTaskEffectString(input.chatId, "chatId");
+              const title = requireScheduledTaskEffectString(input.title, "title");
+              const body = typeof input.body === "string" ? input.body.trim() : "";
+              const text = [`【定时任务】${title}`, ...(body ? ["", body] : [])].join("\n");
+              const sent = await botRegistry.sendMessage(platform, chatId, text);
+              if (!sent) throw new Error("ScheduledTask bot channel is unavailable");
+              return { ok: true };
             }
-            const id = requireScheduledTaskServiceId(input.id);
-            if (method === "pause") return { task: await scheduledTasks.pause(id) };
-            if (method === "resume") return { task: await scheduledTasks.resume(id) };
-            await scheduledTasks.remove(id);
-            return { ok: true };
+            throw new Error(`Unknown ScheduledTask native effect: ${method}`);
           },
         },
       ],
@@ -553,12 +469,24 @@ owner = await startRuntimeHostDesktopOwner(
     registerClientIpc: registerHostClientIpc,
   },
   {
+    upgradePrompts: runtimeHostUpgradePrompts,
     onFatalError: (error) => {
+      if (error instanceof RuntimeHostUpgradeCancelledError) {
+        app.quit();
+        return;
+      }
       console.error("[runtime-host] fatal:", error);
       app.quit();
     },
   },
-);
+).catch((error: unknown) => {
+  if (error instanceof RuntimeHostUpgradeCancelledError) {
+    app.exit(0);
+    return new Promise<never>(() => undefined);
+  }
+  throw error;
+});
+
 const stopComputerUseSession = (sessionId: string): void => {
   void owner
     ?.stopSession(sessionId)
@@ -567,7 +495,6 @@ const stopComputerUseSession = (sessionId: string): void => {
 native.computerUsePip.setStopHandler(stopComputerUseSession);
 native.computerUseStatusItem.setStopHandler(stopComputerUseSession);
 
-await scheduledTasks.refreshTimers();
 updateService.start();
 void ensureMcpReady()
   .then(() => mcpCapabilityPublisher.refreshIfChanged())
@@ -595,6 +522,24 @@ function registerHostClientIpc(
   );
   const unsubscribeProjectCatalogChanges = client.subscribeProjectCatalogChanges(() => {
     mainWindowController.send("projects:changed");
+  });
+  const unsubscribeScheduledTaskChanges = client.subscribeScheduledTaskChanges((frame) => {
+    mainWindowController.send("scheduled-tasks:changed", {
+      type: "scheduled_tasks_changed",
+      reason: frame.reason,
+      taskId: frame.taskId,
+      ts: Date.now(),
+    });
+    if (frame.reason !== "fired") return;
+    void client
+      .getScheduledTask(frame.taskId)
+      .then((task) => {
+        if (!task) return;
+        if (task.effect.kind === "agent_run" || task.effect.channel === "bot") {
+          mainWindowController.send("scheduled-tasks:fired", task);
+        }
+      })
+      .catch(() => undefined);
   });
   const capabilityBinding = mcpCapabilityPublisher.bind(
     controls.refreshClientCapabilities,
@@ -729,11 +674,7 @@ function registerHostClientIpc(
   registerRuntimeHostWorkspaceIpc({ ipcMain: scopedIpc, client });
   registerScheduledTaskIpc({
     ipcMain: scopedIpc,
-    scheduledTasks,
-    getWorkspacePrivacyContext: async () => ({
-      incognitoActive: (await client.queryRuntimePolicy()).policy.privacy
-        .incognitoActive,
-    }),
+    client,
   });
   const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
     resolveProjectContextRoot(sessionId, {
@@ -834,6 +775,7 @@ function registerHostClientIpc(
     unsubscribeConfigurationChanges();
     unsubscribeSessionCatalogChanges();
     unsubscribeProjectCatalogChanges();
+    unsubscribeScheduledTaskChanges();
     candidateSettingsBotsIpc.dispose();
     if (settingsBotsIpc === candidateSettingsBotsIpc) {
       settingsBotsIpc = undefined;
@@ -844,11 +786,11 @@ function registerHostClientIpc(
   };
 }
 
-function requireScheduledTaskServiceId(value: unknown): string {
+function requireScheduledTaskEffectString(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) {
-    throw new Error("ScheduledTask authority requires an id");
+    throw new Error(`ScheduledTask native effect requires ${label}`);
   }
-  return value;
+  return value.trim();
 }
 
 function registerPersistentClientIpc(): void {
@@ -873,6 +815,15 @@ function registerPersistentClientIpc(): void {
     getRuntimeHostDiagnostics: async () => {
       if (!runtimePolicyClient) throw new Error("Runtime Host is unavailable");
       return runtimePolicyClient.queryHostDiagnostics();
+    },
+    getRuntimeHostTurnTrace: async (sessionId, turnId) => {
+      if (!runtimePolicyClient) throw new Error("Runtime Host is unavailable");
+      const result = await runtimePolicyClient.queryExecutionInspect({
+        kind: "turn_trace",
+        sessionId,
+        turnId,
+      });
+      return result.kind === "turn_trace" ? result.turn : undefined;
     },
     writeClipboard: (report) => clipboard.writeText(report),
   });
@@ -965,7 +916,6 @@ function wireLifecycle(): void {
 
 async function closeRuntimeHostDesktop(): Promise<void> {
   clientSettingsWatcher.stop();
-  scheduledTasks.stopTimers();
   updateService.dispose();
   settingsBotsIpc?.dispose();
   permissionOverlay.dismiss();
@@ -979,7 +929,6 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     Promise.resolve().then(() => native.computerUseStatusItem.destroy()),
     Promise.resolve().then(() => native.computerUseScreenLock.dispose()),
     Promise.resolve().then(() => native.computerUse.backend?.dispose?.()),
-    scheduledTaskStore.ready().then(() => scheduledTaskStore.close()),
   ]);
   for (const result of results) {
     if (result.status === "rejected")

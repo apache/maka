@@ -7,14 +7,18 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experiment.js';
-import type {
-  ExperimentExecutor,
-  ExecutorVerification,
-  SubjectExecutionContext,
+import {
+  ExecutorPreparationFailure,
+  type ExperimentExecutor,
+  type ExecutorVerification,
+  type SubjectExecutionContext,
 } from './runner.js';
 import type { EvalResult } from './result.js';
 
 type Framework = 'harbor' | 'pier';
+
+const PREPARATION_STDERR_LIMIT = 64 * 1024;
+const PREPARATION_REDACTION_OVERLAP = 8 * 1024;
 
 interface RelayState {
   readonly child: ChildProcess;
@@ -179,6 +183,7 @@ async function startTrial(
   await chmod(trialsRoot, 0o700);
   const trialName = `${safeName(cell.id)}-${randomBytes(6).toString('hex')}`;
   const configPath = join(trialsRoot, `${trialName}.json`);
+  const trialPath = join(trialsRoot, trialName);
   const task = decodeTask(framework, options, cell);
   const timeoutMultiplier = positive(cell.budget.timeoutMultiplier, 'budget.timeoutMultiplier');
   const environmentConfig = { ...options.environment, mounts: resolveMounts(options.mounts) };
@@ -190,6 +195,15 @@ async function startTrial(
   let child: ChildProcess | undefined;
   let connectedSocket: Socket | undefined;
   let abort: (() => void) | undefined;
+  const exactSecrets = [token, ...Object.values(credentials)];
+  const stderr = new BoundedCapture(
+    PREPARATION_STDERR_LIMIT +
+      Math.max(
+        PREPARATION_REDACTION_OVERLAP,
+        ...exactSecrets.map((secret) => Buffer.byteLength(secret)),
+      ),
+  );
+  let stderrClosed: Promise<unknown> | undefined;
   try {
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -213,8 +227,10 @@ async function startTrial(
     child = spawn(
       process.env[options.pythonPathEnv]!,
       [join(relayPath, 'run_trial.py'), framework, options.frameworkVersion, configPath],
-      { cwd: dirname(specPath), env: environment, stdio: 'ignore' },
+      { cwd: dirname(specPath), env: environment, stdio: ['ignore', 'ignore', 'pipe'] },
     );
+    child.stderr!.on('data', (chunk: Buffer) => stderr.append(chunk));
+    stderrClosed = once(child.stderr!, 'close');
     abort = () => child?.kill('SIGTERM');
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
@@ -239,7 +255,7 @@ async function startTrial(
       lines,
       token,
       trialName,
-      trialPath: join(trialsRoot, trialName),
+      trialPath,
       taskInput: ready.instruction,
       credentials,
       containerCwd: options.containerCwd,
@@ -250,12 +266,77 @@ async function startTrial(
       child.kill('SIGTERM');
       await waitForTrial(child);
     }
+    await stderrClosed?.catch(() => undefined);
     connectedSocket?.destroy();
     await closeServer(server);
-    throw error;
+    await mkdir(trialPath, { recursive: true, mode: 0o700 });
+    const diagnosticPath = 'preparation-error.json';
+    const diagnostic = sanitizeDiagnostic(stderr.text(), exactSecrets, PREPARATION_STDERR_LIMIT);
+    await writeFile(
+      join(trialPath, diagnosticPath),
+      `${JSON.stringify({
+        stage: 'executor-preparation',
+        framework,
+        exitCode: child?.exitCode ?? null,
+        signal: child?.signalCode ?? null,
+        stderr: diagnostic.text,
+        truncated: stderr.truncated || diagnostic.truncated,
+      })}\n`,
+      { flag: 'wx', mode: 0o600 },
+    );
+    throw new ExecutorPreparationFailure(
+      [{ kind: 'executor-preparation', framework, trialName, path: diagnosticPath }],
+      { cause: error },
+    );
   } finally {
     if (abort) signal?.removeEventListener('abort', abort);
   }
+}
+
+class BoundedCapture {
+  #value = Buffer.alloc(0);
+  #total = 0;
+
+  constructor(readonly limit: number) {}
+
+  append(chunk: Buffer): void {
+    this.#total += chunk.length;
+    this.#value = Buffer.concat([this.#value, chunk]).subarray(-this.limit);
+  }
+
+  get truncated(): boolean {
+    return this.#total > this.limit;
+  }
+
+  text(): string {
+    return this.#value.toString('utf8');
+  }
+}
+
+function sanitizeDiagnostic(
+  value: string,
+  exactSecrets: readonly string[],
+  limit: number,
+): { readonly text: string; readonly truncated: boolean } {
+  let redacted = value;
+  for (const secret of exactSecrets) {
+    if (secret) redacted = redacted.replaceAll(secret, '[REDACTED]');
+  }
+  redacted = redacted
+    .replace(/(authorization\s*:\s*(?:bearer|basic)\s+)[^\s]+/giu, '$1[REDACTED]')
+    .replace(
+      /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password)\s*[:=]\s*)[^\s]+/giu,
+      '$1[REDACTED]',
+    )
+    .replace(
+      /(--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password)\s+)[^\s]+/giu,
+      '$1[REDACTED]',
+    )
+    .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/giu, '$1[REDACTED]@')
+    .replace(/\bcommand\b[^\r\n]*/giu, 'command [REDACTED]');
+  const bytes = Buffer.from(redacted);
+  if (bytes.length <= limit) return { text: redacted, truncated: false };
+  return { text: bytes.subarray(-limit).toString('utf8'), truncated: true };
 }
 
 async function closeServer(server: Server): Promise<void> {

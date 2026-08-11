@@ -195,6 +195,40 @@ describe('Runtime Host Maka Session driver', () => {
     });
   });
 
+  test('delivers completed thinking while a later step remains active', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 50,
+    });
+
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+    subscription.push(thinkingFrame(1, 'step-1', 0, 'first'));
+    subscription.push(thinkingFrame(2, 'step-1', 5, '', true));
+    subscription.push(thinkingFrame(3, 'step-2', 0, 'second'));
+
+    assert.deepEqual(
+      [
+        await nextEvent(switched.activeTurn.events),
+        await nextEvent(switched.activeTurn.events),
+        await nextEvent(switched.activeTurn.events),
+      ].map((event) => ({
+        type: event.type,
+        messageId: 'messageId' in event ? event.messageId : undefined,
+      })),
+      [
+        { type: 'thinking_delta', messageId: 'step-1' },
+        { type: 'thinking_complete', messageId: 'step-1' },
+        { type: 'thinking_delta', messageId: 'step-2' },
+      ],
+    );
+  });
+
   test('restarts initial hydration when the first connection closes during transcript load', async () => {
     const transcript = deferred<StoredMessage[]>();
     const initial = new FakeSubscription(continuitySnapshot(), transcript.promise);
@@ -308,7 +342,6 @@ describe('Runtime Host Maka Session driver', () => {
         rootTurn: completedTurn('turn-1', 'run-1'),
       }),
     });
-    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'text_complete');
     assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
     assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     await waitFor(() => refresh.nextCalls > 0);
@@ -1180,6 +1213,7 @@ class FakeConnection {
 
 class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<SubscriptionFrame> {
   readonly hostEpoch = 'host-1';
+  readonly activeAssistantStreams = [];
   readonly subscriptionId: string;
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<{
@@ -1351,6 +1385,31 @@ function deltaFrame(
       messageId: `message-${turnId}`,
       startOffset,
       text,
+    },
+  };
+}
+
+function thinkingFrame(
+  sequence: number,
+  messageId: string,
+  startOffset: number,
+  text: string,
+  complete = false,
+): SubscriptionFrame {
+  return {
+    kind: 'subscription.session_delta',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence,
+    sessionId: 'session-1',
+    delta: {
+      kind: 'thinking',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      messageId,
+      startOffset,
+      text,
+      ...(complete ? { complete: true } : {}),
     },
   };
 }

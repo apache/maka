@@ -9,6 +9,7 @@ export function parseInteractiveRuntimeHostCandidateArguments(
     'expected-root-id',
     'idle-grace-ms',
     'handshake-timeout-ms',
+    'generation',
     'legacy-configuration-root',
   ]);
   const values = new Map<string, string>();
@@ -40,7 +41,14 @@ export function parseInteractiveRuntimeHostCandidateArguments(
       : {}),
     idleGraceMs: readOptionalInteger(values, 'idle-grace-ms'),
     handshakeTimeoutMs: readOptionalInteger(values, 'handshake-timeout-ms'),
+    ...(values.has('generation') ? { generation: readGeneration(values) } : {}),
   };
+}
+
+function readGeneration(values: Map<string, string>): string {
+  const value = values.get('generation');
+  if (!value || value.length > 128) throw new Error('Invalid --generation');
+  return value;
 }
 
 function readOptionalAbsolutePath(values: Map<string, string>, key: string): string | undefined {

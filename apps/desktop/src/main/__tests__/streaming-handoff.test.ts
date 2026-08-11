@@ -308,6 +308,9 @@ describe('single live-turn handoff', () => {
     const ref = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
     let diagnosticDetails: string | undefined;
+    let diagnosticTarget:
+      | { sessionId: string; turnId: string; eventId: string }
+      | undefined;
     const handlers = createAppShellSessionEventHandlers({
       uiLocale: 'zh',
       activeIdRef: { current: 'session-1' },
@@ -321,8 +324,9 @@ describe('single live-turn handoff', () => {
       setInteractionBySession: interactions.set,
       showModelSetupToast: () => {},
       toastApi: {
-        error: (_title, _description, details) => {
+        error: (_title, _description, details, target) => {
           diagnosticDetails = details;
+          diagnosticTarget = target;
         },
       },
     });
@@ -340,6 +344,11 @@ describe('single live-turn handoff', () => {
     assert.match(diagnosticDetails ?? '', /Turn: turn-1/u);
     assert.match(diagnosticDetails ?? '', /Reason: tool_failed/u);
     assert.match(diagnosticDetails ?? '', /Code: TOOL_FAILED/u);
+    assert.deepEqual(diagnosticTarget, {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      eventId: 'event-1',
+    });
 
     handlers.reconcilePersistedMessages('session-1', [
       { type: 'tool_call', id: 'tool-1', turnId: 'turn-1', stepId: 'step-1', ts: 3, toolName: 'Bash', args: {} },

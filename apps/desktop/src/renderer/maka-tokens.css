@@ -1428,27 +1428,6 @@
     overflow: hidden;          /* main shell handles its own scrolling */
   }
 
-  /* Native fallback for raw browser scroll surfaces. Primary app scroll
-   * containers are mounted through OverlayScrollbars with the os-theme-maka
-   * theme in styles.css. */
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: transparent transparent;
-  }
-  ::-webkit-scrollbar        { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track  { background: transparent; }
-  ::-webkit-scrollbar-thumb  {
-    background: transparent;
-    border-radius: var(--radius-control);
-    transition: background var(--duration-quick) var(--ease-out-strong);
-  }
-  *:hover {
-    scrollbar-color: oklch(from var(--foreground) l c h / 0.18) transparent;
-  }
-  *:hover::-webkit-scrollbar-thumb { background: oklch(from var(--foreground) l c h / 0.18); }
-  ::-webkit-scrollbar-thumb:hover { background: oklch(from var(--foreground) l c h / 0.28); }
-  ::-webkit-scrollbar-corner { background: transparent; }
-
   ::selection { background: var(--selection); }
 
   /* Subtle film-grain overlay. Per the taste-skill and frontend-design

@@ -5,7 +5,11 @@ import type {
   E2eFixtureScenario,
 } from '@maka/core';
 import { createDefaultSettings } from '@maka/core/settings';
-import { createSqliteScheduledTaskStore } from '@maka/storage';
+import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
+import {
+  resolveStorageRoot,
+  tryAcquireInteractiveRootOwner,
+} from '@maka/storage/root-authority';
 import { writeJson } from './seed-helpers.js';
 import { createDailyReviewArchiveStore } from '../daily-review-archive-store.js';
 
@@ -114,7 +118,10 @@ export async function writeScheduledTasks(workspaceRoot: string, now: number): P
   // assertion in `scheduled-tasks.spec.ts` vary between runs. Seed one
   // explicit minute apart, oldest first, so 创建时间倒序 has a single answer.
   const createdAt = (index: number): number => now - (4 - index) * 60_000;
-  const store = createSqliteScheduledTaskStore(workspaceRoot);
+  const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  if (!owner) throw new Error('Unable to acquire the ScheduledTask fixture root');
+  const store = await openInteractiveScheduledTaskStoreForWrite(owner.lease);
   const create = (
     title: string,
     intentBody: string,
@@ -190,6 +197,7 @@ export async function writeScheduledTasks(workspaceRoot: string, now: number): P
     }
   } finally {
     store.close();
+    await owner.close();
   }
 }
 

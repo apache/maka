@@ -7,10 +7,47 @@ import { z } from 'zod/v4';
 import {
   classifyError,
   errorPresentationFromClass,
+  providerFailureSummary,
   providerRetryMetadata,
 } from '../provider-error-classification.js';
 
 describe('Provider error classification', () => {
+  test('extracts allowlisted fields from JSON string failures without copying the payload', () => {
+    const summary = providerFailureSummary(
+      JSON.stringify({
+        error: { message: 'provider rejected request', code: 'bad_request' },
+        request_id: 'req-123',
+        prompt: 'private customer text',
+        headers: { 'x-debug': 'internal' },
+      }),
+    );
+
+    assert.deepEqual(summary, {
+      message: 'provider rejected request (code=bad_request, requestId=req-123)',
+      code: 'bad_request',
+    });
+    assert.equal(JSON.stringify(summary).includes('private customer text'), false);
+    assert.equal(JSON.stringify(summary).includes('x-debug'), false);
+
+    assert.deepEqual(
+      providerFailureSummary({
+        error: JSON.stringify({
+          message: 'nested provider rejection',
+          code: 'nested_error',
+          prompt: 'another private prompt',
+        }),
+      }),
+      {
+        message: 'nested provider rejection (code=nested_error)',
+        code: 'nested_error',
+      },
+    );
+    assert.equal(
+      providerFailureSummary(JSON.stringify([{ prompt: 'private list payload' }])),
+      undefined,
+    );
+  });
+
   test('retries incremental Responses transport failures with stable classification', () => {
     const websocketFailure = Object.assign(new Error('closed before completion'), {
       name: 'OpenAiResponsesTransportError',

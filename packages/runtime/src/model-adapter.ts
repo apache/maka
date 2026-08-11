@@ -38,6 +38,7 @@ import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.
 import {
   classifyError,
   errorPresentationFromClass,
+  providerFailureSummary,
   providerRetryMetadata,
 } from './provider-error-classification.js';
 import {
@@ -321,7 +322,7 @@ export class ModelAdapter {
           }
         } catch (error) {
           succeeded = false;
-          yield { kind: 'error', failure: normalizeModelFailure(error) };
+          yield { kind: 'error', failure: normalizeProviderFailure(error) };
         } finally {
           if (!continuation.lane) return;
           if (!succeeded) {
@@ -459,7 +460,7 @@ export class ModelAdapter {
   }
 
   normalizeFailure(error: unknown): ModelFailure {
-    return normalizeModelFailure(error);
+    return normalizeProviderFailure(error);
   }
 
   classifyError(error: unknown): string {
@@ -782,7 +783,7 @@ function translateChunk(
       return [{ kind: 'tool-call', toolCall }];
     }
     case 'error':
-      return [{ kind: 'error', failure: normalizeModelFailure(chunk.error) }];
+      return [{ kind: 'error', failure: normalizeProviderFailure(chunk.error) }];
     default:
       return [];
   }
@@ -848,6 +849,17 @@ function normalizeModelFailure(error: unknown): ModelFailure {
     ...(retry.retryAfterMs !== undefined ? { retryAfterMs: retry.retryAfterMs } : {}),
     ...(code !== undefined ? { code } : {}),
     message: presentation.message ?? generalizedErrorMessage(error),
+  };
+}
+
+function normalizeProviderFailure(error: unknown): ModelFailure {
+  if (isModelFailure(error)) return error;
+  const summary = providerFailureSummary(error);
+  const failure = normalizeModelFailure(error);
+  return {
+    ...failure,
+    ...(summary?.code !== undefined ? { code: summary.code } : {}),
+    ...(failure.kind === 'unknown' && summary !== undefined ? { message: summary.message } : {}),
   };
 }
 

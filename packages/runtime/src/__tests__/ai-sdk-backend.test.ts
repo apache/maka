@@ -6043,12 +6043,9 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('provider error mid-step still persists the streamed partial text (partialOutputRetained)', async () => {
-    // Codex P1: the non-abort error exit (provider failure / watchdog timeout)
-    // must flush the in-flight step's partial accumulators just like the abort
-    // exit does — the user already saw the streamed text, so it belongs in the
-    // ledger. The gate releases only after the backend has emitted the partial
-    // text_delta, so consumption-before-error is deterministic.
+  test('provider error mid-step persists partial text and its safe provider summary', async () => {
+    // The user already saw the streamed text, so it belongs in the ledger even
+    // when the provider fails. The gate makes consumption-before-error deterministic.
     const gate = makeGate();
     const model = new MockLanguageModelV4({
       doStream: {
@@ -6058,7 +6055,10 @@ describe('AiSdkBackend model history', () => {
             controller.enqueue({ type: 'text-start', id: 'text-1' });
             controller.enqueue({ type: 'text-delta', id: 'text-1', delta: 'partial answer' });
             await gate.promise;
-            controller.error(new Error('provider exploded mid-step'));
+            controller.error({
+              error: { code: 'provider_error', message: 'provider exploded mid-step' },
+              request_id: 'req-mid-step',
+            });
           },
         }),
       },
@@ -6089,9 +6089,10 @@ describe('AiSdkBackend model history', () => {
     assert.equal(assistants.length, 1);
     assert.equal(assistants[0]!.text, 'partial answer');
     // And the turn still closes as an error, not a false success.
+    const failure = events.find((event) => event.type === 'error');
     assert.equal(
-      events.some((event) => event.type === 'error'),
-      true,
+      failure?.message,
+      'provider exploded mid-step (code=provider_error, requestId=req-mid-step)',
     );
     const completes = events.filter((event) => event.type === 'complete');
     assert.equal(completes.length > 0, true);
@@ -11688,6 +11689,7 @@ describe('AiSdkBackend RunTrace', () => {
 
   test('does not retry an idle watchdog timeout after partial answer text', async () => {
     const timers = manualWatchdogTimer();
+    const traces: RunTraceEvent[] = [];
     let calls = 0;
     const model = new MockLanguageModelV4({
       doStream: async (options) => {
@@ -11717,6 +11719,7 @@ describe('AiSdkBackend RunTrace', () => {
       now: monotonicClock(),
       streamWatchdogTimer: timers.clock,
       providerRetrySleep: async () => {},
+      recordRunTrace: (event) => traces.push(event),
     });
 
     const events: SessionEvent[] = [];
@@ -11732,6 +11735,10 @@ describe('AiSdkBackend RunTrace', () => {
     );
     assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    const failureTrace = traces.find((event) => event.type === 'model_stream_failed');
+    assert.equal(failureTrace?.data?.rawErrorName, 'Error');
+    assert.match(String(failureTrace?.data?.redactedErrorMessage), /stream idle timeout/);
+    assert.equal(typeof failureTrace?.data?.redactedErrorStackSha256, 'string');
   });
 
   test('does not retry an idle watchdog timeout after provider continuation metadata', async () => {

@@ -1,7 +1,7 @@
 /**
  * Agent tool for the unified ScheduledTask catalog.
  *
- * Agent-facing access to the Desktop-owned ScheduledTask catalog.
+ * Agent-facing access to the Runtime Host-owned ScheduledTask catalog.
  */
 
 import { z } from 'zod';
@@ -16,8 +16,8 @@ import {
 import type { MakaTool } from './tool-runtime.js';
 
 export const SCHEDULED_TASK_TOOL_NAME = 'ScheduledTask';
-export const SCHEDULED_TASK_AUTHORITY_SERVICE_ID = 'maka_scheduled_task_authority';
-export const SCHEDULED_TASK_AUTHORITY_SERVICE_VERSION = '1';
+export const SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID = 'maka_scheduled_task_native_effect';
+export const SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_VERSION = '1';
 
 export interface ScheduledTaskToolAuthority {
   create(input: {
@@ -31,10 +31,10 @@ export interface ScheduledTaskToolAuthority {
     sessionId: string;
     maxFires?: number;
   }): Promise<ScheduledTask | { error: string }>;
-  list(sessionId: string): Promise<readonly ScheduledTask[]>;
-  pause(id: string, sessionId: string): Promise<ScheduledTask | { error: string }>;
-  resume(id: string, sessionId: string): Promise<ScheduledTask | { error: string }>;
-  remove(id: string, sessionId: string): Promise<{ ok: true } | { error: string }>;
+  list(): Promise<readonly ScheduledTask[]>;
+  pause(id: string): Promise<ScheduledTask | { error: string }>;
+  resume(id: string): Promise<ScheduledTask | { error: string }>;
+  remove(id: string): Promise<{ ok: true } | { error: string }>;
 }
 
 const scheduleSchema = z.union([
@@ -82,7 +82,7 @@ export function buildScheduledTaskTool(deps: { authority: ScheduledTaskToolAutho
     name: SCHEDULED_TASK_TOOL_NAME,
     displayName: 'ScheduledTask',
     description:
-      'Create and manage workspace scheduled tasks (定时任务). ' +
+      'Create and manage global scheduled tasks (定时任务). ' +
       'Use for standalone recurring/one-shot work that must appear in the desktop Scheduled tasks page. ' +
       'Default effect agent_run starts a fresh session with intentBody when due. ' +
       'For session-internal polling use Automation instead.',
@@ -91,7 +91,7 @@ export function buildScheduledTaskTool(deps: { authority: ScheduledTaskToolAutho
       const input = schema.parse(raw);
       const sessionId = ctx.sessionId;
       if (input.mode === 'list') {
-        const tasks = await deps.authority.list(sessionId);
+        const tasks = await deps.authority.list();
         if (tasks.length === 0) return 'No scheduled tasks.';
         return tasks
           .map(
@@ -117,16 +117,16 @@ export function buildScheduledTaskTool(deps: { authority: ScheduledTaskToolAutho
       }
       if (!input.id) return `${input.mode} requires id`;
       if (input.mode === 'pause') {
-        const result = await deps.authority.pause(input.id, sessionId);
+        const result = await deps.authority.pause(input.id);
         if ('error' in result) return result.error;
         return `Paused ${result.title} (${result.id})`;
       }
       if (input.mode === 'resume') {
-        const result = await deps.authority.resume(input.id, sessionId);
+        const result = await deps.authority.resume(input.id);
         if ('error' in result) return result.error;
         return `Resumed ${result.title} (${result.id})`;
       }
-      const result = await deps.authority.remove(input.id, sessionId);
+      const result = await deps.authority.remove(input.id);
       if ('error' in result) return result.error;
       return `Deleted scheduled task ${input.id}`;
     },

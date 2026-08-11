@@ -9,6 +9,7 @@ import {
   normalizeUpdateScheduledTaskInput,
   pauseScheduledTask,
   resumeScheduledTask,
+  SCHEDULED_TASK_RUN_MESSAGE_MAX_CHARS,
   type ScheduledTask,
   type ScheduledTaskRun,
   type ScheduledTaskSchedule,
@@ -17,8 +18,31 @@ import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
+import {
+  assertStorageRootLease,
+  runWithStorageRootLease,
+  StorageRootAuthorityError,
+  type StorageRootLease,
+} from './root-authority.js';
 
-export interface ScheduledTaskStore {
+const writerBrand: unique symbol = Symbol('InteractiveScheduledTaskStoreWriter');
+const writers = new WeakSet<object>();
+const writerByLease = new WeakMap<object, InteractiveScheduledTaskStoreWriter>();
+const writerOpeningByLease = new WeakMap<object, Promise<InteractiveScheduledTaskStoreWriter>>();
+
+export type ScheduledTaskStoreErrorCode = 'invalid_input' | 'not_found' | 'operation_conflict';
+
+export class ScheduledTaskStoreError extends Error {
+  constructor(
+    readonly code: ScheduledTaskStoreErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ScheduledTaskStoreError';
+  }
+}
+
+interface ScheduledTaskStore {
   list(): Promise<ScheduledTask[]>;
   get(id: string): Promise<ScheduledTask | undefined>;
   create(input: unknown, now?: number): Promise<ScheduledTask>;
@@ -28,13 +52,22 @@ export interface ScheduledTaskStore {
   snooze(id: string, delayMs: number, now?: number): Promise<ScheduledTask>;
   clearRunHistory(id: string, now?: number): Promise<ScheduledTask>;
   remove(id: string): Promise<void>;
-  claimNextDue(now?: number): Promise<ScheduledTaskFireClaim | null>;
+  claimNextDue(now?: number): Promise<ScheduledTaskDueScan>;
   claimNow(id: string, now?: number): Promise<ScheduledTaskFireClaim>;
+  listPendingFires(): Promise<ScheduledTaskFireClaim[]>;
+  bindFireExecution(
+    claimId: string,
+    execution: ScheduledTaskFireExecution,
+  ): Promise<ScheduledTaskFireClaim>;
+  setFireNativeState(
+    claimId: string,
+    state: ScheduledTaskNativeFireState,
+  ): Promise<ScheduledTaskFireClaim>;
+  cancelWaitingNativeFire(taskId: string): Promise<boolean>;
   settleFire(
     claimId: string,
     run: Omit<ScheduledTaskRun, 'id'> & { id?: string },
   ): Promise<ScheduledTask>;
-  recoverPendingFires(now?: number): Promise<ScheduledTask[]>;
   ready(): Promise<void>;
   close(): void;
 }
@@ -45,6 +78,28 @@ export interface ScheduledTaskFireClaim {
   scheduledFor: number;
   claimedAt: number;
   task: ScheduledTask;
+  execution?: ScheduledTaskFireExecution;
+  nativeState?: ScheduledTaskNativeFireState;
+}
+
+export interface ScheduledTaskDueScan {
+  readonly claim: ScheduledTaskFireClaim | null;
+  readonly expired: readonly ScheduledTask[];
+}
+
+export type ScheduledTaskNativeFireState = 'waiting_for_provider' | 'invoking';
+
+export interface ScheduledTaskFireExecution {
+  sessionId: string;
+  turnId: string;
+  runId: string;
+  userMessageId: string;
+}
+
+export interface InteractiveScheduledTaskStoreWriter extends ScheduledTaskStore {
+  readonly kind: 'interactive';
+  readonly access: 'write';
+  readonly [writerBrand]: true;
 }
 
 interface ScheduledTaskStoreState {
@@ -52,8 +107,101 @@ interface ScheduledTaskStoreState {
   claims: ScheduledTaskFireClaim[];
 }
 
-export function createSqliteScheduledTaskStore(workspaceRoot: string): ScheduledTaskStore {
-  return new SqliteScheduledTaskStore(workspaceRoot);
+export function authenticateInteractiveScheduledTaskStoreWriter(
+  writer: InteractiveScheduledTaskStoreWriter,
+): InteractiveScheduledTaskStoreWriter {
+  if (!writers.has(writer)) {
+    throw new StorageRootAuthorityError(
+      'invalid_lease',
+      'Expected an authentic interactive ScheduledTask Store writer',
+    );
+  }
+  return writer;
+}
+
+export async function openInteractiveScheduledTaskStoreForWrite(
+  lease: StorageRootLease<'interactive', 'write'>,
+): Promise<InteractiveScheduledTaskStoreWriter> {
+  await assertStorageRootLease(lease, 'interactive', 'write');
+  const existing = writerByLease.get(lease);
+  if (existing) return existing;
+  const opening = writerOpeningByLease.get(lease);
+  if (opening) return opening;
+  const pending = Promise.resolve().then(async () => {
+    let store: ScheduledTaskStore | undefined;
+    try {
+      store = await runWithStorageRootLease(lease, 'interactive', 'write', async (root) => {
+        const opened = new SqliteScheduledTaskStore(root);
+        await opened.ready();
+        return opened;
+      });
+      await assertStorageRootLease(lease, 'interactive', 'write');
+      const raced = writerByLease.get(lease);
+      if (raced) {
+        store.close();
+        return raced;
+      }
+      const writer = createWriterFacade(lease, store);
+      writers.add(writer);
+      writerByLease.set(lease, writer);
+      return writer;
+    } catch (error) {
+      store?.close();
+      throw error;
+    }
+  });
+  writerOpeningByLease.set(lease, pending);
+  try {
+    return await pending;
+  } finally {
+    if (writerOpeningByLease.get(lease) === pending) writerOpeningByLease.delete(lease);
+  }
+}
+
+function createWriterFacade(
+  lease: StorageRootLease<'interactive', 'write'>,
+  store: ScheduledTaskStore,
+): InteractiveScheduledTaskStoreWriter {
+  let closed = false;
+  const run = <T>(operation: () => Promise<T>): Promise<T> => {
+    if (closed) {
+      return Promise.reject(
+        new StorageRootAuthorityError('invalid_lease', 'ScheduledTask Store writer is closed'),
+      );
+    }
+    return runWithStorageRootLease(lease, 'interactive', 'write', operation);
+  };
+  const writer: InteractiveScheduledTaskStoreWriter = {
+    kind: 'interactive',
+    access: 'write',
+    [writerBrand]: true,
+    list: () => run(() => store.list()),
+    get: (id) => run(() => store.get(id)),
+    create: (input, now) => run(() => store.create(input, now)),
+    update: (id, patch, now) => run(() => store.update(id, patch, now)),
+    pause: (id, now) => run(() => store.pause(id, now)),
+    resume: (id, now) => run(() => store.resume(id, now)),
+    snooze: (id, delayMs, now) => run(() => store.snooze(id, delayMs, now)),
+    clearRunHistory: (id, now) => run(() => store.clearRunHistory(id, now)),
+    remove: (id) => run(() => store.remove(id)),
+    claimNextDue: (now) => run(() => store.claimNextDue(now)),
+    claimNow: (id, now) => run(() => store.claimNow(id, now)),
+    listPendingFires: () => run(() => store.listPendingFires()),
+    bindFireExecution: (claimId, execution) =>
+      run(() => store.bindFireExecution(claimId, execution)),
+    setFireNativeState: (claimId, state) => run(() => store.setFireNativeState(claimId, state)),
+    cancelWaitingNativeFire: (taskId) => run(() => store.cancelWaitingNativeFire(taskId)),
+    settleFire: (claimId, record) => run(() => store.settleFire(claimId, record)),
+    ready: () => run(() => store.ready()),
+    close: () => {
+      if (closed) return;
+      closed = true;
+      if (writerByLease.get(lease) === writer) writerByLease.delete(lease);
+      writers.delete(writer);
+      store.close();
+    },
+  };
+  return Object.freeze(writer);
 }
 
 class SqliteScheduledTaskStore implements ScheduledTaskStore {
@@ -82,7 +230,7 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
 
   async create(input: unknown, now = Date.now()): Promise<ScheduledTask> {
     const normalized = normalizeCreateScheduledTaskInput(input, now);
-    if (!normalized.ok) throw new Error(normalized.message);
+    if (!normalized.ok) throw storeError('invalid_input', normalized.message);
     const value = normalized.value;
     const task: ScheduledTask = {
       id: randomUUID(),
@@ -108,7 +256,7 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
 
   async update(id: string, patch: unknown, now = Date.now()): Promise<ScheduledTask> {
     const normalized = normalizeUpdateScheduledTaskInput(patch, now);
-    if (!normalized.ok) throw new Error(normalized.message);
+    if (!normalized.ok) throw storeError('invalid_input', normalized.message);
     let updated: ScheduledTask | undefined;
     await this.mutate((state) => ({
       ...state,
@@ -116,7 +264,7 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
         if (task.id !== id) return task;
         assertNoPendingClaim(state.claims, id);
         if (task.status === 'completed' || task.status === 'expired') {
-          throw new Error('Cannot update a terminal scheduled task');
+          throw storeError('operation_conflict', 'Cannot update a terminal scheduled task');
         }
         const schedule = normalized.value.schedule ?? task.schedule;
         const nextFireAt = task.status === 'active' ? computeRequiredNext(schedule, now) : null;
@@ -129,13 +277,16 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
           ? (normalized.value.maxFires ?? null)
           : task.maxFires;
         if (effect.kind === 'agent_run' && !intentBody.trim()) {
-          throw new Error('Agent run intent body is required');
+          throw storeError('invalid_input', 'Agent run intent body is required');
         }
         if (maxFires !== null && maxFires <= task.fireCount) {
-          throw new Error('maxFires must be greater than the current fireCount');
+          throw storeError(
+            'operation_conflict',
+            'maxFires must be greater than the current fireCount',
+          );
         }
         if (nextFireAt !== null && expiresAt !== null && nextFireAt >= expiresAt) {
-          throw new Error('Schedule must fire before expiresAt');
+          throw storeError('invalid_input', 'Schedule must fire before expiresAt');
         }
         updated = {
           ...task,
@@ -155,7 +306,7 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
         return updated;
       }),
     }));
-    if (!updated) throw new Error(`No such scheduled task: ${id}`);
+    if (!updated) throw storeError('not_found', `No such scheduled task: ${id}`);
     return updated;
   }
 
@@ -170,7 +321,7 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
         return updated;
       }),
     }));
-    if (!updated) throw new Error(`No such scheduled task: ${id}`);
+    if (!updated) throw storeError('not_found', `No such scheduled task: ${id}`);
     return updated;
   }
 
@@ -182,25 +333,28 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
         if (task.id !== id) return task;
         assertNoPendingClaim(state.claims, id);
         const result = resumeScheduledTask(task, now);
-        if ('error' in result) throw new Error(result.error);
+        if ('error' in result) throw storeError('operation_conflict', result.error);
         if (
           result.nextFireAt !== null &&
           result.expiresAt !== null &&
           result.nextFireAt >= result.expiresAt
         ) {
-          throw new Error('Schedule must fire before expiresAt');
+          throw storeError('invalid_input', 'Schedule must fire before expiresAt');
         }
         updated = result;
         return updated;
       }),
     }));
-    if (!updated) throw new Error(`No such scheduled task: ${id}`);
+    if (!updated) throw storeError('not_found', `No such scheduled task: ${id}`);
     return updated;
   }
 
   async snooze(id: string, delayMs: number, now = Date.now()): Promise<ScheduledTask> {
     if (!Number.isFinite(delayMs) || delayMs <= 0 || delayMs > 7 * 24 * 60 * 60 * 1000) {
-      throw new Error('Scheduled task snooze delay must be between 1 ms and 7 days');
+      throw storeError(
+        'invalid_input',
+        'Scheduled task snooze delay must be between 1 ms and 7 days',
+      );
     }
     let updated: ScheduledTask | undefined;
     await this.mutate((state) => ({
@@ -209,17 +363,17 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
         if (task.id !== id) return task;
         assertNoPendingClaim(state.claims, id);
         if (task.status !== 'active' || task.nextFireAt === null) {
-          throw new Error('Only active scheduled tasks can be snoozed');
+          throw storeError('operation_conflict', 'Only active scheduled tasks can be snoozed');
         }
         const nextFireAt = Math.max(now, task.nextFireAt) + Math.floor(delayMs);
         if (task.expiresAt !== null && nextFireAt >= task.expiresAt) {
-          throw new Error('Snooze would move the task beyond expiresAt');
+          throw storeError('invalid_input', 'Snooze would move the task beyond expiresAt');
         }
         updated = { ...task, nextFireAt, updatedAt: now };
         return updated;
       }),
     }));
-    if (!updated) throw new Error(`No such scheduled task: ${id}`);
+    if (!updated) throw storeError('not_found', `No such scheduled task: ${id}`);
     return updated;
   }
 
@@ -234,7 +388,7 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
         return updated;
       }),
     }));
-    if (!updated) throw new Error(`No such scheduled task: ${id}`);
+    if (!updated) throw storeError('not_found', `No such scheduled task: ${id}`);
     return updated;
   }
 
@@ -251,16 +405,19 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
       });
       return { ...state, tasks: next };
     });
-    if (!found) throw new Error(`No such scheduled task: ${id}`);
+    if (!found) throw storeError('not_found', `No such scheduled task: ${id}`);
   }
 
-  async claimNextDue(now = Date.now()): Promise<ScheduledTaskFireClaim | null> {
+  async claimNextDue(now = Date.now()): Promise<ScheduledTaskDueScan> {
     let claimed: ScheduledTaskFireClaim | undefined;
+    const expired: ScheduledTask[] = [];
     await this.mutate((state) => {
       const claimedTaskIds = new Set(state.claims.map((claim) => claim.taskId));
       const tasks = state.tasks.map((task) => {
         if (task.status === 'active' && task.expiresAt !== null && now >= task.expiresAt) {
-          return { ...task, status: 'expired' as const, nextFireAt: null, updatedAt: now };
+          const next = { ...task, status: 'expired' as const, nextFireAt: null, updatedAt: now };
+          expired.push(next);
+          return next;
         }
         return task;
       });
@@ -273,23 +430,108 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
       claimed = createClaim(task, task.nextFireAt!, now);
       return { tasks, claims: [...state.claims, claimed] };
     });
-    return claimed ?? null;
+    return { claim: claimed ?? null, expired };
   }
 
   async claimNow(id: string, now = Date.now()): Promise<ScheduledTaskFireClaim> {
     let claimed: ScheduledTaskFireClaim | undefined;
     await this.mutate((state) => {
       const task = state.tasks.find((entry) => entry.id === id);
-      if (!task) throw new Error(`No such scheduled task: ${id}`);
+      if (!task) throw storeError('not_found', `No such scheduled task: ${id}`);
       assertNoPendingClaim(state.claims, id);
-      if (task.status !== 'active') throw new Error('Only active tasks can be triggered now');
+      if (task.status !== 'active') {
+        throw storeError('operation_conflict', 'Only active tasks can be triggered now');
+      }
       if (task.expiresAt !== null && now >= task.expiresAt) {
-        throw new Error('Scheduled task has expired');
+        throw storeError('operation_conflict', 'Scheduled task has expired');
       }
       claimed = createClaim(task, now, now);
       return { ...state, claims: [...state.claims, claimed] };
     });
     return claimed!;
+  }
+
+  async listPendingFires(): Promise<ScheduledTaskFireClaim[]> {
+    return structuredClone((await this.readState()).claims);
+  }
+
+  async bindFireExecution(
+    claimId: string,
+    execution: ScheduledTaskFireExecution,
+  ): Promise<ScheduledTaskFireClaim> {
+    let updated: ScheduledTaskFireClaim | undefined;
+    await this.mutate((state) => ({
+      ...state,
+      claims: state.claims.map((claim) => {
+        if (claim.id !== claimId) return claim;
+        if (claim.task.effect.kind !== 'agent_run') {
+          throw storeError(
+            'operation_conflict',
+            `Scheduled task fire ${claimId} is not an Agent execution`,
+          );
+        }
+        if (claim.execution && !sameExecution(claim.execution, execution)) {
+          throw storeError(
+            'operation_conflict',
+            `Scheduled task fire ${claimId} already has another execution`,
+          );
+        }
+        updated = { ...claim, execution: { ...execution } };
+        return updated;
+      }),
+    }));
+    if (!updated) {
+      throw storeError('not_found', `No such scheduled task fire claim: ${claimId}`);
+    }
+    return structuredClone(updated);
+  }
+
+  async setFireNativeState(
+    claimId: string,
+    nativeState: ScheduledTaskNativeFireState,
+  ): Promise<ScheduledTaskFireClaim> {
+    let updated: ScheduledTaskFireClaim | undefined;
+    await this.mutate((state) => ({
+      ...state,
+      claims: state.claims.map((claim) => {
+        if (claim.id !== claimId) return claim;
+        if (claim.task.effect.kind !== 'notify') {
+          throw storeError(
+            'operation_conflict',
+            `Scheduled task fire ${claimId} is not a native effect`,
+          );
+        }
+        if (claim.nativeState === 'invoking' && nativeState !== 'invoking') {
+          throw storeError(
+            'operation_conflict',
+            `Scheduled task fire ${claimId} already crossed delivery admission`,
+          );
+        }
+        updated = { ...claim, nativeState };
+        return updated;
+      }),
+    }));
+    if (!updated) {
+      throw storeError('not_found', `No such scheduled task fire claim: ${claimId}`);
+    }
+    return structuredClone(updated);
+  }
+
+  async cancelWaitingNativeFire(taskId: string): Promise<boolean> {
+    let cancelled = false;
+    await this.mutate((state) => {
+      const claim = state.claims.find((entry) => entry.taskId === taskId);
+      if (!claim) return state;
+      if (claim.nativeState !== 'waiting_for_provider') {
+        throw storeError('operation_conflict', 'Scheduled task has a fire in progress');
+      }
+      cancelled = true;
+      return {
+        ...state,
+        claims: state.claims.filter((entry) => entry.id !== claim.id),
+      };
+    });
+    return cancelled;
   }
 
   async settleFire(
@@ -306,7 +548,7 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
           id: run.id ?? randomUUID(),
           at: run.at,
           outcome: run.outcome,
-          message: run.message,
+          message: [...run.message].slice(0, SCHEDULED_TASK_RUN_MESSAGE_MAX_CHARS).join(''),
           ...(run.sessionId ? { sessionId: run.sessionId } : {}),
           ...(run.runId ? { runId: run.runId } : {}),
         };
@@ -317,27 +559,6 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
     });
     if (!updated) throw new Error(`No such scheduled task: claim ${claimId}`);
     return updated;
-  }
-
-  async recoverPendingFires(now = Date.now()): Promise<ScheduledTask[]> {
-    const recovered: ScheduledTask[] = [];
-    await this.mutate((state) => {
-      const claimsByTask = new Map(state.claims.map((claim) => [claim.taskId, claim]));
-      const tasks = state.tasks.map((task) => {
-        const claim = claimsByTask.get(task.id);
-        if (!claim) return task;
-        const next = nextScheduledTaskStateAfterFire(task, {
-          id: randomUUID(),
-          at: now,
-          outcome: 'failed',
-          message: 'The previous fire was interrupted before its outcome was recorded.',
-        });
-        recovered.push(next);
-        return next;
-      });
-      return { tasks, claims: [] };
-    });
-    return recovered;
   }
 
   private async read(): Promise<ScheduledTask[]> {
@@ -410,7 +631,9 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
 
 function computeRequiredNext(schedule: ScheduledTaskSchedule, now: number): number {
   const next = computeNextFireAt(schedule, now);
-  if (next === null) throw new Error('Schedule has no fire within one year');
+  if (next === null) {
+    throw storeError('invalid_input', 'Schedule has no fire within one year');
+  }
   return next;
 }
 
@@ -430,6 +653,22 @@ function createClaim(
 
 function assertNoPendingClaim(claims: readonly ScheduledTaskFireClaim[], taskId: string): void {
   if (claims.some((claim) => claim.taskId === taskId)) {
-    throw new Error('Scheduled task has a fire in progress');
+    throw storeError('operation_conflict', 'Scheduled task has a fire in progress');
   }
+}
+
+function storeError(code: ScheduledTaskStoreErrorCode, message: string): ScheduledTaskStoreError {
+  return new ScheduledTaskStoreError(code, message);
+}
+
+function sameExecution(
+  left: ScheduledTaskFireExecution,
+  right: ScheduledTaskFireExecution,
+): boolean {
+  return (
+    left.sessionId === right.sessionId &&
+    left.turnId === right.turnId &&
+    left.runId === right.runId &&
+    left.userMessageId === right.userMessageId
+  );
 }

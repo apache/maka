@@ -164,7 +164,7 @@ async function collectRuntimeHostBotTurn(
       if (frame.delta.turnId !== turnId || frame.delta.kind !== 'text') continue;
       latestMessageId = frame.delta.messageId;
       const folded = foldRuntimeHostAssistantDelta(
-        assistantText.get(latestMessageId) ?? '',
+        frame.delta.reset ? '' : (assistantText.get(latestMessageId) ?? ''),
         frame.delta,
       );
       assistantText.set(latestMessageId, folded.text);

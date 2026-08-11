@@ -158,6 +158,11 @@ export class HostSessionCatalogCoordinator {
     };
   }
 
+  async createForHost(input: SessionCreateInput): Promise<void> {
+    const outcome = await this.#create(input);
+    if (!outcome.ok) throw new Error(outcome.error.message);
+  }
+
   async #query(
     input: SessionCatalogQueryInput,
   ): Promise<OperationOutcome<'session.catalog.query'>> {

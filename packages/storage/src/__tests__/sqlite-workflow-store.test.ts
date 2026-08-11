@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { createSqliteDeepResearchStore } from '../deep-research-store.js';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
-import { createSqliteScheduledTaskStore } from '../scheduled-task-store.js';
+import { openInteractiveScheduledTaskStoreForWrite } from '../scheduled-task-store.js';
 import { createSqlitePlanStore } from '../plan-store.js';
 import { createSqliteTaskLedgerStore } from '../task-ledger-store.js';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 
 const SESSION_ID = 'session-workflow';
 
@@ -372,7 +373,8 @@ describe('SQLite workflow stores', () => {
   test('persists Scheduled Tasks and admits each fire once', async () => {
     await withRoot(async (root) => {
       const now = Date.now();
-      const store = createSqliteScheduledTaskStore(root);
+      const { owner, open } = await scheduledTaskStoreRoot(root);
+      const store = await open();
       const task = await store.create(
         {
           title: 'Review SQLite',
@@ -387,10 +389,10 @@ describe('SQLite workflow stores', () => {
         store.claimNextDue(now + 1_000),
         store.claimNextDue(now + 1_000),
       ]);
-      const claim = claims.find((entry) => entry !== null);
+      const claim = claims.map((entry) => entry.claim).find((entry) => entry !== null);
       assert.ok(claim);
-      assert.equal(claims.filter((entry) => entry !== null).length, 1);
-      assert.equal(await store.claimNextDue(now + 1_000), null);
+      assert.equal(claims.filter((entry) => entry.claim !== null).length, 1);
+      assert.equal((await store.claimNextDue(now + 1_000)).claim, null);
       await store.settleFire(claim.id, {
         at: now + 1_000,
         outcome: 'ok',
@@ -398,7 +400,7 @@ describe('SQLite workflow stores', () => {
       });
       store.close();
 
-      const reopened = createSqliteScheduledTaskStore(root);
+      const reopened = await open();
       try {
         const persisted = (await reopened.list())[0];
         assert.equal(persisted?.id, task.id);
@@ -406,33 +408,57 @@ describe('SQLite workflow stores', () => {
         assert.equal(persisted?.fireCount, 1);
       } finally {
         reopened.close();
+        await owner.close();
       }
     });
   });
 
-  test('recovers an admitted Scheduled Task fire without replaying its side effect', async () => {
+  test('persists the exact ScheduledTask Agent execution identity before admission', async () => {
     await withRoot(async (root) => {
       const now = Date.now();
-      const store = createSqliteScheduledTaskStore(root);
-      try {
-        const task = await store.create(
-          {
-            title: 'Recover exactly once',
-            intentBody: '',
-            schedule: { kind: 'interval', everySeconds: 60, startAt: now + 1_000 },
-            effect: { kind: 'notify', channel: 'local' },
-            createdBy: { kind: 'user' },
+      const { owner, open } = await scheduledTaskStoreRoot(root);
+      const store = await open();
+      const task = await store.create(
+        {
+          title: 'Durable Agent fire',
+          intentBody: 'Continue the release',
+          schedule: { kind: 'once', runAt: now + 1_000 },
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: '/workspace',
+              backend: 'ai-sdk',
+              llmConnectionSlug: 'default',
+              model: 'test-model',
+              permissionMode: 'execute',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
           },
-          now,
-        );
-        assert.ok(await store.claimNextDue(now + 1_000));
-        const [recovered] = await store.recoverPendingFires(now + 2_000);
-        assert.equal(recovered?.id, task.id);
-        assert.equal(recovered?.fireCount, 1);
-        assert.equal(recovered?.runs[0]?.outcome, 'failed');
-        assert.ok((recovered?.nextFireAt ?? 0) > now + 2_000);
+          createdBy: { kind: 'user' },
+        },
+        now,
+      );
+      const claim = await store.claimNow(task.id, now);
+      await store.bindFireExecution(claim.id, {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        userMessageId: 'message-1',
+      });
+      store.close();
+
+      const reopened = await open();
+      try {
+        assert.deepEqual((await reopened.listPendingFires())[0]?.execution, {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          runId: 'run-1',
+          userMessageId: 'message-1',
+        });
       } finally {
-        store.close();
+        reopened.close();
+        await owner.close();
       }
     });
   });
@@ -440,7 +466,8 @@ describe('SQLite workflow stores', () => {
   test('does not lower maxFires below the task fire count', async () => {
     await withRoot(async (root) => {
       const now = Date.now();
-      const store = createSqliteScheduledTaskStore(root);
+      const { owner, open } = await scheduledTaskStoreRoot(root);
+      const store = await open();
       try {
         const task = await store.create(
           {
@@ -460,39 +487,22 @@ describe('SQLite workflow stores', () => {
         );
       } finally {
         store.close();
-      }
-    });
-  });
-
-  test('does not admit later due Scheduled Tasks before their side effects can start', async () => {
-    await withRoot(async (root) => {
-      const now = Date.now();
-      const store = createSqliteScheduledTaskStore(root);
-      try {
-        for (const title of ['First', 'Second']) {
-          await store.create(
-            {
-              title,
-              intentBody: '',
-              schedule: { kind: 'once', runAt: now + 1_000 },
-              effect: { kind: 'notify', channel: 'local' },
-              createdBy: { kind: 'user' },
-            },
-            now,
-          );
-        }
-        assert.ok(await store.claimNextDue(now + 1_000));
-        const [recovered] = await store.recoverPendingFires(now + 2_000);
-        assert.equal(recovered?.fireCount, 1);
-        const unstarted = await store.claimNextDue(now + 2_000);
-        assert.ok(unstarted);
-        assert.notEqual(unstarted.taskId, recovered?.id);
-      } finally {
-        store.close();
+        await owner.close();
       }
     });
   });
 });
+
+async function scheduledTaskStoreRoot(root: string) {
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) throw new Error('Unable to acquire the ScheduledTask test root');
+  return {
+    owner,
+    open: () => openInteractiveScheduledTaskStoreForWrite(owner.lease),
+  };
+}
 
 function seedLegacyPlanLedger(root: string, eventCount = 3): void {
   const lease = acquireOperationalStateDatabase(root);

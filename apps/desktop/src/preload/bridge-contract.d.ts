@@ -688,7 +688,7 @@ export interface MakaBridge {
     subscribeChanges(
       handler: (event: { type: 'scheduled_tasks_changed'; reason: string; taskId?: string; ts: number }) => void,
     ): () => void;
-    subscribeDue(handler: (task: ScheduledTask) => void): () => void;
+    subscribeDue(handler: (task: Pick<ScheduledTask, 'id' | 'title'>) => void): () => void;
   };
   inspector: {
     /** Read-only per-session causal trace (#1625). */

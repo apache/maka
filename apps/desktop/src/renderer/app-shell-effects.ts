@@ -2,7 +2,6 @@ import { useEffect, useEffectEvent, useLayoutEffect } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
 import type {
   ConnectionEvent,
-  ScheduledTask,
   SessionChangedEvent,
   SessionEvent,
   SessionEventStreamSnapshot,
@@ -312,7 +311,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   const handleScheduledTaskChange = useEffectEvent(() => {
     void options.refreshScheduledTasks();
   });
-  const handleScheduledTaskDue = useEffectEvent((task: ScheduledTask) => {
+  const handleScheduledTaskDue = useEffectEvent((task: { id: string; title: string }) => {
     const copy = getShellRemainingCopy(options.uiLocale).notifications;
     void options.refreshScheduledTasks();
     options.toastApi.toast({

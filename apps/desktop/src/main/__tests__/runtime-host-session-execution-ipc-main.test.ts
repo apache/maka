@@ -696,6 +696,7 @@ function observerWithTranscript(
           },
           interactions: { pending: [] },
         },
+        activeAssistantStreams: [],
         transcript: Promise.resolve([...transcript]),
         events: waitForEnd(eventsFinished),
         async close() {
