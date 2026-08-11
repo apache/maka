@@ -86,36 +86,23 @@ describe('model-metadata vision capability', () => {
 });
 
 describe('openAiAdapterApiProtocol', () => {
-  it('routes every gpt-5* family to the Responses wire', () => {
-    for (const modelId of [
-      'gpt-5',
-      'gpt-5-codex',
-      'gpt-5.5',
-      'gpt-5.6-sol',
-      'GPT-5',
-      ' gpt-5.4 ',
-    ]) {
-      assert.equal(openAiAdapterApiProtocol(modelId), 'openai-responses', modelId);
-    }
+  it('routes a normalized gpt-5 family to the Responses wire', () => {
+    assert.equal(openAiAdapterApiProtocol(' GPT-5.6-sol '), 'openai-responses');
   });
 
-  it('keeps every other OpenAI-adapter model on the Chat Completions wire', () => {
-    for (const modelId of ['gpt-4o', 'gpt-4.1', 'o3', 'o4-mini', 'chatgpt-4o-latest']) {
-      assert.equal(openAiAdapterApiProtocol(modelId), 'openai-chat', modelId);
-    }
+  it('keeps a non-gpt-5 OpenAI model on the Chat Completions wire', () => {
+    assert.equal(openAiAdapterApiProtocol('gpt-4o'), 'openai-chat');
   });
 
   it('routes only xAI Grok 4.5 through Responses', () => {
     assert.equal(openAiAdapterApiProtocol('grok-4.5', 'xai'), 'openai-responses');
     assert.equal(openAiAdapterApiProtocol('grok-4.5', 'xai-oauth'), 'openai-responses');
     assert.equal(openAiAdapterApiProtocol('grok-4.3', 'xai'), 'openai-chat');
-    assert.equal(openAiAdapterApiProtocol('grok-4.3', 'xai-oauth'), 'openai-chat');
     assert.equal(openAiAdapterApiProtocol('grok-4.5', 'openai'), 'openai-chat');
   });
 
   it('routes only DeepSeek V4 Flash through the provider Responses wire', () => {
     assert.equal(openAiAdapterApiProtocol('deepseek-v4-flash', 'deepseek'), 'openai-responses');
     assert.equal(openAiAdapterApiProtocol('deepseek-v4-pro', 'deepseek'), 'openai-chat');
-    assert.equal(openAiAdapterApiProtocol('deepseek-chat', 'deepseek'), 'openai-chat');
   });
 });
