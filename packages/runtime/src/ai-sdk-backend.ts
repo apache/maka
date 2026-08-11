@@ -69,6 +69,7 @@ import {
 } from '@maka/core/orchestration';
 import type { PlanToolResult } from './plan-tools.js';
 import {
+  ARCHIVE_READ_TOOL_NAME,
   bindToolResultArchiveDecoder,
   type ToolResultArchiveCapability,
 } from './tool-result-archive-capability.js';
@@ -525,15 +526,15 @@ function projectToolModePlan(
   };
 }
 
-function omitToolsFromPlan(
+function restrictToolsInPlan(
   plan: ToolAvailabilityPlan,
-  omittedToolNames: ReadonlySet<string>,
+  allowedToolNames: ReadonlySet<string>,
 ): ToolAvailabilityPlan {
   const visible = (names: readonly string[]): string[] =>
-    names.filter((name) => !omittedToolNames.has(name));
+    names.filter((name) => allowedToolNames.has(name));
   return {
     ...plan,
-    providerTools: plan.providerTools.filter((tool) => !omittedToolNames.has(tool.name)),
+    providerTools: plan.providerTools.filter((tool) => allowedToolNames.has(tool.name)),
     activeTools: visible(plan.activeTools),
     ...(plan.projectActiveTools
       ? {
@@ -545,6 +546,16 @@ function omitToolsFromPlan(
     currentRepairToolNames: () => visible(plan.currentRepairToolNames()),
   };
 }
+
+const DELEGATE_MAIN_TOOL_NAMES = new Set([
+  INVALID_TOOL_NAME,
+  ARCHIVE_READ_TOOL_NAME,
+  'agent_list',
+  'view_agent_graph',
+  'update_agent_graph',
+  'agent_swarm_status',
+  'agent_output',
+]);
 
 function nestableToolSnapshot(
   providerTools: readonly MakaTool[],
@@ -1590,12 +1601,12 @@ export class AiSdkBackend implements AgentBackend {
         (input.runtimeContext ?? []).filter((event) => event.turnId !== turnId),
         requiredOrchestrationTools,
       ),
-      toolMode,
+      scope.orchestration.mode === 'delegate' ? 'direct' : toolMode,
       codeModeExecTool,
     );
     const plan =
       scope.orchestration.mode === 'delegate'
-        ? omitToolsFromPlan(toolModePlan, new Set(['yield_agent_graph']))
+        ? restrictToolsInPlan(toolModePlan, DELEGATE_MAIN_TOOL_NAMES)
         : toolModePlan;
     const providerTools = plan.providerTools;
     let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};

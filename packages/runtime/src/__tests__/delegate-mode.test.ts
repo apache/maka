@@ -11,6 +11,9 @@ describe('Delegate Mode', () => {
   test('instructs the main agent to acknowledge and end normally without yielding', () => {
     const prompt = renderDelegateModePrompt();
     assert.match(prompt, /remain responsive/);
+    assert.match(prompt, /exactly one structured decision/);
+    assert.match(prompt, /zero tool calls/);
+    assert.match(prompt, /requires any tool/);
     assert.match(prompt, /end this turn normally/);
     assert.match(prompt, /Do not poll, sleep/);
   });
@@ -23,8 +26,31 @@ describe('Delegate Mode', () => {
     assert.equal(shouldWakeDelegateSupervisor('root', undefined, completed), true);
     const wake = renderDelegateSupervisorWake('root', completed);
     assert.equal(wake?.orchestrationMode, 'delegate');
+    assert.equal(wake?.displayText, 'Delegated task checkpoint.');
     assert.match(wake?.text ?? '', /end this turn normally/);
     assert.match(wake?.text ?? '', /Do not poll, sleep/);
+  });
+
+  test('does not wake again for reconciliation after a runtime checkpoint', () => {
+    const completed = snapshot('completed');
+    assert.equal(
+      shouldWakeDelegateSupervisor(
+        'root',
+        {
+          status: 'reconciled',
+          newActivationCount: 0,
+          observedExistingActivationCount: 1,
+          dispatches: [],
+          stops: [],
+          deferredWork: [],
+          failures: [],
+          schedule: {} as never,
+          observation: {} as never,
+        },
+        completed,
+      ),
+      false,
+    );
   });
 
   test('does not claim ordinary Graph checkpoints', () => {
