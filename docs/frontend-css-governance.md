@@ -46,7 +46,7 @@ Astryx reset and component layers come first; Maka base tokens and product `comp
 ## 7. How these rules are checked
 
 The rules above are conventions enforced in review, plus the fast scripts that
-survive as their own commands — `check-dead-css`, `check-a11y`, `check-copy`,
+survive as their own commands — `check-dead-css`, `check-a11y`, and
 `check-console`. The source-scanning contract suite that used to re-assert them
 as tests is gone: it charged every refactor a rewrite of its own guards while
 catching only what a linter should.

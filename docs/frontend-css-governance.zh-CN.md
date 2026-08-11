@@ -60,7 +60,7 @@ Astryx reset 和组件层在前，Maka base token 与产品 `components` 在后�
 ## 7. 这些规则靠什么保证
 
 靠评审时的约定，加上仍然独立存在的快速脚本：`check-dead-css`、`check-a11y`、
-`check-copy`、`check-console`。原来用测试把这些规则再断言一遍的源码扫描套件已经
+`check-console`。原来用测试把这些规则再断言一遍的源码扫描套件已经
 删除——它让每次重构都要顺手改写自己的护栏，抓到的却只是 linter 该抓的东西。
 
 - renderer CSS 的行为在它真正渲染的地方验证：Storybook、app，或对真实界面的 e2e 断言。

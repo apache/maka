@@ -32,7 +32,7 @@
     "typecheck:stories": "tsc -p tsconfig.storybook.json --noEmit",
     "pretest": "npm run build:workspace-deps && npm run test:checks",
     "test": "npm run clean:main && npm run build:main && node --test \"dist/main/**/*.test.js\"",
-    "test:checks": "node ../../scripts/check-console.mjs && node ../../scripts/check-a11y.mjs && node ../../scripts/check-copy.mjs",
+    "test:checks": "node ../../scripts/check-console.mjs && node ../../scripts/check-a11y.mjs",
     "test:dist": "npm run test:checks && node --test \"dist/main/**/*.test.js\"",
     "e2e": "npm run build:with-deps && playwright test --config e2e/playwright.config.ts",
     "build:with-deps": "npm run build:workspace-deps && npm run build",

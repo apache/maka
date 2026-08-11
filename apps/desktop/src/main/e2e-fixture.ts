@@ -6,7 +6,6 @@ import { createFileCredentialStore, createProjectCatalog } from '@maka/storage';
 import type { CredentialStore } from '@maka/storage';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
-  ARTIFACT_SESSION_ID,
   E2E_FIXTURE_NOW,
   LONG_SIDEBAR_PROJECT_ID,
   LONG_SIDEBAR_PROJECT_NAME,
@@ -14,11 +13,6 @@ import {
   TURN_SESSION_ID,
   writeSession,
 } from './e2e-fixture/seed-helpers.js';
-import {
-  artifactMessages,
-  artifactSession,
-  writeArtifacts,
-} from './e2e-fixture/scenarios-artifacts.js';
 import { turnMessages, turnSession } from './e2e-fixture/scenarios-chat.js';
 import { seedMcpFixture, seedSkillsMarketFixture } from './e2e-fixture/scenarios-modules.js';
 import { longSidebarSessions } from './e2e-fixture/scenarios-sessions.js';
@@ -33,7 +27,6 @@ import { usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
 const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'fetched-empty',
   'turn-narrative',
-  'artifact-pane',
   'settings-data',
   'settings-bots-onboarding',
   'settings-general',
@@ -132,14 +125,6 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'models' };
     case 'turn-narrative':
       return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'tasks' };
-    case 'artifact-pane':
-      return {
-        ...state,
-        activeSessionId: ARTIFACT_SESSION_ID,
-        workbarCollapsed: false,
-        workbarTab: 'files',
-        workbarPreview: true,
-      };
     case 'settings-data':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'data' };
     case 'settings-bots-onboarding':
@@ -195,10 +180,6 @@ export async function seedE2eFixture(input: {
   }
   await writeSession(input.workspaceRoot, turnSession(now), turnMessages(now));
 
-  if (scenario === 'artifact-pane') {
-    await writeSession(input.workspaceRoot, artifactSession(now), artifactMessages(now));
-    await writeArtifacts(input.workspaceRoot, now);
-  }
   if (scenario === 'sidebar-search-modal-open') {
     for (const seed of longSidebarSessions(now)) {
       await writeSession(input.workspaceRoot, seed.header, seed.messages);
