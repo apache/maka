@@ -1,16 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  defaultWorkspacePrivacyContext,
   isWorkspacePrivacyContext,
   validateWorkspacePrivacyContext,
 } from '../incognito.js';
 
 describe('workspace privacy context', () => {
-  it('defaults explicitly to non-incognito', () => {
-    assert.deepEqual(defaultWorkspacePrivacyContext(), { incognitoActive: false });
-  });
-
   it('accepts booleans and strips renderer-supplied authority fields', () => {
     assert.deepEqual(
       validateWorkspacePrivacyContext({

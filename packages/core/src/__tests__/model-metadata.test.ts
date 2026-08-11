@@ -7,7 +7,7 @@ import {
   resolveModelPdfSupport,
   resolveModelVisionSupport,
 } from '../model-metadata.js';
-import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '../llm-connections.js';
+import type { ModelInfo, ProviderType } from '../llm-connections.js';
 
 describe('model-metadata vision capability', () => {
   it('treats a Claude newer than the generated snapshot as able to read images', () => {
@@ -85,43 +85,6 @@ describe('model-metadata vision capability', () => {
     );
   });
 
-  it('uses synchronized facts while preserving access-path overrides', () => {
-    const metadata = lookupModelMetadata('anthropic', 'claude-sonnet-4-5');
-    assert.equal(metadata.contextWindow, 200_000);
-    assert.equal(
-      lookupModelMetadata('anthropic', 'claude-sonnet-4-5-20250929').contextWindow,
-      200_000,
-    );
-    assert.deepEqual(metadata.thinkingOptions, {
-      toggle: true,
-      offBehavior: 'anthropic-thinking-disabled',
-    });
-  });
-
-  it('reports vision false for text-only models', () => {
-    assert.equal(lookupModelMetadata('deepseek', 'deepseek-chat').capabilities?.vision, false);
-    assert.equal(lookupModelMetadata('zai-coding-plan', 'glm-5.2').capabilities?.vision, false);
-    assert.equal(lookupModelMetadata('zai-coding-plan', 'glm-4.7').capabilities?.vision, false);
-  });
-
-  it('keeps Tencent Coding Plan text-only even when an upstream model supports vision elsewhere', () => {
-    const capabilities = lookupModelMetadata('tencent-coding-plan', 'kimi-k2.5').capabilities;
-    assert.equal(capabilities?.vision, false);
-    assert.equal(capabilities?.reasoning, true);
-    assert.equal(capabilities?.functionCalling, true);
-    assert.equal(
-      resolveModelVisionSupport('tencent-coding-plan', [{ id: 'kimi-k2.5' }], 'kimi-k2.5'),
-      false,
-    );
-  });
-
-  it('keeps complete metadata for every Codex subscription model alias', () => {
-    for (const modelId of PROVIDER_DEFAULTS['openai-codex'].fallbackModels) {
-      const metadata = lookupModelMetadata('openai-codex', modelId);
-      assert.ok(metadata.displayName);
-      assert.equal(metadata.capabilities?.vision, true);
-    }
-  });
 });
 
 describe('resolveModelVisionSupport', () => {

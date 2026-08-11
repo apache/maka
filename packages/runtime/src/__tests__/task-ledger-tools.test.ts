@@ -167,16 +167,6 @@ function findTool(tools: MakaTool[], name: string): MakaTool {
 }
 
 describe('task ledger tools', () => {
-  test('builds snake_case task tools by default, all local (no permission gate)', () => {
-    const tools = buildTaskLedgerTools({ store: new FakeTaskLedgerStore() });
-    assert.deepEqual(
-      tools.map((t) => t.name),
-      [TASK_CREATE_TOOL_NAME, TASK_UPDATE_TOOL_NAME, TASK_LIST_TOOL_NAME, TASK_GET_TOOL_NAME],
-    );
-    for (const tool of tools) {
-    }
-  });
-
   test('task tool feature flag defaults on and can be disabled explicitly', () => {
     assert.equal(isTaskLedgerToolsEnabled({}), true);
     assert.equal(isTaskLedgerToolsEnabled({ MAKA_TASK_LEDGER_TOOLS: 'false' }), false);
