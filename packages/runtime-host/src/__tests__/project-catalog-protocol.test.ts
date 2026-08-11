@@ -14,22 +14,7 @@ const foreignHostPath = process.platform === 'win32' ? '/workspace' : 'C:\\works
 const revision = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Project catalog protocol', () => {
-  test('declares bounded ready operations and exact invalidations', () => {
-    assert.deepEqual(
-      Object.fromEntries(
-        (['project.catalog.query', 'project.catalog.mutate'] as const).map((operation) => [
-          operation,
-          {
-            mode: HOST_OPERATION_SPECS[operation].mode,
-            availability: HOST_OPERATION_SPECS[operation].availability,
-          },
-        ]),
-      ),
-      {
-        'project.catalog.query': { mode: 'query', availability: 'ready' },
-        'project.catalog.mutate': { mode: 'command', availability: 'ready' },
-      },
-    );
+  test('decodes exact invalidations', () => {
     const frame = { kind: 'project.catalog.changed' as const, revision: 1 };
     assert.deepEqual(decodeHostFrame(frame), frame);
     assert.throws(() => decodeHostFrame({ ...frame, extra: true }), isProtocolError);

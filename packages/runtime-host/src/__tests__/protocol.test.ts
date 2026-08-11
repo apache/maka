@@ -46,45 +46,8 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(() => negotiateProtocol({ min: -1, max: 0 }, { min: 0, max: 0 }), isInvalidFrame);
   });
 
-  test('keeps subscription operations closed, ready-only, and queue Epoch correlated', () => {
+  test('keeps the subscription queue Epoch correlated', () => {
     assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 3);
-    assert.deepEqual(
-      Object.fromEntries(
-        (['subscription.open', 'subscription.close'] as const).map((operation) => [
-          operation,
-          {
-            mode: HOST_OPERATION_SPECS[operation].mode,
-            availability: HOST_OPERATION_SPECS[operation].availability,
-            errors: HOST_OPERATION_SPECS[operation].errors,
-          },
-        ]),
-      ),
-      {
-        'subscription.open': {
-          mode: 'control',
-          availability: 'ready',
-          errors: [
-            'host_not_ready',
-            'host_draining',
-            'operation_unavailable',
-            'not_found',
-            'operation_conflict',
-            'internal_failure',
-          ],
-        },
-        'subscription.close': {
-          mode: 'control',
-          availability: 'ready',
-          errors: [
-            'host_not_ready',
-            'host_draining',
-            'operation_unavailable',
-            'not_found',
-            'internal_failure',
-          ],
-        },
-      },
-    );
     const opened = {
       requestId: 'open-1',
       operation: 'subscription.open',

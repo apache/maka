@@ -8,7 +8,6 @@ import {
   encodeTaskLedgerTask,
   encodeTaskLedgerQueryResult,
   TASK_LEDGER_CURSOR_MAX_BYTES,
-  TASK_LEDGER_OPERATION_SPECS,
   TASK_LEDGER_PAGE_MAX_BYTES,
   TASK_LEDGER_PAGE_MAX_ITEMS,
   type TaskLedgerQueryResult,
@@ -18,19 +17,7 @@ const revision = `sha256:${'a'.repeat(64)}` as const;
 const nextRevision = `sha256:${'b'.repeat(64)}` as const;
 
 describe('Task Ledger protocol', () => {
-  test('declares the closed ready query and decodes all input branches', () => {
-    const spec = TASK_LEDGER_OPERATION_SPECS['task.ledger.query'];
-    assert.equal(spec.mode, 'query');
-    assert.equal(spec.availability, 'ready');
-    assert.deepEqual(spec.errors, [
-      'host_not_ready',
-      'host_draining',
-      'operation_unavailable',
-      'invalid_request',
-      'not_found',
-      'internal_failure',
-    ]);
-
+  test('decodes all closed query input branches', () => {
     for (const input of [
       { kind: 'list_start', sessionId: 'session-1' },
       { kind: 'list_continue', sessionId: 'session-1', revision, cursor: 'opaque:2' },

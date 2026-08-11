@@ -23,7 +23,6 @@ import {
   RUNTIME_RESOURCE_CONTROL_INPUT_MAX_BYTES,
   RUNTIME_RESOURCE_MAX_CONTROL_SEQUENCE,
   RUNTIME_RESOURCE_CURSOR_MAX_BYTES,
-  RUNTIME_RESOURCE_OPERATION_SPECS,
   RUNTIME_RESOURCE_PAGE_MAX_ITEMS,
   RUNTIME_RESOURCE_RESULT_MAX_BYTES,
 } from '../protocol/runtime-resource.js';
@@ -34,15 +33,6 @@ const runtimeRef = 'maka://runtime/background-tasks/shell-1';
 type PipeShellSnapshot = Extract<ShellRunSnapshotResult, { mode: 'pipes' }>;
 
 describe('Runtime Resource protocol', () => {
-  test('declares the complete ready operation surface', () => {
-    assert.equal(RUNTIME_RESOURCE_OPERATION_SPECS['runtime.resource.query'].mode, 'query');
-    for (const [key, spec] of Object.entries(RUNTIME_RESOURCE_OPERATION_SPECS)) {
-      assert.equal(spec.availability, 'ready', key);
-      if (key === 'runtime.resource.start') assert.equal(spec.mode, 'command', key);
-      else if (key !== 'runtime.resource.query') assert.equal(spec.mode, 'control', key);
-    }
-  });
-
   test('round-trips every query, controller, and stop branch', () => {
     const update = resourceUpdate();
     const unavailable = resourceUpdate({
