@@ -16,6 +16,18 @@ implementation choices.
 Every address and exact value below is scoped to that artifact. A later signed
 build may move functions or change defaults.
 
+### Reproducibility limit
+
+The historical artifact is no longer present at the recorded local path. On
+2026-08-11, that path contained a newer binary signed on 2026-08-05 with
+SHA-256 `d51dc8dd4c5a1ff19c13e206a8e5022db8bf5cb1c7aff0d67d6c7f4bb55dc031`.
+
+The July 16 SHA-256 and addresses are contemporaneous contributor evidence. No
+copy of that proprietary artifact is stored in this repository, so the original
+inspection cannot be independently reproduced from the repository alone.
+Sanitized analysis records and the derived source boundary can remain without
+redistributing the executable.
+
 ## Canonical description
 
 Maka used this specific signed Codex Desktop binary both as a compatibility
@@ -122,3 +134,19 @@ provide a license grant. This record identifies what happened; it does not make
 the licensing conclusion. An independent human reviewer must decide whether the
 retained binary-derived material is acceptable for an ASF release or must be
 replaced.
+
+### Applicable-terms gate before code transfer
+
+The project has not established which agreement governed the inspection or
+whether an applicable-law exception applied. The potentially relevant published
+agreements include OpenAI's individual Terms of Use and Services Agreement:
+
+- `https://openai.com/policies/row-terms-of-use/`
+- `https://openai.com/policies/services-agreement/`
+
+This provenance record must not be treated as an approval of the retained
+binary-derived components. Before code transfer, the project must either:
+
+1. independently replace those retained components; or
+2. obtain an appropriate human legal or ASF determination based on the actual
+   governing terms and applicable jurisdiction.

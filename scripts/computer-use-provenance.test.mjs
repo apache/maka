@@ -21,6 +21,7 @@ const cursorDocument = await readFile(
   new URL('docs/computer-use-cursor-provenance.md', repoRoot),
   'utf8',
 );
+const repositoryLicense = await readFile(new URL('LICENSE', repoRoot), 'utf8');
 
 test('every repository path the provenance record names still exists', async () => {
   // Backticked spans that look like repository paths: a slash, and a file
@@ -88,6 +89,24 @@ test('the cursor provenance record preserves the mixed source boundary', () => {
   assert.match(cursorDocument, /disassembled control flow/);
   assert.match(cursorDocument, /^### Binary-derived facts still retained$/m);
   assert.match(cursorDocument, /^### Maka-authored or Maka-adjusted behavior$/m);
+});
+
+test('the repository license accounts for the trycua/cua MIT adaptation', () => {
+  assert.match(repositoryLicense, /^trycua\/cua cursor-overlay$/m);
+  assert.match(repositoryLicense, /Revision: 8c921b2b3bf13494724ead4f0a814d80c56a7e8b/);
+  assert.match(repositoryLicense, /Copyright \(c\) 2025 Cua AI, Inc\./);
+  assert.match(repositoryLicense, /Maka's agent-cursor renderer and palette include adaptations/);
+  assert.match(repositoryLicense, /^MIT License$/m);
+});
+
+test('the cursor record preserves the artifact and applicable-terms review gates', () => {
+  assert.match(cursorDocument, /^### Reproducibility limit$/m);
+  assert.match(cursorDocument, /historical artifact is no longer present/);
+  assert.match(cursorDocument, /d51dc8dd4c5a1ff19c13e206a8e5022db8bf5cb1c7aff0d67d6c7f4bb55dc031/);
+  assert.match(cursorDocument, /cannot be independently reproduced from the repository alone/);
+  assert.match(cursorDocument, /^### Applicable-terms gate before code transfer$/m);
+  assert.match(cursorDocument, /independently replace those retained components/);
+  assert.match(cursorDocument, /human legal or ASF determination/);
 });
 
 test('the record accounts for every executor the manifest pins', async () => {
