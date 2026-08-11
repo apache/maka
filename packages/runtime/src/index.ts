@@ -1508,6 +1508,32 @@ export type {
   ProductToolSurfacePolicy,
 } from './tool-catalog-derive.js';
 
+// tool-discovery.ts — provider-native Tool Search discovery policy + lowering
+// contract (maka-agent/maka-agent#1382 slice 1). Maka-owned catalog policy the
+// ModelAdapter lowers to Anthropic / OpenAI native Tool Search, with a
+// deterministic `load_tools` fallback for unsupported models.
+export {
+  buildToolDiscoveryPolicy,
+  lowerToolsForProvider,
+  mcpNamespace,
+  resolveProviderToolSearchCapability,
+  NATIVE_TOOL_SEARCH_NAME,
+  NATIVE_TOOL_SEARCH_DESCRIPTION,
+} from './tool-discovery.js';
+export type {
+  ToolDiscovery,
+  ToolDiscoveryPolicy,
+  ProviderToolSearchCapability,
+  AnthropicSearchVariant,
+  NativeSearchToolKind,
+  NativeSearchToolDescriptor,
+  LoweredToolEntry,
+  LoweredProviderToolPayload,
+  DeferredSurfaceInput,
+  McpServerToolsInput,
+  BuildToolDiscoveryPolicyInput,
+} from './tool-discovery.js';
+
 // ───────────────────────────────────────────────────────────────────────────
 // System-prompt fragments (shared by the desktop app and the CLI/TUI).
 // Read-only, stateless builders for project instructions, personalization, git
