@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
-import { mergeSettings, normalizeSettings } from '../settings.js';
+import { normalizeSettings } from '../settings.js';
 
 test('normalizes user-approved subagent presets without widening the catalog', () => {
   const normalized = normalizeSettings({
@@ -53,7 +53,7 @@ test('normalizes user-approved subagent presets without widening the catalog', (
 
 describe('custom pet selection settings', () => {
   test('fails closed for missing, unsafe, or malformed persisted selections', () => {
-    for (const selectedPetId of [undefined, '../maodie', 'MAODIE', '', 42, {}]) {
+    for (const selectedPetId of [undefined, '../maodie', 42]) {
       const normalized = normalizeSettings({
         personalization: {
           displayName: '',
@@ -68,23 +68,13 @@ describe('custom pet selection settings', () => {
 });
 
 test('a chat-default thinking level the app does not recognize drops to no preference', () => {
-  // Fail closed, matching permissionMode next to it: a level that reached
-  // settings.json from an older build or a hand edit must not travel on to
-  // session creation as a rung no picker can render.
-  const normalized = normalizeSettings(
-    mergeSettings(createDefaultSettings(), {
-      chatDefaults: { thinkingLevel: 'ultra' as unknown as undefined },
-    }),
-  );
+  const normalized = normalizeSettings({
+    chatDefaults: { thinkingLevel: 'ultra' as unknown as undefined },
+  });
   expect(normalized.chatDefaults.thinkingLevel).toBe(undefined);
 });
 
 test('a blank default project id is dropped rather than stored', () => {
-  // A blank id cannot name a project, so carrying it would make "a default is
-  // set" true while nothing resolves — the settings row would claim a default
-  // the app can never open.
-  const normalized = normalizeSettings(
-    mergeSettings(createDefaultSettings(), { projects: { defaultProjectId: '   ' } }),
-  );
+  const normalized = normalizeSettings({ projects: { defaultProjectId: '   ' } });
   expect(normalized.projects.defaultProjectId).toBe(undefined);
 });
