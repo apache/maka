@@ -108,29 +108,6 @@ body`);
     );
   });
 
-  it('recovers legacy scalar colons and tab-indented lists with an explicit warning', () => {
-    const result = validateSkillMetadata(`---
-name: Legacy Writer
-description: Use when: the user asks for writing help.
-allowed-tools: Read, Write
-required-tools:
-\t- Bash
----
-# Legacy Writer`);
-
-    assert.equal(result.valid, true);
-    assert.equal(result.manifest.description, 'Use when: the user asks for writing help.');
-    assert.deepEqual(result.manifest.allowedTools, ['Read', 'Write']);
-    assert.deepEqual(result.manifest.requiredTools, ['Bash']);
-    assert.deepEqual(
-      result.issues.map((issue) => ({
-        code: issue.code,
-        severity: issue.severity,
-      })),
-      [{ code: 'malformed_frontmatter', severity: 'warning' }],
-    );
-  });
-
   it('keeps compatible skills loadable while reporting non-blocking metadata warnings', () => {
     const result = validateSkillMetadata(`---
 name: ${'N'.repeat(65)}
@@ -777,13 +754,6 @@ Use host tools.`,
       if (result.ok) return;
       assert.equal(result.reason, 'host_incompatible');
 
-      // without host: legacy behavior, loads ok.
-      const legacyTool = buildSkillAgentTool(workspaceRoot);
-      const legacy = await legacyTool.impl(
-        { name: 'gated-helper' },
-        {} as unknown as MakaToolContext,
-      );
-      assert.equal(legacy.ok, true);
     });
   });
 
@@ -817,9 +787,6 @@ Use host tools.`,
       });
       assert.equal(ok.ok, true);
 
-      // no host: legacy behavior, load ok.
-      const legacy = await loadSkillInstructions(workspaceRoot, 'gated-helper');
-      assert.equal(legacy.ok, true);
     });
   });
 
@@ -900,11 +867,6 @@ Plain work.`,
       assert.match(full, /<available-skill id="plain-helper"/);
       assert.match(full, /<available-skill id="gated-helper"/);
 
-      // no host (undefined): legacy behavior, both shown (no gating).
-      const legacy = await buildSkillsPromptFragment(workspaceRoot);
-      assert.ok(legacy);
-      assert.match(legacy, /<available-skill id="plain-helper"/);
-      assert.match(legacy, /<available-skill id="gated-helper"/);
     });
   });
 

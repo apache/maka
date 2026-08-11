@@ -940,7 +940,7 @@ describe('Interaction decoding and validity', () => {
     }
   });
 
-  test('decodes only bounded auto-review rationale while preserving legacy outcomes', () => {
+  test('decodes only bounded auto-review rationale', () => {
     const rationale = 'r'.repeat(INTERACTION_AUTO_REVIEW_RATIONALE_MAX_CHARS);
     const reviewed = decodeInteractionCanonicalOutcome({
       kind: 'permission_answer',
@@ -966,17 +966,6 @@ describe('Interaction decoding and validity', () => {
       retry.kind === 'permission_answer' ? retry.rationale : undefined,
       'A retry may explain the same user-answer semantics differently.',
     );
-
-    const legacy = decodeInteractionCanonicalOutcome({
-      kind: 'permission_answer',
-      decision: 'deny',
-      rememberForTurn: false,
-      reviewer: 'auto_review',
-      committedAt: 3,
-    });
-    assert.equal(legacy.kind, 'permission_answer');
-    if (legacy.kind !== 'permission_answer') return;
-    assert.equal(legacy.rationale, undefined);
 
     assert.throws(() =>
       decodeInteractionCanonicalOutcome({

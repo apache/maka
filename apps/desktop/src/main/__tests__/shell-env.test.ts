@@ -308,18 +308,6 @@ describe('buildCaptureCommand', () => {
       assert.equal(match[1], JSON.stringify({ PATH: '/usr/bin' }));
     });
 
-    it('tcsh / csh collapse to the legacy single -ic argv', () => {
-      const tcsh = buildCaptureCommand('tcsh', '/usr/bin/node', MARK);
-      assert.deepEqual(tcsh.shellArgs, ['-ic']);
-      const csh = buildCaptureCommand('csh', '/usr/bin/node', MARK);
-      assert.deepEqual(csh.shellArgs, ['-ic']);
-      // Same flush-marker payload as the rest of the POSIX family.
-      assert.equal(
-        tcsh.command,
-        `'/usr/bin/node' -p '"${MARK}" + JSON.stringify({ PATH: process.env.PATH }) + "${MARK}"'`,
-      );
-    });
-
     it('round-trips an apostrophe in execPath via the close-quote / escape / reopen sequence', () => {
       // POSIX single-quoting cannot contain a literal `'`; the safe escape is
       // to close the quote, emit a backslash-escaped quote, and reopen.
