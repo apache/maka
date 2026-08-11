@@ -1,18 +1,9 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as timerDelay } from 'node:timers/promises';
-<<<<<<< HEAD
-import {
-  deriveTurnRecords,
-  DurableStoreWriteError,
-  RunSealedError,
-  isTerminalRuntimeEvent,
-} from '@maka/core';
-=======
 import { deriveTurnRecords } from '@maka/core/session';
-import { DurableStoreWriteError } from '@maka/core/runtime-event-store';
+import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
->>>>>>> origin/main
 import {
   ToolLedgerCorruptionError,
   ToolLedgerRejectionError,
