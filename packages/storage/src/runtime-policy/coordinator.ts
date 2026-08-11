@@ -1824,14 +1824,19 @@ export class RuntimePolicyCoordinator {
               continue;
             }
             const currentDigest = digestByModel.get(record.modelId);
-            if (
+            const currentBasis =
               connection.enabledModelIds.includes(record.modelId) &&
               currentDigest !== undefined &&
-              record.executionBasisDigest === currentDigest
-            ) {
+              record.executionBasisDigest === currentDigest;
+            if (currentBasis) {
               supportedModels.push(record.modelId);
             }
+            // lastTest comes from the CURRENT basis only: a stale
+            // endpoint/headers/overlay result must not surface as the
+            // profile's last state (or its needs_reauth tone) once the basis
+            // changed.
             if (
+              currentBasis &&
               record.source === 'tested' &&
               record.testSummary &&
               (!lastTest || record.checkedAt > Date.parse(lastTest.checkedAt))
@@ -1847,6 +1852,9 @@ export class RuntimePolicyCoordinator {
             group.push(modelId);
             digestModels.set(digest, group);
           }
+          // healthByDigest caches the rows read for the aggregate circuit so
+          // the per-model ready computation reuses the same authority data.
+          const healthByDigest = new Map<string, Awaited<ReturnType<typeof store.readHealth>>>();
           for (const [digest, modelIds] of digestModels) {
             const health = await store.readHealth(
               connection.connectionId,
@@ -1855,6 +1863,7 @@ export class RuntimePolicyCoordinator {
               credential.revision,
               digest,
             );
+            healthByDigest.set(digest, health);
             for (const row of health) {
               // The credential-global row (model_id='') applies to every
               // model on this basis; per-model rows apply to their model.
@@ -1883,6 +1892,34 @@ export class RuntimePolicyCoordinator {
               }
             }
           }
+          if (profile.enabled) {
+            for (const modelId of supportedModels) {
+              // Model-scoped health isolation: this Profile is a ready
+              // candidate for `modelId` unless the credential-global row or
+              // THIS model's row is blocked (open / half_open / invalid). A
+              // denied model must not remove the Profile from other models'
+              // ready sets.
+              const digest = digestByModel.get(modelId);
+              if (digest === undefined) continue;
+              const health = healthByDigest.get(digest) ?? [];
+              let blocked = false;
+              for (const row of health) {
+                if (row.modelId !== '' && row.modelId !== modelId) continue;
+                if (
+                  row.circuitState === 'open' ||
+                  row.circuitState === 'half_open' ||
+                  row.circuitState === 'invalid'
+                ) {
+                  blocked = true;
+                  break;
+                }
+              }
+              if (blocked) continue;
+              const list = readyProfileIdsByModel.get(modelId) ?? [];
+              if (!list.includes(profile.profileId)) list.push(profile.profileId);
+              readyProfileIdsByModel.set(modelId, list);
+            }
+          }
         }
         entries.push(
           deepFreeze({
@@ -1898,20 +1935,6 @@ export class RuntimePolicyCoordinator {
             circuit,
           }),
         );
-        if (profile.enabled && credential) {
-          // half_open is a probe in flight, not a dispatchable candidate: it
-          // must not count toward the ready set even though the UI shows it as
-          // a transient cooldown state.
-          const ready =
-            (circuit === null || circuit.state === 'closed') && supportedModels.length > 0;
-          if (ready) {
-            for (const modelId of supportedModels) {
-              const list = readyProfileIdsByModel.get(modelId) ?? [];
-              if (!list.includes(profile.profileId)) list.push(profile.profileId);
-              readyProfileIdsByModel.set(modelId, list);
-            }
-          }
-        }
       }
       const readyCandidateCount = [...readyProfileIdsByModel.values()].filter(
         (profileIds) => profileIds.length >= 2,

@@ -296,6 +296,9 @@ async function applyV2ConfigImport(
   let restoredEnabled = 0;
   let balancedRestored = false;
   let balancedPending = false;
+  // slug -> profileIds the quiesce disabled; the restore pass re-enables the
+  // ones the bundle did not list.
+  const quiescedSecondaries = new Map<string, Set<string>>();
 
   if (Array.isArray(bundle.data.connections)) {
     const incoming = bundle.data.connections as V2ExportedConnection[];
@@ -318,12 +321,16 @@ async function applyV2ConfigImport(
     // still declares balanced routing must drop to legacy_primary and every
     // enabled secondary must be disabled FIRST, so a partial failure can never
     // leave "balanced declared + credentials partially replaced". Newly
-    // created connections have no routing declaration and skip this pass.
+    // created connections have no routing declaration and skip this pass. The
+    // disabled set is remembered (function scope) so profiles NOT listed in
+    // the bundle can be restored to their previous enabled state after the
+    // import (RFC 13.4: absent profiles are kept).
     for (const connection of plan.overwrite) {
       const current = await profiles.list(connection.slug);
       if (current.routingMode === 'balanced') {
         await profiles.setRoutingMode(connection.slug, { mode: 'legacy_primary' });
       }
+      const disabled = new Set<string>();
       for (const secondary of current.profiles.filter(
         (candidate) => !candidate.primary && candidate.enabled,
       )) {
@@ -332,9 +339,10 @@ async function applyV2ConfigImport(
           profileRevision: secondary.revision,
           enabled: false,
         });
+        disabled.add(secondary.profileId);
       }
+      if (disabled.size > 0) quiescedSecondaries.set(connection.slug, disabled);
     }
-
     for (const connection of [...plan.create, ...plan.overwrite]) {
       const source =
         (incoming.find((candidate) => candidate.slug === connection.slug) ??
@@ -452,6 +460,7 @@ async function applyV2ConfigImport(
       if (!appliedConnectionSlugs.has(connection.slug)) continue;
       const slugMapping = mappings.get(connection.slug);
       if (!slugMapping) continue;
+      const restoredProfileIds = new Set<string>();
       for (const profile of connection.credentialProfiles ?? []) {
         if (!profile.enabled) continue;
         const targetProfileId = slugMapping.get(profile.profileRef);
@@ -471,10 +480,35 @@ async function applyV2ConfigImport(
               profileRevision: target.revision,
               enabled: true,
             });
+            restoredProfileIds.add(target.profileId);
           }
           restoredEnabled += 1;
         } else {
           verificationFailed.push(`${connection.slug}/${profile.label}`);
+        }
+      }
+      // Profiles the quiesce disabled but the bundle did not list keep their
+      // metadata and credentials (RFC 13.4); restore their previous enabled
+      // state so the import never silently disables an account. If the
+      // connection's execution basis changed, readiness naturally shows them
+      // unverified — the balanced gate re-checks the current digest.
+      const quiesced = quiescedSecondaries.get(connection.slug);
+      if (quiesced) {
+        const fresh = await profiles.list(connection.slug);
+        for (const profile of fresh.profiles) {
+          if (
+            !profile.primary &&
+            !profile.enabled &&
+            quiesced.has(profile.profileId) &&
+            !restoredProfileIds.has(profile.profileId)
+          ) {
+            await profiles.setEnabled(connection.slug, {
+              profileId: profile.profileId,
+              profileRevision: profile.revision,
+              enabled: true,
+            });
+            restoredEnabled += 1;
+          }
         }
       }
       if (connection.routingMode === 'balanced') {

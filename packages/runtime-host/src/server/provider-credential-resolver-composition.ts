@@ -206,7 +206,15 @@ async function blockedForModel(
   );
   for (const row of rows) {
     if (row.modelId !== '' && row.modelId !== modelId) continue;
-    if (row.circuitState === 'open' || row.circuitState === 'invalid') return true;
+    // half_open is a claimed probe in flight: dispatching this Profile as an
+    // ordinary candidate would bypass the Router's single-flight probe lease.
+    if (
+      row.circuitState === 'open' ||
+      row.circuitState === 'half_open' ||
+      row.circuitState === 'invalid'
+    ) {
+      return true;
+    }
   }
   return false;
 }

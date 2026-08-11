@@ -583,6 +583,16 @@ describe('config-transfer-service', () => {
         credentialConfigured: true,
         supportedModels: [],
       },
+      {
+        profileId: 'profile-extra',
+        revision: 2,
+        label: 'kept-account',
+        enabled: true,
+        weight: 15,
+        primary: false,
+        credentialConfigured: true,
+        supportedModels: [],
+      },
     ];
     const calls: string[] = [];
     deps.profiles = {
@@ -643,20 +653,24 @@ describe('config-transfer-service', () => {
 
     const result = await applyConfigImport(bundle as any, 'overwrite', deps);
 
-    // Quiesce first (balanced -> legacy_primary, secondary disabled), then the
-    // exact-ID update, credential replacement, re-test, re-enable, balanced
-    // restore — never "balanced declared + credentials replaced".
+    // Quiesce first (balanced -> legacy_primary, BOTH secondaries disabled),
+    // then the exact-ID update, credential replacement, re-test, re-enable of
+    // the bundle-listed profile, restore of the bundle-absent profile, then
+    // balanced restore — never "balanced declared + credentials replaced"
+    // and never a silently disabled account.
     assert.deepEqual(calls, [
       'routing:legacy_primary',
       'setEnabled:profile-77:false',
+      'setEnabled:profile-extra:false',
       'update:profile-77',
       'credential:profile-77',
       'test:profile-77',
       'setEnabled:profile-77:true',
+      'setEnabled:profile-extra:true',
       'routing:balanced',
     ]);
     assert.deepEqual(result.profiles?.balancedRestored, true);
-    assert.deepEqual(result.profiles?.restoredEnabled, 1);
+    assert.deepEqual(result.profiles?.restoredEnabled, 2);
   });
 
   it('routes a parsed v1 bundle through the legacy import path', async () => {
