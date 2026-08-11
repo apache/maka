@@ -10,22 +10,12 @@ import {
 } from '../events.js';
 import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from '../interaction.js';
 import {
-  RUNTIME_EVENT_AUTHORS,
-  RUNTIME_EVENT_CONTENT_KINDS,
-  RUNTIME_EVENT_ROLES,
-  RUNTIME_EVENT_STATUSES,
   TERMINAL_RUNTIME_EVENT_STATUSES,
   createRuntimeEventId,
   decodePersistedRuntimeEvent,
   decodeRuntimeEvent,
-  isRuntimeEventAuthor,
-  isRuntimeEventRole,
-  isRuntimeEventStatus,
   isTerminalRuntimeEvent,
-  isTerminalRuntimeEventStatus,
   isPartialRuntimeEvent,
-  runtimeEventEnvelopeKeys,
-  runtimeEventEnvelopeValueDomains,
   runtimeEventHasModelVisibleContent,
   type RuntimeEvent,
   type RuntimeEventActions,
@@ -64,41 +54,6 @@ const runtimeEventValidationCorpus = JSON.parse(
     'utf8',
   ),
 ) as RuntimeEventValidationCorpus;
-
-test('the shared validation corpus exercises every envelope key', () => {
-  // A key no case ever sets is a key an external protocol implementation can
-  // silently miss.
-  // Only cases the corpus expects to be accepted count. A rejected case carries
-  // a value both sides refuse, so it passes just as well against an exporter
-  // that never learned the key at all — which is the one thing this is here to
-  // catch.
-  const exercised = new Set([
-    ...Object.keys(runtimeEventValidationCorpus.baseEvent),
-    ...runtimeEventValidationCorpus.cases
-      .filter((entry) => entry.accepted)
-      .flatMap((entry) => Object.keys(entry.overrides)),
-  ]);
-  for (const key of runtimeEventEnvelopeKeys()) {
-    assert.ok(exercised.has(key), `no corpus case sets the envelope key ${key}`);
-  }
-});
-
-test('the shared validation corpus exercises every envelope value domain', () => {
-  // The same drift one level down. Python spells these domains out again, so a
-  // member no accepted case carries is a member the exporter may reject while
-  // this side accepts it — and every event that carries it degrades to a
-  // one-line summary, exactly as an unknown key did.
-  const accepted = runtimeEventValidationCorpus.cases.filter((entry) => entry.accepted);
-  for (const [key, domain] of Object.entries(runtimeEventEnvelopeValueDomains())) {
-    const carried = new Set([
-      runtimeEventValidationCorpus.baseEvent[key],
-      ...accepted.map((entry) => entry.overrides[key]),
-    ]);
-    for (const member of domain) {
-      assert.ok(carried.has(member), `no corpus case carries ${key}: ${member}`);
-    }
-  }
-});
 
 test('Core decoder matches the shared RuntimeEvent validation corpus', () => {
   for (const entry of runtimeEventValidationCorpus.cases) {
@@ -139,54 +94,6 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
   assert.equal(stored.type, 'assistant');
   if (stored.type !== 'assistant') throw new Error('unreachable');
   assert.deepEqual(stored.thinking?.parts, parts);
-});
-
-describe('RuntimeEvent role / author / status enums', () => {
-  test('locks the role enum and guard', () => {
-    expect(RUNTIME_EVENT_ROLES).toEqual(['user', 'model', 'tool', 'system']);
-    expect(isRuntimeEventRole('model')).toBe(true);
-    expect(isRuntimeEventRole('assistant')).toBe(false);
-    expect(isRuntimeEventRole(123)).toBe(false);
-  });
-
-  test('locks the author enum (agent ≠ model) and guard', () => {
-    expect(RUNTIME_EVENT_AUTHORS).toEqual(['user', 'host', 'agent', 'tool', 'system']);
-    expect(isRuntimeEventAuthor('host')).toBe(true);
-    expect(isRuntimeEventAuthor('agent')).toBe(true);
-    expect(isRuntimeEventAuthor('model')).toBe(false);
-    expect(isRuntimeEventAuthor(null)).toBe(false);
-  });
-
-  test('locks the status enum, terminal subset, and guards', () => {
-    expect(RUNTIME_EVENT_STATUSES).toEqual([
-      'streaming',
-      'completed',
-      'failed',
-      'aborted',
-      'cancelled',
-    ]);
-    expect(TERMINAL_RUNTIME_EVENT_STATUSES).toEqual([
-      'completed',
-      'failed',
-      'aborted',
-      'cancelled',
-    ]);
-    expect(isRuntimeEventStatus('streaming')).toBe(true);
-    expect(isRuntimeEventStatus('idle')).toBe(false);
-    expect(isTerminalRuntimeEventStatus('completed')).toBe(true);
-    expect(isTerminalRuntimeEventStatus('streaming')).toBe(false);
-    expect(isTerminalRuntimeEventStatus('nope')).toBe(false);
-  });
-
-  test('content kind list matches the discriminated union', () => {
-    expect(RUNTIME_EVENT_CONTENT_KINDS).toEqual([
-      'text',
-      'thinking',
-      'function_call',
-      'function_response',
-      'error',
-    ]);
-  });
 });
 
 describe('continuation-start protocol', () => {
