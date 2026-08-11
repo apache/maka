@@ -25,21 +25,6 @@ export function decodeCanonicalRuntimePolicy(value: unknown): RuntimePolicy {
   return decoded;
 }
 
-export function decodeLegacyRuntimePolicyV1(value: unknown): RuntimePolicy {
-  const policy = exactRecord(value, 'legacy runtime policy', [
-    'networkProxy',
-    'personalization',
-    'memory',
-    'workspaceInstructions',
-    'privacy',
-    'chatDefaults',
-    'webSearch',
-  ]);
-  const decoded = normalizeRuntimePolicyFields(policy, { presets: [] });
-  assertCanonicalValue(value, withoutSubagents(decoded), 'legacy runtime policy');
-  return decoded;
-}
-
 export function normalizeRuntimePolicyMutation(value: unknown): MutateRuntimePolicyInput {
   const input = exactRecord(value, 'runtime policy mutation', ['expectedRevision', 'operation']);
   const operation = exactRecord(input.operation, 'runtime policy operation', ['kind', 'value']);
@@ -77,11 +62,6 @@ function normalizeRuntimePolicyFields(
     webSearch: normalizeWebSearch(policy.webSearch),
     subagents,
   };
-}
-
-function withoutSubagents(policy: RuntimePolicy): Omit<RuntimePolicy, 'subagents'> {
-  const { subagents: _subagents, ...legacy } = policy;
-  return legacy;
 }
 
 function normalizeMutationOperation(operation: Record<string, unknown>): RuntimePolicyMutation {
