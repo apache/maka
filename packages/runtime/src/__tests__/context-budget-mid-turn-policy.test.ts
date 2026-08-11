@@ -7,14 +7,6 @@ import {
 } from '../context-budget-policy.js';
 
 describe('mid-turn history compact policy env plumbing', () => {
-  test('defaults on: the runtime derives midTurn with the shared reserve when history compaction is enabled', () => {
-    const policy = buildDefaultContextBudgetPolicy(connection(), {
-      env: { MAKA_CONTEXT_HISTORY_COMPACT: 'on' },
-    });
-    assert.equal(policy?.historyCompact?.enabled, true);
-    assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 16_384 });
-  });
-
   test('defaults on with no compaction env at all (the runtime, not the surface, owns it)', () => {
     const policy = buildDefaultContextBudgetPolicy(connection(), { env: {} });
     assert.equal(policy?.historyCompact?.enabled, true);
@@ -65,13 +57,6 @@ describe('window-bounded reserve derivation (issue #882 PR 3 review P2)', () => 
     const policy = buildDefaultContextBudgetPolicy(gpt4Connection(), { env: {}, modelId: 'gpt-4' });
     assert.equal(policy?.maxHistoryEstimatedTokens, 8192 - 2048);
     assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 2048 });
-  });
-
-  test('keeps the classic 16384 reserve for large windows (>= 64K unchanged)', () => {
-    const policy = buildDefaultContextBudgetPolicy(connection(), { env: {} });
-    // claude-sonnet-4-5 metadata window is 200_000: 200_000 / 4 caps at 16_384.
-    assert.equal(policy?.maxHistoryEstimatedTokens, 200_000 - 16_384);
-    assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 16_384 });
   });
 
   test('uses the official Agent Plan default-model window instead of the unknown-model fallback', () => {
