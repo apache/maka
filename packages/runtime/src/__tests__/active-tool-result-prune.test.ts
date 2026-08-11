@@ -615,6 +615,72 @@ describe('active current-turn tool-result pruning', () => {
     assert.doesNotMatch(prompt, /OLD_STATUS/);
     assert.match(prompt, /OLD_WRITE/);
   });
+
+  test('foreground Bash output is not superseded by background or PTY handles', async () => {
+    const messages = [
+      largeToolMessage('Bash', 'test-foreground', 'FOREGROUND_TEST_OUTPUT'),
+      largeToolMessage('Bash', 'test-background', 'BACKGROUND_JOB_REF'),
+      largeToolMessage('Bash', 'test-pty', 'PTY_JOB_REF'),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 3,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Bash', 'test-foreground', { command: 'npm test' }, 0),
+        completedCall(
+          'Bash',
+          'test-background',
+          { command: 'npm test', run_in_background: true },
+          1,
+        ),
+        completedCall(
+          'Bash',
+          'test-pty',
+          { command: 'npm test', run_in_background: true, pty: true },
+          2,
+        ),
+      ],
+      eligibleToolCallIds: new Set(['test-foreground', 'test-background']),
+      archiveToolResult: () => ({ artifactId: 'unused' }),
+    });
+
+    assert.equal(rewritten.rewritten, 0);
+    assert.deepEqual(rewritten.messages, messages);
+  });
+
+  test('distinct background Bash job refs remain independently visible', async () => {
+    const messages = [
+      largeToolMessage('Bash', 'job-a', 'BACKGROUND_JOB_REF_A'),
+      largeToolMessage('Bash', 'job-b', 'BACKGROUND_JOB_REF_B'),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Bash', 'job-a', { command: 'npm test', run_in_background: true }, 0),
+        completedCall('Bash', 'job-b', { command: 'npm test', run_in_background: true }, 1),
+      ],
+      eligibleToolCallIds: new Set(['job-a']),
+      archiveToolResult: () => ({ artifactId: 'unused' }),
+    });
+
+    assert.equal(rewritten.rewritten, 0);
+    assert.deepEqual(rewritten.messages, messages);
+  });
 });
 
 function largeToolMessage(toolName: string, toolCallId: string, body: string): ModelMessage {

@@ -186,6 +186,16 @@ function describeGrep(input: unknown): SnapshotDescriptor | undefined {
 function describeBash(input: unknown): SnapshotDescriptor | undefined {
   const record = asRecord(input);
   if (!record || typeof record.command !== 'string') return undefined;
+  if (
+    (record.run_in_background !== undefined && typeof record.run_in_background !== 'boolean') ||
+    (record.pty !== undefined && typeof record.pty !== 'boolean')
+  ) {
+    return undefined;
+  }
+  // Background and PTY results are process handles or terminal snapshots, not
+  // newer observations of a foreground command. Keep each one independently
+  // visible; exact input-and-output deduplication still handles true repeats.
+  if (record.run_in_background === true || record.pty === true) return undefined;
   const command = record.command.trim();
   if (!isSupportedSnapshotCommand(command)) return undefined;
   return { kind: 'snapshot', key: `Bash\u0000${command}` };

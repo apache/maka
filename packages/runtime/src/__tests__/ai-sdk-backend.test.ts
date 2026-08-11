@@ -9230,7 +9230,9 @@ describe('AiSdkBackend usage telemetry', () => {
           minSupersededResultEstimatedTokens: 1,
         },
       },
-      archiveToolResult: async ({ toolCallId }) => ({ artifactId: `artifact-${toolCallId}` }),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async () => ({ artifactId: 'artifact-read-1' }),
+      }),
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
