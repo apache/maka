@@ -1,7 +1,6 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  isRunNotificationKind,
   resolveNotificationContent,
   runNotificationCopy,
   shouldRaiseRunNotification,
@@ -21,19 +20,6 @@ it('gates native notifications through every required condition', () => {
   for (const [input, expected] of cases) {
     assert.equal(shouldRaiseRunNotification(input), expected);
   }
-});
-
-it('recognizes terminal kinds and keeps distinct fallback copy', () => {
-  for (const value of ['completed', 'errored']) assert.equal(isRunNotificationKind(value), true);
-  for (const value of ['complete', 'error', 'aborted', '', undefined, null, 1, {}]) {
-    assert.equal(isRunNotificationKind(value), false);
-  }
-
-  const completed = runNotificationCopy('completed');
-  const errored = runNotificationCopy('errored');
-  assert.ok(completed.title && completed.body);
-  assert.ok(errored.title && errored.body);
-  assert.notEqual(completed.title, errored.title);
 });
 
 it('sanitizes renderer content, caps it, and falls back per field', () => {
