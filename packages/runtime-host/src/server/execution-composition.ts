@@ -121,7 +121,6 @@ import {
 } from './host-composition.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostInteractiveTurnCoordinator } from './interactive-turn-coordinator.js';
-import { migrateLegacyRuntimePolicy } from './legacy-runtime-policy-migration.js';
 import { ensureBootstrapRuntimePolicy } from './bootstrap-runtime-policy.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
@@ -172,7 +171,6 @@ export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition 
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
-  readonly legacyConfigurationRoot?: string;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
 }
@@ -237,13 +235,6 @@ export async function createExecutionRuntimeHostComposition(
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
     );
-    await migrateLegacyRuntimePolicy({
-      workspaceRoot: context.owner.capability.canonicalPath,
-      ...(options.legacyConfigurationRoot
-        ? { legacyConfigurationRoot: options.legacyConfigurationRoot }
-        : {}),
-      stores: runtimePolicyStores,
-    });
     if (options.bootstrapRuntimePolicy !== false) {
       await ensureBootstrapRuntimePolicy({
         workspaceRoot: context.owner.capability.canonicalPath,

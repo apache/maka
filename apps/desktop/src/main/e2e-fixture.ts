@@ -1,12 +1,7 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { E2eFixtureScenario, E2eFixtureState, UiLocale } from '@maka/core';
-import {
-  backfillSessionProjects,
-  createFileCredentialStore,
-  createProjectCatalog,
-  createSessionStore,
-} from '@maka/storage';
+import { createFileCredentialStore } from '@maka/storage';
 import type { CredentialStore } from '@maka/storage';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
@@ -227,17 +222,5 @@ export async function seedE2eFixture(input: {
     for (const seed of usageStatsSessions(now)) {
       await writeSession(input.workspaceRoot, seed.header, seed.messages);
     }
-  }
-  await seedSessionProjects(input.workspaceRoot);
-}
-
-async function seedSessionProjects(workspaceRoot: string): Promise<void> {
-  const sessions = createSessionStore(workspaceRoot);
-  const catalog = createProjectCatalog(workspaceRoot);
-  try {
-    await backfillSessionProjects({ sessions, catalog });
-  } finally {
-    await sessions.close?.();
-    catalog.close();
   }
 }

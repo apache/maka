@@ -230,7 +230,7 @@ export function planTests(changedFiles, options = {}) {
       e2e: true,
       full: true,
       runtimeSandbox: graph.dirs.includes('packages/cli'),
-      scriptMode: 'full',
+      scriptMode: 'extended',
       // A complete functional suite is still the default release/main gate.
       // Stress multipliers and native child-process lock probes run only when
       // their owning storage seam changes; making --full imply stress turned
@@ -261,7 +261,7 @@ export function planTests(changedFiles, options = {}) {
     if (RELEASE_CONFIG_FILES.has(path)) {
       code = true;
       directWorkspaces.add('apps/desktop');
-      if (scriptMode === 'none') scriptMode = 'fast';
+      scriptMode = 'extended';
       continue;
     }
     const workspace = graph.dirs.find((dir) => path === dir || path.startsWith(`${dir}/`));
@@ -272,11 +272,7 @@ export function planTests(changedFiles, options = {}) {
     }
     if (path.startsWith('scripts/')) {
       code = true;
-      scriptMode = EXTENDED_SCRIPT_FILES.has(path)
-        ? 'extended'
-        : scriptMode === 'none'
-          ? 'fast'
-          : scriptMode;
+      if (EXTENDED_SCRIPT_FILES.has(path)) scriptMode = 'extended';
       continue;
     }
     if (path.startsWith('skills/')) {

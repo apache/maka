@@ -5,7 +5,6 @@ import { RuntimeHostKernel } from './host-kernel.js';
 export interface InteractiveRuntimeHostCandidateOptions {
   rootPath: string;
   expectedRootId: string;
-  legacyConfigurationRoot?: string;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   generation?: string;

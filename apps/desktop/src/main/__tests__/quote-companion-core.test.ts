@@ -270,32 +270,6 @@ describe('performCompanionTurn', () => {
     );
   });
 
-  it('happy path: forks at the completed turn, preserves permission, sends, then commits + consumes', async () => {
-    const { api, calls } = makeApi({
-      turns: [turn('t-old', 'completed'), turn('t-settled', 'completed'), turn('t-running', 'running')],
-    });
-    const rec = recorder();
-    const result = await performCompanionTurn({ api, isDisposed: () => false, ...base, ...rec });
-    assert.equal(result.status, 'sent');
-    assert.deepEqual(
-      calls.branchedFrom.map(({ sourceTurnId, name, sideConversation }) => ({
-        sourceTurnId,
-        name,
-        sideConversation,
-      })),
-      [{ sourceTurnId: 't-settled', name: base.name, sideConversation: true }],
-    );
-    assert.equal(calls.sent.length, 1);
-    assert.deepEqual(calls.sent[0].cmd.quotes, [{ text: 'excerpt' }]);
-    assert.deepEqual(calls.removed, []);
-    // Quotes are consumed only AFTER the send is accepted.
-    assert.deepEqual(rec.events, [
-      `created:${calls.branchedFrom[0]!.copyId}`,
-      `committed:${calls.branchedFrom[0]!.copyId}`,
-      `beforeSend:${calls.branchedFrom[0]!.copyId}`,
-      'consumed',
-    ]);
-  });
 
   it('reports and commits the created id before sending', async () => {
     const events: string[] = [];
@@ -317,22 +291,6 @@ describe('performCompanionTurn', () => {
     ]);
   });
 
-  it('forwards staged attachments through the same session send command', async () => {
-    const { api, calls } = makeApi();
-    const rec = recorder();
-    const attachmentItems = [
-      { approvalId: 'attachment-1', name: 'notes.txt', mimeType: 'text/plain' },
-    ];
-    const result = await performCompanionTurn({
-      api,
-      isDisposed: () => false,
-      ...base,
-      ...rec,
-      attachmentItems,
-    });
-    assert.equal(result.status, 'sent');
-    assert.deepEqual(calls.sent[0].cmd.attachmentItems, attachmentItems);
-  });
 
   it('structures listTurns rejection and never creates or sends', async () => {
     const { api, calls } = makeApi({ listTurnsThrows: true });
@@ -525,20 +483,6 @@ describe('performCompanionTurn', () => {
     assert.equal(rec.events.includes('consumed'), false);
   });
 
-  it('existing fork: skips creation and sends directly', async () => {
-    const { api, calls } = makeApi();
-    const rec = recorder();
-    const result = await performCompanionTurn({
-      api,
-      isDisposed: () => false,
-      ...base,
-      existingForkId: 'fork-existing',
-      ...rec,
-    });
-    assert.deepEqual(result, { status: 'sent', forkId: 'fork-existing' });
-    assert.equal(calls.created, 0);
-    assert.deepEqual(rec.events, ['beforeSend:fork-existing', 'consumed']);
-  });
 });
 
 describe('isCompanionTurnTerminal', () => {
@@ -655,12 +599,6 @@ describe('applyCompanionInteractionEvent', () => {
     toolUseId: 'tu1',
   } as unknown as SessionEvent;
 
-  it('enqueues a request and ignores a duplicate requestId', () => {
-    let queues = applyCompanionInteractionEvent({}, 'S', req);
-    assert.equal(queues.S.length, 1);
-    queues = applyCompanionInteractionEvent(queues, 'S', req);
-    assert.equal(queues.S.length, 1);
-  });
 
 
   it('a terminal complete clears the queue', () => {

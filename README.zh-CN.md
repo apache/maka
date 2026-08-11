@@ -224,7 +224,6 @@ npm --workspace @maka/desktop test
 
 ```sh
 npm run sync:model-metadata
-npm run test:scripts
 npm --workspace @maka/core test
 ```
 

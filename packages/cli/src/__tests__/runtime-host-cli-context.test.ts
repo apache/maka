@@ -12,7 +12,6 @@ import { connectRuntimeHostCli, RuntimeHostCliConflictError } from '../runtime-h
 
 test('CLI Runtime Host bootstrap launches the execution composition', async () => {
   let candidateEntrypoint: string | URL | undefined;
-  let legacyConfigurationRoot: string | undefined;
   let clientInstanceId: string | undefined;
   let closes = 0;
   const connection = {
@@ -35,12 +34,10 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
     {
       rootPath: '/runtime-host-root',
       surface: 'activation',
-      legacyConfigurationRoot: '/legacy-configuration',
     },
     {
       connectOrSpawn: async (input) => {
         candidateEntrypoint = input.candidateEntrypoint;
-        legacyConfigurationRoot = input.legacyConfigurationRoot;
         clientInstanceId = input.clientInstanceId;
         return {
           kind: 'connected',
@@ -58,7 +55,6 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
 
   assert.ok(candidateEntrypoint instanceof URL);
   assert.equal(basename(fileURLToPath(candidateEntrypoint)), 'execution-candidate-main.js');
-  assert.equal(legacyConfigurationRoot, '/legacy-configuration');
   assert.ok(clientInstanceId);
   await context.close();
   assert.equal(closes, 1);

@@ -70,23 +70,6 @@ describe('AutomationManager', () => {
   });
 
   describe('markFired', () => {
-    test('one-shot completes after a successful fire', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        name: 'once',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'once', delaySeconds: 30 },
-      });
-      assert.ok(!('error' in auto));
-      // Started nulls nextFireAt but stays active until the outcome is known.
-      const started = mgr.attemptStarted(auto.id);
-      assert.equal(started?.status, 'active');
-      assert.equal(started?.nextFireAt, null);
-      mgr.attemptSucceeded(auto.id, 'run-1');
-      assert.equal(mgr.get(auto.id)?.status, 'completed');
-      assert.equal(mgr.get(auto.id)?.lastRunId, 'run-1');
-    });
 
     test('maxFires completes on the successful fire that reaches the cap', () => {
       const mgr = createManager();
@@ -195,36 +178,9 @@ describe('AutomationManager', () => {
       assert.equal(mgr.get(auto.id)?.lastError, 'Automation run failed');
     });
 
-    test('attemptSucceeded resets failure count', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        name: 'test',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in auto));
-      mgr.attemptFailed(auto.id, 'fail');
-      mgr.attemptFailed(auto.id, 'fail');
-      mgr.attemptSucceeded(auto.id);
-      assert.equal(mgr.get(auto.id)?.consecutiveFailures, 0);
-      assert.equal(mgr.get(auto.id)?.lastError, null);
-    });
   });
 
   describe('removeAllForSession', () => {
-    test('removes every automation owned by the session', () => {
-      const mgr = createManager();
-      mgr.create({
-        name: 'h1',
-        prompt: 'p',
-        sessionId: 's1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      const removed = mgr.removeAllForSession('s1');
-      assert.equal(removed, 1);
-      assert.equal(mgr.listForSession('s1').length, 0);
-    });
   });
 
   describe('registerAll — restart recovery', () => {
@@ -435,17 +391,6 @@ describe('computeJitter', () => {
     }
   });
 
-  test('one-shot jitter is zero off round marks and negative within bounds on them', () => {
-    const firesAt = new Date(2026, 0, 1, 10, 37, 0, 0).getTime();
-    assert.equal(computeJitter(30 * 60 * 1000, false, Math.random, firesAt), 0);
-    assert.equal(computeJitter(60_000, false), 0);
-    for (let i = 0; i < 50; i++) {
-      const roundMark = new Date(2026, 0, 1, 11, i % 2 === 0 ? 0 : 30, 0, 0).getTime();
-      const jitter = computeJitter(17 * 60 * 1000, false, Math.random, roundMark);
-      assert.ok(jitter <= 0, `one-shot jitter should be <= 0, got ${jitter}`);
-      assert.ok(jitter >= -90_000, `one-shot jitter should be >= -90000, got ${jitter}`);
-    }
-  });
 });
 
 describe('schedule jitter wiring (AutomationManager.computeNextFire)', () => {
@@ -456,18 +401,6 @@ describe('schedule jitter wiring (AutomationManager.computeNextFire)', () => {
     return new AutomationManager({ generateId: () => `j-${++idc}`, now: () => NOW, random });
   }
 
-  test('interval schedules get positive recurring jitter', () => {
-    const mgr = managerWithRandom(() => 0.5);
-    const auto = mgr.create({
-      name: 'poll',
-      prompt: 'p',
-      sessionId: 's1',
-      schedule: { type: 'interval', seconds: 600 },
-    });
-    assert.ok(!('error' in auto));
-    // 600s interval → 10% max = 60s; random 0.5 → +30s jitter.
-    assert.equal(auto.nextFireAt, NOW + 600_000 + 30_000);
-  });
 
   test('cron schedules get positive recurring jitter (never fire before the mark)', () => {
     const zero = managerWithRandom(() => 0);

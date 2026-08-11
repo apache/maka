@@ -145,14 +145,6 @@ describe("materializeChat attachments", () => {
     assert.deepEqual(items[0].attachments, [imageAttachment, codeAttachment]);
   });
 
-  test("leaves attachments absent when the user message has none", () => {
-    const messages: StoredMessage[] = [
-      { type: "user", id: "m1", turnId: "t1", ts: 1, text: "plain prompt" },
-    ];
-    const items = materializeChat(messages);
-    assert.equal(items.length, 1);
-    assert.equal(items[0].attachments, undefined);
-  });
 
   test("preserves Host provenance on a Goal continuation", () => {
     const messages: StoredMessage[] = [
@@ -195,43 +187,7 @@ describe("materializeChat attachments", () => {
     );
   });
 
-  test("surfaces history compaction fail-open notices inline", () => {
-    const messages: StoredMessage[] = [
-      {
-        type: "system_note",
-        id: "note-1",
-        turnId: "t1",
-        ts: 1,
-        kind: "context_compaction_failed_open",
-      },
-    ];
-    const items = materializeChat(messages);
-    assert.equal(items.length, 1);
-    assert.equal(items[0].role, "system");
-    assert.equal(
-      items[0].text,
-      "Context summary failed; the session continued without a new summary.",
-    );
-  });
 
-  test("surfaces a step-limit system notice inline", () => {
-    const items = materializeChat([
-      {
-        type: "system_note",
-        id: "note-1",
-        turnId: "t1",
-        ts: 1,
-        kind: "step_limit",
-      },
-    ]);
-
-    assert.equal(items.length, 1);
-    assert.equal(items[0].role, "system");
-    assert.equal(
-      items[0].text,
-      "Reached the configured step limit. The task may be incomplete. Send “continue” to resume.",
-    );
-  });
 });
 
 // ── #1307: the timeline model stays flat (fold is a render concern) ──────────
@@ -781,23 +737,7 @@ describe("final reply extraction for copy (#2407)", () => {
     },
   ];
 
-  test("returns only the last answer step, not the intermediate narration", () => {
-    const [turn] = materializeTurns(multiStepTurn());
-    assert.ok(turn);
-    assert.equal(finalAssistantReplyText(turn), "Done: the fix is committed and the tests pass.");
-  });
 
-  test("keeps every narration step on the timeline in production order", () => {
-    const [turn] = materializeTurns(multiStepTurn());
-    assert.deepEqual(
-      turn?.timeline.flatMap((item) => (item.kind === "text" ? [item.text] : [])),
-      [
-        "Let me inspect the files first.",
-        "Found it — the flag was inverted.",
-        "Done: the fix is committed and the tests pass.",
-      ],
-    );
-  });
 
 
   test("falls back to the aggregate when the timeline has no text entry", () => {

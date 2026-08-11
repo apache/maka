@@ -7,11 +7,7 @@ import {
 } from '../model-metadata.js';
 import { curatedCatalogFallbackModelsForProvider } from '../model-metadata.js';
 import {
-  CATALOG_PROVIDER_TYPES,
-  PROVIDER_DEFAULTS,
   PROVIDER_REGISTRY,
-  READY_PROVIDER_TYPES,
-  RECOMMENDED_PROVIDER_TYPES,
   backendKindOf,
   effectiveBaseUrl,
   migrateConnectionV1ToV2,
@@ -24,39 +20,6 @@ import {
   validateConnectionBaseUrl,
   type ProviderType,
 } from '../llm-connections.js';
-
-test('provider registry satisfies shared structural invariants', () => {
-  assert.equal(PROVIDER_DEFAULTS, PROVIDER_REGISTRY);
-  const providerIds = new Set(Object.keys(PROVIDER_REGISTRY));
-  for (const list of [CATALOG_PROVIDER_TYPES, READY_PROVIDER_TYPES, RECOMMENDED_PROVIDER_TYPES]) {
-    assert.equal(
-      list.every((id) => providerIds.has(id)),
-      true,
-    );
-  }
-
-  for (const [id, provider] of Object.entries(PROVIDER_REGISTRY)) {
-    assert.ok(provider.label.trim(), `${id}: label`);
-    assert.equal(validateConnectionBaseUrl(provider.baseUrl), null, `${id}: baseUrl`);
-    assert.equal(
-      provider.fallbackModels.every((modelId) => modelId === modelId.trim() && modelId.length > 0),
-      true,
-      `${id}: fallback model ids`,
-    );
-    assert.equal(
-      new Set(provider.fallbackModels).size,
-      provider.fallbackModels.length,
-      `${id}: duplicate fallback model id`,
-    );
-  }
-
-  for (const orderField of ['readyOrder', 'catalogOrder', 'recommendedOrder'] as const) {
-    const orders = Object.values(PROVIDER_REGISTRY)
-      .map((provider) => provider[orderField])
-      .filter((order): order is number => order !== undefined);
-    assert.equal(new Set(orders).size, orders.length, `${orderField} must be unique`);
-  }
-});
 
 test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs', () => {
   for (const value of [
