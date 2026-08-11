@@ -10,7 +10,6 @@ import {
   createBundledSkillLock,
   createManagedSkillLock,
   encodeSkillRuntimePreferences,
-  getBundledSkillSource,
   listManagedSkillSources,
   patchSkillRuntimePreference,
   readManagedSkillSource,
@@ -22,8 +21,10 @@ import {
 
 describe('shared bundled skill catalog', () => {
   it('is the complete byte-pinned catalog with bundled provenance and legacy trust', () => {
-    assert.equal(BUNDLED_SKILL_CATALOG.length, 30);
-    assert.equal(new Set(BUNDLED_SKILL_CATALOG.map((skill) => skill.id)).size, 30);
+    assert.deepEqual(
+      BUNDLED_SKILL_CATALOG.map((skill) => skill.id),
+      ['computer-use'],
+    );
     for (const skill of BUNDLED_SKILL_CATALOG) {
       assert.equal(skill.contentSha256, sha256(skill.body));
       assert.ok(skill.body.startsWith('---\n'));
@@ -107,44 +108,6 @@ describe('shared bundled skill catalog', () => {
         managedSource: { status: 'available', contentSha256: updatedHash },
       }).managedUpdateStatus,
       'local_modified',
-    );
-  });
-
-  it('trusts the published drafter-diagram lock without changing its bundled identity', () => {
-    const source = getBundledSkillSource('drafter-diagram');
-    assert.ok(source);
-    assert.equal(source.sourceName, 'maka-bundled');
-    assert.deepEqual(source.legacyContentSha256, [
-      'sha256:4b93ebada2f061f1dfc3d99a21bc93a9d3d640f326af6230d15813bac6a5efcf',
-    ]);
-
-    const publishedHash = 'sha256:4b93ebada2f061f1dfc3d99a21bc93a9d3d640f326af6230d15813bac6a5efcf';
-    const publishedLock = {
-      schemaVersion: 1,
-      id: 'drafter-diagram',
-      sourceType: 'bundled',
-      sourceName: 'maka-bundled',
-      sourceVersion: '1',
-      contentSha256: publishedHash,
-      installedAt: '2026-07-01T00:00:00.000Z',
-    };
-    assert.deepEqual(
-      validateSkillLock({
-        lock: publishedLock,
-        skillId: 'drafter-diagram',
-        currentContentSha256: publishedHash,
-      }),
-      {
-        sourceType: 'bundled',
-        sourceName: 'maka-bundled',
-        sourceVersion: '1',
-        installedAt: '2026-07-01T00:00:00.000Z',
-        contentSha256: publishedHash,
-        userModified: false,
-        validationStatus: 'ok',
-        validationCodes: [],
-        managedUpdateStatus: 'not_managed',
-      },
     );
   });
 });
@@ -261,7 +224,6 @@ describe('shared skill preference semantics', () => {
       ok: true,
       target: inventory[2],
     });
-
   });
 
   it('patches one stable ref and clears review only after every collision is explicit', () => {
@@ -294,8 +256,6 @@ describe('shared skill preference semantics', () => {
     assert.equal(second.preferences.get(inventory[0].ref)?.pinned, true);
     assert.equal(second.preferences.get(inventory[1].ref)?.enabled, true);
   });
-
-
 
   it('resolves case-only stable refs exactly while keeping bare ids normalized', () => {
     const caseInventory = [
