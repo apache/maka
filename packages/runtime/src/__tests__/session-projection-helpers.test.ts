@@ -5,7 +5,6 @@ import {
   buildStatusPatch,
   buildTurnStateMessage,
   isTerminalRunStatus,
-  normalizeStopSessionSource,
   statusFromEvent,
   turnStatusFromEvent,
   turnHasRetainedOutput,
@@ -95,15 +94,6 @@ describe('session projection helpers', () => {
     expect(turnHasRetainedOutput(messages, 'turn-1')).toBe(false);
     expect(turnHasRetainedOutput(messages, 'turn-2')).toBe(true);
     expect(turnHasRetainedOutput(messages, 'turn-3')).toBe(true);
-  });
-
-  test('normalizeStopSessionSource maps renderer stop button source', () => {
-    expect(normalizeStopSessionSource('stop_button')).toBe('renderer.stop_button');
-    expect(normalizeStopSessionSource(undefined)).toBeUndefined();
-  });
-
-  test('normalizeStopSessionSource preserves graph supervisor provenance', () => {
-    expect(normalizeStopSessionSource('graph_supervisor')).toBe('graph.supervisor');
   });
 
   test('projects terminal run statuses and session terminal events', () => {
