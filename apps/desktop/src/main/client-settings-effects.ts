@@ -10,6 +10,7 @@ interface ClientSettingsEffectDependencies {
   readonly settingsStore: Pick<SettingsStore, 'get'>;
   readonly applyKeepSystemAwake: (enabled: boolean) => Promise<void>;
   readonly applyBotSettings: (settings: AppSettings['botChat']) => Promise<void>;
+  readonly observeLocale: (settings: AppSettings) => void;
   readonly emitExternalChanged: () => void;
 }
 
@@ -32,6 +33,7 @@ export function createClientSettingsEffects(
       const rendererChanged = nextRendererFingerprint !== rendererFingerprint;
       const keepAwakeChanged = settings.system.keepSystemAwake !== keepSystemAwake;
       const botChanged = nextBotFingerprint !== botFingerprint;
+      dependencies.observeLocale(settings);
       if (keepAwakeChanged) {
         await dependencies.applyKeepSystemAwake(settings.system.keepSystemAwake);
         keepSystemAwake = settings.system.keepSystemAwake;

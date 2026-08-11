@@ -1,7 +1,4 @@
 import { app, nativeImage, powerMonitor, screen } from 'electron';
-import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core/ui-locale';
-import type { AppSettings } from '@maka/core/settings';
-import type { UiLocale } from '@maka/core/ui-locale';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
 import { buildBrowserTools } from './browser/browser-tools.js';
 import {
@@ -25,12 +22,13 @@ import {
   applyComputerUseRealModelPolicy,
   parseComputerUseRealModelPolicy,
 } from './computer-use-real-model-policy.js';
+import type { DesktopLocaleAuthority } from './desktop-locale-authority.js';
 
 const COMPUTER_USE_WAKE_HOLD = 'computer-use';
 
 export interface DesktopNativeCapabilityAssemblyDeps {
   readonly isComputerUseRealModelE2e: boolean;
-  readonly settings: { get(): Promise<AppSettings> };
+  readonly locale: Pick<DesktopLocaleAuthority, 'current'>;
   readonly keepSystemAwake?: { hold(reason: string): void; release(reason: string): void };
   readonly mainWindow?: {
     windowBounds(): { x: number; y: number; width: number; height: number } | undefined;
@@ -57,19 +55,8 @@ export function assembleDesktopNativeCapabilities(
       : {},
   );
 
-  let uiLocale: UiLocale | undefined;
-  const resolveComputerUseLocale = (): UiLocale => {
-    const system = resolveSystemUiLocale(app.getPreferredSystemLanguages());
-    void deps.settings
-      .get()
-      .then((settings) => {
-        uiLocale = resolveUiLocale(settings.personalization.uiLocale, system);
-      })
-      .catch(() => undefined);
-    return uiLocale ?? system;
-  };
   const computerUseStatusItem = createComputerUseStatusItem({
-    resolveLocale: resolveComputerUseLocale,
+    resolveLocale: () => deps.locale.current(),
     onLiveChanged: (live) => {
       if (live) deps.keepSystemAwake?.hold(COMPUTER_USE_WAKE_HOLD);
       else deps.keepSystemAwake?.release(COMPUTER_USE_WAKE_HOLD);

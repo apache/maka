@@ -6,7 +6,6 @@ import { type ConnectionEvent } from '@maka/core/connections';
 import type { UsageRange } from '@maka/core/settings';
 import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/session';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
-import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core/ui-locale';
 import {
   PROVIDER_DEFAULTS,
   providerAuthRequiresSecret,
@@ -104,7 +103,7 @@ import {
   startRuntimeHostDesktopManager,
   type RuntimeHostDesktopManager,
 } from "./runtime-host-desktop-manager.js";
-import { runtimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
+import { createRuntimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
 import {
   createDesktopRuntimeHostProfileService,
@@ -233,7 +232,7 @@ const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
 });
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
-  settings: settingsStore,
+  locale: desktopLocale,
   keepSystemAwake,
   mainWindow: mainWindowController,
 });
@@ -253,13 +252,7 @@ const releaseComputerUseSession = (sessionId: string): void => {
   native.computerUseTools.clearSession(sessionId);
 };
 const permissionOverlay = createPermissionOverlayMain({
-  resolveLocale: async () => {
-    const settings = await settingsStore.get();
-    return resolveUiLocale(
-      settings.personalization.uiLocale,
-      resolveSystemUiLocale(app.getPreferredSystemLanguages()),
-    );
-  },
+  resolveLocale: () => desktopLocale.resolve(),
 });
 onMainWindowClose = () => {
   native.computerUseOverlay.destroyAll();
@@ -371,6 +364,7 @@ const clientSettingsEffects = createClientSettingsEffects({
   applyBotSettings: useBotOnboardingFixture
     ? async () => undefined
     : (settings) => botRegistry.applySettings(settings),
+  observeLocale: (settings) => desktopLocale.observe(settings),
   emitExternalChanged: () => {
     mainWindowController.send("settings:clientChanged");
     sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() });
@@ -384,11 +378,12 @@ const clientSettingsTools = buildClientSettingsTools({
     return settings;
   },
   confirm: async (changes) => {
+    const copy = clientSettingsConfirmation(changes, await desktopLocale.resolve());
     const result = await dialog.showMessageBox({
       type: "question",
-      message: "Allow Maka to update this client's settings?",
-      detail: changes.join("\n"),
-      buttons: ["Apply changes", "Cancel"],
+      message: copy.message,
+      detail: copy.detail,
+      buttons: copy.buttons,
       defaultId: 0,
       cancelId: 1,
       noLink: true,
@@ -442,6 +437,7 @@ const browserIpc = registerBrowserIpc({
 registerNotificationsIpc({
   ipcMain,
   settingsStore,
+  locale: desktopLocale,
   mainWindowController,
   e2e: isE2e,
 });
@@ -566,7 +562,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     openSshTunnel: runtimeHostSshTerminal.openSshTunnel,
   },
   {
-    upgradePrompts: runtimeHostUpgradePrompts,
+    upgradePrompts: createRuntimeHostUpgradePrompts(() => desktopLocale.resolve()),
     onTargetStateChanged: (state) => {
       const hostId = state.readiness === "ready"
         ? state.candidate.client.hostId
