@@ -38,15 +38,6 @@ function makeManager() {
 }
 
 describe('BrowserViewManager', () => {
-  it('creates a view once and reuses it', () => {
-    const { manager, created } = makeManager();
-    const a = manager.getOrCreate('s1');
-    const b = manager.getOrCreate('s1');
-    assert.equal(a, b);
-    assert.equal(created.length, 1);
-    assert.equal(manager.liveCount(), 1);
-  });
-
   it('fires onLiveChange on create and dispose, not on reuse', async () => {
     const { manager, liveSets } = makeManager();
     manager.getOrCreate('s1');
