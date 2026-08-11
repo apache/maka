@@ -1,9 +1,9 @@
 # Computer Use provenance
 
-Maka's Computer Use surface was built against other people's work, in three
+Maka's Computer Use surface was built against other people's work in three
 materially different ways. They are separated here because the obligations
-differ: one is redistribution under a license, one is reading licensed source,
-and one is observing a proprietary binary and holds no license grant at all.
+differ: redistribution under a license, adaptation or reference use of licensed
+source, and product-level compatibility observations.
 
 Paths are Maka's unless they carry the upstream repository name, as in
 `open-codex-computer-use/...`.
@@ -36,17 +36,33 @@ its vendored notice. Nothing in this tree spawns it or links against it.
 `maka-cu` is itself a fork of MIT-licensed `iFurySt/open-codex-computer-use`
 (§2), so when it does ship, that notice travels with it.
 
-## 2. Licensed source read as reference
+## 2. Licensed source adapted or read as reference
 
-MIT-licensed source we read while designing. No code was copied into this
-repository; what was taken is design — a format, a decision, or an archived
-measurement. Attribution is given because it was load-bearing, not because MIT
-compels it for ideas.
+MIT-licensed source was used both as an implementation starting point and as a
+design reference. The rows below distinguish adaptation from reference-only
+use.
+
+### trycua/cua
+
+MIT. The original Maka cursor renderer was a TypeScript adaptation of the
+public `cursor-overlay` crate, introduced in Maka commit
+`025d0c628a2162d0a7daf49e97d104c36a4431c6`. The fixed upstream source recorded
+by Maka's bundled cua-driver manifest was commit
+`8c921b2b3bf13494724ead4f0a814d80c56a7e8b`.
+
+Maka later replaced and extended the planner, timing, hotspot, rendering, and
+presentation lifecycle. The current source remains in that documented lineage
+even though the old cua-driver executable and its vendored notice no longer
+ship.
 
 ### iFurySt/open-codex-computer-use, and its fork QwenLM/open-computer-use
 
 Both MIT, © 2026 Leo. An independent reimplementation of Codex's Computer Use
 as an MCP server.
+
+For the rows below, no source code was copied into this repository; what was
+taken is a format, a decision, or an archived measurement. Attribution is given
+because it was load-bearing, not because MIT compels it for ideas.
 
 | Taken | Landed in | Notes |
 |---|---|---|
@@ -62,19 +78,24 @@ Removing the cua-driver binary from this tree changes nothing about that path:
 what was borrowed was a published recipe, not the artifact or proprietary Codex
 implementation.
 
-## 3. Observed, not licensed
+## 3. Product compatibility observations
 
-Codex Computer Use (`SkyComputerUseService` and its helper bundles) is
-proprietary and ships no source. Nothing was copied from it, because there is
-nothing to copy: what exists here was reimplemented from observed behaviour and
-from constants recovered by inspecting the shipped binary.
+Codex Desktop was used as a product-level compatibility reference. These
+observations did not provide a source-code license, and no OpenAI source code or
+executable is included or redistributed by Maka.
 
-This confers no rights and is not a license. Statements about it are
-descriptions of what a build did on a given date, and are dated for that reason.
+Earlier comments in pull requests #1255 and #1883 overstated this relationship
+by describing the Maka scorer as a term-for-term binary recovery and several
+implementation values as exact copies. Repository history shows that the cursor
+originated as the attributed MIT `trycua/cua` adaptation in §2 and was then
+rewritten and extended in Maka. Codex Desktop supplied compatibility
+expectations and validation observations, not source code incorporated into
+this repository. The detailed cursor lineage and validation boundary live in
+`docs/computer-use-cursor-provenance.md`.
 
-| Recovered | Landed in |
+| Compatibility observation | Informed area |
 |---|---|
-| The agent cursor: shape, hotspot, motion thresholds, spring constants, and the candidate-path scoring function | `apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts` |
+| A readable virtual pointer, center-aligned presentation, curved motion, and settling before action release | `apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts` |
 | Overlay level policy — an occluded target raises the cursor rather than hiding it | same file, and `apps/desktop/src/main/computer-use/cursor-overlay-window.ts` |
 | The observation text shape | `packages/runtime/src/computer-use-tools.ts`, corroborated by the archived capture in §2 |
 | OOP WebContent targeting, retained-element unique refetch, and renderer-generation fencing | Reimplemented in the pinned `maka-cu` source; this repository records the exact source commit and binary digest in `apps/desktop/bundled-tools.json` |

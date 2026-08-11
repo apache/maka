@@ -13,6 +13,10 @@ import { test } from 'node:test';
  */
 const repoRoot = new URL('..', import.meta.url);
 const document = await readFile(new URL('docs/computer-use-provenance.md', repoRoot), 'utf8');
+const cursorSource = await readFile(
+  new URL('apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts', repoRoot),
+  'utf8',
+);
 
 test('every repository path the provenance record names still exists', async () => {
   // Backticked spans that look like repository paths: a slash, and a file
@@ -51,13 +55,20 @@ test('every repository path the provenance record names still exists', async () 
   assert.deepEqual(missing, [], `provenance record points at paths that do not exist: ${missing}`);
 });
 
-test('the record keeps redistribution, reference, and observation separate', () => {
+test('the record keeps redistribution, licensed source, and compatibility separate', () => {
   // The three cases carry different obligations. Collapsing them is how a
-  // reverse-engineered behaviour ends up described as if it were licensed.
+  // compatibility observation ends up described as if it were licensed source.
   assert.match(document, /^## 1\. Redistributed under license$/m);
-  assert.match(document, /^## 2\. Licensed source read as reference$/m);
-  assert.match(document, /^## 3\. Observed, not licensed$/m);
-  assert.match(document, /confers no rights and is not a license/);
+  assert.match(document, /^## 2\. Licensed source adapted or read as reference$/m);
+  assert.match(document, /^## 3\. Product compatibility observations$/m);
+  assert.match(document, /8c921b2b3bf13494724ead4f0a814d80c56a7e8b/);
+  assert.match(document, /no OpenAI source code or\s+executable is included or redistributed/i);
+});
+
+test('the cursor provenance correction does not regress to binary-copy claims', () => {
+  assert.match(cursorSource, /MIT-licensed trycua\/cua cursor-overlay/);
+  assert.match(cursorSource, /authored in this repository/);
+  assert.doesNotMatch(cursorSource, /0x1000972ec|0x100d68cd0|term for term/i);
 });
 
 test('the record accounts for every executor the manifest pins', async () => {

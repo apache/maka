@@ -1,19 +1,15 @@
-// Maka's Codex-style agent cursor.
+// Maka's agent-cursor renderer.
 //
-// Confirmed from the shipped Codex Computer Use native binary:
-// - AgentCursor is a normalized SwiftUI Shape with the exact path below.
-// - FogCursorStyle uses the hosting view center as its hotspot.
-// - MotionConfiguration.live supplies the thresholds and spring constants below.
-// - Long moves use independent position, axis, rotation, and stretch springs.
+// The implementation lineage starts with the TypeScript adaptation of the
+// MIT-licensed trycua/cua cursor-overlay introduced in commit 025d0c628. Maka
+// subsequently replaced and extended the planner, timing, hotspot, rendering,
+// and presentation lifecycle while comparing the result with Codex Desktop as
+// a compatibility target.
 //
-// - The candidate-path scoring function IS retained: it is inlined into the
-//   planner at 0x1000972ec, and planCursorPath reproduces it term for term
-//   below. An earlier note here claimed the scorer had been stripped; it had
-//   not, and the placeholder scorer written against that claim rewarded the
-//   bendiest candidate instead of the straightest.
-//
-// Geometry, hotspot, thresholds, and spring/style constants are exact for the
-// inspected 2026-07-16 build.
+// The current TypeScript planner, scorer, and Maka-specific integration were
+// authored in this repository. Earlier comments described the scorer as a
+// term-for-term binary recovery; that overstated its provenance. No OpenAI
+// source code or executable is included or redistributed here.
 import { makaBrandPalette, type Palette, rgba } from './palette.js';
 
 const PI = Math.PI;
@@ -54,10 +50,9 @@ export const CODEX_CURSOR_MOTION = {
 } as const;
 
 /**
- * Codex `CloseEnoughConfiguration.default`, recovered from the inspected build
- * (doubles at 0x100d68cd0 / 0x100d68cd8). The action is released only once the
- * cursor has effectively landed; releasing earlier makes the click visibly fire
- * while the glyph is still travelling.
+ * Compatibility-calibrated release thresholds. The action is released only
+ * once the cursor has effectively landed; releasing earlier makes the click
+ * visibly fire while the glyph is still travelling.
  *
  * These live here, next to the spring they are read against, because they are
  * not independently choosable: `cursorPresentationReadyDeadlineMs` below is
@@ -127,9 +122,8 @@ export function cursorPresentationReadyDeadlineMs(): number {
   return Math.ceil(seconds * 1000) + Math.ceil(1000 / 60);
 }
 
-// Candidate scoring, inlined at 0x1000972ec. These weights are deliberately not
-// MotionConfiguration fields: the recovered struct holds exactly the 30 values
-// above and none of the numbers below.
+// Maka's candidate scorer. These weights are local implementation choices, not
+// part of the public configuration surface above.
 /** Segments the scorer walks the candidate in (25 samples, 24 steps). */
 const SCORE_SAMPLES = 24;
 const SCORE_DETOUR_WEIGHT = 320;
@@ -187,8 +181,7 @@ export const CODEX_CURSOR_GLYPH = {
    */
   size: 18,
   shadowBlur: 9,
-  // Normalized AgentCursor.path(in:) coordinates recovered from the native
-  // function's read-only floating-point constants.
+  // Normalized Maka cursor geometry, retained as a stable rendering contract.
   start: [0.00599, 0.15864] as const,
   curve1: [
     [0.15158, 0.00627],
