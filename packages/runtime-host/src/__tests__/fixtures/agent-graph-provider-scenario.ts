@@ -80,7 +80,7 @@ export class AgentGraphProviderScenario {
         assert.match(
           latestUserText(body),
           this.orchestrationMode === 'delegate'
-            ? /Background task set .* reached settled\./
+            ? /Background task set .* reached a durable checkpoint\.[\s\S]*Checkpoint projection status: settled\./
             : /reached a durable supervisor checkpoint\./,
         );
         this.#phase = 'await_view_result';
