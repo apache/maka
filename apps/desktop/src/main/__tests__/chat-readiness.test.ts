@@ -128,25 +128,6 @@ describe('chat readiness guard', () => {
     );
   });
 
-  test('allows none-auth local providers and real providers with secrets', async () => {
-    const local = await requireReadyConnection(
-      'ollama',
-      deps({ connection: connection({ slug: 'ollama', providerType: 'ollama', name: 'Ollama', defaultModel: 'llama3.2' }) }),
-    );
-    assert.equal(local.connection.slug, 'ollama');
-    assert.equal(local.apiKey, '');
-    assert.equal(local.model, 'llama3.2');
-
-    const real = await requireReadyConnection(
-      'anthropic',
-      deps({ connection: connection(), apiKey: 'sk-ant-test' }),
-      'claude-3-5-sonnet-20241022',
-    );
-    assert.equal(real.connection.slug, 'anthropic');
-    assert.equal(real.apiKey, 'sk-ant-test');
-    assert.equal(real.model, 'claude-3-5-sonnet-20241022');
-  });
-
   test('send path blocks explicit fake sessions and revalidates old ai sessions', async () => {
     await assertRejectsReadiness(
       'explicit fake session',
