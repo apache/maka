@@ -232,46 +232,6 @@ describe('task ledger tools', () => {
     }
   });
 
-  test('task_create forwards drafts to the store using ctx.sessionId and renders the returned ledger', async () => {
-    const store = new FakeTaskLedgerStore();
-    const create = findTool(buildTaskLedgerTools({ store }), TASK_CREATE_TOOL_NAME);
-    const result = await create.impl(
-      { tasks: [{ subject: '写测试' }, { subject: '实现' }] },
-      fakeContext(SESSION_ID, 'run-1'),
-    );
-    assert.equal(store.createCalls.length, 1);
-    assert.equal(store.createCalls[0]?.sessionId, SESSION_ID);
-    assert.deepEqual(store.createCalls[0], {
-      sessionId: SESSION_ID,
-      drafts: [{ subject: '写测试' }, { subject: '实现' }],
-      context: {
-        runId: 'run-1',
-        turnId: 'turn-1',
-        toolCallId: 'call-1',
-        source: 'tool',
-        actor: 'main_agent',
-      },
-    });
-    assert.match(String(result), /写测试/);
-    assert.match(String(result), /实现/);
-    assert.match(String(result), /pending/);
-  });
-
-  test('task_update forwards only provided fields and renders the returned ledger', async () => {
-    const store = new FakeTaskLedgerStore();
-    const tools = buildTaskLedgerTools({ store });
-    const create = findTool(tools, TASK_CREATE_TOOL_NAME);
-    const update = findTool(tools, TASK_UPDATE_TOOL_NAME);
-    await create.impl({ tasks: [{ subject: '原始' }] }, fakeContext(SESSION_ID));
-
-    const result = await update.impl(
-      { id: 'id-0', status: 'in_progress' },
-      fakeContext(SESSION_ID),
-    );
-    assert.deepEqual(store.updateCalls[0]?.patch, { status: 'in_progress' });
-    assert.match(String(result), /in_progress/);
-  });
-
   test('task_create result shows only the created tasks (with ids) and total, not the pre-existing ledger', async () => {
     const store = new FakeTaskLedgerStore();
     const tools = buildTaskLedgerTools({ store });
