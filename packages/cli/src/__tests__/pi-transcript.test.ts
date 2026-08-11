@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
-import { before, describe, test } from 'node:test';
+import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
-import { _setColorLevelForTesting } from '../tui-ansi.js';
 import type { PipeShellOutput, PtyShellOutput } from '@maka/core/shell-run';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
 import type { SessionEvent, ToolResultContent } from '@maka/core/events';
@@ -20,13 +19,6 @@ import {
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
 } from '../pi-transcript.js';
-
-// Pin the color level so ANSI-escape assertions are hermetic. Detection reads
-// process.env.TERM/COLORTERM at module load, so ambient terminal capability
-// (truecolor locally, unset/dumb on CI runners) would otherwise decide whether
-// color escapes appear. Level 3 (truecolor) is the development default these
-// tests lock (#1064/#1066); matches tui-ansi.test.ts's reset convention.
-before(() => _setColorLevelForTesting(3));
 
 describe('Maka Pi TUI transcript', () => {
   test('keeps assistant text after a tool call visible after the tool block', () => {

@@ -263,20 +263,8 @@ export interface SessionAuthorityStore extends SessionStore {
   completeSessionRetirementCleanup(sessionId: string): Promise<void>;
 }
 
-interface SessionAuthorityStoreTestDependencies {
-  readonly beforeTranscriptRemoval?: (sessionId: string) => Promise<void>;
-}
-
 export function createSessionStore(workspaceRoot: string): SessionAuthorityStore {
-  return new SqliteSessionStore(workspaceRoot, {});
-}
-
-/** @internal Test-only dependency injection; not exported from the package root. */
-export function createSessionStoreWithTestDependencies(
-  workspaceRoot: string,
-  dependencies: SessionAuthorityStoreTestDependencies,
-): SessionAuthorityStore {
-  return new SqliteSessionStore(workspaceRoot, dependencies);
+  return new SqliteSessionStore(workspaceRoot);
 }
 
 class SqliteSessionStore implements SessionAuthorityStore {
@@ -284,7 +272,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
   private readonly workspaceRoot: string;
   private closePromise: Promise<void> | null = null;
 
-  constructor(workspaceRoot: string, _dependencies: SessionAuthorityStoreTestDependencies) {
+  constructor(workspaceRoot: string) {
     this.workspaceRoot = workspaceRoot;
     const databaseLease = acquireOperationalStateDatabase(workspaceRoot);
     this.metadata = createSqliteSessionMetadataStore(

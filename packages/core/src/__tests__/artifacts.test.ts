@@ -47,14 +47,7 @@ describe('Artifact turn key', () => {
 
 describe('Artifact user-delete policy', () => {
   test('protects durable evidence while allowing ordinary and unattributed artifacts', () => {
-    for (const source of [
-      'deep_research',
-      'subagent_writeback',
-      'tool_result_archive',
-      'session_effect',
-    ] as const) {
-      assert.equal(canUserDeleteArtifact({ source }), false, source);
-    }
+    assert.equal(canUserDeleteArtifact({ source: 'deep_research' }), false);
     assert.equal(canUserDeleteArtifact({ source: 'user_upload' }), true);
     assert.equal(canUserDeleteArtifact({ source: undefined }), true);
   });

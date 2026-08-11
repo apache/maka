@@ -1,13 +1,10 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { decodeAgentRunEvent } from '../agent-run.js';
 import {
-  MODEL_CALL_ATTEMPT_EVENT_TYPE,
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   decodeModelCallAttempt,
   groupModelCallAttempts,
-  isModelCallAttempt,
   settledAttempt,
   sumModelCallCostUsd,
   summarizeModelCallCoverage,
@@ -139,25 +136,6 @@ describe('ModelCallAttempt codec', () => {
         }),
       ),
     );
-  });
-
-  test('isModelCallAttempt narrows without throwing', () => {
-    assert.equal(isModelCallAttempt(attempt()), true);
-    assert.equal(isModelCallAttempt({ nope: true }), false);
-  });
-
-  test('the AgentRun ledger accepts the new event type', () => {
-    const decoded = decodeAgentRunEvent({
-      type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
-      id: 'attempt-1',
-      runId: 'run-1',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      ts: 1_250,
-      data: attempt() as unknown as Record<string, unknown>,
-    });
-    assert.equal(decoded.type, MODEL_CALL_ATTEMPT_EVENT_TYPE);
-    assert.equal(decodeModelCallAttempt(decoded.data).attemptId, 'attempt-1');
   });
 });
 

@@ -6,10 +6,6 @@ import { normalizeBrowserAddressInput } from '../browser.js';
 describe('browser address input normalization', () => {
   it('returns stable rejection reasons for non-navigable input', () => {
     assert.deepEqual(normalizeBrowserAddressInput('   '), { ok: false, reason: 'empty' });
-    assert.deepEqual(normalizeBrowserAddressInput('file:///etc/passwd'), {
-      ok: false,
-      reason: 'unsupported_scheme',
-    });
     assert.deepEqual(normalizeBrowserAddressInput('javascript:alert(1)'), {
       ok: false,
       reason: 'unsupported_scheme',

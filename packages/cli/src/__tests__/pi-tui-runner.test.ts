@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { before, describe, test } from 'node:test';
+import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { SHELL_RUN_UPDATE_BUFFER_MAX_ENTRIES } from '@maka/core/shell-run-result';
 import { type PermissionMode } from '@maka/core/permission';
@@ -47,7 +47,6 @@ import type {
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import { runMakaPiTui as runMakaPiTuiImpl, type MakaPiTuiInput } from '../pi-tui-runner.js';
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
-import { _setColorLevelForTesting } from '../tui-ansi.js';
 import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
 import {
   assertBottomPickerPlacement,
@@ -65,11 +64,6 @@ import {
 // close takes to report — the same budget split as waitFor's WAIT_BUDGET_MS
 // (tight locally, generous on loaded CI runners).
 const CLOSE_BUDGET_MS = Math.max(WAIT_BUDGET_MS, 500);
-
-// Pin truecolor so the accent-chrome escape assertion ("uses logo blue") is
-// hermetic. Color level is detected from process.env.TERM/COLORTERM at module
-// load, which varies between local (truecolor) and CI (unset/dumb) terminals.
-before(() => _setColorLevelForTesting(3));
 
 type TestMakaPiTuiInput = Omit<MakaPiTuiInput, 'driver' | 'turnActivity'> & {
   driver: MakaSessionDriver;

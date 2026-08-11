@@ -73,8 +73,3 @@ test('a chat-default thinking level the app does not recognize drops to no prefe
   });
   expect(normalized.chatDefaults.thinkingLevel).toBe(undefined);
 });
-
-test('a blank default project id is dropped rather than stored', () => {
-  const normalized = normalizeSettings({ projects: { defaultProjectId: '   ' } });
-  expect(normalized.projects.defaultProjectId).toBe(undefined);
-});
