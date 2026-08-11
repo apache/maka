@@ -215,12 +215,36 @@ export class ConnectionCatalogDocumentOwner {
       normalizeConnectionCatalogEntryUpdateForProvider(input.changes, previous.providerType),
     );
     const endpointChanged = previous.baseUrl !== changes.baseUrl;
+    const requestBodyOverlayChanged =
+      changes.requestBodyOverlay !== undefined &&
+      !isDeepStrictEqual(previous.requestBodyOverlay, changes.requestBodyOverlay ?? undefined);
     const testBasisChanged =
       endpointChanged ||
       previous.enabled !== changes.enabled ||
       !sameStringArray(previous.enabledModelIds, changes.enabledModelIds) ||
-      (changes.requestBodyOverlay !== undefined &&
-        !isDeepStrictEqual(previous.requestBodyOverlay, changes.requestBodyOverlay ?? undefined));
+      requestBodyOverlayChanged;
+    // Credential routing is owned by the dedicated Profile authority and is
+    // deliberately absent from the profile-blind Connection update contract.
+    // Absence must therefore preserve it. When the execution basis changes,
+    // keep the identities/metadata (and their locator reachability) but retire
+    // dispatchability until every Profile has been verified again.
+    const credentialRouting = previous.credentialRouting
+      ? endpointChanged || requestBodyOverlayChanged
+        ? {
+            ...previous.credentialRouting,
+            mode: 'legacy_primary' as const,
+            profiles: previous.credentialRouting.profiles.map((profile) =>
+              profile.enabled
+                ? {
+                    ...profile,
+                    enabled: false,
+                    revision: nextRevision(profile.revision),
+                  }
+                : profile,
+            ),
+          }
+        : previous.credentialRouting
+      : undefined;
     const connections = [...current.connections];
     connections[index] = {
       connectionId: previous.connectionId,
@@ -273,11 +297,13 @@ export class ConnectionCatalogDocumentOwner {
       ...(testBasisChanged || previous.lastTest === undefined
         ? {}
         : { lastTest: previous.lastTest }),
+      ...(credentialRouting === undefined ? {} : { credentialRouting }),
     };
     if (current.defaultTarget && !isValidTarget(current.defaultTarget, connections)) {
       return deepFreeze({ kind: 'invalid_default_target', target: current.defaultTarget });
     }
     const next = { ...current, revision: nextRevision(current.revision), connections };
+    assertDocumentCredentialRoutingInvariants(next, FILE);
     await this.write(root, next);
     return committed(next);
   }

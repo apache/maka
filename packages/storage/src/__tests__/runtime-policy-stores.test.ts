@@ -2804,6 +2804,88 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('profile-blind Connection updates preserve routing and basis changes disable every Profile', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('profile-update', 'openai', 'Profile update'),
+      );
+      const created = await stores.operations.createCredentialProfile({
+        expected: connectionBasis(connection),
+        label: 'backup',
+        weight: 7,
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      const declared = created.snapshot.connections.find(
+        (candidate) => candidate.connectionId === connection.connectionId,
+      )!;
+      const secondary = declared.credentialRouting!.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      )!;
+      const enabled = await stores.operations.setCredentialProfileEnabled({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: declared.revision,
+          profileId: secondary.profileId,
+          profileRevision: secondary.revision,
+        },
+        enabled: true,
+      });
+      assert.equal(enabled.kind, 'committed');
+      if (enabled.kind !== 'committed') return;
+      const beforeUpdate = enabled.snapshot.connections.find(
+        (candidate) => candidate.connectionId === connection.connectionId,
+      )!;
+
+      const renamed = await stores.connectionCatalog.update({
+        expected: connectionBasis(beforeUpdate),
+        changes: {
+          name: 'Renamed only',
+          enabled: beforeUpdate.enabled,
+          enabledModelIds: beforeUpdate.enabledModelIds,
+        },
+      });
+      assert.equal(renamed.kind, 'committed');
+      if (renamed.kind !== 'committed') return;
+      const afterRename = renamed.snapshot.connections.find(
+        (candidate) => candidate.connectionId === connection.connectionId,
+      )!;
+      assert.deepEqual(afterRename.credentialRouting, beforeUpdate.credentialRouting);
+
+      const moved = await stores.connectionCatalog.update({
+        expected: connectionBasis(afterRename),
+        changes: {
+          name: afterRename.name,
+          baseUrl: 'https://other-openai.example/v1',
+          enabled: afterRename.enabled,
+          enabledModelIds: afterRename.enabledModelIds,
+        },
+      });
+      assert.equal(moved.kind, 'committed');
+      if (moved.kind !== 'committed') return;
+      const afterMove = moved.snapshot.connections.find(
+        (candidate) => candidate.connectionId === connection.connectionId,
+      )!;
+      assert.equal(afterMove.credentialRouting?.mode, 'legacy_primary');
+      assert.deepEqual(
+        afterMove.credentialRouting?.profiles.map((profile) => ({
+          profileId: profile.profileId,
+          label: profile.label,
+          weight: profile.weight,
+          enabled: profile.enabled,
+        })),
+        beforeUpdate.credentialRouting?.profiles.map((profile) => ({
+          profileId: profile.profileId,
+          label: profile.label,
+          weight: profile.weight,
+          enabled: false,
+        })),
+      );
+    });
+  });
+
   test('balanced activation requires configured credentials and preserves primary', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(

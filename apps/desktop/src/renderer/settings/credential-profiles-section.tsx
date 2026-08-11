@@ -263,22 +263,20 @@ export function CredentialProfilesSection(props: CredentialProfilesSectionProps)
                           }}
                         />
                       )}
-                      {!profile.primary && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          isDisabled={anyAction && !enableBusy}
-                          isLoading={enableBusy}
-                          label={profile.enabled ? copy.profileDisabled : copy.profileEnabled}
-                          onClick={() =>
-                            void props.onSetEnabled({
-                              profileId: profile.profileId,
-                              profileRevision: profile.revision,
-                              enabled: !profile.enabled,
-                            })
-                          }
-                        />
-                      )}
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        isDisabled={anyAction && !enableBusy}
+                        isLoading={enableBusy}
+                        label={profile.enabled ? copy.profileDisabled : copy.profileEnabled}
+                        onClick={() =>
+                          void props.onSetEnabled({
+                            profileId: profile.profileId,
+                            profileRevision: profile.revision,
+                            enabled: !profile.enabled,
+                          })
+                        }
+                      />
                       {!profile.primary && (
                         <Button
                           variant="secondary"

@@ -92,6 +92,14 @@ test('primary profile cannot be removed and removal confirms the label only', as
   await expect(accounts.getByText('主账号', { exact: true })).toBeVisible();
   await expect(accounts.getByRole('button', { name: '移除' })).toHaveCount(1);
 
+  // Primary is not removable, but it must remain recoverable after an
+  // execution-basis change disables every Profile: expose the same explicit
+  // disable/enable lifecycle as secondary Profiles.
+  await accounts.getByRole('button', { name: '停用', exact: true }).click();
+  await expect(accounts.getByRole('button', { name: '启用', exact: true })).toHaveCount(2);
+  await accounts.getByRole('button', { name: '启用', exact: true }).first().click();
+  await expect(accounts.getByRole('button', { name: '停用', exact: true })).toHaveCount(1);
+
   // A secondary removal confirms against the label, never a secret.
   await accounts.getByRole('button', { name: '移除' }).click();
   const confirm = page.getByRole('alertdialog');

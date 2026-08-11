@@ -1,5 +1,6 @@
 import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
 import {
+  PROVIDER_DEFAULTS,
   reconcileConnectionAfterEnabledModelsChange,
   type LlmConnection,
 } from '@maka/core/llm-connections';
@@ -315,11 +316,68 @@ async function applyV2ConfigImport(
     const incoming = bundle.data.connections as V2ExportedConnection[];
     const existing = await deps.connectionStore.list();
     const plan = planConnectionMerge(existing, incoming, strategy);
+    const existingBySlug = new Map(existing.map((connection) => [connection.slug, connection]));
+    const createSlugs = new Set(plan.create.map((connection) => connection.slug));
+    const sourceFor = (connection: LlmConnection): V2ExportedConnection =>
+      (incoming.find((candidate) => candidate.slug === connection.slug) ??
+        connection) as V2ExportedConnection;
+    const isProfileAware = (connection: LlmConnection): boolean => {
+      const source = sourceFor(connection);
+      return source.credentialProfiles !== undefined || source.routingMode !== undefined;
+    };
+    const quiesceConnection = async (slug: string): Promise<void> => {
+      await profiles.materializePrimary(slug);
+      const current = await profiles.list(slug);
+      if (current.routingMode === 'balanced') {
+        await profiles.setRoutingMode(slug, { mode: 'legacy_primary' });
+      }
+      const disabled = new Set<string>();
+      for (const profile of current.profiles.filter((candidate) => candidate.enabled)) {
+        await profiles.setEnabled(slug, {
+          profileId: profile.profileId,
+          profileRevision: profile.revision,
+          enabled: false,
+        });
+        disabled.add(profile.profileId);
+      }
+      if (disabled.size > 0) quiescedProfiles.set(slug, disabled);
+    };
+
+    // Existing profile-capable targets are quiesced BEFORE their endpoint,
+    // overlay or credential basis can change. This closes the legacy-primary
+    // window in which an old key could otherwise be dispatched to the newly
+    // imported endpoint.
+    for (const connection of plan.overwrite) {
+      if (!isProfileAware(connection)) continue;
+      const target = existingBySlug.get(connection.slug);
+      if (!target || PROVIDER_DEFAULTS[target.providerType].authKind === 'none') continue;
+      await quiesceConnection(connection.slug);
+    }
+
     for (const connection of [...plan.create, ...plan.overwrite]) {
       const selection = connection.enabledModelIds
         ? reconcileConnectionAfterEnabledModelsChange(connection, connection.enabledModelIds)
         : null;
-      await deps.connectionStore.save(selection ? { ...connection, ...selection } : connection);
+      const normalized = selection ? { ...connection, ...selection } : connection;
+      const target = existingBySlug.get(connection.slug);
+      const replacesProvider = target?.providerType !== undefined &&
+        target.providerType !== connection.providerType;
+      const needsPostSaveQuiesce =
+        isProfileAware(connection) && (createSlugs.has(connection.slug) || replacesProvider);
+      // A new/replaced Connection must not become dispatchable between create
+      // and primary materialization. Stage it disabled, quiesce its Profiles,
+      // then restore the Connection-level enabled bit while Profiles remain
+      // disabled pending verification.
+      const staged = needsPostSaveQuiesce && normalized.enabled
+        ? { ...normalized, enabled: false }
+        : normalized;
+      await deps.connectionStore.save(staged);
+      if (needsPostSaveQuiesce) {
+        await quiesceConnection(connection.slug);
+        if (staged !== normalized) {
+          await deps.connectionStore.save(normalized);
+        }
+      }
       appliedConnectionSlugs.add(connection.slug);
     }
     result.connections = {
@@ -328,46 +386,8 @@ async function applyV2ConfigImport(
       skipped: plan.skipped.length,
     };
 
-    // Quiesce before touching any credential. Only PROFILE-AWARE sources
-    // (those carrying an explicit Profile declaration or routing mode) enter
-    // the profile lifecycle: an implicit auth-less connection (e.g. Ollama)
-    // has no profiles and must never be materialized (auth_not_supported).
-    // For every profile-aware connection — created or overwritten — the
-    // primary routing is materialized (idempotent; an overwrite target that
-    // is still an implicit legacy connection needs it too), then the mode
-    // drops to legacy_primary and every enabled profile, including the
-    // primary, is disabled FIRST. A partial failure can therefore never leave
-    // a dispatchable primary with a replaced credential. The disabled set is
-    // remembered (function scope) so profiles NOT listed in the bundle can be
-    // restored to their previous enabled state after the import (RFC 13.4:
-    // absent profiles are kept).
     for (const connection of [...plan.create, ...plan.overwrite]) {
-      const source =
-        (incoming.find((candidate) => candidate.slug === connection.slug) ??
-          connection) as V2ExportedConnection;
-      const profileAware =
-        source.credentialProfiles !== undefined || source.routingMode !== undefined;
-      if (!profileAware) continue;
-      await profiles.materializePrimary(connection.slug);
-      const current = await profiles.list(connection.slug);
-      if (current.routingMode === 'balanced') {
-        await profiles.setRoutingMode(connection.slug, { mode: 'legacy_primary' });
-      }
-      const disabled = new Set<string>();
-      for (const profile of current.profiles.filter((candidate) => candidate.enabled)) {
-        await profiles.setEnabled(connection.slug, {
-          profileId: profile.profileId,
-          profileRevision: profile.revision,
-          enabled: false,
-        });
-        disabled.add(profile.profileId);
-      }
-      if (disabled.size > 0) quiescedProfiles.set(connection.slug, disabled);
-    }
-    for (const connection of [...plan.create, ...plan.overwrite]) {
-      const source =
-        (incoming.find((candidate) => candidate.slug === connection.slug) ??
-          connection) as V2ExportedConnection;
+      const source = sourceFor(connection);
       const slugMapping = new Map<string, string>();
       slugMapping.set(EXPORT_PRIMARY_PROFILE_REF, 'primary');
       mappings.set(connection.slug, slugMapping);
@@ -376,15 +396,10 @@ async function applyV2ConfigImport(
       const current = await profiles.list(connection.slug);
       const byId = new Map(current.profiles.map((profile) => [profile.profileId, profile]));
       const byLabel = new Map(
-        current.profiles
-          .filter((profile) => !profile.primary)
-          .map((profile) => [profile.label.toLowerCase(), profile]),
+        current.profiles.map((profile) => [profile.label.toLowerCase(), profile]),
       );
       for (const profile of meta) {
         if (profile.primary) {
-          // The primary has no separate mutation here, but the bundle DID
-          // declare it: it must count as listed so the quiesce restore never
-          // re-enables a bundle-disabled primary.
           const primary = current.profiles.find((candidate) => candidate.primary);
           if (primary) {
             let listed = listedTargetProfileIds.get(connection.slug);
@@ -393,11 +408,41 @@ async function applyV2ConfigImport(
               listedTargetProfileIds.set(connection.slug, listed);
             }
             listed.add(primary.profileId);
+            const labelOwner = byLabel.get(profile.label.toLowerCase());
+            if (labelOwner && labelOwner.profileId !== primary.profileId) {
+              labelConflicts.push(`${connection.slug}/${profile.label}`);
+              skippedProfiles += 1;
+              continue;
+            }
+            if (primary.label !== profile.label || primary.weight !== profile.weight) {
+              await profiles.update(connection.slug, {
+                profileId: primary.profileId,
+                profileRevision: primary.revision,
+                label: profile.label,
+                weight: profile.weight,
+              });
+              byLabel.delete(primary.label.toLowerCase());
+              const updatedPrimary = {
+                ...primary,
+                label: profile.label,
+                weight: profile.weight,
+                revision: primary.revision + 1,
+              };
+              byId.set(primary.profileId, updatedPrimary);
+              byLabel.set(profile.label.toLowerCase(), updatedPrimary);
+              updatedProfiles += 1;
+            }
           }
           continue;
         }
         const exact = byId.get(profile.profileId);
         if (strategy === 'overwrite' && exact) {
+          const labelOwner = byLabel.get(profile.label.toLowerCase());
+          if (labelOwner && labelOwner.profileId !== exact.profileId) {
+            labelConflicts.push(`${connection.slug}/${profile.label}`);
+            skippedProfiles += 1;
+            continue;
+          }
           // In-place update only for an exact profile-ID match.
           await profiles.update(connection.slug, {
             profileId: exact.profileId,
@@ -405,6 +450,15 @@ async function applyV2ConfigImport(
             label: profile.label,
             weight: profile.weight,
           });
+          byLabel.delete(exact.label.toLowerCase());
+          const updatedExact = {
+            ...exact,
+            label: profile.label,
+            weight: profile.weight,
+            revision: exact.revision + 1,
+          };
+          byId.set(exact.profileId, updatedExact);
+          byLabel.set(profile.label.toLowerCase(), updatedExact);
           slugMapping.set(profile.profileRef, exact.profileId);
           let listed = listedTargetProfileIds.get(connection.slug);
           if (!listed) {
@@ -435,6 +489,8 @@ async function applyV2ConfigImport(
         );
         if (createdTarget) {
           slugMapping.set(profile.profileRef, createdTarget.profileId);
+          byId.set(createdTarget.profileId, createdTarget);
+          byLabel.set(createdTarget.label.toLowerCase(), createdTarget);
           let listed = listedTargetProfileIds.get(connection.slug);
           if (!listed) {
             listed = new Set<string>();

@@ -1598,6 +1598,190 @@ describe('config-transfer-service', () => {
     assert.deepEqual(result.credentials, { applied: 1, skipped: 0 });
   });
 
+  it('quiesces a profile-aware overwrite before saving its new execution basis', async () => {
+    const { deps } = makeDeps();
+    const calls: string[] = [];
+    const primary = {
+      profileId: 'primary-id',
+      revision: 1,
+      label: 'primary',
+      enabled: true,
+      weight: 1,
+      primary: true,
+      credentialConfigured: true,
+      supportedModels: [] as string[],
+    };
+    deps.connectionStore = {
+      list: async () => [conn('deepseek-main')],
+      save: async (connection) => {
+        calls.push(`save:${connection.baseUrl}`);
+        return connection;
+      },
+    };
+    deps.profiles = {
+      materializePrimary: async () => { calls.push('materialize'); },
+      list: async () => ({
+        connectionRevision: 1,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [primary],
+      }),
+      create: async () => {},
+      update: async () => {},
+      setEnabled: async (_slug, input) => {
+        calls.push(`enabled:${input.enabled}`);
+        primary.enabled = input.enabled;
+      },
+      setRoutingMode: async () => {},
+      setCredential: async () => {},
+      test: async () => ({ ok: true }),
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('deepseek-main'),
+            baseUrl: 'https://new-endpoint.example/v1',
+            credentialProfiles: [
+              { profileRef: 'primary', profileId: 'source-primary', label: 'primary', enabled: false, weight: 1, primary: true },
+            ],
+            routingMode: 'legacy_primary',
+          },
+        ],
+      },
+    };
+
+    await applyConfigImport(bundle as any, 'overwrite', deps);
+
+    assert.deepEqual(calls, [
+      'materialize',
+      'enabled:false',
+      'save:https://new-endpoint.example/v1',
+    ]);
+  });
+
+  it('stages a new profile-aware Connection disabled until its primary is quiesced', async () => {
+    const { deps, saved } = makeDeps();
+    const primary = {
+      profileId: 'primary-id',
+      revision: 1,
+      label: 'primary',
+      enabled: true,
+      weight: 1,
+      primary: true,
+      credentialConfigured: false,
+      supportedModels: [] as string[],
+    };
+    deps.profiles = {
+      materializePrimary: async () => {},
+      list: async () => ({
+        connectionRevision: 1,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [primary],
+      }),
+      create: async () => {},
+      update: async () => {},
+      setEnabled: async (_slug, input) => {
+        primary.enabled = input.enabled;
+        primary.revision += 1;
+      },
+      setRoutingMode: async () => {},
+      setCredential: async () => {},
+      test: async () => ({ ok: false }),
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('new-profile-aware'),
+            credentialProfiles: [
+              { profileRef: 'primary', profileId: 'source-primary', label: 'primary', enabled: false, weight: 1, primary: true },
+            ],
+            routingMode: 'legacy_primary',
+          },
+        ],
+      },
+    };
+
+    await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(saved.map((connection) => connection.enabled), [false, true]);
+    assert.equal(primary.enabled, false);
+  });
+
+  it('restores primary label and weight through the Profile update authority', async () => {
+    const { deps } = makeDeps();
+    const primary = {
+      profileId: 'primary-id',
+      revision: 3,
+      label: 'old-primary',
+      enabled: true,
+      weight: 1,
+      primary: true,
+      credentialConfigured: true,
+      supportedModels: [] as string[],
+    };
+    const updates: Array<{ profileId: string; label?: string; weight?: number }> = [];
+    deps.profiles = {
+      materializePrimary: async () => {},
+      list: async () => ({
+        connectionRevision: 1,
+        routingMode: 'legacy_primary',
+        readyCandidateCount: 0,
+        profiles: [primary],
+      }),
+      create: async () => {},
+      update: async (_slug, input) => {
+        updates.push(input);
+        primary.label = input.label ?? primary.label;
+        primary.weight = input.weight ?? primary.weight;
+        primary.revision += 1;
+      },
+      setEnabled: async (_slug, input) => {
+        primary.enabled = input.enabled;
+        primary.revision += 1;
+      },
+      setRoutingMode: async () => {},
+      setCredential: async () => {},
+      test: async () => ({ ok: true }),
+    };
+    const bundle = {
+      schemaVersion: 2,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections'] as const,
+      data: {
+        connections: [
+          {
+            ...conn('deepseek-main'),
+            credentialProfiles: [
+              { profileRef: 'primary', profileId: 'source-primary', label: 'main-account', enabled: false, weight: 40, primary: true },
+            ],
+            routingMode: 'legacy_primary',
+          },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'overwrite', deps);
+
+    assert.deepEqual(updates, [
+      { profileId: 'primary-id', profileRevision: 4, label: 'main-account', weight: 40 },
+    ]);
+    assert.equal(primary.label, 'main-account');
+    assert.equal(primary.weight, 40);
+    assert.equal(result.profiles?.updated, 1);
+  });
+
   it('routes a parsed v1 bundle through the legacy import path', async () => {
     const { deps, setCreds } = makeDeps();
     const raw = serializeConfigBundle({
