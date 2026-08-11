@@ -1,80 +1,128 @@
 ---
 doc_id: architecture.runtime-host
-title: "Runtime Host：Runtime 执行的唯一在线宿主"
+title: "Runtime Host 架构"
 language: zh-CN
 source_language: zh-CN
 counterpart: ./runtime-host-architecture.md
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-08-10
+last_verified: 2026-08-11
 owners:
   - maka-backend
 ---
 
-# Runtime Host：Runtime 执行的唯一在线宿主
+# Runtime Host 架构
 
-> Runtime Host 是一个 State Root 及其 Runtime execution 的唯一在线 owner。Client 只提交有界操作；Host 持有 durable state、execution admission、recovery 和 shutdown。Client disconnect 不会把这些所有权转回 Client。
+> Runtime Host 是一个长期运行的进程，负责一个 State Root 以及使用该 State Root 的 Runtime work。Desktop、TUI、CLI、bot 和 Eval 都是 Client；它们请求 Host 执行工作，不拥有第二套 Runtime。
 
-本文面向维护 Runtime Host 或接入产品领域的工程师。它只解释稳定的所有权和 lifecycle contract，不重复每个 operation schema 或 coordinator 的实现细节。
+本文解释维护 Runtime Host 或接入产品功能时需要理解的稳定边界，不重复每个 protocol schema 或 coordinator 的实现细节。
+
+本文所说的 **owner** 或 **authority**，是指 Host 在线时唯一有权改变某类状态的组件，不一定是发起操作的 Client 或用户。
 
 ## 为什么需要 Runtime Host
 
-Runtime execution 的生命周期长于一次连接。模型调用可能在 Desktop window reload 后继续，authenticated remote Client 可能断开，进程也可能在 durable work 尚未结束时重启。
+Runtime work 的生命周期长于一次连接。模型调用可能在 Desktop window reload 后继续，authenticated remote Client 可能断开，进程也可能在 durable work 尚未结束时重启。State Root 是保存这些持久状态的目录。
 
 如果每个 Client 都拥有自己的 Runtime 与恢复路径，系统会出现多个 writer、冲突的 Session state，以及依赖连接存活的 execution。Runtime Host 消除这些歧义：
 
 - 一个进程拥有一个 State Root 的写权限；
-- Local IPC 与 authenticated WebSocket 使用同一份 canonical state；
-- Domain code 拥有业务决策；
-- 一个 execution authority 拥有 admission、stop、settlement 与 recovery。
+- Local IPC 与 authenticated WebSocket 使用同一份持久状态；
+- 业务代码决定一项工作的含义；
+- 一个 execution authority 负责顶层 Session work 的 admission 与 stop，跟踪最终结果，并等待 cleanup 结束。
 
-## 心智模型
+## 用普通语言理解各组件
+
+| 组件 | 直观含义 |
+|---|---|
+| Host Kernel | 进程入口：拥有 State Root 的排他 lease 与 connections，停止接收新工作，并负责关闭进程 |
+| Host Composition | 固定的启动方案：创建 Stores、共享 authorities 与 Module 列表 |
+| Domain Module | 一条静态记录，把一组 protocol operations 与 startup/shutdown 职责分配给一个 owner |
+| Hosted Execution | Session 顶层工作的调度入口：接收一个确切 execution，负责停止或恢复它，并区分最终结果与 cleanup 完成 |
+| Run Composer | 在 provider call 前记录不会再变化的 prompt 与 tool 基线 |
+| Session Continuity | 向 Client 提供 canonical Session snapshot 与带大小限制的 live updates |
+| Client Capability | 允许 Host 调用已连接 Client 发布的能力，但不转移 Runtime ownership |
+
+Durable Stores 是 recovery 的事实来源。下文所说的 **canonical state**，是指从这些 Stores 重建的状态；**projection** 则是从该状态派生、便于读取的视图。
+
+**Bounded** 表示 protocol 对 schema、大小、数量或时间设有明确限制，而不是接受任意 work 或 payload。
+
+下面几个 execution 名称也表示不同范围：
+
+| 名称 | 范围 |
+|---|---|
+| Session | 持久存在的对话与 workspace context |
+| Turn | Session 中一项被记录的顶层工作，可以由用户或 Host 发起 |
+| Run | 为一次 Turn 执行 model 与 tool work 的持久实体 |
+| Root execution | 一个 Session 当前唯一被 admit 的顶层 execution |
+
+## 一次 Turn 如何穿过系统
 
 ```mermaid
-flowchart LR
-    Client[Client] --> Kernel[Host Kernel]
-    Kernel --> Composition[Host Composition]
-    Composition --> Domain[Domain Module]
-    Domain --> Execution[Hosted Execution Authority]
-    Execution --> Runtime[Maka Runtime]
-    Domain --> Composer[Run Composer]
-    Composer --> Runtime
-    Composition --> Store[Durable Stores]
+sequenceDiagram
+    participant Client
+    participant Kernel as Host Kernel
+    participant Domain as Domain Module
+    participant Execution as Hosted Execution
+    participant Runtime as Maka Runtime
+    participant Store as Durable Stores
+    participant Continuity as Session Continuity
+    participant Capability as Client Capability
+
+    Client->>Kernel: 提交一条消息
+    Kernel->>Domain: 路由已认证的 operation
+    Domain->>Execution: 为 root execution 完成 reservation 与 admission
+    Execution->>Runtime: 启动这一 execution
+    loop Model 与 tool work
+        Runtime->>Store: 写入 durable facts
+        Runtime-->>Continuity: 发布带大小限制的 live event
+        Continuity-->>Client: 发送下一个 sequenced update
+        opt 所选 tool 需要 Client environment
+            Runtime->>Capability: 调用已冻结的 capability binding
+            Capability->>Client: 发起有界 reverse call
+        end
+    end
+    Store-->>Continuity: 重建 canonical state
+    Continuity-->>Client: 返回新的 snapshot
 ```
 
-| 组件 | 拥有的责任 |
-|---|---|
-| Host Kernel | State Root ownership、transport、connection authority、residency、drain 与 shutdown |
-| Host Composition | 静态 composition identity、Store 创建、Domain Modules 与共享 authorities |
-| Domain Module | 一个领域的 handlers、recovery、drain、close 与 connection cleanup |
-| Hosted Execution Authority | Root admission、execution identity、stop、terminal reconciliation 与 recovery |
-| Run Composer | 一次 Run 的 immutable prompt、tool、policy 与 source-revision 基线 |
+请求到来前，Host Composition 已经创建这些组件，并把每个业务操作分配给一个 Domain Module。进程状态、diagnostics、upgrade 与 access credential 操作仍由 Kernel 拥有。Composition 是启动方案，不是每次请求都要调用的一层 service。
 
-## 四种不能混合的 identity
+以用户消息为例：Kernel 负责认证和路由，但不解释消息；拥有该操作的 Domain 应用 message 与 Session 规则，并在 root work 可以开始时使用 Hosted Execution。第一次 provider request 之前，Run Composer 会冻结并持久化 prompt 与 tool 基线。Runtime 写入 canonical facts，Session Continuity 再把这些事实投影给所有 Client。
 
-| Identity | 含义 | 生命周期 |
+Scheduled Task 使用同一条 execution path，只是它从自己的 Domain 内部启动，而不是由已连接的 Client 发起。这也是 Client disconnect 不会决定 execution lifetime 的原因。
+
+## Host 的几种身份
+
+这些值回答不同的问题，不能相互替代：
+
+| Identity | 直观含义 | 生命周期 |
 |---|---|---|
-| State Root | Host durable state 的 canonical 目录 | 跨 Host 进程存在 |
-| Host Epoch | 一次取得 root owner 的进程实例 | 随该进程结束 |
-| Composition ID | 允许使用该 State Root 的静态 Host composition | 持久绑定到 root |
-| Host Generation | 本地 ephemeral Client 请求的 Runtime Host build | Product build，或一个 development Client process |
+| State Root | 保存 Host 持久状态的目录；同一时刻只有一个进程持有其排他写 lease | 跨 Host 进程存在 |
+| Host Epoch | 当前持有该 lease 的进程 identity | 随该进程结束 |
+| Composition ID | 允许解释该 State Root 的 Host program 类型 | 持久绑定到 root |
+| Composition Revision | Client 期望连接的 Composition revision | startup wiring 或 compatibility 改变时更新 |
+| Host Generation | 由本地 owner Client 请求的 replacement generation | 一个 product version 共用，或仅属于一个 development Client process |
 
-重启会创建新的 Host Epoch；软件更新也可能改变 Host Generation。两者都不会改变 State Root 或 Composition ID。
+重启会改变 Host Epoch；Composition 变化可能改变其 Revision；product version 更新或 development Client 重启可能改变 Host Generation。这些变化都不会隐式移动 State Root，也不会改变持久绑定的 Composition ID。
 
-## 所有权边界
+例如，绑定到 interactive Composition 的 State Root 不能被另一种 Composition 打开；interactive Composition 自身可以演进到新 revision，而不改变这项持久 identity。
+
+## 各组件分别负责什么
 
 ### Host Kernel 拥有进程生命周期
 
-Kernel 取得 State Root writer owner，启动 required listeners，认证连接，创建 immutable connection authority，并驱动 Composition recovery、drain 与 close。
+Kernel 取得 State Root 的排他写 lease，启动 listeners，并认证连接。认证会为该 connection 生成一组不可变的 permissions。Kernel 还会跟踪 active operations 与 **residencies**——让进程必须继续存活的明确原因——并驱动 Composition recovery、drain 与 close。
 
-Kernel 不解释 message、prompt、tool、Goal state、Automation state 或 Agent Graph state。新增领域行为通过 Domain Module 接入，而不是给 Kernel 状态机增加分支。
+Kernel 不解释 message、tool、Goal 或 Scheduled Task 等业务状态。新增业务行为通过 Domain Module 接入，而不是给 Kernel 状态机增加分支。
 
-### Host Composition 拥有静态装配
+### Host Composition 是固定的启动方案
 
-Composition 在启动前固定。Descriptor 只包含稳定 ID 与 revision；实际 Module IDs 来自已创建的 Composition，因此 diagnostics 不会与真实 ownership 漂移。
+Composition ID、revision 与 construction function 在 listener 启动前选定。Modules 在启动期间只创建一次，并在 Host Ready 后保持不变。Diagnostics 直接读取已创建 Composition 的实际 Module IDs，不维护第二份列表。
 
-每个 protocol operation 只有一个 Module owner。Composition 组合这些 owner，不保留平行的 handler 或 lifecycle 实现。
+每个业务操作只有一个 Module owner。Composition 组合这些 owner，不保留平行的 handler 或 lifecycle 实现。Kernel operations 不属于 Domain Module。
+
+例如，interactive Composition 会创建 Session、Scheduled Task 等 Modules，以及它们使用的 Stores 与共享 execution authority。这个列表在 Host process 内只选择一次。Composition 不是 dynamic plugin registry，也不是每个 Session 各自拥有的配置。
 
 Recovery 使用五个固定 phase：
 
@@ -84,37 +132,66 @@ Recovery 使用五个固定 phase：
 4. `domains`
 5. `schedulers`
 
+这个顺序保证 durable state 与 resources 先就绪，随后恢复 executions 与 business domains，最后才启动 schedulers。
+
 Close 按 Module 反序执行。Drain 与 close 会尝试每个 owner，并聚合失败。
 
-### Domain Module 拥有业务生命周期
+### Domain Module 负责一组操作及其生命周期
 
-Domain Module 通过明确的 constructor ports 获取依赖，并拥有自己的 handlers 与 resources。它可以使用共享 Host contract，但不会通过动态 registry 查找 service，也不会创建第二个 Runtime authority。
+Domain Module 是一条静态记录，用于回答四个问题：
+
+- 这一组职责处理哪些 protocol operations；
+- 每个 startup phase 需要恢复什么；
+- drain 时必须拒绝哪些新工作；
+- close 时需要释放哪些 resources 与 connection-scoped state。
+
+例如，Scheduled Task Module 拥有 Scheduled Task operations，恢复 durable scheduling state，只在 recovery 完成后启动 scheduler，并在 shutdown 时停止和关闭 scheduler。Task 触发后，Module 仍然请求共享的 Hosted Execution authority 执行它，不会创建另一套 Runtime。
+
+Module 不一定对应独立 process、package 或源码目录。它可以表示一个聚焦功能，也可以表示生命周期紧密相关的一组职责。Construction code 直接传入依赖；Module 不会在 runtime 按名称查找依赖。
 
 Domain 决定 execution result 的业务含义和下一步动作。Hosted Execution 只拥有 execution lifecycle。
 
-### Hosted Execution 拥有 root execution 生命周期
+### Hosted Execution 控制 Session 的顶层工作
 
-Hosted Execution 是 root execution 的唯一在线 authority。Admission 原子返回该 execution 的初始 snapshot、completion handle 与 cleanup settlement handle。
+**Admission** 是为一个确切 root execution 原子保留 Session 的决策，用来防止两个顶层 Turn 并发运行。
 
-Consumer 使用 durable terminal projection 判断业务结果，使用 settlement handle 判断 execution cleanup 是否完成。它们不能在 admission 后再用 Session ID 或 Turn ID 重新拼装这些引用。
+Admission 成功后返回三个相关值：
 
-Subscription 只是唤醒提示。Recovery 始终重新读取 durable facts。
+- `snapshot`：execution 被 admit 时观察到的状态；
+- `completion`：状态为 completed、failed 或 cancelled 的 terminal snapshot，或者明确的 `authority_error`；
+- `settled`：execution cleanup 已结束、临时 resources 已释放的信号。
 
-### Run Composer 拥有 provider dispatch 基线
+Domain 使用 `completion` 判断业务结果，使用 `settled` 判断 cleanup 是否结束。它保留这次确切 execution 返回的 handles，而不是事后通过 Session ID 或 Turn ID 重新拼装。
 
-Run Composer 冻结一次 Run 的 model-visible 基线：base system prompt、tool catalog、tool availability policy、base provider options 与 source revisions。
+Hosted Execution subscription 只告诉同一 Host Epoch 内的 observer“可能发生了变化”，不能证明新状态是什么。Recovery 始终重新读取 durable facts。
 
-首次 physical provider dispatch 前必须：
+### Session Continuity 负责 Client 如何观察 Session
+
+Session Continuity 是 live Session 面向 Client 的公开 read model。打开 subscription 会返回 canonical snapshot、下一个预期 sequence number，以及仍处于 active 状态的 assistant stream identities。可能更大的 transcript 通过单独、带大小限制的 snapshot 读取。
+
+Live projection、assistant 与 tool updates 都有明确的大小限制和 sequence number。发生 connection loss、Host Epoch 变化、sequence gap 或 transcript snapshot 过期后，Client 应重新打开 subscription，并重读 canonical state。例如，Desktop 在模型输出期间 reload 时，会恢复当前 transcript 与 active stream identities，而不是重新发送用户消息。Stream delivery 永远不是 recovery authority。
+
+### Run Composer 冻结模型实际看到的内容
+
+Run Composer 冻结一次 Run 的 model-visible 基线：base system prompt、tool catalog、tool availability policy、base provider options，以及构建这些内容时使用的 input revisions。
+
+第一次真实 provider request 前必须：
 
 1. 创建 immutable Run Composition snapshot；
 2. 将其提交到 AgentRun Store；
-3. durable commit 成功后才能 dispatch。
+3. durable commit 成功后才能调用 provider。
 
-Composition 或 commit 失败时必须 fail closed。没有发生 dispatch 的 Run 不伪造 composition snapshot。
+Composition 或 persistence 失败时不调用 provider。没有到达 provider dispatch 的 Run 不伪造 composition snapshot。
+
+### Client Capability 让 Host 安全调用 Client 能力
+
+Authenticated Client 可以发布带大小限制、带版本的 tool 或 service **offers**，描述自己能够做什么。Runtime Host 选择确切的 provider **binding**；Run 仍通过正常的 Run Composition 路径记录所选 model tools。对于必须在 Client 环境执行的 effect，Host 可以发起有界 reverse call，例如调用 Desktop 发布的 OS-facing capability。
+
+发布或调用 capability 不会把 Session、Run 或 execution ownership 转移给 Client。Connection loss 会使对应 provider unavailable；拥有该操作的 Domain 仍通过自己的 durable contract 处理 capability loss 或明确的 result-unknown outcome。
 
 ### Runtime Host 解析 workspace
 
-Client 只使用一种 closed target 表达 workspace：
+Client 必须使用下面两种 target form 中的一个来表达 workspace：
 
 ```ts
 type WorkspaceTarget =
@@ -122,68 +199,74 @@ type WorkspaceTarget =
   | { kind: "host_path"; path: string };
 ```
 
-`project` 是可跨机器传递的形式。Runtime Host 通过自己的 Project Catalog 解析它，并返回包含 canonical target 与 `hostCwd` 的 projection。`host_path` 只供拥有明确 Host-path authority 的 Client 使用，例如从本地 checkout 启动的 CLI。
+`project` 是可跨机器传递的形式。Runtime Host 通过自己的 Project Catalog 解析它，并返回 canonical target 与 `hostCwd`；`hostCwd` 是 Host 上的绝对目录。`host_path` 只供被明确允许指定 Host path 的 Client 使用，例如从本地 checkout 启动的 CLI。
 
-Project Catalog 提供 revision-pinned、paginated 的 summary 与 location view。Summary 不包含 path；读取 location 必须拥有 Host-path authority。
+Project summary 不暴露 path。只有被允许读取 Host path 的 connection 才能读取或修改 project location、在 Host 上 reveal path，或提交 `host_path`。
 
-Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 将所选 Project 保存为按 root 隔离的 Client preference；选择 Project 不修改 Host 全局状态。没有 Host-path authority 的 Client 可以使用已注册 Project，但不能注册、relink、请求 Host 侧 reveal 或提交 Host path。
-
-Skill Catalog 管理属于 Host 文件系统操作。它要求 Host-path authority，并返回该操作实际解析出的 workspace。
+Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 会按 State Root 在本地记住所选 Project；选择它不会修改 Host 全局状态。
 
 ## 生命周期
 
+两种 Host lifetime 使用同一个 Kernel 与 Composition：
+
+| Host 类型 | 由谁管理生命周期 |
+|---|---|
+| Ephemeral Host | 由本地 Client 启动；没有 connection、operation 或 residency 要求其继续存活时可以退出 |
+| Service Host | 由 deployment owner 运行；Client generation 不能替换它，也不使用 Client 驱动的 idle exit |
+
 | 阶段 | Contract |
 |---|---|
-| Startup | 取得 root owner，绑定 Composition identity，创建 Composition，恢复 Modules，启动 schedulers，最后发布 Ready |
-| Request | Authentication、bounded decode、connection authority 检查，再路由到唯一 Module handler |
-| Execution | 通过 Hosted Execution reservation 与 admission，从 durable facts reconcile terminal state |
-| Drain | 拒绝新 admission，同时让已接收工作收敛 |
-| Close | 反序关闭 Modules，关闭 listeners，最后释放 State Root owner |
+| Startup | 取得 State Root lease，绑定 Composition identity，创建 Composition，恢复 Modules，启动 schedulers，最后发布 Ready |
+| Request | Authentication、input limits 与 connection permissions 检查，再路由到 Kernel 或唯一的 Domain Module handler |
+| Execution | 通过 Hosted Execution reservation 与 admission，再重读 durable facts 确认最终状态 |
+| Drain | 停止接收新工作，同时让已接收工作结束或到达可恢复状态 |
+| Close | 停止 listeners 接收连接，drain operations，反序关闭 Modules，清理 listeners，最后释放 State Root lease |
 
 Client disconnect 只释放 connection-scoped resources，不取消已经 admission 的 execution。
 
-### 本地 ephemeral upgrade handoff
+### 本地 Ephemeral Host 的升级交接
 
-Host Generation 与 protocol compatibility 是两个事实：两个 build 即使使用相同 protocol，也可能必须替换进程，才能让新版 Runtime code 成为 authority。本地 owner Client 可以针对精确 Host Epoch 请求 drain。Kernel 继续使用正常 drain 路径，successor 则等待现有 owner lock 释放。
+Host Generation 与 protocol compatibility 是两个事实：两个本地 Client generation 即使使用相同 protocol，也可能请求替换进程，让所请求的 Runtime generation 成为 authority。本地 owner Client 请求 drain 时必须带上自己观察到的 Host Epoch，因此过期 Client 无法 drain 后来启动的替代进程。下一个 Host 会等待现有 State Root lease 释放。
 
-Startup 发现另一个 generation 时，Host 可以返回 connection、operation 与 residency category 的 bounded activity count。这些事实用于解释进程为什么仍在驻留，并不授予 termination authority。只有本地 ephemeral Host 支持 takeover。Service Host 会明确发布自己的 lifecycle，并可被不同 Client generation 连接；升级由 deployment owner 协调。
+Startup 发现另一个 generation 时，Host 可以返回数量受限的 active connections、operations 与 residencies。这些数量用于解释进程为什么仍然存活，不允许 Client 直接杀死它。只有本地 ephemeral Host 支持 replacement，中断 active work 必须经过 Client 的明确选择；Service Host 的升级仍由 deployment owner 负责。等待中的 Client 会停止连接尝试，直到所观察的 Host 退出，因此等待本身不会让原本应 idle exit 的 Host 继续驻留。
 
-选择等待后，Client 会停止连接尝试，直到所观察的 Host 进程退出。因此，等待本身不会让本应进入 idle exit 的 Host 继续驻留。
-
-对于 ephemeral Host，更新准备会把用户是否允许中断的选择传给 Host。Kernel 在同一个决策点检查现有工作并关闭 admission，然后进入正常 drain。对于 service Host，Desktop 只暂停自己的 reconnect，不会 drain 由部署系统拥有的 Host。安装被拒绝时，Desktop 恢复 reconnect。
-
-## 核心不变量
+## 必须始终成立的规则
 
 1. 一个 State Root 最多有一个 writer owner。
 2. 一个 Session 最多有一个 root Hosted Execution 或 pending root admission。
-3. Local IPC 与 WebSocket 共享一个 dispatcher、authority model 与 canonical state。
-4. Transport 拥有 framing 与 authentication，不拥有 Domain state。
-5. Composition 在启动前固定。
-6. 一个 protocol operation 只有一个 Module owner。
-7. Notification 只是提示；Store 才是 recovery authority。
+3. Local IPC 与 WebSocket 共享一个 routing table、permission model 与 canonical state。
+4. Transport 只负责 message framing 与 authentication，不拥有业务状态。
+5. Composition identity 在 listener 启动前固定，Module set 在 Ready 前固定。
+6. 一个业务操作只有一个 Module owner；进程与 access operations 仍由 Kernel 拥有。
+7. Notification 与 stream 不能替代 Store 成为 recovery authority。
 8. Provider dispatch 等待 Run Composition durable commit。
 9. Domain lifecycle 与 execution lifecycle 保持分离。
 10. 一个 owner 关闭失败时，shutdown 仍继续关闭其余 owner。
 11. 只有 Runtime Host 能把 `WorkspaceTarget` 解析为 canonical Host path。
+12. Client-local capability execution 不会把 Runtime ownership 转移出 Host。
+13. Stream 中断后，Client 从 canonical snapshot 重建 observation。
 
 ## 失败如何收敛
 
 | 失败 | 必须遵守的行为 |
 |---|---|
-| Composition mismatch | 在 listener 或 Domain Store mutation 前失败，不能进入 Candidate spawn loop |
-| Host crash | Successor 重新读取 Store，幂等 reconcile execution 与 Domain state |
+| Composition mismatch | 在 listener 或 Domain Store mutation 前失败；报告终态 incompatibility，不重复启动 Candidate |
+| Host crash | 下一个 Host 重读 Stores，并安全地重复 recovery，直到 execution 与 Domain state 收敛 |
 | Notification 丢失 | 重读 canonical projection，不能从 callback delivery 推断 terminal state |
+| Session stream 丢失 | 重新打开 subscription，并重读 snapshot 与 transcript |
 | Run Composition 失败 | 不调用 provider |
 | Client disconnect | 已 admission 的工作继续由 Host 持有 |
+| Client Capability 丢失 | 暴露有界的 capability-loss 或 outcome-unknown state，不静默重试结果不确定的 effect |
 | Partial shutdown failure | 聚合错误，同时继续释放其余 resources |
 
-Runtime Host 不承诺任意 external side effect 的 exactly-once。具体 Tool 或 resource owner 必须报告 observed outcome、unknown outcome 或明确的 recovery result。
+Runtime Host 不保证任意 external side effect 恰好发生一次。如果 connection 在 dispatch 后丢失，Host 可能只能确认 outcome unknown。Tool 或 resource contract 必须保留这种不确定性；除非 operation 明确允许，否则不能自动重试。
 
 ## 协议与安全边界
 
-- Protocol message 使用 closed schema、bounded input/output 与 typed errors。
+- Protocol message 使用拒绝未知字段的 closed schema、明确的大小与数量限制，以及稳定的 error code。
 - Authentication 在 protocol connection admission 前完成。
-- Connection authority 固定 principal、operation grants 与 path/capability access。
+- Authentication 会在 connection 的整个生命周期内固定 principal、允许的 operations，以及 path 或 capability access。
+- Client Capability offers 与 reverse calls 必须经过认证、带大小限制，并绑定到该 connection。
 - 新增 protocol operation 不会扩张既有 credential grant。
 - Status 与 diagnostics 只公开 bounded、redacted 的 lifecycle 与 composition facts。
 
@@ -191,25 +274,14 @@ Runtime Host 不承诺任意 external side effect 的 exactly-once。具体 Tool
 
 - [`host-kernel.ts`](../../packages/runtime-host/src/server/host-kernel.ts)：process ownership、listeners、connection lifecycle、drain 与 shutdown
 - [`host-composition.ts`](../../packages/runtime-host/src/server/host-composition.ts)：composition identity、Module contract、recovery 与 close order
+- [`execution-composition.ts`](../../packages/runtime-host/src/server/execution-composition.ts)：静态 coordinator 与 Module assembly
 - [`hosted-execution-authority.ts`](../../packages/runtime-host/src/server/hosted-execution-authority.ts)：root execution contract
+- [`session-continuity-coordinator.ts`](../../packages/runtime-host/src/server/session-continuity-coordinator.ts)：canonical Client observation 与 live stream continuity
+- [`client-capability-coordinator.ts`](../../packages/runtime-host/src/server/client-capability-coordinator.ts)：capability publication、binding 与 reverse-call lifecycle
 - [`workspace-resolver.ts`](../../packages/runtime-host/src/server/workspace-resolver.ts)：Project 与 Host-path workspace resolution
 - [`run-composition.ts`](../../packages/core/src/run-composition.ts)：durable Run Composition schema
 - [`state-root-composition.ts`](../../packages/storage/src/state-root-composition.ts)：persistent Composition binding
 
-## 验证契约
-
-修改这些边界时，应保留以下测试：
-
-- State Root ownership 与 Composition binding；
-- Local IPC/WebSocket state sharing、authentication 与 listener rollback；
-- unique handler ownership、phased recovery、reverse close 与 aggregate failure；
-- Hosted Execution admission、stop、settlement 与 restart recovery；
-- immutable Run Composition commit 与 pre-dispatch fail-closed；
-- Client disconnect、drain 与 crash recovery 的端到端行为。
-- 无 Host-path authority 时使用 Project workspace，并拒绝未授权 Host path。
-
-跨越这些边界的改动仍须通过全仓 format、lint、typecheck 与 tests。
-
 ## 小结
 
-Runtime Host 只保留一套 ownership：Kernel 拥有 process，Composition 拥有 assembly，Modules 拥有 business lifecycle，Hosted Execution 拥有 execution lifecycle，Run Composer 拥有 provider-dispatch basis。Durable Stores 让这些生命周期在进程重启后继续收敛。
+Runtime Host 只保留一条 ownership path：Kernel 控制 process；Composition 创建一组固定 Modules；Modules 拥有业务行为，Hosted Execution 控制顶层工作；Run Composer 记录模型看到的内容，Session Continuity 重建 Client 看到的内容，Client Capability 则允许 Host 对 Client 发起受限回调。Durable Stores 让这些组件在进程重启后恢复，而不产生第二个 Runtime owner。
