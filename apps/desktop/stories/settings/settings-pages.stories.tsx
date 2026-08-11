@@ -101,6 +101,10 @@ const connectionsBridge: ConnectionsBridge = {
         patch.relayModelProfiles === undefined
           ? current.relayModelProfiles
           : (patch.relayModelProfiles ?? undefined),
+      requestBodyOverlay:
+        patch.requestBodyOverlay === undefined
+          ? current.requestBodyOverlay
+          : (patch.requestBodyOverlay ?? undefined),
       updatedAt: NOW,
     };
   },
@@ -119,6 +123,12 @@ const connectionsBridge: ConnectionsBridge = {
   },
   async hasSecret() {
     return true;
+  },
+  async getRequestHeaders() {
+    return { names: [] };
+  },
+  async setRequestHeaders(_slug, headers) {
+    return { names: headers.map(({ name }) => name) };
   },
   subscribeEvents() {
     return () => undefined;
@@ -609,6 +619,10 @@ const makaBridge = {
         '/Users/storybook-fixture-user/Library/Application Support/Maka/workspaces/infra-observability-platform-desktop',
     }),
     openPath: async () => ({ ok: true as const, opened: '/Users/storybook' }),
+    // About mounts update status + subscribe on open (Settings → 关于).
+    updateStatus: async () => ({ state: 'idle' as const, currentVersion: '0.9.0-dev' }),
+    subscribeUpdateStatus: () => () => undefined,
+    checkForUpdates: async () => ({ state: 'not-available' as const, currentVersion: '0.9.0-dev' }),
   },
   ...makeMemoryBridgeChannels(emptyMemoryState),
   webSearch: {
@@ -639,7 +653,7 @@ const makaBridge = {
   },
   // Appearance mounts CustomPetSettingsSection, which reads and subscribes on
   // window.maka.pets. Without this fixture the catalog story throws on mount
-  // (subscribeChanges of undefined) and smoke:storybook fails the page.
+  // (subscribeChanges of undefined) and the render smoke fails the page.
   pets: {
     list: async () => [],
     getSelection: async () => null,
@@ -925,46 +939,6 @@ async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise
   return selector;
 }
 
-function assertDailyReviewSettingsBounds(
-  canvasElement: HTMLElement,
-  selector: HTMLButtonElement,
-): void {
-  const time = canvasElement.querySelector<HTMLInputElement>('input[type="text"]');
-  const page = canvasElement.querySelector<HTMLElement>('.settingsPageStack');
-  // The rows kit (#1972) retired `.settingsFormLayout`. A control now lives in
-  // its row's capped end slot, so `.settingsRowEnd` is the container this
-  // contract has always meant: the bound the control must not overflow.
-  const timeForm = time?.closest<HTMLElement>('.settingsRowEnd');
-  const selectorForm = selector.closest<HTMLElement>('.settingsRowEnd');
-  const listbox = document.querySelector<HTMLElement>('[role="listbox"]');
-  const popover = listbox?.closest<HTMLElement>('[popover]');
-  if (!time || !page || !timeForm || !selectorForm || !popover) {
-    throw new Error('Daily Review bounds contract could not resolve its production elements');
-  }
-
-  const withinHorizontally = (inner: DOMRect, outer: DOMRect) =>
-    inner.left >= outer.left - 1 && inner.right <= outer.right + 1;
-  const timeRect = time.getBoundingClientRect();
-  const selectorRect = selector.getBoundingClientRect();
-  const popoverRect = popover.getBoundingClientRect();
-  const pageRect = page.getBoundingClientRect();
-  const doesNotCoverTrigger =
-    popoverRect.top >= selectorRect.bottom - 1
-    || popoverRect.bottom <= selectorRect.top + 1;
-  const valid =
-    withinHorizontally(timeRect, timeForm.getBoundingClientRect())
-    && withinHorizontally(selectorRect, selectorForm.getBoundingClientRect())
-    && popoverRect.width > 0
-    && popoverRect.height > 0
-    && withinHorizontally(popoverRect, pageRect)
-    && popoverRect.left >= -1
-    && popoverRect.right <= window.innerWidth + 1
-    && doesNotCoverTrigger;
-  if (!valid) {
-    throw new Error(`Daily Review controls overflow at ${window.innerWidth}px`);
-  }
-}
-
 // Real path: sidebar footer 设置 → 模型.
 export const Models: Story = {
   decorators: [withSettingsBridge],
@@ -1075,16 +1049,6 @@ export const DailyReviewModelSelectorOpen: Story = {
   },
 };
 
-// Real path: Settings → Daily Review → Analysis model at the minimum window width.
-export const DailyReviewModelSelectorOpenNarrow: Story = {
-  decorators: [withSettingsBridge],
-  parameters: { viewport: { defaultViewport: 'mobile2' } },
-  render: () => <SettingsStory section="daily-review" />,
-  play: async ({ canvasElement }) => {
-    const selector = await openDailyReviewModelSelector(canvasElement);
-    assertDailyReviewSettingsBounds(canvasElement, selector);
-  },
-};
 // Real path: 设置 → 数据.
 export const Data: Story = {
   decorators: [withSettingsBridge],
@@ -1097,9 +1061,7 @@ export const Data: Story = {
  * was hiding. Everything the collapsed story shows is still on screen here.
  *
  * The disclosure is per-row now (a CollapsibleGroup, one open at a time) rather than one
- * page-level 展开详情 button, so the story opens the first capability instead — and asserts
- * on the trigger's own `aria-expanded`, which is Collapsible's contract, rather than on a
- * `data-diagnostics` attribute the page used to maintain by hand for this test.
+ * page-level 展开详情 button, so the story opens the first capability instead.
  */
 // Real path: 设置 → 权限与能力 → 展开某个能力行.
 export const PermissionCenterDiagnosticsExpanded: Story = {

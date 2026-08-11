@@ -14,8 +14,8 @@ import type { SynthesisCacheWriteInput } from '../ai-sdk-compaction-contract.js'
 /**
  * A faithful in-memory stand-in for `@maka/storage`'s `ArtifactStore`. The glue
  * is typed against the structural artifact-store contract, so runtime can be
- * tested without depending on `@maka/storage`; the real store is exercised
- * end-to-end by the desktop app and the headless Harbor smoke.
+ * tested without depending on `@maka/storage`; the real store is exercised by
+ * host integration tests.
  */
 class FakeArtifactStore {
   private readonly records: ArtifactRecord[] = [];

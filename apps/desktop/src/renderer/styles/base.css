@@ -57,6 +57,20 @@ button {
       border-color var(--duration-base) var(--ease-out-strong),
       color var(--duration-base) var(--ease-out-strong);
   }
+/* Real users' OS-level setting, one global rule (DESIGN.md §10 adjacent:
+     motion is feedback, and a user who asked for less of it gets less of it
+     everywhere, not only where a file remembered to opt out). Kept identical
+     to the fixture-attribute block below so the two variants cannot drift. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 /* PR-IR-04: Test-fixture-driven reduced-motion variant (per
      the reduced-motion contract tests). Mirrors `prefers-reduced-motion: reduce`
      via an attribute on `<html>` so e2e-fixture renders can exercise a
@@ -88,3 +102,36 @@ button {
     transition-duration: 0.01ms !important;
     caret-color: transparent !important;
   }
+
+/* One scrollbar for the whole app (visual system 2.0 T5-F). Both reference
+   systems converged on the same recipe: a slim pill inset in a transparent
+   gutter, one step darker on hover, no painted track. The 2px transparent
+   border + content-box clip turns the 10px hit area into a 6px pill. The
+   few surfaces that hide or thin their own bars are more specific and keep
+   winning. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  /* One step above --border-strong's 16%, scoped to the thumb only. */
+  background-color: oklch(from var(--foreground) l c h / 0.28);
+}

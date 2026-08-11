@@ -52,6 +52,7 @@ export type {
   RuntimePolicyOperationCoordinator,
   RuntimePolicyOperationSecretMaterial,
   ResolveExecutionConnectionResult,
+  ReplaceConnectionRequestHeadersResult,
   ResolveNetworkProxyExecutionInput,
   ResolveNetworkProxyExecutionResult,
   ResolveWebSearchExecutionInput,
@@ -208,6 +209,10 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
     },
     operations: {
       exportCredentialMaterial: (locator) => coordinator.exportCredentialMaterial(locator),
+      getConnectionRequestHeaders: (connectionId) =>
+        coordinator.getConnectionRequestHeaders(connectionId),
+      replaceConnectionRequestHeaders: (connectionId, updates) =>
+        coordinator.replaceConnectionRequestHeaders(connectionId, updates),
       resolveExecutionConnection: (connectionSlug) =>
         coordinator.resolveExecutionConnection(connectionSlug),
       resolveWebSearchExecution: (input) => coordinator.resolveWebSearchExecution(input),

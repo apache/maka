@@ -134,6 +134,35 @@ export function renderObservationText(
   const query = observation.query ?? '';
   const shown = query ? matching(window, query) : window;
   const lines: string[] = [header(observation, window.length, query, shown.length)];
+  if (
+    observation.renderDifference === true &&
+    observation.difference &&
+    observation.difference.presentation !== 'full'
+  ) {
+    const difference = observation.difference;
+    if (difference.presentation === 'no-change') {
+      lines.push(
+        `no_change=true(the window has no effective accessibility changes since ${difference.baseObservationId})`,
+      );
+      return lines.join('\n');
+    }
+    if (difference.removedStableIdRanges.length > 0) {
+      lines.push(
+        `removed_element_ids=${difference.removedStableIdRanges
+          .map(({ start, end }) => (start === end ? String(start) : `${start}-${end}`))
+          .join(',')}`,
+      );
+    }
+    const byId = new Map(observation.elements.map((element) => [element.elementId, element]));
+    for (const change of difference.changes) {
+      if (change.kind === 'remove' || change.elementId === undefined) continue;
+      const element = byId.get(change.elementId);
+      if (!element) continue;
+      const depth = Math.max(0, change.path.length - 1);
+      lines.push(`${'\t'.repeat(depth)}change=${change.kind} ${elementLine(element)}`);
+    }
+    return lines.join('\n');
+  }
   for (const [element, depth] of walk(collapseStructuralWrappers(shown, options))) {
     lines.push(`${'\t'.repeat(depth)}${elementLine(element)}`);
   }

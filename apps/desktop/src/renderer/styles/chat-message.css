@@ -23,6 +23,13 @@
   width: 100%;
 }
 
+.maka-chat-message-loading {
+  display: grid;
+  place-items: center;
+  min-height: min(240px, 40vh);
+  padding: var(--space-6);
+}
+
 /* Astryx's ChatMessageList renders a `flex: 1` spacer before its rows so a
    short conversation sits on the composer instead of hanging from the top.
    That spacer is unconditional, so on the empty surface it splits the column
@@ -47,14 +54,26 @@
   font: var(--maka-text-body);
 }
 
-/* Geometry (radius, padding, max-width) belongs to ChatMessageBubble: under
-   `density="compact"` it resolves --radius-container plus the compact padding
-   step, so re-declaring them here only forked the primitive. What stays is the
-   product tint and the verbatim-text rule — Maka renders user input as typed,
-   which the primitive has no opinion about. */
+/* Padding and max-width belong to ChatMessageBubble; re-declaring those here
+   only forks the primitive. What stays is the product tint, the verbatim-text
+   rule (Maka renders user input as typed, which the primitive has no opinion
+   about) — and, since Visual System 2.0 (T3), the radius TIER.
+
+   The primitive resolves `--radius-container` (12px). DESIGN.md §6 assigns
+   radius by box height, and container is scoped to "modals, panels, portal
+   surfaces" — a message bubble is none of those. Measured in the chat fixture
+   the filled user bubble is 44px tall, which lands it in the card tier (10px,
+   "cards, rows-as-cards, list containers"). Astryx publishes no radius prop on
+   this component (only `variant`), so the tier is expressed on Maka's own
+   class rather than by reaching into the primitive's internals.
+
+   Scoped to the filled bubble on purpose: the assistant bubble is `ghost` (no
+   fill, measured transparent), so it has no corner to round and inherits
+   nothing it needs to override. */
 .maka-chat-message-bubble-user {
   background: var(--chat-user-bg);
   color: var(--chat-user-foreground, var(--foreground));
+  border-radius: var(--radius-surface);
   white-space: pre-wrap;
 }
 
@@ -71,10 +90,48 @@
   gap: var(--space-1);
 }
 
+/* Expanded activity headers stay reachable while their own detail is being
+   read. Native sticky positioning keeps the header in the transcript flow,
+   so it leaves naturally at the card boundary and does not disturb ChatLayout
+   scroll anchoring while reasoning or tool output continues to stream. */
+.maka-turn :is(.maka-deep-thinking, .maka-tool-activity-card) {
+  --maka-activity-sticky-top: var(--space-2);
+  --maka-activity-header-height: var(--h-control-sm);
+}
+
+.maka-turn .maka-activity-card-header[aria-expanded="true"],
+.maka-turn .maka-tool-activity-card [role="button"][aria-expanded="true"] {
+  position: sticky;
+  top: var(--maka-activity-sticky-top);
+  z-index: var(--z-sticky);
+  background: var(--surface-raised);
+  border-radius: var(--radius-element);
+  box-shadow: 0 var(--border-width-hairline) 0 var(--border-soft);
+}
+
+/* A call detail inside an expanded tool group forms a second, bounded sticky
+   tier. The group remains available to collapse the whole run; the lower row
+   collapses only the detail currently being read.
+   Stock ChatToolCalls uses role=button on call rows (no data-slot patch). */
+.maka-turn
+  .maka-tool-activity-card
+  > [role="button"][aria-expanded="true"]
+  ~ div
+  [role="button"][aria-expanded="true"] {
+  top: calc(var(--maka-activity-sticky-top) + var(--maka-activity-header-height));
+}
+
+/* Astryx clips the animated group body with overflow:hidden. `clip` preserves
+   that visual boundary without becoming a scroll ancestor that captures the
+   nested sticky row. */
+.maka-turn .maka-tool-activity-card > [role="button"] + div > div {
+  overflow: clip;
+}
+
 /* Cursor for tool/reasoning disclosure triggers is owned by
    styles/native-cursor.css (role=button + default !important). */
 
-.maka-turn .astryx-chat-tool-calls :is([role="button"], [data-slot="chat-tool-call-row"]) > span:nth-child(2) {
+.maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
   font: var(--maka-text-label);
 }
 
@@ -101,7 +158,7 @@
    the rule enlarged the leading icon wrapper and left the reasoning text at
    supporting size — the one row the retune was for. */
 .maka-turn .astryx-chat-reasoning [role="button"],
-.maka-turn .astryx-chat-tool-calls :is([role="button"], [data-slot="chat-tool-call-row"]) {
+.maka-turn .astryx-chat-tool-calls [role="button"] {
   --text-supporting-size: var(--text-body-size);
   --text-supporting-leading: var(--maka-line-body);
 }
@@ -127,7 +184,7 @@
 @media (hover: hover) {
   .maka-turn .astryx-chat-tool-calls [role="button"]:hover,
   .maka-turn .astryx-chat-reasoning [role="button"]:hover {
-    background-color: var(--color-overlay-hover);
+    background-color: var(--foreground-5);
     border-radius: var(--radius-element);
   }
 }
@@ -136,11 +193,12 @@
 
    The Astryx duration/ease below are deliberate, not a leak of the product
    scale. Astryx ChatToolCalls animates its own group open with
-   `grid-template-rows --duration-medium --ease-standard`; a detail row that
+   `grid-template-rows --duration-medium` and its own easing; a detail row that
    expands beside one has to share that clock or the two disclosures visibly
    desync. Product motion belongs on the maka-tokens scale — this is the
    exception that follows a neighbouring Astryx component, so retune it only
-   when ChatToolCalls moves. */
+   when ChatToolCalls moves. Astryx exports --duration-medium as a CSS var but
+   not its easing, so the curve is copied by value. */
 @keyframes maka-chat-tool-detail-open {
   from { grid-template-rows: 0fr; }
   to { grid-template-rows: 1fr; }
@@ -149,7 +207,7 @@
 .maka-chat-tool-detail {
   display: grid;
   grid-template-rows: 1fr;
-  animation: maka-chat-tool-detail-open var(--duration-medium, 300ms) var(--ease-standard, cubic-bezier(0.24, 1, 0.4, 1)) both;
+  animation: maka-chat-tool-detail-open var(--duration-medium, 300ms) cubic-bezier(0.24, 1, 0.4, 1) both;
 }
 
 .maka-chat-tool-detail-inner {

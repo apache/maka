@@ -17,6 +17,11 @@ export interface MakaSessionMoveResult {
   oldCwdDirty?: boolean;
 }
 
+export interface MakaSessionSwitchOptions {
+  /** Explicitly relocate the durable Session cwd before attaching to it. */
+  relocateCwd?: string;
+}
+
 export type InspectCwdChanges = (cwd: string) => Promise<boolean | undefined>;
 
 export interface RewindTarget {
@@ -28,6 +33,7 @@ export interface MakaSessionSwitchResult {
   summary: SessionSummary;
   messages: StoredMessage[];
   activeTurn?: MakaPreparedSessionTurn;
+  relocation?: MakaSessionMoveResult;
 }
 
 export interface MakaSessionRewindResult extends MakaSessionSwitchResult {
@@ -83,7 +89,10 @@ export interface MakaSessionDriver {
   setOrchestrationMode?(mode: OrchestrationMode): Promise<void>;
   renameSession(name: string): Promise<string | void>;
   moveSession?(cwd: string): Promise<MakaSessionMoveResult>;
-  switchSession(sessionId: string): Promise<MakaSessionSwitchResult>;
+  switchSession(
+    sessionId: string,
+    options?: MakaSessionSwitchOptions,
+  ): Promise<MakaSessionSwitchResult>;
   listRewindTargets(): Promise<RewindTarget[]>;
   rewindToTurn(turnId: string): Promise<MakaSessionRewindResult>;
   subscribeStartedTurns?(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
@@ -91,7 +100,12 @@ export interface MakaSessionDriver {
     listener: (sessionId: string, requestId: string) => void,
   ): () => void;
   subscribeTranscriptReplacements?(
-    listener: (sessionId: string, turnId: string, messages: StoredMessage[]) => void,
+    listener: (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void,
   ): () => void;
   startNewSession(): void;
   stop(): Promise<void>;
@@ -100,6 +114,8 @@ export interface MakaSessionDriver {
   getOrchestrationMode?(): OrchestrationMode;
   getPermissionMode?(): PermissionMode;
 }
+
+export type MakaTranscriptReplacementReason = 'terminal' | 'reconnect';
 
 export type SessionResumeAvailability = { available: true } | { available: false; reason: string };
 

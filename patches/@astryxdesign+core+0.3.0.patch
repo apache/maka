@@ -1,24 +1,21 @@
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
-index ff34874..06c600a 100644
+index ff34874..0a15599 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
-@@ -69,6 +69,14 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
+@@ -69,6 +69,11 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
       * @default 'balanced'
       */
      density?: Density;
 +    /**
-+     * Per-conversation identity for hosts that switch conversations in place
-+     * without remounting the layout. When the value changes, ChatLayout
-+     * re-locks the scroll ("pinned at bottom") and resets the new-message
-+     * baseline, so the first message of the new conversation is not flagged
-+     * as unread and the previous conversation's state does not leak over.
++     * Per-conversation identity for hosts that switch conversations in place.
++     * Resets scroll and unread state without remounting composer content.
 +     */
 +    conversationKey?: string | number;
  }
  export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ea27cd5..6daf0d8 100644
+index ea27cd5..856556c 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 @@ -28,7 +28,7 @@
@@ -38,26 +35,15 @@ index ea27cd5..6daf0d8 100644
    ref,
    ...rest
  }) {
-@@ -211,6 +212,31 @@ export function ChatLayout({
+@@ -211,6 +212,20 @@ export function ChatLayout({
      isLocked: scroll.isLocked,
      onResize: scroll.scrollIfLocked
    });
-+  // #2205: once auto-follow re-locks (scrollend settled within the lock
-+  // threshold, i.e. the user is back at the bottom), the "New messages"
-+  // indicator is stale: hasNewMessages only clears via the button's
-+  // dismiss(), so scrolling back down kept the label visible. Clearing on
-+  // every lock transition makes "at bottom" the authority for the badge.
 +  useEffect(() => {
 +    if (scroll.isLocked) {
 +      newMsgs.dismiss();
 +    }
 +  }, [scroll.isLocked, newMsgs.dismiss]);
-+  // #2205: a conversation switch must reset the scroll lock and the
-+  // new-message baseline without remounting the layout — a remount would
-+  // drop an in-progress composer draft. Hosts pass a per-conversation key;
-+  // when it changes, re-lock to "pinned at bottom" semantics and clear the
-+  // previous conversation's flag and last-message baseline, so the first
-+  // message of the new conversation is recorded, not flagged as unread.
 +  const conversationKeyRef = useRef(conversationKey);
 +  useEffect(() => {
 +    if (conversationKey === conversationKeyRef.current) {
@@ -70,159 +56,35 @@ index ea27cd5..6daf0d8 100644
    const defaultScrollButton = /*#__PURE__*/_jsx(ChatLayoutScrollButton, {
      isVisible: scroll.isScrolledUp || newMsgs.hasNewMessages,
      label: newMsgs.hasNewMessages ? t('@astryx.chatLayout.newMessages') : undefined,
-diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.d.ts
-index 7bece68..94b8001 100644
---- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.d.ts
-+++ b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.d.ts
-@@ -45,6 +45,10 @@ export interface ChatToolCallItem {
-     data?: unknown;
-     /** Inline detail content shown when the row is expanded (e.g. code diff, command output). */
-     resultDetail?: ReactNode;
-+    /** Activate the row itself instead of expanding resultDetail. */
-+    onActivate?: () => void;
-+    /** Accessible name for an activatable row. */
-+    activateLabel?: string;
- }
- export interface ChatToolCallsProps extends BaseProps<HTMLDivElement> {
-     ref?: React.Ref<HTMLDivElement>;
-@@ -52,6 +56,15 @@ export interface ChatToolCallsProps extends BaseProps<HTMLDivElement> {
-     calls: ChatToolCallItem[];
-     /** Custom summary label for groups. Auto-generated from count if omitted. */
-     label?: string;
-+    /**
-+     * Group-level lines added, rendered in green on the COLLAPSED header. The
-+     * header projects the latest call's name and target only, so a group's
-+     * per-call `additions` are invisible until it is expanded; this is the
-+     * slot for a summary across the whole group.
-+     */
-+    additions?: number;
-+    /** Group-level lines removed, rendered in red on the collapsed header. */
-+    deletions?: number;
-     /** Whether the group is expanded. Uncontrolled by default. */
-     isExpanded?: boolean;
-     /** Default expanded state. @default true for ≤3 calls, false for >3. */
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
-index 791909e..febce87 100644
+index 791909e..9d4aa32 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
-@@ -107,20 +107,24 @@ function CallRow({
- }) {
-   const t = useTranslator();
-   const status = call.status ?? 'complete';
-+  const hasActivation = call.onActivate != null;
-   const hasDetail = call.resultDetail != null;
-+  const interactive = hasActivation || hasDetail;
-   const [isDetailOpen, setIsDetailOpen] = useState(false);
-   const detailId = useId();
-   const toggleDetail = hasDetail ? () => setIsDetailOpen(prev => !prev) : undefined;
-+  const activate = hasActivation ? call.onActivate : toggleDetail;
+@@ -114,6 +114,7 @@ function CallRow({
    const row = /*#__PURE__*/_jsxs("div", {
--    role: hasDetail ? 'button' : undefined,
--    tabIndex: hasDetail ? 0 : undefined,
--    "aria-expanded": hasDetail ? isDetailOpen : undefined,
--    "aria-controls": hasDetail && isDetailOpen ? detailId : undefined,
--    onClick: toggleDetail,
--    onKeyDown: hasDetail ? e => {
-+    role: interactive ? 'button' : undefined,
-+    tabIndex: interactive ? 0 : undefined,
+     role: hasDetail ? 'button' : undefined,
+     tabIndex: hasDetail ? 0 : undefined,
 +    "data-slot": "chat-tool-call-row",
-+    "aria-expanded": !hasActivation && hasDetail ? isDetailOpen : undefined,
-+    "aria-controls": !hasActivation && hasDetail && isDetailOpen ? detailId : undefined,
-+    onClick: activate,
-+    onKeyDown: interactive ? e => {
-       if (e.key === 'Enter' || e.key === ' ') {
-         e.preventDefault();
--        toggleDetail?.();
-+        activate?.();
-       }
-     } : undefined,
-     ...{
-@@ -130,7 +134,7 @@ function CallRow({
-       1: {
-         className: "x78zum5 x6s0dn4 x1s4dlld xjwf9q1 x13f7esw x1ypdohk xh6dtrn x7a5moj xtedp8i xe9uy6x"
-       }
--    }[!!hasDetail << 0],
-+    }[!!interactive << 0],
-     children: [/*#__PURE__*/_jsxs("span", {
-       title: status === 'error' ? call.errorMessage : undefined,
-       ...stylex.props(styles.statusIcon, STATUS_STYLES[status]),
-@@ -200,7 +204,7 @@ function CallRow({
-         className: "x141an7d x1ltkj2j x9ynric xnbbluu xuxw1ft x2lah0s"
-       },
-       children: call.duration
--    }), hasDetail && /*#__PURE__*/_jsx("span", {
-+    }), hasDetail && !hasActivation && /*#__PURE__*/_jsx("span", {
-       ...{
-         0: {
-           className: "x3nfvp2 x6s0dn4 xl56j7k x2lah0s x6jxa94 x1v9usgg xnbbluu x1ob6yzd x9kvfbb xvc5jky"
-@@ -214,9 +218,11 @@ function CallRow({
-         size: "xsm",
-         color: "inherit"
-       })
-+    }), hasActivation && call.activateLabel != null && /*#__PURE__*/_jsx(VisuallyHidden, {
-+      children: call.activateLabel
-     })]
-   });
--  if (!hasDetail) {
-+  if (hasActivation || !hasDetail) {
-     return row;
-   }
-   return /*#__PURE__*/_jsxs("div", {
-@@ -260,6 +266,8 @@ export function ChatToolCalls(props) {
-   const {
-     calls,
-     label: _customLabel,
-+    additions: groupAdditions,
-+    deletions: groupDeletions,
-     isExpanded: controlledExpanded,
-     defaultIsExpanded,
-     onExpandedChange,
-@@ -378,7 +386,17 @@ export function ChatToolCalls(props) {
-           className: "x3nfvp2 x6s0dn4 x1lsbc85 x141an7d x1ltkj2j x9ynric xnbbluu x2lah0s"
-         },
-         children: !isExpanded && /*#__PURE__*/_jsxs(_Fragment, {
--          children: [/*#__PURE__*/_jsx(Icon, {
-+          children: [groupAdditions != null && /*#__PURE__*/_jsxs("span", {
-+            ...{
-+              className: "xtjic6"
-+            },
-+            children: ["+", groupAdditions]
-+          }), groupDeletions != null && /*#__PURE__*/_jsxs("span", {
-+            ...{
-+              className: "xjt36v0"
-+            },
-+            children: ["-", groupDeletions]
-+          }), /*#__PURE__*/_jsx(Icon, {
-             icon: "wrench",
-             size: "xsm",
-             color: "inherit"
+     "aria-expanded": hasDetail ? isDetailOpen : undefined,
+     "aria-controls": hasDetail && isDetailOpen ? detailId : undefined,
+     onClick: toggleDetail,
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
-index 8c509bc..f108f3b 100644
+index 8c509bc..e86d673 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
-@@ -49,6 +49,13 @@ export function useChatNewMessages({
+@@ -49,6 +49,8 @@ export function useChatNewMessages({
    const elementRef = useRef(null);
    const cleanupRef = useRef(null);
    const attach = useCallback(el => {
-+    // #2205: a fresh content element means a fresh transcript (e.g. a host
-+    // that remounts the message container per conversation). Reset the
-+    // baseline so the first resize of the new content is recorded as the
-+    // new last message, not flagged as unread — only growth while unlocked
-+    // after this point is "new messages".
 +    lastMessageRef.current = null;
 +    setHasNewMessages(false);
      observeResize(el, () => {
        onResizeRef.current?.();
        const messages = el.getElementsByClassName('astryx-chat-message');
-@@ -90,9 +97,19 @@ export function useChatNewMessages({
+@@ -90,9 +92,14 @@ export function useChatNewMessages({
    const dismiss = useCallback(() => {
      setHasNewMessages(false);
    }, []);
-+  // #2205: full baseline reset for a new conversation — clears the flag and
-+  // forgets the previous conversation's last message, so the next message
-+  // observed is recorded as the baseline rather than flagged as unread.
-+  // Used by ChatLayout when `conversationKey` changes (hosts that switch
-+  // conversations in place without remounting the layout).
 +  const reset = useCallback(() => {
 +    lastMessageRef.current = null;
 +    setHasNewMessages(false);
@@ -234,12 +96,11 @@ index 8c509bc..f108f3b 100644
      contentRef
    };
  }
-\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js b/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
-index 33ed78d..195a427 100644
+index 33ed78d..44c6ad0 100644
 --- a/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
 +++ b/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
-@@ -111,7 +111,13 @@ function detectMac() {
+@@ -111,7 +111,10 @@ function detectMac() {
    // Prefer User-Agent Client Hints API (not deprecated)
    const uaData = 'userAgentData' in navigator ? navigator.userAgentData : null;
    if (uaData && typeof uaData === 'object' && 'platform' in uaData) {
@@ -248,14 +109,11 @@ index 33ed78d..195a427 100644
 +    if (uaPlatform.trim().length > 0) {
 +      return /mac/i.test(uaPlatform);
 +    }
-+    // Blank UA-CH platform: Electron bundles with a rewritten identity ship
-+    // '' (and empty brands). Treat it as absent and fall through to
-+    // navigator.platform instead of reading it as "not Apple".
    }
    // Fallback: navigator.platform (deprecated but still shipped everywhere)
    return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
 diff --git a/node_modules/@astryxdesign/core/dist/List/List.js b/node_modules/@astryxdesign/core/dist/List/List.js
-index 08b5f7d..94c623b 100644
+index 08b5f7d..5fc3c63 100644
 --- a/node_modules/@astryxdesign/core/dist/List/List.js
 +++ b/node_modules/@astryxdesign/core/dist/List/List.js
 @@ -89,6 +89,7 @@ export function List({
@@ -275,10 +133,10 @@ index 08b5f7d..94c623b 100644
      ...(isOrdered && start != null && start !== 1 ? {
        start
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
-index 65f9278..c2e72d1 100644
+index 65f9278..56f6021 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
 +++ b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
-@@ -54,7 +54,13 @@ function isApplePlatform() {
+@@ -54,7 +54,10 @@ function isApplePlatform() {
    }
    const uaData = 'userAgentData' in navigator ? navigator.userAgentData : null;
    if (uaData && typeof uaData === 'object' && 'platform' in uaData) {
@@ -287,92 +145,18 @@ index 65f9278..c2e72d1 100644
 +    if (uaPlatform.trim().length > 0) {
 +      return /mac/i.test(uaPlatform);
 +    }
-+    // Blank UA-CH platform: Electron bundles with a rewritten identity ship
-+    // '' (and empty brands). Treat it as absent and fall through to
-+    // navigator.platform instead of reading it as "not Apple".
    }
    return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
  }
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
-index 234a2e4..bee69b4 100644
+index 234a2e4..e3f1842 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
-@@ -74,6 +74,10 @@ export interface ChatToolCallItem {
-   data?: unknown;
-   /** Inline detail content shown when the row is expanded (e.g. code diff, command output). */
-   resultDetail?: ReactNode;
-+  /** Activate the row itself instead of expanding resultDetail. */
-+  onActivate?: () => void;
-+  /** Accessible name for an activatable row. */
-+  activateLabel?: string;
- }
-
- export interface ChatToolCallsProps extends BaseProps<HTMLDivElement> {
-@@ -366,32 +370,36 @@ function getToolCallKey(call: ChatToolCallItem): string {
- function CallRow({call}: {call: ChatToolCallItem}) {
-   const t = useTranslator();
-   const status = call.status ?? 'complete';
-+  const hasActivation = call.onActivate != null;
-   const hasDetail = call.resultDetail != null;
-+  const interactive = hasActivation || hasDetail;
-   const [isDetailOpen, setIsDetailOpen] = useState(false);
-   const detailId = useId();
-
-   const toggleDetail = hasDetail
-     ? () => setIsDetailOpen(prev => !prev)
-     : undefined;
-+  const activate = hasActivation ? call.onActivate : toggleDetail;
-
-   const row = (
+@@ -378,6 +378,7 @@ function CallRow({call}: {call: ChatToolCallItem}) {
      <div
--      role={hasDetail ? 'button' : undefined}
--      tabIndex={hasDetail ? 0 : undefined}
--      aria-expanded={hasDetail ? isDetailOpen : undefined}
--      aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
--      onClick={toggleDetail}
-+      role={interactive ? 'button' : undefined}
-+      tabIndex={interactive ? 0 : undefined}
+       role={hasDetail ? 'button' : undefined}
+       tabIndex={hasDetail ? 0 : undefined}
 +      data-slot="chat-tool-call-row"
-+      aria-expanded={!hasActivation && hasDetail ? isDetailOpen : undefined}
-+      aria-controls={!hasActivation && hasDetail && isDetailOpen ? detailId : undefined}
-+      onClick={activate}
-       onKeyDown={
--        hasDetail
-+        interactive
-           ? (e: React.KeyboardEvent) => {
-               if (e.key === 'Enter' || e.key === ' ') {
-                 e.preventDefault();
--                toggleDetail?.();
-+                activate?.();
-               }
-             }
-           : undefined
-       }
--      {...stylex.props(styles.callRow, hasDetail && styles.callRowClickable)}>
-+      {...stylex.props(styles.callRow, interactive && styles.callRowClickable)}>
-       <span
-         title={status === 'error' ? call.errorMessage : undefined}
-         {...stylex.props(styles.statusIcon, STATUS_STYLES[status])}>
-@@ -450,7 +458,7 @@ function CallRow({call}: {call: ChatToolCallItem}) {
-       {call.duration != null && status === 'complete' && (
-         <span {...stylex.props(styles.callDuration)}>{call.duration}</span>
-       )}
--      {hasDetail && (
-+      {hasDetail && !hasActivation && (
-         <span
-           {...stylex.props(
-             styles.callDetailChevron,
-@@ -459,9 +467,12 @@ function CallRow({call}: {call: ChatToolCallItem}) {
-           <Icon icon="chevronDown" size="xsm" color="inherit" />
-         </span>
-       )}
-+      {hasActivation && call.activateLabel != null && (
-+        <VisuallyHidden>{call.activateLabel}</VisuallyHidden>
-+      )}
-     </div>
-   );
-
--  if (!hasDetail) {
-+  if (hasActivation || !hasDetail) {
-     return row;
-   }
+       aria-expanded={hasDetail ? isDetailOpen : undefined}
+       aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
+       onClick={toggleDetail}

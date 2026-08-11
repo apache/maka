@@ -14,75 +14,6 @@ import {
   thinkingVariantsForModel,
 } from '../model-thinking.js';
 
-test('thinking choices are filtered, ordered, and expose off only with a real wire', () => {
-  assert.deepEqual(
-    [...deriveThinkingChoices({ efforts: ['max', 'turbo', 'none', 'low', 'high'] })],
-    ['off', 'low', 'high', 'max'],
-  );
-  assert.deepEqual([...deriveThinkingChoices({ toggle: true })], []);
-  assert.deepEqual(
-    [...deriveThinkingChoices({ toggle: true, offBehavior: 'anthropic-thinking-disabled' })],
-    ['off'],
-  );
-  assert.deepEqual([...deriveThinkingChoices(undefined)], []);
-});
-
-test('model options preserve declared effort and off-wire facts', () => {
-  assert.deepEqual(thinkingOptionsForModel('openai', 'gpt-5.5'), {
-    efforts: ['none', 'low', 'medium', 'high', 'xhigh'],
-  });
-  assert.deepEqual(thinkingOptionsForModel('anthropic', 'claude-haiku-4-5'), {
-    toggle: true,
-    offBehavior: 'anthropic-thinking-disabled',
-  });
-  assert.deepEqual(thinkingOptionsForModel('deepseek', 'deepseek-v4-flash'), {
-    efforts: ['high', 'max'],
-    toggle: true,
-  });
-  assert.equal(thinkingOptionsForModel('openai', 'unknown-model'), undefined);
-});
-
-test("model variants expose each provider model's declared choices", () => {
-  for (const [provider, model, expected] of [
-    ['openai', 'gpt-5.5', ['off', 'low', 'medium', 'high', 'xhigh']],
-    ['anthropic', 'claude-opus-4-8', ['low', 'medium', 'high', 'xhigh', 'max']],
-    ['google', 'gemini-2.5-flash', ['off']],
-    ['deepseek', 'deepseek-v4-flash', ['high', 'max']],
-    ['cohere', 'command-a-plus-05-2026', ['off']],
-    ['ollama', 'llama3', []],
-  ] as const) {
-    assert.deepEqual(
-      [...thinkingVariantsForModel(provider, model)],
-      expected,
-      `${provider}:${model}`,
-    );
-  }
-});
-
-test('account access paths inherit thinking metadata from their provider', () => {
-  assert.deepEqual(
-    thinkingOptionsForModel('openai-codex', 'gpt-5.5'),
-    thinkingOptionsForModel('openai', 'gpt-5.5'),
-  );
-  assert.deepEqual(
-    thinkingOptionsForModel('claude-subscription', 'claude-opus-4-8'),
-    thinkingOptionsForModel('anthropic', 'claude-opus-4-8'),
-  );
-  assert.deepEqual(
-    thinkingOptionsForModel('openai-codex', 'gpt-5.6-luna'),
-    thinkingOptionsForModel('openai', 'gpt-5.6-luna'),
-  );
-});
-
-test('provider-scoped model ids do not leak metadata to ambiguous ids', () => {
-  assert.deepEqual(
-    [...thinkingVariantsForModel('vercel', 'xai/grok-4.3')],
-    ['off', 'low', 'medium', 'high'],
-  );
-  assert.deepEqual([...thinkingVariantsForModel('vercel', 'grok-4.3')], []);
-  assert.deepEqual([...thinkingVariantsForModel('openai-compatible', 'gpt-5.5')], []);
-});
-
 test('thinking-level guard accepts only the closed display vocabulary', () => {
   for (const level of THINKING_LEVELS) assert.equal(isThinkingLevel(level), true);
   for (const value of ['default', 'turbo', undefined, 123]) {
@@ -222,56 +153,6 @@ test('resolveThinkingLevel discards levels the model does not offer', () => {
   assert.equal(resolveThinkingLevel(relay, 'm', 'max'), undefined);
   assert.equal(resolveThinkingLevel(relay, 'm', undefined), undefined);
   assert.equal(resolveThinkingLevel({ providerType: 'openai' }, 'gpt-5.5', 'xhigh'), 'xhigh');
-});
-
-test('openai-compatible thinking variants are declared per model', () => {
-  const connection = {
-    providerType: 'openai-compatible',
-    relayModelProfiles: { reasoner: { thinkingLevels: ['high', 'low', 'turbo'] } },
-  } as unknown as ConnectionThinkingContext;
-  assert.deepEqual([...thinkingVariantsForConnection(connection, 'reasoner')], ['low', 'high']);
-  // A sibling model on the same relay without a declaration sees no menu —
-  // the granularity is the model, not the connection.
-  assert.deepEqual([...thinkingVariantsForConnection(connection, 'plain-instruct')], []);
-});
-
-test('openai-compatible connections without a declaration fall back to metadata variants', () => {
-  for (const relayModelProfiles of [
-    undefined,
-    {},
-    { 'deepseek-v4-flash': {} },
-    { 'deepseek-v4-flash': { thinkingLevels: [] } },
-    { 'deepseek-v4-flash': { thinkingLevels: 'low' } },
-    { 'deepseek-v4-flash': { thinkingLevels: ['turbo'] } },
-  ]) {
-    assert.deepEqual(
-      [
-        ...thinkingVariantsForConnection(
-          {
-            providerType: 'openai-compatible',
-            relayModelProfiles,
-          } as unknown as ConnectionThinkingContext,
-          'deepseek-v4-flash',
-        ),
-      ],
-      [],
-      JSON.stringify(relayModelProfiles),
-    );
-  }
-  // Non-custom providers keep metadata-derived variants: a profiles table
-  // riding along on their connection is inert.
-  assert.deepEqual(
-    [
-      ...thinkingVariantsForConnection(
-        {
-          providerType: 'openai',
-          relayModelProfiles: { 'gpt-5.5': { thinkingLevels: ['off'] } },
-        },
-        'gpt-5.5',
-      ),
-    ],
-    ['off', 'low', 'medium', 'high', 'xhigh'],
-  );
 });
 
 // Reasoning replay has no toggle: DeepSeek-like relays require

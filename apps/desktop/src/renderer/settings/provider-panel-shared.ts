@@ -6,6 +6,8 @@ import {
   type CreateConnectionInput,
   type LlmConnection,
   type ModelDiscoveryResult,
+  type RequestHeaderUpdate,
+  type SavedRequestHeaders,
   type ProviderCategory,
   type ProviderType,
   type UiLocale,
@@ -24,6 +26,11 @@ export interface ConnectionsBridge {
   test(slug: string, opts?: { model?: string }): Promise<ConnectionTestResult>;
   fetchModels(slug: string): Promise<ModelDiscoveryResult>;
   hasSecret(slug: string): Promise<boolean>;
+  getRequestHeaders(slug: string): Promise<SavedRequestHeaders>;
+  setRequestHeaders(
+    slug: string,
+    headers: readonly RequestHeaderUpdate[],
+  ): Promise<SavedRequestHeaders>;
   subscribeEvents?(handler: () => void): () => void;
 }
 
@@ -41,6 +48,11 @@ export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale
   // Main-process handlers throw display-ready Chinese copy; keep it instead
   // of flattening it into a coarser classification or the generic fallback.
   if (/[\u3400-\u9fff]/.test(cleaned)) return cleaned;
+  if (/connection_stale|Unable to delete Connection: connection_stale/i.test(cleaned)) {
+    return locale === 'zh'
+      ? '连接状态已更新，请刷新列表后再删除。'
+      : 'The connection changed while deleting. Refresh the list and try again.';
+  }
   const classified = locale === 'zh'
     ? generalizedErrorMessageChinese(new Error(cleaned), '')
     : generalizedErrorMessage(new Error(cleaned), '');

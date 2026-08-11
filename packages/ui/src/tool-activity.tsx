@@ -6,7 +6,9 @@ import {
   type UiLocale,
 } from '@maka/core';
 import {
+  ICON_SIZE,
   Check,
+  ChevronRight,
   Clock,
   Copy,
   Repeat,
@@ -33,7 +35,12 @@ import {
   Button as UiButton,
   Banner,
   ChatToolCalls,
+  List,
+  ListItem,
+  StatusDot,
+  Text,
   type ChatToolCallItem,
+  VisuallyHidden,
 } from '@astryxdesign/core';
 import { ToolCodeBlock, ToolDetailReveal } from './tool-activity/tool-code-block.js';
 import { cn } from './ui.js';
@@ -54,6 +61,7 @@ import {
   ToolResultPreview,
 } from './tool-activity/tool-result-preview.js';
 import { getToolActivityCopy } from './tool-activity/copy.js';
+import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 
 /** Friendly card for a `load_tools` result; falls back to JSON on unexpected shapes. */
 function LoadToolResultPreview(props: { args: unknown; value: unknown }) {
@@ -82,7 +90,7 @@ function automationScheduleIcon(text: string): ComponentType<LucideProps> {
 }
 
 /**
- * Compact preview card for the unified Automation tool's text results
+ * Compact preview card for the session heartbeat Automation tool's text results
  * (created / deleted / listed). The tool returns human-readable text, so this
  * parses its stable first-line shapes; anything unrecognized (pause/resume,
  * errors) falls back to the generic text preview.
@@ -91,7 +99,7 @@ function AutomationResultPreview(props: { text: string }) {
   const copy = getToolActivityCopy(useUiLocale()).automation;
   const text = props.text;
 
-  // mode:create success — "Automation created: "NAME" (kind[, durable])\nID: …\nSchedule: …\nNext fire: …"
+  // mode:create success — "Automation created: "NAME" (heartbeat)\nID: …\nSchedule: …\nNext fire: …"
   const created = text.match(/^Automation created: "(.+?)" \((.+?)\)\n/);
   if (created) {
     const schedule = text.match(/^Schedule: (.+)$/m)?.[1];
@@ -100,7 +108,7 @@ function AutomationResultPreview(props: { text: string }) {
     return (
       <div className={previewVariants({ part: 'load-tool' })} data-kind="automation_create">
         <p className={previewVariants({ part: 'load-tool-title' })}>
-          <Icon size={14} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
+          <Icon size={ICON_SIZE.control} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
           {copy.created(redactSecrets(created[1] ?? ''))}
         </p>
         {schedule && <p className={previewVariants({ part: 'load-tool-count' })}>{redactSecrets(schedule)}</p>}
@@ -117,7 +125,7 @@ function AutomationResultPreview(props: { text: string }) {
     return (
       <div className={previewVariants({ part: 'load-tool' })} data-kind="automation_delete">
         <p className={previewVariants({ part: 'load-tool-title' })}>
-          <Check size={14} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
+          <Check size={ICON_SIZE.control} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
           {ok ? copy.deleted : copy.notFound}
         </p>
       </div>
@@ -131,7 +139,7 @@ function AutomationResultPreview(props: { text: string }) {
     return (
       <div className={previewVariants({ part: 'load-tool' })} data-kind="automation_list">
         <p className={previewVariants({ part: 'load-tool-title' })}>
-          <Clock size={14} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
+          <Clock size={ICON_SIZE.control} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
           {copy.list(blocks.length)}
         </p>
         {blocks.length === 0 && <p className={previewVariants({ part: 'load-tool-count' })}>{copy.empty}</p>}
@@ -140,7 +148,7 @@ function AutomationResultPreview(props: { text: string }) {
           const BlockIcon = automationScheduleIcon(block);
           return (
             <p key={i} className={previewVariants({ part: 'load-tool-tools' })}>
-              <BlockIcon size={12} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
+              <BlockIcon size={ICON_SIZE.meta} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
               {redactSecrets(head)}
             </p>
           );
@@ -288,11 +296,10 @@ export function ToolCallDetail({
 }
 
 /**
- * Every tool row renders through Astryx `ChatToolCalls` — one component, one
- * visual language, whatever the status. The six product statuses fold into
- * Astryx's four: `interrupted` and sandbox denials are failures that carry
- * their own word in `errorMessage`, and the detail panel (banner, command,
- * output, previews) rides along in `resultDetail`.
+ * Ordinary tool evidence renders through Astryx `ChatToolCalls`; linked child
+ * sessions render through Astryx `ListItem` because their primary action is
+ * navigation, not inline evidence expansion. Adjacent segments preserve the
+ * source order without restoring a vendor activation patch.
  */
 export function ToolTrow({
   items,
@@ -303,18 +310,118 @@ export function ToolTrow({
 }) {
   const locale = useUiLocale();
   if (items.length === 0) return null;
-  const calls = items.flatMap((item) => linkedAgentCalls(item, locale, onOpenLinkedSession)
-    ?? [standardToolCall(item, locale)]);
+  const segments = toolTrowSegments(items, locale);
 
-  // No defaultIsExpanded: opening a group is the reader's move. Seeding it open
-  // from in-flight status latches, since the prop is uncontrolled and the
-  // timeline key is stable (see timelineEntryKey). Cost: the collapsed header
-  // projects the last call, which can settle before a parallel sibling.
-  //
-  // A group's own +/- is the whole turn's, not the last call's: a run of five
-  // Edits collapses to one line, and "what did this turn change" is the
-  // question that line has to answer. Per-call counts stay on the rows inside.
-  return <ChatToolCalls calls={calls} {...diffStats(items.flatMap(itemDiffs))} />;
+  // ChatToolCalls owns expandable tool evidence. Linked child sessions are
+  // navigation targets instead, so they render through Astryx's compact List:
+  // one native clickable row, with no parallel action button.
+  return (
+    <>
+      {segments.map((segment) => segment.kind === 'tools' ? (
+        <ChatToolCalls
+          key={segment.key}
+          className="maka-tool-activity-card"
+          calls={segment.calls}
+        />
+      ) : (
+        <LinkedAgentList
+          key={segment.key}
+          rows={segment.rows}
+          locale={locale}
+          onOpenLinkedSession={onOpenLinkedSession}
+        />
+      ))}
+    </>
+  );
+}
+
+type LinkedAgentRow = {
+  key: string;
+  name: string;
+  status: Extract<ToolResultContent, { kind: 'subagent' }>['status'];
+  readOnly: boolean;
+  target?: string;
+  duration?: string;
+  failureClass?: string;
+  childSessionId?: string;
+};
+
+type ToolTrowSegment =
+  | { kind: 'tools'; key: string; calls: ChatToolCallItem[] }
+  | { kind: 'agents'; key: string; rows: LinkedAgentRow[] };
+
+function toolTrowSegments(items: ToolActivityItem[], locale: UiLocale): ToolTrowSegment[] {
+  const segments: ToolTrowSegment[] = [];
+  for (const item of items) {
+    const rows = linkedAgentRows(item, locale);
+    const previous = segments.at(-1);
+    if (rows) {
+      if (previous?.kind === 'agents') previous.rows.push(...rows);
+      else segments.push({ kind: 'agents', key: item.toolUseId, rows });
+      continue;
+    }
+    const call = standardToolCall(item, locale);
+    if (previous?.kind === 'tools') previous.calls.push(call);
+    else segments.push({ kind: 'tools', key: item.toolUseId, calls: [call] });
+  }
+  return segments;
+}
+
+function LinkedAgentList(props: {
+  rows: LinkedAgentRow[];
+  locale: UiLocale;
+  onOpenLinkedSession?: (sessionId: string) => void;
+}) {
+  const copy = getToolActivityCopy(props.locale).agent;
+  return (
+    <List density="compact">
+      {props.rows.map((row) => {
+        const childSessionId = row.childSessionId;
+        const open = childSessionId && props.onOpenLinkedSession
+          ? () => props.onOpenLinkedSession?.(childSessionId)
+          : undefined;
+        const status = copy.subagentStatus[row.status];
+        return (
+          <ListItem
+            key={row.key}
+            startContent={(
+              <StatusDot
+                variant={dotForStatus(linkedAgentStatusSemantic(row.status))}
+                label={status}
+                isPulsing={row.status === 'running'}
+              />
+            )}
+            label={(
+              <span className="maka-subagent-session-label">
+                <Text type="label" maxLines={1}>
+                  {row.name}
+                </Text>
+                {row.target ? (
+                  <Text type="body" color="secondary" maxLines={1} className="maka-subagent-session-summary">
+                    {row.target}
+                  </Text>
+                ) : null}
+                {row.failureClass ? (
+                  <VisuallyHidden>Error: {row.failureClass}</VisuallyHidden>
+                ) : null}
+              </span>
+            )}
+            endContent={(
+              <span className="maka-subagent-session-end">
+                <Text type="supporting" color="secondary">
+                  {[subagentStats(row.status, row.readOnly, props.locale), row.duration]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </Text>
+                {open ? <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" /> : null}
+              </span>
+            )}
+            onClick={open}
+          />
+        );
+      })}
+    </List>
+  );
 }
 
 function standardToolCall(item: ToolActivityItem, locale: UiLocale): ChatToolCallItem {
@@ -339,28 +446,24 @@ function standardToolCall(item: ToolActivityItem, locale: UiLocale): ChatToolCal
   };
 }
 
-function linkedAgentCalls(
+function linkedAgentRows(
   item: ToolActivityItem,
   locale: UiLocale,
-  onOpenLinkedSession: ((sessionId: string) => void) | undefined,
-): ChatToolCallItem[] | undefined {
+): LinkedAgentRow[] | undefined {
   const result = item.result;
   if (result?.kind === 'subagent') {
     const name = redactSecrets(result.agentName.trim()) || resolveToolDisplayName(item, locale);
-    const open = linkedSessionActivation(result.childSessionId, name, locale, onOpenLinkedSession);
     return [{
       key: item.toolUseId,
       name,
-      status: subagentToolStatus(result.status),
+      status: result.status,
+      readOnly: result.permissionMode === 'explore',
       target: item.intent
         ? formatToolIntent(item.intent)
         : boundedAgentSummary(result.summary),
       duration: formatDuration(item.durationMs ?? result.durationMs) ?? undefined,
-      errorMessage: result.failureClass
-        ? redactSecrets(result.failureClass)
-        : toolCallErrorMessage(item, locale),
-      stats: subagentStats(result.status, result.permissionMode === 'explore', locale),
-      ...open,
+      failureClass: result.failureClass ? redactSecrets(result.failureClass) : undefined,
+      childSessionId: result.childSessionId,
     }];
   }
   if (result?.kind !== 'agent_swarm') return undefined;
@@ -370,23 +473,28 @@ function linkedAgentCalls(
     return {
       key: `${item.toolUseId}:${child.itemId}`,
       name,
-      status: child.status === 'completed' ? 'complete' : 'error',
+      status: child.status,
+      readOnly: child.profile === 'local_read',
       target: boundedAgentSummary(child.summary),
       duration: formatDuration(child.durationMs) ?? undefined,
-      errorMessage: child.failureClass ? redactSecrets(child.failureClass) : undefined,
-      stats: subagentStats(child.status, child.profile === 'local_read', locale),
-      ...linkedSessionActivation(child.childSessionId, name, locale, onOpenLinkedSession),
-    } satisfies ChatToolCallItem;
+      failureClass: child.failureClass ? redactSecrets(child.failureClass) : undefined,
+      childSessionId: child.childSessionId,
+    } satisfies LinkedAgentRow;
   });
 }
 
-function subagentToolStatus(
-  status: Extract<ToolResultContent, { kind: 'subagent' }>['status'],
-): NonNullable<ChatToolCallItem['status']> {
-  if (status === 'completed') return 'complete';
-  if (status === 'running') return 'running';
-  if (status === 'waiting_for_user') return 'pending';
-  return 'error';
+type LinkedAgentStatus = Extract<ToolResultContent, { kind: 'subagent' }>['status'];
+
+const LINKED_AGENT_STATUS_SEMANTIC = {
+  completed: 'success',
+  running: 'active',
+  waiting_for_user: 'attention',
+  failed: 'error',
+  cancelled: 'neutral',
+} satisfies Record<LinkedAgentStatus, StatusSemantic>;
+
+function linkedAgentStatusSemantic(status: LinkedAgentStatus): StatusSemantic {
+  return LINKED_AGENT_STATUS_SEMANTIC[status];
 }
 
 function subagentStats(
@@ -400,19 +508,6 @@ function subagentStats(
     .join(' · ');
 }
 
-function linkedSessionActivation(
-  childSessionId: string | undefined,
-  name: string,
-  locale: UiLocale,
-  onOpenLinkedSession: ((sessionId: string) => void) | undefined,
-): Pick<ChatToolCallItem, 'onActivate' | 'activateLabel'> {
-  if (!childSessionId || !onOpenLinkedSession) return {};
-  return {
-    onActivate: () => onOpenLinkedSession(childSessionId),
-    activateLabel: getToolActivityCopy(locale).agent.openSessionAriaLabel(name),
-  };
-}
-
 function boundedAgentSummary(summary: string): string | undefined {
   const normalized = redactSecrets(summary.trim());
   if (!normalized) return undefined;
@@ -420,10 +515,9 @@ function boundedAgentSummary(summary: string): string | undefined {
 }
 
 /**
- * Green `+N` / red `-N`, from the shared structural parse. One diff for a row,
- * every diff in the run for the collapsed group header. Zero stays unpainted,
- * so a run that changed no file leaves the header as it was rather than
- * wearing a "0 changes" badge.
+ * Green `+N` / red `-N`, from the shared structural parse. Each visible call
+ * owns its diff counts. Zero stays unpainted so unchanged calls do not wear a
+ * misleading "0 changes" badge.
  */
 function diffStats(diffs: string[]): { additions?: number; deletions?: number } {
   let additions = 0;
@@ -555,7 +649,7 @@ function SandboxBlockedBanner(props: {
     <Banner
       status="warning"
       className="maka-sandbox-blocked-banner"
-      icon={<ShieldAlert size={16} aria-hidden="true" />}
+      icon={<ShieldAlert size={ICON_SIZE.chrome} aria-hidden="true" />}
       title={bannerCopy.title}
       description={(
         <span className="maka-sandbox-blocked-description">
@@ -578,7 +672,7 @@ function SandboxBlockedBanner(props: {
           aria-busy={copyPending ? 'true' : undefined}
           isDisabled={copyPending}
           onClick={() => void copy()}
-          icon={copyPhase === 'copied' ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+          icon={copyPhase === 'copied' ? <Check size={ICON_SIZE.control} aria-hidden="true" /> : <Copy size={ICON_SIZE.control} aria-hidden="true" />}
           label={copyLabel}
         />
       ) : undefined}

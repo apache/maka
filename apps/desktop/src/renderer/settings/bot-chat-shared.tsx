@@ -22,7 +22,7 @@ import { getBotSettingsCopy } from '../locales/settings-bot-copy';
  * `configDocUrl` is the official developer doc surfaced inline as a
  * "查看配置文档" link.
  */
-// BOT_BRAND moved to `packages/ui/src/bot-brand.ts` so the Plan Reminder
+// BOT_BRAND moved to `packages/ui/src/bot-brand.ts` so the ScheduledTask
 // delivery picker can use the same brand metadata as Settings here (@kenji
 // audit 2026-06-25 msg `e4cfbfb0` finding #2). Imported via `@maka/ui`.
 

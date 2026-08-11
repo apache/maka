@@ -3,7 +3,7 @@
  *
  * The `AgentBackend` port interface and the request/response shapes that
  * cross the runtime boundary live here in @maka/core so that every backend
- * implementation (AiSdkBackend / PiAgentBackend / FakeBackend) and their
+ * implementation (AiSdkBackend / FakeBackend) and their
  * consumers depend on a small pure-type module, not on a concrete backend
  * implementation file.
  */
@@ -80,8 +80,8 @@ export interface BackendSendInput {
    * provably never persisted (never pushed, or the consumer detached first);
    * the dying request never carries a nacked message. Each acked message is
    * injected into the model context wrapped in a steering envelope,
-   * continuing the same turn. Absent for callers that do not steer (child
-   * agents, benchmarks).
+   * continuing the same turn. Absent for callers that do not steer, including
+   * child agents and non-interactive clients.
    */
   pullSteering?: () => readonly SteeringLease[];
   /** Confirm delivery of leased steering messages (see pullSteering). */

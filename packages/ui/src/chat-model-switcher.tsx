@@ -20,10 +20,11 @@
 import { type ReactNode, useMemo } from 'react';
 import { Button as UiButton } from '@astryxdesign/core';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
-import { Check, Settings } from './icons.js';
+import { ICON_SIZE, Check, Settings } from './icons.js';
 import {
   type ChatModelChoice,
   type ModelMenuGroup,
+  modelChoiceDescription,
   modelMenuGroups,
   modelChoiceValue,
 } from './chat-model-helpers.js';
@@ -45,7 +46,7 @@ function providerMarkIcon(
   );
 }
 
-const currentCheck = <Check size={14} aria-hidden="true" />;
+const currentCheck = <Check size={ICON_SIZE.control} aria-hidden="true" />;
 
 /**
  * The one shared body of both model menus: an optional leading row for a
@@ -64,6 +65,7 @@ function ModelMenuItems(props: {
   disabled?: boolean;
   onPick(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
 }) {
+  const locale = useUiLocale();
   return (
     <>
       {props.leadingOption ? (
@@ -89,6 +91,7 @@ function ModelMenuItems(props: {
                 key={value}
                 icon={providerMarkIcon(choice.providerType, props.renderProviderMark)}
                 label={choice.label}
+                description={modelChoiceDescription(choice, locale)}
                 endContent={value === props.currentValue ? currentCheck : undefined}
                 isDisabled={props.disabled}
                 onClick={() => {
@@ -304,7 +307,7 @@ export function ModelChipStatic(props: {
         onClick={props.onOpenSettings}
         aria-label={copy.configureAriaLabel(props.label)}
         tooltip={copy.configureTitle}
-        icon={<Settings size={12} aria-hidden="true" />}
+        icon={<Settings size={ICON_SIZE.meta} aria-hidden="true" />}
         label={props.label}
       />
     );

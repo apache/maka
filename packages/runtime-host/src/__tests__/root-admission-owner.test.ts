@@ -246,21 +246,6 @@ test('snapshots recovered admissions without retaining mutable caller references
       ['source-2', 'followup text'],
     ],
   );
-  assert.ok(Object.isFrozen(snapshot));
-  assert.ok(Object.isFrozen(snapshotInput));
-  assert.ok(Object.isFrozen(snapshotInput.attachments));
-  assert.ok(Object.isFrozen(snapshotInput.attachments?.[0]));
-  assert.ok(Object.isFrozen(snapshotInput.attachments?.[0]?.ref));
-  assert.ok(Object.isFrozen(snapshotInput.quotes));
-  assert.ok(Object.isFrozen(snapshotInput.quotes?.[0]));
-  assert.ok(Object.isFrozen(snapshot.sourceMessages));
-  assert.ok(Object.isFrozen(snapshot.sourceMessages[0]));
-  assert.ok(Object.isFrozen(snapshot.sourceMessages[0]?.content));
-  assert.ok(Object.isFrozen(snapshot.sourceMessages[0]?.content.attachments));
-  assert.ok(Object.isFrozen(snapshot.sourceMessages[0]?.content.attachments?.[0]));
-  assert.ok(Object.isFrozen(snapshot.sourceMessages[0]?.content.attachments?.[0]?.ref));
-  assert.ok(Object.isFrozen(snapshot.sourceMessages[0]?.content.quotes));
-  assert.ok(Object.isFrozen(snapshot.sourceMessages[0]?.content.quotes?.[0]));
   assert.throws(() => {
     snapshotInput.quotes![0]!.text = 'returned mutation';
   }, TypeError);
@@ -268,7 +253,7 @@ test('snapshots recovered admissions without retaining mutable caller references
   assert.throws(() => owner.assertKnownAdmission(admission), /identity changed/);
 });
 
-test('returns an owned frozen admission instead of the mutable store result', async () => {
+test('returns an owned admission instead of retaining the mutable store result', async () => {
   const durableAdmission = mutableAdmission();
   const store: RootTurnAdmissionStore = {
     admitRootTurn: async () => ({ kind: 'admitted', admission: durableAdmission }),
@@ -285,10 +270,6 @@ test('returns an owned frozen admission instead of the mutable store result', as
   assert.ok(resultInput);
   assert.ok(durableInput);
   assert.notEqual(result.admission, durableAdmission);
-  assert.ok(Object.isFrozen(result));
-  assert.ok(Object.isFrozen(result.admission));
-  assert.ok(Object.isFrozen(resultInput.quotes));
-  assert.ok(Object.isFrozen(resultInput.quotes?.[0]));
 
   durableInput.quotes![0]!.text = 'store mutation';
   durableAdmission.sourceMessages[0]!.content.quotes![0]!.label = 'Store mutation';

@@ -1,4 +1,4 @@
-import type { ProjectCatalog, ProjectRecord } from '@maka/storage';
+import type { ProjectRecord } from '@maka/core';
 import type { CurrentProjectSelection } from './project-root-controller.js';
 
 type DirectoryActionResult =
@@ -29,19 +29,17 @@ export interface ProjectManagementService {
   restore(projectId: unknown): Promise<ProjectRecord>;
 }
 
-export interface ProjectSessionCatalog {
-  listHeaders(): Promise<
-    Array<{ readonly id: string; readonly cwd: string; readonly projectId?: string | null }>
-  >;
-  updateHeader(
-    sessionId: string,
-    patch: { readonly cwd?: string; readonly projectId?: string | null },
-  ): Promise<unknown>;
+export interface ProjectManagementCatalog {
+  list(): Promise<ProjectRecord[]>;
+  register(path: string): Promise<ProjectRecord>;
+  relink(projectId: string, path: string): Promise<ProjectRecord>;
+  rename(projectId: string, name: string): Promise<ProjectRecord>;
+  archive(projectId: string): Promise<ProjectRecord>;
+  restore(projectId: string): Promise<ProjectRecord>;
 }
 
 export function createProjectManagementService(deps: {
-  catalog: ProjectCatalog;
-  sessions: ProjectSessionCatalog;
+  catalog: ProjectManagementCatalog;
   chooseDirectory(): Promise<string | undefined>;
   selection: {
     currentSelection(): Promise<CurrentProjectSelection>;
@@ -57,31 +55,17 @@ export function createProjectManagementService(deps: {
     const selectedProjectId = selection.projectId;
     const requested =
       typeof selectedProjectId === 'string'
-        ? projects.find(
-            (project) =>
-              project.id === selectedProjectId ||
-              project.aliases?.includes(selectedProjectId),
-          )
-        : projects.find((project) =>
-            project.locations.some((location) => location.path === selection.path),
-          );
-    const isSelectable = (project: ProjectRecord | undefined) =>
-      project !== undefined &&
-      project.archivedAt === undefined &&
-      project.available &&
-      project.preferredPath;
-    const selected =
-      isSelectable(requested) ? requested : projects.find((project) => isSelectable(project));
-    const path = selected?.preferredPath;
-    if (!selected || !path) {
-      if (requested || typeof selectedProjectId === 'string') {
+        ? selectableProject(projects, selectedProjectId)
+        : undefined;
+    if (!requested) {
+      if (typeof selectedProjectId === 'string') {
         deps.selection.setSelection(null, selection.path);
         return { projectId: null, path: selection.path };
       }
       return { projectId: undefined, path: selection.path };
     }
-    deps.selection.setSelection(selected.id, path);
-    return { projectId: selected.id, path };
+    deps.selection.setSelection(requested.id, requested.preferredPath);
+    return { projectId: requested.id, path: requested.preferredPath };
   }
 
   return {
@@ -92,9 +76,9 @@ export function createProjectManagementService(deps: {
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
       const project = await deps.catalog.register(path);
-      const selected = await deps.catalog.select(project.id);
-      deps.selection.setSelection(selected.project.id, selected.path);
-      return { ok: true, project: selected.project, path: selected.path };
+      const selected = requireSelectableProject(project);
+      deps.selection.setSelection(selected.id, selected.preferredPath);
+      return { ok: true, project: selected, path: selected.preferredPath };
     },
 
     async select(projectId) {
@@ -103,60 +87,34 @@ export function createProjectManagementService(deps: {
         deps.selection.setSelection(null, selection.path);
         return { project: null, path: selection.path };
       }
-      const selected = await deps.catalog.select(requireProjectId(projectId));
-      deps.selection.setSelection(selected.project.id, selected.path);
-      return selected;
+      const id = requireProjectId(projectId);
+      const selection = await deps.selection.currentSelection();
+      const project = selectableProject(await deps.catalog.list(), id);
+      if (!project) {
+        return { project: null, path: selection.path };
+      }
+      deps.selection.setSelection(project.id, project.preferredPath);
+      return { project, path: project.preferredPath };
     },
 
     async relink(projectId) {
       const id = requireProjectId(projectId);
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
-      let selectedProjectWasRelinked = false;
-      const prepareSessions = async (context: {
-        projectId: string;
-        projectAliases: string[];
-        destinationPath: string;
-        previousLocations: Array<{ path: string }>;
-        conflictingProjectId?: string;
-        conflictingProjectAliases?: string[];
-      }) => {
-        const selectedPath = (await deps.selection.currentSelection()).path;
-        selectedProjectWasRelinked = context.previousLocations.some(
-          (location) => location.path === selectedPath,
-        );
-        const survivingIds = new Set([context.projectId, ...context.projectAliases]);
-        const conflictingIds = new Set([
-          ...(context.conflictingProjectId ? [context.conflictingProjectId] : []),
-          ...(context.conflictingProjectAliases ?? []),
-        ]);
-        for (const header of await deps.sessions.listHeaders()) {
-          if (header.projectId && survivingIds.has(header.projectId)) {
-            await deps.sessions.updateHeader(header.id, {
-              cwd: context.destinationPath,
-              ...(header.projectId !== context.projectId
-                ? { projectId: context.projectId }
-                : {}),
-            });
-          } else if (header.projectId && conflictingIds.has(header.projectId)) {
-            await deps.sessions.updateHeader(header.id, { projectId: context.projectId });
-          }
-        }
-      };
-      const project = await deps.catalog.relink(id, path, prepareSessions);
-      if (selectedProjectWasRelinked && project.preferredPath) {
-        deps.selection.setSelection(project.id, project.preferredPath);
+      const selection = await deps.selection.currentSelection();
+      const selectedProjectWasRelinked = selection.projectId === id;
+      const project = await deps.catalog.relink(id, path);
+      if (selectedProjectWasRelinked) {
+        const selected = requireSelectableProject(project);
+        deps.selection.setSelection(selected.id, selected.preferredPath);
       }
       return { ok: true, project };
     },
 
     async pathFor(projectId) {
       const id = requireProjectId(projectId);
-      const project = (await deps.catalog.list()).find(
-        (candidate) => candidate.id === id || candidate.aliases?.includes(id),
-      );
-      if (!project || project.archivedAt !== undefined || !project.available) return null;
-      return project.preferredPath ?? null;
+      const project = selectableProject(await deps.catalog.list(), id);
+      return project?.preferredPath ?? null;
     },
 
     rename(projectId, name) {
@@ -180,4 +138,28 @@ export function createProjectManagementService(deps: {
 function requireProjectId(value: unknown): string {
   if (typeof value !== 'string' || !value) throw new TypeError('Invalid project id.');
   return value;
+}
+
+function selectableProject(
+  projects: readonly ProjectRecord[],
+  id: string,
+): (ProjectRecord & { readonly preferredPath: string }) | undefined {
+  const project = projects.find(
+    (candidate) => candidate.id === id || candidate.aliases?.includes(id),
+  );
+  return isSelectableProject(project) ? project : undefined;
+}
+
+function requireSelectableProject(
+  project: ProjectRecord,
+): ProjectRecord & { readonly preferredPath: string } {
+  const selected = selectableProject([project], project.id);
+  if (!selected) throw new Error(`Project is unavailable: ${project.id}`);
+  return selected;
+}
+
+function isSelectableProject(
+  project: ProjectRecord | undefined,
+): project is ProjectRecord & { readonly preferredPath: string } {
+  return Boolean(project?.available && project.archivedAt === undefined && project.preferredPath);
 }

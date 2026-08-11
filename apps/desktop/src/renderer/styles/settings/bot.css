@@ -18,8 +18,8 @@
   display: block;
 }
 .settingsBotLogo[data-large="true"] {
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
 }
 
 .settingsRemoteAccessChannelRow,
@@ -46,7 +46,7 @@
 }
 
 .settingsRemoteAccessChannelRow[data-attention="true"] {
-  background: oklch(from var(--warning) l c h / 0.06);
+  background: var(--warning-wash);
 }
 
 .settingsRemoteAccessItemActions {
@@ -127,6 +127,10 @@
   text-decoration: underline;
 }
 
+.settingsBotConfigDocLink:focus-visible {
+  text-decoration: underline;
+}
+
 /* At the restored/sanitized 480px window floor, the fixed Settings navigation
    leaves a narrow content column. Keep provider summaries readable instead of
    squeezing the logo, title, status chip, and switch into one row. */
@@ -180,13 +184,18 @@
 
 .settingsBotOnboardingQrFrame {
   display: grid;
-  width: 284px;
-  height: 284px;
+  /* Shared with the WeChat QR login frame (settings/wechat.css): both read
+     --qr-frame-size so the paired dialogs present one QR spec. */
+  width: var(--qr-frame-size);
+  height: var(--qr-frame-size);
   place-items: center;
   overflow: hidden;
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
-  background: white;
+  /* Paper, not a ladder tier: a QR code has to stay dark-on-light to be
+     scannable at all. See --surface-paper in maka-tokens.css. */
+  background: var(--surface-paper);
+  padding: var(--space-3);
 }
 
 .settingsBotOnboardingQrFrame img {
@@ -205,20 +214,21 @@
 .settingsBotOnboardingSuccess,
 .settingsBotOnboardingEmpty {
   display: grid;
-  width: 52px;
-  height: 52px;
+  width: 48px;
+  height: 48px;
   place-items: center;
+  /* Pill, not --radius-plate: a status circle is a circle. */
   border-radius: var(--radius-pill);
 }
 
 .settingsBotOnboardingSuccess {
   color: var(--success-text);
-  background: oklch(from var(--success) l c h / 0.12);
+  background: var(--success-wash);
 }
 
 .settingsBotOnboardingEmpty {
   color: var(--destructive);
-  background: oklch(from var(--destructive) l c h / 0.10);
+  background: var(--destructive-wash);
 }
 
 .settingsBotOnboardingStatus,

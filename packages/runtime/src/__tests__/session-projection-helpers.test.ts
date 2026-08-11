@@ -102,10 +102,6 @@ describe('session projection helpers', () => {
     expect(normalizeStopSessionSource(undefined)).toBeUndefined();
   });
 
-  test('normalizeStopSessionSource preserves benchmark deadline provenance', () => {
-    expect(normalizeStopSessionSource('benchmark_deadline')).toBe('benchmark.deadline');
-  });
-
   test('normalizeStopSessionSource preserves graph supervisor provenance', () => {
     expect(normalizeStopSessionSource('graph_supervisor')).toBe('graph.supervisor');
   });

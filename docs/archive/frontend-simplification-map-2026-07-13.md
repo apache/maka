@@ -6,8 +6,8 @@ on the full suite + typecheck + dead-css + alignment auditor.
 
 Baseline (this tip, 1301404d): 45.5K lines TS/TSX (non-test) + 22.0K lines CSS.
 Hotspots: app-shell.tsx 1733 · chat-turn 970 · bot-chat 961 · OnboardingHero 955 ·
-provider-oauth 870 · composer 866 · plan-reminder 865 · connection-detail 861.
-CSS: maka-tokens 1509 · onboarding 916 · plan-reminders 864 · skills 833.
+provider-oauth 870 · composer 866 · scheduled-task 865 · connection-detail 861.
+CSS: maka-tokens 1509 · onboarding 916 · scheduled-tasks 864 · skills 833.
 
 Knip verification notes: storybook stories + ui .test.tsx flagged "unused" are FALSE
 positives (apps/desktop/.storybook globs both story roots; ui test runner executes
@@ -38,7 +38,7 @@ dist/**/*.test.js). Real finds verified by hand before acting.
   3. use-project-context — SHIPPED. appInfo, branchList/pending, recentProjectPaths,
      projectPicker pending+refs + createAppShellProjectActions wiring.
   4. use-module-data — SHIPPED. skills/managedSkillSources/bundledSkillCatalog/
-     planReminders + both skill/plan action factories; surface-active predicates
+     scheduledTasks + both skill/plan action factories; surface-active predicates
      injected.
   5. use-shell-connections — SHIPPED (partial). connections/defaultConnection +
      connectionsEqual + refreshConnections + handleConnectionEvent. theme/userLabel/
@@ -98,7 +98,7 @@ dist/**/*.test.js). Real finds verified by hand before acting.
   `*MountedRef` sites to `useMountedRef` — 20 renderer settings sites, 4 other
   renderer sites (OnboardingHero readyHero, FirstRunChecklist, artifact-pane,
   browser-panel), 10 packages/ui panels (chat-turn, chat-model-switcher, search-modal,
-  plan-reminder-panel, clipboard-feedback, skills-panel, composer, permission-dialog,
+  scheduled-task-panel, clipboard-feedback, skills-panel, composer, permission-dialog,
   session-history-list, daily-review-panel). Kept each site's companion-ref cleanup
   effect and its ref name; deleted the whole effect only where it did nothing but the
   mounted flag (browser-panel, permission-dialog). packages/ui sites import the hook

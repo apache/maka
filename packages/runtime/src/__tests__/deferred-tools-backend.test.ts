@@ -47,7 +47,7 @@ const config: ToolAvailabilityConfig = {
 
 const agentConfig: ToolAvailabilityConfig = {
   economy: true,
-  groups: buildDeferredToolGroupsFromCatalog('headless', AGENT_TOOL_NAMES),
+  groups: buildDeferredToolGroupsFromCatalog('cli', AGENT_TOOL_NAMES),
 };
 
 function tools(implCalls: string[]): MakaTool[] {
@@ -472,6 +472,7 @@ describe('AiSdkBackend deferred agent tools', () => {
       }),
     );
 
+    assert.ok(capturedTools[0]?.includes(AGENT_LIST_TOOL_NAME));
     assert.ok(capturedTools[0]?.includes('view_agent_graph'));
     assert.ok(capturedTools[0]?.includes('update_agent_graph'));
     assert.ok(capturedTools[0]?.includes('yield_agent_graph'));

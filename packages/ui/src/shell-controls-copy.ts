@@ -8,6 +8,8 @@ type ShellControlsCopy = {
     mainLabel: string;
     newTask: string;
     importSession: string;
+    conversations: string;
+    archivedConversations: string;
     /**
      * Accessible name of the session-group header's new-task trigger
      * (session-history-list.tsx). Deliberately NOT `newTask`: that copy is
@@ -21,7 +23,7 @@ type ShellControlsCopy = {
     settings: string;
     updateDownloaded(version: string): string;
     updateFailed(version: string): string;
-    pendingReminders(count: number): string;
+    pendingTasks(count: number): string;
   };
   search: {
     title: string;
@@ -50,13 +52,15 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       mainLabel: '主导航',
       newTask: '新任务',
       importSession: '导入会话',
+      conversations: '会话',
+      archivedConversations: '已归档',
       groupNewTask: '新建任务',
       automations: '定时任务',
       extensions: '扩展',
       settings: '设置',
       updateDownloaded: (version: string) => `新版本 ${version} 已下载，重启后安装`,
       updateFailed: (version: string) => `新版本 ${version} 更新失败，点击重试或手动下载`,
-      pendingReminders: (count: number) => `定时任务，${count} 个未完成提醒`,
+      pendingTasks: (count: number) => `定时任务，${count} 个未完成任务`,
     },
     search: {
       title: '搜索',
@@ -83,13 +87,15 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       mainLabel: 'Main navigation',
       newTask: 'New task',
       importSession: 'Import conversation',
+      conversations: 'Conversations',
+      archivedConversations: 'Archived',
       groupNewTask: 'New task in group',
       automations: 'Scheduled tasks',
       extensions: 'Extensions',
       settings: 'Settings',
       updateDownloaded: (version: string) => `Update ${version} downloaded. Restart to install.`,
       updateFailed: (version: string) => `Update ${version} failed. Click to retry or download manually.`,
-      pendingReminders: (count: number) => `Scheduled tasks, ${count} unfinished ${count === 1 ? 'reminder' : 'reminders'}`,
+      pendingTasks: (count: number) => `Scheduled tasks, ${count} unfinished ${count === 1 ? 'task' : 'tasks'}`,
     },
     search: {
       title: 'Search',

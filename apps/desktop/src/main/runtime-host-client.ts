@@ -6,8 +6,8 @@ import {
   type StoredMessage,
 } from "@maka/core/session";
 import type { Task } from "@maka/core/task-ledger";
+import type { ScheduledTask } from "@maka/core/scheduled-task";
 import type {
-  ConnectionCatalogEntry,
   ConnectionCatalogSnapshot,
   ConnectionVersionBasis,
   CredentialLocator,
@@ -34,6 +34,7 @@ import {
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
+  readRuntimeHostProjectDetails,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
 } from "@maka/runtime-host/client";
@@ -64,13 +65,21 @@ import {
   type PlanQueryResult,
   type PricingMutation,
   type PricingQueryResult,
+  type ProjectCatalogMutateInput,
+  type ProjectCatalogMutateResult,
+  type ProjectCatalogProject,
+  type ProjectCatalogProjectDetails,
   type QueueRetractInput,
   type QueueRetractResult,
   type SessionCatalogFilter,
   type SessionCatalogChangedFrame,
+  type ScheduledTaskChangedFrame,
+  type ScheduledTaskMutateInput,
+  type ScheduledTaskMutateResult,
   type SessionCatalogItem,
   type SessionCatalogProjection,
   type SessionConfiguration,
+  type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
   type SessionConversationCopyInput,
   type SessionConversationCopyResult,
@@ -79,7 +88,7 @@ import {
   type SessionLifecycleState,
   type SessionMetadataPatch,
   type SessionUpdateResult,
-  type SkillCatalogLocalContext,
+  type SkillCatalogWorkspaceContext,
   type SkillCatalogInvocableItem,
   type SkillCatalogInvocableTarget,
   type SkillCatalogMutateInput,
@@ -94,9 +103,11 @@ import {
   type TurnInterruptResult,
   type TurnMessageSubmitInput,
   type TurnMessageSubmitResult,
+  type WorkspaceProjection,
 } from "@maka/runtime-host/protocol";
 
 const MAX_OPTIMISTIC_ATTEMPTS = 3;
+const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
 
 export type DesktopSessionConfigurationPatch = Partial<SessionConfiguration>;
@@ -124,6 +135,7 @@ export class DesktopRuntimeHostClientError extends Error {
 
 export interface DesktopRuntimeHostSession {
   readonly snapshot: SessionContinuitySnapshot;
+  readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcript: Promise<StoredMessage[]>;
   readonly events: AsyncIterable<SubscriptionFrame>;
   close(): Promise<void>;
@@ -140,6 +152,7 @@ export interface DesktopSkillCatalogSnapshot {
   readonly revision: SkillCatalogRevision;
   readonly view: SkillCatalogView;
   readonly items: readonly SkillCatalogPageItem[];
+  readonly workspace: WorkspaceProjection;
 }
 
 export interface DesktopPricingMutationInput {
@@ -199,11 +212,64 @@ export class DesktopRuntimeHostClient {
     return this.connection.subscribeConfigurationChanges(listener);
   }
 
+  subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeProjectCatalogChanges(listener);
+  }
+
   subscribeSessionCatalogChanges(
     listener: (frame: SessionCatalogChangedFrame) => void,
   ): () => void {
     this.#assertOpen();
     return this.connection.subscribeSessionCatalogChanges(listener);
+  }
+
+  subscribeScheduledTaskChanges(
+    listener: (frame: ScheduledTaskChangedFrame) => void,
+  ): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeScheduledTaskChanges(listener);
+  }
+
+  async listScheduledTasks(): Promise<ScheduledTask[]> {
+    for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
+      const tasks: ScheduledTask[] = [];
+      let cursor: string | undefined;
+      let revision: number | undefined;
+      let changed = false;
+      do {
+        const result = await this.#request("scheduled-task.query", {
+          kind: "list",
+          ...(cursor === undefined ? {} : { cursor, expectedRevision: revision! }),
+        });
+        if (result.kind === "revision_changed") {
+          changed = true;
+          break;
+        }
+        if (result.kind !== "page") {
+          throw new Error("Runtime Host returned the wrong ScheduledTask projection");
+        }
+        revision ??= result.revision;
+        tasks.push(...result.tasks);
+        cursor = result.nextCursor ?? undefined;
+      } while (cursor !== undefined);
+      if (!changed) return tasks;
+    }
+    throw new DesktopRuntimeHostClientError(
+      "catalog_unstable",
+      "ScheduledTask catalog kept changing while Desktop read it",
+    );
+  }
+
+  getScheduledTask(taskId: string): Promise<ScheduledTask | null> {
+    return this.#request("scheduled-task.query", { kind: "get", taskId }).then((result) => {
+      if (result.kind !== "task") throw new Error("Runtime Host returned the wrong ScheduledTask projection");
+      return result.task;
+    });
+  }
+
+  mutateScheduledTask(input: ScheduledTaskMutateInput): Promise<ScheduledTaskMutateResult> {
+    return this.#request("scheduled-task.mutate", input);
   }
 
   async loadConnectionCatalog(): Promise<ConnectionCatalogSnapshot> {
@@ -298,6 +364,19 @@ export class DesktopRuntimeHostClient {
     return this.#request("credential.vault.delete", input);
   }
 
+  getConnectionRequestHeaders(
+    connectionId: string,
+  ): Promise<OperationOutput<"connection.request-headers.query">> {
+    return this.#request("connection.request-headers.query", { connectionId });
+  }
+
+  replaceConnectionRequestHeaders(
+    connectionId: string,
+    headers: OperationInput<"connection.request-headers.replace">["headers"],
+  ): Promise<OperationOutput<"connection.request-headers.replace">> {
+    return this.#request("connection.request-headers.replace", { connectionId, headers });
+  }
+
   fetchConnectionModels(
     connectionId: string,
   ): Promise<OperationOutput<"connection.models.fetch">> {
@@ -340,12 +419,22 @@ export class DesktopRuntimeHostClient {
   }
 
   async loadSkillCatalog(
-    context: SkillCatalogLocalContext,
+    context: SkillCatalogWorkspaceContext,
     view: SkillCatalogView,
   ): Promise<DesktopSkillCatalogSnapshot> {
     this.#assertOpen();
     try {
-      return await readRuntimeHostSkillCatalog(this.connection, context, view);
+      const snapshot = await readRuntimeHostSkillCatalog(
+        this.connection,
+        context,
+        view,
+      );
+      return {
+        revision: snapshot.revision,
+        view: snapshot.view,
+        items: snapshot.items,
+        workspace: snapshot.resolvedWorkspace,
+      };
     } catch (error) {
       if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
       throw new DesktopRuntimeHostClientError(
@@ -466,6 +555,58 @@ export class DesktopRuntimeHostClient {
         "Session catalog kept changing while Desktop read it",
       );
     }
+  }
+
+  async listProjects(): Promise<ProjectCatalogProjectDetails[]> {
+    this.#assertOpen();
+    try {
+      return await readRuntimeHostProjectDetails(this.connection);
+    } catch (error) {
+      if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
+      throw new DesktopRuntimeHostClientError(
+        "catalog_unstable",
+        "Project catalog kept changing while Desktop read it",
+      );
+    }
+  }
+
+  async registerProject(path: string): Promise<ProjectCatalogProject> {
+    const result = await this.#mutateProject({ kind: "register", path });
+    return this.#projectForMutation(result);
+  }
+
+  async relinkProject(projectId: string, path: string): Promise<ProjectCatalogProject> {
+    return this.#projectForMutation(
+      await this.#mutateProject({ kind: "relink", projectId, path }),
+    );
+  }
+
+  async renameProject(projectId: string, name: string): Promise<ProjectCatalogProject> {
+    return this.#projectForMutation(
+      await this.#mutateProject({ kind: "rename", projectId, name }),
+    );
+  }
+
+  async archiveProject(projectId: string): Promise<ProjectCatalogProject> {
+    return this.#projectForMutation(
+      await this.#mutateProject({ kind: "archive", projectId }),
+    );
+  }
+
+  async restoreProject(projectId: string): Promise<ProjectCatalogProject> {
+    return this.#projectForMutation(
+      await this.#mutateProject({ kind: "restore", projectId }),
+    );
+  }
+
+  #mutateProject(input: ProjectCatalogMutateInput) {
+    this.#assertOpen();
+    return this.#request("project.catalog.mutate", input);
+  }
+
+  #projectForMutation(result: ProjectCatalogMutateResult): ProjectCatalogProject {
+    if (result.kind !== "project") throw invalidProjection("Project mutation");
+    return result.project;
   }
 
   async listArtifacts(sessionId: string): Promise<ArtifactProjection[]> {
@@ -689,21 +830,6 @@ export class DesktopRuntimeHostClient {
     );
   }
 
-  relocateSessionCwd(
-    sessionId: string,
-    cwd: string,
-    projectId?: string | null,
-  ): Promise<SessionCatalogProjection> {
-    return this.#updateSession(sessionId, (current) =>
-      this.#request("session.cwd.relocate", {
-        sessionId,
-        expectedRevision: current.revision,
-        cwd,
-        ...(projectId === undefined ? {} : { projectId }),
-      }),
-    );
-  }
-
   async setSessionReadMarker(
     sessionId: string,
     readThroughMessageId: string,
@@ -730,7 +856,7 @@ export class DesktopRuntimeHostClient {
   }
 
   async removeSession(sessionId: string): Promise<void> {
-    for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_SESSION_REVISION_ATTEMPTS; attempt += 1) {
       const current = await this.#requireSession(sessionId);
       const result = await this.#request("session.remove", {
         sessionId,
@@ -913,6 +1039,19 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"turn.query">,
   ): Promise<OperationOutput<"turn.query">> {
     return this.#request("turn.query", input);
+  }
+
+  queryHostDiagnostics(): Promise<OperationOutput<"host.diagnostics.query">> {
+    return this.connection.queryHostDiagnostics(2_000);
+  }
+
+  prepareHostUpgrade(
+    allowInterruptActiveTasks: boolean,
+  ): Promise<OperationOutput<"host.upgrade.prepare">> {
+    return this.#request("host.upgrade.prepare", {
+      expectedHostEpoch: this.connection.hostEpoch,
+      allowInterruptActiveTasks,
+    });
   }
 
   stopTurn(
@@ -1375,7 +1514,7 @@ export class DesktopRuntimeHostClient {
     sessionId: string,
     update: (current: SessionCatalogProjection) => Promise<SessionUpdateResult>,
   ): Promise<SessionCatalogProjection> {
-    for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_SESSION_REVISION_ATTEMPTS; attempt += 1) {
       const current = await this.#requireSession(sessionId);
       const result = await update(current);
       if (result.kind === "committed")
@@ -1408,6 +1547,7 @@ export class DesktopRuntimeHostClient {
 
 class DesktopSessionHandle implements DesktopRuntimeHostSession {
   readonly snapshot: SessionContinuitySnapshot;
+  readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcript: Promise<StoredMessage[]>;
   readonly events: AsyncIterable<SubscriptionFrame>;
   #closeTask: Promise<void> | undefined;
@@ -1417,6 +1557,7 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
     private readonly onClose: () => void,
   ) {
     this.snapshot = subscription.snapshot;
+    this.activeAssistantStreams = subscription.activeAssistantStreams;
     this.events = subscription;
     this.transcript = subscription.loadTranscript(decodeStoredMessageForRead);
     void this.transcript.catch(() => undefined);

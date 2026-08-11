@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { ArrowLeft } from '@maka/ui/icons';
+import { ICON_SIZE, ArrowLeft } from '@maka/ui/icons';
 import {
   BOT_ONBOARDING_PROVIDERS,
   type BotChannelSettings,
@@ -173,7 +173,7 @@ export function BotChatChannelDetail(props: {
         aria-label={detailCopy.back}
         isDisabled={props.actionBusy}
         onClick={props.onBack}
-        icon={<ArrowLeft size={16} aria-hidden="true" />}
+        icon={<ArrowLeft size={ICON_SIZE.chrome} aria-hidden="true" />}
         label={detailCopy.back}
       />
       <header className="settingsBotDetailHeader" data-support={support}>

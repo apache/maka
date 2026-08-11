@@ -19,6 +19,7 @@ import type { ProviderType } from '@maka/core';
 import type { ModelMenuGroup } from './chat-model-helpers.js';
 import {
   buildModelPickerOptions,
+  buildModelPickerDescriptions,
   buildModelPickerProviderTypes,
   type ModelPickerLeadingOption,
 } from './model-picker-internals.js';
@@ -44,7 +45,8 @@ export interface ModelPickerProps {
 }
 
 export function ModelPicker(props: ModelPickerProps) {
-  const copy = getSharedUiCopy(useUiLocale()).modelPicker;
+  const locale = useUiLocale();
+  const copy = getSharedUiCopy(locale).modelPicker;
 
   const options = useMemo(
     () => buildModelPickerOptions(props.groups, props.leadingOption),
@@ -53,6 +55,10 @@ export function ModelPicker(props: ModelPickerProps) {
   const providerTypes = useMemo(
     () => buildModelPickerProviderTypes(props.groups, props.leadingOption),
     [props.groups, props.leadingOption],
+  );
+  const descriptions = useMemo(
+    () => buildModelPickerDescriptions(props.groups, locale),
+    [locale, props.groups],
   );
 
   // size=md matches the other settings-row selectors. Settings is the only
@@ -90,6 +96,7 @@ export function ModelPicker(props: ModelPickerProps) {
               className="modelPickerOption"
               icon={providerMark}
               label={<span className="modelPickerOptionLabel">{option.label ?? option.value}</span>}
+              description={descriptions.get(option.value)}
             />
           );
         }}

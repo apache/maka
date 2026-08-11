@@ -11,7 +11,7 @@
      - Borders / dividers / hovers / muted text never use a "gray" — they're foreground at low alpha.
 
    Visual foundation:
-     - Small tokenized radii + subtle border rings (--shadow-minimal-flat).
+     - Small tokenized radii + subtle border rings (--ring-soft).
      - Multi-layer soft shadows with very low opacity (0.06) instead of one heavy shadow.
      - System UI fonts with optical antialiasing.
      - 14px base font, 4px spacing unit → dense but readable.
@@ -69,7 +69,31 @@
      A wash wide enough to be the whole boundary reads as a gray slab pasted
      next to the content rather than a second panel, which is the note
      PR-UI-FRAME-4 left here and the reason this lands at 0.025 and not higher. */
-  --surface-canvas: oklch(from var(--background) calc(l - 0.025) c h);
+  --surface-canvas: var(--surface-base);
+
+  /* -- Surface ladder (visual system 2.0, T1) --------------------------
+     Four rungs; height maps monotonically to lightness, and the READING
+     surface always occupies this mode's brightest rung: pure white in light,
+     the lightest gray in dark.
+
+     The middle of this ladder is not new. The owner's 2026-06-20 decision
+     above already put a gray plate behind pure-white content, and that IS
+     this model -- `--background` was always the CARD, never the page. What
+     was missing were the two ends: nothing below the canvas for a sidebar to
+     recede to, and no surface of its own for overlays, which had been pinned
+     to the card white.
+
+     The semantic names are canonical; the older names around them are
+     aliases that keep resolving to exactly what they resolved to before.
+     Nothing is forced to migrate here -- see DESIGN.md, Surface ladder. */
+  --surface-sunken: oklch(from var(--background) calc(l - 0.055) c h);
+  --surface-base: oklch(from var(--background) calc(l - 0.025) c h);
+  --surface-raised: var(--background);
+  /* Light has no room above white, so overlay carries the same FILL as raised
+     and is told apart by the overlay recipe (border-soft + elevation).
+     Unpinning it from `--background` is what gives dark a rung to climb and
+     the recipe something to hang on: a semantic split, not a colour change. */
+  --surface-overlay: var(--surface-raised);
   /* PR-GRAY-CARD-LIFT-3 (WAWQAQ msg `053ca971`): in the new
      gray-plate / white-card hierarchy, "elevated" cards live on the
      same pure white as base content cards — the lift comes from the
@@ -77,7 +101,23 @@
      `--background-elevated` mixed 1.5% foreground into background,
      which read as a faint gray on the new shell. Pinning it to the
      same `--background` keeps card surfaces consistently white. */
-  --background-elevated: var(--background);
+  --background-elevated: var(--surface-overlay);
+  /* Visual System 2.0 (T3). NOT a ladder tier, and deliberately outside it.
+     Paper: the backing we hand to content whose own contrast assumes a light
+     background and which we cannot restyle. Four consumers, two kinds:
+       - foreign documents — the sandboxed HTML-artifact iframe (`srcDoc`,
+         which usually declares no background and black body text) and the PDF
+         embed, where the backdrop IS the content's readability;
+       - QR codes (bot onboarding, WeChat pairing), where dark-on-light is a
+         scanning requirement, not a preference — a QR on a dark plate is not
+         "low contrast", it is unreadable by the camera it exists for.
+     Resolving these to `--surface-raised` would satisfy DESIGN.md §10's ban on
+     literal surface colors and break all four in dark mode. That ban exists to
+     stop OUR surfaces drifting off the ladder; none of these is one of our
+     surfaces. Mode-invariant on purpose — it deliberately has no `.dark`
+     override. If a fifth consumer appears that is really app chrome, it
+     belongs on the ladder instead. */
+  --surface-paper: oklch(1 0 0);
   /* PR-UI-ALIGN-0: warm near-black (#141414-like) at a faint warm hue, so
      ALL derived grays (#636261/#838280-like) pick up the reference's warm cast
      instead of reading as cold neutral. */
@@ -87,7 +127,18 @@
      built on. zinc-family hue 286 at the same chroma reads clean and
      cool like the reference sidebar. */
   --foreground: oklch(0.17 0.005 286);
-  --foreground-dimmed: color-mix(in srgb, var(--foreground) 80%, var(--background));
+  /* Alias, not a tier. It was written as "80% ink" like --foreground-secondary
+     but mixed in srgb where that one mixes in oklch, so the same words gave
+     two different colours (10.51:1 vs 12.01:1 measured). One family, one
+     colour space: derive every ink in oklch. */
+  /* `--foreground-dimmed` is gone as of Visual System 2.0 (T4). It was an alias
+     of --foreground-secondary kept alive for five call sites in
+     task-ledger.css, which now name the tier directly. Two names for one ink
+     tier is how the original bug happened: both were written as "80% ink",
+     one mixed in srgb and the other in oklch, and they resolved 10.51:1 against
+     12.01:1. The contract test still runs — it now asserts the token has no
+     independent definition, which an absent token satisfies and a
+     reintroduced color-mix does not. */
 
   /* Brand accent = logo blue (oklch L0.70 C0.135 h250), sampled from
      apps/desktop/assets/icon.png (owner decision 2026-07-03). --success stays
@@ -125,9 +176,29 @@
      --warning's orange h55 (info + warning were indistinguishable). Blue is
      also consistent with the accent (h250) and unambiguously reads as
      informational, not cautionary. */
-  --info: oklch(0.68 0.13 240);         /* blue — informational / "ask" mode */
-  --success: oklch(0.55 0.17 145);      /* green — connected, ok */
-  --destructive: oklch(0.58 0.24 28);   /* red — errors, denied */
+  /* Status family, specified rather than picked (visual system 2.0, T1).
+     One lightness for all four hues, each keeping its own chroma, so the
+     family reads as one system instead of four independent choices.
+
+     Measured against white before this: info 2.82:1, warning 3.29:1, success
+     4.55:1, destructive 4.81:1 — a 1.7x spread with TWO of the four under the
+     4.5:1 AA floor. At L=0.50 they land 5.54-6.33:1 together. Residual spread
+     is hue, not drift: yellow carries more luminance than blue at equal
+     lightness, and equalising that would mean abandoning the shared L that
+     makes them a family.
+
+     All FOUR are declared here, in one block, in both modes. Warning used to
+     sit thirty lines further down beside the -text variants, which is how it
+     came to be the only hue without a dark override: a regeneration that walks
+     "the status block" walks three of them and silently leaves the fourth
+     behind. Grouping is the fix, not a tidy-up. */
+  --info: oklch(0.50 0.13 240);         /* blue — informational / "ask" mode */
+  --success: oklch(0.50 0.17 145);      /* green — connected, ok */
+  --destructive: oklch(0.50 0.24 28);   /* red — errors, denied */
+  /* 警告 must be visually distinct from 提示. Warning is the orange caution
+     hue (h55); info is now cool blue (h240), so the two tiers read as clearly
+     different families — no longer the near-identical ambers they once were. */
+  --warning: oklch(0.50 0.18 55);
 
   /* Legacy brand affordance for a few emphasized surfaces. New checked
      control states use --control instead.
@@ -152,19 +223,49 @@
      (mcp-brand-marks.tsx: simple-icons + @ant-design/icons-svg DingTalk + the
      vendored Feishu mark), so no per-brand plate-tint token is needed — a
      colourful logo already supplies the brand identity. The system-banner tint
-     alias went the same way: the plan-reminders banner derives from --accent
+     alias went the same way: the scheduled-tasks banner derives from --accent
      directly, which is one indirection fewer for the same result. */
 
   /* === text variants (mixed toward foreground for better contrast) === */
   --success-text: color-mix(in oklab, var(--success) 50%, var(--foreground));
   --destructive-text: color-mix(in oklab, var(--destructive) 50%, var(--foreground));
   --info-text: color-mix(in oklab, var(--info) 50%, var(--foreground));
-  /* 警告 must be visually distinct from 提示. Warning is the orange caution
-     hue (h55); info is now cool blue (h240), so the two tiers read as clearly
-     different families — no longer the near-identical ambers they once were.
-     Still derived nowhere else, safe across palettes. */
-  --warning: oklch(0.66 0.18 55);
   --warning-text: color-mix(in oklab, var(--warning) 50%, var(--foreground));
+
+  /* === tinted status surfaces (visual system 2.0, T4) =================
+     The wash family behind status rows and banners. DESIGN.md §8 forbids a
+     hand-rolled `oklch()` status wash at a call site — before this there was
+     nothing to consume instead, only the `-text` variants above, so fourteen
+     call sites each picked their own alpha: backgrounds ranged 0.06–0.12 and
+     borders 0.22–0.38, none of them wrong on its own and no two agreeing.
+
+     EVERY member derives from the status hue with `oklch(from var(--x) ...)`
+     and no literal ever appears here. That is the whole point of a family:
+     when §8's status colours are regenerated — including the scheduled
+     separate dark-mode round — the washes follow automatically instead of
+     being fourteen more places to remember.
+
+     Two tiers, decided in #my-ai:944f2c9d:
+     - regular 0.08 fill / 0.24 border. 0.08 was the existing mode; the border
+       lands at ~3x the fill, matching the system's established "the edge reads
+       about three times the face" rhythm.
+     - strong 0.12 fill / 0.40 border, at 1.5x / 1.67x the regular tier, in the
+       same ~1.6x family as the border ladder.
+
+     STRONG IS RESERVED, and the reservation is the point: it is only for
+     warnings about data destruction or something the user cannot undo. It is
+     not "the loud one to reach for when a notice should stand out" — that
+     habit is exactly how the fourteen alphas above accumulated. */
+  --success-wash:            oklch(from var(--success)     l c h / 0.08);
+  --success-wash-border:     oklch(from var(--success)     l c h / 0.24);
+  --warning-wash:            oklch(from var(--warning)     l c h / 0.08);
+  --warning-wash-border:     oklch(from var(--warning)     l c h / 0.24);
+  --destructive-wash:        oklch(from var(--destructive) l c h / 0.08);
+  --destructive-wash-border: oklch(from var(--destructive) l c h / 0.24);
+  --info-wash:               oklch(from var(--info)        l c h / 0.08);
+  --info-wash-border:        oklch(from var(--info)        l c h / 0.24);
+  --destructive-wash-strong:        oklch(from var(--destructive) l c h / 0.12);
+  --destructive-wash-strong-border: oklch(from var(--destructive) l c h / 0.40);
 
   /* === foreground solid mix scale ===
      foreground-N = N% of foreground interpolated INTO background.
@@ -194,7 +295,21 @@
   /* PR-UI-ALIGN-0: visible hairline borders (≈#e6e6e6) like the reference's
      card/container outlines — maka's 5% was nearly invisible, which flattened
      the floating-card hierarchy. */
---border:        oklch(from var(--foreground) l c h / 0.10);
+  /* Border tiers (visual system 2.0, T1). `--border` is the STRUCTURAL line:
+     the edge of a panel, a card, a table. `--border-soft` is the quiet one for
+     seams inside a surface — rails, row separators, the outline that only has
+     to hint at a boundary the fill has already made.
+
+     Four strengths were in play before this: 5% on the sidebar rail (declared
+     locally in sidebar.css), 8% on --card-border-color, 10% here, and 16% on
+     --border-strong. Two of those are tiers and two are drift. The soft tier
+     is what the 5% rail and the 8% card edge converge on; their call sites
+     move in T2-T4, since T1 does not touch product CSS.
+
+     Pairs with the DESIGN.md rule that one boundary picks ONE mechanism —
+     fill step, line, or shadow, never all three stacked. */
+  --border:        oklch(from var(--foreground) l c h / 0.10);
+  --border-soft:   oklch(from var(--foreground) l c h / 0.06);
   --border-strong: oklch(from var(--foreground) l c h / 0.16);
   /* === border stroke width (#520 PR4 item 14) ============================
      Border color was already tokenized; the width was bare px in every
@@ -210,8 +325,18 @@
   --border-width-thick:    2px;
   --border-width-accent:   3px;
   --muted:         oklch(from var(--foreground) l c h / 0.05);
-  --muted-foreground: color-mix(in oklch, var(--foreground) 50%, var(--background));
-  --foreground-secondary: color-mix(in oklch, var(--foreground) 80%, var(--background));
+  /* Ink ladder (visual system 2.0, T1): three tiers about 2x apart, all above
+     4.5:1. Measured against --surface-raised, light reads 19.1 / 9.8 / 4.8.
+
+     The audit asked for a 3x gap, copied from a reference that reaches 3.6x
+     with only TWO text tiers. Three tiers standing on a 4.5:1 AA floor cannot
+     span 3x without the bottom two colliding, so the rhythm is even instead:
+     roughly geometric, which is what three tiers can actually hold.
+
+     50% muted was the one real defect — 4.21:1 in light and 3.89:1 in dark,
+     already under AA in the mode nobody checked. */
+  --muted-foreground: color-mix(in oklch, var(--foreground) 54%, var(--background));
+  --foreground-secondary: color-mix(in oklch, var(--foreground) 74%, var(--background));
   --state-hover-bg:    oklch(from var(--foreground) l c h / 0.04);
   --state-selected-bg: oklch(from var(--foreground) l c h / 0.065);
   /* PR5 FOREGROUND-ALPHA-TOKEN-0: raw foreground-alpha tiers for component
@@ -224,6 +349,16 @@
   --foreground-alpha-6:  oklch(from var(--foreground) l c h / 0.06);
   --foreground-alpha-10: oklch(from var(--foreground) l c h / 0.10);
   --foreground-alpha-12: oklch(from var(--foreground) l c h / 0.12);
+  /* Visual System 2.0 (T2/T3). Added so the three sites that were borrowing
+     `--border-strong` as a strong neutral TINT can say what they mean: a
+     scrollbar thumb (composer.css) and two separator glyphs (packages/ui).
+     DESIGN.md §4 scopes --border-strong to emphasis chrome — selected outlines
+     and emphasized boundaries — and flags exactly these borrows for migration.
+     Deliberately 0.16, the same alpha they were already getting, so the
+     migration moves them between FAMILIES without moving a pixel; the point is
+     that a future retune of the border ladder must not silently repaint a
+     scrollbar and a "·". */
+  --foreground-alpha-16: oklch(from var(--foreground) l c h / 0.16);
   /* User bubble color is intentionally distinct from `--accent` so users can
      re-tint the accent without ruining chat legibility.
      PR-GRAY-CARD-LIFT-0: bubble shifts to neutral gray (hue 0)
@@ -236,20 +371,47 @@
 
   /* === color-system compatibility aliases ===
      Legacy `--color-*` names that predate the --background family, relocated
-     here from reference-shell.css (Round C). Kept as thin aliases for the few
-     consumers still on them: `--color-bg-container` backs the agents content
-     surface (reference-shell.css) + darwin glass card. The border/text alias
-     tiers went out once their last consumers moved to the --background
-     family. Authoritative source is the token each aliases — see the token
-     README at the top of this file. Do NOT add new --color-* names.
-     `--color-bg-container` is the one shipped exception where the alias name is
-     the canonical handle for the content-card surface (resolves to
-     --background); it carries its darwin overrides in "DARWIN GLASS" below. */
-  --color-bg-container: var(--background);
+     here from reference-shell.css (Round C). The border/text alias tiers went
+     out once their last consumers moved to the --background family, and
+     Visual System 2.0 (T2) retired the last one: `--color-bg-container` backed
+     the agents content surface, which now names the ladder tier it wanted
+     (`--surface-raised`, see reference-shell.css) instead of aliasing toward
+     it. Nothing in the app reads a `--color-*` compatibility name any more.
+     Do NOT add new --color-* names. */
+
+  /* === elevation (visual system 2.0, T1) =============================
+     Product names for the theme's shadow scale, so the right answer is
+     findable. The generated theme ships --shadow-low/med/high and product CSS
+     had used them exactly once, reaching instead for hand-rolled shadows —
+     a scale nobody can name is a scale nobody uses.
+
+     Three names, three jobs: `raised` for a card lifting off its plate,
+     `overlay` for anything in a portal, `drag` for something under the
+     cursor. In-flow elements do not cast shadows; that rule is unchanged,
+     this only gives the legitimate path a name.
+
+     Consumers move in T2-T4 — T1 does not touch product CSS. */
+  --elevation-raised:  var(--shadow-low);
+  --elevation-overlay: var(--shadow-med);
+  --elevation-drag:    var(--shadow-high);
 
   /* === shadow recipes ===
-     Flat elevation uses a foreground-derived 1px ring in both themes. */
-  --shadow-minimal-flat:
+     Flat elevation uses a foreground-derived 1px ring in both themes.
+
+     NOT an elevation tier and NOT dead: this is a 1px ring wearing a
+     box-shadow, and it has five live consumers (two of them in
+     packages/ui/src/styles.css). The T1 audit read its three DEFINITION
+     sites as its only mentions and called it dead; deleting it would have
+     taken two production styles with it. It stays, named for what it is. */
+  /* Visual System 2.0 (T4): renamed from `--shadow-minimal-flat`, which
+     DESIGN.md §4 had already diagnosed — a 1px ring (`0 0 0 1px`) wearing
+     box-shadow clothing, filed under elevation because of the property it
+     happens to use rather than the job it does. It is a border-family value at
+     the soft tier's own 6% alpha, and the name now says so, which matters
+     because "shadow" invited call sites to reach for it when they wanted
+     lift. Same pixels; the two leading transparent layers are kept so the
+     shadow list's shape (and any transition against it) is unchanged. */
+  --ring-soft:
     rgba(0,0,0,0) 0 0 0 0,
     rgba(0,0,0,0) 0 0 0 0,
     oklch(from var(--foreground) l c h / 0.06) 0 0 0 1px;
@@ -510,8 +672,20 @@
      It is corner-adjacent with a uniform inset. If a proposed
      shrink is neither, it is not concentric — pick the tier the
      element's ROLE calls for instead. */
+  /* Radius language (visual system 2.0, T1). Two vocabularies were running in
+     parallel and disagreeing on the card: this file said 8, Astryx's own scale
+     said 10 (--radius-element), and --radius-modal said 12. Three numbers for
+     one idea is how a radius stops meaning anything.
+
+     They land on one set: 4 inner / 6 control / 10 card / 12 modal / full.
+     The card tier resolves to 10 rather than 8 — Astryx's element rung is the
+     one its own components already round to, so meeting it there is what stops
+     our cards from disagreeing with the controls inside them.
+
+     Assignment is monotonic in box height, and `border-radius: 0` is legal
+     only on an edge-to-edge row. See DESIGN.md, Radius language. */
   --radius-control: 6px;
-  --radius-surface: 8px;
+  --radius-surface: 10px;
   --radius-modal: 12px;
   --radius-pill: 999px;
   /* Square icon plates (provider logo, about logo, feature status) are
@@ -521,7 +695,12 @@
      different shapes). A percentage is scale-invariant, so one value
      is correct at every size, including sizes not yet added.
      27% restores the anchor ratio measured in PR-UI-13 (12px on the
-     44px plate) that the tier convergence silently reverted. */
+     44px plate) that the tier convergence silently reverted.
+
+     The plate ladder itself has five rungs — 28/32/36/44/48px boxes —
+     and its glyph sits at roughly 58-64% of the box (the fill
+     convention); a plate off the ladder or a glyph outside that band
+     is the thing to question in review. */
   --radius-plate: 27%;
 
   /* PR-SPACING-CONVERGE-0 (issue #430 PR3, 2026-07-03):
@@ -555,8 +734,15 @@
   --space-12: calc(var(--spacing) * 12);     /* 48px */
   --space-16: calc(var(--spacing) * 16);     /* 64px */
 
-  --icon-size: 16px;           /* chrome glyph size (nav + button icons); dense
-                                  meta (12-14) and hero (20+) stay call-site */
+  /* Five-rung icon scale, mirroring ICON_SIZE in @maka/ui's icons.tsx —
+     these tokens exist for the CSS-clamped sites; pick by the role the
+     glyph plays, not by eye. */
+  --icon-meta: 13px;
+  --icon-control: 14px;
+  --icon-chrome: 16px;
+  --icon-empty: 20px;
+  --icon-plate: 28px;
+  --icon-size: var(--icon-chrome); /* deprecated alias, one release */
 
   /* === motion ===
      Custom easing curves per emil-design-eng — the built-in CSS easings
@@ -633,13 +819,16 @@
       market cards) now hovers by border tone only. */
 
    /* === page-card recipe ===
-     Single source of truth for lifted page-card chrome: a subtle border,
-     compact radius, and low-opacity lift shared by top-level module pages. */
+     Border and fill for top-level page-card chrome. The "lift" half of this
+     recipe is gone as of Visual System 2.0 (T4): `--card-shadow` and
+     `--card-highlight` had three consumers between them — the settings dialog,
+     which is a portal and now wears §5's Floating Recipe, and the stat tile,
+     which rests on the plate and is therefore flat. §5 makes flat the default
+     and reserves shadow for things that genuinely float, so a resting lift had
+     no one left to serve; §4 also had both of them stacking a shadow onto an
+     edge a border already stated. `--card-bg` remains a raised alias (§2). */
   --card-border-color: oklch(from var(--foreground) l c h / 0.08);
   --card-bg: var(--background);
-  --card-shadow: 0 1px 2px oklch(from var(--foreground) l c h / 0.04);
-  /* A 1px inner top sheen gives lifted cards a physical edge. */
-  --card-highlight: inset 0 1px 0 oklch(1 0 0 / 0.04);
 
   --h-titlebar: 36px;
 
@@ -736,6 +925,16 @@
      fallbacks are redundant. */
   --maka-chat-measure: 680px;
 
+  /* === settings ==========================================================
+     One right-edge cap for a settings row's end slot — the read-only value
+     and the control cluster share it, so the two kinds of row end stop at
+     the same edge — and one column width for the trailing selects. */
+  --settings-row-end-cap: min(320px, 62cqi);
+  --settings-control-width: 260px;
+  /* One QR frame spec for the paired dialogs (bot onboarding + WeChat QR
+     login, T5-E): both frames read this so the pair cannot drift. */
+  --qr-frame-size: 256px;
+
 }
 
 /* =============================================================================
@@ -755,9 +954,29 @@
      the shell (Astryx painted its own surface over the frame plate until this
      branch handed the columns their materials); against the product's #171719
      content it rendered a near-black #09090b rail. */
-  --surface-canvas: oklch(from var(--background) calc(l - 0.025) c h);
-  --background-elevated: color-mix(in srgb, var(--foreground) 2%, var(--background));
-  --foreground: oklch(0.92 0.004 286);
+  --surface-canvas: var(--surface-base);
+  /* Dark inverts the direction, not the rule: higher is still lighter and the
+     reading surface still takes the brightest rung. Unlike light there IS
+     room above raised, so overlay climbs a real step. */
+  --surface-sunken: oklch(from var(--background) calc(l - 0.065) c h);
+  --surface-base: oklch(from var(--background) calc(l - 0.025) c h);
+  --surface-raised: var(--background);
+  /* Visual System 2.0 (T4): derived in oklch like the three rungs above it.
+     It was the ladder's last `color-mix(in srgb, ...)`, which DESIGN.md §3
+     named as the one known exception to the One Colorspace Rule and scheduled
+     for exactly this round. Two derivations in one family that read as the
+     same intent but resolve differently is the drift that rule exists to stop —
+     and the ladder is the family where it would matter most, since the rungs
+     are only meaningful relative to each other. Pinned to the measured value
+     the srgb mix produced (rgb 27,27,29 / OKLab L 0.223) so the unification
+     moves no pixels; the contract holds the number. */
+  --surface-overlay: oklch(from var(--background) calc(l + 0.018) c h);
+  --background-elevated: var(--surface-overlay);
+  /* 0.92 measured 14.11:1, just under the 15:1 the reading tier asks for. */
+  --foreground: oklch(0.95 0.004 286);
+  /* Dark's ink-to-surface gap differs, so one percentage cannot put secondary
+     in the 8.5-10:1 band for both modes: 74% gives 9.8 light but 8.2 dark. */
+  --foreground-secondary: color-mix(in oklch, var(--foreground) 78%, var(--background));
 
   --accent: oklch(0.74 0.15 250);
   /* Dark mode keeps the same pale-blue CTA chip + deep-blue text as light
@@ -783,9 +1002,15 @@
   --link: var(--accent);
   --focus-ring: var(--accent);
   --status-running: var(--accent);
+  /* All four together, same shape as the light block. Warning is the hue that
+     proves why: it was the ONE status without a dark override, so lowering the
+     light value to L=0.50 dragged dark down with it and put dark warning at
+     2.83:1, well under AA. Its measured 5.44:1 is restored, and the structure
+     that let it be missed is gone. */
   --info: oklch(0.74 0.13 240);         /* blue — see light-mode note */
   --success: oklch(0.60 0.17 145);
   --destructive: oklch(0.70 0.19 22);
+  --warning: oklch(0.66 0.18 55);
 
   --opacity-overlay: 0.06;
 
@@ -796,7 +1021,7 @@
      (interface-design: "dark mode shadows collapse to a single ring");
      modal keeps one deep drop so overlays still separate from the
      backdrop. */
-  --shadow-minimal-flat:
+  --ring-soft:
     0 0 0 1px oklch(1 0 0 / 0.08);
   /* Slate user bubble for dark mode — distinct from --accent and readable
      against the dark background.
@@ -815,23 +1040,29 @@
 }
 
 /* =============================================================================
-   DARWIN GLASS — color-alias overrides for the macOS vibrancy shell
-   (relocated from styles/theme-glass.css, Round C). Unlayered + the
-   html[data-os="darwin"] selector on purpose: the override must outrank the
-   :root aliases above (0,1,1 > 0,1,0) and beat any @layer declaration. The
-   glass MATERIAL rules (backdrop-filter, transparency) stay in theme-glass.css.
+   DARWIN GLASS — retired by Visual System 2.0 (T2).
 
-   Re-anchored on --background (not a warm/zinc literal) so hue/chroma follow
-   the active palette; card↔canvas separation is the canvas/vibrancy's job, so
-   the content card == the palette background.
+   This block carried the last `--color-*` compatibility alias
+   (`--color-bg-container`) plus a darwin-dark override that lifted the content
+   card `calc(l + 0.035)` off `--background`. Both are gone, and the lift is
+   NOT retuned to a smaller number — it is deleted, because the job it was
+   hired for is now the surface ladder's:
+
+   - What it wanted was "the card reads above the shell in dark mode". The
+     ladder states that directly (base 17 → raised 23) and states it for every
+     mode and palette, not just darwin-dark.
+   - What it actually did was overshoot. Measured on this branch's parent, the
+     plate landed at L 0.240 while `--surface-overlay` — the tier that floats
+     ABOVE plates — sat at 0.223. Menus and dialogs opened DARKER than the
+     surface they opened over, which inverts DESIGN.md §2's Height Rule at the
+     top of the ladder. A private offset cannot see the tiers above it; that is
+     the whole argument for a ladder over per-site lifts.
+
+   The glass MATERIAL rules (backdrop-filter, transparency) were always
+   separate and stay in styles/theme-glass.css — this block was color only, so
+   removing it does not touch vibrancy. Plate fill now resolves through
+   `--agents-content-area-bg` → `--surface-raised` (reference-shell.css).
 ============================================================================= */
-html[data-os="darwin"] {
-  --color-bg-container: var(--background);
-}
-html[data-os="darwin"].dark {
-  /* Dark glass lifts the card one lightness step off the darker shell. */
-  --color-bg-container: oklch(from var(--background) calc(l + 0.035) c h);
-}
 
 /* =============================================================================
    PR-UI-2 (@yuejing 2026-05-22): base46-inspired palette catalog
@@ -1196,27 +1427,6 @@ html[data-os="darwin"].dark {
     -moz-osx-font-smoothing: grayscale;
     overflow: hidden;          /* main shell handles its own scrolling */
   }
-
-  /* Native fallback for raw browser scroll surfaces. Primary app scroll
-   * containers are mounted through OverlayScrollbars with the os-theme-maka
-   * theme in styles.css. */
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: transparent transparent;
-  }
-  ::-webkit-scrollbar        { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track  { background: transparent; }
-  ::-webkit-scrollbar-thumb  {
-    background: transparent;
-    border-radius: var(--radius-control);
-    transition: background var(--duration-quick) var(--ease-out-strong);
-  }
-  *:hover {
-    scrollbar-color: oklch(from var(--foreground) l c h / 0.18) transparent;
-  }
-  *:hover::-webkit-scrollbar-thumb { background: oklch(from var(--foreground) l c h / 0.18); }
-  ::-webkit-scrollbar-thumb:hover { background: oklch(from var(--foreground) l c h / 0.28); }
-  ::-webkit-scrollbar-corner { background: transparent; }
 
   ::selection { background: var(--selection); }
 

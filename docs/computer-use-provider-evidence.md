@@ -121,3 +121,96 @@ The run initially failed closed when the user's foreground ChatGPT window
 occluded the synthetic target. The fixture host now settles and raises its
 layer-0 window with `showInactive()` and `moveTop()` before declaring readiness,
 without focusing it or using an always-on-top overlay layer.
+
+## Native WebContent Qualification
+
+The executor pinned by `apps/desktop/bundled-tools.json` now carries source
+commit `4a9787d2c7f2fbc6a29b33d691916c6b84543661`, including
+`maka-agent/maka-cu#2`, the window-transition follow-up in #3, and the direct
+WebContent frame-reflow fix in #4.
+
+The shared synthetic CUA Lab was run ten consecutive times before integration:
+
+- observation exposed one OOP button after unique mirror removal;
+- slider requested/readback/business oracle: `42 / 42 / 42`;
+- scroll path: semantic `ax_action`, oracle offset `76`;
+- OOP click path: `skylight_pid`;
+- DOM `MouseEvent.isTrusted`: `true`;
+- host local mouse events: one down and one up;
+- stale wrong-target count: `0`;
+- target application never became frontmost.
+
+A separate live retained-element probe exercised the three refetch outcomes:
+
+- unique replacement: action completed once, wrong target `0`;
+- missing replacement: `element_released`, no side effect;
+- ambiguous replacement: `element_changed`, no side effect.
+
+After #4, the exact binary pinned by `apps/desktop/bundled-tools.json`
+(`e457a3143544ba8385c489e5259f206d9450feb1c692eb562413b41b9f38de21`)
+completed a source-bound five-run Web matrix:
+
+- the probe rebuilt clean source commit `4a9787d2c7f2fbc6a29b33d691916c6b84543661`
+  and required the pinned binary bytes to match that build;
+- primary AX click oracle was 1 in every run;
+- every OOP click used `skylight_pid`, produced `MouseEvent.isTrusted=true`,
+  and delivered exactly one host-local mouse down/up pair;
+- slider was 42 and scroll offset was 76 in every run;
+- unique refetch clicked the intended stale target once, while missing refetch
+  had no target or decoy effect;
+- all 30 foreground-sentinel spans recorded zero target-frontmost samples, with
+  at least 92 samples per span and a maximum 80 ms sample gap.
+
+The deterministic source suite separately forces direct WebContent frame-only
+reflow through unique, missing, and ambiguous refetch outcomes, preserves a
+distinct renderer process generation, and confirms that native AX frame changes
+remain fail closed.
+
+This is native executor evidence, not a provider-model qualification cell. A
+future `real-runtime` web scenario must still pass the report contract above.
+
+The same source commit adds `doctor --json`. A release-binary smoke on the
+locked-screen state correctly reported permissions granted, all required native
+SPIs available, an ad-hoc non-hardened signature, and
+`metadataObservation / screenshotObservation / trustedWebContentClick = false`.
+
+Modal and secondary-window routing now have deterministic and live native
+functional evidence. Five consecutive CUA Lab runs against the exact pinned
+binary completed:
+
+- modal open, app observation routed to the sheet, close, and return to main;
+- secondary open, app routing to the frontmost secondary window, exact-window
+  button click, semantic scroll, close, and return to main;
+- all 30 dispatch paths were `ax_action`;
+- button count was 1 and scroll offset reached 140;
+- the five per-run records are retained in one aggregate fixture.
+
+The high-frequency foreground sentinel does not pass: across ten modal/secondary
+sampling spans it recorded 1,738 target-frontmost samples, with at least 189
+samples per span and a maximum 96 ms sample gap. The stage-level before/after
+reads had hidden this transient focus theft. Modal/multi-window routing is
+therefore functionally qualified but does not yet satisfy the background-focus
+contract.
+
+The source includes bounded handling for two measured AppKit races: a newly
+listed CGWindow may publish its AXWindow later, and a press may return
+`cannotComplete` while creating or closing a window. This five-run fixture did
+not exercise the topology-recovery verification arm
+(`topologyRecoveryEvidenceCount: 0`), so that behavior remains implementation
+and unit-test evidence rather than a live claim.
+
+This is native executor qualification, not a provider-model matrix cell.
+
+The same pin now carries stable AX observation revisions:
+
+- the first tree receives depth-first stable ids;
+- matched siblings preserve ids across fresh snapshot tokens;
+- new ids begin above the previous maximum;
+- post-action observations can render no-change, ordered insert/update changes,
+  compressed removed-id ranges, or a full-tree fallback;
+- explicit observe continues to render the complete tree.
+
+This is hermetic protocol/static contract evidence, not a provider-model
+qualification cell. The native source suite passed 326 tests with 26 explicit
+live-test skips, and the host Computer Use suite passed 124 tests. The
+modal/secondary evidence above was run after unlock.

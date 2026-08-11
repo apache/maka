@@ -463,8 +463,8 @@ describe('loop-gate for repeated identical FAILING tool calls', () => {
     assert.equal(h.impl.length, 3, 'the post-reset call ran');
   });
 
-  // Headless Bash returns a terminal result instead of throwing, so its failure
-  // is only counted if deriveToolResultStatus() classifies the terminal exitCode.
+  // A Bash adapter may return a terminal result instead of throwing, so its failure
+  // is counted only when deriveToolResultStatus() classifies the terminal exitCode.
   test('a returned terminal result with a non-zero exit counts as a failure', async () => {
     const h = makeHarness();
     const t = makeTerminalTool('Bash', h.impl, 1);

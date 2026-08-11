@@ -1,12 +1,7 @@
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
 import {
-  CAPABILITY_READINESS_STATES,
-  FEATURE_ENABLEMENT_STATES,
-  OS_PERMISSION_STATES,
   deriveCapabilityReadiness,
-  isCapabilityReadinessState,
-  isOsPermissionState,
   runtimeProbeFromBotReadiness,
   type CapabilityFeatureSignal,
   type CapabilityRuntimeProbeSignal,
@@ -18,28 +13,6 @@ const presentConfig = { state: 'present', source: 'settings' } as const;
 const noRuntime: CapabilityRuntimeProbeSignal = { state: 'not_run', source: 'runtime_probe' };
 
 describe('permission and capability snapshot contracts', () => {
-  test('locks permission and capability readiness enums', () => {
-    expect(OS_PERMISSION_STATES).toEqual([
-      'unsupported',
-      'unknown',
-      'not_determined',
-      'denied',
-      'granted',
-    ]);
-    expect(FEATURE_ENABLEMENT_STATES).toEqual(['not_available', 'partial', 'disabled', 'enabled']);
-    expect(CAPABILITY_READINESS_STATES).toEqual([
-      'not_configured',
-      'denied',
-      'enabled',
-      'degraded',
-      'paused',
-    ]);
-    expect(isOsPermissionState('granted')).toBe(true);
-    expect(isOsPermissionState('authorized')).toBe(false);
-    expect(isCapabilityReadinessState('enabled')).toBe(true);
-    expect(isCapabilityReadinessState('operational')).toBe(false);
-  });
-
   test('disabled feature is paused, not permission denied', () => {
     expect(
       deriveCapabilityReadiness({

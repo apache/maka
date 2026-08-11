@@ -252,11 +252,14 @@ export interface SessionHeader {
   /** Defaults to `default` when absent on legacy session records. */
   orchestrationMode?: OrchestrationMode;
 
+  /** Zero while an imported transcript is staging; one after materialization. */
+  transcriptLedgerVersion?: 0 | 1;
+
   /** Forward-compatible schema versioning. V0.1 only writes 1. */
   schemaVersion: 1;
 }
 
-export type BackendKind = 'ai-sdk' | 'fake' | 'pi-agent';
+export type BackendKind = 'ai-sdk' | 'fake';
 
 export interface SessionSummary {
   id: string;

@@ -1,12 +1,11 @@
 import type { Socket } from 'node:net';
 import {
-  encodeProtocolFrame,
-  ProtocolFrameDecoder,
-  RUNTIME_HOST_MAX_FRAME_BYTES,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RuntimeHostProtocolError,
-  type ClientFrame,
-  type HostFrame,
+  type EncodedProtocolMessage,
 } from '../protocol/index.js';
+import { frameLocalIpcProtocolMessage, LocalIpcProtocolFrameDecoder } from './local-ipc-framing.js';
+import type { RuntimeHostMessageTransport } from './message-transport.js';
 
 const MAX_QUEUED_FRAMES = 64;
 const MAX_QUEUED_BYTES = 2 * 1024 * 1024;
@@ -30,7 +29,8 @@ export class RuntimeHostTransportError extends Error {
       | 'read_eof'
       | 'read_timeout'
       | 'concurrent_read'
-      | 'inbound_queue_full',
+      | 'inbound_queue_full'
+      | 'outbound_queue_full',
     message: string,
     options?: ErrorOptions,
   ) {
@@ -39,9 +39,9 @@ export class RuntimeHostTransportError extends Error {
   }
 }
 
-export class FramedTransport {
+export class FramedTransport implements RuntimeHostMessageTransport {
   readonly closed: Promise<void>;
-  readonly #decoder = new ProtocolFrameDecoder();
+  readonly #decoder = new LocalIpcProtocolFrameDecoder();
   readonly #queue: QueuedFrame[] = [];
   #queuedBytes = 0;
   #buffered = Buffer.alloc(0);
@@ -64,7 +64,7 @@ export class FramedTransport {
       this.#ended = true;
       this.#drainInbound();
     });
-    socket.once('error', (error) => this.#fail(error));
+    socket.once('error', (error) => this.#fail(transportFailure(error)));
     socket.once('close', (hadError) => {
       if (!this.#readTerminal || hadError) {
         this.#fail(new RuntimeHostTransportError('closed', 'Runtime Host transport closed'));
@@ -106,29 +106,28 @@ export class FramedTransport {
     });
   }
 
-  write(frame: ClientFrame | HostFrame): Promise<void> {
-    try {
-      return this.writeEncoded(encodeProtocolFrame(frame));
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  }
-
-  writeEncoded(encoded: Uint8Array): Promise<void> {
+  write(message: EncodedProtocolMessage): Promise<void> {
     if (this.#failure) return Promise.reject(this.#failure);
+    const frame = frameLocalIpcProtocolMessage(message);
     return new Promise((resolve, reject) => {
-      this.socket.write(encoded, (error) => {
-        if (error) reject(error);
-        else resolve();
+      this.socket.write(frame, (error) => {
+        if (!error) {
+          resolve();
+          return;
+        }
+        const failure = transportFailure(error);
+        this.#fail(failure);
+        reject(failure);
       });
     });
   }
 
-  destroyAfterFlush(): void {
+  closeAfterFlush(): void {
     this.socket.destroySoon();
   }
 
-  destroy(error?: Error): void {
+  abort(error?: Error): void {
+    if (error) this.#fail(error);
     this.socket.destroy(error);
   }
 
@@ -149,10 +148,10 @@ export class FramedTransport {
       while (true) {
         const newline = this.#buffered.indexOf(0x0a);
         if (newline === -1) {
-          if (this.#buffered.byteLength > RUNTIME_HOST_MAX_FRAME_BYTES) {
+          if (this.#buffered.byteLength > RUNTIME_HOST_MAX_MESSAGE_BYTES) {
             throw new RuntimeHostProtocolError(
               'frame_too_large',
-              'Runtime Host frame exceeds the byte limit',
+              'Runtime Host message exceeds the byte limit',
             );
           }
           break;
@@ -256,4 +255,17 @@ export class FramedTransport {
 function asError(error: unknown): Error {
   if (error instanceof Error) return error;
   return new RuntimeHostProtocolError('invalid_frame', String(error));
+}
+
+function transportFailure(error: Error): Error {
+  if (error instanceof RuntimeHostTransportError || error instanceof RuntimeHostProtocolError) {
+    return error;
+  }
+  return new RuntimeHostTransportError(
+    'closed',
+    `Runtime Host transport failed: ${error.message}`,
+    {
+      cause: error,
+    },
+  );
 }

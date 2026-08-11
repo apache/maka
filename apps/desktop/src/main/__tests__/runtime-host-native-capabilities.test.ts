@@ -11,6 +11,7 @@ import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
   decodeClientCapabilityReplaceInput,
   type ClientCapabilityCallFrame,
+  type ClientCapabilityServiceCallFrame,
 } from '@maka/runtime-host/protocol';
 import { z } from 'zod';
 import { buildClientSettingsTools } from '../client-settings-tools.js';
@@ -122,6 +123,37 @@ test('publishes every production Desktop-owned tool schema through the protocol'
       offers: provider.offers(),
     }),
   );
+});
+
+test('publishes and admits additional Desktop native-effect services', async () => {
+  let admitted = false;
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
+    additionalServices: () => [
+      {
+        serviceId: 'maka_scheduled_task_native_effect',
+        version: '1',
+        async call(method, input) {
+          return { method, id: input.id };
+        },
+      },
+    ],
+  });
+  assert.deepEqual(provider.services?.(), [
+    { serviceId: 'maka_scheduled_task_native_effect', version: '1' },
+  ]);
+  assert.ok(provider.callService);
+  const result = await provider.callService(serviceFrame(), {
+    signal: new AbortController().signal,
+    accept: async () => {
+      admitted = true;
+    },
+  });
+  assert.equal(admitted, true);
+  assert.deepEqual(result, { method: 'notify_local', id: 'task-1' });
 });
 
 test('validates before admission and invokes the exact offered tool with Host context', async () => {
@@ -458,6 +490,18 @@ function tool<P, R>(
     description: `${name} description`,
     parameters,
     impl,
+  };
+}
+
+function serviceFrame(): ClientCapabilityServiceCallFrame {
+  return {
+    kind: 'client.capability.service_call',
+    invocationId: 'invocation-service-1',
+    registrationId: 'registration-1',
+    serviceId: 'maka_scheduled_task_native_effect',
+    version: '1',
+    method: 'notify_local',
+    input: { id: 'task-1' },
   };
 }
 

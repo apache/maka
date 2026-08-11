@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -11,6 +11,7 @@ import type {
 import type { ShellRunRecord } from '@maka/core/shell-run';
 import {
   FAKE_ASK_USER_QUESTION_PROMPT,
+  FakeBackend,
   LOCAL_READ_AGENT_DEFINITION,
   SessionManager,
 } from '@maka/runtime';
@@ -29,6 +30,8 @@ import {
 } from '@maka/storage/root-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 import {
   createExecutionRuntimeHostComposition,
   runtimeHostFilesystemWorkerRuntime,
@@ -129,6 +132,123 @@ test('composition drain preserves usage admission until active Runtime work sett
     );
 
     await composition.close();
+  });
+});
+
+test('hosted execution settles while its tracked environment resource remains verifiable', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'hosted-fake',
+        name: 'Hosted fake',
+        providerType: 'ollama',
+        enabled: true,
+        enabledModelIds: ['fake-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    const fetch = await policy.operations.beginModelFetch(connection.connectionId);
+    assert.equal(fetch.kind, 'ready');
+    if (fetch.kind !== 'ready') return;
+    const fetched = await policy.operations.completeModelFetch(fetch.ticket, {
+      models: [{ id: 'fake-model' }],
+      source: 'fetched',
+      fetchedAt: Date.now(),
+    });
+    assert.equal(fetched.kind, 'committed');
+    if (fetched.kind !== 'committed') return;
+    const defaultTarget = await policy.connectionCatalog.setDefaultTarget({
+      expectedCatalogRevision: fetched.snapshot.revision,
+      target: { connectionId: connection.connectionId, modelId: 'fake-model' },
+    });
+    assert.equal(defaultTarget.kind, 'committed');
+
+    const residencies = new HostResidencyRegistry();
+    let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>;
+    const operationContext = {
+      hostEpoch: 'hosted-environment-test',
+      connectionId: 'hosted-environment-test',
+      surface: 'run' as const,
+      principal: 'runtime_host' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    composition = await createExecutionRuntimeHostComposition(
+      {
+        owner,
+        hostEpoch: operationContext.hostEpoch,
+        acquireResidency: (label) => residencies.acquire(label),
+        retainUntilProcessExit: () => undefined,
+        requestDrain: () => composition?.beginDrain(),
+        waitForResidencies: () => residencies.waitForEmpty(),
+        waitForResidenciesExcept: (label) => residencies.waitForEmptyExcept(label),
+      },
+      { bootstrapRuntimePolicy: false },
+      {
+        primaryBackendFactory: (backendContext) => {
+          const backend = new FakeBackend(backendContext);
+          const send = backend.send.bind(backend);
+          backend.send = async function* (input) {
+            if (input.text === 'leave the environment ready for verification') {
+              const started = await composition.handlers['runtime.resource.start'](
+                { sessionId: backendContext.sessionId, launchId: input.turnId },
+                operationContext,
+              );
+              assert.equal(started.ok, true);
+            }
+            yield* send(input);
+          };
+          return backend;
+        },
+      },
+    );
+    try {
+      await composition.recover();
+      const executionId = '00000000-0000-4000-8000-000000000111';
+      const execution = composition.handlers['hosted.execution.start'](
+        {
+          executionId,
+          session: {
+            workspace: { kind: 'host_path', path: root },
+            modelTarget: { kind: 'default' },
+            name: 'Hosted environment test',
+          },
+          content: { text: 'leave the environment ready for verification' },
+        },
+        operationContext,
+      );
+      let settled = false;
+      void execution.then(() => {
+        settled = true;
+      });
+      try {
+        await waitFor(async () => settled, 5_000);
+      } catch {
+        assert.fail(`Hosted execution did not settle: ${JSON.stringify(residencies.snapshot())}`);
+      }
+      const result = await execution;
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+      if (result.result.kind !== 'settled') assert.fail(result.result.failureReason);
+
+      const resources = await composition.handlers['runtime.resource.query'](
+        { kind: 'list_start', sessionId: executionId },
+        operationContext,
+      );
+      assert.equal(resources.ok, true);
+      if (!resources.ok || resources.result.kind !== 'page') return;
+      assert.equal(
+        resources.result.resources.some((item) => item.result.status === 'running'),
+        true,
+      );
+    } finally {
+      composition.beginDrain();
+      await composition.close();
+    }
   });
 });
 
@@ -257,7 +377,69 @@ test('production Skill catalog resolves a Graph child durable tool surface', asy
   });
 });
 
-test('production execution composition owns claimed graph activation retry and exact abort', async () => {
+test('new Full Access Plan Skill previews use the mutating tool surface', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const skillDirectory = join(root, '.agents', 'skills', 'write-preview');
+    await mkdir(skillDirectory, { recursive: true });
+    await writeFile(
+      join(skillDirectory, 'SKILL.md'),
+      [
+        '---',
+        'name: Write Preview',
+        'description: Requires the Write tool.',
+        'required-tools: [Write]',
+        '---',
+        '# Write Preview',
+        '',
+      ].join('\n'),
+    );
+
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      const connection = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'new-session-skill-client',
+        surface: 'desktop' as const,
+        principal: 'local_os_user' as const,
+        acquireResidency: () => ({ release() {} }),
+      };
+      const query = (permissionMode: 'ask' | 'bypass') =>
+        composition.handlers['skill.catalog.invocable.query'](
+          {
+            kind: 'start',
+            target: {
+              kind: 'new_session',
+              context: { workspace: { kind: 'host_path', path: root } },
+              collaborationMode: 'plan',
+              permissionMode,
+            },
+          },
+          connection,
+        );
+
+      const managed = await query('ask');
+      assert.equal(managed.ok, true);
+      if (!managed.ok || managed.result.kind !== 'page') return;
+      assert.equal(
+        managed.result.items.some((item) => item.id === 'write-preview'),
+        false,
+      );
+
+      const fullAccess = await query('bypass');
+      assert.equal(fullAccess.ok, true);
+      if (!fullAccess.ok || fullAccess.result.kind !== 'page') return;
+      assert.equal(
+        fullAccess.result.items.some((item) => item.id === 'write-preview'),
+        true,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production composition validates graph stop before aborting a claimed child', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const claims = createAgentGraphControlStore(root);
@@ -354,6 +536,30 @@ test('production execution composition owns claimed graph activation retry and e
         onReady: ready,
       });
       await started;
+      const clientContext = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'graph-stop-client',
+        surface: 'tui' as const,
+        principal: 'local_os_user' as const,
+        acquireResidency: () => ({ release() {} }),
+      };
+      const invalidStop = await composition.handlers['agent.graph.stop'](
+        { rootSessionId: abortedClaim.targetSessionId },
+        clientContext,
+      );
+      assert.equal(invalidStop.ok, false);
+      if (invalidStop.ok) return;
+      assert.equal(invalidStop.error.code, 'operation_conflict');
+      const stillActive = await composition.handlers['turn.query'](
+        {
+          sessionId: abortedClaim.targetSessionId,
+          turnId: abortedClaim.targetTurnId,
+        },
+        clientContext,
+      );
+      assert.equal(stillActive.ok, true);
+      if (!stillActive.ok) return;
+      assert.equal(['completed', 'failed', 'cancelled'].includes(stillActive.result.status), false);
       abort.abort();
       const aborted = await aborting;
       assert.equal(aborted.status, 'cancelled');

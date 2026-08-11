@@ -24,6 +24,19 @@ import type { ChatModelChoice, ProviderType, UiLocale } from '@maka/core';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 export type { ChatModelChoice } from '@maka/core';
 
+export function modelChoiceDescription(
+  choice: Pick<ChatModelChoice, 'description' | 'knowledgeCutoff'>,
+  locale: UiLocale = 'zh',
+): string | undefined {
+  const description = choice.description?.trim();
+  const knowledge = choice.knowledgeCutoff?.trim();
+  const copy = getSharedUiCopy(locale).modelPicker;
+  const parts = [description, knowledge ? copy.knowledgeCutoff(knowledge) : undefined].filter(
+    (value): value is string => Boolean(value),
+  );
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
 export interface ModelMenuGroup {
   connectionSlug: string;
   /** Provider of this group, so the menu can render its brand mark on the heading. */

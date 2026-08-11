@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import type { ipcMain as electronIpcMain } from "electron";
 import type {
   LocalMemoryBackupInfo,
   LocalMemoryEntryPreview,
@@ -20,6 +19,10 @@ import {
   type MemoryStateProjection,
 } from "@maka/runtime-host/protocol";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
 
 type LocalMemoryMutationResult =
   | {
@@ -45,7 +48,7 @@ const BACKUP_FILES: Readonly<Record<MemoryBackupKind, string>> = {
 };
 
 interface RuntimeHostMemoryIpcDeps {
-  readonly ipcMain: Pick<typeof electronIpcMain, "handle">;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
   readonly workspaceRoot: string;
   readonly openPath: (path: string) => Promise<string>;
@@ -54,8 +57,10 @@ interface RuntimeHostMemoryIpcDeps {
 export function registerRuntimeHostMemoryIpc(
   deps: RuntimeHostMemoryIpcDeps,
 ): void {
-  deps.ipcMain.handle("memory:getState", () => getMemoryState(deps));
-  deps.ipcMain.handle("memory:listProposals", () =>
+  handleReconnectableRead(deps.ipcMain, "memory:getState", () =>
+    getMemoryState(deps),
+  );
+  handleReconnectableRead(deps.ipcMain, "memory:listProposals", () =>
     listMemoryEntries(deps.client, "proposals"),
   );
   deps.ipcMain.handle("memory:propose", async (_event, input: unknown) => {

@@ -20,7 +20,6 @@ export async function collectWindowsTestSkips(root = REPO_ROOT) {
   const entries = [];
   for (const file of files.sort()) {
     const path = relative(root, file).replaceAll('\\', '/');
-    if (path === 'scripts/windows-test-inventory.test.mjs') continue;
     const sourceText = await readFile(file, 'utf8');
     const sourceLines = sourceText.split(/\r?\n/u);
     for (const skip of findSkipExpressions(sourceText)) {

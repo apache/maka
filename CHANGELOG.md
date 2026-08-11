@@ -2,6 +2,91 @@
 
 ## Unreleased
 
+## 0.1.10 - 2026-08-10
+
+### Highlights
+
+- Rebuilt the Runtime Host around durable ownership and recovery: clients now
+  reconnect across host restarts, incompatible host epochs retire cleanly, and
+  evicted session streams recover without losing the active conversation
+  (#2613, #2618, #2630, #2633).
+- Added remote capability provider mode and stopped agent graph supervisors
+  from generating unnecessary wake-ups (#2625, #2626).
+- Made the changes panel Git-authoritative, restored slash command discovery,
+  exposed archived conversations, and added an About-page update check
+  (#2610, #2612, #2573, #2629).
+- Added managed dependency artifact authority to storage and routed DeepSeek V4
+  Flash edits through ApplyPatch (#2485, #2606).
+
+### Reliability and developer experience
+
+- Recovered stuck xAI login attempts and stale connection deletion, kept
+  settings-controlled session chrome hidden, rendered subagents as compact
+  rows, and aligned the workbar picker with Astryx (#2615, #2617, #2619,
+  #2632).
+- Removed obsolete Runtime Host transition residue and preserved the storage
+  hydration crash fixture (#2635, #2576).
+- Reduced Windows CI work by scoping the baseline to affected surfaces and
+  gating expensive storage coverage, while retrying transient Electron
+  downloads (#2599, #2637, #2594).
+- Updated bundled Computer Use and WebContent dependency pins, including the
+  frame reflow fix (#2627, #2631, #2638).
+
+### Distribution
+
+- Ships for Apple Silicon macOS as a signed and notarized DMG and ZIP, and for
+  Windows x64 as an unsigned NSIS installer and ZIP, built and verified in the
+  same release run.
+- The bundled Computer Use skill ships with the app, but the Computer Use
+  executor remains excluded from this release.
+
+## 0.1.9 - 2026-08-09
+
+### Highlights
+
+- Completed the Runtime Host M5 production cutover (#2420), then established
+  the local standalone service (#2583), authenticated WebSocket access
+  (#2591), and Host-owned project catalog authority (#2603).
+- Added external session import end to end: the shared foundation (#2500), a
+  Codex session adapter (#2502), and the Desktop import flow (#2507).
+- Shipped Visual System 2.0 from its foundations through the full theme sweep
+  and detail polish (#2525, #2536, #2538), aligned high-traffic chrome with
+  Astryx primitives (#2580), and closed the remaining elevation, rhythm, and
+  primitive review debt (#2593).
+- Made task submission readiness a shared product contract (#2498), exposed it
+  in Desktop (#2519), added CLI preflight (#2524), and consumed the readiness
+  result at submission time (#2523).
+- Expanded implementation-agent capabilities with portable terminal input
+  (#2526), semantic terminal mouse input (#2533), interactive shell controls
+  (#2561), and OpenAI native ApplyPatch (#2532).
+- Replaced the CodeMode `Self` evaluator with QuickJS (#2549).
+
+### Reliability and developer experience
+
+- Runtime recovery now handles idle and incomplete provider streams (#2535,
+  #2604), preserves compaction projection after overflow (#2602), retains
+  imported session context (#2579), and keeps full access available in Plan
+  mode (#2581).
+- Stabilized Runtime Host session lifecycle races (#2548), added client request
+  backpressure (#2539), made task refusals actionable (#2527), recovered CLI
+  sessions after workspace moves (#2531), and kept renamed Claude model ids
+  stable across catalog refreshes (#2482).
+- Matured the generated-files workbar (#2506), kept generated files under user
+  control (#2585), restored composer drafts across remounts (#2584), exposed
+  diagnostics from error toasts (#2540), and added per-connection model request
+  customization (#2565).
+- Cut CI wall-clock time with impact gates and a single end-to-end job (#2589),
+  reduced Storybook to render smoke (#2582), and expanded Windows process,
+  named-pipe, artifact, workspace, and crash-recovery coverage.
+
+### Distribution
+
+- Ships for Apple Silicon macOS as a signed and notarized DMG and ZIP, and for
+  Windows x64 as an unsigned NSIS installer and ZIP, built and verified in the
+  same release run.
+- The bundled Computer Use skill ships with the app, but the Computer Use
+  executor remains excluded from this release.
+
 ## 0.1.8 - 2026-08-08
 
 ### Highlights
@@ -268,8 +353,8 @@
   Astryx Link for the last bare anchors (#2138), a localized required/optional
   field marker (#2184), global shortcuts through Astryx `useHotkeys` (#2091),
   and Astryx `clickAction` owning the in-flight button state (#2089).
-- Fixed the 计划提醒 inspector to sit two tab stops from any row (#2185) and
-  seeded plan reminders with distinct `createdAt` (#2186).
+- Fixed the 定时任务 inspector to sit two tab stops from any row (#2185) and
+  seeded scheduled tasks with distinct `createdAt` (#2186).
 - Added an a11y audit that flags `aria-label` on elements whose role cannot hold
   a name (#2108), and established the Windows support baseline (#2156).
 - Replaced fixed waits with explicit barriers in runtime tests (#2162), owned
@@ -335,7 +420,7 @@
 - Derived thinking-strength controls from models.dev reasoning options, and
   unified cron expression authority.
 - Continued the Astryx redesign across Settings, the subagent page, the
-  extensions page, plan reminders, skill chips and empty states, and the
+  extensions page, scheduled tasks, skill chips and empty states, and the
   composer model and voice controls.
 - Put every headless benchmark arm under the same tool surface and model
   budget, registered `ArchiveRead` for Harbor-archived tool results, and

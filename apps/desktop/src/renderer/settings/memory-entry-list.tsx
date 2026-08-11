@@ -1,4 +1,5 @@
 import type { LocalMemoryState } from '@maka/core';
+import { EmptyState } from '@astryxdesign/core';
 import { Button, MoreMenu, RelativeTime } from '@maka/ui';
 import { memoryOriginLabel } from './memory-settings-labels';
 import type { MemorySettingsCopy } from '../locales/settings-memory-copy';
@@ -22,15 +23,12 @@ export function MemoryEntryList(props: {
         <span>{props.copy.countEntries(props.entries.length)}</span>
       </div>
       {props.entries.length === 0 ? (
-        <p className="settingsMemoryEntryEmpty">{props.filtered ? props.copy.text.noMatchEntry : props.copy.text.noEntry}</p>
+        <EmptyState
+          isCompact
+          className="settingsMemoryEntryEmpty"
+          title={props.filtered ? props.copy.text.noMatchEntry : props.copy.text.noEntry}
+        />
       ) : (
-        /* PR-MEMORY-ENTRY-LIST-A11Y-0 (round 18/30): fourth
-           application of the same ARIA list fix. Was `<div
-           role="list">` with `<article role="listitem">` rows —
-           semantic `<ul>` / `<li>` so screen readers get the
-           relationship from the elements themselves. The inner
-           `<article>` per entry stays — articles are valid
-           sectioning content inside list items. */
         <ul className="settingsMemoryEntryList" aria-label={props.copy.listAria(props.title)}>
           {props.entries.map((entry) => {
             const copyPending = props.pendingCopyIds?.has(`entry:${entry.id}:copy`) ?? false;

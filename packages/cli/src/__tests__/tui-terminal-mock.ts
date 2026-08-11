@@ -67,15 +67,21 @@ export function plainTerminalOutput(output: string): string {
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
 }
 
-export function inputSurfaceRows(lines: readonly string[]): [number, number] {
+export function findInputSurfaceRows(lines: readonly string[]): [number, number] | undefined {
   const editorBorderIndexes = lines
     .map((line, index) => (/^─+$/.test(line) ? index : -1))
     .filter((index) => index >= 0);
-  assert.ok(editorBorderIndexes.length >= 2);
+  if (editorBorderIndexes.length < 2) return undefined;
   return [
     editorBorderIndexes[editorBorderIndexes.length - 2]!,
     editorBorderIndexes[editorBorderIndexes.length - 1]!,
   ];
+}
+
+export function inputSurfaceRows(lines: readonly string[]): [number, number] {
+  const rows = findInputSurfaceRows(lines);
+  assert.ok(rows, 'expected a settled input surface with top and bottom editor borders');
+  return rows;
 }
 
 /**
@@ -89,11 +95,9 @@ export function inputSurfaceRows(lines: readonly string[]): [number, number] {
  */
 export function autocompleteSuggestionLines(lines: readonly string[]): readonly string[] {
   if (!lines.some((line) => line.includes('→'))) return [];
-  const editorBorders = lines
-    .map((line, index) => (/^─+$/.test(line) ? index : -1))
-    .filter((index) => index >= 0);
-  if (editorBorders.length < 2) return [];
-  const editorTopBorder = editorBorders[editorBorders.length - 2]!;
+  const inputRows = findInputSurfaceRows(lines);
+  if (!inputRows) return [];
+  const [editorTopBorder] = inputRows;
   let start = editorTopBorder;
   while (start > 0 && /\/\w/.test(lines[start - 1]!)) start -= 1;
   return lines.slice(start, editorTopBorder);

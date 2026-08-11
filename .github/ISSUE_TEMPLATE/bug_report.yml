@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a defect in Maka (Desktop, TUI/CLI, or Headless)
+description: Report a defect in Maka (Desktop, TUI/CLI, Runtime Host, or Eval)
 labels: ["bug"]
 body:
   - type: textarea
@@ -29,7 +29,7 @@ body:
       placeholder: |
         - Maka version or commit:
         - OS and version:
-        - Surface: Desktop / TUI / CLI / Headless
+        - Surface: Desktop / TUI / CLI / Runtime Host / Eval
         - Node.js version, if running from source:
     validations:
       required: true

@@ -79,7 +79,8 @@
   padding: 3px 8px;
   border-radius: var(--radius-control);
   /* Astryx's fixed tooltip pair (same as Thumbnail's remove scrim): legible
-     in both themes without borrowing surface tokens for text. */
+     in both themes without borrowing surface tokens for text. 11px matches
+     Astryx's own tooltip type — a lockstep exception, not the product scale. */
   background-color: var(--color-overlay);
   color: var(--color-on-dark);
   font-size: 11px;
@@ -88,7 +89,7 @@
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
-  transition: opacity var(--duration-fast, 120ms) var(--ease-standard, ease);
+  transition: opacity var(--duration-quick) var(--ease-out-strong);
   z-index: var(--z-tooltip);
 }
 
@@ -421,7 +422,8 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  scrollbar-color: var(--border-strong) transparent;
+  /* Ink tint, not a border — see --foreground-alpha-16 (same alpha, right family). */
+  scrollbar-color: var(--foreground-alpha-16) transparent;
   scrollbar-width: thin;
 }
 

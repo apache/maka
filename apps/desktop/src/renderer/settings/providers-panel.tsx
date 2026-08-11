@@ -13,7 +13,7 @@ import {
   Text,
   VStack,
 } from '@astryxdesign/core';
-import { ChevronRight } from '@maka/ui/icons';
+import { ICON_SIZE, ChevronRight, Cpu } from '@maka/ui/icons';
 import {
   type LlmConnection,
   type ProviderType,
@@ -70,15 +70,13 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   bridge: ConnectionsBridge;
   initialPage?: 'connections' | 'catalog';
   /**
-   * When set, open this connection's detail once the list has loaded. Used by
-   * the `oauth-relogin` e2e fixture so the re-login affordance is captured; a
-   * real user reaches the same page by clicking the connection row.
+   * When set, open this connection's detail once the list has loaded.
    */
   initialConnectionSlug?: string;
   /**
    * When set, land straight on this provider's setup once the panel has
-   * loaded — the first-run hero's path. One-shot: the caller retires the
-   * request via onInitialCreateProviderConsumed.
+   * loaded. One-shot: the caller retires the request via
+   * onInitialCreateProviderConsumed.
    */
   initialCreateProviderType?: ProviderType;
   /** Called once the setup level has been entered. */
@@ -380,6 +378,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             />
           ) : connections.length === 0 ? (
             <EmptyState
+              icon={<Cpu size={ICON_SIZE.empty} />}
               title={copy.empty}
               description={copy.emptyHelp}
               actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} />}
@@ -412,7 +411,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                             <span>{status.label}</span>
                           </span>
                         )}
-                        <ChevronRight size={16} aria-hidden="true" />
+                        <ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />
                       </HStack>
                     )}
                     onClick={() => openDetail(connection.slug)}

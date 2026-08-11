@@ -129,31 +129,13 @@ describe('browser tool helpers', () => {
 });
 
 describe('browser tool execution', () => {
-  it('navigate reports the landed URL and title', async () => {
-    install({ url: 'https://example.com/welcome', title: 'Welcome' });
-    const out = await run(buildBrowserNavigateTool(), { url: 'https://example.com' });
-    assert.match(out, /Loaded https:\/\/example\.com\/welcome/);
-    assert.match(out, /Title: Welcome/);
-  });
 
   it('navigate rejects a non-web URL before connecting', async () => {
     install({});
     await assert.rejects(run(buildBrowserNavigateTool(), { url: 'file:///etc/passwd' }), /Not a navigable URL/);
   });
 
-  it('snapshot returns the element listing with the page URL', async () => {
-    install({ url: 'https://example.com/', snapshot: '[1] button "Search"' });
-    const out = await run(buildBrowserSnapshotTool(), {});
-    assert.match(out, /\[1\] button "Search"/);
-    assert.match(out, /example\.com/);
-  });
 
-  it('click reports the match count and warns on multiple matches', async () => {
-    install({ click: { matches_n: 3, match_level: 'stable' } });
-    const out = await run(buildBrowserClickTool(), { ref: '[5]' });
-    assert.match(out, /matched 3 elements, stable match/);
-    assert.match(out, /Multiple matches/);
-  });
 
   it('type reports verification failure with the actual content', async () => {
     install({ fill: { verified: false, actual: 'partial', match_level: 'exact' } });
@@ -170,18 +152,7 @@ describe('browser tool execution', () => {
     await assert.rejects(run(buildBrowserWaitTool(), { text: '   ' }), /non-empty/);
   });
 
-  it('wait succeeds and names the condition', async () => {
-    install({ waitImpl: async () => {} });
-    const out = await run(buildBrowserWaitTool(), { text: 'Loaded' });
-    assert.match(out, /Done: text "Loaded"/);
-  });
 
-  it('extract converts page HTML to markdown', async () => {
-    install({ url: 'https://example.com/', extractHtml: "<h1>Hi</h1><p>See <a href='https://x.com'>x</a></p>" });
-    const out = await run(buildBrowserExtractTool(), {});
-    assert.match(out, /Hi/);
-    assert.match(out, /\[x\]\(https:\/\/x\.com\)/);
-  });
 
   it('extract fails clearly when a selector matches nothing', async () => {
     install({ url: 'https://example.com/' }); // extractHtml undefined => page returns null

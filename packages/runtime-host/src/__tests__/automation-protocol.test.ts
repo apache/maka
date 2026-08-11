@@ -57,12 +57,11 @@ describe('Automation protocol', () => {
     const create = {
       kind: 'create' as const,
       sessionId: 'session-1',
-      automationKind: 'cron' as const,
       name: 'daily summary',
       prompt: 'Summarize the workspace.',
       schedule: { type: 'once' as const, delaySeconds: 30 },
       maxFires: 1,
-      durable: true,
+      requiredCapabilityGroups: ['client_contract'],
     };
     assert.deepEqual(decodeAutomationMutateInput(create), create);
     for (const kind of ['delete', 'pause', 'resume'] as const) {
@@ -96,6 +95,8 @@ describe('Automation protocol', () => {
       createInput({ schedule: { type: 'interval', seconds: 9 } }),
       createInput({ schedule: { type: 'once', delaySeconds: 86_401 } }),
       createInput({ schedule: { type: 'cron', expression: '*'.repeat(101) } }),
+      createInput({ requiredCapabilityGroups: ['client_contract', 'client_contract'] }),
+      createInput({ requiredCapabilityGroups: Array.from({ length: 33 }, (_, i) => `group_${i}`) }),
     ]) {
       assertInvalid(() => decodeAutomationMutateInput(input));
     }
@@ -164,7 +165,6 @@ function createInput(overrides: Record<string, unknown> = {}): Record<string, un
   return {
     kind: 'create',
     sessionId: 'session-1',
-    automationKind: 'heartbeat',
     name: 'check build',
     prompt: 'Check the build.',
     schedule: { type: 'interval', seconds: 60 },
@@ -175,7 +175,6 @@ function createInput(overrides: Record<string, unknown> = {}): Record<string, un
 function projection(): AutomationProjection {
   return {
     id: 'automation-1',
-    kind: 'cron',
     name: 'daily summary',
     status: 'active',
     prompt: 'Summarize the workspace.',
@@ -191,9 +190,13 @@ function projection(): AutomationProjection {
     expiresAt: 4,
     lastError: null,
     consecutiveFailures: 0,
-    durable: true,
     deferredFireCount: 0,
     firePending: false,
+    waiting: {
+      reason: 'client_capability_provider_unavailable',
+      since: 2,
+      message: 'Capability provider is offline',
+    },
   };
 }
 

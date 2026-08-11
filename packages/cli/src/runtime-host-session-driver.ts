@@ -32,6 +32,8 @@ import type {
   SessionCatalogItem,
   SessionCatalogProjection,
   SessionUpdateResult,
+  WorkspaceProjection,
+  WorkspaceTarget,
 } from '@maka/runtime-host/protocol';
 import {
   RuntimeHostSessionChannel,
@@ -45,7 +47,9 @@ import type {
   MakaSessionDriver,
   MakaSessionMoveResult,
   MakaSessionRewindResult,
+  MakaSessionSwitchOptions,
   MakaSessionSwitchResult,
+  MakaTranscriptReplacementReason,
   RewindTarget,
   SessionResumeAvailability,
 } from './session-driver.js';
@@ -61,6 +65,7 @@ const MAX_CATALOG_ATTEMPTS = 3;
 export interface RuntimeHostMakaSessionDriverInput {
   connection: RuntimeHostSessionDriverConnection;
   cwd: string;
+  workspace?: WorkspaceTarget;
   llmConnectionSlug: string;
   model: string;
   permissionMode?: PermissionMode;
@@ -86,7 +91,12 @@ export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
     listener: (sessionId: string, requestId: string) => void,
   ): () => void;
   subscribeTranscriptReplacements(
-    listener: (sessionId: string, turnId: string, messages: StoredMessage[]) => void,
+    listener: (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void,
   ): () => void;
   listShellRunUpdates(sessionId: string): Promise<ShellRunUpdate[]>;
   subscribeShellRunUpdates(listener: (update: ShellRunUpdate) => void): () => void;
@@ -104,7 +114,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   readonly #now: () => number;
   readonly #inspectCwdChanges: InspectCwdChanges;
   #sessionId: string | null = null;
-  #cwd: string;
+  #workspace: WorkspaceProjection;
   #model: string;
   #llmConnectionSlug: string;
   #thinkingLevel: ThinkingLevel | undefined;
@@ -124,7 +134,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     (sessionId: string, requestId: string) => void
   >();
   readonly #transcriptListeners = new Set<
-    (sessionId: string, turnId: string, messages: StoredMessage[]) => void
+    (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void
   >();
 
   constructor(input: RuntimeHostMakaSessionDriverInput) {
@@ -132,7 +147,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#newId = input.newId ?? randomUUID;
     this.#now = input.now ?? Date.now;
     this.#inspectCwdChanges = input.inspectCwdChanges ?? inspectGitCwdChanges;
-    this.#cwd = input.cwd;
+    this.#workspace = {
+      target: input.workspace ?? { kind: 'host_path', path: input.cwd },
+      hostCwd: input.cwd,
+    };
     this.#model = input.model;
     this.#llmConnectionSlug = input.llmConnectionSlug;
     this.#permissionMode = input.permissionMode ?? 'ask';
@@ -146,7 +164,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   async createSession(input: CreateSessionInput): Promise<SessionSummary> {
     if (this.#sessionId) throw new Error('Cannot create a Session while another is active.');
     if (!input.model) throw new Error('Runtime Host Session creation requires an explicit model');
-    this.#cwd = input.cwd;
+    this.#workspace = {
+      target: workspaceTargetForCreate(this.#workspace, input),
+      hostCwd: input.cwd,
+    };
     this.#llmConnectionSlug = input.llmConnectionSlug;
     this.#model = input.model;
     this.#thinkingLevel = input.thinkingLevel;
@@ -162,7 +183,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return sessions
       .map((session, index) => ({ session, index }))
       .sort((left, right) => {
-        const cwdDelta = cwdRank(left.session, this.#cwd) - cwdRank(right.session, this.#cwd);
+        const cwdDelta =
+          cwdRank(left.session, this.#workspace.hostCwd) -
+          cwdRank(right.session, this.#workspace.hostCwd);
         return cwdDelta !== 0 ? cwdDelta : left.index - right.index;
       })
       .map(({ session }) => session);
@@ -371,38 +394,51 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async moveSession(rawCwd: string): Promise<MakaSessionMoveResult> {
     const sessionId = this.#requireSession('move');
-    const nextCwd = await resolveMoveCwd(rawCwd, this.#cwd);
-    const previousCwd = this.#cwd;
+    const nextCwd = await resolveMoveCwd(rawCwd, this.#workspace.hostCwd);
+    const previousCwd = this.#workspace.hostCwd;
     if (nextCwd === previousCwd) {
       return { previousCwd, cwd: nextCwd, changed: false, oldCwdDirty: false };
     }
     const oldCwdDirty = await this.#inspectCwdChanges(previousCwd).catch(() => undefined);
-    const session = await updateRuntimeHostSession(this.#connection, sessionId, (current) =>
-      this.#request('session.cwd.relocate', {
-        sessionId,
-        expectedRevision: current.revision,
-        cwd: nextCwd,
-      }),
-    );
-    this.#cwd = session.cwd;
-    return { previousCwd, cwd: this.#cwd, changed: true, oldCwdDirty };
+    const session = await this.#commitCwdRelocation(sessionId, nextCwd);
+    this.#workspace = session.workspace;
+    return { previousCwd, cwd: this.#workspace.hostCwd, changed: true, oldCwdDirty };
   }
 
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    const session = await getRuntimeHostSession(this.#connection, sessionId);
+  async switchSession(
+    sessionId: string,
+    options: MakaSessionSwitchOptions = {},
+  ): Promise<MakaSessionSwitchResult> {
+    let session = await getRuntimeHostSession(this.#connection, sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
-    const summary = runtimeHostSessionSummary(session);
-    const availability = await inspectSessionResumeAvailability(summary);
-    if (!availability.available) {
-      throw new Error(
-        summary.cwd ? `Session cwd no longer exists: ${summary.cwd}` : availability.reason,
-      );
+    let summary = runtimeHostSessionSummary(session);
+    if (options.relocateCwd === undefined) {
+      await assertSessionResumeAvailable(summary);
     }
     const boundary = await this.#request('session.execution_boundary.query', { sessionId });
     if (boundary.kind === 'external') {
       throw new Error(
         `Cannot resume externally isolated session ${sessionId} outside its owning harness.`,
       );
+    }
+    let relocation: MakaSessionMoveResult | undefined;
+    if (options.relocateCwd !== undefined) {
+      const nextCwd = await resolveMoveCwd(options.relocateCwd, this.#workspace.hostCwd);
+      const previousCwd = session.workspace.hostCwd;
+      if (nextCwd === previousCwd) {
+        relocation = { previousCwd, cwd: nextCwd, changed: false, oldCwdDirty: false };
+      } else {
+        const oldCwdDirty = await this.#inspectCwdChanges(previousCwd).catch(() => undefined);
+        session = await this.#commitCwdRelocation(sessionId, nextCwd);
+        relocation = {
+          previousCwd,
+          cwd: session.workspace.hostCwd,
+          changed: true,
+          oldCwdDirty,
+        };
+      }
+      summary = runtimeHostSessionSummary(session);
+      await assertSessionResumeAvailable(summary);
     }
     const expectedChannelGeneration = this.#channelGeneration;
     const nextSessionGeneration = this.#sessionGeneration + 1;
@@ -415,7 +451,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#channelGeneration += 1;
     this.#sessionId = sessionId;
     await this.#replaceChannel(opened.channel);
-    this.#cwd = session.cwd;
+    this.#workspace = session.workspace;
     this.#adoptConfiguration(session);
     this.#activeBoundaryDisplayMode = executionBoundaryDisplayMode(boundary);
     this.#permissionMode = boundary.kind === 'bypass' ? 'bypass' : 'ask';
@@ -424,6 +460,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return {
       summary,
       messages: opened.messages,
+      ...(relocation === undefined ? {} : { relocation }),
       ...(attachedTurnId
         ? {
             activeTurn: {
@@ -437,6 +474,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           }
         : {}),
     };
+  }
+
+  #commitCwdRelocation(sessionId: string, cwd: string): Promise<SessionCatalogProjection> {
+    return updateRuntimeHostSession(this.#connection, sessionId, (current) =>
+      this.#request('session.workspace.relocate', {
+        sessionId,
+        expectedRevision: current.revision,
+        workspace: { kind: 'host_path', path: cwd },
+      }),
+    );
   }
 
   async listRewindTargets(): Promise<RewindTarget[]> {
@@ -511,7 +558,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   subscribeTranscriptReplacements(
-    listener: (sessionId: string, turnId: string, messages: StoredMessage[]) => void,
+    listener: (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void,
   ): () => void {
     this.#transcriptListeners.add(listener);
     return () => this.#transcriptListeners.delete(listener);
@@ -572,7 +624,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const session = requireSession(
       await this.#request('session.create', {
         sessionId,
-        cwd: this.#cwd,
+        workspace: this.#workspace.target,
         name,
         modelTarget: {
           kind: 'explicit',
@@ -588,6 +640,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     );
     this.#sessionGeneration += 1;
     this.#sessionId = sessionId;
+    this.#workspace = session.workspace;
     this.#adoptConfiguration(session);
     await this.#ensureChannel(sessionId);
     return session;
@@ -809,6 +862,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       },
       onInteractionResolved: (pending) => this.#resolveExternalInteraction(pending),
       onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn),
+      onTranscriptReplaced: (turnId, messages) =>
+        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect'),
+      onRecovered: () => this.#refreshRuntimeResources(sessionId),
     });
   }
 
@@ -846,12 +902,34 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     void loadCurrentMessages(this.#connection, turn.sessionId)
       .then((messages) => {
         if (this.#sessionId !== turn.sessionId) return;
-        for (const listener of this.#transcriptListeners) {
-          listener(
-            turn.sessionId,
-            turn.turnId,
-            messages.map((message) => structuredClone(message)),
-          );
+        this.#publishTranscriptReplacement(turn.sessionId, turn.turnId, messages, 'terminal');
+      })
+      .catch(() => undefined);
+  }
+
+  #publishTranscriptReplacement(
+    sessionId: string,
+    turnId: string,
+    messages: readonly StoredMessage[],
+    reason: MakaTranscriptReplacementReason,
+  ): void {
+    if (this.#sessionId !== sessionId) return;
+    for (const listener of this.#transcriptListeners) {
+      listener(
+        sessionId,
+        turnId,
+        messages.map((message) => structuredClone(message)),
+        reason,
+      );
+    }
+  }
+
+  #refreshRuntimeResources(sessionId: string): void {
+    void readRuntimeHostResources(this.#connection, sessionId)
+      .then((resources) => {
+        if (this.#sessionId !== sessionId) return;
+        for (const resource of resources) {
+          for (const listener of this.#shellRunListeners) listener(resource);
         }
       })
       .catch(() => undefined);
@@ -863,6 +941,19 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   ): Promise<OperationOutput<K>> {
     return this.#connection.request(operation, input);
   }
+}
+
+function workspaceTargetForCreate(
+  current: WorkspaceProjection,
+  input: Pick<CreateSessionInput, 'cwd' | 'projectId'>,
+): WorkspaceTarget {
+  if (typeof input.projectId === 'string') {
+    return { kind: 'project', projectId: input.projectId };
+  }
+  if (input.projectId === null || input.cwd !== current.hostCwd) {
+    return { kind: 'host_path', path: input.cwd };
+  }
+  return current.target;
 }
 
 interface LoadedSessionConfiguration {
@@ -886,6 +977,15 @@ function representableSession(item: SessionCatalogItem): SessionCatalogProjectio
 function requireSession(item: SessionCatalogItem): SessionCatalogProjection {
   if (!('kind' in item)) return item;
   throw new Error(`Runtime Host Session is not representable by this CLI: ${item.id}`);
+}
+
+async function assertSessionResumeAvailable(summary: SessionSummary): Promise<void> {
+  const availability = await inspectSessionResumeAvailability(summary);
+  if (!availability.available) {
+    throw new Error(
+      summary.cwd ? `Session cwd no longer exists: ${summary.cwd}` : availability.reason,
+    );
+  }
 }
 
 async function updateRuntimeHostSession(
@@ -924,8 +1024,10 @@ async function loadCurrentMessages(
 export function runtimeHostSessionSummary(session: SessionCatalogProjection): SessionSummary {
   return {
     id: session.id,
-    cwd: session.cwd,
-    ...(session.projectId === undefined ? {} : { projectId: session.projectId }),
+    cwd: session.workspace.hostCwd,
+    ...(session.workspace.target.kind === 'project'
+      ? { projectId: session.workspace.target.projectId }
+      : {}),
     name: session.name,
     isFlagged: session.isFlagged,
     isArchived: session.isArchived,

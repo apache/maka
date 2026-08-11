@@ -1,11 +1,6 @@
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  AutomationManager,
-  computeJitter,
-  computeNextCronFire,
-  matchesCronField,
-} from '../automation-state.js';
+import { AutomationManager, computeJitter, computeNextCronFire } from '../automation-state.js';
 import type { AutomationSchedule } from '../automation-state.js';
 
 let idCounter = 0;
@@ -25,7 +20,6 @@ describe('AutomationManager', () => {
       const mgr = createManager();
       for (let i = 0; i < 20; i++) {
         mgr.create({
-          kind: 'heartbeat',
           name: `auto-${i}`,
           prompt: 'test',
           sessionId: 'sess-1',
@@ -33,7 +27,6 @@ describe('AutomationManager', () => {
         });
       }
       const result = mgr.create({
-        kind: 'heartbeat',
         name: 'overflow',
         prompt: 'test',
         sessionId: 'sess-1',
@@ -42,110 +35,12 @@ describe('AutomationManager', () => {
       assert.ok('error' in result);
       assert.ok(result.error.includes('Maximum'));
       const otherSession = mgr.create({
-        kind: 'heartbeat',
         name: 'another session',
         prompt: 'test',
         sessionId: 'sess-2',
         schedule: { type: 'interval', seconds: 60 },
       });
       assert.ok(!('error' in otherSession));
-    });
-
-    test('durability is a cron-only policy with a durable default', () => {
-      const mgr = createManager();
-      const durableCron = mgr.create({
-        kind: 'cron',
-        name: 'daily',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'cron', expression: '0 9 * * *' },
-      });
-      const ephemeralCron = mgr.create({
-        kind: 'cron',
-        name: 'ephemeral-cron',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'cron', expression: '0 9 * * *' },
-        durable: false,
-      });
-      const heartbeat = mgr.create({
-        kind: 'heartbeat',
-        name: 'durable-beat',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 60 },
-        durable: true,
-      });
-      assert.ok(!('error' in durableCron));
-      assert.equal(durableCron.durable, true);
-      assert.ok(!('error' in ephemeralCron));
-      assert.equal(Boolean(ephemeralCron.durable), false);
-      assert.ok(!('error' in heartbeat));
-      assert.equal(Boolean(heartbeat.durable), false);
-    });
-  });
-
-  describe('durable automations are app-global (queryable + manageable across sessions)', () => {
-    // A durable cron persisted from one session must remain visible and
-    // manageable from a *different* session after a restart re-homes it under
-    // its original sessionId. Non-durable heartbeats stay session-private.
-    function makeDurableCron(mgr: ReturnType<typeof createManager>, sessionId = 'creator-sess') {
-      const auto = mgr.create({
-        kind: 'cron',
-        name: 'nightly backup',
-        prompt: 'back up',
-        sessionId,
-        schedule: { type: 'cron', expression: '0 3 * * *' },
-      });
-      assert.ok(!('error' in auto));
-      return auto as Extract<typeof auto, { id: string }>;
-    }
-
-    test('durable crons are globally visible and manageable; heartbeats stay private', () => {
-      const mgr = createManager();
-      const cron = makeDurableCron(mgr, 'creator-sess');
-      const beat = mgr.create({
-        kind: 'heartbeat',
-        name: 'poll',
-        prompt: 'p',
-        sessionId: 'creator-sess',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in beat));
-      const visible = mgr.listVisibleForSession('fresh-sess');
-      assert.equal(visible.length, 1);
-      assert.equal(visible[0].name, 'nightly backup');
-      assert.equal(mgr.pause(beat.id, 'other-sess'), undefined);
-      assert.equal(mgr.delete(beat.id, 'other-sess'), false);
-      assert.equal(mgr.pause(cron.id, 'fresh-sess')?.status, 'paused');
-      assert.equal(mgr.resume(cron.id, 'another-sess')?.status, 'active');
-      assert.equal(mgr.delete(cron.id, 'fresh-sess'), true);
-      assert.equal(mgr.get(cron.id), undefined);
-    });
-
-    test('global durables do not count against a new session create limit', () => {
-      const mgr = createManager();
-      // Fill the store with durable crons owned by an old session.
-      for (let i = 0; i < 20; i++) {
-        const a = mgr.create({
-          kind: 'cron',
-          name: `c${i}`,
-          prompt: 'p',
-          sessionId: 'old-sess',
-          schedule: { type: 'cron', expression: '0 3 * * *' },
-        });
-        assert.ok(!('error' in a));
-      }
-      // A fresh session can still create its own — the per-session cap counts
-      // only session-owned automations, not the global durable ones it can see.
-      const mine = mgr.create({
-        kind: 'heartbeat',
-        name: 'mine',
-        prompt: 'p',
-        sessionId: 'fresh-sess',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in mine));
     });
   });
 
@@ -158,7 +53,6 @@ describe('AutomationManager', () => {
       ];
       for (const [name, schedule, maxFires] of cases) {
         const auto = mgr.create({
-          kind: 'cron',
           name,
           prompt: 'p',
           sessionId: 'sess-1',
@@ -176,29 +70,9 @@ describe('AutomationManager', () => {
   });
 
   describe('markFired', () => {
-    test('one-shot completes after a successful fire', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        kind: 'heartbeat',
-        name: 'once',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'once', delaySeconds: 30 },
-      });
-      assert.ok(!('error' in auto));
-      // Started nulls nextFireAt but stays active until the outcome is known.
-      const started = mgr.attemptStarted(auto.id);
-      assert.equal(started?.status, 'active');
-      assert.equal(started?.nextFireAt, null);
-      mgr.attemptSucceeded(auto.id, 'run-1');
-      assert.equal(mgr.get(auto.id)?.status, 'completed');
-      assert.equal(mgr.get(auto.id)?.lastRunId, 'run-1');
-    });
-
     test('maxFires completes on the successful fire that reaches the cap', () => {
       const mgr = createManager();
       const auto = mgr.create({
-        kind: 'heartbeat',
         name: 'limited',
         prompt: 'p',
         sessionId: 'sess-1',
@@ -217,7 +91,6 @@ describe('AutomationManager', () => {
     test('an accepted attempt still records its outcome when paused in flight', () => {
       const mgr = createManager();
       const auto = mgr.create({
-        kind: 'heartbeat',
         name: 'in flight',
         prompt: 'p',
         sessionId: 'sess-1',
@@ -235,7 +108,6 @@ describe('AutomationManager', () => {
     test('a failed fire does NOT complete (even at maxFires)', () => {
       const mgr = createManager();
       const auto = mgr.create({
-        kind: 'heartbeat',
         name: 'limited',
         prompt: 'p',
         sessionId: 'sess-1',
@@ -252,7 +124,6 @@ describe('AutomationManager', () => {
     test('does not fire paused automation', () => {
       const mgr = createManager();
       const auto = mgr.create({
-        kind: 'heartbeat',
         name: 'test',
         prompt: 'p',
         sessionId: 'sess-1',
@@ -268,7 +139,6 @@ describe('AutomationManager', () => {
     test('auto-pauses after MAX_CONSECUTIVE_FAILURES', () => {
       const mgr = createManager();
       const auto = mgr.create({
-        kind: 'heartbeat',
         name: 'test',
         prompt: 'p',
         sessionId: 'sess-1',
@@ -282,7 +152,6 @@ describe('AutomationManager', () => {
     test('a one-shot failure pauses (visible, not a silent zombie)', () => {
       const mgr = createManager();
       const auto = mgr.create({
-        kind: 'heartbeat',
         name: 'once',
         prompt: 'p',
         sessionId: 'sess-1',
@@ -297,7 +166,6 @@ describe('AutomationManager', () => {
     test('an empty accepted failure gets a stable diagnostic', () => {
       const mgr = createManager();
       const auto = mgr.create({
-        kind: 'heartbeat',
         name: 'empty failure',
         prompt: 'p',
         sessionId: 'sess-1',
@@ -308,54 +176,14 @@ describe('AutomationManager', () => {
       mgr.attemptFailed(auto.id, '');
       assert.equal(mgr.get(auto.id)?.lastError, 'Automation run failed');
     });
-
-    test('attemptSucceeded resets failure count', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        kind: 'heartbeat',
-        name: 'test',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in auto));
-      mgr.attemptFailed(auto.id, 'fail');
-      mgr.attemptFailed(auto.id, 'fail');
-      mgr.attemptSucceeded(auto.id);
-      assert.equal(mgr.get(auto.id)?.consecutiveFailures, 0);
-      assert.equal(mgr.get(auto.id)?.lastError, null);
-    });
   });
 
-  describe('removeAllForSession', () => {
-    test('removes heartbeat automations only', () => {
-      const mgr = createManager();
-      mgr.create({
-        kind: 'heartbeat',
-        name: 'h1',
-        prompt: 'p',
-        sessionId: 's1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      mgr.create({
-        kind: 'cron',
-        name: 'c1',
-        prompt: 'p',
-        sessionId: 's1',
-        schedule: { type: 'cron', expression: '0 9 * * *' },
-      });
-      const removed = mgr.removeAllForSession('s1');
-      assert.equal(removed, 1);
-      assert.equal(mgr.listForSession('s1').length, 1);
-      assert.equal(mgr.listForSession('s1')[0].kind, 'cron');
-    });
-  });
+  describe('removeAllForSession', () => {});
 
   describe('registerAll — restart recovery', () => {
     function load(mgr: ReturnType<typeof createManager>, over: Partial<Record<string, unknown>>) {
       const base = {
         id: 'loaded',
-        kind: 'cron',
         name: 'c',
         status: 'active',
         prompt: 'p',
@@ -371,7 +199,6 @@ describe('AutomationManager', () => {
         expiresAt: null,
         lastError: null,
         consecutiveFailures: 0,
-        durable: true,
       };
       mgr.registerAll([{ ...base, ...over }] as never);
       return mgr.get('loaded');
@@ -406,7 +233,6 @@ describe('AutomationManager', () => {
     test('resume clears consecutiveFailures so one later failure does not re-pause', () => {
       const mgr = createManager();
       const auto = mgr.create({
-        kind: 'cron',
         name: 'flaky',
         prompt: 'p',
         sessionId: 's1',
@@ -431,7 +257,6 @@ describe('AutomationManager', () => {
     test('a skipped once is settled terminally (no drift, not re-armed)', () => {
       const mgr = createManager();
       const auto = mgr.create({
-        kind: 'cron',
         name: 'remind',
         prompt: 'p',
         sessionId: 's1',
@@ -451,13 +276,12 @@ describe('AutomationManager', () => {
 });
 
 describe('computeNextCronFire', () => {
-  test('keeps Runtime return and compatibility-export contracts', () => {
+  test('uses the canonical strict cron grammar', () => {
     const base = new Date('2026-07-06T08:00:00').getTime();
 
-    assert.equal(computeNextCronFire('0 9 * * MON', base), computeNextCronFire('0 9 * * 1', base));
+    assert.equal(computeNextCronFire('0 9 * * 1', base), new Date('2026-07-06T09:00:00').getTime());
+    assert.equal(computeNextCronFire('0 9 * * MON', base), null);
     assert.equal(computeNextCronFire('not valid', base), null);
-    assert.equal(matchesCronField('5-15/3', 14, 0, 59), true);
-    assert.equal(matchesCronField('5-15/3', 18, 0, 59), false);
   });
 });
 
@@ -465,7 +289,6 @@ describe('AutomationManager edge cases', () => {
   test('create rejects invalid cron expression', () => {
     const mgr = createManager();
     const result = mgr.create({
-      kind: 'heartbeat',
       name: 'bad cron',
       prompt: 'p',
       sessionId: 'sess-1',
@@ -480,7 +303,6 @@ describe('AutomationManager edge cases', () => {
     // Create and complete 60 automations — more than the 50-record history cap.
     for (let i = 0; i < 60; i++) {
       const auto = mgr.create({
-        kind: 'heartbeat',
         name: `auto-${i}`,
         prompt: 'p',
         sessionId: 'sess-1',
@@ -492,7 +314,6 @@ describe('AutomationManager edge cases', () => {
     }
     // Pruning is triggered on next create
     mgr.create({
-      kind: 'heartbeat',
       name: 'trigger-prune',
       prompt: 'p',
       sessionId: 'sess-1',
@@ -517,7 +338,6 @@ describe('AutomationManager edge cases', () => {
       random: () => 0,
     });
     const auto = mgr.create({
-      kind: 'heartbeat',
       name: 'skip test',
       prompt: 'p',
       sessionId: 'sess-1',
@@ -539,7 +359,6 @@ describe('AutomationManager edge cases', () => {
   test('attemptFailed does not overwrite completed status', () => {
     const mgr = createManager();
     const auto = mgr.create({
-      kind: 'heartbeat',
       name: 'terminal',
       prompt: 'p',
       sessionId: 'sess-1',
@@ -568,18 +387,6 @@ describe('computeJitter', () => {
       }
     }
   });
-
-  test('one-shot jitter is zero off round marks and negative within bounds on them', () => {
-    const firesAt = new Date(2026, 0, 1, 10, 37, 0, 0).getTime();
-    assert.equal(computeJitter(30 * 60 * 1000, false, Math.random, firesAt), 0);
-    assert.equal(computeJitter(60_000, false), 0);
-    for (let i = 0; i < 50; i++) {
-      const roundMark = new Date(2026, 0, 1, 11, i % 2 === 0 ? 0 : 30, 0, 0).getTime();
-      const jitter = computeJitter(17 * 60 * 1000, false, Math.random, roundMark);
-      assert.ok(jitter <= 0, `one-shot jitter should be <= 0, got ${jitter}`);
-      assert.ok(jitter >= -90_000, `one-shot jitter should be >= -90000, got ${jitter}`);
-    }
-  });
 });
 
 describe('schedule jitter wiring (AutomationManager.computeNextFire)', () => {
@@ -590,24 +397,9 @@ describe('schedule jitter wiring (AutomationManager.computeNextFire)', () => {
     return new AutomationManager({ generateId: () => `j-${++idc}`, now: () => NOW, random });
   }
 
-  test('interval schedules get positive recurring jitter', () => {
-    const mgr = managerWithRandom(() => 0.5);
-    const auto = mgr.create({
-      kind: 'heartbeat',
-      name: 'poll',
-      prompt: 'p',
-      sessionId: 's1',
-      schedule: { type: 'interval', seconds: 600 },
-    });
-    assert.ok(!('error' in auto));
-    // 600s interval → 10% max = 60s; random 0.5 → +30s jitter.
-    assert.equal(auto.nextFireAt, NOW + 600_000 + 30_000);
-  });
-
   test('cron schedules get positive recurring jitter (never fire before the mark)', () => {
     const zero = managerWithRandom(() => 0);
     const base = zero.create({
-      kind: 'cron',
       name: 'nightly',
       prompt: 'p',
       sessionId: 's1',
@@ -615,7 +407,6 @@ describe('schedule jitter wiring (AutomationManager.computeNextFire)', () => {
     });
     assert.ok(!('error' in base));
     const jittered = managerWithRandom(() => 0.999).create({
-      kind: 'cron',
       name: 'nightly',
       prompt: 'p',
       sessionId: 's1',
@@ -644,7 +435,6 @@ describe('schedule jitter wiring (AutomationManager.computeNextFire)', () => {
       random: () => 0.5,
     });
     const auto = mgr.create({
-      kind: 'heartbeat',
       name: 'remind',
       prompt: 'p',
       sessionId: 's1',

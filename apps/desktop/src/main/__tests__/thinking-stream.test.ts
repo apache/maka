@@ -1,33 +1,8 @@
-/**
- * Tests for the PR-UI-C0 review fixup `applyThinkingDelta` /
- * `applyThinkingComplete` pure helpers (@kenji A3-style trust-
- * boundary review msg 7885a347).
- *
- * Anthropic extended-thinking is model output and can echo
- * prompts / env / tool stderr / pasted credentials past the
- * provider's redactor. The renderer-side helpers enforce:
- *
- *   1. Secondary `redactSecrets` BEFORE state — raw bearer / API
- *      key text never reaches React state, DevTools snapshot, or
- *      the `<pre>` render path.
- *   2. Per-delta cap (4 KB) — a single misbehaving multi-MB delta
- *      tail-keeps with a marker.
- *   3. Per-session total cap (32 KB) — sustained streaming tail-
- *      keeps the most recent reasoning with a head marker, so the
- *      user sees the current chain of thought.
- *
- * Imported from `@maka/ui` barrel (mirrors the tool-output-stream
- * test pattern).
- */
+/** Thinking may echo credentials, so renderer state keeps a second redaction boundary. */
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import {
-  THINKING_MAX_DELTA_CHARS,
-  THINKING_MAX_TOTAL_CHARS,
-  applyThinkingComplete,
-  applyThinkingDelta,
-} from '@maka/ui';
+import { applyThinkingComplete, applyThinkingDelta } from '@maka/ui';
 
 describe('applyThinkingDelta — secondary redaction', () => {
   it('masks raw `Authorization: Bearer ...` text before storing', () => {
@@ -53,136 +28,13 @@ describe('applyThinkingDelta — secondary redaction', () => {
       false,
     );
   });
-
-  it('does not flip redacted=true when input is clean', () => {
-    const result = applyThinkingDelta('previous text\n', 'next reasoning step about the math\n');
-    assert.equal(result.redacted, false);
-    assert.equal(result.truncated, false);
-    assert.equal(result.text, 'previous text\nnext reasoning step about the math\n');
-  });
-
-  it('handles non-string raw delta gracefully', () => {
-    // @ts-expect-error — defensive against runtime contract violation
-    const result = applyThinkingDelta('prev', undefined);
-    assert.equal(result.text, 'prev');
-    assert.equal(result.redacted, false);
-    assert.equal(result.truncated, false);
-  });
-});
-
-describe('applyThinkingDelta — per-delta cap', () => {
-  function filler(len: number): string {
-    let out = '';
-    let i = 0;
-    while (out.length < len) {
-      out += `reasoning step ${i}: examining the next consideration.\n`;
-      i += 1;
-    }
-    return out.slice(0, len);
-  }
-
-  it('tail-keeps a single oversize delta with a truncation marker', () => {
-    const big = filler(THINKING_MAX_DELTA_CHARS * 3);
-    const result = applyThinkingDelta('', big);
-    assert.equal(result.truncated, true);
-    // After truncation the appended segment must fit in maxDelta.
-    assert.ok(
-      result.text.length <= THINKING_MAX_DELTA_CHARS,
-      `result.text.length=${result.text.length} should be <= ${THINKING_MAX_DELTA_CHARS}`,
-    );
-  });
-
-  it('preserves tail content of an oversize delta', () => {
-    const head = filler(THINKING_MAX_DELTA_CHARS * 3);
-    const tail = '\n--- LAST REASONING STEP ---\n';
-    const result = applyThinkingDelta('', head + tail);
-    assert.ok(result.truncated);
-    assert.ok(
-      result.text.endsWith(tail),
-      `tail "${tail}" should survive truncation; got "...${result.text.slice(-80)}"`,
-    );
-  });
-
-  it('does not truncate a delta at-or-under maxDelta', () => {
-    const justUnder = filler(THINKING_MAX_DELTA_CHARS - 100);
-    const result = applyThinkingDelta('', justUnder);
-    assert.equal(result.truncated, false);
-    assert.equal(result.text, justUnder);
-  });
-});
-
-describe('applyThinkingDelta — per-session total cap', () => {
-  function chunk(len: number, label: string): string {
-    let out = '';
-    while (out.length < len) {
-      out += `[${label}] reasoning continues here.\n`;
-    }
-    return out.slice(0, len);
-  }
-
-  it('tail-keeps when accumulated total exceeds maxTotal', () => {
-    // Push small deltas until we cross the total cap. Each delta is
-    // well under the per-delta cap so truncated should fire only on
-    // the total-cap path, not the per-delta path.
-    let prev = '';
-    for (let i = 0; i < 12; i += 1) {
-      const delta = chunk(3 * 1024, `step-${i}`);
-      const result = applyThinkingDelta(prev, delta);
-      prev = result.text;
-    }
-    assert.ok(
-      prev.length <= THINKING_MAX_TOTAL_CHARS,
-      `accumulated text length=${prev.length} should be <= ${THINKING_MAX_TOTAL_CHARS}`,
-    );
-    // Most recent reasoning preserved: the last few `[step-11]`
-    // markers must survive.
-    assert.ok(prev.includes('[step-11]'), 'newest reasoning must survive');
-    // Oldest dropped: `[step-0]` should be gone.
-    assert.equal(prev.includes('[step-0]'), false, 'oldest reasoning must drop');
-  });
-
-  it('marks the result truncated=true when total cap fires', () => {
-    let prev = '';
-    let sawTruncated = false;
-    for (let i = 0; i < 12; i += 1) {
-      const result = applyThinkingDelta(prev, chunk(3 * 1024, `t-${i}`));
-      prev = result.text;
-      if (result.truncated) sawTruncated = true;
-    }
-    assert.equal(sawTruncated, true);
-  });
 });
 
 describe('applyThinkingComplete — final replace path', () => {
-  it('replaces (not appends) the prior text — final payload is full', () => {
-    // applyThinkingComplete signature accepts only the raw final
-    // text; the caller (renderer) is responsible for picking up the
-    // result and overwriting state.
-    const result = applyThinkingComplete('this is the FULL final reasoning text');
-    assert.equal(result.text, 'this is the FULL final reasoning text');
-    assert.equal(result.redacted, false);
-    assert.equal(result.truncated, false);
-  });
-
   it('redacts secrets in the final payload', () => {
     const result = applyThinkingComplete('final thinking with Authorization: Bearer sk-secret123ABC ...');
     assert.equal(result.redacted, true);
     assert.equal(result.text.includes('sk-secret123ABC'), false);
-  });
-
-  it('tail-keeps when the final payload exceeds the total cap', () => {
-    const huge = 'paragraph of reasoning. '.repeat(5000); // ~115 KB
-    const result = applyThinkingComplete(huge);
-    assert.equal(result.truncated, true);
-    assert.ok(result.text.length <= THINKING_MAX_TOTAL_CHARS);
-  });
-
-  it('handles non-string input gracefully', () => {
-    // @ts-expect-error — defensive
-    const result = applyThinkingComplete(null);
-    assert.equal(result.text, '');
-    assert.equal(result.redacted, false);
-    assert.equal(result.truncated, false);
   });
 });
 

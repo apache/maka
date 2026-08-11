@@ -66,7 +66,7 @@
 
 .settingsReadOnlyValue {
   min-width: 0;
-  max-width: min(320px, 45cqi);
+  max-width: var(--settings-row-end-cap);
   color: var(--foreground-secondary);
   font: var(--maka-text-body);
   font-variant-numeric: tabular-nums;
@@ -125,7 +125,17 @@
   flex-wrap: wrap;
   gap: var(--space-2);
   min-width: 0;
-  max-width: min(360px, 62cqi);
+  max-width: var(--settings-row-end-cap);
+}
+
+/* A Selector layer is min-width: anchor-size(width), but its intrinsic option
+   width may still make it wider than the right-aligned end slot. The selected
+   font decides that intrinsic width, so a label that fits on macOS can push
+   the left-aligned top-layer popover past the page edge on Linux. The setting
+   row owns the available inline space: cap its listbox layers to their anchor
+   and let the Selector's Item truncate long labels inside that stable width. */
+.settingsRowEnd [popover]:has([role="listbox"]) {
+  max-width: anchor-size(width);
 }
 
 @container settings-rows (max-width: 460px) {
@@ -149,4 +159,75 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
+}
+
+.settingsExpandableField {
+  padding-block: var(--space-3);
+}
+
+.requestHeaderRow {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr) auto;
+  align-items: start;
+  gap: var(--space-2);
+}
+
+.requestHeaderName,
+.requestHeaderValue {
+  min-width: 0;
+}
+
+.requestHeaderRemove {
+  display: flex;
+  align-items: center;
+  min-height: 2.5rem;
+}
+
+@container settings-rows (max-width: 460px) {
+  .requestHeaderRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .requestHeaderName {
+    grid-column: 1 / -1;
+  }
+}
+
+/* The group's own corners (visual system 2.0, T4).
+
+   DESIGN.md §6 keeps `border-radius: 0` legal on these rows — they are true
+   full-bleed rows, flush with the group on both inline edges — but the GROUP
+   still has to end somewhere. Without corners a hovered or selected first row
+   paints a square fill into the page, so a bounded list reads as if it were
+   bleeding off its own container. §6 puts list containers on the card tier.
+
+   Rounded on the outer corners of the end rows rather than by clipping the
+   group, and that is the load-bearing part: the row carries its focus ring as
+   `outline: 2px solid` at `outline-offset: 2px`, i.e. 4px OUTSIDE its border
+   box (measured, not assumed). `overflow: hidden` on the group would cut that
+   ring off on exactly the first and last rows — a keyboard-visibility
+   regression in return for a cosmetic corner. `overflow: clip` with an
+   `overflow-clip-margin` big enough to spare the ring would push the clip edge
+   out past the corner it was supposed to round, which defeats the point.
+   Rounding the end rows clips nothing at all.
+
+   Only the OUTER corners move, so the divider rhythm above is untouched: the
+   hairline is a `border-block-start` on rows 2..n, and neither the first row's
+   top edge nor the last row's bottom edge carries one. The "straight middle
+   with two hooks" this file already documents cannot come back.
+
+   Keyed on `> *` rather than `> .astryx-item` because a group can end on a
+   form block (`.settingsFieldRow` / `.settingsActionRow`), and the corner
+   belongs to whatever is actually last. Placed after the `radius: 0` rule
+   above: equal specificity, so source order decides. */
+.settingsRows > *:first-child,
+.settingsRowsGroup > *:first-child {
+  border-start-start-radius: var(--radius-surface);
+  border-start-end-radius: var(--radius-surface);
+}
+
+.settingsRows > *:last-child,
+.settingsRowsGroup > *:last-child {
+  border-end-start-radius: var(--radius-surface);
+  border-end-end-radius: var(--radius-surface);
 }

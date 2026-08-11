@@ -1,4 +1,4 @@
-import type { PlanReminder, SessionSummary } from '@maka/core';
+import type { ScheduledTask, SessionSummary } from '@maka/core';
 import {
   SegmentedControl,
   SegmentedControlItem,
@@ -12,7 +12,7 @@ import {
   type SessionRowActions,
 } from './session-history-list.js';
 import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } from './session-sidebar-nav.js';
-import { Clock, FolderOpen } from './icons.js';
+import { ICON_SIZE, Clock, FolderOpen } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import type { Ref } from 'react';
@@ -36,7 +36,7 @@ export function SessionListPanel(props: {
   selection: NavSelection;
   sessions: SessionSummary[];
   activeId?: string;
-  planReminders?: PlanReminder[];
+  scheduledTasks?: ScheduledTask[];
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
   groups?: ReadonlyArray<SessionHistoryGroup>;
@@ -83,13 +83,13 @@ export function SessionListPanel(props: {
       <SegmentedControlItem
         value="conversation"
         label={copy.groupByTime}
-        icon={<Clock size={14} aria-hidden="true" />}
+        icon={<Clock size={ICON_SIZE.control} aria-hidden="true" />}
         isLabelHidden
       />
       <SegmentedControlItem
         value="project"
         label={copy.groupByProject}
-        icon={<FolderOpen size={14} aria-hidden="true" />}
+        icon={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
         isLabelHidden
       />
     </SegmentedControl>
@@ -135,7 +135,7 @@ export function SessionListPanel(props: {
         topContent={
           <SessionSidebarNav
             selection={props.selection}
-            planReminders={props.planReminders}
+            scheduledTasks={props.scheduledTasks}
             moduleMemory={props.moduleMemory}
             onSelect={props.onSelect}
             onNew={props.onNew}

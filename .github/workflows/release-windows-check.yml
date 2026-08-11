@@ -17,8 +17,8 @@ on:
       - 'apps/desktop/package.json'
       - 'scripts/package-windows-x64.mjs'
       - 'scripts/prepare-bundled-git.mjs'
-      - 'scripts/prepare-bundled-git.test.mjs'
       - 'scripts/verify-windows-x64.mjs'
+      - 'scripts/verify-windows-installer-lifecycle.mjs'
       - 'scripts/verify-packaged-app.mjs'
       - 'scripts/npm-spawn.mjs'
       - 'scripts/generate-third-party-notices.mjs'
@@ -64,3 +64,8 @@ jobs:
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-x64 -- "apps/desktop/release/Maka-${version}-win-x64.exe"
+
+      - name: Exercise clean install and uninstall
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          npm run verify:windows-installer -- "apps/desktop/release/Maka-${version}-win-x64.exe"

@@ -96,7 +96,7 @@ import {
   withTimeout,
 } from './fixtures/execution-host-suite.js';
 
-test('production Host executes admitted heartbeat and cron fires through one durable root authority', {
+test('production Host executes an admitted heartbeat through the durable root authority', {
   timeout: 30_000,
 }, async () => {
   await withExecutionRoot(async (fixture) => {
@@ -107,55 +107,23 @@ test('production Host executes admitted heartbeat and cron fires through one dur
       const heartbeat = await desktop.request('automation.mutate', {
         kind: 'create',
         sessionId: fixture.sessionId,
-        automationKind: 'heartbeat',
         name: 'heartbeat execution proof',
         prompt: 'Complete the heartbeat execution proof.',
         schedule: { type: 'once', delaySeconds: 5 },
       });
-      const cron = await tui.request('automation.mutate', {
-        kind: 'create',
-        sessionId: fixture.sessionId,
-        automationKind: 'cron',
-        name: 'cron execution proof',
-        prompt: 'Complete the cron execution proof.',
-        schedule: { type: 'once', delaySeconds: 5 },
-      });
       assert.equal(heartbeat.kind, 'committed');
-      assert.equal(cron.kind, 'committed');
-      if (
-        heartbeat.kind !== 'committed' ||
-        !heartbeat.automation ||
-        cron.kind !== 'committed' ||
-        !cron.automation
-      ) {
+      if (heartbeat.kind !== 'committed' || !heartbeat.automation) {
         return;
       }
 
-      const [observedHeartbeat, observedCron] = await Promise.all([
-        waitForAutomationCompletion(tui, fixture.sessionId, heartbeat.automation.id),
-        waitForAutomationCompletion(desktop, fixture.sessionId, cron.automation.id),
-      ]);
+      const observedHeartbeat = await waitForAutomationCompletion(
+        tui,
+        fixture.sessionId,
+        heartbeat.automation.id,
+      );
       assert.ok(observedHeartbeat.lastRunId);
-      assert.ok(observedCron.lastRunId);
       assert.equal(observedHeartbeat.lastError, null);
-      assert.equal(observedCron.lastError, null);
       assert.equal(observedHeartbeat.firePending, false);
-      assert.equal(observedCron.firePending, false);
-
-      const cronSessions = await desktop.request('session.catalog.query', {
-        kind: 'list_start',
-        filter: { labelSlug: 'cron' },
-      });
-      assert.equal(cronSessions.kind, 'page');
-      if (cronSessions.kind === 'page') {
-        assert.equal(cronSessions.sessions.length, 1);
-        const cronSession = cronSessions.sessions[0];
-        assert.ok(cronSession && !('kind' in cronSession));
-        if (cronSession && !('kind' in cronSession)) {
-          assert.deepEqual([...cronSession.labels].sort(), ['automation', 'cron']);
-          assert.ok(cronSession.lastMessageAt);
-        }
-      }
 
       const deletedHeartbeat = await tui.request('automation.mutate', {
         kind: 'delete',
@@ -164,13 +132,6 @@ test('production Host executes admitted heartbeat and cron fires through one dur
       });
       assert.equal(deletedHeartbeat.kind, 'committed');
       assert.equal(deletedHeartbeat.kind === 'committed' && deletedHeartbeat.automation, null);
-      const deletedCron = await desktop.request('automation.mutate', {
-        kind: 'delete',
-        sessionId: fixture.sessionId,
-        automationId: cron.automation.id,
-      });
-      assert.equal(deletedCron.kind, 'committed');
-      assert.equal(deletedCron.kind === 'committed' && deletedCron.automation, null);
     } finally {
       await Promise.allSettled([desktop.close(), tui.close()]);
       await fixture.stopHost(host);

@@ -17,6 +17,8 @@ export {
 export { RuntimeContextCompactError } from './runtime-kernel.js';
 export type { ModelMessage, JSONValue } from './model-protocol.js';
 export { ProviderPrefixModelCallUnavailableError } from './tool-free-model-call.js';
+export { stableHash, toolCatalogHash } from './request-shape.js';
+export { toolAvailabilityHash } from './tool-availability.js';
 export {
   buildNativeWebSearchTool,
   NATIVE_WEB_SEARCH_TOOL_NAME,
@@ -434,14 +436,6 @@ export type {
   SynthesisCacheWriteResult,
   SemanticCompactBlockRecorder,
 } from './ai-sdk-compaction-contract.js';
-export { PiAgentBackend, normalizePiAgentFrame } from './pi-agent-backend.js';
-export type {
-  PiAgentBackendInput,
-  PiAgentFrame,
-  PiAgentSendInput,
-  PiAgentTransport,
-} from './pi-agent-backend.js';
-
 export { buildBuiltinTools, classifyRuntimeResourceRef } from './builtin-tools.js';
 export { createToolResultArchiveCapability } from './tool-result-archive-capability.js';
 export type {
@@ -661,7 +655,7 @@ export type {
   WorkspaceWriteLockProvider,
   WorkspaceWriteLockKeyResult,
 } from './workspace-executor.js';
-export { computeEditedSource, COMPUTE_EDITED_SOURCE_FN_SOURCE } from './edit-replace.js';
+export { computeEditedSource } from './edit-replace.js';
 export type { EditMatch, EditMatchStrategy } from './edit-replace.js';
 export { truncateToolOutput } from './tool-output.js';
 export type { TruncateToolOutputOptions, TruncatedToolOutput } from './tool-output.js';
@@ -1158,6 +1152,10 @@ export type {
 } from './semantic-compact.js';
 export { runConnectionTestEffect, testConnection } from './test-connection.js';
 export {
+  createRequestCustomizationFetch,
+  type RequestCustomization,
+} from './request-customization-fetch.js';
+export {
   fetchGitHubCopilotModels,
   fetchOpenAiCodexModels,
   fetchProviderModels,
@@ -1279,21 +1277,8 @@ export { RuntimeRunner, runtimeGateFromCallback } from './runtime-runner.js';
 export type {
   RuntimeGate,
   RuntimeGateDecision,
-  AgentFlowLike,
   RuntimeRunnerDeps,
 } from './runtime-runner.js';
-
-// runtime-event-adapters.ts — legacy StoredMessage ↔ RuntimeEvent bridge.
-export {
-  storedMessageToRuntimeEvent,
-  storedMessageToRuntimeEvents,
-  runtimeEventToStoredMessageDraft,
-  createRuntimeEventId,
-} from './runtime-event-adapters.js';
-export type {
-  StoredMessageEventContext,
-  RuntimeEventToDraftOptions,
-} from './runtime-event-adapters.js';
 
 // session-trace-projection.ts — per-session causal trace for the Inspector (#1625).
 export { projectSessionTrace, attributeTurnFailure } from './session-trace-projection.js';
@@ -1529,20 +1514,17 @@ export {
 } from './system-prompt/main-session-prompt.js';
 
 // ───────────────────────────────────────────────────────────────────────────
-// Unified Automation (Codex-style: heartbeat + cron, single tool).
+// Session-scoped heartbeat Automation.
 // ───────────────────────────────────────────────────────────────────────────
 export {
   AutomationManager,
   computeNextCronFire,
   computeJitter,
-  matchesCronField,
   settleAutomationAttempt,
 } from './automation-state.js';
 export type {
   AutomationAttemptOutcome,
   AutomationDefinition,
-  AutomationExecutionTemplate,
-  AutomationKind,
   AutomationSchedule,
   AutomationStatus,
   AutomationManagerDeps,
@@ -1557,6 +1539,14 @@ export type {
   AutomationAuthorityToolDeps,
   AutomationToolAuthority,
 } from './automation-tools.js';
+export {
+  buildScheduledTaskTool,
+  buildAgentScheduledTaskCreatePayload,
+  SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID,
+  SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_VERSION,
+  SCHEDULED_TASK_TOOL_NAME,
+} from './scheduled-task-tools.js';
+export type { ScheduledTaskToolAuthority } from './scheduled-task-tools.js';
 export { evaluateAutomationCanFire, HEARTBEAT_IDLE_STATUSES } from './automation-can-fire.js';
 export type { CanFireSessionHeader, EvaluateAutomationCanFireDeps } from './automation-can-fire.js';
 
@@ -1635,10 +1625,12 @@ export {
   GoalContinuationCoordinator,
   GOAL_WAIT_BACKOFF_BASE_MS,
   GOAL_WAIT_BACKOFF_MAX_MS,
+  volatileGoalDurability,
 } from './goal-continuation.js';
 export type {
   GoalContinuationDeps,
   GoalContinuationScheduler,
+  GoalDurabilityPort,
   GoalControlDecline,
   GoalControlStanding,
   GoalObservedTurnStart,

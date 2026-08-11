@@ -3,6 +3,7 @@ import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type {
   SessionCatalogProjection,
   SubscriptionFrame,
+  WorkspaceTarget,
 } from '@maka/runtime-host/protocol';
 import type {
   BotSessionAdapter,
@@ -25,8 +26,7 @@ type RuntimeHostBotSessionClient = Pick<
 >;
 
 export interface RuntimeHostBotSessionCreateTarget {
-  readonly cwd: string;
-  readonly projectId?: string | null;
+  readonly workspace: WorkspaceTarget;
 }
 
 export interface RuntimeHostBotSessionAdapterDeps {
@@ -53,8 +53,7 @@ export function createRuntimeHostBotSessionAdapter(
       try {
         session = await deps.client.createSession({
           sessionId,
-          cwd: target.cwd,
-          ...(target.projectId === undefined ? {} : { projectId: target.projectId }),
+          workspace: target.workspace,
           name: input.name,
           labels: [...input.labels],
           modelTarget: { kind: 'default' },
@@ -165,7 +164,7 @@ async function collectRuntimeHostBotTurn(
       if (frame.delta.turnId !== turnId || frame.delta.kind !== 'text') continue;
       latestMessageId = frame.delta.messageId;
       const folded = foldRuntimeHostAssistantDelta(
-        assistantText.get(latestMessageId) ?? '',
+        frame.delta.reset ? '' : (assistantText.get(latestMessageId) ?? ''),
         frame.delta,
       );
       assistantText.set(latestMessageId, folded.text);

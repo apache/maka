@@ -42,36 +42,11 @@
   overflow: hidden;
 }
 
-/* WAWQAQ msg `9f313715` (2026-08-03): the content column is a rounded floating
-   plate flush to the sidebar — its edge is the ONE boundary on that seam. The
-   theme's full-height sidenav hairline (`.astryx-app-shell-sidenav.elevated`
-   in the built maka.css) ran on the same seam, so beside the plate's top-left
-   corner radius both lines showed and read as a doubled border. Drop it in both
-   collapse states — column separation is tonal (the plate's fill against the
-   canvas), per DESIGN.md's One Working Plane rule. Override lives here because
-   maka.css is a generated artifact (`npm run astryx:theme`), not a hand-edited
-   file.
-
-   Continuous Collapse used to repaint the collapsed rail with
-   --color-background-surface here as well, so the traffic lights would sit on
-   one surface instead of straddling a column edge narrower than they are. That
-   was written while AppShell's own surface was still the content column's
-   material; `.astryx-layout-content` below now paints --agents-layout-bg
-   (== --surface-canvas == --color-background-body), so the two columns already
-   share one material and the repaint was the only thing breaking the band. In
-   light mode --color-background-surface happens to equal the floating plate's
-   fill, which hid it; in dark mode the plate lifts 0.035L off --background and
-   the rail became a THIRD tone (measured L 0.205 against the canvas's 0.18),
-   painting a 49px slab that ran to the window top past the plate's 4px gutter
-   and under the light cluster. The rail now wears its column's material in both
-   states, which is what "one surface" meant in the first place.
-
-   The width goes with the color. Transparent alone left the border occupying
-   its 1px of layout, so the content column started 1px right of where the
-   sidebar column ended — invisible on its own, but it put a seam between the
-   two that nothing could align to. The titlebar's breadcrumb opens at that
-   edge, which is what made the phantom pixel measurable. */
+/* Sidebar and canvas share one floor colour; the content plate is the only
+   step. Drop the theme sidenav hairline (generated maka.css) so the plate edge
+   is the single seam. Width 0: a transparent 1px border still reserved layout. */
 .maka-shell-astryx .astryx-app-shell-sidenav {
+  background: var(--agents-layout-bg);
   border-inline-end-color: transparent;
   border-inline-end-width: 0;
 }
@@ -434,6 +409,14 @@ dialog:modal {
   background: var(--state-hover-bg);
 }
 
+.maka-titlebar-identity__breadcrumbs button:focus-visible {
+  /* Inset, not outline: the breadcrumb item ancestor clips 3px of an
+     outward ring (measured by the T5 geometry probe) — a ring that cannot
+     fully paint is worse than none. Same idiom as the workbar launcher. */
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}
+
 /* The session name carries the weight of the pair: it is what the window is
    showing, and the project is the context it sits in. Astryx gives every
    non-current crumb the same secondary ink, and this one has to be non-current
@@ -465,6 +448,15 @@ dialog:modal {
    used to carry was 1px the crumb did not have, so the trail lost a pixel of
    height the moment the field appeared. */
 .maka-titlebar-identity__rename-input {
+  min-width: 2rem;
+  max-width: min(20rem, 100%);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+.maka-titlebar-identity__rename-input input {
   font: var(--maka-text-body);
   font-weight: var(--font-weight-medium);
   color: var(--foreground);
@@ -477,15 +469,11 @@ dialog:modal {
   /* The crumb button's own inline padding, so the first glyph does not step
      4px left the moment the label becomes a field. */
   padding-inline: var(--space-1);
-  /* Small enough that a real name is always the binding measure — at `4rem`
-     the field opened wider than the word it replaced and nudged the trail. */
   min-width: 2rem;
-  /* Bounded by the column, not by a guess: `20rem` alone overflowed the same
-     way the segments did once the window was narrow enough. */
   max-width: min(20rem, 100%);
 }
 
-.maka-titlebar-identity__rename-input:focus {
+.maka-titlebar-identity__rename-input input:focus {
   box-shadow: 0 1px 0 var(--focus-ring);
 }
 
@@ -534,3 +522,12 @@ dialog:modal {
    `.maka-workspace-top-actions`, and each of those carves out a rect covering
    its children. A per-button rule (plus a `*` descendant rule for the icons)
    only duplicated that. */
+
+
+/* Focus rings inside the titlebar strip go inset (T5 geometry probe): the
+   strip sits 4px under the window edge and body's overflow clips the top
+   pixel of an outward 2px+offset ring. An inset ring paints whole. */
+.maka-window-titlebar :is(button, [role="button"]):focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}

@@ -30,6 +30,8 @@ export interface ChatModelChoice {
   providerLabel: string;
   model: string;
   label: string;
+  description?: string;
+  knowledgeCutoff?: string;
   connectionName?: string;
   isDefault: boolean;
   thinkingLevels: readonly ThinkingLevel[];
@@ -64,6 +66,8 @@ export function buildChatModelChoices(connections: readonly LlmConnection[]): Ch
         providerLabel: MODEL_MENU_PROVIDER_LABELS[connection.providerType] ?? provider.label,
         model: entry.id,
         label: entry.displayName?.trim() || entry.id,
+        ...(entry.description !== undefined ? { description: entry.description } : {}),
+        ...(entry.knowledgeCutoff !== undefined ? { knowledgeCutoff: entry.knowledgeCutoff } : {}),
         ...(provider.authKind === 'oauth_token' ? {} : { connectionName: connection.name }),
         isDefault: entry.isDefault,
         thinkingLevels: thinkingVariantsForConnection(connection, entry.id),

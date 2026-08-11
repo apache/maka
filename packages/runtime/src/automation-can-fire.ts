@@ -8,8 +8,7 @@ import type { AutomationDefinition } from './automation-state.js';
  *
  * 'waiting_for_user' is IN the set (#639 decision): a session parked waiting
  * for the user's next message is the wakeup's HOME scenario — the whole point
- * of a heartbeat is to start a turn in place of the user. 'done' is also in
- * (firing into a completed session is the durable-cron case).
+ * of a heartbeat is to start a turn in place of the user. 'done' is also idle.
  */
 export const HEARTBEAT_IDLE_STATUSES: ReadonlySet<string> = new Set([
   'active',
@@ -24,7 +23,7 @@ export interface CanFireSessionHeader {
 }
 
 export interface EvaluateAutomationCanFireDeps {
-  /** Global privacy gate — true blocks every kind. */
+  /** Global privacy gate. */
   isIncognitoActive: () => Promise<boolean>;
   /** Reads the session header; may THROW if the session file is gone (deleted). */
   readSessionHeader: (sessionId: string) => Promise<CanFireSessionHeader | null>;
@@ -33,21 +32,15 @@ export interface EvaluateAutomationCanFireDeps {
 }
 
 /**
- * Decide whether an automation may fire now. Kind-aware:
- * - Global privacy (incognito) blocks every kind.
- * - Cron spawns a FRESH session, so its creator session is irrelevant — it is
- *   never gated on that session. This is what lets a durable cron keep firing
- *   after the conversation that created it is archived or deleted.
- * - Heartbeat injects into its own session, so that session must exist (reading
- *   it must not throw) and be idle (not archived, an idle status).
+ * Decide whether a heartbeat may fire now. The target session must exist,
+ * remain unarchived, and be idle; incognito blocks all fires.
  * Pure and injectable so the gate is unit-testable and identical across hosts.
  */
 export async function evaluateAutomationCanFire(
-  automation: Pick<AutomationDefinition, 'kind' | 'sessionId'>,
+  automation: Pick<AutomationDefinition, 'sessionId'>,
   deps: EvaluateAutomationCanFireDeps,
 ): Promise<boolean> {
   if (await deps.isIncognitoActive()) return false;
-  if (automation.kind === 'cron') return true;
   const idle = deps.idleStatuses ?? HEARTBEAT_IDLE_STATUSES;
   let header: CanFireSessionHeader | null;
   try {

@@ -1,26 +1,18 @@
 /**
- * Unified Automation — Codex-style automation system.
- *
- * Two kinds:
- * - "heartbeat": session-scoped polling (resume into same session)
- * - "cron": standalone scheduled runs (create fresh session each time)
+ * Session-scoped heartbeat automation manager.
  */
 
 import type {
   AutomationDefinition,
-  AutomationExecutionTemplate,
-  AutomationKind,
+  AutomationClientCapabilityRequirement,
   AutomationSchedule,
+  AutomationWaitingState,
 } from '@maka/core/automation';
 import { AUTOMATION_LAST_ERROR_LIMIT, truncateAutomationText } from '@maka/core/automation';
 import { compileCronExpression } from '@maka/core/cron-expression';
 
-export { matchesCronField } from '@maka/core/cron-expression';
-
 export type {
   AutomationDefinition,
-  AutomationExecutionTemplate,
-  AutomationKind,
   AutomationSchedule,
   AutomationStatus,
 } from '@maka/core/automation';
@@ -74,15 +66,13 @@ export class AutomationManager {
   constructor(private readonly deps: AutomationManagerDeps) {}
 
   create(input: {
-    kind: AutomationKind;
     name: string;
     prompt: string;
     sessionId: string;
     schedule: AutomationSchedule;
     maxFires?: number;
     expiresAt?: number;
-    durable?: boolean;
-    execution?: AutomationExecutionTemplate;
+    capabilityRequirements?: readonly AutomationClientCapabilityRequirement[];
   }): AutomationDefinition | { error: string } {
     // Only count active/paused automations toward the limit (not completed/expired).
     const activeCount = this.listForSession(input.sessionId).filter(
@@ -94,13 +84,9 @@ export class AutomationManager {
       };
     }
 
-    if (input.kind === 'heartbeat') {
-      const existing = this.listForSession(input.sessionId).filter(
-        (a) => a.kind === 'heartbeat' && a.status === 'active',
-      );
-      if (existing.length >= 5) {
-        return { error: 'Maximum 5 active heartbeat automations per session.' };
-      }
+    const existing = this.listForSession(input.sessionId).filter((a) => a.status === 'active');
+    if (existing.length >= 5) {
+      return { error: 'Maximum 5 active heartbeat automations per session.' };
     }
 
     const now = this.deps.now();
@@ -115,17 +101,8 @@ export class AutomationManager {
 
     const defaultExpiry = now + DEFAULT_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
 
-    // Cron is a standalone scheduled task (fresh session each run) — it is
-    // meaningless if it dies on restart, so it defaults to durable. Heartbeat
-    // injects into its own session and has no coherent post-restart target, so
-    // it is ALWAYS session-bound (never durable) — a durable heartbeat would be
-    // a zombie after restart. `durable` is therefore a cron-only concept; an
-    // explicit value only refines cron.
-    const durable = input.kind === 'cron' ? (input.durable ?? true) : false;
-
     const automation: AutomationDefinition = {
       id,
-      kind: input.kind,
       name: input.name,
       status: 'active',
       prompt: input.prompt,
@@ -141,8 +118,9 @@ export class AutomationManager {
       expiresAt: input.expiresAt ?? defaultExpiry,
       lastError: null,
       consecutiveFailures: 0,
-      ...(durable ? { durable: true } : {}),
-      ...(input.kind === 'cron' && input.execution ? { execution: input.execution } : {}),
+      ...(input.capabilityRequirements && input.capabilityRequirements.length > 0
+        ? { capabilityRequirements: structuredClone(input.capabilityRequirements) }
+        : {}),
     };
 
     this.automations.set(id, automation);
@@ -157,23 +135,24 @@ export class AutomationManager {
   delete(id: string, sessionId?: string): boolean {
     const automation = this.automations.get(id);
     if (!automation) return false;
-    if (sessionId && !this.manageableBy(automation, sessionId)) return false;
+    if (sessionId && automation.sessionId !== sessionId) return false;
     this.automations.delete(id);
     return true;
   }
 
   pause(id: string, sessionId: string): AutomationDefinition | undefined {
     const automation = this.automations.get(id);
-    if (!automation || !this.manageableBy(automation, sessionId)) return undefined;
+    if (!automation || automation.sessionId !== sessionId) return undefined;
     if (automation.status !== 'active') return undefined;
     automation.status = 'paused';
     automation.updatedAt = this.deps.now();
+    automation.waiting = undefined;
     return automation;
   }
 
   resume(id: string, sessionId: string): AutomationDefinition | undefined {
     const automation = this.automations.get(id);
-    if (!automation || !this.manageableBy(automation, sessionId)) return undefined;
+    if (!automation || automation.sessionId !== sessionId) return undefined;
     if (automation.status !== 'paused') return undefined;
     // Refuse to resume an automation whose fire budget is already spent. A
     // maxFires-exhausted (or a one-shot that already fired) automation only
@@ -190,30 +169,13 @@ export class AutomationManager {
     // count toward re-pausing it after a single fresh failure.
     automation.consecutiveFailures = 0;
     automation.lastError = null;
+    automation.waiting = undefined;
     automation.nextFireAt = this.computeNextFire(automation.schedule, this.deps.now());
     return automation;
   }
 
   listForSession(sessionId: string): AutomationDefinition[] {
     return [...this.automations.values()].filter((a) => a.sessionId === sessionId);
-  }
-
-  /**
-   * Automations a session can see and manage: its own (any kind) plus every
-   * durable one. Durable automations (cron by default) are app-global — they
-   * outlive their creator session and reload from disk on restart with their
-   * original sessionId, so a fresh session must still be able to list and
-   * manage them. Non-durable heartbeats stay private to their session.
-   */
-  listVisibleForSession(sessionId: string): AutomationDefinition[] {
-    return [...this.automations.values()].filter(
-      (a) => a.sessionId === sessionId || a.durable === true,
-    );
-  }
-
-  /** A session may manage its own automations plus any durable (app-global) one. */
-  private manageableBy(automation: AutomationDefinition, sessionId: string): boolean {
-    return automation.sessionId === sessionId || automation.durable === true;
   }
 
   listActive(): AutomationDefinition[] {
@@ -232,6 +194,7 @@ export class AutomationManager {
       automation.status = 'expired';
       automation.nextFireAt = null;
       automation.updatedAt = now;
+      automation.waiting = undefined;
       return true;
     }
     return false;
@@ -247,6 +210,7 @@ export class AutomationManager {
     if (!automation || automation.status !== 'active') return undefined;
 
     const now = this.deps.now();
+    automation.waiting = undefined;
     // Check expiry BEFORE firing — don't execute expired automations.
     if (automation.expiresAt && now >= automation.expiresAt) {
       automation.status = 'expired';
@@ -278,21 +242,34 @@ export class AutomationManager {
     return automation;
   }
 
-  /**
-   * Record a fire attempt deferred by the idle-gate (target busy). Pure
-   * observability — surfaced in the model-facing list output.
-   */
+  /** Record a transient scheduler deferral. */
   recordDeferredFire(id: string): void {
     const automation = this.automations.get(id);
     if (!automation || automation.status !== 'active') return;
     automation.deferredFireCount = (automation.deferredFireCount ?? 0) + 1;
+    automation.waiting = undefined;
+    automation.updatedAt = this.deps.now();
   }
 
-  /** Record a retry for a fire that was admitted while the definition was active. */
+  /** Record a transient retry for a fire that was admitted while the definition was active. */
   recordAdmittedFireDeferred(id: string): void {
     const automation = this.automations.get(id);
     if (!automation) return;
     automation.deferredFireCount = (automation.deferredFireCount ?? 0) + 1;
+    automation.waiting = undefined;
+    automation.updatedAt = this.deps.now();
+  }
+
+  /** Persist a missing execution prerequisite without consuming the transient retry window. */
+  recordPrerequisiteWaiting(id: string, waiting: AutomationWaitingState): boolean {
+    const automation = this.automations.get(id);
+    if (!automation || automation.status !== 'active') return false;
+    const current = automation.waiting;
+    if (current?.reason === waiting.reason && current.message === waiting.message) return false;
+    automation.deferredFireCount = (automation.deferredFireCount ?? 0) + 1;
+    automation.waiting = mergeWaitingState(current, waiting);
+    automation.updatedAt = this.deps.now();
+    return true;
   }
 
   /**
@@ -313,7 +290,9 @@ export class AutomationManager {
     if (automation.schedule.type === 'once') {
       automation.nextFireAt = null;
       automation.status = 'expired';
-      automation.lastError = 'Fire window skipped (session busy or privacy mode)';
+      automation.lastError =
+        automation.waiting?.message ?? 'Fire window skipped (session busy or privacy mode)';
+      automation.waiting = undefined;
       return;
     }
     automation.nextFireAt = this.computeNextFire(automation.schedule, now);
@@ -340,10 +319,15 @@ export class AutomationManager {
     settleAutomationAttempt(automation, { status: 'failed', error }, this.deps.now());
   }
 
+  clearWaiting(id: string): void {
+    const automation = this.automations.get(id);
+    if (automation) automation.waiting = undefined;
+  }
+
   removeAllForSession(sessionId: string): number {
     let count = 0;
     for (const [id, auto] of this.automations) {
-      if (auto.sessionId === sessionId && auto.kind === 'heartbeat') {
+      if (auto.sessionId === sessionId) {
         this.automations.delete(id);
         count++;
       }
@@ -459,6 +443,7 @@ export function settleAutomationAttempt(
   if (automation.status === 'completed' || automation.status === 'expired') return;
   if (outcome.runId) automation.lastRunId = outcome.runId;
   automation.updatedAt = now;
+  automation.waiting = undefined;
   if (outcome.status === 'completed') {
     automation.consecutiveFailures = 0;
     automation.lastError = null;
@@ -483,6 +468,15 @@ export function settleAutomationAttempt(
   }
 }
 
+function mergeWaitingState(
+  current: AutomationWaitingState | undefined,
+  next: AutomationWaitingState,
+): AutomationWaitingState {
+  return current?.reason === next.reason
+    ? { ...next, since: current.since }
+    : structuredClone(next);
+}
+
 /**
  * Compute the next Unix-ms timestamp at which a 5-field cron expression fires,
  * strictly after `fromTime`. Returns null for a malformed expression or one
@@ -499,7 +493,7 @@ export function settleAutomationAttempt(
  * intentionally out of scope for this parser.
  */
 export function computeNextCronFire(expression: string, fromTime: number): number | null {
-  const compiled = compileCronExpression(expression, { profile: 'automation-v1' });
+  const compiled = compileCronExpression(expression);
   return compiled.ok ? compiled.value.nextAfter(fromTime) : null;
 }
 

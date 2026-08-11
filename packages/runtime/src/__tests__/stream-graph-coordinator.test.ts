@@ -325,6 +325,20 @@ describe('host-managed agent graph coordinator', () => {
         coordinator.toolsForSession(childSessions[0]!.id),
         /only to root Sessions/,
       );
+      let childStopEntered = false;
+      await assert.rejects(
+        coordinator.stopExecution(childSessions[0]!.id, {
+          stopSupervisor: async () => {
+            childStopEntered = true;
+          },
+          withSupervisorWakesSuppressed: async (operation) => {
+            childStopEntered = true;
+            await operation();
+          },
+        }),
+        /only to root Sessions/,
+      );
+      assert.equal(childStopEntered, false);
 
       const canonicalProjection = await controlStore.readAgentGraphClientProjection(graphId);
       assert.ok(canonicalProjection);
@@ -430,7 +444,16 @@ describe('host-managed agent graph coordinator', () => {
       );
       await gate.started;
       try {
-        await recovered.stop(rootSession.id);
+        const supervisorStopFailure = new Error('supervisor stop failed');
+        await assert.rejects(
+          recovered.stopExecution(rootSession.id, {
+            stopSupervisor: async () => {
+              throw supervisorStopFailure;
+            },
+            withSupervisorWakesSuppressed: (operation) => operation(),
+          }),
+          (error: unknown) => error === supervisorStopFailure,
+        );
       } finally {
         gate.release();
       }
@@ -883,6 +906,14 @@ describe('host-managed agent graph coordinator', () => {
   test('attempts every operator stop and surfaces all close failures', async () => {
     const graphId = agentGraphIdForRootSession('root-session');
     const stopped: string[] = [];
+    let releaseStops!: () => void;
+    const stopsReleased = new Promise<void>((resolve) => {
+      releaseStops = resolve;
+    });
+    let markStopsStarted!: () => void;
+    const stopsStarted = new Promise<void>((resolve) => {
+      markStopsStarted = resolve;
+    });
     const coordinator = new AgentGraphCoordinator({
       sessionStore: {
         listForRecovery: async () => [],
@@ -909,6 +940,8 @@ describe('host-managed agent graph coordinator', () => {
       runtime: {
         stopSession: async (sessionId: string) => {
           stopped.push(sessionId);
+          if (stopped.length === 2) markStopsStarted();
+          await stopsReleased;
           throw new Error(`cannot stop ${sessionId}`);
         },
       },
@@ -916,6 +949,10 @@ describe('host-managed agent graph coordinator', () => {
       rootSessionId: 'root-session',
     } as unknown as AgentGraphCoordinatorInput);
     await coordinator.toolsForSession('root-session');
+    coordinator.beginDrain();
+    await stopsStarted;
+    assert.deepEqual(stopped.sort(), ['child-a', 'child-b']);
+    releaseStops();
     await assert.rejects(
       coordinator.close(),
       (error: unknown) =>
@@ -925,7 +962,6 @@ describe('host-managed agent graph coordinator', () => {
             (failure) => failure instanceof AggregateError && failure.errors.length === 2,
           )),
     );
-    assert.deepEqual(stopped.sort(), ['child-a', 'child-b']);
   });
 
   test('rejects concurrent yield when reconciliation only waits for uncommitted input', async () => {

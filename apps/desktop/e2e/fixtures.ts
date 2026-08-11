@@ -5,7 +5,13 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { createConnectionStore, createFileCredentialStore, createSettingsStore } from '@maka/storage';
+import {
+  createConnectionStore,
+  createFileCredentialStore,
+  createProjectCatalog,
+  createSettingsStore,
+} from '@maka/storage';
+import { resolveStorageRoot } from '@maka/storage/root-authority';
 import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
 
@@ -131,12 +137,8 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
       `---\nname: Workspace Only\ndescription: Maka workspace suggestion.\n---\n# Workspace Only`,
       'utf8',
     ),
-    writeFile(
-      path.join(workspaceRoot, 'last-project-path.json'),
-      JSON.stringify({ projectPath: projectRoot }),
-      'utf8',
-    ),
   ]);
+  await seedCurrentProject(workspaceRoot, projectRoot);
 }
 
 async function seedE2eGitReviewProject(
@@ -174,26 +176,22 @@ async function seedE2eGitReviewProject(
       ),
     ),
   );
-  await writeFile(
-    path.join(workspaceRoot, 'last-project-path.json'),
-    JSON.stringify({ projectPath: projectRoot }),
-    'utf8',
-  );
+  await seedCurrentProject(workspaceRoot, projectRoot);
 }
 
-/**
- * The sandboxed HOME of the run currently under test. Set by withE2eWindow
- * before Electron launches.
- *
- * Read it from inside a test BODY, never as a fixture: a fixture would have no
- * declared dependency on the window fixture, so Playwright could resolve it
- * before the window is set up and hand back a stale path.
- */
-let currentHomeDir = '';
-
-export function e2eHomeDir(): string {
-  if (!currentHomeDir) throw new Error('e2eHomeDir() is only valid inside a test that opened a window');
-  return currentHomeDir;
+async function seedCurrentProject(workspaceRoot: string, projectRoot: string): Promise<void> {
+  const storageRoot = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const catalog = createProjectCatalog(workspaceRoot);
+  try {
+    const project = await catalog.register(projectRoot);
+    await writeFile(
+      path.join(workspaceRoot, 'project-preferences.json'),
+      JSON.stringify({ version: 1, selections: { [storageRoot.rootId]: project.id } }),
+      'utf8',
+    );
+  } finally {
+    catalog.close();
+  }
 }
 
 /**
@@ -227,14 +225,13 @@ async function withE2eWindow(
     gitReviewExtraFiles?: number;
     extraConnectionCount?: number;
   },
-  use: (page: Page) => Promise<void>,
+  use: (page: Page, context: { userDataDir: string }) => Promise<void>,
 ): Promise<void> {
   const userDataDir = await mkdtemp(path.join(tmpdir(), 'maka-e2e-'));
   // Lives inside the throwaway userData dir so the existing teardown removes
   // it too — there is no second path to leak.
   const homeDir = path.join(userDataDir, 'home');
   await mkdir(homeDir, { recursive: true });
-  currentHomeDir = homeDir;
   let app: ElectronApplication | undefined;
   const mainLogs: string[] = [];
   const rendererLogs: string[] = [];
@@ -291,7 +288,7 @@ async function withE2eWindow(
       const rendererDetail = rendererLogs.length > 0 ? `\nRenderer console:\n${rendererLogs.join('\n')}` : '';
       throw new Error(`${detail}${mainDetail}${rendererDetail}`, { cause: error });
     }
-    await use(page);
+    await use(page, { userDataDir });
   } finally {
     try {
       if (app) await closeElectronApplication(app, 5_000);
@@ -303,107 +300,13 @@ async function withE2eWindow(
 
 export const test = base.extend<{
   window: Page;
-  externalSessionImportWindow: Page;
-  firstRunWindow: Page;
-  modelPickerLongWindow: Page;
-  sandboxBoundaryWindow: Page;
-  readOnlyBoundaryWindow: Page;
-  sessionWorkbarWindow: Page;
   artifactPaneWindow: Page;
-  botSettingsWindow: Page;
+  gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
-  settingsProjectsWindow: Page;
-  oauthReloginWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
-  // Used by chat / session / settings / attachment specs.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
-  },
-  // External Session import runs through the production Runtime Host owner.
-  externalSessionImportWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: true,
-        readinessSelector: '.maka-session-panel',
-        locale: 'zh',
-      },
-      use,
-    );
-  },
-  // No connection: the real main process derives `needs_connection`, and the
-  // renderer replaces the empty chat with the first-task activation card.
-  firstRunWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '[data-maka-contract="onboarding-card"]',
-        e2eFixtureScenario: 'first-run',
-        locale: 'zh',
-      },
-      use,
-    );
-  },
-  // Settings -> 偏好 -> 项目, with three seeded catalog entries (available,
-  // long-path, and folder-gone) so the list, the default control, and the
-  // unavailable row all render without touching a native directory picker.
-  settingsProjectsWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: true,
-        readinessSelector: '.settingsMainPane',
-        e2eFixtureScenario: 'settings-projects',
-        locale: 'zh',
-      },
-      use,
-    );
-  },
-  modelPickerLongWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: true,
-        readinessSelector: COMPOSER_INPUT,
-        locale: 'zh',
-        extraConnectionCount: 10,
-      },
-      use,
-    );
-  },
-  // Sandbox-boundary takeover: boots a deterministic expansion request in the
-  // real desktop shell so the composer-slot placement and non-modal behavior
-  // are covered without a provider or test-only renderer state path.
-  sandboxBoundaryWindow: async ({}, use) => {
-    await withE2eWindow(
-      { seed: false, readinessSelector: '.maka-sandbox-boundary-prompt', e2eFixtureScenario: 'sandbox-boundary', locale: 'zh' },
-      use,
-    );
-  },
-  // Read-only boundary (#1611): the Deep Research fixture session is seeded
-  // with `permissionMode: 'explore'`, so the metadata store derives a genesis
-  // managed read-only boundary for it. That makes this the only window where
-  // the composer's permission label is driven by a real read-only profile
-  // travelling main → IPC → renderer.
-  readOnlyBoundaryWindow: async ({}, use) => {
-    await withE2eWindow(
-      { seed: false, readinessSelector: COMPOSER_INPUT, e2eFixtureScenario: 'deep-research-progress', locale: 'zh' },
-      use,
-    );
-  },
-  // Session workbar: seeds a task tree and opens the unified auxiliary
-  // workspace so its shell controls and peer tabs run against real IPC data.
-  sessionWorkbarWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        // The data contract, not the tag: the panel's surface is an Astryx Card
-        // (a div carrying role="complementary"), so a tag-anchored selector
-        // would pin an implementation detail the design system owns.
-        readinessSelector: '[data-maka-contract="session-workbar-right"]',
-        e2eFixtureScenario: 'task-ledger',
-        locale: 'zh',
-      },
-      use,
-    );
   },
   artifactPaneWindow: async ({}, use) => {
     await withE2eWindow(
@@ -416,17 +319,23 @@ export const test = base.extend<{
       use,
     );
   },
-  // Remote access: uses the e2e-fixture workspace so Settings opens on the
-  // channel catalog and main injects deterministic IM onboarding adapters.
-  // The renderer still talks through the real preload/IPC/session authority.
-  botSettingsWindow: async ({}, use) => {
+  gitReviewWindow: async ({}, use) => {
     await withE2eWindow(
-      { seed: false, readinessSelector: '[aria-label="设置内容"]', e2eFixtureScenario: 'settings-bots', locale: 'zh' },
-      use,
+      {
+        seed: true,
+        readinessSelector: COMPOSER_INPUT,
+        locale: 'zh',
+        gitReviewExtraFiles: 0,
+      },
+      async (page, context) => {
+        await use({
+          page,
+          projectRoot: path.join(context.userDataDir, 'git-review-project'),
+        });
+      },
     );
   },
-  // Project + Maka-workspace Skills with one deliberately host-incompatible
-  // entry. Proves `/` uses Runtime discovery/gating rather than management UI data.
+  // Project + workspace Skills for draft/chip journeys.
   invocableSkillsWindow: async ({}, use) => {
     await withE2eWindow({
       seed: true,
@@ -434,19 +343,6 @@ export const test = base.extend<{
       locale: 'zh',
       invocableSkills: true,
     }, use);
-  },
-  oauthReloginWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        // The connection detail is a page now, not a dialog; waiting on
-        // `dialog[open]` waited for markup this redesign deleted.
-        readinessSelector: '[data-maka-contract="connection-detail"]',
-        e2eFixtureScenario: 'oauth-relogin',
-        locale: 'zh',
-      },
-      use,
-    );
   },
 });
 

@@ -2,7 +2,7 @@ import type { ToolAvailabilityDiagnostic } from '@maka/core/usage-stats/types';
 import { z } from 'zod';
 
 import { estimateTokens } from './context-budget-helpers.js';
-import { canonicalizeToolSet, toolSchemaCharsForDiagnostics } from './request-shape.js';
+import { canonicalizeToolSet, stableHash, toolSchemaCharsForDiagnostics } from './request-shape.js';
 import type { MakaTool, ToolGating } from './tool-runtime.js';
 
 /**
@@ -48,6 +48,22 @@ export interface ToolAvailabilityConfig {
   economy: boolean;
   /** Natural clusters hidden behind the connector when economy is on. */
   groups?: readonly ToolGroup[];
+}
+
+export function toolAvailabilityHash(config: ToolAvailabilityConfig): `sha256:${string}` {
+  return stableHash({
+    economy: config.economy,
+    groups: (config.groups ?? []).map((group) => ({
+      id: group.id,
+      toolNames: [...new Set(group.toolNames)].sort(compareExactString),
+      ...(group.label !== undefined ? { label: group.label } : {}),
+      ...(group.description !== undefined ? { description: group.description } : {}),
+    })),
+  });
+}
+
+function compareExactString(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /** The minimal shape this module reads from an AI SDK `StepResult`. */

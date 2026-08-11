@@ -1,5 +1,0 @@
-{"id":"legacy-corrupt-0001","workspaceRoot":"/Users/fixture/Library/Application Support/Maka/workspaces/default","cwd":"/Users/fixture/work/corrupt-project","createdAt":1783921000000,"lastUsedAt":1783921010000,"name":"Corrupt Session","isFlagged":false,"labels":[],"isArchived":false,"status":"active","statusUpdatedAt":1783921010000,"hasUnread":false,"backend":"ai-sdk","llmConnectionSlug":"openai-compatible","connectionLocked":true,"model":"demo-model","permissionMode":"ask","schemaVersion":1,"lastMessageAt":1783921010000}
-{"type":"user","id":"msg-user-corrupt-1","turnId":"turn-corrupt-1","ts":1783921005000,"text":"this file is corrupt"}
-{"type":"turn_state","id":"msg-turnstate-corrupt","turnId":"turn-corrupt-1","ts":1783921005000,"status":"running","partialOutputRetained":false}
-{this line is not valid json
-{"type":"turn_state","id":"msg-turnstate-corrupt-done","turnId":"turn-corrupt-1","ts":1783921010000,"status":"completed","partialOutputRetained":false}

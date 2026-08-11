@@ -30,12 +30,14 @@ import type { OpenAiResponsesTransportState } from './openai-responses-websocket
 import { anthropicV1BaseUrl, googleV1BetaBaseUrl } from './provider-urls.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
+import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 
 export interface ModelFactoryInput {
   connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
   fetch?: typeof globalThis.fetch;
+  requestHeaders?: Readonly<Record<string, string>>;
   resolvedRuntime?: ResolvedModelRuntime;
   openAiChatReasoningTransportState?: OpenAiChatReasoningTransportState;
   openAiResponsesTransportState?: OpenAiResponsesTransportState;
@@ -48,15 +50,23 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
     apiKey,
     modelId,
     fetch,
+    requestHeaders,
     resolvedRuntime,
     openAiChatReasoningTransportState,
     openAiResponsesTransportState,
   } = input;
   const runtime = resolvedRuntime ?? resolveModelRuntime(connection, modelId);
   const { adapter, baseUrl: baseURL, wire, reasoningReplay } = runtime;
+  const hasRequestCustomization =
+    Object.keys(requestHeaders ?? {}).length > 0 ||
+    Object.keys(connection.requestBodyOverlay ?? {}).length > 0;
+  const requestFetch = createRequestCustomizationFetch(fetch ?? globalThis.fetch, {
+    headers: requestHeaders,
+    bodyOverlay: connection.requestBodyOverlay,
+  });
 
   if (adapter.kind === 'google' && adapter.normalizeBaseUrl === false) {
-    return createGoogle({ apiKey, baseURL, fetch }).chat(modelId);
+    return createGoogle({ apiKey, baseURL, fetch: requestFetch }).chat(modelId);
   }
 
   switch (adapter.kind) {
@@ -64,7 +74,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       return createAnthropic({
         ...(adapter.auth === 'bearer' ? { authToken: apiKey } : { apiKey }),
         baseURL: adapter.normalizeBaseUrl ? anthropicV1BaseUrl(baseURL) : baseURL,
-        fetch,
+        fetch: requestFetch,
         headers: { 'anthropic-beta': ANTHROPIC_BETA },
       }).chat(modelId);
 
@@ -72,7 +82,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       return createAnthropic({
         authToken: apiKey,
         baseURL: anthropicV1BaseUrl(baseURL),
-        fetch,
+        fetch: requestFetch,
         headers: claudeSubscriptionHeaders(),
       }).chat(modelId);
 
@@ -80,26 +90,29 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       return createOpenAI({
         apiKey,
         baseURL,
-        fetch: openAiResponsesTransportState?.wrapFetch(fetch ?? globalThis.fetch) ?? fetch,
+        fetch:
+          !hasRequestCustomization && openAiResponsesTransportState
+            ? openAiResponsesTransportState.wrapFetch(requestFetch)
+            : requestFetch,
         headers: openAiCodexHeaders(apiKey),
       }).responses(modelId);
 
     case 'github-copilot': {
       if (wire === 'openai-responses') {
-        return createOpenAI({ apiKey, baseURL, fetch }).responses(modelId);
+        return createOpenAI({ apiKey, baseURL, fetch: requestFetch }).responses(modelId);
       }
       if (wire === 'anthropic-messages') {
         return createAnthropic({
           authToken: apiKey,
           baseURL: anthropicV1BaseUrl(baseURL),
-          fetch,
+          fetch: requestFetch,
         }).chat(modelId);
       }
       return createOpenAICompatible({
         name: 'github-copilot',
         apiKey,
         baseURL,
-        fetch,
+        fetch: requestFetch,
       }).chatModel(modelId);
     }
 
@@ -110,7 +123,10 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       const openai = createOpenAI({
         apiKey,
         baseURL,
-        fetch: openAiResponsesTransportState?.wrapFetch(fetch ?? globalThis.fetch) ?? fetch,
+        fetch:
+          !hasRequestCustomization && openAiResponsesTransportState
+            ? openAiResponsesTransportState.wrapFetch(requestFetch)
+            : requestFetch,
       });
       return wire === 'openai-responses' ? openai.responses(modelId) : openai.chat(modelId);
     }
@@ -119,11 +135,11 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       return createGoogle({
         apiKey,
         baseURL: googleV1BetaBaseUrl(baseURL),
-        fetch,
+        fetch: requestFetch,
       }).chat(modelId);
 
     case 'cohere':
-      return createCohere({ apiKey, baseURL, fetch })(modelId);
+      return createCohere({ apiKey, baseURL, fetch: requestFetch })(modelId);
 
     case 'openai-compatible': {
       if (adapter.requireBaseUrl && !baseURL) {
@@ -143,15 +159,15 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           apiKey,
           baseURL,
           fetch: speaksPlaintextReasoning
-            ? createOpenAiResponsesPlaintextReasoningTransport(fetch ?? globalThis.fetch)
-            : fetch,
+            ? createOpenAiResponsesPlaintextReasoningTransport(requestFetch)
+            : requestFetch,
         }).responses(modelId);
       }
       if (reasoningReplay.kind !== 'openai-chat-plaintext') {
         throw new Error('OpenAI-compatible Chat wire requires plaintext reasoning replay');
       }
       const reasoningTransport = createOpenAiChatReasoningTransport(
-        fetch ?? globalThis.fetch,
+        requestFetch,
         openAiChatReasoningTransportState ??
           createOpenAiChatReasoningTransportState(reasoningReplay.requestField),
         connection.providerType === 'kimi-coding-plan',

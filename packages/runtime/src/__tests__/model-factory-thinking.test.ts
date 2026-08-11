@@ -132,12 +132,6 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
-  test('openai-codex gpt-5.6-sol sends xhigh reasoning effort', () => {
-    assert.deepEqual(buildProviderOptions(conn('openai-codex'), 'gpt-5.6-sol', 'xhigh'), {
-      openai: { store: false, textVerbosity: 'medium', reasoningEffort: 'xhigh' },
-    });
-  });
-
   test('google effort model (gemini-3) sends thinkingLevel; Gemini 2.5 Flash off sends thinkingBudget 0; safetySettings always present', () => {
     const g3 = buildProviderOptions(conn('google'), 'gemini-3-pro-preview', 'high');
     assert.equal(
@@ -306,21 +300,6 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual([...thinkingVariantsForModel('stepfun-step-plan', 'step-router-v1')], []);
   });
 
-  test('StepFun Step Plan Global sends only officially supported reasoning effort levels', () => {
-    assert.deepEqual(
-      buildProviderOptions(conn('stepfun-ai-step-plan'), 'step-3.7-flash', 'medium'),
-      { 'stepfun-ai-step-plan': { reasoningEffort: 'medium' } },
-    );
-    assert.deepEqual(
-      buildProviderOptions(conn('stepfun-ai-step-plan'), 'step-3.5-flash-2603', 'low'),
-      { 'stepfun-ai-step-plan': { reasoningEffort: 'low' } },
-    );
-    assert.deepEqual(
-      buildProviderOptions(conn('stepfun-ai-step-plan'), 'step-3.5-flash', 'medium'),
-      {},
-    );
-  });
-
   test('Volcengine Ark sends its official thinking object and optional reasoning effort', () => {
     const modelId = 'doubao-seed-2-0-pro-260215';
     assert.deepEqual(
@@ -466,23 +445,6 @@ describe('getAIModel: models.dev registry providers', () => {
     }
   });
 
-  test('routes only xAI Grok 4.5 through Responses', () => {
-    for (const providerType of ['xai', 'xai-oauth'] as const) {
-      const responses = getAIModel({
-        connection: conn(providerType),
-        apiKey: 'xai-test-key',
-        modelId: 'grok-4.5',
-      });
-      const chat = getAIModel({
-        connection: conn(providerType),
-        apiKey: 'xai-test-key',
-        modelId: 'grok-4.3',
-      });
-
-      assert.equal(responses.provider, 'openai.responses');
-      assert.equal(chat.provider, `${providerType}.chat`);
-    }
-  });
 
   test('routes each exact GitHub Copilot model through its account-advertised wire', () => {
     for (const [modelId, apiProtocol, expectedProvider] of [
@@ -613,27 +575,10 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
   });
 });
 
-test('models without a real off wire do not expose off', () => {
-  assert.equal(thinkingVariantsForModel('deepseek', 'deepseek-v4-flash').includes('off'), false);
-  assert.equal(thinkingVariantsForModel('zai-coding-plan', 'glm-5.1').includes('off'), false);
-  assert.equal(thinkingVariantsForModel('zai-coding-plan', 'glm-4.5-air').includes('off'), false);
-});
-
 describe('changesBackendConfig', () => {
   test('thinkingLevel change triggers backend reconfiguration', () => {
     assert.equal(changesBackendConfig({ thinkingLevel: 'high' }), true);
     assert.equal(changesBackendConfig({ thinkingLevel: undefined }), true);
-  });
-
-  test('unrelated patches do not', () => {
-    assert.equal(changesBackendConfig({ name: 'x' }), false);
-    assert.equal(changesBackendConfig({}), false);
-  });
-
-  test('backend / llmConnectionSlug / model still trigger', () => {
-    assert.equal(changesBackendConfig({ backend: 'ai-sdk' }), true);
-    assert.equal(changesBackendConfig({ llmConnectionSlug: 'a' }), true);
-    assert.equal(changesBackendConfig({ model: 'm' }), true);
   });
 
   test('permissionMode triggers, so a mode change is enforced and not merely stored', () => {

@@ -30,7 +30,7 @@ describe('Runtime Host maka run adapter', () => {
       },
       {
         connect: async () => ({
-          connection: {} as RuntimeHostConnection,
+          connection: readinessConnection(),
           catalog: connectionCatalog(),
           close: async () => {
             closes += 1;
@@ -44,6 +44,43 @@ describe('Runtime Host maka run adapter', () => {
     assert.deepEqual(stdout, ['Host answer\n']);
     assert.deepEqual(stderr, []);
     assert.equal(closes, 1);
+  });
+
+  test('stops before context creation when CLI preflight finds a confirmed blocker', async () => {
+    const stderr: string[] = [];
+    let contextCreations = 0;
+    const blockedCatalog = connectionCatalog();
+    blockedCatalog.connections[0]!.enabled = false;
+
+    const exitCode = await runRuntimeHostTextCli(
+      ['answer once'],
+      {
+        workspaceRoot: () => '/runtime-host-data',
+        processCwd: () => process.cwd(),
+        stdinIsTTY: () => true,
+        readStdin: async () => '',
+        writeStdout: () => {},
+        writeStderr: (text) => stderr.push(text),
+        onSigint: () => () => {},
+        newId: () => 'turn-blocked',
+      },
+      {
+        connect: async () => ({
+          connection: {} as RuntimeHostConnection,
+          catalog: blockedCatalog,
+          close: async () => {},
+        }),
+        createContext: (_connection, _catalog, input) => {
+          contextCreations += 1;
+          return publicCommandContext(input);
+        },
+      },
+    );
+
+    assert.equal(exitCode, 2);
+    assert.equal(contextCreations, 0);
+    assert.match(stderr.join(''), /model_connection_disabled/);
+    assert.match(stderr.join(''), /repair connection "openai-main" in `maka`/);
   });
 
   test('continues the Host-owned cwd Session without creating another identity', async () => {
@@ -62,7 +99,10 @@ describe('Runtime Host maka run adapter', () => {
           sessions: [
             {
               ...sessionProjection('session-existing'),
-              cwd,
+              workspace: {
+                target: { kind: 'host_path', path: cwd },
+                hostCwd: cwd,
+              },
               lastUsedAt: 10,
               lastMessageAt: 10,
             },
@@ -300,22 +340,6 @@ describe('Runtime Host maka run adapter', () => {
 
     assert.equal(observed.length, 1);
     assert.equal(observed[0]?.finalOutput, 'Host answer');
-  });
-
-  test('canonicalizes a legacy resumed Session through Host authority', async () => {
-    const fixture = runFixture({
-      sessionCwdOverride: { sessionId: 'session-legacy', cwd: '/canonical-workspace' },
-      switchSummaryCwd: '/workspace-link',
-    });
-
-    await collect(
-      fixture.context.runtime.sendMessage('session-legacy', {
-        turnId: 'turn-1',
-        text: 'resume safely',
-      }),
-    );
-
-    assert.deepEqual(fixture.moves, ['/canonical-workspace']);
   });
 
   test('applies the requested step cap through the Host turn', async () => {
@@ -787,10 +811,30 @@ function connectionCatalog() {
         providerType: 'openai' as const,
         enabled: true,
         enabledModelIds: ['gpt-5'],
-        models: [],
+        models: [{ id: 'gpt-5' }],
       },
     ],
   };
+}
+
+function readinessConnection(): RuntimeHostConnection {
+  return {
+    request: async (operation: string) => {
+      if (operation !== 'credential.vault.query') {
+        throw new Error(`Unexpected readiness operation: ${operation}`);
+      }
+      return {
+        kind: 'status',
+        status: {
+          locator: { scope: 'connection', connectionId: 'connection-1', kind: 'api_key' },
+          configured: true,
+          credentialId: 'credential-1',
+          revision: 1,
+          updatedAt: 1,
+        },
+      };
+    },
+  } as unknown as RuntimeHostConnection;
 }
 
 async function* questionEvents(turnId: string): AsyncIterable<SessionEvent> {
@@ -975,7 +1019,10 @@ function sessionProjection(id: string): SessionCatalogProjection {
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: 'Run once',

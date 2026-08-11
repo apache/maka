@@ -11,7 +11,7 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
 } from '@astryxdesign/core/DropdownMenu';
-import { Eye, ShieldAlert, ShieldCheck } from './icons.js';
+import { ICON_SIZE, Eye, ShieldAlert, ShieldCheck } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { cn } from './utils.js';
@@ -19,9 +19,9 @@ import { cn } from './utils.js';
 type PermissionModeAppearance = 'field' | 'icon';
 
 function permissionModeIcon(mode: PermissionMode) {
-  if (mode === 'bypass') return <ShieldAlert size={15} aria-hidden="true" />;
-  if (mode === 'explore') return <Eye size={15} aria-hidden="true" />;
-  return <ShieldCheck size={15} aria-hidden="true" />;
+  if (mode === 'bypass') return <ShieldAlert size={ICON_SIZE.control} aria-hidden="true" />;
+  if (mode === 'explore') return <Eye size={ICON_SIZE.control} aria-hidden="true" />;
+  return <ShieldCheck size={ICON_SIZE.control} aria-hidden="true" />;
 }
 
 export interface PermissionModeMeta {

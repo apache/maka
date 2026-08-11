@@ -11,7 +11,7 @@ import {
   type ExecutionInspectSeverity,
   type SessionInspectDocument,
 } from '@maka/core/execution-inspect';
-import type { ExecutionLogCoverage } from '@maka/core/execution-evidence';
+import type { ExecutionLogCoverage } from '@maka/core/execution-log-coverage';
 import {
   inspectAgentRunReadModel,
   type AgentRunInspectReader,

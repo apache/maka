@@ -67,7 +67,7 @@ npm --workspace maka-agent exec -- maka          # TUI
 npm --workspace maka-agent exec -- maka run "…"  # one non-interactive turn
 ```
 
-Headless commands live in [`packages/headless/README.md`](./packages/headless/README.md).
+Evaluation commands and contracts live in [`packages/eval`](./packages/eval).
 
 ### Building
 
@@ -75,7 +75,7 @@ Headless commands live in [`packages/headless/README.md`](./packages/headless/RE
 
 ```
 code-mode → core → storage → mcp → runtime → runtime-host
-          → computer-use → headless → maka-agent → ui → desktop
+          → computer-use → eval → maka-agent → ui → desktop
 ```
 
 Building one workspace only succeeds when its dependencies are already built —
@@ -101,7 +101,6 @@ trees, which fail on imports that no longer resolve.
 ```sh
 npm test                                 # all workspaces
 npm --workspace @maka/core test          # one workspace
-npm run test:scripts                     # repository scripts
 npm --workspace @maka/desktop run e2e    # Playwright
 ```
 
@@ -155,7 +154,7 @@ the required sections and the checklist. Fill it in rather than replacing it.
 ```
 
 `<type>` is the set in [branch naming](#branch-naming). `<scope>` is the
-workspace or area — `desktop`, `ui`, `runtime`, `headless`, `settings`,
+workspace or area — `desktop`, `ui`, `runtime`, `eval`, `settings`,
 `runtime-host`, `storage`, `core`, `cli`, `deps`, `computer-use`, `scripts`,
 `release`, `windows`, `e2e`, `security`, and so on — `git log` shows the set
 in use.

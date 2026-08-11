@@ -8,7 +8,7 @@
 
 **A local-first Agent workspace built for real work.**
 
-Maka does more than answer questions. With controlled permissions, it can inspect projects, execute tools, produce artifacts, and preserve model messages, tool calls, and durable-task progress as recoverable execution facts. Desktop, the terminal TUI, and the non-interactive CLI are clients of one per-workspace Runtime Host. Headless owns a separate task runtime for durable evaluation and automation workloads.
+Maka does more than answer questions. With controlled permissions, it can inspect projects, execute tools, produce artifacts, and preserve model messages and tool calls as recoverable execution facts. Desktop, the terminal TUI, the non-interactive CLI, and Maka evaluation subjects all execute through Runtime Host.
 
 > [!IMPORTANT]
 > Maka is under active development. The macOS Apple Silicon desktop build is an early public release; data formats, CLI commands, and experimental capabilities may still change.
@@ -18,8 +18,7 @@ Maka does more than answer questions. With controlled permissions, it can inspec
 - **Local-first instead of hosted-first**: sessions, settings, and run records stay on your machine by default. You choose the model connection: cloud API, local model, or compatible gateway.
 - **Log is the Runtime**: model messages, Tool Calls, Tool Results, and termination facts enter Runtime Event Log. Sessions, UI, model context, and recovery are projections over that log.
 - **Context is not history**: Tool Result pruning and LLM Compaction change what the next inference sees without treating recorded evidence as disposable context.
-- **A task may outlive a Turn**: Headless uses TaskRun, Task Event Log, budgets, and continuation to advance interruptible and inspectable durable work.
-- **Feedback is not fact authority**: Self-check may produce evidence and one bounded repair opportunity, but “I checked it” does not become a system fact.
+- **One execution authority**: Runtime Host owns Session, Turn, agent lifecycle, continuation, tools, and events. Eval owns only experiment semantics and results.
 
 Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 
@@ -29,7 +28,7 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 |---|---|---|
 | **Desktop** | Daily interaction, file and Artifact workflows, model and permission setup | Electron + React with streaming sessions, tool timelines, branching, search, and recovery |
 | **TUI / CLI** | Using Maka in the current project directory or running one non-interactive Turn | `maka`, `maka run`; shares workspace and model connections with Desktop |
-| **Headless** | Durable tasks, recoverable TaskRuns, experiments, and evaluation | `maka eval` with task logs, export, resume, and comparison |
+| **Eval** | Reproducible benchmark experiments across Maka and external subjects | `maka eval run <spec> --out <directory>` |
 
 ## Current capabilities
 
@@ -47,12 +46,12 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 - Local memory, web search, and bot entry points;
 - Integrations are configured independently, and not every experimental entry is available by default.
 
-### Durable tasks and evolution
+### Evaluation
 
-- Append-only Task Event Log and TaskRun projection;
-- Budgets, permission pauses, continuation, result export, and failed-task retry;
-- Plan-first, source-guarded, and attempt-bounded Heavy-task Self-check;
-- AHE target protocol and evidence export; complete automatic self-iteration remains an external or experimental workflow.
+- Declarative multi-arm experiments expanded into task × repetition × subject cells;
+- Immutable per-cell attempts with targeted infrastructure replacement and earliest-valid selection;
+- A small result kernel for score, normalized usage, attributable cost, duration, status, failure reason, and artifacts;
+- Maka subjects execute only through Runtime Host; external competitors use generic external subject adapters.
 
 ## Quick start
 
@@ -128,7 +127,7 @@ The TUI also accepts `/graph on`, `/graph off`, and `/graph <task>`. Non-interac
 supervisor output. Graph implementation operators use isolated Git worktrees, so
 the source project must be a clean Git worktree.
 
-The CLI reads the same model connections and workspace configuration written by Desktop. See [`packages/headless/README.md`](./packages/headless/README.md) for Headless commands and its trust posture.
+The CLI reads the same model connections and workspace configuration written by Desktop. Evaluation specs and adapters live in [`packages/eval`](./packages/eval).
 
 ## Architecture
 
@@ -141,7 +140,9 @@ Desktop / TUI / CLI → Runtime Host → SessionManager → AgentRun
                                              ↓
                               Context / Session / UI projections
 
-Headless / Eval → Task Event Log → TaskRun → Self-check / AHE evidence
+Experiment → Cells → Attempts → Results
+                    ↓
+       Runtime Host executes Maka subjects
 ```
 
 Start with [ARCHITECTURE.md](./ARCHITECTURE.md). It provides the system map, code boundaries, problem-oriented reading paths, and six bilingual deep dives.
@@ -154,7 +155,7 @@ apps/desktop/       Electron main / preload / React renderer
 packages/core/      Pure contracts for Sessions, Events, Permissions, and Connections
 packages/storage/   SQLite operational state, configuration, and payload stores
 packages/runtime/   AgentRun, model adapters, tools, context, and recovery
-packages/headless/  TaskRun, Autonomous Loop, Self-check, eval, and AHE
+packages/eval/      Experiment cells, attempts, results, and executor/subject adapters
 packages/cli/       TUI and non-interactive CLI
 packages/ui/        Shared conversation, Markdown, Artifact, and UI primitives
 
@@ -177,11 +178,11 @@ Maka stores workspace data under Electron `userData` by default:
 
 Current boundaries that matter:
 
-- Sessions, messages, execution ledgers, workflows, usage, Automations, Daily Review, and Headless TaskRuns live in `runtime.sqlite`;
+- Sessions, messages, execution ledgers, workflows, usage, Automations, and Daily Review live in `runtime.sqlite`;
 - Runtime credentials such as API keys, bot tokens, and proxy passwords currently live in local plaintext `credentials.json`, behind the OS account boundary, with POSIX directory mode `0700` and file mode `0600` enforced;
-- Subscription OAuth tokens (Claude, Codex, GitHub Copilot, xAI, and the Antigravity preview) live in the same `credentials.json` — the single authority for desktop, TUI, and headless. Pre-existing Electron `safeStorage` credential/token files are not imported; affected users must re-authenticate;
+- Subscription OAuth tokens (Claude, Codex, GitHub Copilot, xAI, and the Antigravity preview) live in the same `credentials.json` — the single authority for Runtime Host clients. Pre-existing Electron `safeStorage` credential/token files are not imported; affected users must re-authenticate;
 - Renderer does not receive plaintext credentials. File writes, Shell, and dangerous tool calls pass through the permission engine;
-- Headless real-model evaluation fails closed by default and requires an explicit external isolation boundary.
+- Eval does not construct Runtime or read Runtime storage. Maka subjects connect to an existing Runtime Host.
 
 Read [SECURITY.md](./SECURITY.md) for security reporting and policy, and [docs/README.md](./docs/README.md) for current privacy and sandbox contracts.
 
@@ -190,7 +191,7 @@ Read [SECURITY.md](./SECURITY.md) for security reporting and policy, and [docs/R
 `runtime.sqlite` is the sole operational authority. It owns RuntimeEvents,
 session metadata and message history, Agent Graph control, core execution state,
 workflow state, usage and pricing, Artifact metadata, Automations, Daily Review,
-and Headless TaskRuns. Artifact payload bytes remain regular files under
+and Runtime continuation records. Artifact payload bytes remain regular files under
 `artifacts/`; connections, credentials, settings, MCP configuration, skills,
 and device identity remain configuration files.
 
@@ -211,14 +212,6 @@ decodes canonical session-message and Artifact records, and verifies Artifact
 payload sizes against SQLite metadata before restore. Backup and restore use
 owner-only file modes, file and directory synchronization, staging, and atomic
 publication.
-
-Headless trajectory hydration now consumes a frozen selected-session export
-from that SQLite Artifact authority. The cell publishes `trajectory-state`
-only when RuntimeEvents reference image Artifacts; Harbor downloads its
-standalone `runtime.sqlite` first and then only the payloads referenced by the
-validated snapshot. It does not copy a live WAL or fall back to
-`artifacts/metadata.jsonl`. Missing, corrupt, unsupported, or mismatched
-evidence fails closed to a summary trajectory instead of mixing authorities.
 
 Runtime continuation remains opt-in:
 
@@ -246,7 +239,7 @@ Run one workspace in isolation:
 
 ```sh
 npm --workspace @maka/runtime test
-npm --workspace @maka/headless test
+npm --workspace @maka/eval test
 npm --workspace @maka/desktop test
 ```
 
@@ -254,7 +247,6 @@ Use the following commands to update `packages/core/src/model-metadata.generated
 
 ```sh
 npm run sync:model-metadata
-npm run test:scripts
 npm --workspace @maka/core test
 ```
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppSettings, ProjectRecord, UpdateAppSettingsResult } from '@maka/core';
 import {
   Badge,
@@ -11,7 +11,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { HStack, List, ListItem } from '@astryxdesign/core';
-import { FolderOpen } from '@maka/ui/icons';
+import { ICON_SIZE, FolderOpen } from '@maka/ui/icons';
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 import { projectPathDisplay } from '../project-path-display.js';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -47,19 +47,23 @@ export function ProjectsSettingsPage(props: {
   const [homePath, setHomePath] = useState<string | undefined>(undefined);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
+  const reloadGeneration = useRef(0);
 
   const reload = useCallback(async () => {
+    const generation = ++reloadGeneration.current;
     const next = await window.maka.projects.list();
-    if (mountedRef.current) setProjects(next);
+    if (mountedRef.current && generation === reloadGeneration.current) setProjects(next);
   }, [mountedRef]);
 
   useEffect(() => {
     void reload();
+    const unsubscribe = window.maka.projects.subscribeChanges(() => void reload());
     // Paths render unabbreviated until this lands, which is why
     // `collapseHomePath` treats an unknown home as a no-op rather than a bug.
     void window.maka.app.info().then((info) => {
       if (mountedRef.current) setHomePath(info.homePath);
     });
+    return unsubscribe;
   }, [reload, mountedRef]);
 
   // Archived projects are removed-from-Maka, not deleted; they belong to the
@@ -116,7 +120,7 @@ export function ProjectsSettingsPage(props: {
         }
       >
         {listed.length === 0 ? (
-          <EmptyState title={copy.emptyTitle} description={copy.emptyBody} />
+          <EmptyState icon={<FolderOpen size={ICON_SIZE.empty} />} title={copy.emptyTitle} description={copy.emptyBody} />
         ) : (
           // A project is an entity, not a preference, so it belongs in the
           // entity-list carrier the MCP and skills pages already use — real
@@ -296,7 +300,7 @@ export function ProjectsSettingsPage(props: {
                 // No wrapper class: `startContent` already owns the slot's
                 // layout, and the anchor's weight comes from the icon's size
                 // rather than a plate or a second glyph family.
-                startContent={<FolderOpen size={18} aria-hidden="true" />}
+                startContent={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
                 endContent={isRenaming ? undefined : endCluster}
               />
             );

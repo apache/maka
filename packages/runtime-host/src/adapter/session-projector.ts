@@ -4,6 +4,7 @@ import type {
   InteractionPendingSnapshot,
   SessionContinuitySnapshot,
   SessionAssistantDelta,
+  SessionAssistantStreamIdentity,
   SessionMessageQueueProjection,
   SteeringMessageSnapshot,
   SubscriptionFrame,
@@ -15,6 +16,8 @@ interface AssistantAccumulator {
   turnId: string;
   messageId: string;
   text: string;
+  complete: boolean;
+  replacing: boolean;
 }
 
 export type RuntimeHostTerminalTurn = Extract<
@@ -40,12 +43,13 @@ export class RuntimeHostSessionProjector {
     snapshot: SessionContinuitySnapshot,
     transcript: readonly StoredMessage[],
     now: () => number = Date.now,
+    activeAssistantStreams: readonly SessionAssistantStreamIdentity[] = [],
   ) {
     this.#snapshot = structuredClone(snapshot);
     this.#now = now;
     this.#transcriptIds = new Set(transcript.map((message) => message.id));
     const root = snapshot.rootTurn;
-    if (!root || isRuntimeHostTerminalTurn(root)) return;
+    if (!root) return;
     for (const message of transcript) {
       if (message.type !== 'assistant' || message.turnId !== root.turnId) continue;
       if (message.thinking?.text) {
@@ -54,6 +58,8 @@ export class RuntimeHostSessionProjector {
           turnId: root.turnId,
           messageId: message.id,
           text: message.thinking.text,
+          complete: true,
+          replacing: false,
         });
       }
       if (message.text) {
@@ -62,8 +68,23 @@ export class RuntimeHostSessionProjector {
           turnId: root.turnId,
           messageId: message.id,
           text: message.text,
+          complete: true,
+          replacing: false,
         });
       }
+    }
+    for (const stream of activeAssistantStreams) {
+      if (stream.turnId !== root.turnId) continue;
+      const key = accumulatorKey(stream.kind, stream.messageId);
+      const current = this.#accumulators.get(key);
+      this.#accumulators.set(key, {
+        kind: stream.kind,
+        turnId: stream.turnId,
+        messageId: stream.messageId,
+        text: current?.text ?? '',
+        complete: false,
+        replacing: false,
+      });
     }
   }
 
@@ -77,6 +98,7 @@ export class RuntimeHostSessionProjector {
     const events: SessionEvent[] = [];
     if (includeAssistantText) {
       for (const accumulator of this.#accumulators.values()) {
+        if (accumulator.complete) continue;
         events.push({
           type: accumulator.kind === 'text' ? 'text_delta' : 'thinking_delta',
           id: `host-seed:${root.runId}:${accumulator.kind}:${accumulator.messageId}`,
@@ -109,7 +131,72 @@ export class RuntimeHostSessionProjector {
   }
 
   seedTerminal(turn: RuntimeHostTerminalTurn): SessionEvent[] {
-    return this.#terminalEvents(turn);
+    return this.#terminalEvents(turn, true);
+  }
+
+  seedStoredTerminal(turnId: string, transcript: readonly StoredMessage[]): SessionEvent[] {
+    const terminal = [...transcript]
+      .reverse()
+      .find(
+        (message): message is Extract<StoredMessage, { type: 'turn_state' }> =>
+          message.type === 'turn_state' &&
+          message.turnId === turnId &&
+          message.status !== 'running',
+      );
+    if (!terminal) return [];
+    const events: SessionEvent[] = [];
+    for (const message of transcript) {
+      if (message.type !== 'assistant' || message.turnId !== turnId) continue;
+      if (message.thinking?.text) {
+        events.push({
+          type: 'thinking_complete',
+          id: `${terminal.id}:thinking:${message.id}`,
+          turnId,
+          messageId: message.id,
+          ts: terminal.ts,
+          text: message.thinking.text,
+        });
+      }
+      if (message.text) {
+        events.push({
+          type: 'text_complete',
+          id: `${terminal.id}:text:${message.id}`,
+          turnId,
+          messageId: message.id,
+          ts: terminal.ts,
+          text: message.text,
+        });
+      }
+    }
+    if (terminal.status === 'completed') {
+      events.push({
+        type: 'complete',
+        id: terminal.id,
+        turnId,
+        ts: terminal.ts,
+        stopReason: 'end_turn',
+      });
+    } else if (terminal.status === 'failed') {
+      const reason = terminal.errorClass ?? 'runtime_error';
+      events.push({
+        type: 'error',
+        id: terminal.id,
+        turnId,
+        ts: terminal.ts,
+        recoverable: false,
+        reason,
+        message: `Turn failed: ${reason}`,
+      });
+    } else {
+      events.push({
+        type: 'abort',
+        id: terminal.id,
+        turnId,
+        ts: terminal.ts,
+        reason: abortReason(terminal.abortSource ?? ''),
+      });
+    }
+    return events;
   }
 
   accept(frame: SubscriptionFrame): RuntimeHostProjectionUpdate {
@@ -118,14 +205,26 @@ export class RuntimeHostSessionProjector {
       const delta = frame.delta;
       const key = accumulatorKey(delta.kind, delta.messageId);
       const current = this.#accumulators.get(key);
-      const folded = foldRuntimeHostAssistantDelta(current?.text ?? '', delta);
+      const folded = foldRuntimeHostAssistantDelta(delta.reset ? '' : (current?.text ?? ''), delta);
+      const replacing = delta.reset === true || (current?.replacing ?? false);
       this.#accumulators.set(key, {
         kind: delta.kind,
         turnId: delta.turnId,
         messageId: delta.messageId,
         text: folded.text,
+        complete: delta.complete === true,
+        replacing: delta.complete === true ? false : replacing,
       });
-      if (folded.tail) {
+      if (delta.complete === true) {
+        events.push({
+          type: delta.kind === 'text' ? 'text_complete' : 'thinking_complete',
+          id: frameIdentity(frame),
+          turnId: delta.turnId,
+          messageId: delta.messageId,
+          ts: this.#now(),
+          text: folded.text,
+        });
+      } else if (folded.tail && !replacing) {
         events.push({
           type: delta.kind === 'text' ? 'text_delta' : 'thinking_delta',
           id: frameIdentity(frame),
@@ -178,10 +277,10 @@ export class RuntimeHostSessionProjector {
     return { events, previousSnapshot, startedTurn, terminalTurn, resolvedInteractions };
   }
 
-  #terminalEvents(root: RuntimeHostTerminalTurn): SessionEvent[] {
+  #terminalEvents(root: RuntimeHostTerminalTurn, includeSettled = false): SessionEvent[] {
     const events: SessionEvent[] = [];
     for (const accumulator of this.#accumulators.values()) {
-      if (accumulator.turnId !== root.turnId) continue;
+      if (accumulator.turnId !== root.turnId || (!includeSettled && accumulator.complete)) continue;
       events.push({
         type: accumulator.kind === 'text' ? 'text_complete' : 'thinking_complete',
         id: `${root.terminalEventId}:${accumulator.kind}:${accumulator.messageId}`,
@@ -207,7 +306,7 @@ export class RuntimeHostSessionProjector {
         ts: this.#now(),
         recoverable: false,
         reason: root.failureClass,
-        message: `Turn failed: ${root.failureClass}`,
+        message: root.failureMessage ?? `Turn failed: ${root.failureClass}`,
       });
     } else {
       events.push({

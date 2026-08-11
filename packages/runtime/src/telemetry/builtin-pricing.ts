@@ -1,8 +1,11 @@
 import type { PricingConfig } from '@maka/core/usage-stats/types';
+import { GENERATED_MODEL_PRICING } from './model-pricing.generated.js';
 
-// Vendor public pricing snapshot as of 2026-05-20. Special tiers such as
-// Coding Plan, Education, and Volume Pricing should be represented by overrides.
-export const BUILTIN_PRICING: readonly PricingConfig[] = [
+// Access-path-specific pricing that models.dev cannot represent. The generated
+// table is authoritative for ordinary overlapping keys; these rows only fill
+// gaps or preserve special plans whose provider price is not a public base
+// rate. User pricing overrides still win in buildPricingLookup().
+const LOCAL_PRICING_SUPPLEMENT: readonly PricingConfig[] = [
   {
     modelKey: 'anthropic:claude-opus-4-1',
     inputUsdPer1M: 15,
@@ -32,7 +35,6 @@ export const BUILTIN_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0.075,
   },
   { modelKey: 'openai:o1', inputUsdPer1M: 15, outputUsdPer1M: 60, cacheReadUsdPer1M: 7.5 },
-  { modelKey: 'google:gemini-2.5-pro', inputUsdPer1M: 1.25, outputUsdPer1M: 10 },
   { modelKey: 'google:gemini-2.5-flash', inputUsdPer1M: 0.3, outputUsdPer1M: 2.5 },
   {
     modelKey: 'deepseek:deepseek-chat',
@@ -51,17 +53,18 @@ export const BUILTIN_PRICING: readonly PricingConfig[] = [
   { modelKey: 'zai-coding-plan:glm-4.6', inputUsdPer1M: 0.6, outputUsdPer1M: 2.2 },
   { modelKey: 'zai-coding-plan:glm-4.5-air', inputUsdPer1M: 0.2, outputUsdPer1M: 0.8 },
   {
-    modelKey: 'MiniMax:MiniMax-M3',
-    inputUsdPer1M: 0.3,
-    outputUsdPer1M: 1.2,
-    cacheReadUsdPer1M: 0.06,
-  },
-  {
     modelKey: 'MiniMax-cn:MiniMax-M3',
     inputUsdPer1M: 0.3,
     outputUsdPer1M: 1.2,
     cacheReadUsdPer1M: 0.06,
   },
+];
+
+const generatedPricingKeys = new Set(GENERATED_MODEL_PRICING.map(({ modelKey }) => modelKey));
+
+export const BUILTIN_PRICING: readonly PricingConfig[] = [
+  ...GENERATED_MODEL_PRICING,
+  ...LOCAL_PRICING_SUPPLEMENT.filter(({ modelKey }) => !generatedPricingKeys.has(modelKey)),
 ];
 
 const byKey = new Map(BUILTIN_PRICING.map((pricing) => [pricing.modelKey, pricing]));

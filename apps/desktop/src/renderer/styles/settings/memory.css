@@ -41,22 +41,6 @@
     color: var(--foreground-secondary);
     font: var(--maka-text-body);
   }
-.settingsMemoryEntryPreviewNotice {
-    display: grid;
-    gap: var(--space-1);
-    padding: var(--space-2-5) var(--space-3);
-    border: var(--border-width-hairline) solid oklch(from var(--warning) l c h / 0.34);
-    border-radius: var(--radius-surface);
-    background: oklch(from var(--warning) l c h / 0.08);
-  }
-.settingsMemoryEntryPreviewNotice strong {
-    color: var(--foreground);
-    font: var(--maka-text-body);
-  }
-.settingsMemoryEntryPreviewNotice small {
-    color: var(--foreground-secondary);
-    font: var(--maka-text-supporting);
-  }
 .settingsMemorySaveSummary {
     display: grid;
     gap: var(--space-0-5);
@@ -220,14 +204,17 @@
     font: var(--maka-text-label);
   }
 
-.settingsMemoryEntryRow p,
-  .settingsMemoryEntryEmpty {
+.settingsMemoryEntryRow p {
     margin: 0;
     color: var(--foreground-secondary);
     font: var(--maka-text-body);
     white-space: pre-wrap;
     word-break: break-word;
   }
+
+.settingsMemoryEntryEmpty {
+  margin: var(--space-2) 0 0;
+}
 
 .settingsMemoryEntryActions {
   display: flex;
@@ -250,47 +237,9 @@
   white-space: nowrap;
 }
 
-.settingsMemoryFilterEmpty,
-  .settingsMemoryListEmpty {
-    display: grid;
-    gap: var(--space-1);
-    padding-block: var(--space-2);
-  }
-
-.settingsMemoryFilterEmpty strong,
-  .settingsMemoryListEmpty strong {
-    color: var(--foreground);
-    font: var(--maka-text-body);
-  }
-
-.settingsMemoryFilterEmpty small,
-  .settingsMemoryListEmpty small {
-    color: var(--foreground-secondary);
-    font: var(--maka-text-body);
-  }
-
 .settingsMemoryManualAdd {
   display: grid;
   gap: var(--space-2);
-}
-
-.settingsMemoryDraftWarning {
-  display: grid;
-  gap: var(--space-1);
-  padding: var(--space-2-5) var(--space-3);
-  border: var(--border-width-hairline) solid oklch(from var(--warning) l c h / 0.38);
-  border-radius: var(--radius-surface);
-  background: oklch(from var(--warning) l c h / 0.09);
-}
-
-.settingsMemoryDraftWarning strong {
-  color: var(--foreground);
-  font: var(--maka-text-body);
-}
-
-.settingsMemoryDraftWarning small {
-  color: var(--foreground-secondary);
-  font: var(--maka-text-supporting);
 }
 
 .settingsMemoryBackupCandidate > span {

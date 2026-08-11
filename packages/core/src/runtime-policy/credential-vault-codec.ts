@@ -7,6 +7,11 @@ import type {
 } from '../runtime-policy.js';
 import { WEB_SEARCH_CREDENTIAL_PROVIDERS } from '../web-search.js';
 import {
+  parseRequestHeaders,
+  RequestCustomizationValidationError,
+  serializeRequestHeaders,
+} from '../request-customization.js';
+import {
   domainError,
   entityIdValue,
   exactRecord,
@@ -27,7 +32,7 @@ export function decodeCredentialLocator(value: unknown): CredentialLocator {
       'connectionId',
       'kind',
     ]);
-    if (item.kind !== 'api_key' && item.kind !== 'oauth_token') {
+    if (item.kind !== 'api_key' && item.kind !== 'oauth_token' && item.kind !== 'request_headers') {
       throw domainError('connection credential kind is invalid');
     }
     return {
@@ -114,10 +119,15 @@ export function normalizeSetCredentialInput(value: unknown): SetCredentialInput 
       revision: positiveRevisionValue(basis.revision, 'credential revision'),
     };
   }
+  const locator = decodeCredentialLocator(input.locator);
+  const secret = normalizeCredentialSecret(input.secret);
   return {
-    locator: decodeCredentialLocator(input.locator),
+    locator,
     expected,
-    secret: normalizeCredentialSecret(input.secret),
+    secret:
+      locator.scope === 'connection' && locator.kind === 'request_headers'
+        ? normalizeRequestHeadersSecret(secret)
+        : secret,
   };
 }
 
@@ -131,4 +141,13 @@ export function normalizeCredentialSecret(value: unknown): string {
     throw domainError('credential secret must be a non-empty string');
   }
   return value;
+}
+
+function normalizeRequestHeadersSecret(value: string): string {
+  try {
+    return serializeRequestHeaders(parseRequestHeaders(value));
+  } catch (error) {
+    if (error instanceof RequestCustomizationValidationError) throw domainError(error.message);
+    throw error;
+  }
 }

@@ -16,7 +16,6 @@ import {
   openInteractiveLongTermMemoryStoreForWrite,
 } from '../long-term-memory-store.js';
 import {
-  createHeadlessRootLease,
   resolveStorageRoot,
   STORAGE_ROOT_MARKER_FILE,
   tryAcquireInteractiveRootOwner,
@@ -1286,13 +1285,11 @@ describe('long-term memory Storage Root authority', () => {
     );
   });
 
-  test('rejects a Headless lease at the Interactive opener without creating a database', async () => {
+  test('rejects a forged lease at the Interactive opener without creating a database', async () => {
     await withTempRoot(async (root) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'headless' });
-      const lease = createHeadlessRootLease(capability, 'write');
       await assert.rejects(
         openInteractiveLongTermMemoryStoreForWrite(
-          lease as unknown as Parameters<typeof openInteractiveLongTermMemoryStoreForWrite>[0],
+          {} as Parameters<typeof openInteractiveLongTermMemoryStoreForWrite>[0],
         ),
         /interactive/,
       );

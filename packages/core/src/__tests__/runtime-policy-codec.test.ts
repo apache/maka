@@ -136,6 +136,22 @@ test('normalizes catalog inputs while canonical entries reject noncanonical endp
 
   assert.throws(
     () =>
+      normalizeCreateCatalogConnectionInput({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'unicode-relay',
+          name: 'Unicode relay',
+          providerType: 'openai-compatible',
+          baseUrl: `https://example.test/${'界'.repeat(2_000)}`,
+          enabled: true,
+          enabledModelIds: [],
+        },
+      }),
+    /must not exceed 2048 bytes/,
+  );
+
+  assert.throws(
+    () =>
       decodeCanonicalConnectionCatalogEntry({
         ...input.connection,
         connectionId: '123e4567-e89b-42d3-a456-426614174000',

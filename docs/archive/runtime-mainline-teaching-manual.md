@@ -17,7 +17,7 @@ primary_spine:
   - ToolRuntime
 ---
 
-> Archived on 2026-07-13. The backend architecture chapters now own this runtime and headless narrative. Start with `ARCHITECTURE.md`.
+> Archived on 2026-07-13. The Runtime discussion is historical; the Headless architecture it describes was retired by #2598. Start with `ARCHITECTURE.md`.
 
 # Maka Runtime 主线教学手册
 

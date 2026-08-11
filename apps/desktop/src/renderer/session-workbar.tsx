@@ -2,7 +2,6 @@ import {
   lazy,
   Suspense,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -32,6 +31,7 @@ import {
   type Composer,
 } from '@maka/ui';
 import {
+  ICON_SIZE,
   Activity,
   FolderOpen,
   GitBranch,
@@ -44,9 +44,15 @@ import {
   X,
 } from '@maka/ui/icons';
 import { Badge } from '@astryxdesign/core/Badge';
+import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { ContextMenu } from '@astryxdesign/core/ContextMenu';
+import { Heading } from '@astryxdesign/core/Heading';
+import { Icon } from '@astryxdesign/core/Icon';
+import { Kbd } from '@astryxdesign/core/Kbd';
+import { List, ListItem } from '@astryxdesign/core/List';
 import { Section } from '@astryxdesign/core/Section';
+import { Spinner } from '@astryxdesign/core/Spinner';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import type { SessionSummary } from '@maka/core';
@@ -94,17 +100,8 @@ const SessionTerminalPanel = lazy(() =>
 
 function WorkbarPanelLoading(props: { label: string }) {
   return (
-    <div
-      className="maka-workbar-panel-loading"
-      role="status"
-      aria-label={props.label}
-      aria-busy="true"
-    >
-      <Loader2
-        size={16}
-        aria-hidden="true"
-        className="maka-workbar-tab-spinner"
-      />
+    <div className="maka-workbar-panel-loading">
+      <Spinner size="sm" shade="subtle" label={props.label} />
     </div>
   );
 }
@@ -190,7 +187,7 @@ function tabIcon(tab: SessionWorkbarTab, active: boolean): ReactNode {
   if (active) {
     return (
       <Loader2
-        size={14}
+        size={ICON_SIZE.control}
         aria-hidden="true"
         className="maka-workbar-tab-icon maka-workbar-tab-spinner"
       />
@@ -210,7 +207,7 @@ function tabIcon(tab: SessionWorkbarTab, active: boolean): ReactNode {
               : tab.kind === 'inspector'
                 ? Activity
                 : MessageCircleQuestion;
-  return <Icon size={14} aria-hidden="true" className="maka-workbar-tab-icon" />;
+  return <Icon size={ICON_SIZE.control} aria-hidden="true" className="maka-workbar-tab-icon" />;
 }
 
 function WorkbarTabStrip(props: {
@@ -366,7 +363,7 @@ function WorkbarTabStrip(props: {
       <Tooltip content={copy.openTab}>
         <IconButton
           label={copy.openTab}
-          icon={<Plus size={15} aria-hidden />}
+          icon={<Plus size={ICON_SIZE.control} aria-hidden />}
           variant="ghost"
           size="sm"
           className="maka-workbar-new-tab"
@@ -498,9 +495,16 @@ function SortableWorkbarTab(props: {
         data-preview={props.tab.preview || undefined}
         style={style}
       >
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="sm"
           role="tab"
+          label={
+            props.count !== undefined
+              ? `${label}, ${props.count}`
+              : label
+          }
           aria-selected={props.selected}
           aria-busy={props.busy || props.running || undefined}
           tabIndex={props.selected ? 0 : -1}
@@ -511,21 +515,21 @@ function SortableWorkbarTab(props: {
           onDoubleClick={() => {
             if (props.tab.preview) props.onPin(props.tab.id);
           }}
+          icon={tabIcon(props.tab, props.busy || props.running)}
+          endContent={props.count !== undefined ? <TabCount count={props.count} /> : undefined}
         >
-          {tabIcon(props.tab, props.busy || props.running)}
           <span
             className="maka-workbar-tab-label"
             title={props.tab.preview ? `${label} · ${copy.pinTabHint}` : label}
           >
             {label}
           </span>
-          {props.count !== undefined ? <TabCount count={props.count} /> : null}
-        </button>
+        </Button>
         {!props.busy ? (
           <Tooltip content={copy.closeTab(label)}>
             <IconButton
               label={copy.closeTab(label)}
-              icon={<X size={13} aria-hidden />}
+              icon={<X size={ICON_SIZE.meta} aria-hidden />}
               variant="ghost"
               size="sm"
               className="maka-workbar-tab-close"
@@ -539,20 +543,15 @@ function SortableWorkbarTab(props: {
 }
 
 function WorkbarLauncher(props: {
-  active: boolean;
-  returnTabId: string | null;
   onOpen: (kind: SessionWorkbarTabKind) => void;
-  onDismiss: () => void;
   sideChatAvailable: boolean;
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
-  const isMac = navigator.platform.toLowerCase().includes('mac');
-  const menuRef = useRef<HTMLDivElement>(null);
   const actions: Array<{
     kind: SessionWorkbarTabKind;
     label: string;
     description: string;
-    icon: ReactNode;
+    icon: typeof Activity;
     shortcut?: string;
     disabled?: boolean;
   }> = [
@@ -560,131 +559,74 @@ function WorkbarLauncher(props: {
       kind: 'side-chat',
       label: copy.sideChat,
       description: copy.launcher.sideChat,
-      icon: <MessageCircleQuestion aria-hidden />,
-      shortcut: isMac ? '⌥⌘S' : 'Alt+Ctrl+S',
+      icon: MessageCircleQuestion,
+      shortcut: 'mod+alt+s',
       disabled: !props.sideChatAvailable,
     },
     {
       kind: 'review',
       label: copy.review,
       description: copy.launcher.review,
-      icon: <GitBranch aria-hidden />,
-      shortcut: '⌃⇧G',
+      icon: GitBranch,
+      shortcut: 'ctrl+shift+g',
     },
     {
       kind: 'terminal',
       label: copy.terminal,
       description: copy.launcher.terminal,
-      icon: <Terminal aria-hidden />,
-      shortcut: isMac ? '⌃`' : 'Ctrl+`',
+      icon: Terminal,
+      shortcut: 'ctrl+`',
     },
     {
       kind: 'browser',
       label: copy.browser,
       description: copy.launcher.browser,
-      icon: <Globe aria-hidden />,
-      shortcut: isMac ? '⌘T' : 'Ctrl+T',
+      icon: Globe,
+      shortcut: 'mod+t',
     },
     {
       kind: 'files',
       label: copy.files,
       description: copy.launcher.files,
-      icon: <FolderOpen aria-hidden />,
-      shortcut: isMac ? '⌘P' : 'Ctrl+P',
+      icon: FolderOpen,
+      shortcut: 'mod+p',
     },
     {
       kind: 'tasks',
       label: copy.tasks,
       description: copy.launcher.tasks,
-      icon: <ListTodo aria-hidden />,
+      icon: ListTodo,
     },
     {
       kind: 'inspector',
       label: copy.inspector,
       description: copy.launcher.inspector,
-      icon: <Activity aria-hidden />,
+      icon: Activity,
     },
   ];
-  const firstEnabledActionIndex = actions.findIndex(
-    (action) => !action.disabled,
-  );
-  useLayoutEffect(() => {
-    if (!props.active) return;
-    menuRef.current
-      ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
-      ?.focus();
-  }, [props.active]);
-  const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    const menu = menuRef.current;
-    if (!menu) return;
-    const items = Array.from(
-      menu.querySelectorAll<HTMLButtonElement>(
-        '[role="menuitem"]:not(:disabled)',
-      ),
-    );
-    const currentIndex = items.findIndex(
-      (item) => item === document.activeElement,
-    );
-    let targetIndex = -1;
-    if (event.key === 'ArrowDown') {
-      targetIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
-    } else if (event.key === 'ArrowUp') {
-      targetIndex =
-        currentIndex < 0
-          ? items.length - 1
-          : (currentIndex - 1 + items.length) % items.length;
-    } else if (event.key === 'Home') {
-      targetIndex = 0;
-    } else if (event.key === 'End') {
-      targetIndex = items.length - 1;
-    } else if (event.key === 'Escape' && props.returnTabId) {
-      event.preventDefault();
-      props.onDismiss();
-      window.requestAnimationFrame(() => {
-        document
-          .querySelector<HTMLElement>(
-            `[data-workbar-tab-id="${CSS.escape(props.returnTabId ?? '')}"] [role="tab"]`,
-          )
-          ?.focus();
-      });
-      return;
-    }
-    const target = items[targetIndex];
-    if (!target) return;
-    event.preventDefault();
-    target.focus();
-  };
   return (
     <div className="maka-workbar-launcher">
-      <div
-        ref={menuRef}
+      <List
         className="maka-workbar-launcher-list"
-        role="menu"
-        aria-label={copy.openTab}
-        onKeyDown={handleMenuKeyDown}
+        density="compact"
+        header={<Heading level={4}>{copy.openTools}</Heading>}
       >
-        {actions.map((action, index) => (
-          <button
+        {actions.map((action) => (
+          <ListItem
             key={action.kind}
-            type="button"
-            role="menuitem"
-            tabIndex={index === firstEnabledActionIndex ? 0 : -1}
-            className="maka-workbar-launcher-row"
-            data-secondary={
-              action.kind === 'tasks' || action.kind === 'inspector' || undefined
+            startContent={<Icon icon={action.icon} size="sm" color="secondary" />}
+            label={action.label}
+            description={action.description}
+            endContent={
+              action.shortcut ? (
+                <Kbd keys={action.shortcut} />
+              ) : undefined
             }
-            disabled={action.disabled}
-            aria-description={action.description}
+            isDisabled={action.disabled}
             onClick={() => props.onOpen(action.kind)}
-          >
-            <span className="maka-workbar-launcher-icon">{action.icon}</span>
-            <span className="maka-workbar-launcher-label">{action.label}</span>
-            {action.shortcut ? (
-              <kbd className="maka-workbar-launcher-shortcut">{action.shortcut}</kbd>
-            ) : null}
-          </button>
+          />
         ))}
-      </div>
+      </List>
     </div>
   );
 }
@@ -795,14 +737,7 @@ export function SessionWorkbar(props: {
             />
             <WorkbarPanel active={visible && showingLauncher} placement={placement}>
               <WorkbarLauncher
-                active={visible && showingLauncher}
-                returnTabId={activeTab?.id ?? null}
                 onOpen={(kind) => props.onRequestOpenTab(placement, kind)}
-                onDismiss={() => {
-                  if (activeTab) {
-                    props.onActivateTab(placement, activeTab.id);
-                  }
-                }}
                 sideChatAvailable={props.sourceSession !== undefined}
               />
             </WorkbarPanel>

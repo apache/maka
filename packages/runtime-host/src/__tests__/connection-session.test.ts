@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { connect, createServer, type Server, type Socket } from 'node:net';
@@ -10,18 +11,31 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { readHostRegistration } from '../control/registration.js';
-import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
+import {
+  connectRuntimeHost,
+  RuntimeHostRequestInterruptedError,
+  type RuntimeHostConnection,
+} from '../client/index.js';
 import {
   decodeHostFrame,
+  encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type ClientFrame,
   type HostFrame,
   type ResponseFrame,
   type TurnSnapshot,
 } from '../protocol/index.js';
 import { RuntimeHostKernel, type RuntimeHostComposition } from '../server/index.js';
+import { LOCAL_OWNER_CONNECTION_AUTHORITY } from '../server/connection-authority.js';
+import type {
+  ClientCapabilityConnectionIdentity,
+  ClientCapabilityService,
+} from '../server/client-capability-service.js';
 import { RuntimeHostConnectionSession } from '../server/connection-session.js';
 import {
+  createUnavailableAccessAuthorityOperationHandlers,
   createUnavailableDomainOperationHandlers,
   type OperationHandlerMap,
 } from '../server/operation-dispatcher.js';
@@ -40,6 +54,16 @@ const CURRENT_PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
+
+function acceptedConnection(connectionId: string) {
+  return {
+    hostEpoch: 'host-epoch',
+    connectionId,
+    clientInstanceId: 'test-client',
+    surface: 'tui' as const,
+    authority: LOCAL_OWNER_CONNECTION_AUTHORITY,
+  };
+}
 
 type TurnQueryHandler = RuntimeHostComposition['handlers']['turn.query'];
 
@@ -88,6 +112,47 @@ test('concurrent responses remain framed and correlated in reverse completion or
   );
 });
 
+test('the Client backpressures a healthy request burst at the Host connection limit', async () => {
+  const requestCount = 96;
+  const firstWaveEntered = deferred();
+  const releaseFirstWave = deferred();
+  let entered = 0;
+  let active = 0;
+  let maxActive = 0;
+
+  await withRuntimeHost(
+    async (input) => {
+      entered += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (entered === RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS) firstWaveEntered.resolve();
+      await releaseFirstWave.promise;
+      active -= 1;
+      return {
+        ok: true,
+        result: runningSnapshot(input.sessionId, input.turnId),
+      };
+    },
+    async ({ connectClient }) => {
+      const client = await connectClient();
+      const requests = Array.from({ length: requestCount }, (_, index) =>
+        client.queryTurn({ sessionId: 'session', turnId: `burst-${index}` }, 5_000),
+      );
+      try {
+        await withTimeout(firstWaveEntered.promise, 1_000, 'first request wave was not admitted');
+        assert.equal(maxActive, RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS);
+        releaseFirstWave.resolve();
+        const results = await Promise.all(requests);
+        assert.equal(results.length, requestCount);
+        assert.equal((await client.status(1_000)).state, 'ready');
+      } finally {
+        releaseFirstWave.resolve();
+        await Promise.allSettled(requests);
+      }
+    },
+  );
+});
+
 test('serial outbound writer flushes accepted frames in FIFO order over a real socket', async () => {
   const pair = await openTransportPair();
   let failureCalls = 0;
@@ -120,7 +185,7 @@ test('serial outbound writer fails once when its real transport is closed', asyn
     failureCalls += 1;
   });
   try {
-    pair.clientTransport.destroy();
+    pair.clientTransport.abort();
     await pair.clientTransport.closed;
     const receipt = writer.enqueue(statusResponse('closed-transport'));
     await assert.rejects(receipt.flushed);
@@ -194,7 +259,7 @@ test('clean read EOF drains an already dispatched response before closing', asyn
 test('a fatal transport close during clean EOF drain tears down exactly once', async () => {
   const fixture = await openHalfClosedDispatchedSession('fatal-close-after-eof');
   try {
-    fixture.pair.serverTransport.destroy(new Error('forced transport failure'));
+    fixture.pair.serverTransport.abort(new Error('forced transport failure'));
     await withTimeout(
       fixture.teardownObserved.promise,
       1_000,
@@ -224,7 +289,7 @@ test('a connection accepted before composition exists resolves ready handlers wi
   const hostTask = RuntimeHostKernel.start({
     owner,
     idleGraceMs: 10_000,
-    compositionFactory: async () => {
+    composition: defineInteractiveRuntimeHostComposition(async () => {
       factoryEntered.resolve();
       await releaseFactory.promise;
       return {
@@ -236,7 +301,7 @@ test('a connection accepted before composition exists resolves ready handlers wi
         async recover() {},
         async close() {},
       };
-    },
+    }),
   });
   let transport: FramedTransport | undefined;
   let host: RuntimeHostKernel | undefined;
@@ -247,7 +312,7 @@ test('a connection accepted before composition exists resolves ready handlers wi
     assert.equal(registration.state, 'recovering');
     transport = await openAcceptedTransport(registration.endpoint, 'pre-ready-client');
 
-    await transport.write({
+    await writeProtocolFrame(transport, {
       requestId: 'before-ready',
       operation: 'turn.query',
       input: { sessionId: 'session', turnId: 'turn' },
@@ -259,7 +324,7 @@ test('a connection accepted before composition exists resolves ready handlers wi
 
     releaseFactory.resolve();
     host = await withTimeout(hostTask, 1_000, 'Runtime Host did not become ready');
-    await transport.write({
+    await writeProtocolFrame(transport, {
       requestId: 'after-ready',
       operation: 'turn.query',
       input: { sessionId: 'session', turnId: 'turn' },
@@ -272,7 +337,7 @@ test('a connection accepted before composition exists resolves ready handlers wi
     assert.equal(afterReady.result.runId, 'run-turn');
   } finally {
     releaseFactory.resolve();
-    transport?.destroy();
+    transport?.abort();
     host ??= await hostTask.catch(() => undefined);
     await host?.close().catch(() => undefined);
     await rm(join(resolveRootControlNamespace(), capability.rootId), {
@@ -295,12 +360,16 @@ test('connection reset while operation admission is pending does not execute the
       ok: true,
       result: {
         hostEpoch: 'host-epoch',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
         state: 'ready',
         connections: 1,
         activeOperations: 1,
         activeResidencies: 0,
       },
     }),
+    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+    ...createUnavailableAccessAuthorityOperationHandlers(),
     ...createHandlers(async (input) => {
       handlerCalls += 1;
       return {
@@ -311,12 +380,7 @@ test('connection reset while operation admission is pending does not execute the
   };
   const session = new RuntimeHostConnectionSession({
     transport: pair.serverTransport,
-    connection: {
-      hostEpoch: 'host-epoch',
-      connectionId: 'pending-admission',
-      surface: 'tui',
-      principal: 'local_os_user',
-    },
+    connection: acceptedConnection('pending-admission'),
     resolveHandlers: () => handlers,
     resolveContinuity: () => undefined,
     beginOperation: async () => {
@@ -334,7 +398,7 @@ test('connection reset while operation admission is pending does not execute the
   });
   const run = session.run();
   try {
-    await pair.clientTransport.write({
+    await writeProtocolFrame(pair.clientTransport, {
       requestId: 'pending-request',
       operation: 'turn.query',
       input: { sessionId: 'session', turnId: 'turn' },
@@ -352,9 +416,101 @@ test('connection reset while operation admission is pending does not execute the
     assert.equal(finishCalls, 1);
   } finally {
     releaseAdmission.resolve();
-    pair.clientTransport.destroy();
+    pair.clientTransport.abort();
     await Promise.allSettled([run, pair.close()]);
   }
+});
+
+test('a ready composition attaches the authenticated Client identity once', async () => {
+  const pair = await openTransportPair();
+  const attached: ClientCapabilityConnectionIdentity[] = [];
+  let serviceAvailable = false;
+  let closeCalls = 0;
+  const closeStarted = deferred();
+  const releaseClose = deferred();
+  const service: ClientCapabilityService = {
+    attachConnection(identity) {
+      attached.push(identity);
+      return {
+        accept() {},
+        async close() {
+          closeCalls += 1;
+          closeStarted.resolve();
+          await releaseClose.promise;
+        },
+      };
+    },
+  };
+  const session = new RuntimeHostConnectionSession({
+    transport: pair.serverTransport,
+    connection: acceptedConnection('stable-provider-connection'),
+    resolveHandlers: () => ({
+      'host.status': async () => ({
+        ok: true,
+        result: {
+          hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
+          state: 'ready',
+          connections: 1,
+          activeOperations: 1,
+          activeResidencies: 0,
+        },
+      }),
+      ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+      ...createUnavailableAccessAuthorityOperationHandlers(),
+      ...createUnavailableDomainOperationHandlers(),
+    }),
+    resolveContinuity: () => undefined,
+    resolveClientCapabilities: () => (serviceAvailable ? service : undefined),
+    beginOperation: async () => ({
+      acquireResidency: () => ({ release() {} }),
+      seal() {},
+      finish() {},
+    }),
+    onTeardown() {},
+  });
+  const run = session.run();
+  let runSettled = false;
+  void run.then(() => {
+    runSettled = true;
+  });
+  try {
+    await writeProtocolFrame(pair.clientTransport, {
+      requestId: 'before-composition',
+      operation: 'host.status',
+      input: {},
+    });
+    await pair.clientTransport.read(1_000);
+    assert.deepEqual(attached, []);
+
+    serviceAvailable = true;
+    for (const requestId of ['after-composition', 'still-attached']) {
+      await writeProtocolFrame(pair.clientTransport, {
+        requestId,
+        operation: 'host.status',
+        input: {},
+      });
+      await pair.clientTransport.read(1_000);
+    }
+    assert.deepEqual(attached, [
+      {
+        connectionId: 'stable-provider-connection',
+        principalId: 'local_os_user',
+        clientInstanceId: 'test-client',
+        principalKind: 'local_owner',
+      },
+    ]);
+  } finally {
+    pair.clientTransport.abort();
+    await closeStarted.promise;
+    await Promise.resolve();
+    assert.equal(runSettled, false);
+    releaseClose.resolve();
+    await Promise.allSettled([run, pair.close()]);
+  }
+  assert.equal(runSettled, true);
+  assert.equal(closeCalls, 1);
 });
 
 test('an admitted operation settles without connection or residency leakage after disconnect', async () => {
@@ -411,6 +567,55 @@ test('an admitted operation settles without connection or residency leakage afte
   );
 });
 
+test('an admitted command reports an unknown outcome when its connection closes', async () => {
+  const commandEntered = deferred();
+  const releaseCommand = deferred();
+  await withRuntimeHost(
+    async (input) => ({
+      ok: true,
+      result: runningSnapshot(input.sessionId, input.turnId),
+    }),
+    async ({ connectClient }) => {
+      const client = await connectClient();
+      const command = client.startTurn({
+        sessionId: 'session',
+        turnId: 'interrupted-command',
+        content: { text: 'start' },
+      });
+      try {
+        await withTimeout(commandEntered.promise, 1_000, 'command was not admitted');
+        await client.close();
+        await assert.rejects(
+          command,
+          (error: unknown) =>
+            error instanceof RuntimeHostRequestInterruptedError &&
+            error.mode === 'command' &&
+            error.dispatch === 'dispatched' &&
+            error.reason === 'connection_lost' &&
+            !error.retryable,
+        );
+      } finally {
+        releaseCommand.resolve();
+        await Promise.allSettled([command]);
+      }
+    },
+    {
+      'turn.start': async (input) => {
+        commandEntered.resolve();
+        await releaseCommand.promise;
+        return {
+          ok: true,
+          result: {
+            kind: 'started',
+            turn: runningSnapshot(input.sessionId, input.turnId),
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
+          },
+        };
+      },
+    },
+  );
+});
+
 test('a duplicate active request id tears down only the offending connection', async () => {
   const handlerEntered = deferred();
   const releaseHandler = deferred();
@@ -428,13 +633,13 @@ test('a duplicate active request id tears down only the offending connection', a
     async ({ connectClient, endpoint }) => {
       const transport = await openAcceptedTransport(endpoint, 'duplicate-request-client');
       try {
-        await transport.write({
+        await writeProtocolFrame(transport, {
           requestId: 'duplicate-request',
           operation: 'turn.query',
           input: { sessionId: 'session', turnId: 'first' },
         });
         await withTimeout(handlerEntered.promise, 1_000, 'first request was not admitted');
-        await transport.write({
+        await writeProtocolFrame(transport, {
           requestId: 'duplicate-request',
           operation: 'turn.query',
           input: { sessionId: 'session', turnId: 'second' },
@@ -447,7 +652,7 @@ test('a duplicate active request id tears down only the offending connection', a
         assert.equal(handlerCalls, 1);
       } finally {
         releaseHandler.resolve();
-        transport.destroy();
+        transport.abort();
       }
 
       const observer = await connectClient();
@@ -490,7 +695,7 @@ test('reserves liveness status at the domain request limit and rejects another d
             value.activeOperations === 65 &&
             value.activeResidencies === 0,
         );
-        await transport.write({
+        await writeProtocolFrame(transport, {
           requestId: 'overflow-status',
           operation: 'host.status',
           input: {},
@@ -503,7 +708,7 @@ test('reserves liveness status at the domain request limit and rejects another d
           assert.equal(statusResponse.ok, true);
         }
         await new Promise<void>((resolve) => setImmediate(resolve));
-        await transport.write({
+        await writeProtocolFrame(transport, {
           requestId: 'overflow-64',
           operation: 'turn.query',
           input: { sessionId: 'session', turnId: 'turn-64' },
@@ -515,7 +720,7 @@ test('reserves liveness status at the domain request limit and rejects another d
         );
       } finally {
         releaseHandlers.resolve();
-        transport.destroy();
+        transport.abort();
       }
       const status = await waitForStatus(
         observer,
@@ -541,6 +746,8 @@ test('an in-flight status does not consume the final domain request slot', async
         ok: true,
         result: {
           hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
           state: 'ready',
           connections: 1,
           activeOperations: 65,
@@ -548,6 +755,8 @@ test('an in-flight status does not consume the final domain request slot', async
         },
       };
     },
+    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+    ...createUnavailableAccessAuthorityOperationHandlers(),
     ...createHandlers(async (input) => {
       const index = Number(input.turnId.slice('turn-'.length));
       domainEntered[index]?.resolve();
@@ -560,12 +769,7 @@ test('an in-flight status does not consume the final domain request slot', async
   };
   const session = new RuntimeHostConnectionSession({
     transport: pair.serverTransport,
-    connection: {
-      hostEpoch: 'host-epoch',
-      connectionId: 'status-before-final-domain-client',
-      surface: 'tui',
-      principal: 'local_os_user',
-    },
+    connection: acceptedConnection('status-before-final-domain-client'),
     resolveHandlers: () => handlers,
     resolveContinuity: () => undefined,
     beginOperation: async () => ({
@@ -590,13 +794,13 @@ test('an in-flight status does not consume the final domain request slot', async
       1_000,
       'initial domain handlers were not admitted',
     );
-    await pair.clientTransport.write({
+    await writeProtocolFrame(pair.clientTransport, {
       requestId: 'status-first-probe',
       operation: 'host.status',
       input: {},
     });
     await withTimeout(statusEntered.promise, 1_000, 'status handler was not admitted');
-    await pair.clientTransport.write({
+    await writeProtocolFrame(pair.clientTransport, {
       requestId: 'status-first-63',
       operation: 'turn.query',
       input: { sessionId: 'session', turnId: 'turn-63' },
@@ -611,7 +815,7 @@ test('an in-flight status does not consume the final domain request slot', async
       assert.equal(response.operation, 'host.status');
       assert.equal(response.ok, true);
     }
-    await pair.clientTransport.write({
+    await writeProtocolFrame(pair.clientTransport, {
       requestId: 'status-first-overflow',
       operation: 'turn.query',
       input: { sessionId: 'session', turnId: 'turn-64' },
@@ -624,7 +828,7 @@ test('an in-flight status does not consume the final domain request slot', async
   } finally {
     releaseStatus.resolve();
     releaseDomains.resolve();
-    pair.clientTransport.destroy();
+    pair.clientTransport.abort();
     await Promise.allSettled([run, pair.close()]);
   }
 });
@@ -641,12 +845,16 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
       ok: true,
       result: {
         hostEpoch: 'host-epoch',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
         state: 'ready',
         connections: 1,
         activeOperations: 1,
         activeResidencies: 0,
       },
     }),
+    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+    ...createUnavailableAccessAuthorityOperationHandlers(),
     ...createHandlers(async (input) => ({
       ok: true,
       result: runningSnapshot(input.sessionId, input.turnId),
@@ -655,12 +863,7 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
   };
   const session = new RuntimeHostConnectionSession({
     transport: pair.serverTransport,
-    connection: {
-      hostEpoch: 'host-epoch',
-      connectionId: 'shared-subscription-connection',
-      surface: 'tui',
-      principal: 'local_os_user',
-    },
+    connection: acceptedConnection('shared-subscription-connection'),
     resolveHandlers: () => handlers,
     resolveContinuity: () => coordinator,
     beginOperation: async () => ({
@@ -673,13 +876,13 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
   const run = session.run();
   const slow = await openSubscription(pair.clientTransport, 'slow-session', 'open-slow');
   const sibling = await openSubscription(pair.clientTransport, 'sibling-session', 'open-sibling');
-  const originalWrite = pair.serverTransport.writeEncoded.bind(pair.serverTransport);
+  const originalWrite = pair.serverTransport.write.bind(pair.serverTransport);
   const writeBlocked = deferred();
   const releaseWrite = deferred();
-  pair.serverTransport.writeEncoded = async (encoded) => {
+  pair.serverTransport.write = async (message) => {
     writeBlocked.resolve();
     await releaseWrite.promise;
-    return originalWrite(encoded);
+    return originalWrite(message);
   };
 
   try {
@@ -698,7 +901,7 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
       'run-sibling-session',
       connectionTextEvent('sibling-session', 1),
     );
-    await pair.clientTransport.write({
+    await writeProtocolFrame(pair.clientTransport, {
       requestId: 'status-after-eviction',
       operation: 'host.status',
       input: {},
@@ -737,8 +940,8 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
     assert.equal(pair.serverTransport.socket.destroyed, false);
   } finally {
     releaseWrite.resolve();
-    pair.serverTransport.writeEncoded = originalWrite;
-    pair.clientTransport.destroy();
+    pair.serverTransport.write = originalWrite;
+    pair.clientTransport.abort();
     await Promise.allSettled([run, pair.close()]);
     coordinator.close();
   }
@@ -752,6 +955,7 @@ interface RuntimeHostTestFixture {
 async function withRuntimeHost(
   queryTurn: TurnQueryHandler,
   run: (fixture: RuntimeHostTestFixture) => Promise<void>,
+  handlerOverrides: Partial<RuntimeHostComposition['handlers']> = {},
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-continuity-'));
   const root = join(base, 'root');
@@ -765,12 +969,12 @@ async function withRuntimeHost(
   const host = await RuntimeHostKernel.start({
     owner,
     idleGraceMs: 10_000,
-    compositionFactory: async () => ({
-      handlers: createHandlers(queryTurn),
+    composition: defineInteractiveRuntimeHostComposition(async () => ({
+      handlers: { ...createHandlers(queryTurn), ...handlerOverrides },
       beginDrain() {},
       async recover() {},
       async close() {},
-    }),
+    })),
   });
   try {
     await run({
@@ -807,13 +1011,14 @@ async function openAcceptedTransport(
     socket.once('error', reject);
   });
   const transport = new FramedTransport(socket);
-  await transport.write({
+  await writeProtocolFrame(transport, {
     kind: 'hello',
     clientInstanceId,
     surface: 'tui',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    compositionId: 'maka.interactive',
   });
   const handshake = decodeHostFrame(await transport.read(1_000));
   assert.ok('kind' in handshake);
@@ -854,8 +1059,8 @@ async function openTransportPair(): Promise<TransportPair> {
     clientTransport,
     serverTransport,
     close: async () => {
-      clientTransport.destroy();
-      serverTransport.destroy();
+      clientTransport.abort();
+      serverTransport.abort();
       await Promise.all([clientTransport.closed, serverTransport.closed]);
       await closeServer(listener);
     },
@@ -872,23 +1077,22 @@ async function openHalfClosedDispatchedSession(
   let teardownCalls = 0;
   const session = new RuntimeHostConnectionSession({
     transport: pair.serverTransport,
-    connection: {
-      hostEpoch: 'host-epoch',
-      connectionId: `${turnId}-client`,
-      surface: 'tui',
-      principal: 'local_os_user',
-    },
+    connection: acceptedConnection(`${turnId}-client`),
     resolveHandlers: () => ({
       'host.status': async () => ({
         ok: true,
         result: {
           hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
           state: 'ready',
           connections: 1,
           activeOperations: 1,
           activeResidencies: 0,
         },
       }),
+      ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+      ...createUnavailableAccessAuthorityOperationHandlers(),
       ...createHandlers(async (input) => {
         handlerEntered.resolve();
         await releaseHandler.promise;
@@ -911,7 +1115,7 @@ async function openHalfClosedDispatchedSession(
   });
   const run = session.run();
   try {
-    await pair.clientTransport.write({
+    await writeProtocolFrame(pair.clientTransport, {
       requestId: `${turnId}-request`,
       operation: 'turn.query',
       input: { sessionId: 'session', turnId },
@@ -928,13 +1132,13 @@ async function openHalfClosedDispatchedSession(
       teardownCalls: () => teardownCalls,
       close: async () => {
         releaseHandler.resolve();
-        pair.clientTransport.destroy();
+        pair.clientTransport.abort();
         await Promise.allSettled([run, pair.close()]);
       },
     };
   } catch (error) {
     releaseHandler.resolve();
-    pair.clientTransport.destroy();
+    pair.clientTransport.abort();
     await Promise.allSettled([run, pair.close()]);
     throw error;
   }
@@ -1023,6 +1227,8 @@ function statusResponse(requestId: string): ResponseFrame {
     ok: true,
     result: {
       hostEpoch: 'host-epoch',
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
       state: 'ready',
       connections: 1,
       activeOperations: 0,
@@ -1030,6 +1236,20 @@ function statusResponse(requestId: string): ResponseFrame {
     },
   };
 }
+
+const UNUSED_HOST_DIAGNOSTICS_HANDLER: Pick<
+  OperationHandlerMap,
+  'host.diagnostics.query' | 'host.upgrade.prepare'
+> = {
+  'host.diagnostics.query': async () => ({
+    ok: false,
+    error: { code: 'internal_failure', message: 'not used' },
+  }),
+  'host.upgrade.prepare': async () => ({
+    ok: false,
+    error: { code: 'internal_failure', message: 'not used' },
+  }),
+};
 
 function largeFailureResponse(requestId: string): ResponseFrame {
   return {
@@ -1053,7 +1273,7 @@ function runningSnapshot(sessionId: string, turnId: string): TurnSnapshot {
 }
 
 async function openSubscription(transport: FramedTransport, sessionId: string, requestId: string) {
-  await transport.write({
+  await writeProtocolFrame(transport, {
     requestId,
     operation: 'subscription.open',
     input: { sessionId },
@@ -1063,6 +1283,13 @@ async function openSubscription(transport: FramedTransport, sessionId: string, r
     throw new Error(`Unable to open ${sessionId} subscription`);
   }
   return response.result;
+}
+
+function writeProtocolFrame(
+  transport: FramedTransport,
+  frame: ClientFrame | HostFrame,
+): Promise<void> {
+  return transport.write(encodeProtocolMessage(frame));
 }
 
 function canonicalProjection(sessionId: string): CanonicalSessionProjection {

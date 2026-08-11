@@ -1,5 +1,5 @@
 import { type ToolResultContent, type UiLocale } from '@maka/core';
-import { Check, Copy } from '../icons.js';
+import { ICON_SIZE, Check, Copy } from '../icons.js';
 import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
 import { previewVariants } from '../primitives/chat.js';
 import { redactSecrets } from '../redact.js';
@@ -95,7 +95,7 @@ export function ExploreAgentPreview(props: {
               data-pending={summaryCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={summaryCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={summaryCopy.phase === 'failed' ? 'true' : undefined}
-              icon={summaryCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              icon={summaryCopy.phase === 'copied' ? <Check size={ICON_SIZE.meta} aria-hidden="true" /> : <Copy size={ICON_SIZE.meta} aria-hidden="true" />}
               label={summaryCopy.label}
             />
           </div>
@@ -114,7 +114,7 @@ export function ExploreAgentPreview(props: {
               data-copied={continuationCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={continuationCopy.phase === 'failed' ? 'true' : undefined}
               tooltip={copy.continuationTitle}
-              icon={continuationCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              icon={continuationCopy.phase === 'copied' ? <Check size={ICON_SIZE.meta} aria-hidden="true" /> : <Copy size={ICON_SIZE.meta} aria-hidden="true" />}
               label={continuationCopy.label}
             />
           </div>
@@ -182,7 +182,7 @@ export function ExploreAgentPreview(props: {
               data-pending={processCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={processCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={processCopy.phase === 'failed' ? 'true' : undefined}
-              icon={processCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              icon={processCopy.phase === 'copied' ? <Check size={ICON_SIZE.meta} aria-hidden="true" /> : <Copy size={ICON_SIZE.meta} aria-hidden="true" />}
               label={processCopy.label}
             />
           </div>
@@ -210,7 +210,7 @@ export function ExploreAgentPreview(props: {
               data-pending={evidenceCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={evidenceCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={evidenceCopy.phase === 'failed' ? 'true' : undefined}
-              icon={evidenceCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              icon={evidenceCopy.phase === 'copied' ? <Check size={ICON_SIZE.meta} aria-hidden="true" /> : <Copy size={ICON_SIZE.meta} aria-hidden="true" />}
               label={evidenceCopy.label}
             />
           </div>
@@ -245,7 +245,7 @@ export function ExploreAgentPreview(props: {
               data-pending={reportCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={reportCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={reportCopy.phase === 'failed' ? 'true' : undefined}
-              icon={reportCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              icon={reportCopy.phase === 'copied' ? <Check size={ICON_SIZE.meta} aria-hidden="true" /> : <Copy size={ICON_SIZE.meta} aria-hidden="true" />}
               label={reportCopy.label}
             />
           </div>
@@ -273,7 +273,7 @@ export function ExploreAgentPreview(props: {
               data-pending={candidateCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={candidateCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={candidateCopy.phase === 'failed' ? 'true' : undefined}
-              icon={candidateCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              icon={candidateCopy.phase === 'copied' ? <Check size={ICON_SIZE.meta} aria-hidden="true" /> : <Copy size={ICON_SIZE.meta} aria-hidden="true" />}
               label={candidateCopy.label}
             />
           </div>
@@ -305,7 +305,7 @@ export function ExploreAgentPreview(props: {
               data-pending={matchesCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={matchesCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={matchesCopy.phase === 'failed' ? 'true' : undefined}
-              icon={matchesCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              icon={matchesCopy.phase === 'copied' ? <Check size={ICON_SIZE.meta} aria-hidden="true" /> : <Copy size={ICON_SIZE.meta} aria-hidden="true" />}
               label={matchesCopy.label}
             />
           </div>

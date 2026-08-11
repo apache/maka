@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import type { IpcMain } from 'electron';
 import {
   isCollaborationMode,
   isOrchestrationMode,
@@ -15,6 +14,7 @@ import type {
   SessionCatalogFilter,
   SessionCatalogProjection,
   SessionCreateInput,
+  WorkspaceTarget,
   SessionModelTarget,
 } from '@maka/runtime-host/protocol';
 import { resolveCreateSessionRequest } from './create-session-input.js';
@@ -28,6 +28,10 @@ import {
 } from './session-family-action.js';
 import { normalizeSessionModelSelection } from './session-model-input.js';
 import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 
 type RuntimeHostSessionCatalogClient = Pick<
   DesktopRuntimeHostClient,
@@ -47,7 +51,7 @@ export interface RuntimeHostSessionCatalogIpcDeps {
   client: RuntimeHostSessionCatalogClient;
   resolveCreateProject: (
     input: Pick<CreateSessionRequestInput, 'cwd' | 'projectId'>,
-  ) => Promise<{ readonly cwd: string; readonly projectId?: string | null }>;
+  ) => Promise<WorkspaceTarget>;
   emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,
@@ -60,12 +64,16 @@ export interface RuntimeHostSessionCatalogIpcDeps {
 
 export function registerRuntimeHostSessionCatalogIpc(
   deps: RuntimeHostSessionCatalogIpcDeps,
-  ipcMain: Pick<IpcMain, 'handle'>,
+  ipcMain: ReconnectableReadIpcMain,
 ): void {
   const newId = deps.newId ?? randomUUID;
+  const pendingCleanup = new Set<string>();
+  const recoveryTask = deps.sessionCopyCleanup.recover().then((recovery) => {
+    for (const { sessionId } of recovery.failed) pendingCleanup.add(sessionId);
+  });
+  void recoveryTask.catch(() => undefined);
   const listSessions = async (filter?: SessionListFilter): Promise<DesktopHostSessionSummary[]> => {
-    const recovery = await deps.sessionCopyCleanup.recover();
-    const pendingCleanup = new Set(recovery.failed.map(({ sessionId }) => sessionId));
+    await recoveryTask;
     const parentSessionId = normalizeParentSessionFilter(filter?.subagentParentSessionId);
     const sessions = await deps.client.listSessions(toHostCatalogFilter(filter));
     return sessions
@@ -78,27 +86,30 @@ export function registerRuntimeHostSessionCatalogIpc(
   const actionIds = (sessionId: string, options: unknown) =>
     resolveSessionActionIds(() => listSessions(), sessionId, options);
 
-  ipcMain.handle('sessions:list', (_event, filter?: SessionListFilter) => listSessions(filter));
+  handleReconnectableRead(ipcMain, 'sessions:list', (_event, filter?: SessionListFilter) =>
+    listSessions(filter),
+  );
   ipcMain.handle('sessions:cleanupSessionCopy', async (_event, sessionId: string) => {
     await deps.sessionCopyCleanup.cleanup(sessionId);
+    pendingCleanup.delete(sessionId);
   });
   ipcMain.handle('sessions:abandonSessionCopy', async (_event, sessionId: string) => {
     await deps.sessionCopyCleanup.schedule(sessionId);
+    pendingCleanup.add(sessionId);
   });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
     if (input?.backend !== undefined && input.backend !== 'ai-sdk') {
       throw new Error('Unsupported Runtime Host Session backend');
     }
     const request = resolveCreateSessionRequest(input);
-    const project = await deps.resolveCreateProject({
+    const workspace = await deps.resolveCreateProject({
       ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input?.projectId === undefined ? {} : { projectId: input.projectId }),
     });
     const session = await deps.client.createSession({
       sessionId: newId(),
-      cwd: project.cwd,
+      workspace,
       ...(request.mode === undefined ? {} : { mode: request.mode }),
-      ...(project.projectId === undefined ? {} : { projectId: project.projectId }),
       ...(request.mode === undefined ? { name: request.name } : {}),
       ...(request.labels === undefined ? {} : { labels: request.labels }),
       modelTarget: normalizeModelTarget(input),
@@ -273,8 +284,10 @@ export function toDesktopHostSessionSummary(
 ): DesktopHostSessionSummary {
   return {
     id: session.id,
-    cwd: session.cwd,
-    ...(session.projectId === undefined ? {} : { projectId: session.projectId }),
+    cwd: session.workspace.hostCwd,
+    ...(session.workspace.target.kind === 'project'
+      ? { projectId: session.workspace.target.projectId }
+      : {}),
     name: session.name,
     isFlagged: session.isFlagged,
     isArchived: session.isArchived,

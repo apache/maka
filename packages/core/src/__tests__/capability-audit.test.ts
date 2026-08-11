@@ -11,7 +11,7 @@ import {
   deriveCapabilityAuditReport,
   type CapabilityAuditSkillInput,
 } from '../capability-audit.js';
-import type { PlanReminder } from '../plan-reminders.js';
+import type { ScheduledTask } from '../scheduled-task.js';
 
 describe('capability audit contract', () => {
   it('locks the visible source and automation enums', () => {
@@ -58,54 +58,65 @@ describe('capability audit contract', () => {
     assert.equal(report.skills[1].permissionMode, 'explore');
   });
 
-  it('maps plan reminders into automation records without losing run state', () => {
-    const reminders: PlanReminder[] = [
+  it('maps scheduled tasks into automation records without losing run state', () => {
+    const tasks: ScheduledTask[] = [
       {
         id: 'auto-1',
         title: '每日复盘',
-        note: '',
-        schedule: { kind: 'recurring', startAt: 1_700_000_000_000, recurrence: 'daily' },
-        delivery: { channel: 'local' },
-        status: 'scheduled',
-        enabled: true,
+        intent: { kind: 'text', body: '' },
+        schedule: { kind: 'calendar', anchorAt: 1_700_000_000_000, recurrence: 'daily' },
+        effect: { kind: 'notify', channel: 'local' },
+        status: 'active',
         createdAt: 1_700_000_000_000,
         updatedAt: 1_700_000_000_000,
-        nextRunAt: 1_700_003_600_000,
-        lastRun: { id: 'run-1', at: 1_700_001_000_000, status: 'triggered', message: 'ok' },
-        runs: [],
-        runCount: 1,
+        nextFireAt: 1_700_003_600_000,
+        lastFireAt: 1_700_001_000_000,
+        runs: [{ id: 'run-1', at: 1_700_001_000_000, outcome: 'ok', message: 'ok' }],
+        fireCount: 1,
+        maxFires: null,
+        expiresAt: null,
+        createdBy: { kind: 'user' },
+        lastError: null,
       },
       {
         id: 'auto-2',
         title: '周会提醒',
-        note: '',
+        intent: { kind: 'text', body: '' },
         schedule: { kind: 'once', runAt: 1_700_000_100_000 },
-        delivery: { channel: 'local' },
+        effect: { kind: 'notify', channel: 'local' },
         status: 'paused',
-        enabled: false,
         createdAt: 1_700_000_000_000,
         updatedAt: 1_700_000_000_000,
-        runs: [],
-        runCount: 0,
-        lastRun: { id: 'run-2', at: 1_700_001_500_000, status: 'blocked', message: 'skip' },
+        nextFireAt: null,
+        lastFireAt: 1_700_001_500_000,
+        runs: [{ id: 'run-2', at: 1_700_001_500_000, outcome: 'blocked', message: 'skip' }],
+        fireCount: 0,
+        maxFires: null,
+        expiresAt: null,
+        createdBy: { kind: 'user' },
+        lastError: 'skip',
       },
       {
         id: 'auto-3',
         title: '月末归档',
-        note: '',
+        intent: { kind: 'text', body: '' },
         schedule: { kind: 'once', runAt: 1_700_000_200_000 },
-        delivery: { channel: 'local' },
+        effect: { kind: 'notify', channel: 'local' },
         status: 'completed',
-        enabled: false,
         createdAt: 1_700_000_000_000,
         updatedAt: 1_700_000_000_000,
-        runs: [],
-        runCount: 0,
-        lastRun: { id: 'run-3', at: 1_700_001_900_000, status: 'failed', message: 'fail' },
+        nextFireAt: null,
+        lastFireAt: 1_700_001_900_000,
+        runs: [{ id: 'run-3', at: 1_700_001_900_000, outcome: 'failed', message: 'fail' }],
+        fireCount: 0,
+        maxFires: null,
+        expiresAt: null,
+        createdBy: { kind: 'user' },
+        lastError: 'fail',
       },
     ];
 
-    const report = deriveCapabilityAuditReport({ planReminders: reminders });
+    const report = deriveCapabilityAuditReport({ scheduledTasks: tasks });
 
     assert.equal(report.automations.length, 3);
     assert.equal(report.automations[0].trigger, 'schedule');

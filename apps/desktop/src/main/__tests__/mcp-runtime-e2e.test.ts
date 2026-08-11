@@ -30,9 +30,9 @@ test('MCP tools stay bound to the connection generation that advertised them', a
       structuredContent: { echoed: 'runtime-e2e' },
     });
 
-    const firstRevision = manager.toolSnapshotRevision();
+    const firstRevision = manager.toolSnapshot().revision;
     await manager.reconnect('fixture');
-    assert.ok(manager.toolSnapshotRevision() > firstRevision);
+    assert.ok(manager.toolSnapshot().revision > firstRevision);
     await assert.rejects(
       async () =>
         echo.impl(
@@ -46,7 +46,7 @@ test('MCP tools stay bound to the connection generation that advertised them', a
             emitOutput() {},
           },
         ),
-      /connection generation is no longer available/u,
+      /tool binding is stale/u,
     );
 
     const replacement = buildMcpTools(manager).find(

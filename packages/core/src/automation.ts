@@ -1,8 +1,3 @@
-import type { BackendKind } from './session.js';
-import type { CollaborationMode } from './collaboration.js';
-import type { OrchestrationMode } from './orchestration.js';
-import type { ThinkingLevel } from './model-thinking.js';
-
 const UTF8 = new TextEncoder();
 
 // Preserve the embedded model schema's code-unit limits while giving every
@@ -16,6 +11,7 @@ export const AUTOMATION_CRON_EXPRESSION_MAX_CODE_UNITS = 100;
 export const AUTOMATION_CRON_EXPRESSION_MAX_BYTES = 300;
 export const AUTOMATION_LAST_ERROR_MAX_CODE_UNITS = 2_000;
 export const AUTOMATION_LAST_ERROR_MAX_BYTES = 6_000;
+export const AUTOMATION_MAX_CLIENT_CAPABILITY_REQUIREMENTS = 32;
 
 export interface AutomationTextLimit {
   readonly maxCodeUnits: number;
@@ -73,7 +69,6 @@ export function truncateAutomationText(value: string, limit: AutomationTextLimit
   return result;
 }
 
-export type AutomationKind = 'heartbeat' | 'cron';
 export type AutomationStatus = 'active' | 'paused' | 'completed' | 'expired';
 
 export type AutomationSchedule =
@@ -81,21 +76,20 @@ export type AutomationSchedule =
   | { type: 'interval'; seconds: number }
   | { type: 'once'; delaySeconds: number };
 
-/** Frozen execution settings used by durable cron fires after their creator changes. */
-export interface AutomationExecutionTemplate {
-  readonly cwd: string;
-  readonly projectId?: string | null;
-  readonly backend: BackendKind;
-  readonly llmConnectionSlug: string;
-  readonly model: string;
-  readonly thinkingLevel?: ThinkingLevel;
-  readonly collaborationMode: CollaborationMode;
-  readonly orchestrationMode: OrchestrationMode;
+export interface AutomationClientCapabilityRequirement {
+  readonly principalId: string;
+  readonly clientInstanceId: string;
+  readonly contractId: string;
+}
+
+export interface AutomationWaitingState {
+  readonly reason: 'client_capability_provider_unavailable';
+  readonly since: number;
+  readonly message: string;
 }
 
 export interface AutomationDefinition {
   id: string;
-  kind: AutomationKind;
   name: string;
   status: AutomationStatus;
   prompt: string;
@@ -111,18 +105,17 @@ export interface AutomationDefinition {
   expiresAt: number | null;
   lastError: string | null;
   consecutiveFailures: number;
-  /** Cron definitions are globally visible and survive the creating Client. */
-  durable?: boolean;
   deferredFireCount?: number;
-  /** Present for Host-created cron definitions; legacy definitions acquire it before firing. */
-  execution?: AutomationExecutionTemplate;
+  /** Session-affine Client Capability contracts frozen when the Automation is created. */
+  capabilityRequirements?: readonly AutomationClientCapabilityRequirement[];
+  /** A transient prerequisite that must recover before the next fire can enter Runtime. */
+  waiting?: AutomationWaitingState;
 }
 
 /** Durable execution intent removed atomically when its canonical Run settles. */
 export interface AutomationPendingFire {
   readonly id: string;
   readonly automationId: string;
-  readonly automationKind: AutomationKind;
   readonly automationName: string;
   readonly prompt: string;
   readonly scheduledFor: number;
@@ -133,8 +126,9 @@ export interface AutomationPendingFire {
   readonly status: 'admitted' | 'running';
   readonly admittedAt: number;
   readonly updatedAt: number;
+  readonly transientDeferredSince?: number;
   readonly startedAt?: number;
-  readonly execution?: AutomationExecutionTemplate;
+  readonly capabilityRequirements?: readonly AutomationClientCapabilityRequirement[];
 }
 
 export interface AutomationAuthoritySnapshot {

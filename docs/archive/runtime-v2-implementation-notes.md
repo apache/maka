@@ -28,22 +28,19 @@ Five new modules, each importable via its canonical subpath AND re-exported
 
 | Module | Subpath | Role |
 |---|---|---|
-| `runtime-event-adapters.ts` | `@maka/runtime/runtime-event-adapters` | Legacy `StoredMessage` ↔ `RuntimeEvent` bridge (user/assistant/system_note text + thinking; tool/permission/tokenUsage return `null`). |
 | `model-history.ts` | `@maka/runtime/model-history` | Policy-driven `buildModelHistoryFromRuntimeEvents()` replacing ad-hoc `StoredMessage` filtering. |
 | `invocation-context.ts` | `@maka/runtime/invocation-context` | `InvocationRequest` / `InvocationContext` spine, injectable `newId`/`now` providers, `InvocationResult` envelope. |
 | `runtime-runner.ts` | `@maka/runtime/runtime-runner` | `RuntimeRunner.run()` collecting shell: preflight gate → context → user event → flow dispatch → terminal collection. |
 | `agent-flow.ts` | `@maka/runtime/agent-flow` | Formal `AgentFlow` / `AgentFlowControl` / `FlowInput` seam. |
 | `ai-sdk-flow.ts` | `@maka/runtime/ai-sdk-flow` | `AiSdkFlow` wrapping an `AgentBackend`; `mapSessionEventToRuntimeEvent()` placeholder mapping. |
 
-Each module ships a co-located test suite
-(`runtime-event-adapters.test.ts`, `runtime-runner.test.ts`,
-`ai-sdk-flow.test.ts`).
+Each module shipped with co-located tests for the initial migration seam.
 
 ### Exports consolidated by the steward
 
 - `packages/core/package.json` — added `"./runtime-event"`.
 - `packages/core/src/index.ts` — re-exports the `RuntimeEvent` surface.
-- `packages/runtime/package.json` — added six subpath exports.
+- `packages/runtime/package.json` — added the runtime-v2 subpath exports.
 - `packages/runtime/src/index.ts` — selective barrel re-exports.
 
 ## Reconciled: single `InvocationContext` type
@@ -57,8 +54,8 @@ formal flow seam:
   `AgentFlow.run(ctx, input)` contract.
 
 The runtime barrel re-exports the canonical `InvocationContext` from
-`invocation-context.ts`; the previous duplicate flow-local context has been
-removed so runner and flow code share the same identity/provider spine.
+`invocation-context.ts`; the previous duplicate flow-local context was removed
+so runner and flow code share the same identity/provider spine.
 
 ## What remains (by phase)
 
@@ -87,8 +84,7 @@ removed so runner and flow code share the same identity/provider spine.
 - **Flow runnable surface:** `RuntimeRunner` depends on the centrally owned
   `RunnableAgentFlow` (`Pick<AgentFlow, 'run'>`) so it remains decoupled from
   flow metadata (`kind`, `sessionId`) while sharing the formal `AgentFlow.run`
-  signature. The old `AgentFlowLike` name remains as a deprecated compatibility
-  alias.
+  signature.
 
 ## Verification snapshot
 

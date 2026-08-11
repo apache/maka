@@ -2,7 +2,6 @@ import { useEffect, useEffectEvent, useLayoutEffect } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
 import type {
   ConnectionEvent,
-  PlanReminder,
   SessionChangedEvent,
   SessionEvent,
   SessionEventStreamSnapshot,
@@ -13,7 +12,6 @@ import type {
   UiLocale,
 } from '@maka/core';
 import {
-  ShellRunUpdateBuffer,
   generalizedErrorMessageChinese,
   sessionExpectsEventStream,
   type ShellRunUpdate,
@@ -40,6 +38,7 @@ import type { WindowCommand } from '../preload/bridge-contract.js';
 import {
   mergeShellRunNotification,
   mergeShellRunUpdates,
+  ShellRunHydration,
   type ShellRunUpdatesBySession,
 } from './shell-run-update-state.js';
 
@@ -227,7 +226,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   refreshConnections: () => Promise<void>;
   refreshMemoryActive: (failureContext?: 'load') => Promise<void>;
   refreshMessages: (sessionId: string) => Promise<boolean>;
-  refreshPlanReminders: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
+  refreshScheduledTasks: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
   refreshProjects: () => Promise<unknown>;
   refreshShellSettings: () => Promise<void>;
   refreshSkills: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
@@ -247,7 +246,7 @@ export function useAppShellBootstrapSubscriptions(options: {
     void options.refreshSkills();
     void options.refreshManagedSkillSources();
     void options.refreshBundledSkillCatalog();
-    void options.refreshPlanReminders();
+    void options.refreshScheduledTasks();
     void options.applyE2eFixture();
   });
   const handleConnectionSubscriptionEvent = useEffectEvent((event: ConnectionEvent) => {
@@ -309,20 +308,20 @@ export function useAppShellBootstrapSubscriptions(options: {
     }
     },
   );
-  const handlePlanChange = useEffectEvent(() => {
-    void options.refreshPlanReminders();
+  const handleScheduledTaskChange = useEffectEvent(() => {
+    void options.refreshScheduledTasks();
   });
-  const handlePlanDue = useEffectEvent((reminder: PlanReminder) => {
+  const handleScheduledTaskDue = useEffectEvent((task: { id: string; title: string }) => {
     const copy = getShellRemainingCopy(options.uiLocale).notifications;
-    void options.refreshPlanReminders();
+    void options.refreshScheduledTasks();
     options.toastApi.toast({
-      title: copy.planReminder,
-      description: reminder.title,
+      title: copy.scheduledTask,
+      description: task.title,
       variant: 'info',
       duration: 8000,
       action: {
         label: copy.viewScheduledTasks,
-        onClick: () => options.setNavSelection({ section: 'automations', module: 'plan-reminders' }),
+        onClick: () => options.setNavSelection({ section: 'automations', module: 'scheduled-tasks' }),
       },
     });
   });
@@ -382,8 +381,8 @@ export function useAppShellBootstrapSubscriptions(options: {
       void options.refreshConnections();
     });
     const unsubscribeSessionChanges = window.maka.sessions.subscribeChanges(handleSessionChange);
-    const unsubscribePlanChanges = window.maka.plans.subscribeChanges(handlePlanChange);
-    const unsubscribePlanDue = window.maka.plans.subscribeDue(handlePlanDue);
+    const unsubscribeScheduledTaskChanges = window.maka.scheduledTasks.subscribeChanges(handleScheduledTaskChange);
+    const unsubscribeScheduledTaskDue = window.maka.scheduledTasks.subscribeDue(handleScheduledTaskDue);
     const unsubscribeWindowCommand = window.maka.appWindow.subscribeCommand(handleWindowCommand);
     markRendererMounted();
     return () => {
@@ -391,8 +390,8 @@ export function useAppShellBootstrapSubscriptions(options: {
       unsubscribeConnections();
       unsubscribeSettingsExternal();
       unsubscribeSessionChanges();
-      unsubscribePlanChanges();
-      unsubscribePlanDue();
+      unsubscribeScheduledTaskChanges();
+      unsubscribeScheduledTaskDue();
       unsubscribeWindowCommand();
     };
   }, []);
@@ -523,49 +522,57 @@ export function useShellRunUpdates(options: {
     if (!sessionId) return;
 
     let disposed = false;
-    let hydrated = false;
     let retryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
     let retryDelayMs = 250;
-    const pending = new ShellRunUpdateBuffer('desktop.shell-run-hydration-buffer');
+    const hydration = new ShellRunHydration();
     const unsubscribe = window.maka.shellRuns.subscribeUpdates((update) => {
       if (disposed) return;
-      if (!hydrated) {
-        pending.add(update);
-        return;
+      const live = hydration.accept(update);
+      if (live) {
+        options.setShellRunUpdatesBySession((current) =>
+          mergeShellRunNotification(current, sessionId, live),
+        );
       }
-      options.setShellRunUpdatesBySession((current) => mergeShellRunNotification(current, sessionId, update));
     });
-    const hydrate = () => {
+    const hydrate = (epoch: number) => {
       void window.maka.shellRuns
         .list(sessionId)
         .then((updates) => {
-        if (disposed) return;
-        applyUpdates(sessionId, updates);
-        retryDelayMs = 250;
-        const buffered = pending.drain();
-        for (const update of buffered.updates) {
+          if (disposed) return;
+          const buffered = hydration.commit(epoch);
+          if (!buffered) return;
+          applyUpdates(sessionId, updates);
+          retryDelayMs = 250;
+          for (const update of buffered.updates) {
             options.setShellRunUpdatesBySession((current) => mergeShellRunNotification(current, sessionId, update));
-        }
-        if (buffered.overflowed) {
-          hydrate();
-          return;
-        }
-        hydrated = true;
+          }
+          if (buffered.overflowed) hydrate(epoch);
         })
         .catch(() => {
-        if (disposed) return;
-        retryTimer = globalThis.setTimeout(() => {
-          retryTimer = undefined;
-          hydrate();
-        }, retryDelayMs);
-        retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
-      });
+          if (disposed || !hydration.isCurrent(epoch)) return;
+          retryTimer = globalThis.setTimeout(() => {
+            retryTimer = undefined;
+            hydrate(epoch);
+          }, retryDelayMs);
+          retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
+        });
     };
-    hydrate();
+    const unsubscribeResync = window.maka.shellRuns.subscribeResync((event) => {
+      if (disposed || event.sessionId !== sessionId) return;
+      const epoch = hydration.begin();
+      retryDelayMs = 250;
+      if (retryTimer !== undefined) {
+        globalThis.clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
+      hydrate(epoch);
+    });
+    hydrate(hydration.begin());
     return () => {
       disposed = true;
       if (retryTimer !== undefined) globalThis.clearTimeout(retryTimer);
       unsubscribe();
+      unsubscribeResync();
     };
   }, [options.activeId]);
 }

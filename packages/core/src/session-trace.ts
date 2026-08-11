@@ -381,7 +381,7 @@ export function isSessionTrace(value: unknown): value is SessionTrace {
   );
 }
 
-function isTurnTrace(value: unknown): value is TurnTrace {
+export function isTurnTrace(value: unknown): value is TurnTrace {
   return (
     isRecord(value) &&
     hasExactShape(value, TURN_TRACE_SHAPE) &&

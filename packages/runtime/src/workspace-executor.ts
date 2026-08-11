@@ -2,7 +2,12 @@ import { promises as fs } from 'node:fs';
 import { exec } from 'node:child_process';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
-import { isPathInside, realpathAllowMissing } from './path-containment.js';
+import {
+  isPathInside,
+  realpathAllowMissing,
+  resolveCanonicalDirectoryEntryTarget,
+} from './path-containment.js';
+import { createPatchedFile, updatePatchedFile } from './apply-patch-file.js';
 import { promisify } from 'node:util';
 import type { ToolExecutionFacts } from '@maka/core/permission';
 import { runProcessWithBoundedTail, runShellWithBoundedTail } from './shell-exec.js';
@@ -81,6 +86,14 @@ export interface WorkspaceWriteFileResult {
   bytes: number;
 }
 
+export type WorkspaceApplyPatchInput = WorkspaceResolvePathInput &
+  ({ action: 'create' | 'update'; diff: string } | { action: 'delete' });
+
+export interface WorkspaceApplyPatchResult {
+  ok: true;
+  path: string;
+}
+
 /**
  * Which path space a resolution may land in.
  *
@@ -106,6 +119,7 @@ export interface WorkspaceResolvePathResult {
 export interface WorkspaceWriteLockKeyInput {
   cwd: string;
   path: string;
+  semantics?: 'target' | 'entry';
 }
 
 export interface WorkspaceWriteLockKeyResult {
@@ -151,6 +165,10 @@ export interface WorkspaceReadFileExecutor {
 
 export interface WorkspaceWriteFileExecutor {
   writeFile(input: WorkspaceWriteFileInput): Promise<WorkspaceWriteFileResult>;
+}
+
+export interface WorkspaceApplyPatchExecutor {
+  applyPatch(input: WorkspaceApplyPatchInput): Promise<WorkspaceApplyPatchResult>;
 }
 
 export interface WorkspaceExistingPathResolver {
@@ -206,7 +224,8 @@ export interface WorkspaceExecutor
     WorkspaceWriteExecutor,
     WorkspaceEditExecutor,
     WorkspaceGlobExecutor,
-    WorkspaceGrepExecutor {}
+    WorkspaceGrepExecutor,
+    Partial<WorkspaceApplyPatchExecutor> {}
 
 export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   readonly facts = LOCAL_WORKSPACE_EXECUTOR_FACTS;
@@ -256,6 +275,23 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
     };
   }
 
+  async applyPatch(input: WorkspaceApplyPatchInput): Promise<WorkspaceApplyPatchResult> {
+    if (input.action !== 'update') {
+      const path = await resolveDirectoryEntryPathInScope(
+        input.cwd,
+        input.path,
+        input.label,
+        input.scope,
+      );
+      if (input.action === 'create') await createPatchedFile(path, input.diff);
+      else await fs.unlink(path);
+      return { ok: true, path };
+    }
+    const path = await resolveExistingPathInScope(input.cwd, input.path, input.label, input.scope);
+    await updatePatchedFile(path, input.diff);
+    return { ok: true, path };
+  }
+
   async resolveExistingPath(input: WorkspaceResolvePathInput): Promise<WorkspaceResolvePathResult> {
     return {
       path: await resolveExistingPathInScope(input.cwd, input.path, input.label, input.scope),
@@ -274,7 +310,11 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
     // the same lock. Escapes are rejected by the resolvers inside the lock, not
     // here. Sharing the canonicalisation is what keeps the lock-key space and
     // the resolved-path space from drifting apart.
-    return { key: (await canonicalPathUnderCwd(input.cwd, input.path)).path };
+    const path =
+      input.semantics === 'entry'
+        ? (await resolveCanonicalDirectoryEntryTarget(input.cwd, input.path)).path
+        : (await canonicalPathUnderCwd(input.cwd, input.path)).path;
+    return { key: path };
   }
 
   async globFiles(input: WorkspaceGlobInput): Promise<WorkspaceGlobResult> {
@@ -371,6 +411,18 @@ async function resolveExistingPathInScope(
   // defence-in-depth and no deterministic test can drive that race, so nothing
   // will fail if it is removed.
   return assertInsideCwd(root, await fs.realpath(candidate), inputPath, label);
+}
+
+async function resolveDirectoryEntryPathInScope(
+  cwd: string,
+  inputPath: string,
+  label: string,
+  scope: WorkspacePathScope,
+): Promise<string> {
+  const target = await resolveCanonicalDirectoryEntryTarget(cwd, inputPath);
+  return scope === 'host'
+    ? target.path
+    : assertInsideCwd(target.root, target.path, inputPath, label);
 }
 
 function assertInsideCwd(

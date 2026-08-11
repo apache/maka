@@ -4,9 +4,9 @@
  * Two capabilities need the machine to stay running while nobody is touching
  * it, and they arrive independently:
  *
- *  - 定时任务: scheduled reminders are driven by an in-process timer (see
- *    `plan-reminders`); when the machine sleeps that timer is frozen and the
- *    reminder silently never fires. The user opts into this with 保持系统唤醒.
+ *  - 定时任务: scheduled tasks are driven by an in-process timer (see
+ *    `scheduled-tasks`); when the machine sleeps that timer is frozen and the
+ *    task silently never fires. The user opts into this with 保持系统唤醒.
  *  - Computer Use: a run drives another app for as long as the model needs,
  *    and the physical-input guard means it does its work precisely when the
  *    user is not touching anything — which is exactly when idle sleep lands.

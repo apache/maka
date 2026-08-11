@@ -7,11 +7,12 @@ import { HStack, VStack } from '@astryxdesign/core/Layout';
 import { Section } from '@astryxdesign/core/Section';
 import { Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
+import { ToggleButton } from '@astryxdesign/core/ToggleButton';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core';
 import type { TraceTotals } from '@maka/core/session-trace';
 import { useToast, useUiLocale } from '@maka/ui';
-import { Activity, AlertTriangle, Copy } from '@maka/ui/icons';
+import { ICON_SIZE, Activity, AlertTriangle, Copy } from '@maka/ui/icons';
 import {
   getDesktopConversationCopy,
   type InspectorCopy,
@@ -170,7 +171,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
             <Button
               variant="ghost"
               size="sm"
-              icon={<Copy size={14} aria-hidden="true" />}
+              icon={<Copy size={ICON_SIZE.control} aria-hidden="true" />}
               label={copy.copyPath}
               onClick={() => {
                 void copyRecordFile();
@@ -195,16 +196,13 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
           role="status"
           aria-live="polite"
           className="maka-inspector-status"
-          /* With nothing to trace the region IS the panel, so it takes the
-             leftover height and centres its empty state the way every other
-             workbar tab does. */
           data-empty={model.empty || undefined}
         >
           {model.empty && !snapshot.loading && !snapshot.error && (
             <EmptyState
-              isCompact
               title={copy.empty}
-              icon={<Activity size={20} aria-hidden="true" />}
+              description={copy.emptyHelp}
+              icon={<Activity size={ICON_SIZE.empty} aria-hidden="true" />}
             />
           )}
         </div>
@@ -220,19 +218,14 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                 <Heading level={3} className="maka-inspector-section-title">
                   {copy.overview.timelineTab}
                 </Heading>
-                {/* The failure count IS the failure filter. A count is a fact
-                    the reader wanted anyway, so it earns its place before it
-                    is asked to be a control, and it costs a word where a
-                    Switch cost a track, a label and a wrapped line. */}
                 {failedTurns > 0 && (
-                  <button
-                    type="button"
+                  <ToggleButton
                     className="maka-inspector-failed-filter"
-                    aria-pressed={filter.failedOnly ?? false}
-                    onClick={() => setFilter({ ...filter, failedOnly: !filter.failedOnly })}
-                  >
-                    {copy.filterFailedOnly(failedTurns)}
-                  </button>
+                    size="sm"
+                    label={copy.filterFailedOnly(failedTurns)}
+                    isPressed={filter.failedOnly ?? false}
+                    onPressedChange={(pressed) => setFilter({ ...filter, failedOnly: pressed })}
+                  />
                 )}
                 <TextInput
                   size="sm"
@@ -246,15 +239,19 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                 />
               </div>
 
-              {/* What the filter is doing, beside the rows it did it to. A
-                  persistent live region rather than a conditional one: a
-                  container that mounts and unmounts is not announced, and this
-                  message changes as the reader types. */}
               <div role="status" aria-live="polite" className="maka-inspector-status">
                 {model.filtered && model.turns.length === 0 && (
                   <EmptyState
                     isCompact
                     title={copy.noMatches}
+                    actions={
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        label={copy.clearFilter}
+                        onClick={() => setFilter({ ...filter, query: '', failedOnly: false })}
+                      />
+                    }
                     data-maka-contract="session-inspector-no-matches"
                   />
                 )}
@@ -270,7 +267,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                   className="maka-inspector-coverage-note"
                   data-maka-contract="session-inspector-coverage"
                 >
-                  <AlertTriangle size={14} aria-hidden="true" />
+                  <AlertTriangle size={ICON_SIZE.control} aria-hidden="true" />
                   <span>
                     {(model.coverage.kind === 'absent'
                       ? copy.coverageAbsent

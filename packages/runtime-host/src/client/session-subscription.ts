@@ -1,5 +1,6 @@
 import {
-  encodeProtocolFrame,
+  encodeProtocolMessage,
+  type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
   type SubscriptionOpenResult,
@@ -41,6 +42,7 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   readonly hostEpoch: string;
   readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
+  readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
   close(): Promise<void>;
 }
@@ -56,6 +58,7 @@ export class ClientSessionSubscription
   readonly hostEpoch: string;
   readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
+  readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly #requestClose: () => Promise<void>;
   readonly #queryTranscript: (
     input: SessionTranscriptQueryInput,
@@ -85,6 +88,7 @@ export class ClientSessionSubscription
     this.hostEpoch = result.hostEpoch;
     this.subscriptionId = result.subscriptionId;
     this.snapshot = result.snapshot;
+    this.activeAssistantStreams = result.activeAssistantStreams;
     this.#expectedSessionId = result.snapshot.session.sessionId;
     this.#expectedSequence = result.nextSequence;
     this.#latestProjectionRevision = result.snapshot.projectionRevision;
@@ -298,7 +302,7 @@ export class ClientSessionSubscription
       waiting.resolve({ done: false, value: frame });
       return;
     }
-    const encodedBytes = encodeProtocolFrame(frame).byteLength;
+    const encodedBytes = encodeProtocolMessage(frame).byteLength;
     if (
       this.#queue.length >= MAX_CLIENT_QUEUED_FRAMES ||
       this.#queuedBytes + encodedBytes > MAX_CLIENT_QUEUED_BYTES

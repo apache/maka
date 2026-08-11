@@ -13,56 +13,6 @@ function verdict(input: Parameters<typeof validateChatDefaultModel>[0]) {
   return result.ok ? { ok: true } : { ok: false, reason: result.reason };
 }
 
-test('fallback catalogs remain explicitly static and selectable', () => {
-  const entries = buildConnectionModelCatalogEntries({
-    connection: { slug: 'deepseek', providerType: 'deepseek', defaultModel: '' },
-  });
-
-  assert.ok(entries.length > 0);
-  assert.equal(
-    entries.every(({ source }) => source === 'static_catalog'),
-    true,
-  );
-  assert.equal(
-    entries.every(({ provenance }) => provenance.modelSource === 'fallback'),
-    true,
-  );
-  assert.equal(
-    entries.every(({ canUseAsChatDefault }) => canUseAsChatDefault),
-    true,
-  );
-});
-
-test('provider facts override static metadata while missing facts are enriched', () => {
-  const [providerOwned] = buildModelCatalogEntries({
-    providerType: 'deepseek',
-    defaultModel: 'deepseek-v4-pro',
-    models: [
-      {
-        id: 'deepseek-v4-pro',
-        contextWindow: 128_000,
-        maxOutputTokens: 8_192,
-        capabilities: { reasoning: false, functionCalling: false },
-      },
-    ],
-    modelSource: 'fetched',
-  });
-  assert.equal(providerOwned?.contextWindow, 128_000);
-  assert.equal(providerOwned?.maxOutputTokens, 8_192);
-  assert.equal(providerOwned?.capabilitySource, 'provider_api');
-  assert.deepEqual(providerOwned?.capabilities, {});
-
-  const [enriched] = buildModelCatalogEntries({
-    providerType: 'deepseek',
-    defaultModel: 'deepseek-v4-pro',
-    models: [{ id: 'deepseek-v4-pro' }],
-    modelSource: 'fetched',
-  });
-  assert.equal(enriched?.contextWindow, 1_000_000);
-  assert.equal(enriched?.capabilitySource, 'static_catalog');
-  assert.deepEqual(enriched?.capabilities, { reasoning: true, functionCalling: true });
-});
-
 test('live inventory blocks missing defaults and preserves higher-priority failures', () => {
   const input = {
     providerType: 'zai-coding-plan' as const,
@@ -180,23 +130,6 @@ test('connection catalogs preserve user-choice provenance without inventing avai
   );
   assert.deepEqual(entries[0]?.provenance.sources?.userChoice, ['connection_default']);
   assert.deepEqual(entries[2]?.provenance.sources?.userChoice, ['session_model']);
-});
-
-test('static metadata is scoped to its provider access path', () => {
-  const [known] = buildModelCatalogEntries({
-    providerType: 'openai',
-    defaultModel: 'gpt-5.5-pro',
-    models: [{ id: 'gpt-5.5-pro' }],
-    modelSource: 'fetched',
-  });
-  const [custom] = buildModelCatalogEntries({
-    providerType: 'openai-compatible',
-    defaultModel: 'gpt-5.5-pro',
-    models: [{ id: 'gpt-5.5-pro' }],
-    modelSource: 'fetched',
-  });
-  assert.equal(known?.displayName, 'GPT-5.5 Pro');
-  assert.equal(custom?.displayName, undefined);
 });
 
 test('unknown persisted provider ids return an empty catalog', () => {

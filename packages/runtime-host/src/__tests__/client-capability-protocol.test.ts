@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID } from '@maka/runtime';
 import {
   CLIENT_CAPABILITY_MAX_MANIFEST_BYTES,
   CLIENT_CAPABILITY_MAX_OFFERS,
@@ -23,6 +24,7 @@ describe('Client Capability protocol', () => {
               offerId: 'not_known_by_host',
               version: 'vendor-v3',
               affinity: 'call',
+              hostPathAccess: 'none',
               label: 'Vendor-defined capability',
               tools: [
                 {
@@ -49,6 +51,7 @@ describe('Client Capability protocol', () => {
               offerId: 'not_known_by_host',
               version: 'vendor-v3',
               affinity: 'call',
+              hostPathAccess: 'none',
               label: 'Vendor-defined capability',
               tools: [
                 {
@@ -78,7 +81,6 @@ describe('Client Capability protocol', () => {
         sessionId: 'session',
         turnId: 'turn',
         toolCallId: 'tool-call',
-        cwd: '/workspace',
       }),
       {
         kind: 'client.capability.call',
@@ -91,7 +93,6 @@ describe('Client Capability protocol', () => {
         sessionId: 'session',
         turnId: 'turn',
         toolCallId: 'tool-call',
-        cwd: '/workspace',
       },
     );
     assert.deepEqual(
@@ -124,7 +125,7 @@ describe('Client Capability protocol', () => {
         input: {
           registrationId: 'registration',
           offers: [],
-          services: [{ serviceId: 'vendor_service', version: 'vendor-v4' }],
+          services: [{ serviceId: SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID, version: 'vendor-v4' }],
         },
       }),
       {
@@ -133,7 +134,7 @@ describe('Client Capability protocol', () => {
         input: {
           registrationId: 'registration',
           offers: [],
-          services: [{ serviceId: 'vendor_service', version: 'vendor-v4' }],
+          services: [{ serviceId: SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID, version: 'vendor-v4' }],
         },
       },
     );
@@ -355,11 +356,17 @@ describe('Client Capability protocol', () => {
     );
   });
 
-  test('requires explicit affinity and rejects prototype-backed schema types', () => {
+  test('requires explicit affinity and Host path access', () => {
     const missingAffinity = offer('fixture', 'inspect') as Record<string, unknown>;
     delete missingAffinity.affinity;
     assert.throws(
       () => decodeClientFrame(replaceFrame([missingAffinity])),
+      (error: unknown) => error instanceof RuntimeHostProtocolError,
+    );
+    const missingHostPathAccess = offer('fixture', 'inspect') as Record<string, unknown>;
+    delete missingHostPathAccess.hostPathAccess;
+    assert.throws(
+      () => decodeClientFrame(replaceFrame([missingHostPathAccess])),
       (error: unknown) => error instanceof RuntimeHostProtocolError,
     );
     assert.throws(
@@ -443,6 +450,7 @@ function offer(offerId: string, toolName: string) {
     offerId,
     version: '0',
     affinity: 'call',
+    hostPathAccess: 'cwd',
     label: offerId,
     tools: [
       {

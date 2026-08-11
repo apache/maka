@@ -1,18 +1,15 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { link, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   authenticateInteractiveArtifactStoreWriter,
-  openHeadlessArtifactStoreForWrite,
   openInteractiveArtifactStoreForWrite,
   type InteractiveArtifactStoreWriter,
 } from '../artifact-stores.js';
 import { ARTIFACT_WRITER_LOCK_FILE } from '../artifact-storage-layout.js';
 import {
-  createHeadlessRootLease,
   resolveStorageRoot,
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
@@ -21,19 +18,13 @@ import {
 
 describe('interactive artifact store authority', () => {
   test('requires authentic leases and writer facades', async () => {
-    await withTemporaryRoot('headless', async (root, track) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'headless' });
-      const lease = createHeadlessRootLease(capability, 'write');
-      await assert.rejects(
-        () =>
-          openInteractiveArtifactStoreForWrite(
-            lease as unknown as StorageRootLease<'interactive', 'write'>,
-          ),
-        invalidLease,
-      );
-      const headless = track(await openHeadlessArtifactStoreForWrite(lease));
-      assert.equal((await headless.create(artifactInput('headless', 'leased'))).id, 'headless');
-    });
+    await assert.rejects(
+      () =>
+        openInteractiveArtifactStoreForWrite(
+          {} as unknown as StorageRootLease<'interactive', 'write'>,
+        ),
+      invalidLease,
+    );
 
     assert.throws(
       () =>
@@ -133,74 +124,6 @@ describe('interactive artifact store authority', () => {
   });
 });
 
-describe('headless artifact store authority', () => {
-  test('returns one facade per lease and preserves concurrent writes', async () => {
-    await withTemporaryRoot('headless', async (root, track) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'headless' });
-      const lease = createHeadlessRootLease(capability, 'write');
-      const [first, second] = await Promise.all([
-        openHeadlessArtifactStoreForWrite(lease),
-        openHeadlessArtifactStoreForWrite(lease),
-      ]);
-      track(first);
-      track(second);
-
-      assert.strictEqual(first, second);
-      await Promise.all([
-        first.create(artifactInput('same-lease-first', 'first')),
-        second.create(artifactInput('same-lease-second', 'second')),
-      ]);
-      assert.deepEqual(
-        (await first.list('session-1', { includeDeleted: true })).map((record) => record.id).sort(),
-        ['same-lease-first', 'same-lease-second'],
-      );
-      await assert.rejects(() => stat(join(root, ARTIFACT_WRITER_LOCK_FILE)), { code: 'ENOENT' });
-    });
-  });
-
-  test('serializes concurrent opener recovery while recovering every authority', async () => {
-    await withTemporaryRoot('headless', async (root, track) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'headless' });
-      const firstLease = createHeadlessRootLease(capability, 'write');
-      const secondLease = createHeadlessRootLease(capability, 'write');
-      const residue = await createPublicationResidue(root, 'residue', 'residue.txt', 'stale');
-
-      const [first, second] = await Promise.all([
-        openHeadlessArtifactStoreForWrite(firstLease),
-        openHeadlessArtifactStoreForWrite(secondLease),
-      ]);
-      track(first);
-      track(second);
-
-      assert.notStrictEqual(first, second);
-      await assert.rejects(() => stat(residue.stagingPath), { code: 'ENOENT' });
-      await assert.rejects(() => stat(residue.targetPath), { code: 'ENOENT' });
-      await first.create(artifactInput('sequential-first', 'first'));
-      assert.deepEqual(
-        (await first.list('session-1')).map((record) => record.id),
-        ['sequential-first'],
-      );
-      await second.create(artifactInput('sequential-second', 'second'));
-      assert.deepEqual(
-        (await first.list('session-1')).map((record) => record.id),
-        ['sequential-first', 'sequential-second'],
-      );
-      await Promise.all([
-        first.create(artifactInput('concurrent-first', 'first')),
-        second.create(artifactInput('concurrent-second', 'second')),
-      ]);
-      const verificationLease = createHeadlessRootLease(capability, 'write');
-      const verificationStore = track(await openHeadlessArtifactStoreForWrite(verificationLease));
-      assert.deepEqual(
-        (await verificationStore.list('session-1', { includeDeleted: true }))
-          .map((record) => record.id)
-          .sort(),
-        ['concurrent-first', 'concurrent-second', 'sequential-first', 'sequential-second'],
-      );
-    });
-  });
-});
-
 function artifactInput(id: string, content: string | Uint8Array) {
   return {
     id,
@@ -215,25 +138,6 @@ function artifactInput(id: string, content: string | Uint8Array) {
 
 function invalidLease(error: unknown): boolean {
   return error instanceof StorageRootAuthorityError && error.code === 'invalid_lease';
-}
-
-async function createPublicationResidue(
-  root: string,
-  id: string,
-  name: string,
-  content: string,
-): Promise<{ stagingPath: string; targetPath: string }> {
-  const sessionDirectory = join(root, 'artifacts', 'session-1');
-  await mkdir(sessionDirectory, { recursive: true });
-  const targetPath = join(sessionDirectory, `${id}-${name}`);
-  const targetHash = createHash('sha256').update(basename(targetPath)).digest('hex');
-  const stagingPath = join(
-    dirname(targetPath),
-    `.artifact-publish.${targetHash}.00000000-0000-4000-8000-000000000000.tmp`,
-  );
-  await writeFile(stagingPath, content, { flag: 'wx' });
-  await link(stagingPath, targetPath);
-  return { stagingPath, targetPath };
 }
 
 async function withInteractiveOwner(
@@ -256,7 +160,7 @@ async function withInteractiveOwner(
 }
 
 async function withTemporaryRoot(
-  kind: 'interactive' | 'headless',
+  kind: 'interactive',
   run: (root: string, track: TrackArtifactWriter) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), `maka-artifact-${kind}-`));

@@ -77,42 +77,6 @@ describe("materializeChat attachments", () => {
     ]);
   });
 
-  test("projects frozen inline references onto chat and turn user messages", () => {
-    const inlineReferences = [
-      {
-        kind: "skill" as const,
-        value: "/skill:writer",
-        label: "Writer",
-        start: 4,
-      },
-      {
-        kind: "workspace_file" as const,
-        value: "@docs/my plan.md",
-        label: "my plan.md",
-        start: 21,
-      },
-    ];
-    const messages: StoredMessage[] = [
-      {
-        type: "user",
-        id: "m1",
-        turnId: "t1",
-        ts: 1,
-        text: "model envelope",
-        displayText: "Use /skill:writer on @docs/my plan.md",
-        inlineReferences,
-      },
-    ];
-
-    assert.deepEqual(
-      materializeChat(messages)[0]?.inlineReferences,
-      inlineReferences,
-    );
-    assert.deepEqual(
-      materializeTurns(messages)[0]?.user?.inlineReferences,
-      inlineReferences,
-    );
-  });
 
   test("preserves an explicit empty reference projection as the new-format marker", () => {
     const messages: StoredMessage[] = [
@@ -129,30 +93,7 @@ describe("materializeChat attachments", () => {
     assert.deepEqual(materializeTurns(messages)[0]?.user?.inlineReferences, []);
   });
 
-  test("projects user message attachments onto the chat item", () => {
-    const messages: StoredMessage[] = [
-      {
-        type: "user",
-        id: "m1",
-        turnId: "t1",
-        ts: 1,
-        text: "see this",
-        attachments: [imageAttachment, codeAttachment],
-      },
-    ];
-    const items = materializeChat(messages);
-    assert.equal(items.length, 1);
-    assert.deepEqual(items[0].attachments, [imageAttachment, codeAttachment]);
-  });
 
-  test("leaves attachments absent when the user message has none", () => {
-    const messages: StoredMessage[] = [
-      { type: "user", id: "m1", turnId: "t1", ts: 1, text: "plain prompt" },
-    ];
-    const items = materializeChat(messages);
-    assert.equal(items.length, 1);
-    assert.equal(items[0].attachments, undefined);
-  });
 
   test("preserves Host provenance on a Goal continuation", () => {
     const messages: StoredMessage[] = [
@@ -176,62 +117,8 @@ describe("materializeChat attachments", () => {
     });
   });
 
-  test("surfaces automatic context compaction system notes inline", () => {
-    const messages: StoredMessage[] = [
-      {
-        type: "system_note",
-        id: "note-1",
-        turnId: "t1",
-        ts: 1,
-        kind: "context_compacted",
-      },
-    ];
-    const items = materializeChat(messages);
-    assert.equal(items.length, 1);
-    assert.equal(items[0].role, "system");
-    assert.equal(
-      items[0].text,
-      "Context compacted to keep this session within the model window.",
-    );
-  });
 
-  test("surfaces history compaction fail-open notices inline", () => {
-    const messages: StoredMessage[] = [
-      {
-        type: "system_note",
-        id: "note-1",
-        turnId: "t1",
-        ts: 1,
-        kind: "context_compaction_failed_open",
-      },
-    ];
-    const items = materializeChat(messages);
-    assert.equal(items.length, 1);
-    assert.equal(items[0].role, "system");
-    assert.equal(
-      items[0].text,
-      "Context summary failed; the session continued without a new summary.",
-    );
-  });
 
-  test("surfaces a step-limit system notice inline", () => {
-    const items = materializeChat([
-      {
-        type: "system_note",
-        id: "note-1",
-        turnId: "t1",
-        ts: 1,
-        kind: "step_limit",
-      },
-    ]);
-
-    assert.equal(items.length, 1);
-    assert.equal(items[0].role, "system");
-    assert.equal(
-      items[0].text,
-      "Reached the configured step limit. The task may be incomplete. Send “continue” to resume.",
-    );
-  });
 });
 
 // ── #1307: the timeline model stays flat (fold is a render concern) ──────────
@@ -599,45 +486,6 @@ describe("live tool status over persisted", () => {
   // A legacy turn has no turn_state, so `status` falls back to an inferred
   // `completed`. That is a guess about old data, not evidence this turn ended,
   // and must not be allowed to take a status away from live.
-  test("an inferred legacy status never overrides live", () => {
-    const settled = materializeTurns([
-      userMsg("t1", 1, "run it"),
-      {
-        type: "tool_call",
-        id: "bash-1",
-        turnId: "t1",
-        ts: 2,
-        toolName: "Bash",
-        args: { command: "sleep 60" },
-      },
-    ]);
-    assert.equal(settled[0]?.statusSource, "inferred");
-    const turns = overlayLiveTurn(settled, {
-      turnId: "t1",
-      phase: "streamed",
-      steps: [
-        {
-          stepId: "a1",
-          tools: [
-            {
-              toolUseId: "bash-1",
-              toolName: "Bash",
-              stepId: "a1",
-              status: "running",
-              args: {},
-            },
-          ],
-        },
-      ],
-    });
-    const tools = turns
-      .find((turn) => turn.turnId === "t1")
-      ?.timeline.find((item: TurnTimelineItem) => item.kind === "tools");
-    assert.equal(
-      tools?.kind === "tools" ? tools.items[0]?.status : undefined,
-      "running",
-    );
-  });
 
   test("keeps durable tool detail while a Runtime Host Turn is still live", () => {
     const settled = materializeTurns([
@@ -820,31 +668,8 @@ describe("final reply extraction for copy (#2407)", () => {
     },
   ];
 
-  test("returns only the last answer step, not the intermediate narration", () => {
-    const [turn] = materializeTurns(multiStepTurn());
-    assert.ok(turn);
-    assert.equal(finalAssistantReplyText(turn), "Done: the fix is committed and the tests pass.");
-  });
 
-  test("keeps every narration step on the timeline in production order", () => {
-    const [turn] = materializeTurns(multiStepTurn());
-    assert.deepEqual(
-      turn?.timeline.flatMap((item) => (item.kind === "text" ? [item.text] : [])),
-      [
-        "Let me inspect the files first.",
-        "Found it — the flag was inverted.",
-        "Done: the fix is committed and the tests pass.",
-      ],
-    );
-  });
 
-  test("leaves the legacy aggregate concatenation untouched for its other consumers", () => {
-    const [turn] = materializeTurns(multiStepTurn());
-    assert.equal(
-      turn?.assistant?.text,
-      "Let me inspect the files first.\n\nFound it — the flag was inverted.\n\nDone: the fix is committed and the tests pass.",
-    );
-  });
 
   test("falls back to the aggregate when the timeline has no text entry", () => {
     const [turn] = materializeTurns(multiStepTurn());

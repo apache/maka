@@ -1,7 +1,0 @@
-{"id":"legacy-a1b2c3d4e5f6","workspaceRoot":"/Users/fixture/Library/Application Support/Maka/workspaces/default","cwd":"/Users/fixture/work/demo-project","createdAt":1783929889564,"lastUsedAt":1783929891400,"name":"New Chat","isFlagged":false,"labels":[],"isArchived":false,"status":"active","statusUpdatedAt":1783929891400,"hasUnread":false,"backend":"ai-sdk","llmConnectionSlug":"openai-compatible","connectionLocked":true,"model":"demo-model","permissionMode":"ask","schemaVersion":1,"lastMessageAt":1783929891400}
-{"type":"user","id":"msg-user-0001","turnId":"turn-0001","ts":1783929889572,"text":"hi"}
-{"type":"turn_state","id":"msg-turnstate-running","turnId":"turn-0001","ts":1783929889572,"status":"running","partialOutputRetained":false}
-{"type":"assistant","id":"msg-assistant-0001","turnId":"turn-0001","ts":1783929891000,"text":"Hello! How can I help you today?","modelId":"demo-model"}
-{"type":"token_usage","id":"msg-tokenusage-0001","turnId":"turn-0001","ts":1783929891300,"input":5,"output":12,"total":17,"cacheHitInput":0,"cacheMissInput":5,"costUsd":0.0001,"rawFinishReason":"stop","runtimeSteps":1}
-{"type":"turn_state","id":"msg-turnstate-completed","turnId":"turn-0001","ts":1783929891400,"status":"completed","partialOutputRetained":false}
-{"type":"system_note","id":"msg-systemnote-0001","turnId":"turn-0001","ts":1783929891400,"kind":"session_resume"}

@@ -34,9 +34,6 @@ export interface RuntimeNetworkSettings {
   preferIpv4: boolean;
 }
 
-/** @deprecated Use RuntimeNetworkSettings for the runtime network contract. */
-export type NetworkSettings = RuntimeNetworkSettings;
-
 export const PROXY_DEFAULTS: ProxySettings = {
   enabled: false,
   type: 'http',

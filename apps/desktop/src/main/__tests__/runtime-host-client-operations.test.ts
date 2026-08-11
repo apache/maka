@@ -211,6 +211,35 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
   );
 });
 
+test('retries a Session update through transient revision churn', async () => {
+  const responses: unknown[] = [];
+  for (let revision = 10; revision < 14; revision += 1) {
+    responses.push(
+      { kind: 'session', session: session('session-1', revision) },
+      {
+        kind: 'revision_conflict',
+        expectedRevision: revision,
+        actualRevision: revision + 1,
+      },
+    );
+  }
+  responses.push(
+    { kind: 'session', session: session('session-1', 14) },
+    {
+      kind: 'committed',
+      session: session('session-1', 15, { collaborationMode: 'plan' }),
+    },
+  );
+  const { client } = clientWithResponses(responses);
+
+  const updated = await client.updateSessionConfiguration('session-1', {
+    collaborationMode: 'plan',
+  });
+
+  assert.equal(updated.revision, 15);
+  assert.equal(updated.collaborationMode, 'plan');
+});
+
 test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async () => {
   const initial = createDefaultRuntimePolicy();
   const concurrent = {
@@ -292,23 +321,6 @@ test('treats empty configuration patches as read-only lookups', async () => {
   ]);
 });
 
-test('reads the bounded Host execution boundary summary', async () => {
-  const { client, requests } = clientWithResponses([
-    { kind: 'managed', access: 'read_only', revision: 4 },
-  ]);
-
-  assert.deepEqual(await client.readExecutionBoundary('session-1'), {
-    kind: 'managed',
-    access: 'read_only',
-    revision: 4,
-  });
-  assert.deepEqual(requests, [
-    {
-      operation: 'session.execution_boundary.query',
-      input: { sessionId: 'session-1' },
-    },
-  ]);
-});
 
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([
@@ -607,25 +619,6 @@ test('restarts paginated Session traces instead of mixing revisions', async () =
   );
 });
 
-test('fails explicitly when the Host cannot represent a legacy Session', async () => {
-  const { client } = clientWithResponses([
-    {
-      kind: 'session',
-      session: {
-        kind: 'unsupported_legacy_record',
-        id: 'legacy-session',
-        revision: 1,
-        reason: 'not_wire_representable',
-      },
-    },
-  ]);
-
-  await assert.rejects(
-    () => client.getSession('legacy-session'),
-    (error: unknown) =>
-      error instanceof DesktopRuntimeHostClientError && error.code === 'unsupported_session',
-  );
-});
 
 test('restarts Session sidecar reads when a paginated revision changes', async () => {
   const taskRevisionOne = catalogRevision('3');
@@ -817,7 +810,10 @@ function session(
   return {
     id,
     revision,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: id,

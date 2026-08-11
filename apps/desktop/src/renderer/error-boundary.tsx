@@ -8,7 +8,7 @@
 
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import type { UiLocale } from '@maka/core';
-import { AlertTriangle, Check, Clipboard, RotateCw } from '@maka/ui/icons';
+import { ICON_SIZE, AlertTriangle, Check, Clipboard, RotateCw } from '@maka/ui/icons';
 import { Button as UiButton, Card, redactSecrets } from '@maka/ui';
 import { getShellCopy } from './locales/shell-copy.js';
 
@@ -23,14 +23,8 @@ export function formatRendererErrorReport(error: Error, info?: ErrorInfo | null)
     'Maka renderer error report',
     `Captured at: ${new Date().toISOString()}`,
     '',
-    `${error.name}: ${error.message}`,
+    formatRendererErrorDetails(error, info),
   ];
-  if (error.stack) {
-    lines.push('', 'Stack:', error.stack);
-  }
-  if (info?.componentStack) {
-    lines.push('', 'React component stack:', info.componentStack.trim());
-  }
   if (typeof navigator !== 'undefined' && navigator.userAgent) {
     lines.push('', `User agent: ${navigator.userAgent}`);
   }
@@ -86,7 +80,19 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
     const copyRequestId = ++this.copyRequestSeq;
     this.setState({ copyState: 'pending' });
     try {
-      await navigator.clipboard.writeText(formatRendererErrorReport(error, errorInfo));
+      const diagnostics = window.maka?.diagnostics;
+      if (diagnostics) {
+        const result = await diagnostics.copyErrorReport({
+          surface: 'renderer_crash',
+          title: `${error.name}: ${error.message}`,
+          details: formatRendererErrorDetails(error, errorInfo),
+          rendererUserAgent: navigator.userAgent,
+          rendererLocale: navigator.language,
+        });
+        if (!result.ok) throw new Error('Desktop diagnostic clipboard write failed');
+      } else {
+        await navigator.clipboard.writeText(formatRendererErrorReport(error, errorInfo));
+      }
       if (this.isCurrentCopyRequest(copyRequestId, error)) this.setState({ copyState: 'copied' });
     } catch {
       if (this.isCurrentCopyRequest(copyRequestId, error)) this.setState({ copyState: 'failed' });
@@ -115,7 +121,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
             keeps only the icon/copy grid geometry. */}
         <Card variant="red" elevation="high" padding={0} className="maka-error-card">
           <span className="maka-error-icon" aria-hidden="true">
-            <AlertTriangle size={28} />
+            <AlertTriangle size={ICON_SIZE.empty} /> {/* 20 in the 32px plate — the ladder's fill convention */}
           </span>
           <div className="maka-error-copy">
             <h2>{copy.title}</h2>
@@ -139,13 +145,13 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
                 isDisabled={copyPending}
                 aria-busy={copyPending ? 'true' : undefined}
                 onClick={this.handleCopyReport}
-                icon={<CopyIcon size={14} aria-hidden="true" />}
+                icon={<CopyIcon size={ICON_SIZE.control} aria-hidden="true" />}
                 label={copyLabel}
               />
               <UiButton
                 variant="secondary"
                 onClick={this.handleReset}
-                icon={<RotateCw size={14} aria-hidden="true" />}
+                icon={<RotateCw size={ICON_SIZE.control} aria-hidden="true" />}
                 label={copy.retry}
               />
               <UiButton variant="primary" onClick={this.handleReload} label={copy.reload} />
@@ -156,4 +162,13 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
       </div>
     );
   }
+}
+
+function formatRendererErrorDetails(error: Error, info?: ErrorInfo | null): string {
+  const lines = [`${error.name}: ${error.message}`];
+  if (error.stack) lines.push('', 'Stack:', error.stack);
+  if (info?.componentStack) {
+    lines.push('', 'React component stack:', info.componentStack.trim());
+  }
+  return redactSecrets(lines.join('\n'));
 }

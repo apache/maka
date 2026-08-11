@@ -5,12 +5,12 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { connectRuntimeHost } from '@maka/runtime-host/client';
 import {
-  HOST_OPERATION_SPECS,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type EffectivePricingEntry,
-  type OperationKey,
 } from '@maka/runtime-host/protocol';
 import {
+  createUnavailableDomainOperationHandlers,
+  defineInteractiveRuntimeHostComposition,
   RuntimeHostKernel,
   type RuntimeHostComposition,
 } from '@maka/runtime-host/server';
@@ -39,7 +39,7 @@ test('drives the Desktop Pricing adapter through a real Runtime Host connection'
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 10_000,
-      compositionFactory: async () => ({
+      composition: defineInteractiveRuntimeHostComposition(async () => ({
         handlers: handlers({
           'pricing.query': async (input) => {
             if (input.kind === 'continue' && input.revision !== revision) {
@@ -92,7 +92,7 @@ test('drives the Desktop Pricing adapter through a real Runtime Host connection'
         beginDrain() {},
         async recover() {},
         async close() {},
-      }),
+      })),
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
@@ -170,21 +170,10 @@ test('drives the Desktop Pricing adapter through a real Runtime Host connection'
 type TestHandlers = Partial<RuntimeHostComposition['handlers']>;
 
 function handlers(overrides: TestHandlers): RuntimeHostComposition['handlers'] {
-  const unavailable = Object.fromEntries(
-    (Object.keys(HOST_OPERATION_SPECS) as OperationKey[])
-      .filter((operation) => operation !== 'host.status')
-      .map((operation) => [
-        operation,
-        async () => ({
-          ok: false,
-          error: {
-            code: 'operation_unavailable',
-            message: `${operation} is unavailable in the Desktop Pricing adapter fixture`,
-          },
-        }),
-      ]),
-  );
-  return { ...unavailable, ...overrides } as RuntimeHostComposition['handlers'];
+  return {
+    ...createUnavailableDomainOperationHandlers(),
+    ...overrides,
+  } as RuntimeHostComposition['handlers'];
 }
 
 function builtin(modelKey: string, inputUsdPer1M: number): EffectivePricingEntry {

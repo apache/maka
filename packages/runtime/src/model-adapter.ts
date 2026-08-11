@@ -38,6 +38,7 @@ import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.
 import {
   classifyError,
   errorPresentationFromClass,
+  providerFailureSummary,
   providerRetryMetadata,
 } from './provider-error-classification.js';
 import {
@@ -60,6 +61,10 @@ import {
   OPENAI_RESPONSES_LANE_HEADER,
   type OpenAiResponsesTransportState,
 } from './openai-responses-websocket.js';
+import {
+  codexV4aApplyPatchProviderTool,
+  openAiApplyPatchProviderTool,
+} from './openai-apply-patch.js';
 
 /**
  * Build an ai-sdk LanguageModel from a single input object.
@@ -317,7 +322,7 @@ export class ModelAdapter {
           }
         } catch (error) {
           succeeded = false;
-          yield { kind: 'error', failure: normalizeModelFailure(error) };
+          yield { kind: 'error', failure: normalizeProviderFailure(error) };
         } finally {
           if (!continuation.lane) return;
           if (!succeeded) {
@@ -455,7 +460,7 @@ export class ModelAdapter {
   }
 
   normalizeFailure(error: unknown): ModelFailure {
-    return normalizeModelFailure(error);
+    return normalizeProviderFailure(error);
   }
 
   classifyError(error: unknown): string {
@@ -479,10 +484,9 @@ export class ModelAdapter {
       // An upstream that drops the connection mid-answer lands here: it yields
       // no error part and throws nothing, so these are the only signal that it
       // happened. Calling them `end_turn` asserts the model said its piece —
-      // the one thing we know we cannot claim. A benchmark cell recorded
+      // the one thing we know we cannot claim. A recorded run once reached
       // `status: completed` on exactly this shape while its agent was still
-      // mid-task, caught only because the proxy noticed the terminal SSE event
-      // never arrived.
+      // mid-task, caught only because the terminal SSE event never arrived.
       //
       // These are reached when nothing else named the stop: the SDK buckets
       // every reason it does not recognize into `other` too, and
@@ -694,6 +698,7 @@ function translateChunk(
                   providerOptions: openAiChatReasoningFieldProviderOptions(
                     openAiChatReasoningTransportState.reasoningField,
                   ),
+                  providerOptionsOrigin: 'maka_transport' as const,
                 }
               : {}),
         });
@@ -710,6 +715,10 @@ function translateChunk(
           : []),
       ];
     }
+    case 'tool-input-start':
+    case 'tool-input-delta':
+    case 'tool-input-end':
+      return chunk.providerExecuted === true ? [{ kind: 'provider-tool-input' }] : [];
     // Step boundaries (`start-step` / `finish-step`) and the terminal `finish`
     // carry no text/thinking to stream. The backend owns step accounting: it
     // counts and flushes one AssistantMessage per step and rotates the
@@ -774,7 +783,7 @@ function translateChunk(
       return [{ kind: 'tool-call', toolCall }];
     }
     case 'error':
-      return [{ kind: 'error', failure: normalizeModelFailure(chunk.error) }];
+      return [{ kind: 'error', failure: normalizeProviderFailure(chunk.error) }];
     default:
       return [];
   }
@@ -809,6 +818,10 @@ function compileProviderTool(
   tool: NonNullable<import('./tool-runtime.js').MakaTool['providerTool']>,
 ): unknown {
   switch (tool.kind) {
+    case 'openai-apply-patch':
+      return openAiApplyPatchProviderTool;
+    case 'openai-custom-apply-patch':
+      return codexV4aApplyPatchProviderTool;
     case 'openai-web-search':
       return openai.tools.webSearch({
         ...(tool.searchContextSize ? { searchContextSize: tool.searchContextSize } : {}),
@@ -836,6 +849,17 @@ function normalizeModelFailure(error: unknown): ModelFailure {
     ...(retry.retryAfterMs !== undefined ? { retryAfterMs: retry.retryAfterMs } : {}),
     ...(code !== undefined ? { code } : {}),
     message: presentation.message ?? generalizedErrorMessage(error),
+  };
+}
+
+function normalizeProviderFailure(error: unknown): ModelFailure {
+  if (isModelFailure(error)) return error;
+  const summary = providerFailureSummary(error);
+  const failure = normalizeModelFailure(error);
+  return {
+    ...failure,
+    ...(summary?.code !== undefined ? { code: summary.code } : {}),
+    ...(failure.kind === 'unknown' && summary !== undefined ? { message: summary.message } : {}),
   };
 }
 

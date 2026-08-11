@@ -10,7 +10,7 @@ import type {
   ShellRunUpdate,
   ToolResultContent,
 } from '@maka/core';
-import { isActiveShellRunStatus } from '@maka/core';
+import { encodedTerminalInputActionsByteLength, isActiveShellRunStatus } from '@maka/core';
 
 import { shellRunResourceRef, type ShellRunWriteInput } from './shell-run-contract.js';
 import { truncateToolOutput } from './tool-output.js';
@@ -75,11 +75,17 @@ export function ptyControlOperation(
     failed?: boolean;
   },
 ): Extract<ShellRunOperation, { kind: 'pty_control' }> {
+  const terminalInput =
+    input.input !== undefined
+      ? Buffer.byteLength(input.input, 'utf8')
+      : input.actions
+        ? encodedTerminalInputActionsByteLength(input.actions)
+        : undefined;
   return {
     kind: 'pty_control',
     failed: outcome.failed === true,
-    ...(input.input !== undefined
-      ? { input: { bytes: Buffer.byteLength(input.input, 'utf8'), queued: outcome.inputQueued } }
+    ...(terminalInput !== undefined
+      ? { input: { bytes: terminalInput, queued: outcome.inputQueued } }
       : {}),
     ...(input.size
       ? {

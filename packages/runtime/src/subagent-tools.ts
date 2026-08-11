@@ -139,7 +139,9 @@ export function buildSubagentSpawnTool(
           if (!input.profile && !input.subagent_id) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
-              message: 'Provide subagent_id or legacy profile.',
+              message:
+                'No child selector was provided. Call agent_list and pass a returned subagent_id to agent_spawn, ' +
+                `or pass one legacy profile: ${profiles.join(', ')}.`,
             });
             return;
           }
@@ -376,7 +378,7 @@ export function buildSubagentListTool(): MakaTool<
     name: AGENT_LIST_TOOL_NAME,
     displayName: 'Agent List',
     description:
-      'List a compact page of subagents to select. The default selection view returns runnable user-approved subagent_id values first, followed by runnable legacy profiles. Use view=catalog only to diagnose unavailable routes. Child execution history is intentionally excluded; use refs returned by agent_spawn or asynchronous graph work with agent_output.',
+      'List a compact page of subagents to select. The default selection view returns runnable user-approved subagent_id values first, followed by legacy choices with separate agent_id (Graph) and profile (agent_spawn) selectors. Use view=catalog only to diagnose unavailable routes. Child execution history is intentionally excluded; use refs returned by agent_spawn or asynchronous graph work with agent_output.',
     parameters: z
       .object({
         view: z
@@ -395,9 +397,8 @@ export function buildSubagentListTool(): MakaTool<
     categoryHint: 'read',
     nesting: 'direct_only',
     impl: async (input, ctx) => {
-      // Runtime Host supplies this capability to production clients.
-      // A headless embedder can still construct ToolRuntime without it, so
-      // keep the failure explicit at the embedding boundary.
+      // Runtime Host supplies this capability to production clients. Keep the
+      // failure explicit at the embedding boundary.
       if (!ctx.listChildAgents) {
         throw new Error(
           'agent_list is not available in this session, so no agent catalog could be read. ' +
@@ -470,6 +471,7 @@ function projectAgentList(
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
     const definition = candidate as Record<string, unknown>;
     if (
+      typeof definition.id !== 'string' ||
       typeof definition.profile !== 'string' ||
       typeof definition.name !== 'string' ||
       typeof definition.description !== 'string'
@@ -486,6 +488,7 @@ function projectAgentList(
         : undefined;
     return [
       {
+        agent_id: definition.id,
         profile: definition.profile,
         name: boundedCatalogText(definition.name, 128),
         description: boundedCatalogText(definition.description, AGENT_LIST_DESCRIPTION_MAX_CHARS),

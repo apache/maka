@@ -41,7 +41,7 @@ import {
   useToast,
   useUiLocale,
 } from '@maka/ui';
-import { ChevronRight } from '@maka/ui/icons';
+import { ICON_SIZE, ChevronRight, Workflow } from '@maka/ui/icons';
 import { getSubagentSettingsCopy } from '../locales/settings-subagents-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
 import { useSettingsRouteFocus } from './settings-route-focus.js';
@@ -230,6 +230,7 @@ export function SubagentSettingsPage(props: {
         {presets.length === 0 ? (
           // The empty state owns the only call to action on an empty page.
           <EmptyState
+            icon={<Workflow size={ICON_SIZE.empty} />}
             title={copy.section.emptyTitle}
             description={copy.section.emptyDescription}
             actions={(
@@ -287,7 +288,7 @@ export function SubagentSettingsPage(props: {
                     size="sm"
                     label={copy.row.configure(preset.name)}
                     tooltip={copy.row.configure(preset.name)}
-                    icon={<ChevronRight size={16} aria-hidden="true" />}
+                    icon={<ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />}
                     isDisabled={saving}
                     // The focus anchor for the way back.
                     data-subagent-preset={preset.id}

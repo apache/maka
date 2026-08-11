@@ -21,7 +21,6 @@ import {
 } from '@maka/core';
 import {
   Button,
-  IconButton,
   TextInput,
   Selector,
   Switch,
@@ -29,7 +28,7 @@ import {
   useUiLocale,
   Banner,
 } from '@maka/ui';
-import { Activity, BarChart3, Cpu, Database, RefreshCcw, Search } from '@maka/ui/icons';
+import { ICON_SIZE, Activity, BarChart3, Cpu, Database, RefreshCcw, Search } from '@maka/ui/icons';
 import {
   getUsageSettingsCopy,
   type UsageSettingsCopy,
@@ -135,16 +134,17 @@ export function UsageSettingsPage(props: {
               page refresh (one action, one shape everywhere); pinned to the
               row's trailing edge so the time cluster reads as a single
               left-aligned group. */}
-          <IconButton
+          {/* Button rather than IconButton: busy buttons take Astryx isLoading
+              (DESIGN.md §10), which IconButton does not expose. */}
+          <Button
             variant="ghost"
             size="sm"
-            isDisabled={refreshing}
-            aria-busy={refreshing}
-            data-pending={refreshing ? 'true' : undefined}
-            label={refreshing ? copy.refreshingAria : copy.refreshAria}
-            tooltip={refreshing ? copy.refreshingAria : copy.refreshAria}
+            isIconOnly
+            isLoading={refreshing}
+            label={copy.refreshAria}
+            tooltip={copy.refreshAria}
             onClick={() => void refresh()}
-            icon={<RefreshCcw size={15} aria-hidden="true" />}
+            icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
           />
         </div>
 
@@ -323,7 +323,21 @@ function UsageRequestsPanel(props: {
           row.latencyMs ? `${row.latencyMs}ms` : '-',
           usageRequestStatusLabel(row.status, props.copy),
         ])}
-        empty={{ Icon: props.hasRequestFilters ? Search : Activity, title: props.requestEmpty }}
+        empty={{
+          Icon: props.hasRequestFilters ? Search : Activity,
+          title: props.requestEmpty,
+          // Filter empty (DESIGN.md §10): a filter no-match always carries the
+          // clear action — the user is in a state they caused and must exit it.
+          body: props.hasRequestFilters ? props.copy.filteredEmptyHelp : undefined,
+          action: props.hasRequestFilters ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              label={props.copy.clearFilters}
+              onClick={props.onClearFilters}
+            />
+          ) : undefined,
+        }}
       />
     </>
   );
@@ -455,6 +469,8 @@ interface UsageEmpty {
   Icon: typeof Search;
   title: string;
   body?: string;
+  /** Tier-3 single action (DESIGN.md §10) — e.g. a filter empty's clear button. */
+  action?: ReactNode;
 }
 
 function UsageStatsTable(props: {
@@ -468,7 +484,8 @@ function UsageStatsTable(props: {
       <EmptyState
         icon={<props.empty.Icon />}
         title={props.empty.title}
-        description={props.empty.body ?? ''}
+        description={props.empty.body ?? undefined}
+        actions={props.empty.action}
         className="settingsUsageEmpty"
       />
     );

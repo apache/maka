@@ -370,6 +370,8 @@ export interface MakaCuDispatchResult {
 // ---------------------------------------------------------------------------
 export interface MakaCuElement {
   token: string;
+  /** Stable across matched revisions of the same window. */
+  stableId?: number;
   /** `null` for the root; `null` and absent are the same on the wire (§5.2). */
   parentToken: string | null;
   depth: number;
@@ -490,6 +492,22 @@ export interface MakaCuMenu {
   truncated: { elements: boolean; depth: boolean };
 }
 
+export type MakaCuDifferencePresentation = 'no-change' | 'difference' | 'full';
+
+export interface MakaCuDifferenceChange {
+  kind: 'remove' | 'insert' | 'update';
+  path: number[];
+  stableId: number;
+  token?: string;
+}
+
+export interface MakaCuDifference {
+  baseSnapshotId: string;
+  presentation: MakaCuDifferencePresentation;
+  changes: MakaCuDifferenceChange[];
+  removedStableIdRanges: Array<{ start: number; end: number }>;
+}
+
 export interface MakaCuSnapshot {
   snapshotId: string;
   capturedAt: number;
@@ -502,6 +520,7 @@ export interface MakaCuSnapshot {
   obscuringRects: ComputerUseRect[];
   elements: MakaCuElement[];
   truncated: { elements: boolean; depth: boolean };
+  difference?: MakaCuDifference;
   /**
    * §5.8. Present only when the observation asked for it.
    *
@@ -551,6 +570,14 @@ function requireNumber(method: string, value: unknown, what: string): number {
     throw new MakaCuProtocolViolation(method, `${what} is not a finite number`);
   }
   return value;
+}
+
+function requireNonNegativeInteger(method: string, value: unknown, what: string): number {
+  const number = requireNumber(method, value, what);
+  if (!Number.isInteger(number) || number < 0) {
+    throw new MakaCuProtocolViolation(method, `${what} is not a non-negative integer`);
+  }
+  return number;
 }
 
 function requireBoolean(method: string, value: unknown, what: string): boolean {
@@ -683,6 +710,9 @@ export function readElement(method: string, value: unknown): MakaCuElement {
   const placeholder = optionalText(method, element.placeholder, 'element.placeholder');
   return {
     token: requireString(method, element.token, 'element.token'),
+    ...(element.stableId === undefined || element.stableId === null
+      ? {}
+      : { stableId: requireNonNegativeInteger(method, element.stableId, 'element.stableId') }),
     parentToken: requireNullableString(method, element.parentToken, 'element.parentToken'),
     depth: requireNumber(method, element.depth, 'element.depth'),
     role: requireString(method, element.role, 'element.role'),
@@ -807,6 +837,57 @@ export function readSnapshot(method: string, value: unknown): MakaCuSnapshot {
   const appName = optionalText(method, target.appName, 'snapshot.target.appName');
   const title = optionalText(method, target.title, 'snapshot.target.title');
   const displayId = optionalText(method, target.displayId, 'snapshot.target.displayId');
+  const parsedElements = elements.map((element) => readElement(method, element));
+  const stableElements = parsedElements.filter(
+    (element): element is MakaCuElement & { stableId: number } => element.stableId !== undefined,
+  );
+  if (stableElements.length !== 0 && stableElements.length !== parsedElements.length) {
+    throw new MakaCuProtocolViolation(
+      method,
+      'snapshot.elements mixes stable ids with snapshot-local indexes',
+    );
+  }
+  const stableIds = new Set(stableElements.map((element) => element.stableId));
+  if (stableIds.size !== stableElements.length) {
+    throw new MakaCuProtocolViolation(method, 'snapshot.elements contains duplicate stable ids');
+  }
+  const parsedDifference =
+    snapshot.difference === undefined || snapshot.difference === null
+      ? undefined
+      : readDifference(method, snapshot.difference);
+  if (parsedDifference) {
+    if (stableElements.length !== parsedElements.length) {
+      throw new MakaCuProtocolViolation(
+        method,
+        'snapshot.difference is present without stable ids on every element',
+      );
+    }
+    const stableIdByToken = new Map(
+      stableElements.map((element) => [element.token, element.stableId]),
+    );
+    for (const [index, change] of parsedDifference.changes.entries()) {
+      if (change.kind === 'remove') continue;
+      const currentStableId = change.token ? stableIdByToken.get(change.token) : undefined;
+      if (currentStableId !== change.stableId) {
+        throw new MakaCuProtocolViolation(
+          method,
+          `snapshot.difference.changes[${index}] does not name its current element`,
+        );
+      }
+    }
+    for (const [index, range] of parsedDifference.removedStableIdRanges.entries()) {
+      if (
+        stableElements.some(
+          (element) => element.stableId >= range.start && element.stableId <= range.end,
+        )
+      ) {
+        throw new MakaCuProtocolViolation(
+          method,
+          `snapshot.difference.removedStableIdRanges[${index}] contains a current element`,
+        );
+      }
+    }
+  }
   return {
     snapshotId: requireString(method, snapshot.snapshotId, 'snapshot.snapshotId'),
     capturedAt: requireNumber(method, snapshot.capturedAt, 'snapshot.capturedAt'),
@@ -842,16 +923,131 @@ export function readSnapshot(method: string, value: unknown): MakaCuSnapshot {
     obscuringRects: obscuring.map((rect, index) =>
       requireRect(method, rect, `snapshot.obscuringRects[${index}]`),
     ),
-    elements: elements.map((element) => readElement(method, element)),
+    elements: parsedElements,
     truncated: {
       elements: requireBoolean(method, truncated.elements, 'snapshot.truncated.elements'),
       depth: requireBoolean(method, truncated.depth, 'snapshot.truncated.depth'),
     },
+    ...(parsedDifference ? { difference: parsedDifference } : {}),
     // §5.8. Absent unless the observation asked for it, so absence is a
     // question that was not put rather than a menu that does not exist.
     ...(snapshot.menu === undefined || snapshot.menu === null
       ? {}
       : { menu: readMenu(method, snapshot.menu) }),
+  };
+}
+
+function readDifference(method: string, value: unknown): MakaCuDifference {
+  const difference = requireRecord(method, value, 'snapshot.difference');
+  const changes = requireArray(method, difference.changes, 'snapshot.difference.changes');
+  const ranges = requireArray(
+    method,
+    difference.removedStableIdRanges,
+    'snapshot.difference.removedStableIdRanges',
+  );
+  const presentation = requireMember(
+    method,
+    difference.presentation,
+    ['no-change', 'difference', 'full'] as const,
+    'snapshot.difference.presentation',
+  );
+  const parsedChanges = changes.map((value, index) => {
+    const change = requireRecord(method, value, `snapshot.difference.changes[${index}]`);
+    const path = requireArray(method, change.path, `snapshot.difference.changes[${index}].path`);
+    const token = optionalText(method, change.token, `snapshot.difference.changes[${index}].token`);
+    const kind = requireMember(
+      method,
+      change.kind,
+      ['remove', 'insert', 'update'] as const,
+      `snapshot.difference.changes[${index}].kind`,
+    );
+    const parsedPath = path.map((part, pathIndex) =>
+      requireNonNegativeInteger(
+        method,
+        part,
+        `snapshot.difference.changes[${index}].path[${pathIndex}]`,
+      ),
+    );
+    if (parsedPath.length === 0) {
+      throw new MakaCuProtocolViolation(
+        method,
+        `snapshot.difference.changes[${index}].path is empty`,
+      );
+    }
+    if (kind === 'remove' && token !== undefined) {
+      throw new MakaCuProtocolViolation(
+        method,
+        `snapshot.difference.changes[${index}].token is present for a removal`,
+      );
+    }
+    if (kind !== 'remove' && token === undefined) {
+      throw new MakaCuProtocolViolation(
+        method,
+        `snapshot.difference.changes[${index}].token is absent for ${kind}`,
+      );
+    }
+    return {
+      kind,
+      path: parsedPath,
+      stableId: requireNonNegativeInteger(
+        method,
+        change.stableId,
+        `snapshot.difference.changes[${index}].stableId`,
+      ),
+      ...(token === undefined ? {} : { token }),
+    };
+  });
+  const parsedRanges = ranges.map((value, index) => {
+    const range = requireRecord(
+      method,
+      value,
+      `snapshot.difference.removedStableIdRanges[${index}]`,
+    );
+    const start = requireNonNegativeInteger(
+      method,
+      range.start,
+      `snapshot.difference.removedStableIdRanges[${index}].start`,
+    );
+    const end = requireNonNegativeInteger(
+      method,
+      range.end,
+      `snapshot.difference.removedStableIdRanges[${index}].end`,
+    );
+    if (end < start) {
+      throw new MakaCuProtocolViolation(
+        method,
+        `snapshot.difference.removedStableIdRanges[${index}] is reversed`,
+      );
+    }
+    return { start, end };
+  });
+  if (presentation === 'no-change' && (parsedChanges.length !== 0 || parsedRanges.length !== 0)) {
+    throw new MakaCuProtocolViolation(
+      method,
+      'snapshot.difference no-change presentation carries changes',
+    );
+  }
+  if (presentation === 'difference' && parsedChanges.length === 0 && parsedRanges.length === 0) {
+    throw new MakaCuProtocolViolation(
+      method,
+      'snapshot.difference difference presentation is empty',
+    );
+  }
+  if (presentation === 'full' && parsedChanges.length !== 0) {
+    throw new MakaCuProtocolViolation(
+      method,
+      'snapshot.difference full presentation carries element changes',
+    );
+  }
+  return {
+    baseSnapshotId: requireString(
+      method,
+      difference.baseSnapshotId,
+      'snapshot.difference.baseSnapshotId',
+    ),
+    presentation,
+    changes: parsedChanges,
+    removedStableIdRanges: parsedRanges,
   };
 }
 

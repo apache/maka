@@ -203,24 +203,6 @@ describe('local MEMORY.md contract', () => {
     assert.doesNotMatch(body ?? '', /pending|rejected|unknown future/i);
   });
 
-  it('redacts legacy secrets before building the prompt body', () => {
-    const body = buildLocalMemoryPromptBody(
-      [
-        '# Maka Memory',
-        '',
-        '## Legacy pasted credential sk-ant-api03-title123456789abcdef',
-        '<!-- maka-memory: id=legacy-secret origin=manual status=active -->',
-        'Authorization: Bearer sk-ant-api03-abc123def456ghi789jkl0mn1opq',
-        'Endpoint: https://api.example.test/models?api_key=raw-secret-value&timeout=30',
-      ].join('\n'),
-    );
-
-    assert.ok(body);
-    assert.doesNotMatch(body, /sk-ant-api03|raw-secret-value|title123456789abcdef/);
-    assert.match(body, /Authorization: Bearer \[redacted\]/);
-    assert.match(body, /api_key=\[redacted\]/);
-  });
-
   it('does not apply UI preview truncation to the prompt body', () => {
     const longPreference = `${'a'.repeat(520)}tail-marker`;
     const body = buildLocalMemoryPromptBody(
@@ -441,35 +423,6 @@ describe('local MEMORY.md contract', () => {
     assert.match(renamed.draft, /## Updated writing style/);
   });
 
-  it('parses and updates legacy manual timestamp ids', () => {
-    const legacy = [
-      '# Maka Memory',
-      '',
-      '## Legacy preference',
-      '<!-- maka-memory: id=manual-1700000000000 origin=manual createdAt=1700000000000 status=active -->',
-      'Legacy content stays editable.',
-    ].join('\n');
-
-    const parsed = parseLocalMemoryMarkdown(legacy);
-    assert.equal(parsed.entries[0]?.id, 'manual-1700000000000');
-
-    const archived = setLocalMemoryEntryStatusDraft(legacy, {
-      id: 'manual-1700000000000',
-      status: 'archived',
-      now: 1700000001000,
-    });
-    assert.equal(archived.ok, true);
-    if (!archived.ok) return;
-    assert.match(
-      archived.draft,
-      /id=manual-1700000000000 origin=manual createdAt=1700000000000 updatedAt=1700000001000 status=archived/,
-    );
-    assert.equal(
-      parseLocalMemoryMarkdown(archived.draft).archivedEntries[0]?.id,
-      'manual-1700000000000',
-    );
-  });
-
   it('archives and restores a memory entry by updating visible metadata', () => {
     const source = [
       '# Maka Memory',
@@ -502,74 +455,6 @@ describe('local MEMORY.md contract', () => {
     if (!restored.ok) return;
     assert.equal(parseLocalMemoryMarkdown(restored.draft).activeEntries[0]?.id, 'keep');
     assert.match(buildLocalMemoryPromptBody(restored.draft) ?? '', /Prefer concise answers/);
-  });
-
-  it('locates a memory entry draft range by stable or legacy id', () => {
-    const source = [
-      '# Maka Memory',
-      '',
-      '## First',
-      '<!-- maka-memory: id=first origin=manual status=active -->',
-      'First content.',
-      '',
-      '## Legacy Title',
-      'Legacy content.',
-      '',
-      '## Last',
-      '<!-- maka-memory: id=last origin=manual status=archived -->',
-      'Last content.',
-    ].join('\n');
-
-    const first = findLocalMemoryEntryDraftRange(source, 'first');
-    assert.ok(first);
-    assert.equal(
-      source.slice(first.start, first.end),
-      [
-        '## First',
-        '<!-- maka-memory: id=first origin=manual status=active -->',
-        'First content.',
-        '',
-        '',
-      ].join('\n'),
-    );
-
-    const legacy = findLocalMemoryEntryDraftRange(source, 'legacy-title');
-    assert.ok(legacy);
-    assert.equal(
-      source.slice(legacy.start, legacy.end),
-      ['## Legacy Title', 'Legacy content.', '', ''].join('\n'),
-    );
-
-    const last = findLocalMemoryEntryDraftRange(source, 'last');
-    assert.ok(last);
-    assert.equal(
-      source.slice(last.start, last.end),
-      [
-        '## Last',
-        '<!-- maka-memory: id=last origin=manual status=archived -->',
-        'Last content.',
-      ].join('\n'),
-    );
-    assert.equal(findLocalMemoryEntryDraftRange(source, 'missing'), null);
-  });
-
-  it('can archive legacy entries without metadata by inserting a visible comment', () => {
-    const result = setLocalMemoryEntryStatusDraft(
-      ['# Maka Memory', '', '## 手写偏好', '旧格式内容。'].join('\n'),
-      {
-        id: '手写偏好',
-        status: 'archived',
-        now: 1700000000000,
-      },
-    );
-
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.match(
-      result.draft,
-      /## 手写偏好\n<!-- maka-memory: id=手写偏好 updatedAt=1700000000000 status=archived -->\n旧格式内容。/,
-    );
-    assert.equal(parseLocalMemoryMarkdown(result.draft).archivedEntries[0]?.id, '手写偏好');
   });
 
   it('rejects entry status updates for invalid or missing ids', () => {

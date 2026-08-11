@@ -75,15 +75,4 @@ describe('long-term memory contract', () => {
     assert.equal(isMemoryKeyType('code'), true);
     assert.equal(isMemoryKeyType('keyword'), false);
   });
-
-  test('normalizes long-term memory content without the legacy Memory module', () => {
-    assert.deepEqual(normalizeLongTermMemoryContent('  concise\u0000answer\u200b  '), {
-      ok: true,
-      value: 'concise answer',
-    });
-    assert.equal(normalizeLongTermMemoryContent('   ').ok, false);
-    assert.equal(normalizeLongTermMemoryContent(`lone\uD800surrogate`).ok, false);
-    assert.equal(normalizeLongTermMemoryContent('💾'.repeat(2_000)).ok, true);
-    assert.equal(normalizeLongTermMemoryContent('💾'.repeat(2_001)).ok, false);
-  });
 });

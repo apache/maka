@@ -122,10 +122,7 @@ async function gatherRuntimeHostConfig(
   const locators = selected.has('credentials')
     ? exportLocators(catalog?.connections ?? [])
     : [];
-  const exported =
-    locators.length > 0
-      ? await deps.client.exportConfigurationCredentials({ locators })
-      : { credentials: [] };
+  const exported = await exportConfigurationCredentials(deps.client, locators);
   const secrets = new Map(
     exported.credentials.map((entry) => [locatorKey(entry.locator), entry.secret]),
   );
@@ -146,6 +143,23 @@ async function gatherRuntimeHostConfig(
     data.memory = await readRuntimeHostMemoryDocument(deps.client, 'memory');
   }
   return buildConfigBundle({ appVersion: deps.appVersion, data });
+}
+
+async function exportConfigurationCredentials(
+  client: DesktopRuntimeHostClient,
+  locators: readonly CredentialLocator[],
+) {
+  const credentials: Array<{ locator: CredentialLocator; secret: string }> = [];
+  for (const locator of locators) {
+    const exported = await client.exportConfigurationCredentials({ locator });
+    if (exported.credential) {
+      credentials.push({
+        locator: exported.credential.locator,
+        secret: Buffer.from(exported.credential.secretBase64, 'base64').toString('utf8'),
+      });
+    }
+  }
+  return { credentials };
 }
 
 function runtimeHostTransferDeps(
@@ -204,6 +218,7 @@ export async function saveConnection(
         // must CLEAR, not inherit — the update contract's "absent means
         // untouched" would otherwise resurrect the old profiles.
         relayModelProfiles: connection.relayModelProfiles ?? null,
+        requestBodyOverlay: connection.requestBodyOverlay ?? null,
       },
     );
     if (updated.kind !== 'committed') {
@@ -219,6 +234,9 @@ export async function saveConnection(
       enabled: connection.enabled,
       enabledModelIds: [...(connection.enabledModelIds ?? [])],
       ...(importedProfiles === undefined ? {} : { relayModelProfiles: importedProfiles }),
+      ...(connection.requestBodyOverlay === undefined
+        ? {}
+        : { requestBodyOverlay: connection.requestBodyOverlay }),
     });
     if (created.kind !== 'committed') {
       throw new Error(`Unable to create imported Connection: ${created.kind}`);
@@ -240,7 +258,14 @@ async function saveConnectionCredential(
   const catalog = await client.loadConnectionCatalog();
   const connection = catalog.connections.find((item) => item.slug === slug);
   if (!connection) throw new Error(`Imported Connection not found: ${slug}`);
-  const locator = connectionCredentialLocator(connection);
+  const locator =
+    kind === 'request_headers'
+      ? ({
+          scope: 'connection',
+          connectionId: connection.connectionId,
+          kind: 'request_headers',
+        } as const)
+      : connectionCredentialLocator(connection);
   if (!locator || locator.kind !== kind) return;
   const current = await client.queryCredential(locator);
   const saved = await client.setCredential({
@@ -261,7 +286,12 @@ function exportLocators(
   return [
     ...connections.flatMap((connection) => {
       const locator = connectionCredentialLocator(connection);
-      return locator ? [locator] : [];
+      const requestHeaders = {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'request_headers',
+      } as const;
+      return locator ? [locator, requestHeaders] : [requestHeaders];
     }),
     { scope: 'network_proxy', kind: 'password' },
     { scope: 'web_search', provider: 'tavily', kind: 'api_key' },
@@ -275,9 +305,18 @@ function connectionCredentials(
   return connections.flatMap((connection) => {
     const locator = connectionCredentialLocator(connection);
     const secret = locator ? secrets.get(locatorKey(locator)) : undefined;
-    return locator && secret
-      ? [{ slug: connection.slug, kind: locator.kind, value: secret }]
-      : [];
+    const requestHeadersLocator = {
+      scope: 'connection',
+      connectionId: connection.connectionId,
+      kind: 'request_headers',
+    } as const;
+    const requestHeaders = secrets.get(locatorKey(requestHeadersLocator));
+    return [
+      ...(locator && secret ? [{ slug: connection.slug, kind: locator.kind, value: secret }] : []),
+      ...(requestHeaders
+        ? [{ slug: connection.slug, kind: 'request_headers' as const, value: requestHeaders }]
+        : []),
+    ];
   });
 }
 

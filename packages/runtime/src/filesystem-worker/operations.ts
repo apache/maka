@@ -2,14 +2,24 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
-import { isPathInside, realpathAllowMissing } from '../path-containment.js';
+import {
+  isPathInside,
+  realpathAllowMissing,
+  resolveCanonicalDirectoryEntryTarget,
+} from '../path-containment.js';
 import { sandboxBoundaryExpansionAllowsPath } from '@maka/core';
+import {
+  ApplyPatchRejectedError,
+  createPatchedFile,
+  updatePatchedFile,
+} from '../apply-patch-file.js';
 
 import { computeEditedSource } from '../edit-replace.js';
 import { createUnifiedDiff } from '../unified-diff.js';
 import { isSupportedImagePath, readWorkspaceImage } from '../image-file.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
+  operationUsesDirectoryEntry,
   type FilesystemWorkerErrorCode,
   type FilesystemWorkerOperation,
   type FilesystemWorkerRequest,
@@ -50,7 +60,12 @@ export async function executeFilesystemWorkerRequest(
   dependencies: FilesystemWorkerOperationDependencies = {},
 ): Promise<FilesystemWorkerResponse> {
   try {
-    await assertTargetUnchanged(request.operation.path, request.expectedTarget);
+    await assertTargetUnchanged(
+      request.operation.cwd,
+      request.operation.path,
+      request.expectedTarget,
+      operationUsesDirectoryEntry(request.operation),
+    );
     return {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
       requestId: request.requestId,
@@ -139,6 +154,28 @@ export async function executeFilesystemOperation(
         bytes: Buffer.byteLength(operation.content, 'utf8'),
         ...(diff !== undefined ? { diff } : {}),
       };
+    }
+    case 'apply_patch': {
+      if (operation.action !== 'update') {
+        const path = await resolveDirectoryEntryAllowed(
+          operation.cwd,
+          operation.path,
+          operation.action === 'create' ? 'ApplyPatch create' : 'ApplyPatch delete',
+          operationBoundary,
+        );
+        if (operation.action === 'create') await createPatchedFile(path, operation.diff);
+        else await fs.unlink(path);
+        return { kind: 'apply_patch', ok: true, path };
+      }
+      const path = await resolveExistingAllowed(
+        operation.cwd,
+        operation.path,
+        'ApplyPatch update',
+        'write',
+        operationBoundary,
+      );
+      await updatePatchedFile(path, operation.diff);
+      return { kind: 'apply_patch', ok: true, path };
     }
     case 'edit': {
       const path = await resolveExistingAllowed(
@@ -307,6 +344,9 @@ function sortKeysDeep(value: unknown): unknown {
 
 function normalizeOperationError(error: unknown): FilesystemOperationError {
   if (error instanceof FilesystemOperationError) return error;
+  if (error instanceof ApplyPatchRejectedError) {
+    return operationError('edit_conflict', error.message);
+  }
   const code = nodeErrorCode(error);
   if (code === 'ENOENT' || code === 'ENOTDIR')
     return operationError('not_found', 'The requested path was not found.');
@@ -316,11 +356,17 @@ function normalizeOperationError(error: unknown): FilesystemOperationError {
 }
 
 async function assertTargetUnchanged(
+  cwd: string,
   path: string,
   expected: FilesystemWorkerTarget,
+  noFollowFinalSymlink = false,
 ): Promise<void> {
-  const enforcementPath = await realpathAllowMissing(path);
-  const targetType = await targetTypeOf(enforcementPath);
+  const enforcementPath = noFollowFinalSymlink
+    ? (await resolveCanonicalDirectoryEntryTarget(cwd, path)).path
+    : await realpathAllowMissing(path);
+  const targetType = noFollowFinalSymlink
+    ? await lstatTargetTypeOf(enforcementPath)
+    : await targetTypeOf(enforcementPath);
   if (enforcementPath !== expected.enforcementPath || targetType !== expected.targetType) {
     throw operationError(
       'path_changed',
@@ -358,6 +404,17 @@ async function resolveWritableAllowed(
     );
   }
   return followed;
+}
+
+async function resolveDirectoryEntryAllowed(
+  cwd: string,
+  inputPath: string,
+  label: string,
+  permission: FilesystemWorkerRequest['operationBoundary'],
+): Promise<string> {
+  const target = await resolveCanonicalDirectoryEntryTarget(cwd, inputPath);
+  assertAllowed(target.root, target.path, label, 'write', permission);
+  return target.path;
 }
 
 async function resolveExistingAllowed(
@@ -428,6 +485,19 @@ function assertContainedGlobPattern(pattern: string): void {
 async function targetTypeOf(path: string): Promise<FilesystemWorkerTarget['targetType']> {
   try {
     const metadata = await fs.stat(path);
+    if (metadata.isFile()) return 'file';
+    if (metadata.isDirectory()) return 'directory';
+    return 'other';
+  } catch (error) {
+    if (nodeErrorCode(error) === 'ENOENT') return 'missing';
+    throw error;
+  }
+}
+
+async function lstatTargetTypeOf(path: string): Promise<FilesystemWorkerTarget['targetType']> {
+  try {
+    const metadata = await fs.lstat(path);
+    if (metadata.isSymbolicLink()) return 'symlink';
     if (metadata.isFile()) return 'file';
     if (metadata.isDirectory()) return 'directory';
     return 'other';

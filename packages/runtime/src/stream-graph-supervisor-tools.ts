@@ -69,7 +69,7 @@ const addWorkSchema = z.preprocess(
       agent_id: identitySchema
         .optional()
         .describe(
-          'Legacy built-in agent id for new graph work (for example "implementation"). Prefer subagent_id from agent_list.',
+          'Legacy built-in agent id for new graph work. Use the exact agent_id from agent_list, not its profile. Prefer subagent_id when available.',
         ),
       subagent_id: identitySchema
         .optional()

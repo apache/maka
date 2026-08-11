@@ -28,7 +28,6 @@ import {
 } from '@maka/core/runtime-policy';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import {
-  createHeadlessRootLease,
   resolveStorageRoot,
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
@@ -46,76 +45,59 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe('runtime policy stores', () => {
-  test('upgrades a version-one policy with an empty canonical subagent catalog', async () => {
-    await withInteractiveOwner(async ({ root, stores }) => {
-      const { subagents: _subagents, ...legacyPolicy } = createDefaultRuntimePolicy();
-      await writeFile(
-        join(root, 'runtime-policy.json'),
-        `${JSON.stringify({ schemaVersion: 1, revision: 3, policy: legacyPolicy })}\n`,
-      );
-
-      const snapshot = await stores.runtimePolicy.getSnapshot();
-      assert.equal(snapshot.revision, 3);
-      assert.deepEqual(snapshot.policy.subagents, { presets: [] });
-      const committed = await stores.runtimePolicy.mutate({
-        expectedRevision: 3,
-        operation: { kind: 'set_subagents', value: { presets: [] } },
-      });
-      assert.equal(committed.kind, 'committed');
-      const persisted = JSON.parse(await readFile(join(root, 'runtime-policy.json'), 'utf8')) as {
-        schemaVersion: number;
-      };
-      assert.equal(persisted.schemaVersion, 2);
-    });
-  });
-
-  test('commits an agent settings patch as one canonical policy revision', async () => {
-    await withInteractiveOwner(async ({ stores }) => {
-      const result = await stores.runtimePolicy.mutate({
-        expectedRevision: 0,
-        operation: {
-          kind: 'patch_agent_settings',
-          value: {
-            personalization: { displayName: 'Maka' },
-            memory: { agentReadEnabled: true },
-            privacy: { incognitoActive: true },
-            webSearch: { enabled: true },
-          },
-        },
-      });
-
-      assert.equal(result.kind, 'committed');
-      if (result.kind !== 'committed') return;
-      assert.equal(result.snapshot.revision, 1);
-      assert.deepEqual(result.snapshot.policy.personalization, {
-        displayName: 'Maka',
-        assistantTone: '',
-      });
-      assert.deepEqual(result.snapshot.policy.memory, {
-        enabled: true,
-        agentReadEnabled: true,
-      });
-      assert.equal(result.snapshot.policy.privacy.incognitoActive, true);
-      assert.deepEqual(result.snapshot.policy.webSearch, {
-        enabled: true,
-        defaultProvider: 'model',
-      });
-    });
-  });
-
-  test('seeds the canonical inventory for fallback-only providers', async () => {
+  test('persists extra request bodies and resolves custom headers as secret execution material', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(stores, 0, {
-        ...connectionDraft('opencode-free', 'opencode-free', 'OpenCode Free'),
-        enabledModelIds: ['big-pickle'],
+        ...connectionDraft('customized-openai', 'openai', 'Customized OpenAI'),
+        requestBodyOverlay: { provider: { order: ['primary'] } },
       });
-
+      await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'api_key'),
+        expected: null,
+        secret: 'provider-secret',
+      });
       assert.deepEqual(
-        connection.models,
-        PROVIDER_DEFAULTS['opencode-free'].fallbackModels.map((id) => ({ id })),
+        await stores.operations.replaceConnectionRequestHeaders(connection.connectionId, [
+          { name: 'X-Tenant', value: 'tenant-a' },
+        ]),
+        { kind: 'committed', names: ['X-Tenant'] },
       );
-      assert.equal(connection.modelSource, 'fallback');
-      assert.equal(connection.modelsFetchedAt, 0);
+      assert.deepEqual(
+        await stores.operations.replaceConnectionRequestHeaders(connection.connectionId, [
+          { name: 'x-tenant' },
+          { name: 'X-Title', value: 'Maka' },
+        ]),
+        { kind: 'committed', names: ['x-tenant', 'X-Title'] },
+      );
+      assert.deepEqual(
+        await stores.operations.getConnectionRequestHeaders(connection.connectionId),
+        { names: ['x-tenant', 'X-Title'] },
+      );
+
+      const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
+      assert.equal(resolved.kind, 'ready');
+      if (resolved.kind !== 'ready') return;
+      assert.deepEqual(resolved.connection.requestBodyOverlay, {
+        provider: { order: ['primary'] },
+      });
+      assert.equal(
+        resolved.secretMaterial.requestHeaders?.secret,
+        JSON.stringify({ 'x-tenant': 'tenant-a', 'X-Title': 'Maka' }),
+      );
+
+      const updated = await stores.connectionCatalog.update({
+        expected: connectionBasis(resolved.connection),
+        changes: {
+          name: resolved.connection.name,
+          enabled: resolved.connection.enabled,
+          enabledModelIds: resolved.connection.enabledModelIds,
+          requestBodyOverlay: null,
+        },
+      });
+      assert.equal(updated.kind, 'committed');
+      if (updated.kind === 'committed') {
+        assert.equal(updated.snapshot.connections[0]?.requestBodyOverlay, undefined);
+      }
     });
   });
 
@@ -277,6 +259,43 @@ describe('runtime policy stores', () => {
       assert.equal(allDisabled.kind, 'committed');
       if (allDisabled.kind !== 'committed') return;
       assert.equal(allDisabled.snapshot.connections[0]?.relayModelProfiles, undefined);
+    });
+  });
+
+  // The migrating half of this behaviour is covered in @maka/core: seeding an
+  // OAuth credential for the provider that declares aliases is refused here,
+  // since the vault only accepts client-supplied OAuth for GitHub Copilot.
+  test('a relay keeps its own ids opaque through a model refresh', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      // Same ids, different provider. A relay may serve `claude-*` names as its
+      // own identifiers, so nothing here may be rewritten on Anthropic's behalf.
+      const connection = await createConnection(stores, 0, {
+        ...connectionDraft('alias-relay', 'openai-compatible', 'Alias Relay'),
+        baseUrl: 'https://relay.example/v1',
+        enabledModelIds: ['claude-haiku-4-5-20251001'],
+        relayModelProfiles: { 'claude-haiku-4-5-20251001': { vision: true } },
+      });
+
+      const credential = await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'api_key'),
+        expected: null,
+        secret: 'sk-relay',
+      });
+      assert.equal(credential.kind, 'committed');
+
+      const fetch = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(fetch.kind, 'ready');
+      if (fetch.kind !== 'ready') return;
+
+      const discovered = await stores.operations.completeModelFetch(fetch.ticket, {
+        models: [{ id: 'claude-opus-5' }, { id: 'claude-haiku-4-5' }],
+        source: 'fetched',
+        fetchedAt: 1_800_000_000_000,
+      });
+      assert.equal(discovered.kind, 'committed');
+      if (discovered.kind !== 'committed') return;
+      // Repaired against the live list like any other id, not migrated.
+      assert.deepEqual(discovered.snapshot.connections[0]?.enabledModelIds, ['claude-opus-5']);
     });
   });
 
@@ -1681,7 +1700,7 @@ describe('runtime policy stores', () => {
     });
   });
 
-  test('commits a connection test when a proxy bypass pattern moves between equivalent lists', async () => {
+  test('commits effects when proxy representation or GET-irrelevant body settings change', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(
         stores,
@@ -1748,6 +1767,31 @@ describe('runtime policy stores', () => {
         status: 'verified',
         checkedAt: '2026-07-29T12:01:00.000Z',
       });
+
+      const current = completed.snapshot.connections[0]!;
+      const modelFetch = await stores.operations.beginModelFetch(current.connectionId);
+      assert.equal(modelFetch.kind, 'ready');
+      if (modelFetch.kind !== 'ready') return;
+      const bodyUpdate = await stores.connectionCatalog.update({
+        expected: connectionBasis(current),
+        changes: {
+          name: current.name,
+          enabled: current.enabled,
+          enabledModelIds: current.enabledModelIds,
+          requestBodyOverlay: { provider: { only: ['deepseek'] } },
+        },
+      });
+      assert.equal(bodyUpdate.kind, 'committed');
+      assert.equal(
+        (
+          await stores.operations.completeModelFetch(modelFetch.ticket, {
+            models: [{ id: 'gpt-5' }],
+            source: 'fetched',
+            fetchedAt: 2,
+          })
+        ).kind,
+        'committed',
+      );
     });
   });
 
@@ -2153,17 +2197,6 @@ describe('runtime policy stores', () => {
       assert.deepEqual(await stores.operations.resolveWebSearchExecution(), {
         kind: 'privacy_mode',
       });
-    });
-  });
-
-  test('resolves WebFetch independently of the WebSearch feature gate', async () => {
-    await withInteractiveOwner(async ({ stores }) => {
-      const resolved = await stores.operations.resolveWebFetchExecution();
-
-      assert.equal(resolved.kind, 'ready');
-      if (resolved.kind !== 'ready') return;
-      assert.equal(resolved.networkProxy.enabled, false);
-      assert.deepEqual(resolved.secretMaterial, {});
     });
   });
 
@@ -2626,23 +2659,12 @@ describe('runtime policy stores', () => {
     });
   });
 
-  test('rejects headless leases, forged facades, and operations after interactive lease close', async () => {
-    await withTempDir(async (base) => {
-      const headlessRoot = join(base, 'headless');
-      const headless = await resolveStorageRoot({ path: headlessRoot, kind: 'headless' });
-      const before = await snapshotRoot(headlessRoot);
-      await assert.rejects(
-        () =>
-          openInteractiveRuntimePolicyStoresForWrite(
-            createHeadlessRootLease(headless, 'write') as unknown as StorageRootLease<
-              'interactive',
-              'write'
-            >,
-          ),
-        isInvalidLease,
-      );
-      assert.deepEqual(await snapshotRoot(headlessRoot), before);
-    });
+  test('rejects forged leases, forged facades, and operations after interactive lease close', async () => {
+    await assert.rejects(
+      () =>
+        openInteractiveRuntimePolicyStoresForWrite({} as StorageRootLease<'interactive', 'write'>),
+      isInvalidLease,
+    );
 
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -2718,7 +2740,7 @@ function connectionBasis(connection: ConnectionCatalogEntry): ConnectionVersionB
 
 function connectionCredential(
   connection: ConnectionCatalogEntry,
-  kind: 'api_key' | 'oauth_token',
+  kind: 'api_key' | 'oauth_token' | 'request_headers',
 ): Extract<CredentialLocator, { scope: 'connection' }> {
   return { scope: 'connection', connectionId: connection.connectionId, kind };
 }

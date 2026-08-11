@@ -65,6 +65,10 @@
 .settingsWebSearchResult a:hover {
     text-decoration: underline;
   }
+
+.settingsWebSearchResult a:focus-visible {
+    text-decoration: underline;
+  }
 .settingsWebSearchResult small {
     font: var(--maka-text-supporting);
     color: var(--muted-foreground);

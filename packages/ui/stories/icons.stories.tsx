@@ -17,8 +17,20 @@ interface IconEntry {
   Comp: ElementType<{ size?: number | string; strokeWidth?: number | string; 'aria-hidden'?: boolean }>;
 }
 
+// The icon seam also exports shared metadata such as ICON_SIZE. Keep the story
+// self-updating without assuming every runtime export can be rendered.
+function isIconComponent(value: unknown): value is IconEntry['Comp'] {
+  return (
+    typeof value === 'function' ||
+    (typeof value === 'object' &&
+      value !== null &&
+      'render' in value &&
+      typeof value.render === 'function')
+  );
+}
+
 const LUCIDE_ICONS: IconEntry[] = Object.entries(Icons)
-  .map(([name, value]) => ({ name, Comp: value as IconEntry['Comp'] }))
+  .flatMap(([name, value]) => (isIconComponent(value) ? [{ name, Comp: value }] : []))
   .sort((a, b) => a.name.localeCompare(b.name));
 
 // Derived from BOT_BRAND, the registry BotBrandLogo itself reads. A hand-kept
@@ -50,7 +62,7 @@ export const LucideIcons: Story = {
               gap: 6,
               padding: 10,
               borderRadius: 'var(--radius-surface)',
-              boxShadow: 'var(--shadow-minimal-flat)',
+              boxShadow: 'var(--ring-soft)',
               placeItems: 'center',
               textAlign: 'center',
             }}
@@ -82,7 +94,7 @@ export const BotBrandIcons: Story = {
               gap: 6,
               padding: 12,
               borderRadius: 'var(--radius-surface)',
-              boxShadow: 'var(--shadow-minimal-flat)',
+              boxShadow: 'var(--ring-soft)',
               placeItems: 'center',
               textAlign: 'center',
             }}

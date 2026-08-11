@@ -1392,7 +1392,7 @@ via `deriveTurnLineageMap()`（PR109d）。
 ### 9.10 Sources / Skills / Automations 可见系统（@kenji item 5）
 
 Maka 当前第一步实现为 core contract + existing module surface：skills 仍来自
-文件系统扫描结果（`window.maka.skills.list()`），automations 复用 Plan Reminder。
+文件系统扫描结果（`window.maka.skills.list()`），scheduled tasks 使用统一 catalog。
 `@maka/core/capability-audit` 把这两类现有快照派生成一个可测试的
 `CapabilityAuditReport`，并在 Skills / Automations 页面顶部显示同一份
 审计摘要。后续接入真实 MCP/API source 时，应填充同一个 `SourceRecord`
@@ -1404,7 +1404,7 @@ Maka 当前第一步实现为 core contract + existing module surface：skills �
 |---|---|---|
 | `SourceRecord` | `slug / name / type / enabled / authType / scopeSummary[] / status / lastTestAt / lastErrorReason` | Skills / Automations 顶部审计摘要；未来可扩 Settings · 来源 |
 | `SkillAuditRecord` | `id / name / description / declaredTools[] / enabled / sourceSlug / permissionMode` | Skills 顶部审计摘要 + 已安装技能列表 |
-| `AutomationRecord` | `id / name / enabled / trigger / permissionMode / lastRunAt / lastRunStatus` | Automations 顶部审计摘要 + 计划提醒列表 / 执行记录 |
+| `AutomationRecord` | `id / name / enabled / trigger / permissionMode / lastRunAt / lastRunStatus` | Automations 顶部审计摘要 + 定时任务列表 / 执行记录 |
 
 **关键不变量**：
 - **skill 不等于 permission widening**：skill 声明 `allowed-tools` 仅是 *请求*，
@@ -1418,12 +1418,12 @@ Maka 当前第一步实现为 core contract + existing module surface：skills �
 **当前 Gate**：
 - `packages/core/src/__tests__/capability-audit.test.ts`：锁定 source /
   skill / automation enum、workspace skills source 派生、Skill 不放大权限、
-  Plan Reminder → Automation last-run 映射。
+  ScheduledTask → Automation last-run 映射。
 - `apps/desktop/src/main/__tests__/capability-audit-ui-contract.test.ts`：
   server-render 审计摘要条，确认 Skills / Automations 共享同一份
   `CapabilityAuditReport`，并锁定窄屏指标布局。
 - 现有 visual fixture 覆盖入口：`skills` 打开 Skills module；
-  `plan-reminders` 打开 Automations module。未来如果新增独立
+  `scheduled-tasks` 打开 Automations module。未来如果新增独立
   Sources 面板或禁用切换，必须新增 `sources-skills-automations`
   smoke path：seed 3 个 source、5 个 skill、2 个 automation，验各自 panel
   渲染 + 禁用切换 + last-run/sync 时间显示。

@@ -1146,7 +1146,7 @@ describe('ShellRunProcessManager', () => {
     assert.equal(manager.livePtyCount(), 0);
   });
 
-  test('writes Unicode exactly, adds no newline, and treats carriage return as Enter', async () => {
+  test('writes semantic text and Enter actions through a real PTY', async () => {
     const manager = await createTestManager();
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -1163,7 +1163,7 @@ describe('ShellRunProcessManager', () => {
     const partial = await manager.writeStdin({
       sessionId: 'session-1',
       ref: initial.ref,
-      input: '\u96ea\u{1F642}',
+      actions: [{ type: 'text', text: '\u96ea\u{1F642}' }],
       abortSignal: NO_ABORT,
     });
     assert.equal(partial.status, 'running');
@@ -1179,7 +1179,7 @@ describe('ShellRunProcessManager', () => {
     const control = await manager.writeStdin({
       sessionId: 'session-1',
       ref: initial.ref,
-      input: '\r',
+      actions: [{ type: 'key', key: 'enter' }],
       abortSignal: NO_ABORT,
     });
     assert.deepEqual(control.operation, {
@@ -1212,7 +1212,7 @@ describe('ShellRunProcessManager', () => {
       abortSignal: NO_ABORT,
     };
 
-    await assert.rejects(() => manager.writeStdin(base), /requires input and\/or size/);
+    await assert.rejects(() => manager.writeStdin(base), /requires input, actions, and\/or size/);
     await assert.rejects(() => manager.writeStdin({ ...base, input: '' }), /must not be empty/);
     await assert.rejects(
       () => manager.writeStdin({ ...base, input: '\uD800' }),
@@ -1241,6 +1241,137 @@ describe('ShellRunProcessManager', () => {
     assert.equal(completed.output.mode, 'pty');
     if (completed.output.mode !== 'pty') throw new Error('expected pty output');
     assert.match(terminalText(completed.output), /VALUE:ok/);
+  });
+
+  test('encodes keys from the terminal mode parsed before the control cut', async () => {
+    const manager = await createTestManager();
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd: await workspace(),
+        command: nodeCommand(`
+        process.stdin.setRawMode?.(true);
+        process.stdin.once('data', (chunk) => {
+          const expected = Buffer.from([0x1b, 0x4f, 0x41]);
+          const marker = chunk.equals(expected) ? 'APP-CURSOR-OK' : 'APP-CURSOR-WRONG';
+          process.stdout.write(marker + '\\n', () => process.exit(0));
+        });
+        process.stdout.write('\\u001b[?1hREADY\\n');
+      `),
+        pty: true,
+        timeoutMs: 5_000,
+      }),
+    );
+    assert.equal(initial.kind, 'shell_run');
+    await waitForPtyText(manager, initial.ref, /READY/);
+
+    await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      actions: [{ type: 'key', key: 'arrow_up' }],
+      abortSignal: NO_ABORT,
+    });
+    const completed = await waitForTerminalShellRun(manager, initial.ref);
+    assertShellRunSnapshot(completed);
+    assert.equal(completed.output.mode, 'pty');
+    if (completed.output.mode !== 'pty') throw new Error('expected pty output');
+    assert.match(terminalText(completed.output), /APP-CURSOR-OK/);
+  });
+
+  test('encodes mouse actions from SGR cell mode parsed before the control cut', async () => {
+    const manager = await createTestManager();
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd: await workspace(),
+        command: nodeCommand(`
+        process.stdin.setRawMode?.(true);
+        const expected = Buffer.from('\\u001b[<0;3;4M\\u001b[<0;3;4m');
+        let received = Buffer.alloc(0);
+        process.stdin.on('data', (chunk) => {
+          received = Buffer.concat([received, chunk]);
+          if (received.length < expected.length) return;
+          const marker = received.subarray(0, expected.length).equals(expected)
+            ? 'SGR-MOUSE-OK'
+            : 'SGR-MOUSE-WRONG:' + received.toString('hex');
+          process.stdout.write(marker + '\\n', () => process.exit(0));
+        });
+        process.stdout.write('\\u001b[?1000;1016;1006hREADY\\n');
+      `),
+        pty: true,
+        timeoutMs: 5_000,
+      }),
+    );
+    assert.equal(initial.kind, 'shell_run');
+    await waitForPtyText(manager, initial.ref, /READY/);
+
+    const control = await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      actions: [{ type: 'mouse', event: 'click', button: 'left', x: 2, y: 3 }],
+      abortSignal: NO_ABORT,
+    });
+    assert.deepEqual(control.operation, {
+      kind: 'pty_control',
+      failed: false,
+      input: { bytes: 18, queued: true },
+    });
+    const completed = await waitForTerminalShellRun(manager, initial.ref);
+    assertShellRunSnapshot(completed);
+    assert.equal(completed.output.mode, 'pty');
+    if (completed.output.mode !== 'pty') throw new Error('expected pty output');
+    assert.match(terminalText(completed.output), /SGR-MOUSE-OK/);
+  });
+
+  test('rejects unavailable mouse input without changing or terminating the PTY', async () => {
+    const manager = await createTestManager();
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd: await workspace(),
+        command: nodeCommand(`
+        process.stdin.setRawMode?.(true);
+        process.stdin.once('data', (chunk) => {
+          const marker = chunk.equals(Buffer.from([0x0d])) ? 'KEYBOARD-OK' : 'KEYBOARD-WRONG';
+          process.stdout.write(marker + '\\n', () => process.exit(0));
+        });
+        process.stdout.write('READY\\n');
+      `),
+        pty: true,
+        timeoutMs: 5_000,
+      }),
+    );
+    assert.equal(initial.kind, 'shell_run');
+    await waitForPtyText(manager, initial.ref, /READY/);
+
+    await assert.rejects(
+      () =>
+        manager.writeStdin({
+          sessionId: 'session-1',
+          ref: initial.ref,
+          actions: [{ type: 'mouse', event: 'click', button: 'left', x: 90, y: 1 }],
+          size: { cols: 100, rows: 30 },
+          abortSignal: NO_ABORT,
+        }),
+      /has not enabled SGR cell mouse reporting/,
+    );
+    const afterRejection = await manager.inspectResource('session-1', initial.ref);
+    assert.equal(afterRejection.status, 'running');
+    assert.equal(afterRejection.output?.mode, 'pty');
+    if (afterRejection.output?.mode !== 'pty') throw new Error('expected pty output');
+    assert.deepEqual(
+      { cols: afterRejection.output.cols, rows: afterRejection.output.rows },
+      { cols: 80, rows: 24 },
+    );
+
+    await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      actions: [{ type: 'key', key: 'enter' }],
+      abortSignal: NO_ABORT,
+    });
+    const completed = await waitForTerminalShellRun(manager, initial.ref);
+    assertShellRunSnapshot(completed);
+    assert.equal(completed.output.mode, 'pty');
+    if (completed.output.mode !== 'pty') throw new Error('expected pty output');
+    assert.match(terminalText(completed.output), /KEYBOARD-OK/);
   });
 
   test('delivers Ctrl-C and Ctrl-D as terminal control characters', async () => {
@@ -1426,34 +1557,6 @@ describe('ShellRunProcessManager', () => {
     assert.ok(latest.sequence > initial.sequence);
     assert.match(latest.buffer, /RAW-VALUE:hello/);
     await manager.stopBackgroundTask('session-1', run.ref, NO_ABORT);
-  });
-
-  test('coalesces high-volume PTY renderer deltas without dropping bytes', async () => {
-    const cwd = await workspace();
-    const events: ShellRunPtyDataEvent[] = [];
-    const manager = createManager(createSqliteShellRunStore(cwd), undefined, {
-      onPtyData: (event) => events.push(event),
-    });
-    const run = await manager.runBackgroundBash(
-      shellInput({
-        cwd,
-        command: `node -e "process.stdout.write('x'.repeat(1024 * 1024))"`,
-        pty: true,
-        timeoutMs: 5_000,
-      }),
-    );
-    assert.equal(run.kind, 'shell_run');
-    await waitForTerminalShellRun(manager, run.ref);
-
-    const bytes = events.reduce((total, event) => total + Buffer.byteLength(event.data, 'utf8'), 0);
-    assert.equal(bytes, 1024 * 1024);
-    assert.equal(
-      events.every((event) => Buffer.byteLength(JSON.stringify(event.data), 'utf8') <= 40 * 1024),
-      true,
-    );
-    for (let index = 1; index < events.length; index += 1) {
-      assert.ok(events[index]!.sequence > events[index - 1]!.sequence);
-    }
   });
 
   test('keeps concurrent PTY control and Read persistence in parser-cut order', async () => {

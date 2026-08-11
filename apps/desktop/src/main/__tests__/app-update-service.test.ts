@@ -4,6 +4,7 @@ import { describe, test } from 'node:test';
 import type { AppUpdater } from 'electron-updater';
 import {
   createAppUpdateService,
+  type AppUpdateInstallRequest,
   type AppUpdateStatus,
 } from '../app-update-service.js';
 
@@ -52,6 +53,7 @@ class FakeUpdater extends EventEmitter {
   quitAndInstallCalls = 0;
   quitAndInstallThrows = false;
   quitAndInstallDispatchError = false;
+  onQuitAndInstall: (() => void) | undefined;
   feed: unknown;
   checkResult: Promise<unknown> | undefined;
 
@@ -73,6 +75,7 @@ class FakeUpdater extends EventEmitter {
   }
 
   quitAndInstall(): void {
+    this.onQuitAndInstall?.();
     this.quitAndInstallCalls += 1;
     if (this.quitAndInstallThrows) throw new Error('install failed');
     if (this.quitAndInstallDispatchError) this.emit('error', new Error('install rejected'));
@@ -94,7 +97,13 @@ function createHarness(input: {
   updater?: FakeUpdater;
   clock?: FakeClock;
   onStatusChange?: (status: AppUpdateStatus) => void;
-  hasActiveTasks?: () => boolean;
+  activeTasks?: boolean;
+  prepareInstall?: (
+    input: AppUpdateInstallRequest,
+  ) => Promise<
+    | { readonly kind: 'active_tasks' }
+    | { readonly kind: 'prepared'; rollback(): void }
+  >;
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
 } = {}) {
@@ -106,7 +115,10 @@ function createHarness(input: {
     updater: updater as unknown as AppUpdater,
     clock,
     onStatusChange: input.onStatusChange,
-    hasActiveTasks: input.hasActiveTasks ?? (() => false),
+    prepareInstall: input.prepareInstall ?? (async (request) =>
+      input.activeTasks && !request.allowInterruptActiveTasks
+        ? { kind: 'active_tasks' }
+        : { kind: 'prepared', rollback() {} }),
     mockLatestVersion: input.mockLatestVersion,
     mockState: input.mockState,
   });
@@ -292,9 +304,8 @@ describe('AppUpdateService', () => {
   });
 
   test('requires explicit authority before interrupting active tasks', async () => {
-    const hasActiveTasks = true;
     const { service, updater } = createHarness({
-      hasActiveTasks: () => hasActiveTasks,
+      activeTasks: true,
     });
     updater.emit('update-downloaded', {
       ...updateInfo('1.1.0'),
@@ -313,7 +324,7 @@ describe('AppUpdateService', () => {
     );
     assert.equal(updater.quitAndInstallCalls, 1);
 
-    const idle = createHarness({ hasActiveTasks: () => false });
+    const idle = createHarness();
     idle.updater.emit('update-downloaded', {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
@@ -325,8 +336,38 @@ describe('AppUpdateService', () => {
     assert.equal(idle.updater.quitAndInstallCalls, 1);
   });
 
+  test('completes the Runtime Host handoff before dispatching the installer', async () => {
+    const order: string[] = [];
+    const updater = new FakeUpdater();
+    updater.onQuitAndInstall = () => order.push('install');
+    const { service } = createHarness({
+      updater,
+      prepareInstall: async () => {
+        order.push('host-prepared');
+        return { kind: 'prepared', rollback() {} };
+      },
+    });
+    updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+
+    assert.deepEqual(await service.installUpdate({ allowInterruptActiveTasks: false }), {
+      ok: true,
+    });
+    assert.deepEqual(order, ['host-prepared', 'install']);
+  });
+
   test('reports synchronous and asynchronous installer failures through status', async () => {
-    const synchronous = createHarness();
+    let synchronousRollbacks = 0;
+    const synchronous = createHarness({
+      prepareInstall: async () => ({
+        kind: 'prepared',
+        rollback: () => {
+          synchronousRollbacks += 1;
+        },
+      }),
+    });
     synchronous.updater.quitAndInstallDispatchError = true;
     synchronous.updater.emit('update-downloaded', {
       ...updateInfo('1.1.0'),
@@ -344,8 +385,17 @@ describe('AppUpdateService', () => {
         : undefined,
       'install',
     );
+    assert.equal(synchronousRollbacks, 1);
 
-    const asynchronous = createHarness();
+    let asynchronousRollbacks = 0;
+    const asynchronous = createHarness({
+      prepareInstall: async () => ({
+        kind: 'prepared',
+        rollback: () => {
+          asynchronousRollbacks += 1;
+        },
+      }),
+    });
     asynchronous.updater.emit('update-downloaded', {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
@@ -363,34 +413,6 @@ describe('AppUpdateService', () => {
       operation: 'install',
       message: 'signature rejected',
     });
-  });
-
-  test('fails closed when the active-task snapshot is invalid or unreadable', async () => {
-    let snapshot: boolean | Error | string = 'invalid';
-    const { service, updater } = createHarness({
-      hasActiveTasks: () => {
-        if (snapshot instanceof Error) throw snapshot;
-        return snapshot as boolean;
-      },
-    });
-    updater.emit('update-downloaded', {
-      ...updateInfo('1.1.0'),
-      downloadedFile: '/tmp/maka-update.zip',
-    });
-
-    assert.deepEqual(
-      await service.installUpdate({ allowInterruptActiveTasks: false }),
-      { ok: false, reason: 'install_failed' },
-    );
-    snapshot = new Error('snapshot unavailable');
-    updater.emit('update-downloaded', {
-      ...updateInfo('1.1.0'),
-      downloadedFile: '/tmp/maka-update.zip',
-    });
-    assert.deepEqual(
-      await service.installUpdate({ allowInterruptActiveTasks: false }),
-      { ok: false, reason: 'install_failed' },
-    );
-    assert.equal(updater.quitAndInstallCalls, 0);
+    assert.equal(asynchronousRollbacks, 1);
   });
 });

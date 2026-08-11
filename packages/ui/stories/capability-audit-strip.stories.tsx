@@ -64,7 +64,7 @@ function report(input: Partial<CapabilityAuditReport['summary']>): CapabilityAud
  *
  * What this frame does not reproduce: the 900px centred column, which is
  * Astryx LayoutContent's own box. Width measurements taken here do not
- * transfer to the app; the strip's internal rhythm does. The plan-reminder
+ * transfer to the app; the strip's internal rhythm does. The scheduled-task
  * page mounts the same component inside `.maka-module-page-body` — a
  * different padded block in the same kind of column — and the same caveat
  * applies there.
@@ -83,7 +83,7 @@ function ModulePage(props: { children: React.ReactNode }) {
 // wrong. With all four of those counts at zero it returns null and the page
 // carries no strip, so that state has no story: it has no pixels.
 //
-// 定时任务 → 计划提醒 reaches the same component in a different frame; see
+// 定时任务 → 定时任务 reaches the same component in a different frame; see
 // ModulePage above for what that changes and why it is not a second story.
 export const WithRisks: Story = {
   render: () => (

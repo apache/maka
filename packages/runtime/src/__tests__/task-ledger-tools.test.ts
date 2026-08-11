@@ -177,24 +177,6 @@ describe('task ledger tools', () => {
     }
   });
 
-  test('can include PascalCase legacy aliases behind an explicit option', () => {
-    const tools = buildTaskLedgerTools(
-      { store: new FakeTaskLedgerStore() },
-      { includeLegacyAliases: true },
-    );
-    assert.deepEqual(
-      tools.map((t) => t.name),
-      [
-        TASK_CREATE_TOOL_NAME,
-        TASK_UPDATE_TOOL_NAME,
-        TASK_LIST_TOOL_NAME,
-        TASK_GET_TOOL_NAME,
-        LEGACY_TASK_CREATE_TOOL_NAME,
-        LEGACY_TASK_UPDATE_TOOL_NAME,
-      ],
-    );
-  });
-
   test('task tool feature flag defaults on and can be disabled explicitly', () => {
     assert.equal(isTaskLedgerToolsEnabled({}), true);
     assert.equal(isTaskLedgerToolsEnabled({ MAKA_TASK_LEDGER_TOOLS: 'false' }), false);

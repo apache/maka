@@ -45,6 +45,15 @@ import {
   type ConnectionDetailProps,
   type OAuthLoginService,
 } from './use-connection-detail';
+import {
+  formatRequestBodyOverlay,
+  parseRequestBodyOverlay,
+  requestHeaderUpdates,
+  RequestBodyEditor,
+  RequestHeadersEditor,
+  savedRequestHeaderDrafts,
+  type RequestHeaderDraft,
+} from './request-customization-editor';
 
 export function ConnectionDetail(props: ConnectionDetailProps) {
   const defaults = PROVIDER_DEFAULTS[props.connection.providerType];
@@ -163,11 +172,100 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   // Opening a row discards the other's draft: leaving an abandoned draft in
   // state meant it reappeared when the user came back to that row, and — until
   // `save` became per-field — rode along with the next save.
-  const [editingRow, setEditingRow] = useState<'key' | 'endpoint' | null>(null);
-  function openRow(row: 'key' | 'endpoint') {
+  const [editingRow, setEditingRow] = useState<'key' | 'endpoint' | 'headers' | 'body' | null>(null);
+  const [savedHeaderNames, setSavedHeaderNames] = useState<readonly string[]>([]);
+  const [headerDrafts, setHeaderDrafts] = useState<RequestHeaderDraft[]>([]);
+  const savedBodyText = formatRequestBodyOverlay(connection.requestBodyOverlay);
+  const [bodyDraft, setBodyDraft] = useState(savedBodyText);
+  const [requestCustomizationBusy, setRequestCustomizationBusy] = useState(false);
+  const toast = useToast();
+  const mounted = useMountedRef();
+  const allActionsBusy = detailActionBusy || requestCustomizationBusy;
+  const hasHeaderDraftChanges =
+    headerDrafts.length !== savedHeaderNames.length ||
+    headerDrafts.some(
+      (header, index) =>
+        !header.retained ||
+        header.value.length > 0 ||
+        header.name.toLowerCase() !== savedHeaderNames[index]?.toLowerCase(),
+    );
+
+  useEffect(() => {
+    let current = true;
+    setSavedHeaderNames([]);
+    setHeaderDrafts([]);
+    setBodyDraft(formatRequestBodyOverlay(connection.requestBodyOverlay));
+    void props.bridge
+      .getRequestHeaders(connection.slug)
+      .then(({ names }) => {
+        if (!current) return;
+        setSavedHeaderNames(names);
+        setHeaderDrafts(savedRequestHeaderDrafts(names));
+      })
+      .catch((error) => {
+        if (!current) return;
+        toast.error(copy.requestCustomizationInvalid, providerPanelActionErrorMessage(error, locale));
+      });
+    return () => {
+      current = false;
+    };
+  }, [connection.slug, props.bridge, toast]);
+
+  function openRow(row: 'key' | 'endpoint' | 'headers' | 'body') {
     if (row === 'key') setBaseUrl(savedBaseUrl);
-    else setApiKey('');
+    else if (row === 'endpoint') setApiKey('');
+    else if (row === 'headers') setHeaderDrafts(savedRequestHeaderDrafts(savedHeaderNames));
+    else setBodyDraft(savedBodyText);
     setEditingRow(row);
+  }
+
+  async function saveRequestHeaders(): Promise<boolean> {
+    let updates;
+    try {
+      updates = requestHeaderUpdates(headerDrafts);
+    } catch {
+      toast.error(copy.requestCustomizationInvalid, copy.requestHeadersInvalidDetail);
+      return false;
+    }
+    setRequestCustomizationBusy(true);
+    try {
+      const saved = await props.bridge.setRequestHeaders(connection.slug, updates);
+      if (!mounted.current) return true;
+      setSavedHeaderNames(saved.names);
+      setHeaderDrafts(savedRequestHeaderDrafts(saved.names));
+      await props.onChanged();
+      return true;
+    } catch (error) {
+      if (mounted.current) {
+        toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
+      }
+      return false;
+    } finally {
+      if (mounted.current) setRequestCustomizationBusy(false);
+    }
+  }
+
+  async function saveRequestBody(): Promise<boolean> {
+    let overlay;
+    try {
+      overlay = parseRequestBodyOverlay(bodyDraft);
+    } catch {
+      toast.error(copy.requestCustomizationInvalid, copy.requestBodyInvalidDetail);
+      return false;
+    }
+    setRequestCustomizationBusy(true);
+    try {
+      await props.bridge.update(connection.slug, { requestBodyOverlay: overlay ?? null });
+      await props.onChanged();
+      return true;
+    } catch (error) {
+      if (mounted.current) {
+        toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
+      }
+      return false;
+    } finally {
+      if (mounted.current) setRequestCustomizationBusy(false);
+    }
   }
   // Most of the 60 providers publish a fixed endpoint; editing it there can
   // only break the connection, and a proxy belongs in 设置 · 通用 · 网络, not in
@@ -258,7 +356,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 value={apiKeyStatusHint}
                 actionLabel={hasSecret === true ? copy.change : copy.set}
                 isEditing={editingRow === 'key'}
-                isDisabled={detailActionBusy}
+                isDisabled={allActionsBusy}
                 canSave={hasApiKeyChange}
                 saveLabel={copy.save}
                 cancelLabel={copy.cancel}
@@ -272,7 +370,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   placeholder={copy.pasteModelKey}
                   label={copy.modelKeyAria(display.name)}
                   isLabelHidden
-                  isDisabled={detailActionBusy}
+                  isDisabled={allActionsBusy}
                 />
                 {defaults.signupUrl && (
                   <Link
@@ -295,7 +393,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 value={savedBaseUrl || copy.endpointDefault}
                 actionLabel={copy.edit}
                 isEditing={editingRow === 'endpoint'}
-                isDisabled={detailActionBusy}
+                isDisabled={allActionsBusy}
                 canSave={hasBaseUrlChange}
                 saveLabel={copy.save}
                 cancelLabel={copy.cancel}
@@ -309,7 +407,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   value={baseUrl}
                   onChange={setBaseUrl}
                   placeholder={defaults.baseUrl}
-                  isDisabled={detailActionBusy}
+                  isDisabled={allActionsBusy}
                 />
               </SettingsExpandableRow>
               <Divider />
@@ -322,11 +420,81 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           still needs one. Two rules with a gap between them read as an empty
           row, so only ever one. */}
       {!supportsApiKey && !showsEndpoint && <Divider />}
+      <DetailSection title={copy.advancedRequest} description={copy.advancedRequestHelp}>
+        <VStack gap={0}>
+              <SettingsExpandableRow
+                label={copy.requestHeaders}
+                value={savedHeaderNames.length > 0
+                  ? copy.configuredHeaders(savedHeaderNames.length)
+                  : copy.noAdvancedRequest}
+                actionLabel={copy.edit}
+                actionAriaLabel={`${copy.edit}: ${copy.requestHeaders}`}
+                isEditing={editingRow === 'headers'}
+                isDisabled={allActionsBusy}
+                canSave={hasHeaderDraftChanges}
+                saveLabel={copy.save}
+                cancelLabel={copy.cancel}
+                onEdit={() => openRow('headers')}
+                onCancel={() => {
+                  setHeaderDrafts(savedRequestHeaderDrafts(savedHeaderNames));
+                  setEditingRow(null);
+                }}
+                onSave={async () => {
+                  if (await saveRequestHeaders()) setEditingRow(null);
+                }}
+              >
+                <RequestHeadersEditor
+                  headers={headerDrafts}
+                  onHeadersChange={setHeaderDrafts}
+                  disabled={allActionsBusy}
+                  hideTitle
+                  copy={{
+                    headers: copy.requestHeaders,
+                    headerName: copy.headerName,
+                    headerValue: copy.headerValue,
+                    retainedValue: copy.retainedHeaderValue,
+                    addHeader: copy.addHeader,
+                    removeHeader: copy.removeHeader,
+                    noHeaders: copy.noRequestHeaders,
+                  }}
+                />
+              </SettingsExpandableRow>
+              <Divider />
+              <SettingsExpandableRow
+                label={copy.extraRequestBody}
+                value={connection.requestBodyOverlay ? copy.keySet : copy.noAdvancedRequest}
+                actionLabel={copy.edit}
+                actionAriaLabel={`${copy.edit}: ${copy.extraRequestBody}`}
+                isEditing={editingRow === 'body'}
+                isDisabled={allActionsBusy}
+                canSave={bodyDraft !== savedBodyText}
+                saveLabel={copy.save}
+                cancelLabel={copy.cancel}
+                onEdit={() => openRow('body')}
+                onCancel={() => {
+                  setBodyDraft(savedBodyText);
+                  setEditingRow(null);
+                }}
+                onSave={async () => {
+                  if (await saveRequestBody()) setEditingRow(null);
+                }}
+              >
+                <RequestBodyEditor
+                  bodyText={bodyDraft}
+                  onBodyTextChange={setBodyDraft}
+                  disabled={allActionsBusy}
+                  hideLabel
+                  copy={{ body: copy.extraRequestBody, bodyHelp: copy.extraRequestBodyHelp }}
+                />
+              </SettingsExpandableRow>
+              <Divider />
+        </VStack>
+      </DetailSection>
       <DetailSection title={copy.modelManagement} description={copy.modelManagementHelp}>
         <EnabledModelManager
           modelChoices={modelChoices}
           enabledModelIds={enabledModelIds}
-          disabled={detailActionBusy}
+          disabled={allActionsBusy}
           onChange={(next) => void updateEnabledModels(next)}
         />
         {/* Each button reports its own work through clickAction (spinner +
@@ -336,9 +504,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             because it takes an options object: handing it the click event
             would pass a MouseEvent as `opts`. */}
         <HStack gap={2} vAlign="center" wrap="wrap">
-          <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} clickAction={() => runTest()} label={copy.testConnection} />
+          <Button variant="secondary" isDisabled={allActionsBusy || !hasUsableCredential} clickAction={() => runTest()} label={copy.testConnection} />
           {supportsRemoteDiscovery && (
-            <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} clickAction={() => refreshModels()} label={copy.updateModels} />
+            <Button variant="ghost" isDisabled={allActionsBusy || !hasUsableCredential} clickAction={() => refreshModels()} label={copy.updateModels} />
           )}
         </HStack>
       </DetailSection>
@@ -395,7 +563,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                               ? copy.thinkingSelectedCount(draftLevels.length)
                               : copy.thinkingUndeclared,
                           'aria-label': `${copy.thinkingEffort} — ${modelId}`,
-                          isDisabled: detailActionBusy,
+                          isDisabled: allActionsBusy,
                         }}
                         hasChevron
                         menuWidth={224}
@@ -414,7 +582,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                                   : draftLevels.filter((existing) => existing !== level),
                               );
                             }}
-                            isDisabled={detailActionBusy}
+                            isDisabled={allActionsBusy}
                           />
                         ))}
                       </DropdownMenu>
@@ -437,13 +605,13 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                             value === 'auto' ? undefined : value === 'enabled',
                           )
                         }
-                        isDisabled={detailActionBusy}
+                        isDisabled={allActionsBusy}
                       />
                     </CapabilityRow>
                     <CapabilityRow label={copy.contextWindow} description={copy.contextWindowHelp}>
                       <DeclaredContextWindowField
                         declared={declared?.contextWindow}
-                        disabled={detailActionBusy}
+                        disabled={allActionsBusy}
                         label={copy.contextWindow}
                         onCommit={(value) =>
                           setDraftContextWindow(modelId, value ?? undefined)
@@ -461,7 +629,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 <Button
                   variant="primary"
                   size="sm"
-                  isDisabled={detailActionBusy || !hasRelayProfileChanges}
+                  isDisabled={allActionsBusy || !hasRelayProfileChanges}
                   clickAction={() => void saveRelayProfiles()}
                   label={copy.saveCapabilities}
                 />
@@ -482,7 +650,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               fallback detail above). `deleting` already drives
               detailActionBusy; feeding it to isLoading puts the spinner on
               the button that is actually working. */}
-          <Button variant="destructive" isDisabled={detailActionBusy} isLoading={deleting} onClick={() => void remove()} label={copy.delete} />
+          <Button variant="destructive" isDisabled={allActionsBusy} isLoading={deleting} onClick={() => void remove()} label={copy.delete} />
         </HStack>
       </DetailSection>
     </VStack>
@@ -557,7 +725,7 @@ function DetailSection(props: { title: string; description: string; children: Re
        row gap there reads as a hole between a heading and the thing it
        labels. */
     <Grid columns={{ minWidth: 320 }} columnGap={10} rowGap={4} role="region" aria-label={props.title}>
-      <VStack gap={1}>
+      <VStack gap={0.5}>
         <Heading level={3}>{props.title}</Heading>
         <Text type="supporting" color="secondary">{props.description}</Text>
       </VStack>

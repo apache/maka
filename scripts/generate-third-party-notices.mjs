@@ -53,7 +53,30 @@ const LICENSE_METADATA_OVERRIDES = new Map([
 ]);
 // The published tarball omits the repository LICENSE; package.json declares Apache-2.0.
 // Keyed by exact version so a bump re-checks the license rather than inheriting this.
-const APACHE_TEXT_OVERRIDE_KEYS = new Set(['@ai-sdk/provider-utils@5.0.21']);
+const APACHE_TEXT_OVERRIDE_KEYS = new Set(['@ai-sdk/provider-utils@5.0.25']);
+const EMBEDDED_COMPONENT_LICENSES = new Map([
+  [
+    '@ai-sdk/code-mode',
+    {
+      version: '1.0.15',
+      components: [
+        {
+          name: 'quickjs-emscripten (embedded runtime)',
+          repository: 'https://github.com/justjake/quickjs-emscripten',
+          copyright: 'quickjs-emscripten copyright (c) 2019-2024 Jake Teton-Landis',
+        },
+        {
+          name: 'QuickJS JavaScript engine (embedded runtime)',
+          repository: 'https://github.com/bellard/quickjs',
+          copyright: [
+            'Copyright (c) 2017-2021 Fabrice Bellard',
+            'Copyright (c) 2017-2021 Charlie Gordon',
+          ].join('\n'),
+        },
+      ],
+    },
+  ],
+]);
 const MIT_COPYRIGHT_OVERRIDES = new Map([
   // The published tarball omits the repository LICENSE; sibling @astryxdesign
   // packages ship it verbatim with this notice.
@@ -212,7 +235,8 @@ function overrideLicenseText(packageKey, selectedLicense) {
 function renderNotice() {
   const lockIndex = buildLockIndex();
   const sections = [];
-  for (const dependency of collectDesktopClosure()) {
+  const dependencies = collectDesktopClosure();
+  for (const dependency of dependencies) {
     const packageKey = `${dependency.name}@${dependency.version}`;
     const candidates = lockIndex.get(packageKey);
     if (!candidates?.length) throw new Error(`${packageKey}: missing from package-lock.json`);
@@ -254,6 +278,28 @@ function renderNotice() {
     ];
     const texts = licenseFiles.map(({ name, text }) => `--- ${name} ---\n${text}`);
     sections.push(`${metadata.join('\n')}\n\n${texts.join('\n\n')}`);
+  }
+  for (const [packageName, inventory] of EMBEDDED_COMPONENT_LICENSES) {
+    const matchingDependencies = dependencies.filter((candidate) => candidate.name === packageName);
+    for (const dependency of matchingDependencies) {
+      const owner = `${dependency.name}@${dependency.version}`;
+      if (dependency.version !== inventory.version) {
+        throw new Error(`${owner}: embedded component licenses require exact-version review`);
+      }
+      for (const component of inventory.components) {
+        sections.push(
+          [
+            `Embedded component: ${component.name}`,
+            `Embedded by: ${owner}`,
+            'Selected license: MIT',
+            `Repository: ${component.repository}`,
+            '',
+            '--- VERSION-PINNED EMBEDDED LICENSE TEXT ---',
+            MIT_TEXT(component.copyright),
+          ].join('\n'),
+        );
+      }
+    }
   }
 
   return `Maka Desktop — Production npm Third-Party Notices

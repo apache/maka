@@ -1,18 +1,26 @@
-import type {
-  ConnectionCatalogCursor,
-  ConnectionCatalogPageItem,
-  ConnectionCatalogQueryResult,
-  RelayModelProfile,
-  RelayModelProfiles,
-  SessionCatalogFilter,
-  SessionCatalogItem,
-  SkillCatalogLocalContext,
-  SkillCatalogInvocableItem,
-  SkillCatalogInvocableTarget,
-  SkillCatalogPageItem,
-  SkillCatalogRevision,
-  SkillCatalogView,
-  OperationOutput,
+import {
+  decodeProjectCatalogProject,
+  decodeProjectCatalogProjectDetails,
+  type ConnectionCatalogCursor,
+  type ConnectionCatalogPageItem,
+  type ConnectionCatalogQueryResult,
+  type RelayModelProfile,
+  type RelayModelProfiles,
+  type SessionCatalogFilter,
+  type SessionCatalogItem,
+  type SkillCatalogWorkspaceContext,
+  type SkillCatalogInvocableItem,
+  type SkillCatalogInvocableTarget,
+  type SkillCatalogPageItem,
+  type SkillCatalogRevision,
+  type SkillCatalogView,
+  type WorkspaceProjection,
+  type OperationOutput,
+  type ProjectCatalogPageItem,
+  type ProjectCatalogProject,
+  type ProjectCatalogProjectDetails,
+  type ProjectCatalogQueryResult,
+  type ProjectCatalogView,
 } from '../protocol/index.js';
 import type { RuntimeHostConnection } from './connection.js';
 
@@ -25,6 +33,7 @@ export interface RuntimeHostSkillCatalogSnapshot {
   readonly revision: SkillCatalogRevision;
   readonly view: SkillCatalogView;
   readonly items: readonly SkillCatalogPageItem[];
+  readonly resolvedWorkspace: WorkspaceProjection;
 }
 
 export type RuntimeHostConnectionCatalogEntry = Omit<
@@ -44,7 +53,7 @@ export interface RuntimeHostConnectionCatalogSnapshot {
 
 export class RuntimeHostCatalogReadError extends Error {
   constructor(
-    readonly catalog: 'connection' | 'session' | 'skill' | 'runtime_resource',
+    readonly catalog: 'connection' | 'project' | 'session' | 'skill' | 'runtime_resource',
     readonly reason: 'unstable' | 'invalid_projection' | 'repeated_cursor',
   ) {
     super(`Runtime Host ${catalog} catalog read failed: ${reason}`);
@@ -78,9 +87,10 @@ export async function readRuntimeHostConnectionCatalog(
 
 export async function readRuntimeHostSkillCatalog(
   connection: RuntimeHostCatalogConnection,
-  context: SkillCatalogLocalContext,
+  context: SkillCatalogWorkspaceContext,
   view: SkillCatalogView,
 ): Promise<RuntimeHostSkillCatalogSnapshot> {
+  let resolvedWorkspace: WorkspaceProjection | undefined;
   const { first, pages } = await collectStablePages(
     'skill',
     async () => {
@@ -89,7 +99,9 @@ export async function readRuntimeHostSkillCatalog(
         context,
         view,
       });
-      return result.kind === 'page' && result.view === view ? result : null;
+      if (result.kind !== 'page' || result.view !== view) return null;
+      resolvedWorkspace = result.resolvedWorkspace;
+      return result;
     },
     async (revision, cursor) => {
       const result = await connection.request('skill.catalog.query', {
@@ -99,10 +111,30 @@ export async function readRuntimeHostSkillCatalog(
         revision,
         cursor,
       });
-      return result.kind === 'page' && result.view === view ? result : null;
+      return result.kind === 'page' &&
+        result.view === view &&
+        workspaceProjectionsEqual(result.resolvedWorkspace, resolvedWorkspace)
+        ? result
+        : null;
     },
   );
-  return { revision: first.revision, view, items: pages.flatMap((page) => page.items) };
+  return {
+    revision: first.revision,
+    view,
+    items: pages.flatMap((page) => page.items),
+    resolvedWorkspace: first.resolvedWorkspace,
+  };
+}
+
+function workspaceProjectionsEqual(
+  left: WorkspaceProjection,
+  right: WorkspaceProjection | undefined,
+): boolean {
+  if (!right) return false;
+  if (left.hostCwd !== right.hostCwd || left.target.kind !== right.target.kind) return false;
+  return left.target.kind === 'project'
+    ? right.target.kind === 'project' && left.target.projectId === right.target.projectId
+    : right.target.kind === 'host_path' && left.target.path === right.target.path;
 }
 
 export async function readRuntimeHostInvocableSkills(
@@ -155,6 +187,55 @@ export async function readRuntimeHostSessions(
     },
   );
   return pages.flatMap((page) => page.sessions);
+}
+
+export async function readRuntimeHostProjects(
+  connection: RuntimeHostCatalogConnection,
+): Promise<ProjectCatalogProject[]> {
+  return readRuntimeHostProjectCatalog(connection, 'summary');
+}
+
+export async function readRuntimeHostProjectDetails(
+  connection: RuntimeHostCatalogConnection,
+): Promise<ProjectCatalogProjectDetails[]> {
+  return readRuntimeHostProjectCatalog(connection, 'locations');
+}
+
+function readRuntimeHostProjectCatalog(
+  connection: RuntimeHostCatalogConnection,
+  view: 'summary',
+): Promise<ProjectCatalogProject[]>;
+function readRuntimeHostProjectCatalog(
+  connection: RuntimeHostCatalogConnection,
+  view: 'locations',
+): Promise<ProjectCatalogProjectDetails[]>;
+async function readRuntimeHostProjectCatalog(
+  connection: RuntimeHostCatalogConnection,
+  view: ProjectCatalogView,
+): Promise<ProjectCatalogProject[] | ProjectCatalogProjectDetails[]> {
+  const { first, pages } = await collectStablePages(
+    'project',
+    async () => {
+      const result = await connection.request('project.catalog.query', {
+        kind: 'list_start',
+        view,
+      });
+      return result.kind === 'page' && result.view === view ? result : null;
+    },
+    async (revision, cursor) => {
+      const result = await connection.request('project.catalog.query', {
+        kind: 'list_continue',
+        view,
+        revision,
+        cursor,
+      });
+      return result.kind === 'page' && result.view === view ? result : null;
+    },
+  );
+  return assembleProjectCatalog(
+    first,
+    pages.flatMap((page) => page.items),
+  );
 }
 
 export async function readRuntimeHostResources(
@@ -237,6 +318,85 @@ function uniqueCursor<T>(
   if (cursors.has(key)) throw new RuntimeHostCatalogReadError(catalog, 'repeated_cursor');
   cursors.add(key);
   return cursor;
+}
+
+function assembleProjectCatalog(
+  first: Extract<ProjectCatalogQueryResult, { kind: 'page' }>,
+  items: readonly ProjectCatalogPageItem[],
+): ProjectCatalogProject[] {
+  const projects = new Map<
+    number,
+    {
+      header: Extract<ProjectCatalogPageItem, { kind: 'project' }>;
+      aliases: Map<number, string>;
+      locations: Map<number, Extract<ProjectCatalogPageItem, { kind: 'location' }>['location']>;
+    }
+  >();
+  for (const item of items) {
+    if (item.kind !== 'project') continue;
+    if (projects.has(item.projectIndex)) {
+      throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
+    }
+    projects.set(item.projectIndex, { header: item, aliases: new Map(), locations: new Map() });
+  }
+  for (const item of items) {
+    if (item.kind === 'project') continue;
+    const project = projects.get(item.projectIndex);
+    if (!project) throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
+    const values = item.kind === 'alias' ? project.aliases : project.locations;
+    const expectedCount =
+      item.kind === 'alias' ? project.header.aliasCount : project.header.locationCount;
+    if (item.itemIndex >= expectedCount || values.has(item.itemIndex)) {
+      throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
+    }
+    if (item.kind === 'alias') project.aliases.set(item.itemIndex, item.alias);
+    else project.locations.set(item.itemIndex, item.location);
+  }
+  if (projects.size !== first.projectCount) {
+    throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
+  }
+  return [...projects.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, { header, aliases, locations }]) => {
+      if (
+        aliases.size !== header.aliasCount ||
+        header.available !== (header.preferredLocationIndex !== null) ||
+        (header.preferredLocationIndex !== null &&
+          header.preferredLocationIndex >= header.locationCount)
+      ) {
+        throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
+      }
+      const project = decodeProjectCatalogProject({
+        id: header.id,
+        aliases: orderedValues(aliases),
+        name: header.name,
+        locationCount: header.locationCount,
+        archivedAt: header.archivedAt,
+        available: header.available,
+      });
+      if (first.view === 'summary') {
+        if (locations.size !== 0) {
+          throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
+        }
+        return project;
+      }
+      if (locations.size !== header.locationCount) {
+        throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
+      }
+      const orderedLocations = orderedValues(locations);
+      const preferredPath =
+        header.preferredLocationIndex === null
+          ? null
+          : orderedLocations[header.preferredLocationIndex]?.path;
+      if (preferredPath === undefined) {
+        throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
+      }
+      return decodeProjectCatalogProjectDetails({
+        ...project,
+        locations: orderedLocations,
+        preferredPath,
+      });
+    });
 }
 
 function assembleConnectionCatalog(

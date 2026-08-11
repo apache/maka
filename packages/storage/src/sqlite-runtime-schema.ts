@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 11;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 12;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
@@ -243,13 +243,7 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
     8,
     `
-    CREATE TABLE headless_task_run_events (
-      task_run_id TEXT NOT NULL,
-      sequence INTEGER NOT NULL CHECK (sequence >= 0),
-      event_id TEXT NOT NULL,
-      record_json TEXT NOT NULL,
-      PRIMARY KEY (task_run_id, sequence)
-    );
+    SELECT 1;
   `,
   ],
   [
@@ -299,6 +293,12 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       ),
       event_id
     FROM runtime_events;
+  `,
+  ],
+  [
+    12,
+    `
+    DROP TABLE IF EXISTS headless_task_run_events;
   `,
   ],
 ]);

@@ -2,18 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import { messageContentsEqual } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';
-import type {
-  AutomationDefinition,
-  AutomationExecutionTemplate,
-  AutomationPendingFire,
-} from '@maka/core/automation';
+import type { AutomationDefinition, AutomationPendingFire } from '@maka/core/automation';
 import {
   AutomationManager,
   buildAutomationAuthorityTool,
   settleAutomationAttempt,
   type AutomationToolAuthority,
   type MakaTool,
-  type RuntimeHostedRootAuthority,
   type SessionManager,
 } from '@maka/runtime';
 import {
@@ -39,23 +34,21 @@ import {
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import type { AutomationOperationHandlerMap } from './operation-dispatcher.js';
+import type { AutomationClientCapabilityAuthority } from './client-capability-service.js';
 import { AutomationAuthorityInvariantError } from './automation-errors.js';
 import {
   assertFireRunIdentity,
-  automationSessionId,
   fireContent,
   HostAutomationFireCoordinator,
 } from './automation-fire-coordinator.js';
 import { runtimeHostAutomationSessionUnavailableReason } from './host-session-availability.js';
+import type { HostedExecutionAuthority } from './hosted-execution-authority.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 
-type AutomationSessions = Pick<
-  ExecutionSessionWriter,
-  'createStableSession' | 'readHeaderSnapshot'
->;
+type AutomationSessions = Pick<ExecutionSessionWriter, 'readHeaderSnapshot'>;
 type AutomationRuns = Pick<ExecutionAgentRunWriter, 'readRun'>;
 type AutomationRuntime = Pick<SessionManager, 'sendMessage'>;
-type AutomationRoot = Pick<RuntimeHostedRootAuthority, 'executeRoot'>;
+type AutomationRoot = Pick<HostedExecutionAuthority, 'admit' | 'reconcile' | 'subscribe'>;
 
 export interface HostAutomationCoordinatorInput {
   readonly store: InteractiveAutomationAuthorityWriter;
@@ -64,6 +57,7 @@ export interface HostAutomationCoordinatorInput {
   readonly runtime: AutomationRuntime;
   readonly root: AutomationRoot;
   readonly runtimePolicy: RuntimePolicyStoresWriter;
+  readonly clientCapabilities: AutomationClientCapabilityAuthority;
   readonly isSessionActive: (sessionId: string) => boolean;
   readonly sessionAdmission: SessionAdmissionGate;
   readonly acquireResidency: () => RuntimeHostResidency;
@@ -112,6 +106,7 @@ class AutomationMutationFailure extends Error {
       | 'session_archived'
       | 'session_busy'
       | 'session_unavailable'
+      | 'capability_unavailable'
       | 'host_not_ready'
       | 'host_draining',
     message: string,
@@ -135,6 +130,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
   readonly #sessions: AutomationSessions;
   readonly #requestDrain: () => void;
   readonly #sessionAdmission: SessionAdmissionGate;
+  readonly #clientCapabilities: HostAutomationCoordinatorInput['clientCapabilities'];
   readonly #newId: () => string;
   readonly #now: () => number;
   readonly #manager: AutomationManager;
@@ -152,6 +148,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     this.#sessions = input.sessions;
     this.#requestDrain = input.requestDrain;
     this.#sessionAdmission = input.sessionAdmission;
+    this.#clientCapabilities = input.clientCapabilities;
     this.#newId = input.newId ?? randomUUID;
     this.#now = input.now ?? Date.now;
     this.#manager = new AutomationManager({
@@ -166,10 +163,15 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
         listDueAutomations: (now) => this.#listDueAutomations(now),
         recordDeferredFire: (automationId, expectedSchedule, skip) =>
           this.#recordDeferredFire(automationId, expectedSchedule, skip),
+        recordPrerequisiteWaiting: (automationId, expectedSchedule, waiting) =>
+          this.#recordPrerequisiteWaiting(automationId, expectedSchedule, waiting),
         admitFire: (automationId, expectedSchedule) =>
           this.#admitFire(automationId, expectedSchedule),
         assertPendingFire: (fire) => this.#assertPendingFire(fire),
-        recordFireDeferred: (fire) => this.#recordFireDeferred(fire),
+        recordFireDeferred: (fire, transientDeferredSince) =>
+          this.#recordFireDeferred(fire, transientDeferredSince),
+        recordFirePrerequisiteWaiting: (fire, waiting) =>
+          this.#recordFirePrerequisiteWaiting(fire, waiting),
         failFire: (fire, error) => this.#failFire(fire, error),
         markFireRunning: (fire) => this.#markFireRunning(fire),
         settleFire: (fire, run) => this.#settleFire(fire, run),
@@ -185,6 +187,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       runtime: input.runtime,
       root: input.root,
       runtimePolicy: input.runtimePolicy,
+      clientCapabilities: input.clientCapabilities,
       isSessionActive: input.isSessionActive,
       acquireResidency: input.acquireResidency,
       requestDrain: input.requestDrain,
@@ -192,7 +195,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       setTimeout: input.setTimeout ?? ((callback, delayMs) => setTimeout(callback, delayMs)),
       clearTimeout: input.clearTimeout ?? ((timer) => clearTimeout(timer as NodeJS.Timeout)),
     });
-    this.modelTool = buildAutomationAuthorityTool({ authority: this, cronEnabled: true });
+    this.modelTool = buildAutomationAuthorityTool({ authority: this });
   }
 
   async prepareRecovery(): Promise<void> {
@@ -246,9 +249,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     return this.#exclusive(() => {
       const blocked = unique.some(
         (sessionId) =>
-          this.#manager
-            .listForSession(sessionId)
-            .some((automation) => automation.durable !== true) ||
+          this.#manager.listForSession(sessionId).length > 0 ||
           [...this.#pendingFires.values()].some((fire) => fire.targetSessionId === sessionId),
       );
       if (blocked) {
@@ -276,13 +277,12 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
   }
 
   async create(input: {
-    kind: AutomationDefinition['kind'];
     name: string;
     prompt: string;
     sessionId: string;
     schedule: AutomationDefinition['schedule'];
     maxFires?: number;
-    durable?: boolean;
+    requiredCapabilityGroups?: readonly string[];
   }): Promise<AutomationDefinition | { error: string }> {
     try {
       return (await this.#create(input)).automation;
@@ -325,15 +325,15 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
   get(id: string, sessionId: string): Promise<AutomationDefinition | undefined> {
     return this.#exclusive(() => {
       const automation = this.#manager.get(id);
-      return automation && visibleTo(automation, sessionId)
+      return automation && automation.sessionId === sessionId
         ? cloneDefinition(automation)
         : undefined;
     });
   }
 
-  listVisibleForSession(sessionId: string): Promise<readonly AutomationDefinition[]> {
+  listForSession(sessionId: string): Promise<readonly AutomationDefinition[]> {
     return this.#exclusive(() =>
-      this.#manager.listVisibleForSession(sessionId).sort(compareAutomations).map(cloneDefinition),
+      this.#manager.listForSession(sessionId).sort(compareAutomations).map(cloneDefinition),
     );
   }
 
@@ -351,7 +351,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       if (!this.#prepared)
         return queryFailure('host_not_ready', 'Automation authority is not ready');
       const visible = this.#manager
-        .listVisibleForSession(input.sessionId)
+        .listForSession(input.sessionId)
         .sort(compareAutomations)
         .map((automation) => projectAutomation(automation, this.#pendingFires.has(automation.id)));
       if (input.kind === 'get') {
@@ -394,13 +394,14 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       switch (input.kind) {
         case 'create': {
           const committed = await this.#create({
-            kind: input.automationKind,
             name: input.name,
             prompt: input.prompt,
             sessionId: input.sessionId,
             schedule: input.schedule,
             ...(input.maxFires === undefined ? {} : { maxFires: input.maxFires }),
-            ...(input.durable === undefined ? {} : { durable: input.durable }),
+            ...(input.requiredCapabilityGroups === undefined
+              ? {}
+              : { requiredCapabilityGroups: input.requiredCapabilityGroups }),
           });
           revision = committed.revision;
           automation = projectAutomation(committed.automation, committed.firePending);
@@ -445,7 +446,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
         if (failure.kind === 'session_busy') {
           return mutationFailure('session_busy', failure.message);
         }
-        if (failure.kind === 'session_unavailable') {
+        if (failure.kind === 'session_unavailable' || failure.kind === 'capability_unavailable') {
           return mutationFailure('operation_unavailable', failure.message);
         }
         return mutationSuccess({ kind: 'rejected', reason: failure.kind });
@@ -455,13 +456,12 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
   }
 
   async #create(input: {
-    kind: AutomationDefinition['kind'];
     name: string;
     prompt: string;
     sessionId: string;
     schedule: AutomationDefinition['schedule'];
     maxFires?: number;
-    durable?: boolean;
+    requiredCapabilityGroups?: readonly string[];
   }): Promise<CommittedAutomation> {
     return this.#exclusive(async () => {
       this.#assertWritable();
@@ -470,9 +470,23 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       if (unavailableReason) {
         throw new AutomationMutationFailure('session_unavailable', unavailableReason);
       }
-      const execution = input.kind === 'cron' ? executionTemplateFromHeader(header) : undefined;
+      const resolvedRequirements = await this.#clientCapabilities.requirementsForAutomation(
+        input.sessionId,
+        input.requiredCapabilityGroups ?? [],
+      );
+      if (!resolvedRequirements.ok) {
+        throw new AutomationMutationFailure('capability_unavailable', resolvedRequirements.message);
+      }
+      const capabilityRequirements = resolvedRequirements.requirements;
       const before = this.#snapshot();
-      const result = this.#manager.create({ ...input, ...(execution ? { execution } : {}) });
+      const result = this.#manager.create({
+        name: input.name,
+        prompt: input.prompt,
+        sessionId: input.sessionId,
+        schedule: input.schedule,
+        ...(input.maxFires === undefined ? {} : { maxFires: input.maxFires }),
+        ...(capabilityRequirements.length > 0 ? { capabilityRequirements } : {}),
+      });
       if ('error' in result) {
         const kind = result.error.includes('Invalid cron') ? 'invalid_schedule' : 'limit_reached';
         throw new AutomationMutationFailure(kind, result.error);
@@ -558,7 +572,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
   #requireManagedAutomation(id: string, sessionId: string): AutomationDefinition {
     const automation = this.#manager.get(id);
     if (!automation) throw new AutomationMutationFailure('not_found', 'Automation was not found');
-    if (!visibleTo(automation, sessionId)) {
+    if (automation.sessionId !== sessionId) {
       throw new AutomationMutationFailure('not_owned', 'Automation is not owned by this Session');
     }
     return automation;
@@ -649,6 +663,29 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     });
   }
 
+  #recordPrerequisiteWaiting(
+    automationId: string,
+    expectedSchedule: number | null,
+    waiting: NonNullable<AutomationDefinition['waiting']>,
+  ): Promise<boolean> {
+    return this.#exclusive(async () => {
+      const automation = this.#manager.get(automationId);
+      if (
+        !automation ||
+        automation.status !== 'active' ||
+        automation.nextFireAt !== expectedSchedule ||
+        this.#pendingFires.has(automationId)
+      ) {
+        return false;
+      }
+      const before = this.#snapshot();
+      if (this.#manager.recordPrerequisiteWaiting(automationId, waiting)) {
+        await this.#commitOrRestore(before);
+      }
+      return true;
+    });
+  }
+
   async #admitFire(
     automationId: string,
     expectedSchedule: number | null,
@@ -680,29 +717,6 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
         return undefined;
       }
       const before = this.#snapshot();
-      if (automation.kind === 'cron' && !automation.execution) {
-        try {
-          const creator = await this.#sessions.readHeaderSnapshot(automation.sessionId);
-          const unavailableReason = runtimeHostAutomationSessionUnavailableReason(creator);
-          if (unavailableReason) {
-            automation.status = 'paused';
-            automation.nextFireAt = null;
-            automation.updatedAt = this.#now();
-            automation.lastError = unavailableReason;
-            await this.#commitOrRestore(before);
-            return undefined;
-          }
-          automation.execution = executionTemplateFromHeader(creator);
-        } catch (error) {
-          if (!isSessionNotFoundError(error) && !isMissingRecord(error)) throw error;
-          automation.status = 'paused';
-          automation.nextFireAt = null;
-          automation.updatedAt = this.#now();
-          automation.lastError = 'Creator Session is unavailable; execution settings are unknown.';
-          await this.#commitOrRestore(before);
-          return undefined;
-        }
-      }
       const started = this.#manager.attemptStarted(automationId);
       if (!started) {
         await this.#commitOrRestore(before);
@@ -713,19 +727,19 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       const fire: AutomationPendingFire = {
         id: fireId,
         automationId,
-        automationKind: started.kind,
         automationName: started.name,
         prompt: started.prompt,
         scheduledFor: expectedSchedule,
-        targetSessionId:
-          started.kind === 'heartbeat' ? started.sessionId : automationSessionId(fireId),
+        targetSessionId: started.sessionId,
         turnId: this.#newId(),
         runId: this.#newId(),
         userMessageId: this.#newId(),
         status: 'admitted',
         admittedAt,
         updatedAt: admittedAt,
-        ...(started.execution ? { execution: structuredClone(started.execution) } : {}),
+        ...(started.capabilityRequirements && started.capabilityRequirements.length > 0
+          ? { capabilityRequirements: structuredClone(started.capabilityRequirements) }
+          : {}),
       };
       this.#pendingFires.set(automationId, fire);
       await this.#commitOrRestore(before);
@@ -742,7 +756,10 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     });
   }
 
-  async #recordFireDeferred(fire: AutomationPendingFire): Promise<void> {
+  async #recordFireDeferred(
+    fire: AutomationPendingFire,
+    transientDeferredSince: number,
+  ): Promise<void> {
     await this.#exclusive(async () => {
       const current = this.#pendingFires.get(fire.automationId);
       if (!current || current.id !== fire.id) return;
@@ -750,6 +767,26 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       this.#manager.recordAdmittedFireDeferred(fire.automationId);
       this.#pendingFires.set(fire.automationId, {
         ...current,
+        transientDeferredSince: current.transientDeferredSince ?? transientDeferredSince,
+        updatedAt: Math.max(current.updatedAt, this.#now()),
+      });
+      await this.#commitOrRestore(before);
+    });
+  }
+
+  async #recordFirePrerequisiteWaiting(
+    fire: AutomationPendingFire,
+    waiting: NonNullable<AutomationDefinition['waiting']>,
+  ): Promise<void> {
+    await this.#exclusive(async () => {
+      const current = this.#pendingFires.get(fire.automationId);
+      if (!current || current.id !== fire.id) return;
+      const before = this.#snapshot();
+      const waitingChanged = this.#manager.recordPrerequisiteWaiting(fire.automationId, waiting);
+      if (!waitingChanged && current.transientDeferredSince === undefined) return;
+      this.#pendingFires.set(fire.automationId, {
+        ...current,
+        transientDeferredSince: undefined,
         updatedAt: Math.max(current.updatedAt, this.#now()),
       });
       await this.#commitOrRestore(before);
@@ -782,8 +819,10 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       if (current.status === 'running') return;
       const before = this.#snapshot();
       const now = this.#now();
+      this.#manager.clearWaiting(fire.automationId);
       this.#pendingFires.set(fire.automationId, {
         ...current,
+        transientDeferredSince: undefined,
         status: 'running',
         startedAt: now,
         updatedAt: now,
@@ -873,19 +912,6 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
   }
 }
 
-function executionTemplateFromHeader(header: SessionHeader): AutomationExecutionTemplate {
-  return {
-    cwd: header.cwd,
-    ...(header.projectId === undefined ? {} : { projectId: header.projectId }),
-    backend: header.backend,
-    llmConnectionSlug: header.llmConnectionSlug,
-    model: header.model,
-    ...(header.thinkingLevel === undefined ? {} : { thinkingLevel: header.thinkingLevel }),
-    collaborationMode: header.collaborationMode ?? 'agent',
-    orchestrationMode: header.orchestrationMode ?? 'default',
-  };
-}
-
 function runFailureMessage(run: AgentRunHeader): string {
   if (run.status === 'cancelled') {
     return run.abortSource
@@ -893,10 +919,6 @@ function runFailureMessage(run: AgentRunHeader): string {
       : 'Automation run cancelled';
   }
   return run.failureMessage ?? run.failureClass ?? 'Automation run failed';
-}
-
-function visibleTo(automation: AutomationDefinition, sessionId: string): boolean {
-  return automation.sessionId === sessionId || automation.durable === true;
 }
 
 function compareAutomations(left: AutomationDefinition, right: AutomationDefinition): number {
@@ -909,7 +931,6 @@ function projectAutomation(
 ): AutomationProjection {
   return {
     id: automation.id,
-    kind: automation.kind,
     name: automation.name,
     status: automation.status,
     prompt: automation.prompt,
@@ -925,9 +946,9 @@ function projectAutomation(
     expiresAt: automation.expiresAt,
     lastError: automation.lastError,
     consecutiveFailures: automation.consecutiveFailures,
-    durable: automation.durable === true,
     deferredFireCount: automation.deferredFireCount ?? 0,
     firePending,
+    waiting: automation.waiting ? structuredClone(automation.waiting) : null,
   };
 }
 

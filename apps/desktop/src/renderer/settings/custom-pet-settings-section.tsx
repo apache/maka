@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { EmptyState } from '@astryxdesign/core';
 import { Badge, Button, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { SettingsRow, SettingsSection } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -194,11 +195,11 @@ export function CustomPetSettingsSection() {
       />
 
       {loading && library.pets.length === 0 ? (
-        <SettingsRow label={copy.loading} />
+        <EmptyState isCompact title={copy.loading} />
       ) : null}
 
       {!loading && library.pets.length === 0 ? (
-        <SettingsRow label={copy.empty} description={copy.emptyHelp} />
+        <EmptyState isCompact title={copy.empty} description={copy.emptyHelp} />
       ) : null}
 
       {library.pets.map((pet) => {

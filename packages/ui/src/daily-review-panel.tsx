@@ -25,7 +25,7 @@ import {
   Text,
   VStack,
 } from '@astryxdesign/core';
-import { ArrowLeft, CalendarDays, ChevronLeft, ChevronRight } from './icons.js';
+import { ICON_SIZE, ArrowLeft, CalendarDays, ChevronLeft, ChevronRight } from './icons.js';
 import {
   dailyReviewPanelErrorMessage,
   dailyReviewScopeKey,
@@ -275,7 +275,7 @@ export function DailyReviewPanel(props: {
                   variant="ghost"
                   size="sm"
                   isIconOnly
-                  icon={<ChevronLeft />}
+                  icon={<ChevronLeft size={ICON_SIZE.chrome} />}
                   label={copy.date.earlier(copy.date.unit.day)}
                   onClick={() => selectScope(shiftDailyReviewScope({ range, offsetDays }, -1))}
                 />
@@ -284,7 +284,7 @@ export function DailyReviewPanel(props: {
                   variant="ghost"
                   size="sm"
                   isIconOnly
-                  icon={<ChevronRight />}
+                  icon={<ChevronRight size={ICON_SIZE.chrome} />}
                   label={copy.date.later(copy.date.unit.day)}
                   isDisabled={offsetDays >= 0}
                   onClick={() => selectScope(shiftDailyReviewScope({ range, offsetDays }, 1))}
@@ -349,10 +349,12 @@ export function DailyReviewPanel(props: {
                 ))}
               </List>
             ) : (
+              /* Section-local absence (DESIGN.md §10 tier 1): the range
+                 stepper above is a scope control, not a filter, so this stays
+                 compact and actionless. */
               <EmptyState
-                icon={<CalendarDays />}
+                isCompact
                 title={resolvedView?.scope.offsetDays === 0 && resolvedView.scope.range === 1 ? copy.emptyOverview.todayTitle : copy.emptyOverview.rangeTitle(displayedRangeLabel)}
-                description={resolvedView?.scope.offsetDays === 0 && resolvedView.scope.range === 1 ? copy.emptyOverview.todayBody : copy.emptyOverview.rangeBody(displayedRangeLabel)}
               />
             )}
           </VStack>
@@ -410,7 +412,7 @@ function DailyReviewReport(props: {
   return (
     <VStack className="maka-daily-review-report" gap={5}>
       <HStack gap={2} vAlign="center" wrap="wrap">
-        <Button variant="ghost" size="sm" icon={<ArrowLeft />} label={copy.page.backToActivity} onClick={props.onBack} />
+        <Button variant="ghost" size="sm" icon={<ArrowLeft size={ICON_SIZE.chrome} />} label={copy.page.backToActivity} onClick={props.onBack} />
         <StackItem size="fill" />
         {props.onCopyMarkdown ? (
           <Button variant="secondary" size="sm" label={pendingAction === 'copy' ? copy.export.copying : copy.export.copy} isDisabled={pendingAction !== null} onClick={() => void runAction('copy', () => props.onCopyMarkdown?.(actionInput))} />
@@ -439,7 +441,7 @@ function DailyReviewReport(props: {
           {sections.map((section, index) => (
             <VStack key={section.key} gap={2}>
               {index > 0 ? <Divider /> : null}
-              <Heading level={4}>{copy.archive.section[section.key]}</Heading>
+              <Heading level={3}>{copy.archive.section[section.key]}</Heading>
               <div className="maka-daily-review-report-prose">
                 <Markdown text={section.content} />
               </div>
@@ -447,7 +449,13 @@ function DailyReviewReport(props: {
           ))}
         </VStack>
       ) : (
-        <EmptyState title={copy.archive.noContent} />
+        /* Panel empty (DESIGN.md §10 tier 2): the whole report body is empty,
+           so it carries icon and description. */
+        <EmptyState
+          icon={<CalendarDays size={ICON_SIZE.empty} />}
+          title={copy.archive.noContent}
+          description={copy.archive.noContentHelp}
+        />
       )}
     </VStack>
   );

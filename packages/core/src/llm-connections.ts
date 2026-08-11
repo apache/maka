@@ -7,6 +7,11 @@
 
 import type { BackendKind } from './session.js';
 import type { RelayModelProfiles } from './model-thinking.js';
+import type {
+  JsonObject,
+  RequestHeaderUpdate,
+  SavedRequestHeaders,
+} from './request-customization.js';
 import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from './codex-model-compatibility.js';
 import {
   CATALOG_PROVIDER_TYPES,
@@ -16,7 +21,7 @@ import {
   READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
   isWiredOAuthProvider,
-  normalizeProviderType,
+  type ApplyPatchProtocol,
   type ProviderCatalogGroup,
   type ProviderCategory,
   type ProviderDefaults,
@@ -34,9 +39,9 @@ export {
   READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
   isWiredOAuthProvider,
-  normalizeProviderType,
 };
 export type {
+  ApplyPatchProtocol,
   ProviderCatalogGroup,
   ProviderCategory,
   ProviderDefaults,
@@ -53,10 +58,20 @@ export type ConnectionAuth =
 export interface ModelInfo {
   id: string;
   displayName?: string;
+  /** Short upstream description, when the provider advertises one. */
+  description?: string;
   /** Account-advertised request wire when one provider exposes multiple model protocols. */
   apiProtocol?: 'openai-chat' | 'openai-responses' | 'anthropic-messages';
   contextWindow?: number;
+  /** Maximum provider-visible input tokens, when narrower than contextWindow. */
+  inputLimit?: number;
   maxOutputTokens?: number;
+  /** Knowledge cutoff reported by the provider or static catalog. */
+  knowledgeCutoff?: string;
+  /** Whether the model advertises structured JSON output separately from tools. */
+  structuredOutput?: boolean;
+  /** Date on which the upstream model facts were last refreshed. */
+  lastUpdated?: string;
   capabilities?: {
     chat?: boolean;
     vision?: boolean;
@@ -68,7 +83,7 @@ export interface ModelInfo {
   };
   /** Multimodal input/output support from provider catalog metadata. */
   modalities?: {
-    input: Array<'text' | 'image' | 'audio'>;
+    input: Array<'text' | 'image' | 'audio' | 'pdf'>;
     output: Array<'text' | 'image' | 'audio'>;
   };
 }
@@ -103,6 +118,8 @@ export interface RuntimeExecutionConnection {
    * (disabling a model deletes its profile).
    */
   relayModelProfiles?: RelayModelProfiles;
+  /** Additional top-level JSON properties added to model request bodies. */
+  requestBodyOverlay?: JsonObject;
   /** Free-form, non-secret per-connection data; nothing reads a key unless it is shaped for the connection's provider type. */
   extras?: Record<string, unknown>;
 }
@@ -210,6 +227,22 @@ export function reconcileConnectionAfterEnabledModelsChange(
  * non-empty inventory, fetched or a cached fallback catalog, means the user
  * has had a list in front of them.
  */
+/**
+ * Resolve a stored id against one inventory. Whether an id is superseded is a
+ * property of the inventory as well as of the caller, so this rewrites only when
+ * a caller supplied a table, the stored id is absent, AND its alias is present —
+ * the exact case where a literal comparison misreads a rename as a removal.
+ */
+function supersededModelId(
+  modelId: string,
+  live: ReadonlySet<string>,
+  aliases: Readonly<Record<string, string>> | undefined,
+): string {
+  if (aliases === undefined || live.has(modelId)) return modelId;
+  const alias = aliases[modelId];
+  return alias !== undefined && live.has(alias) ? alias : modelId;
+}
+
 export function reconcileConnectionAfterModelFetch(
   connection: {
     defaultModel?: unknown;
@@ -218,6 +251,14 @@ export function reconcileConnectionAfterModelFetch(
     hasModelInventory?: boolean;
   },
   models: readonly { id?: unknown }[],
+  options?: {
+    /**
+     * Ids this provider has renamed, mapped to their current form. Omitted by
+     * default: model ids are opaque here, so nothing is rewritten unless a
+     * caller that knows the provider's naming supplies the table.
+     */
+    readonly aliases?: Readonly<Record<string, string>>;
+  },
 ): {
   defaultModel: string;
   enabledModelIds: string[];
@@ -232,9 +273,23 @@ export function reconcileConnectionAfterModelFetch(
     liveIds.push(id);
   }
 
-  const previousDefault =
-    typeof connection.defaultModel === 'string' ? connection.defaultModel.trim() : '';
-  const previousEnabled = connectionEnabledModelIds(connection);
+  // Migrate before matching: a renamed id names a model the inventory still
+  // offers, so comparing it literally classifies a live model as retired.
+  const previousDefault = supersededModelId(
+    typeof connection.defaultModel === 'string' ? connection.defaultModel.trim() : '',
+    live,
+    options?.aliases,
+  );
+  // Dedupe after mapping: a connection holding both forms collapses onto one id
+  // here, and one of the returns below hands this list back without passing it
+  // through connectionEnabledModelIds.
+  const previousEnabled = [
+    ...new Set(
+      connectionEnabledModelIds(connection).map((id) =>
+        supersededModelId(id, live, options?.aliases),
+      ),
+    ),
+  ];
 
   if (liveIds.length === 0) {
     const defaultModel = previousDefault;
@@ -521,6 +576,9 @@ export interface CreateConnectionInput {
   enabledModelIds?: string[];
   apiKey?: string;
   relayModelProfiles?: RelayModelProfiles;
+  /** Sensitive values are accepted only for initial creation and stored in the credential vault. */
+  requestHeaders?: Readonly<Record<string, string>>;
+  requestBodyOverlay?: JsonObject;
   extras?: Record<string, unknown>;
 }
 
@@ -543,56 +601,22 @@ export interface UpdateConnectionInput {
    * only `openai-compatible`, only for `enabledModelIds`).
    */
   relayModelProfiles?: RelayModelProfiles | null;
+  requestBodyOverlay?: JsonObject | null;
   extras?: Record<string, unknown>;
 }
 
-export function migrateConnectionV1ToV2(old: unknown): LlmConnection {
-  const value = old as Partial<LlmConnection> & {
-    backend?: string;
-    authType?: string;
-    slug?: string;
-    name?: string;
-    defaultModel?: string;
-    baseUrl?: string;
-    createdAt?: number;
-  };
-  if (value.providerType) {
-    return {
-      ...value,
-      providerType: normalizeProviderType(value.providerType),
-      enabledModelIds: connectionEnabledModelIds(value),
-    } as LlmConnection;
-  }
-  if (!value.slug) throw new Error('Cannot migrate connection without slug');
+export type { RequestHeaderUpdate, SavedRequestHeaders } from './request-customization.js';
 
-  const now = Date.now();
-  if (value.backend === 'claude' && value.authType === 'oauth_token') {
-    return {
-      slug: value.slug,
-      name: value.name ?? value.slug,
-      providerType: 'claude-subscription',
-      ...(value.baseUrl ? { baseUrl: value.baseUrl } : {}),
-      defaultModel: value.defaultModel || 'claude-sonnet-4-5-20250929',
-      enabled: false,
-      enabledModelIds: [value.defaultModel || 'claude-sonnet-4-5-20250929'],
-      createdAt: value.createdAt ?? now,
-      updatedAt: now,
-    };
+export function normalizePersistedConnection(input: unknown): LlmConnection {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Invalid connection: expected an object');
   }
-
-  if (value.backend === 'claude' || value.backend === undefined) {
-    return {
-      slug: value.slug,
-      name: value.name ?? value.slug,
-      providerType: 'anthropic',
-      ...(value.baseUrl ? { baseUrl: value.baseUrl } : {}),
-      defaultModel: value.defaultModel || 'claude-sonnet-4-5-20250929',
-      enabled: true,
-      enabledModelIds: [value.defaultModel || 'claude-sonnet-4-5-20250929'],
-      createdAt: value.createdAt ?? now,
-      updatedAt: now,
-    };
+  const value = input as Partial<LlmConnection>;
+  if (typeof value.providerType !== 'string' || !value.providerType) {
+    throw new Error('Invalid connection: providerType is required');
   }
-
-  throw new Error(`Cannot migrate connection ${value.slug} with backend=${value.backend}`);
+  return {
+    ...value,
+    enabledModelIds: connectionEnabledModelIds(value),
+  } as LlmConnection;
 }

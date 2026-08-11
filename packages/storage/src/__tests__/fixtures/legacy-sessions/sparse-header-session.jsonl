@@ -1,4 +1,0 @@
-{"id":"legacy-sparse-0001","workspaceRoot":"/Users/fixture/Library/Application Support/Maka/workspaces/default","cwd":"/Users/fixture/work/sparse-project","createdAt":1783920000000,"lastUsedAt":1783920010000,"name":"Sparse Session","isFlagged":false,"isArchived":false,"hasUnread":false,"backend":"claude","llmConnectionSlug":"anthropic-compatible","connectionLocked":true,"model":"","schemaVersion":1}
-{"type":"user","id":"msg-user-sparse-1","turnId":"turn-sparse-1","ts":1783920005000,"text":"hello from a sparse session"}
-{"type":"turn_state","id":"msg-turnstate-sparse","turnId":"turn-sparse-1","ts":1783920005000,"status":"running","partialOutputRetained":false}
-{"type":"turn_state","id":"msg-turnstate-sparse-done","turnId":"turn-sparse-1","ts":1783920010000,"status":"completed","partialOutputRetained":false}

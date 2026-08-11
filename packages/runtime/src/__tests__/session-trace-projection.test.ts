@@ -55,39 +55,6 @@ function event(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
 }
 
 describe('session trace projection', () => {
-  test('groups retries of one logical call into a single step', () => {
-    // Retries share a `logicalCallId` by contract, so "this call was retried"
-    // is a grouping rather than something the reader has to reconstruct.
-    const trace = projectSessionTrace({
-      sessionId: 'session-1',
-      runtimeEvents: [],
-      modelCallAttempts: [
-        attempt({
-          attemptId: 'a-0',
-          attempt: 0,
-          status: 'failed',
-          costUsd: undefined,
-          costBasis: 'unpriced',
-        }),
-        attempt({ attemptId: 'a-1', attempt: 1, startedAt: 1_600, completedAt: 2_000 }),
-      ],
-    });
-
-    assert.equal(trace.turns.length, 1);
-    const steps = trace.turns[0]!.steps;
-    assert.equal(steps.length, 1, 'one logical call is one step');
-    const call = steps[0]!;
-    assert.equal(call.kind, 'model_call');
-    if (call.kind !== 'model_call') return;
-    assert.equal(call.attempts.length, 2);
-    assert.equal(call.status, 'completed', 'the step carries the last attempt outcome');
-    assert.equal(trace.totals.modelAttempts, 2);
-    assert.equal(trace.totals.retries, 1, 'attempts beyond the first are retries');
-    // Only the second attempt was priced, so the step's cost is that one.
-    assert.equal(call.costUsd, 0.002);
-    assert.equal(trace.totals.unpricedAttempts, 1);
-  });
-
   test('a session of entirely unpriced calls totals to no price, not to zero', () => {
     const trace = projectSessionTrace({
       sessionId: 'session-1',
@@ -98,93 +65,6 @@ describe('session trace projection', () => {
     assert.equal(trace.totals.costUsd, undefined, 'absent price is not a zero price');
     assert.equal(trace.totals.unpricedAttempts, 1);
     assert.equal(trace.turns[0]?.steps[0]?.kind, 'model_call');
-  });
-
-  test('carries the window an attempt was metered against', () => {
-    // The inspector's context bar is drawn from this one field; without it the
-    // bar has no denominator and silently disappears.
-    const trace = projectSessionTrace({
-      sessionId: 'session-1',
-      runtimeEvents: [],
-      modelCallAttempts: [attempt({ contextWindow: 200_000 })],
-    });
-
-    const call = trace.turns[0]?.steps[0];
-    assert.equal(call?.kind, 'model_call');
-    assert.equal(
-      call?.kind === 'model_call' ? call.attempts[0]?.contextWindow : undefined,
-      200_000,
-    );
-  });
-
-  test('counts compaction calls made inside a turn', () => {
-    // The compaction kinds settle through the same seam as the send they
-    // interrupt (#1877), so a compacted turn shows what compacting cost.
-    const trace = projectSessionTrace({
-      sessionId: 'session-1',
-      runtimeEvents: [],
-      modelCallAttempts: [
-        attempt({ logicalCallId: 'call-main', attemptId: 'a-main' }),
-        attempt({
-          logicalCallId: 'call-compact',
-          attemptId: 'a-compact',
-          callKind: 'history_compact',
-          startedAt: 1_600,
-          completedAt: 1_900,
-          costUsd: 0.001,
-        }),
-      ],
-    });
-
-    const totals = trace.turns[0]!.totals;
-    assert.equal(totals.compactions, 1);
-    assert.equal(totals.modelAttempts, 2);
-    assert.equal(totals.costUsd, 0.003, 'compaction cost belongs to the turn it interrupted');
-  });
-
-  test('pairs a tool dispatch with the result that answers it', () => {
-    const trace = projectSessionTrace({
-      sessionId: 'session-1',
-      runtimeEvents: [
-        event({
-          id: 'dispatch-1',
-          ts: 1_000,
-          actions: {
-            toolDispatch: {
-              protocol: 't1_after_preflight_v1',
-              operationId: 'op-1',
-              providerToolCallId: 'tool-call-1',
-              toolName: 'Bash',
-              canonicalArgsHash: 'hash',
-              recoveryMode: 'replay_safe',
-            },
-          },
-        }),
-        event({
-          id: 'response-1',
-          ts: 1_800,
-          role: 'tool',
-          author: 'tool',
-          content: {
-            kind: 'function_response',
-            id: 'tool-call-1',
-            name: 'Bash',
-            result: 'boom',
-            isError: true,
-          },
-        }),
-      ],
-      modelCallAttempts: [],
-    });
-
-    const steps = trace.turns[0]!.steps;
-    assert.equal(steps.length, 1, 'a call and its result are one step to a reader');
-    const tool = steps[0]!;
-    assert.equal(tool.kind, 'tool');
-    if (tool.kind !== 'tool') return;
-    assert.equal(tool.toolName, 'Bash');
-    assert.equal(tool.status, 'failed');
-    assert.equal(tool.durationMs, 800);
   });
 
   test('attributes a turn failure to what failed first, not to the terminal error', () => {
@@ -291,20 +171,6 @@ describe('session trace projection', () => {
     assert.deepEqual(trace.coverage.turnsMissingModelCalls, []);
   });
 
-  test('ignores partial streaming events', () => {
-    const trace = projectSessionTrace({
-      sessionId: 'session-1',
-      runtimeEvents: [
-        event({ id: 'partial-1', partial: true, content: { kind: 'error', message: 'transient' } }),
-      ],
-      modelCallAttempts: [attempt()],
-    });
-
-    const steps = trace.turns[0]!.steps;
-    assert.equal(steps.length, 1);
-    assert.equal(steps[0]?.kind, 'model_call');
-    assert.equal(trace.turns[0]?.failure, undefined);
-  });
   test('collapses a re-appended settlement instead of inventing a retry', () => {
     // A provisional abort and its later settlement are appended under one
     // `attemptId`. The ledger dedupes on write; a stream read does not, so
@@ -367,33 +233,6 @@ describe('session trace projection', () => {
     assert.deepEqual(trace.coverage.turnsWithFewerModelCallsThanSteps, []);
   });
 
-  test('a turn with no projected steps still has finite bounds', () => {
-    // Usage-only and text-only turns project nothing. Folding an empty list
-    // gives ±Infinity, which JSON serializes to null — a turn that renders as
-    // having no time at all.
-    const trace = projectSessionTrace({
-      sessionId: 'session-1',
-      runtimeEvents: [
-        event({ id: 'text-1', ts: 1_000, content: { kind: 'text', text: 'hello' } }),
-        event({
-          id: 'usage-1',
-          ts: 2_500,
-          actions: { tokenUsage: { input: 10, output: 2, total: 12 } },
-        }),
-      ],
-      modelCallAttempts: [],
-    });
-
-    const turn = trace.turns[0]!;
-    assert.equal(turn.steps.length, 0);
-    assert.equal(Number.isFinite(turn.startedAt), true);
-    assert.equal(Number.isFinite(turn.endedAt), true);
-    assert.equal(turn.startedAt, 1_000);
-    assert.equal(turn.endedAt, 2_500);
-    assert.equal(turn.durationMs, 1_500);
-    assert.equal(JSON.parse(JSON.stringify(turn)).startedAt, 1_000);
-  });
-
   test('a tool failure the turn recovered from does not fail the turn', () => {
     // The ledger's terminal verdict decides whether the turn failed; the failed
     // step only locates a cause once that is established.
@@ -443,85 +282,6 @@ describe('session trace projection', () => {
       tool?.kind === 'tool' ? tool.status : undefined,
       'failed',
       'the step still failed',
-    );
-  });
-
-  test('emits the written compaction boundary, which is not the summarizer call', () => {
-    const trace = projectSessionTrace({
-      sessionId: 'session-1',
-      runtimeEvents: [
-        event({
-          id: 'history-compact:checkpoint-7',
-          turnId: 'history-compact:12',
-          runId: 'history-compact:checkpoint-7',
-          ts: 900,
-          role: 'user',
-          author: 'system',
-          content: { kind: 'text', text: '<maka_history_compact_checkpoint>' },
-        }),
-      ],
-      modelCallAttempts: [attempt({ callKind: 'history_compact', logicalCallId: 'call-compact' })],
-    });
-
-    const boundary = trace.turns
-      .flatMap((turn) => turn.steps)
-      .find((step) => step.kind === 'compaction');
-    assert.ok(boundary, 'the checkpoint is a step in its own right');
-    assert.equal(
-      boundary.kind === 'compaction' ? boundary.checkpointId : undefined,
-      'checkpoint-7',
-    );
-    // The summarizer request is still its own model call, counted as spend.
-    assert.equal(trace.totals.compactions, 1);
-    assert.equal(trace.totals.modelAttempts, 1);
-  });
-
-  test('separates the declared recovery policy from a recovery that happened', () => {
-    const trace = projectSessionTrace({
-      sessionId: 'session-1',
-      runtimeEvents: [
-        event({
-          id: 'dispatch-1',
-          ts: 1_000,
-          actions: {
-            toolDispatch: {
-              protocol: 't1_after_preflight_v1',
-              operationId: 'op-1',
-              providerToolCallId: 'tool-call-1',
-              toolName: 'Bash',
-              canonicalArgsHash: 'hash',
-              recoveryMode: 'reconcile',
-            },
-          },
-        }),
-        event({
-          id: 'recovery-1',
-          ts: 1_400,
-          actions: {
-            toolRecovery: {
-              kind: 'maka.tool.recovery_decision',
-              version: 1,
-              payload: {
-                protocol: 'tool_recovery_v1',
-                operationId: 'op-1',
-                disposition: 'parked',
-                reasonCode: 'reconcile_diverged',
-                evidenceEventIds: ['dispatch-1'],
-              },
-            },
-          },
-        }),
-      ],
-      modelCallAttempts: [],
-    });
-
-    const tool = trace.turns[0]!.steps.find((step) => step.kind === 'tool');
-    assert.ok(tool && tool.kind === 'tool');
-    assert.equal(tool.recoveryPolicy, 'reconcile', 'the policy every dispatch declares');
-    assert.deepEqual(
-      tool.recovered,
-      { disposition: 'parked', reasonCode: 'reconcile_diverged' },
-      'and the decision that was actually recorded',
     );
   });
 

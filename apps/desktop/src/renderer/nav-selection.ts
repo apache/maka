@@ -14,7 +14,7 @@ export type NavigationState = {
 
 const DEFAULT_MODULE_MEMORY: NavModuleMemory = {
   extensions: 'skills',
-  automations: 'plan-reminders',
+  automations: 'scheduled-tasks',
 };
 
 function defaultNavigationState(): NavigationState {
@@ -33,7 +33,7 @@ function isExtensionModule(value: unknown): value is ExtensionModule {
 }
 
 function isAutomationModule(value: unknown): value is AutomationModule {
-  return value === 'plan-reminders' || value === 'daily-review';
+  return value === 'scheduled-tasks' || value === 'daily-review';
 }
 
 function parseSelection(value: unknown): NavSelection | null {
@@ -57,7 +57,7 @@ function parseSelection(value: unknown): NavSelection | null {
     return { section: 'automations', module: 'daily-review' };
   }
   if (candidate.section === 'automations') {
-    return { section: 'automations', module: 'plan-reminders' };
+    return { section: 'automations', module: 'scheduled-tasks' };
   }
   return null;
 }

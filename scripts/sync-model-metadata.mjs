@@ -3,6 +3,34 @@ import { pathToFileURL } from 'node:url';
 
 const SOURCE_URL = 'https://models.dev/api.json';
 const DEFAULT_OUTPUT = 'packages/core/src/model-metadata.generated.ts';
+const DEFAULT_PRICING_OUTPUT = 'packages/runtime/src/telemetry/model-pricing.generated.ts';
+// models.dev cost fields describe the catalog provider's public API. They are
+// not automatically the rate a user pays on an OAuth, free, subscription, or
+// plan access path. Such paths stay unpriced unless builtin-pricing.ts carries
+// an explicit rate for that exact path.
+export const PRICING_EXCLUDED_PROVIDER_TYPES = new Set([
+  'alibaba-coding-plan-cn',
+  'alibaba-coding-plan',
+  'alibaba-token-plan-cn',
+  'alibaba-token-plan',
+  'github-copilot',
+  'gemini-cli',
+  'kimi-coding-plan',
+  'minimax-coding-plan',
+  'MiniMax-cn',
+  'opencode-free',
+  'opencode-go',
+  'stepfun-ai-step-plan',
+  'stepfun-step-plan',
+  'tencent-coding-plan',
+  'tencent-token-plan',
+  'volcengine-agent-plan',
+  'volcengine-coding-plan',
+  'xiaomi-token-plan-ams',
+  'xiaomi-token-plan-cn',
+  'xiaomi-token-plan-sgp',
+  'zai-coding-plan',
+]);
 export const PROVIDERS = {
   anthropic: 'anthropic',
   alibaba: 'alibaba',
@@ -56,6 +84,9 @@ export const PROVIDERS = {
 export async function main(argv = process.argv) {
   const inputPath = option('--input', argv);
   const outputPath = option('--output', argv) ?? DEFAULT_OUTPUT;
+  const pricingOutputPath =
+    option('--pricing-output', argv) ??
+    (outputPath === DEFAULT_OUTPUT ? DEFAULT_PRICING_OUTPUT : undefined);
   const catalog = JSON.parse(
     inputPath
       ? await readFile(inputPath, 'utf8')
@@ -66,6 +97,7 @@ export async function main(argv = process.argv) {
   );
 
   const generated = {};
+  const generatedPricing = [];
   const generatedProviders = {};
   const generatedModelProviderOverrides = {};
   const directory = {};
@@ -109,6 +141,14 @@ export async function main(argv = process.argv) {
         .filter(([, model]) => model.provider !== undefined)
         .map(([id, model]) => [id, toModelProviderOverride(sourceId, id, model.provider)]),
     );
+    if (!PRICING_EXCLUDED_PROVIDER_TYPES.has(providerType)) {
+      generatedPricing.push(
+        ...Object.entries(provider.models)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([id, model]) => toPricing(providerType, id, model))
+          .filter((pricing) => pricing !== undefined),
+      );
+    }
   }
 
   const providerTypeUnion = Object.keys(PROVIDERS).map(JSON.stringify).join(' | ');
@@ -149,6 +189,9 @@ export async function main(argv = process.argv) {
   }
   lines.push('};', '');
   await writeFile(outputPath, lines.join('\n'));
+  if (pricingOutputPath) {
+    await writeFile(pricingOutputPath, buildPricingModule(generatedPricing));
+  }
 }
 
 function toModelProviderOverride(providerId, modelId, override) {
@@ -173,6 +216,7 @@ export function toMetadata(providerId, modelId, provider, model) {
     typeof provider.doc !== 'string' ||
     typeof model?.name !== 'string' ||
     (model.modalities !== undefined && !Array.isArray(model.modalities?.input)) ||
+    (model.modalities !== undefined && !Array.isArray(model.modalities?.output)) ||
     typeof model.limit?.context !== 'number' ||
     typeof model.limit?.output !== 'number' ||
     typeof model.reasoning !== 'boolean' ||
@@ -180,6 +224,17 @@ export function toMetadata(providerId, modelId, provider, model) {
   ) {
     throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
   }
+  if (
+    (model.description !== undefined && typeof model.description !== 'string') ||
+    (model.knowledge !== undefined && typeof model.knowledge !== 'string') ||
+    (model.limit?.input !== undefined &&
+      (typeof model.limit.input !== 'number' || !Number.isFinite(model.limit.input))) ||
+    (model.structured_output !== undefined && typeof model.structured_output !== 'boolean') ||
+    (model.last_updated !== undefined && typeof model.last_updated !== 'string')
+  ) {
+    throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
+  }
+  const lifecycle = lifecycleForStatus(providerId, modelId, model.status);
   const reasoningOptions = model.reasoning_options ?? [];
   if (!Array.isArray(reasoningOptions)) {
     throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
@@ -203,10 +258,15 @@ export function toMetadata(providerId, modelId, provider, model) {
   }
   return {
     displayName: model.name,
-    lifecycle: model.status === 'deprecated' ? 'deprecated' : 'active',
+    ...(model.description !== undefined ? { description: model.description } : {}),
+    lifecycle,
     docsUrl: provider.doc,
     contextWindow: model.limit?.context,
+    ...(model.limit?.input !== undefined ? { inputLimit: model.limit.input } : {}),
     maxOutputTokens: model.limit?.output,
+    ...(model.knowledge !== undefined ? { knowledgeCutoff: model.knowledge } : {}),
+    ...(model.structured_output !== undefined ? { structuredOutput: model.structured_output } : {}),
+    ...(model.last_updated !== undefined ? { lastUpdated: model.last_updated } : {}),
     capabilities: {
       ...(model.modalities ? { vision: model.modalities.input.includes('image') } : {}),
       reasoning: model.reasoning === true,
@@ -224,7 +284,8 @@ export function toMetadata(providerId, modelId, provider, model) {
       ? {
           modalities: {
             input: model.modalities.input.filter(
-              (value) => value === 'text' || value === 'image' || value === 'audio',
+              (value) =>
+                value === 'text' || value === 'image' || value === 'audio' || value === 'pdf',
             ),
             output: (Array.isArray(model.modalities.output) ? model.modalities.output : []).filter(
               (value) => value === 'text' || value === 'image' || value === 'audio',
@@ -233,6 +294,77 @@ export function toMetadata(providerId, modelId, provider, model) {
         }
       : {}),
   };
+}
+
+export function toPricing(providerType, modelId, model) {
+  const cost = model?.cost;
+  if (cost === undefined) return undefined;
+  if (!cost || typeof cost !== 'object' || Array.isArray(cost)) {
+    throw new Error(`models.dev model ${providerType}/${modelId} has an unsupported cost shape`);
+  }
+  // PricingConfig and computeCost() currently represent one flat rate. Do
+  // not publish a base rate for a model whose actual price depends on input
+  // volume or an explicit tier table; that would systematically undercharge
+  // long-context requests until the runtime can select a tier by usage.
+  if (
+    Object.prototype.hasOwnProperty.call(cost, 'context_over_200k') ||
+    Object.prototype.hasOwnProperty.call(cost, 'tiers')
+  ) {
+    return undefined;
+  }
+  const inputUsdPer1M = priceNumber(providerType, modelId, cost.input, 'input');
+  const outputUsdPer1M = priceNumber(providerType, modelId, cost.output, 'output');
+  const cacheReadUsdPer1M = optionalPriceNumber(
+    providerType,
+    modelId,
+    cost.cache_read,
+    'cache_read',
+  );
+  const cacheWriteUsdPer1M = optionalPriceNumber(
+    providerType,
+    modelId,
+    cost.cache_write,
+    'cache_write',
+  );
+  return {
+    modelKey: `${providerType}:${modelId}`,
+    inputUsdPer1M,
+    outputUsdPer1M,
+    ...(cacheReadUsdPer1M !== undefined ? { cacheReadUsdPer1M } : {}),
+    ...(cacheWriteUsdPer1M !== undefined ? { cacheWriteUsdPer1M } : {}),
+  };
+}
+
+function lifecycleForStatus(providerId, modelId, status) {
+  if (status === undefined) return 'active';
+  if (status === 'active' || status === 'beta' || status === 'alpha' || status === 'deprecated') {
+    return status;
+  }
+  throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported status`);
+}
+
+function priceNumber(providerType, modelId, value, field) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new Error(`models.dev model ${providerType}/${modelId} has an unsupported cost.${field}`);
+  }
+  return value;
+}
+
+function optionalPriceNumber(providerType, modelId, value, field) {
+  return value === undefined ? undefined : priceNumber(providerType, modelId, value, field);
+}
+
+function buildPricingModule(pricing) {
+  const lines = [
+    '// Generated by scripts/sync-model-metadata.mjs from https://models.dev/api.json.',
+    '// Do not edit by hand; special access-path pricing belongs in builtin-pricing.ts.',
+    "import type { PricingConfig } from '@maka/core/usage-stats/types';",
+    '',
+    'export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [',
+  ];
+  for (const entry of pricing) lines.push(`  ${JSON.stringify(entry)},`);
+  lines.push('];', '');
+  return lines.join('\n');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

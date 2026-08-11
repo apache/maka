@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GoalManager, goalCheckpoint } from '../goal-state.js';
-import { GoalContinuationCoordinator } from '../goal-continuation.js';
+import { GoalContinuationCoordinator, volatileGoalDurability } from '../goal-continuation.js';
 import {
   buildGoalTools,
   GOAL_SET_TOOL_NAME,
@@ -37,6 +37,7 @@ function makeTools(getTokenCount?: (s: string) => number) {
     goalManager: mgr,
     evaluator: { evaluate: async () => '{"met":false,"reason":"not evaluated"}' },
     getRecentContext: async () => '',
+    durability: volatileGoalDurability,
     admitTurn: () => ({ kind: 'unavailable', reason: 'tool test' }),
   });
   assert.equal(goalContinuation.beginObservedTurn(SESSION, 't').kind, 'registered');

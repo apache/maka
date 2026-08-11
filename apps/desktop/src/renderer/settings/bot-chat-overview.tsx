@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { ChevronRight, MessageSquare } from '@maka/ui/icons';
+import { ICON_SIZE, ChevronRight } from '@maka/ui/icons';
 import type { BotChannelSettings, BotProvider } from '@maka/core';
 import type { BotStatus } from '@maka/runtime';
 import { BOT_PROVIDERS } from '@maka/core/settings';
@@ -74,12 +74,9 @@ export function BotChatOverview(props: {
       )}
       <SettingsSection titleId="remote-access-active-heading" title={copy.active} description={copy.sortHint}>
           {activeChannels.length === 0 ? (
-            <EmptyState
-              isCompact
-              icon={<MessageSquare />}
-              title={copy.empty}
-              description={copy.emptyHelp}
-            />
+            // Section-local absence (DESIGN.md §10 tier 1): no icon, no
+            // description — the catalog below is the way forward.
+            <EmptyState isCompact title={copy.empty} />
           ) : activeChannels.map((entry) => (
             <Item
               key={entry.provider}
@@ -101,7 +98,7 @@ export function BotChatOverview(props: {
                   {botOverviewDetail(entry.status, entry.currentError, entry.copy.detail, entry.liveOperational, locale)}
                 </span>
               )}
-              endContent={<span className="settingsRemoteAccessItemActions"><ChevronRight size={16} aria-hidden="true" /></span>}
+              endContent={<span className="settingsRemoteAccessItemActions"><ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" /></span>}
               onClick={() => props.onOpenChannel(entry.provider)}
             />
           ))}
@@ -115,7 +112,7 @@ export function BotChatOverview(props: {
               startContent={<BotBrandLogo provider={entry.provider} />}
               label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span className="settingsRemoteAccessItemTitle" aria-label={copy.connectAria(botCopy.providers[entry.provider].label)}>{botCopy.providers[entry.provider].label}</span>}
               description={botCopy.providers[entry.provider].help}
-              endContent={<span className="settingsRemoteAccessItemActions"><ChevronRight size={16} aria-hidden="true" /></span>}
+              endContent={<span className="settingsRemoteAccessItemActions"><ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" /></span>}
               onClick={() => props.onOpenChannel(entry.provider)}
             />
           ))}

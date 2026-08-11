@@ -42,6 +42,35 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('keeps staging imports outside the catalog pagination domain', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-staging-catalog-'));
+    const store = createSessionStore(root);
+    try {
+      const visible = await store.create(makeInput({ name: 'Visible Session' }));
+      const staging = await Promise.all(
+        Array.from({ length: 32 }, (_, index) =>
+          store.createImportedSession(makeInput({ name: `Staging Session ${index}` }), []),
+        ),
+      );
+
+      const page = await store.listCatalogPage(undefined, undefined, 32);
+
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') assert.fail('expected a catalog page');
+      assert.deepEqual(
+        page.records.map((record) => record.header.id),
+        [visible.id],
+      );
+      assert.equal(page.hasMore, false);
+      await assert.rejects(store.readCatalogRecord(staging[0]!.id), (error) =>
+        isSessionNotFoundError(error),
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('appending the first user message locks the session before any read', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-lock-heal-'));
     const store = createSessionStore(root);

@@ -8,12 +8,12 @@ The package root barrel and the subpaths declared in `package.json` are supporte
 
 - `SessionManager` for session and turn orchestration.
 - `BackendRegistry` and `AgentBackend` for backend selection.
-- `AiSdkBackend`, `PiAgentBackend`, and `FakeBackend` for the existing backend implementations.
+- `AiSdkBackend` and `FakeBackend` for the existing backend implementations.
 - Session execution-boundary APIs for managed sandbox expansion and explicit bypass.
 - `buildBuiltinTools()` and the workspace executor interfaces for tool composition.
 - `RuntimeRunner`, runtime events, projections, and recovery helpers for invocation lifecycle.
 
-Desktop composition lives in `apps/desktop/src/main/main.ts`. Headless composition lives in `packages/headless`; it must supply real executor/backend wiring explicitly.
+Desktop composition lives in `apps/desktop/src/main/main.ts`. Other clients execute Maka through Runtime Host rather than composing Runtime directly.
 
 ## Extension rules
 

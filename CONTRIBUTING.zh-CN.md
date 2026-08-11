@@ -63,7 +63,7 @@ npm --workspace maka-agent exec -- maka          # TUI
 npm --workspace maka-agent exec -- maka run "…"  # 非交互地跑一个 Turn
 ```
 
-Headless 的命令见 [`packages/headless/README.md`](./packages/headless/README.md)。
+Eval 的命令与 contract 见 [`packages/eval`](./packages/eval)。
 
 ### 构建
 
@@ -71,7 +71,7 @@ Headless 的命令见 [`packages/headless/README.md`](./packages/headless/README
 
 ```
 code-mode → core → storage → mcp → runtime → runtime-host
-          → computer-use → headless → maka-agent → ui → desktop
+          → computer-use → eval → maka-agent → ui → desktop
 ```
 
 只有依赖都已构建好时，单独构建某个 workspace 才会成功——拿过期的 `@maka/core` 去编译 `@maka/runtime`，产生的类型错误看起来会像是你刚写的代码有问题。拿不准就从根目录构建。
@@ -92,7 +92,6 @@ npm --workspace @maka/desktop run build:renderer  # 渲染层
 ```sh
 npm test                                 # 全部 workspace
 npm --workspace @maka/core test          # 单个 workspace
-npm run test:scripts                     # 仓库脚本
 npm --workspace @maka/desktop run e2e    # Playwright
 ```
 
@@ -142,7 +141,7 @@ CI 里名为 `typecheck` 的 job 会在 `bash -e` 下跑完上面全部命令，
 <type>(<scope>): <summary>
 ```
 
-`<type>` 就是[分支命名](#分支命名)那一套。`<scope>` 是改动的 workspace 或区域——`desktop`、`ui`、`runtime`、`headless`、`settings`、`runtime-host`、`storage`、`core`、`cli`、`deps`、`computer-use`、`scripts`、`release`、`windows`、`e2e`、`security` 等——`git log` 里能看到实际在用的集合。
+`<type>` 就是[分支命名](#分支命名)那一套。`<scope>` 是改动的 workspace 或区域——`desktop`、`ui`、`runtime`、`eval`、`settings`、`runtime-host`、`storage`、`core`、`cli`、`deps`、`computer-use`、`scripts`、`release`、`windows`、`e2e`、`security` 等——`git log` 里能看到实际在用的集合。
 
 ```
 fix(desktop): classify provider action errors from the unwrapped IPC message

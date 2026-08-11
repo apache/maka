@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { AlertOctagon, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, AlertOctagon, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortMarkerLabel } from './chat-display-helpers.js';
@@ -46,17 +46,6 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
-
-/* A size has to be passed: Astryx's `sm` button bounds the icon slot at 16px
-   (Button.tsx's `iconSizeStyles`) but does not resize the glyph inside it, so an
-   unsized lucide icon keeps its own 24px height and renders 16×24, squashed.
-
-   14 rather than the slot's own 16, because `--icon-size` (maka-tokens.css)
-   scopes that token to "nav + button icons" and sends "dense meta (12-14)" back
-   to the call site — this row is dense meta. 14 is also where the same position
-   already sits most often across the app. Named rather than repeated at four
-   call sites: one value, one place to read why. */
-const FOOTER_ICON_SIZE = 14;
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -189,7 +178,7 @@ const MessageBody = memo(function MessageBody(props: {
               <UiIconButton
                 label={editActionLabel}
                 tooltip={editActionLabel}
-                icon={<Pencil size={FOOTER_ICON_SIZE} aria-hidden="true" />}
+                icon={<Pencil size={ICON_SIZE.control} aria-hidden="true" />}
                 variant="ghost"
                 size="sm"
                 className={markerVariants({ variant: 'footer-action' })}
@@ -281,8 +270,8 @@ function MessageCopyButton(props: { text: string }) {
         ? copyText.copyFailed
         : baseLabel;
   const icon = copied
-    ? <Check size={FOOTER_ICON_SIZE} aria-hidden="true" />
-    : <Copy size={FOOTER_ICON_SIZE} aria-hidden="true" />;
+    ? <Check size={ICON_SIZE.control} aria-hidden="true" />
+    : <Copy size={ICON_SIZE.control} aria-hidden="true" />;
 
   return (
     <UiIconButton
@@ -445,7 +434,7 @@ export const TurnView = memo(function TurnView(props: {
               data-direction="forward"
               tooltip={badge.tooltip ?? badge.label}
               onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
-              icon={<GitBranch size={11} aria-hidden="true" />}
+              icon={<GitBranch size={ICON_SIZE.meta} aria-hidden="true" />}
               label={badge.label}
             />
           ))}
@@ -459,7 +448,7 @@ export const TurnView = memo(function TurnView(props: {
           role="note"
           title={copy.automationTitle(turn.user.hostOrigin.automationId)}
         >
-          <Timer size={12} aria-hidden="true" />
+          <Timer size={ICON_SIZE.meta} aria-hidden="true" />
           <span>{copy.automationTriggered}</span>
         </Marker>
       )}
@@ -469,7 +458,7 @@ export const TurnView = memo(function TurnView(props: {
           role="note"
           title={copy.goalTitle(turn.user.hostOrigin.goalId)}
         >
-          <RefreshCcw size={12} aria-hidden="true" />
+          <RefreshCcw size={ICON_SIZE.meta} aria-hidden="true" />
           <span>{copy.goalContinued}</span>
         </Marker>
       )}
@@ -479,7 +468,7 @@ export const TurnView = memo(function TurnView(props: {
           role="note"
           title={copy.agentGraphTitle(turn.user.hostOrigin.graphId)}
         >
-          <GitBranch size={12} aria-hidden="true" />
+          <GitBranch size={ICON_SIZE.meta} aria-hidden="true" />
           <span>{copy.agentGraphTriggered}</span>
         </Marker>
       )}
@@ -563,14 +552,14 @@ export const TurnView = memo(function TurnView(props: {
           <div className="maka-assistant-answer-content">
             {turn.status === 'aborted' && (
               <Marker variant="aborted" role="status">
-                <Ban size={12} aria-hidden="true" />
+                <Ban size={ICON_SIZE.meta} aria-hidden="true" />
                 <em>{turnAbortMarkerLabel(turn.abortSource, locale)}</em>
               </Marker>
             )}
             {turn.status === 'failed' && props.failedReasonLabel && (
               <Marker variant="failed-banner" role="alert">
                 <Marker as="span" variant="failed-icon" aria-hidden="true">
-                  <AlertOctagon size={14} />
+                  <AlertOctagon size={ICON_SIZE.control} />
                 </Marker>
                 <span>{props.failedReasonLabel}</span>
                 {(props.safeResumeAction?.detail ?? props.failedRecoveryLabel) && (
@@ -632,7 +621,7 @@ export const TurnView = memo(function TurnView(props: {
                   data-direction="reverse"
                   tooltip={badge.tooltip ?? badge.label}
                   onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
-                  icon={<GitBranch size={11} aria-hidden="true" />}
+                  icon={<GitBranch size={ICON_SIZE.meta} aria-hidden="true" />}
                   label={badge.label}
                 />
               ))}
@@ -788,7 +777,7 @@ function TurnFooterActions(props: {
               ? (copyPhase ? copyFeedbackLabel : (action.tooltip ?? action.label))
               : (action.tooltip ?? action.label);
             const icon = isCopyAction && copyPhase === 'copied'
-              ? <Check size={FOOTER_ICON_SIZE} aria-hidden="true" />
+              ? <Check size={ICON_SIZE.control} aria-hidden="true" />
               : STATUS_FOOTER_ICON[action.id];
             return (
               <UiIconButton
@@ -815,10 +804,10 @@ function TurnFooterActions(props: {
 }
 
 const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
-  regenerate: <RefreshCcw size={FOOTER_ICON_SIZE} aria-hidden="true" />,
-  branch: <GitBranch size={FOOTER_ICON_SIZE} aria-hidden="true" />,
-  copy: <Copy size={FOOTER_ICON_SIZE} aria-hidden="true" />,
-  info: <Info size={FOOTER_ICON_SIZE} aria-hidden="true" />,
+  regenerate: <RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />,
+  branch: <GitBranch size={ICON_SIZE.control} aria-hidden="true" />,
+  copy: <Copy size={ICON_SIZE.control} aria-hidden="true" />,
+  info: <Info size={ICON_SIZE.control} aria-hidden="true" />,
 };
 
 /** How long one working phrase holds before the next fades in. */
@@ -932,7 +921,7 @@ export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }
       role="status"
       aria-live="polite"
     >
-      <RefreshCcw size={16} aria-hidden="true" className="maka-turn-status-icon" />
+      <RefreshCcw size={ICON_SIZE.chrome} aria-hidden="true" className="maka-turn-status-icon" />
       <span className="maka-turn-indicator-text">{text}</span>
     </div>
   );

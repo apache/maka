@@ -1,6 +1,7 @@
 import type { StatusSemantic } from '@maka/ui';
 import { useEffect, useState, type ComponentType } from 'react';
 import {
+  ICON_SIZE,
   Accessibility as AccessibilityIcon,
   Bell,
   Monitor,
@@ -157,15 +158,17 @@ export function PermissionCenterPage() {
 
   if (error || !permissions || !capabilities) {
     return (
-      <Banner
-        status="error"
-        role="alert"
-        title={copy.readFailed}
-        description={error ?? copy.noData}
-        endContent={(
-          <Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />
-        )}
-      />
+      <SettingsPage>
+        <Banner
+          status="error"
+          role="alert"
+          title={copy.readFailed}
+          description={error ?? copy.noData}
+          endContent={(
+            <Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />
+          )}
+        />
+      </SettingsPage>
     );
   }
 
@@ -397,7 +400,7 @@ function CapabilityRow(props: {
             </span>
           </HStack>
           <VStack gap={0.5} align="start">
-            <Text type="code" size="xsm" color="secondary">{prettyCapabilityId(capability.id)}</Text>
+            <Text type="code" size="sm" color="secondary">{prettyCapabilityId(capability.id)}</Text>
             <Text type="supporting" size="sm" color="secondary">{readinessCopy.detail}</Text>
           </VStack>
         </VStack>
@@ -427,7 +430,7 @@ function CapabilityRow(props: {
                 <VStack gap={0.5}>
                   <Text type="body" size="sm">{layer.value}</Text>
                   {layer.reason ? (
-                    <Text type="supporting" size="xsm" color="secondary">{layer.reason}</Text>
+                    <Text type="supporting" size="sm" color="secondary">{layer.reason}</Text>
                   ) : null}
                 </VStack>
               </MetadataListItem>
@@ -480,13 +483,13 @@ function CapabilityRow(props: {
           <VStack gap={1}>
             <Text type="label" size="sm">{copy.auditSection}</Text>
             {capability.auditEvents.length === 0 ? (
-              <Text type="supporting" size="xsm" color="secondary">{copy.noAudit}</Text>
+              <Text type="supporting" size="sm" color="secondary">{copy.noAudit}</Text>
             ) : (
               <List aria-label={copy.auditAria(capabilityLabel)} density="compact">
                 {capability.auditEvents.slice(-3).map((event, index) => (
                   <ListItem
                     key={`${capability.id}-audit-${index}`}
-                    label={<Text type="supporting" size="xsm" color="secondary">{event}</Text>}
+                    label={<Text type="supporting" size="sm" color="secondary">{event}</Text>}
                   />
                 ))}
               </List>
@@ -590,7 +593,7 @@ function OsPermissionRow(props: {
          layout, and Astryx's startContent slot has no equivalent. */
       startContent={Icon ? (
         <span className="settingsOsPermissionIcon" aria-hidden="true">
-          <Icon size={18} />
+          <Icon size={ICON_SIZE.empty} /> {/* 20 in the 36px plate — the ladder's fill convention */}
         </span>
       ) : undefined}
       label={(
@@ -606,12 +609,12 @@ function OsPermissionRow(props: {
         <VStack gap={0.5}>
           <Text type="supporting" size="sm" color="secondary">{purpose}</Text>
           {impact ? (
-            <Text type="supporting" size="xsm" color="secondary">
+            <Text type="supporting" size="sm" color="secondary">
               {props.copy.impact} {impact}
             </Text>
           ) : null}
           {reason ? (
-            <Text type="supporting" size="xsm" color="secondary">{reason}</Text>
+            <Text type="supporting" size="sm" color="secondary">{reason}</Text>
           ) : null}
           {actionCount > 1 ? <div className="settingsRowActionsUnder">{actionCluster}</div> : null}
         </VStack>

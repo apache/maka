@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { describe, test } from 'node:test';
-import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
@@ -12,7 +11,6 @@ import {
   collectStaleToolResultArchiveCandidates,
   buildSynthesisCacheBlocksFromHydratedArchives,
   deserializeToolResultArchive,
-  mergeContextBudgetDiagnostic,
   renderHistoryCompactBlock,
   retrieveArchivedToolResultsForReplay,
   retrieveRuntimeEventHistoryAround,
@@ -1337,52 +1335,6 @@ describe('context-budget history compact', () => {
     assert.equal(result.diagnostic.historyCompactedTurns, 4);
   });
 
-  test('preserves the legacy V1 token-tail selection contract', () => {
-    const events = [
-      textEvent('old-1', 'turn-1', 'old context '.repeat(40)),
-      textEvent('tail-2', 'turn-2', 'tail two'),
-      textEvent('tail-3', 'turn-3', 'tail three'),
-      textEvent('tail-4', 'turn-4', 'tail four'),
-      textEvent('tail-5', 'turn-5', 'tail five'),
-    ];
-
-    const result = applyRuntimeEventContextBudget(events, {
-      maxHistoryEstimatedTokens: 2000,
-      minRecentTurns: 2,
-      charsPerToken: 1,
-      historyCompact: {
-        enabled: true,
-        highWaterRatio: 0.1,
-        minRecentTurns: 2,
-        tailEstimatedTokens: 100,
-        maxSummaryEstimatedTokens: 120,
-      },
-    });
-
-    assert.ok(result);
-    assert.equal(
-      result.events.some((event) => event.id === 'old-1'),
-      false,
-    );
-    assert.equal(
-      result.events.some((event) => event.id === 'tail-2'),
-      true,
-    );
-    assert.equal(
-      result.events.some((event) => event.id === 'tail-3'),
-      true,
-    );
-    assert.equal(
-      result.events.some((event) => event.id === 'tail-4'),
-      true,
-    );
-    assert.equal(
-      result.events.some((event) => event.id === 'tail-5'),
-      true,
-    );
-    assert.equal(result.diagnostic.historyCompactedTurns, 1);
-  });
-
   test('V2 checkpoint compaction retains only the latest complete turn', () => {
     const events = [
       textEvent('old-1', 'turn-1', 'old context '.repeat(40)),
@@ -1915,69 +1867,6 @@ describe('context-budget search and rewrite diagnostics', () => {
     assert.equal(budgeted.diagnostic.historyRewriteGate, 'phase6-high-water');
     assert.equal(budgeted.diagnostic.historyRewriteVersion, 'phase6-v1');
     assert.equal(budgeted.diagnostic.historyRewriteResetReason, 'explicit_test_reset');
-  });
-});
-
-describe('context-budget diagnostic merges', () => {
-  test('omits count-record fields that are absent from both inputs', () => {
-    const merged = mergeContextBudgetDiagnostic(
-      {
-        enabled: true,
-        estimatedTokensBefore: 287,
-        estimatedTokensAfter: 287,
-        keptTurns: 1,
-        droppedTurns: 0,
-        keptEvents: 6,
-        droppedEvents: 0,
-        historyCompactSkippedReasonCounts: { below_high_water: 1 },
-      },
-      {
-        historyCompactBlocksLoaded: 0,
-        historyCompactBlocksAvailable: 0,
-        historyCompactSkippedReasonCounts: {
-          below_high_water: 2,
-          already_compacted: 1,
-        },
-      },
-    );
-
-    assert.equal(Object.hasOwn(merged, 'archiveRetrievalFailureReasonCounts'), false);
-    assert.equal(Object.hasOwn(merged, 'synthesisCacheSkippedReasonCounts'), false);
-    assert.equal(Object.hasOwn(merged, 'historyCompactLoadSkippedReasonCounts'), false);
-    assert.deepEqual(merged.historyCompactSkippedReasonCounts, {
-      below_high_water: 3,
-      already_compacted: 1,
-    });
-  });
-
-  test('produces a losslessly serializable token usage diagnostic', () => {
-    const contextBudget = mergeContextBudgetDiagnostic(
-      {
-        enabled: true,
-        estimatedTokensBefore: 287,
-        estimatedTokensAfter: 287,
-        keptTurns: 1,
-        droppedTurns: 0,
-        keptEvents: 6,
-        droppedEvents: 0,
-        historyCompactSkippedReasonCounts: { below_high_water: 1 },
-      },
-      {
-        historyCompactBlocksLoaded: 0,
-        historyCompactBlocksAvailable: 0,
-      },
-    );
-    const event = baseEvent({
-      actions: {
-        tokenUsage: {
-          input: 9_131,
-          output: 44,
-          contextBudget,
-        },
-      },
-    });
-
-    assert.doesNotThrow(() => encodeCanonicalRuntimeEvent(event));
   });
 });
 

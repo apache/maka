@@ -89,20 +89,11 @@
   padding: var(--space-3);
   overflow: auto;
   border-radius: var(--radius-control);
-  background: oklch(from var(--destructive) l c h / 0.06);
+  background: var(--destructive-wash);
   color: var(--destructive-text);
   white-space: pre-wrap;
 }
 
-.maka-mcp-loading {
-  min-height: 240px;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  padding: var(--space-8);
-  color: var(--muted-foreground);
-  text-align: center;
-}
 
 .maka-mcp-editor-choice {
   padding: var(--space-3) var(--space-4);

@@ -7,10 +7,15 @@ import {
 
 export interface ModelMetadata {
   displayName?: string;
-  lifecycle?: 'active' | 'deprecated' | 'retired';
+  description?: string;
+  lifecycle?: 'active' | 'beta' | 'alpha' | 'deprecated' | 'retired';
   docsUrl?: string;
   contextWindow?: number;
+  inputLimit?: number;
   maxOutputTokens?: number;
+  knowledgeCutoff?: string;
+  structuredOutput?: boolean;
+  lastUpdated?: string;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
   /**
@@ -191,6 +196,30 @@ export function resolveModelVisionSupport(
     return metadata.capabilities.vision === true;
   }
   return VISION_BY_DEFAULT_PROVIDERS.has(providerType) && VISION_BY_DEFAULT.test(modelId.trim());
+}
+
+/**
+ * Resolve the input modalities for one model, preferring an explicit provider
+ * inventory and falling back to the generated models.dev facts. An empty
+ * result is intentional: unknown models must not be treated as attachment
+ * capable by default.
+ */
+export function resolveModelInputModalities(
+  providerType: ProviderType,
+  models: readonly ModelInfo[] | undefined,
+  modelId: string,
+): NonNullable<ModelInfo['modalities']>['input'] {
+  const stored = models?.find((entry) => entry.id === modelId)?.modalities?.input;
+  if (stored !== undefined) return stored;
+  return lookupModelMetadata(providerType, modelId).modalities?.input ?? [];
+}
+
+export function resolveModelPdfSupport(
+  providerType: ProviderType,
+  models: readonly ModelInfo[] | undefined,
+  modelId: string,
+): boolean {
+  return resolveModelInputModalities(providerType, models, modelId).includes('pdf');
 }
 
 export function curatedCatalogFallbackModelsForProvider(
@@ -470,13 +499,60 @@ function displayMetadataOnly(
       id,
       {
         displayName: metadata.displayName,
+        ...(metadata.description !== undefined ? { description: metadata.description } : {}),
         lifecycle: metadata.lifecycle,
         docsUrl: metadata.docsUrl,
+        ...(metadata.knowledgeCutoff !== undefined
+          ? { knowledgeCutoff: metadata.knowledgeCutoff }
+          : {}),
+        ...(metadata.structuredOutput !== undefined
+          ? { structuredOutput: metadata.structuredOutput }
+          : {}),
+        ...(metadata.lastUpdated !== undefined ? { lastUpdated: metadata.lastUpdated } : {}),
         capabilities: metadata.capabilities,
+        ...(metadata.modalities !== undefined ? { modalities: metadata.modalities } : {}),
         thinkingOptions: overrides[id]?.thinkingOptions ?? metadata.thinkingOptions,
       },
     ]),
   ) as Record<string, ModelMetadata>;
+}
+
+/**
+ * Anthropic ids the subscription catalog now lists under a different name.
+ *
+ * This is renaming, not retirement: Anthropic publishes a pinned dated id and a
+ * shorter "latest" alias for one model, so a catalog listing the alias still
+ * offers a selection stored as the dated id. Reconciliation compares ids
+ * literally, so without this a stored `claude-haiku-4-5-20251001` reads as a
+ * model the catalog dropped and repair falls through to the first live id —
+ * moving a Haiku user onto Opus, across model family and price tier, silently.
+ *
+ * Membership rule: only ids that name the *same* model as their target. A model
+ * that was genuinely withdrawn does NOT belong here — repairing that one onto a
+ * different model is correct, because the original is gone.
+ *
+ * Lives beside CURATED_CATALOG_FALLBACK_MODELS because every target has to be an
+ * id that list offers; a rename pointing at nothing sends reconciliation back to
+ * the fallback this table exists to prevent.
+ */
+export const CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES: Readonly<Record<string, string>> = {
+  'claude-haiku-4-5-20251001': 'claude-haiku-4-5',
+};
+
+/**
+ * The rename table that applies to one provider's inventory, or undefined when
+ * its ids carry no such guarantee.
+ *
+ * Reconciliation is shared by every provider that commits a fetched inventory,
+ * so the table has to be selected by provider rather than assumed: a relay may
+ * serve `claude-*` ids as opaque identifiers of its own, where the same string
+ * is a different model — the rule connection storage states where it prunes
+ * relay profiles across endpoints.
+ */
+export function modelIdAliasesForProvider(
+  providerType: ProviderType,
+): Readonly<Record<string, string>> | undefined {
+  return providerType === 'claude-subscription' ? CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES : undefined;
 }
 
 const CURATED_CATALOG_FALLBACK_MODELS: Partial<Record<ProviderType, readonly string[]>> = {

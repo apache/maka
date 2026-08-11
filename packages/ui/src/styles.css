@@ -1,8 +1,9 @@
 /* Maka product compositions shared across desktop renderer surfaces. Astryx
    owns generic component chrome; these selectors own only product semantics. */
 
-.maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick), background var(--duration-quick); }
-.maka-quote-chip-remove:hover { color: var(--foreground); background: var(--foreground-alpha-10); }
+.maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick) var(--ease-out-strong), background var(--duration-quick) var(--ease-out-strong); }
+.maka-quote-chip-remove:hover { color: var(--foreground); background: var(--state-hover-bg); }
+.maka-quote-chip-remove:focus-visible { color: var(--foreground); background: var(--state-hover-bg); outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 1px; }
 
 .maka-page-header-title,
 .maka-page-header-eyebrow,
@@ -10,22 +11,16 @@
 .maka-page-header-content { min-width: 0; }
 .maka-page-header-heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
-.maka-section-header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; }
-.maka-section-header-content { min-width: 0; }
-.maka-section-header-title {
-  font: var(--maka-text-heading-4);
- display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--foreground); }
-.maka-section-header-title-accent::before { display: inline-block; width: 3px; height: 12px; border-radius: var(--radius-pill); background: oklch(from var(--status-running) l c h / 0.85); content: ""; }
-.maka-section-header-count {
-  font: var(--maka-text-supporting);
- color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
-.maka-section-header-subtitle {
-  font: var(--maka-text-supporting);
- display: block; margin-top: 2px; color: var(--foreground-secondary); }
-.maka-section-header-action { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
 
 .maka-stat-tile { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; }
-.maka-stat-tile-outline { border: 1px solid var(--card-border-color, var(--border)); border-radius: var(--radius-surface); background: var(--card-bg, var(--background)); box-shadow: var(--card-shadow, none); }
+/* Visual System 2.0 (T4): flat. DESIGN.md §5 says default surfaces are flat and
+   depth comes from the ladder, then a line, then shadow only for something that
+   genuinely floats — a stat tile sits on the plate. It already states its edge
+   with a border, so the resting shadow was also a second separator on the same
+   edge (§4's One Means Rule). Dropping it retires --card-shadow's last consumer
+   rather than promoting it to --elevation-raised, which would have made a
+   stationary tile float harder than it did before. */
+.maka-stat-tile-outline { border: 1px solid var(--card-border-color, var(--border)); border-radius: var(--radius-surface); background: var(--card-bg, var(--background)); }
 .maka-stat-tile-filled { border-radius: var(--radius-control); background: var(--foreground-5); }
 .maka-stat-tile-border-info { border-color: oklch(from var(--info) l c h / 0.24); }
 .maka-stat-tile-border-success { border-color: oklch(from var(--success) l c h / 0.24); }
@@ -65,20 +60,43 @@
 .maka-composer-running-actions { display: inline-flex; align-items: center; gap: var(--space-1); }
 .maka-quote-chip-removable { padding-right: 2px; }
 .maka-quote-chip-readonly { padding-right: 8px; }
-.maka-quote-chip-icon { width: 12px; height: 12px; flex: 0 0 auto; color: var(--muted-foreground); }
+.maka-quote-chip-icon { width: var(--icon-meta); height: var(--icon-meta); flex: 0 0 auto; color: var(--muted-foreground); }
 .maka-quote-chip-icon-expanded { margin-top: 2px; }
 .maka-quote-chip-text {
   font: var(--maka-text-supporting);
- min-width: 0; flex: 1; border: 0; padding: 0; color: var(--foreground-secondary); background: transparent; text-align: left; }
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  height: auto;
+  border: 0;
+  padding: 0;
+  color: var(--foreground-secondary);
+  background: transparent;
+  text-align: left;
+  box-shadow: none;
+}
+.maka-quote-chip-text-body {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
 .maka-quote-chip-text-expanded { max-height: 128px; overflow-y: auto; overflow-wrap: break-word; white-space: pre-wrap; }
 .maka-quote-chip-text-clipped { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maka-quote-chip-label { color: var(--muted-foreground); }
-.maka-quote-chip-remove { width: 16px; height: 16px; border-radius: 50%; }
-.maka-quote-chip-remove > svg { width: 12px; height: 12px; }
+.maka-quote-chip-remove {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  min-height: 16px;
+  border-radius: 50%;
+  padding: 0;
+}
+.maka-quote-chip-remove > svg,
+.maka-quote-chip-remove svg { width: var(--icon-meta); height: var(--icon-meta); }
 
 .maka-task-ledger-empty {
-  font: var(--maka-text-body);
- margin: 0; color: var(--muted-foreground); }
+  margin: 0;
+}
 
 /* The meta row holds two different kinds of thing, so it gets two different
    rules. The time is content — a fact about the message — and stays put; gating
@@ -115,6 +133,15 @@
 }
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
+.maka-subagent-session-label,
+.maka-subagent-session-end {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.maka-subagent-session-label { width: 100%; min-width: 0; }
+.maka-subagent-session-summary { min-width: 0; flex: 1 1 auto; }
+.maka-subagent-session-end { color: var(--muted-foreground); }
 .maka-live-turn-footer-placeholder { height: 32px; margin-top: 2px; }
 .maka-turn-processing,
 .maka-turn-status {
@@ -129,9 +156,9 @@
 /* Duration must match `WORKING_PHRASE_FADE_MS` in chat-turn.tsx: the swap is a
    fade out, then a text change, then a fade in, and the JS timer is what waits
    out this transition before rewriting the word. */
-.maka-turn-working-phrase { font-weight: 500; transition: opacity 300ms var(--ease-out-strong); }
+.maka-turn-working-phrase { font-weight: var(--font-weight-medium); transition: opacity var(--duration-large) var(--ease-out-strong); }
 .maka-turn-working-phrase[data-fading="true"] { opacity: 0; }
-.maka-turn-status-separator { color: var(--border-strong); }
+.maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
 .maka-turn-elapsed { font-variant-numeric: tabular-nums; }
 /* #1879: an Astryx `Badge variant="yellow"` now — the warning tone it used to
@@ -308,7 +335,7 @@
   background: var(--background);
 }
 .maka-mermaid-toolbar {
-  min-height: 40px;
+  min-height: 36px;
   flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
   background: var(--foreground-3);
@@ -353,6 +380,9 @@
   height: 100%;
   overflow: visible;
 }
+/* Legal square (DESIGN.md §6): the expanded diagram fills its viewport with
+   margin 0 on every side, so it is full-bleed rather than a card that lost its
+   corners. The collapsed state above keeps its radius. */
 .maka-mermaid-diagram-expanded {
   width: 100%;
   height: 100%;
@@ -544,7 +574,7 @@
 .maka-turn-failed-recovery { color: var(--text-muted); }
 .maka-turn-failed-recovery::before {
   margin-right: var(--space-1-5);
-  color: var(--border-strong);
+  color: var(--foreground-alpha-16);
   content: "·";
 }
 
@@ -628,7 +658,7 @@
   padding: 0;
   border-radius: var(--radius-surface);
   background: var(--background);
-  box-shadow: var(--shadow-minimal-flat);
+  box-shadow: var(--ring-soft);
   white-space: normal;
 }
 .maka-tool-diff-paths,
@@ -727,7 +757,7 @@
    Deleting the family is its own change. */
 .maka-tool-terminal-exit {
   font: var(--maka-text-heading-5);
- height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: 0.04em; }
+ height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: var(--tracking-wide); }
 .maka-tool-terminal-exit[data-ok="true"] { background: oklch(from var(--success) l c h / 0.14); color: var(--success); }
 .maka-tool-terminal-exit[data-ok="false"] { background: oklch(from var(--destructive) l c h / 0.14); color: var(--destructive); }
 .maka-tool-terminal-empty {
@@ -763,7 +793,7 @@
 .maka-agent-preview-section small,
 .maka-agent-preview-meta dt {
   font: var(--maka-text-supporting);
- color: var(--muted-foreground); letter-spacing: 0.04em; text-transform: uppercase; }
+ color: var(--muted-foreground); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
 .maka-agent-preview-summary-line,
 .maka-agent-preview-section-head { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .maka-agent-preview-summary-line small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -801,14 +831,15 @@
 .maka-web-search-preview > header small,
 .maka-web-search-preview li small {
   font: var(--maka-text-supporting);
- color: var(--muted-foreground); letter-spacing: 0.04em; text-transform: uppercase; }
+ color: var(--muted-foreground); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
 .maka-web-search-preview ul { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .maka-web-search-preview li { display: grid; gap: var(--space-0-5); padding-block: var(--space-2); border-top: 1px solid var(--foreground-5); }
 .maka-web-search-preview li:first-child { padding-top: 0; border-top: 0; }
 .maka-web-search-preview a {
   font: var(--maka-text-heading-4);
  color: var(--foreground); text-decoration: none; }
-.maka-web-search-preview a:hover { text-decoration: underline; }
+.maka-web-search-preview a:hover,
+.maka-web-search-preview a:focus-visible { text-decoration: underline; }
 .maka-web-search-preview li p {
   font: var(--maka-text-supporting);
  margin: 0; color: var(--foreground-secondary); white-space: pre-wrap; word-break: break-word; }
@@ -822,7 +853,7 @@
 
 .maka-load-tool-preview {
   font: var(--maka-text-supporting);
- display: grid; gap: var(--space-0-5); margin: var(--space-1) 0 0; padding: var(--space-1) var(--space-2); border-radius: var(--radius-control); background: var(--background); box-shadow: var(--shadow-minimal-flat); }
+ display: grid; gap: var(--space-0-5); margin: var(--space-1) 0 0; padding: var(--space-1) var(--space-2); border-radius: var(--radius-control); background: var(--background); box-shadow: var(--ring-soft); }
 .maka-load-tool-preview p { margin: 0; }
 .maka-load-tool-title {
   font: var(--maka-text-heading-5);
@@ -835,3 +866,13 @@
 .maka-load-tool-footer {
   font: var(--maka-text-supporting);
  }
+
+/* Turn-footer action rings go inset (T5 geometry probe): the Astryx chat
+   layout's scrollport clips an outward ring on the first visible row's
+   actions. Same idiom as the titlebar strip and workbar launcher. The
+   layout's own scroll-to-bottom control has the same clip inside vendor
+   DOM — upstream item, not fixable from product CSS. */
+.maka-turn-footer-action:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}

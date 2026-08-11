@@ -1,6 +1,4 @@
 import { createHash } from 'node:crypto';
-import { realpath, stat } from 'node:fs/promises';
-import { isAbsolute, resolve } from 'node:path';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
@@ -48,7 +46,7 @@ import {
   type SessionCatalogRevision,
   type SessionConfigurationUpdateInput,
   type SessionCreateInput,
-  type SessionCwdRelocateInput,
+  type SessionWorkspaceRelocateInput,
   type SessionExecutionBoundaryQueryInput,
   type SessionMetadataUpdateInput,
   type SessionModelTarget,
@@ -58,6 +56,7 @@ import {
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
+import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
 
 type SessionCatalogStores = Pick<
   ExecutionStoresWriter<'interactive'>['sessionStore'],
@@ -105,6 +104,7 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly manager: SessionConfigurationAuthority;
   readonly admission: SessionAdmissionGate;
   readonly continuity: SessionContinuity;
+  readonly workspaceResolver: HostWorkspaceResolver;
   readonly requestDrain: () => void;
 }
 
@@ -120,7 +120,7 @@ export class HostSessionCatalogCoordinator {
     'session.create': (input) => this.#create(input),
     'session.metadata.update': (input) => this.#updateMetadata(input),
     'session.configuration.update': (input) => this.#updateConfiguration(input),
-    'session.cwd.relocate': (input) => this.#relocateCwd(input),
+    'session.workspace.relocate': (input) => this.#relocateWorkspace(input),
     'session.read_marker.set': (input) => this.#setReadMarker(input),
     'session.execution_boundary.query': (input) => this.#queryExecutionBoundary(input),
   };
@@ -130,6 +130,7 @@ export class HostSessionCatalogCoordinator {
   readonly #manager: SessionConfigurationAuthority;
   readonly #admission: SessionAdmissionGate;
   readonly #continuity: SessionContinuity;
+  readonly #workspaceResolver: HostWorkspaceResolver;
   readonly #requestDrain: () => void;
 
   constructor(options: HostSessionCatalogCoordinatorOptions) {
@@ -138,6 +139,7 @@ export class HostSessionCatalogCoordinator {
     this.#manager = options.manager;
     this.#admission = options.admission;
     this.#continuity = options.continuity;
+    this.#workspaceResolver = options.workspaceResolver;
     this.#requestDrain = options.requestDrain;
   }
 
@@ -154,6 +156,11 @@ export class HostSessionCatalogCoordinator {
       collaborationMode: 'agent',
       orchestrationMode: 'default',
     };
+  }
+
+  async createForHost(input: SessionCreateInput): Promise<void> {
+    const outcome = await this.#create(input);
+    if (!outcome.ok) throw new Error(outcome.error.message);
   }
 
   async #query(
@@ -229,10 +236,11 @@ export class HostSessionCatalogCoordinator {
 
     return this.#admission.run(input.sessionId, async (lease) => {
       let commitAttempted = false;
+      const requestFingerprint = createRequestFingerprint(input, prepared);
       try {
         const probe = await this.#stores.probeStableSessionCreate(
           input.sessionId,
-          prepared.requestFingerprint,
+          requestFingerprint,
         );
         if (probe.kind === 'existing') {
           return createSuccess(
@@ -245,42 +253,50 @@ export class HostSessionCatalogCoordinator {
             'Session identity belongs to a different create request',
           );
         }
-        const [model, policy] = await Promise.all([
-          this.#resolveModel(input.modelTarget, input.thinkingLevel),
-          this.#readRuntimePolicy(),
-        ]);
-        const createInput: CreateSessionInput = {
-          cwd: prepared.cwd,
-          ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
-          name: prepared.name,
-          labels: [...prepared.labels],
-          backend: 'ai-sdk',
-          llmConnectionSlug: model.connectionSlug,
-          model: model.model,
-          ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
-          permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
-          collaborationMode: input.collaborationMode ?? 'agent',
-          orchestrationMode: input.orchestrationMode ?? 'default',
-        };
-        commitAttempted = true;
-        const result = await this.#stores.createStableSession({
-          sessionId: input.sessionId,
-          requestFingerprint: prepared.requestFingerprint,
-          input: createInput,
-        });
-        if (result.kind === 'conflict') {
-          return createFailure(
-            'operation_conflict',
-            'Session identity belongs to a different create request',
-          );
-        }
-        await this.#continuity.refreshCanonical(input.sessionId, lease);
-        return createSuccess(
-          projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
+        return await this.#workspaceResolver.runWithUsageRecorded(
+          input.workspace,
+          async (workspace) => {
+            const [model, policy] = await Promise.all([
+              this.#resolveModel(input.modelTarget, input.thinkingLevel),
+              this.#readRuntimePolicy(),
+            ]);
+            const createInput: CreateSessionInput = {
+              cwd: workspace.cwd,
+              ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
+              name: prepared.name,
+              labels: [...prepared.labels],
+              backend: 'ai-sdk',
+              llmConnectionSlug: model.connectionSlug,
+              model: model.model,
+              ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+              permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
+              collaborationMode: input.collaborationMode ?? 'agent',
+              orchestrationMode: input.orchestrationMode ?? 'default',
+            };
+            commitAttempted = true;
+            const result = await this.#stores.createStableSession({
+              sessionId: input.sessionId,
+              requestFingerprint,
+              input: createInput,
+            });
+            if (result.kind === 'conflict') {
+              return createFailure(
+                'operation_conflict',
+                'Session identity belongs to a different create request',
+              );
+            }
+            await this.#continuity.refreshCanonical(input.sessionId, lease);
+            return createSuccess(
+              projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
+            );
+          },
         );
       } catch (error) {
-        if (error instanceof SessionOperationFailure) {
-          return createFailure(error.code, error.message);
+        if (error instanceof SessionOperationFailure || error instanceof WorkspaceResolutionError) {
+          return createFailure(
+            error.code === 'not_found' ? 'operation_conflict' : error.code,
+            error.message,
+          );
         }
         this.#requestDrain();
         if (!commitAttempted) {
@@ -308,7 +324,6 @@ export class HostSessionCatalogCoordinator {
           ...(input.patch.name === undefined ? {} : normalizeSessionNamePatch(input.patch.name)),
           ...(labels === undefined ? {} : { labels }),
           ...(input.patch.isFlagged === undefined ? {} : { isFlagged: input.patch.isFlagged }),
-          ...(input.patch.projectId === undefined ? {} : { projectId: input.patch.projectId }),
         };
         await this.#stores.updateHeaderVersioned(input.sessionId, patch, input.expectedRevision);
         return updateSuccess(await this.#committedUpdate(input.sessionId, lease));
@@ -407,49 +422,45 @@ export class HostSessionCatalogCoordinator {
     });
   }
 
-  async #relocateCwd(
-    input: SessionCwdRelocateInput,
-  ): Promise<OperationOutcome<'session.cwd.relocate'>> {
-    let cwd: string;
-    try {
-      if (!isAbsolute(input.cwd)) {
-        throw new SessionOperationFailure('invalid_request', 'Session cwd must be absolute');
-      }
-      cwd = await canonicalSessionDirectory(input.cwd);
-    } catch (error) {
-      return cwdFailure(
-        error instanceof SessionOperationFailure ? error.code : 'invalid_request',
-        error instanceof Error ? error.message : 'Session cwd is invalid',
-      );
-    }
+  async #relocateWorkspace(
+    input: SessionWorkspaceRelocateInput,
+  ): Promise<OperationOutcome<'session.workspace.relocate'>> {
     return this.#admission.run(input.sessionId, async (lease) => {
       let commitAttempted = false;
       try {
         const current = await this.#stores.readHeaderRecordSnapshot(input.sessionId);
         if (current.revision !== input.expectedRevision) {
-          return cwdSuccess(revisionConflict(input.expectedRevision, current.revision));
+          return workspaceSuccess(revisionConflict(input.expectedRevision, current.revision));
         }
-        commitAttempted = true;
-        await this.#manager.relocateSessionWorkspace(input.sessionId, {
-          expectedRevision: input.expectedRevision,
-          cwd,
-          ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+        await this.#workspaceResolver.run(input.workspace, async (workspace) => {
+          commitAttempted = true;
+          await this.#manager.relocateSessionWorkspace(input.sessionId, {
+            expectedRevision: input.expectedRevision,
+            cwd: workspace.cwd,
+            projectId: workspace.projectId,
+          });
         });
-        return cwdSuccess(await this.#committedUpdate(input.sessionId, lease));
+        return workspaceSuccess(await this.#committedUpdate(input.sessionId, lease));
       } catch (error) {
-        if (isNotFound(error)) return cwdFailure('not_found', 'Session does not exist');
+        if (isNotFound(error)) return workspaceFailure('not_found', 'Session does not exist');
         if (error instanceof SessionConfigurationRevisionConflictError) {
-          return cwdSuccess(revisionConflict(input.expectedRevision, error.actualRevision));
+          return workspaceSuccess(revisionConflict(input.expectedRevision, error.actualRevision));
         }
         if (error instanceof SessionConfigurationTransitionError) {
-          return cwdFailure(error.code, error.message);
+          return workspaceFailure(error.code, error.message);
+        }
+        if (error instanceof SessionOperationFailure || error instanceof WorkspaceResolutionError) {
+          return workspaceFailure(error.code, error.message);
         }
         if (!commitAttempted) {
           this.#requestDrain();
-          return cwdFailure('persistence_failed', 'Session workspace authority is unavailable');
+          return workspaceFailure(
+            'persistence_failed',
+            'Session workspace authority is unavailable',
+          );
         }
         this.#requestDrain();
-        return cwdFailure(
+        return workspaceFailure(
           'commit_outcome_unknown',
           'Session workspace relocation outcome is unknown',
         );
@@ -692,17 +703,12 @@ function sessionConfigurationMatches(
 }
 
 interface PreparedSessionCreate {
-  readonly cwd: string;
   readonly name: string;
   readonly labels: readonly string[];
   readonly permissionMode?: SessionCreateInput['permissionMode'];
-  readonly requestFingerprint: string;
 }
 
 async function prepareCreate(input: SessionCreateInput): Promise<PreparedSessionCreate> {
-  if (!isAbsolute(input.cwd)) {
-    throw new SessionOperationFailure('invalid_request', 'Session cwd must be absolute');
-  }
   if (input.labels?.some(isExecutionSemanticLabel)) {
     throw new SessionOperationFailure(
       'invalid_request',
@@ -716,34 +722,37 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
       'Session creation requires a declared mode for explore permission',
     );
   }
-  const cwd = await canonicalSessionDirectory(input.cwd);
   const name = normalizedSessionName(mode?.name ?? input.name ?? DEFAULT_SESSION_NAME);
   const labels = [...(input.labels ?? []), ...(mode?.labels ?? [])];
   const permissionMode = mode?.permissionMode ?? input.permissionMode;
-  const identity = [
-    'session.create.v1',
-    input.sessionId,
-    cwd,
-    Object.hasOwn(input, 'projectId') ? ['project', input.projectId] : ['omitted'],
+  return {
     name,
     labels,
+    ...(permissionMode === undefined ? {} : { permissionMode }),
+  };
+}
+
+function createRequestFingerprint(
+  input: SessionCreateInput,
+  prepared: PreparedSessionCreate,
+): string {
+  const identity = [
+    'session.create.v3',
+    input.sessionId,
+    input.workspace.kind === 'project'
+      ? ['project', input.workspace.projectId]
+      : ['host_path', input.workspace.path],
+    prepared.name,
+    prepared.labels,
     input.modelTarget.kind === 'default'
       ? ['default']
       : ['explicit', input.modelTarget.connectionSlug, input.modelTarget.model],
     input.thinkingLevel ?? null,
-    permissionMode ?? ['runtime_default'],
+    prepared.permissionMode ?? ['runtime_default'],
     input.collaborationMode ?? 'agent',
     input.orchestrationMode ?? 'default',
   ];
-  return {
-    cwd,
-    name,
-    labels,
-    ...(permissionMode === undefined ? {} : { permissionMode }),
-    requestFingerprint: `sha256:${createHash('sha256')
-      .update(JSON.stringify(identity))
-      .digest('hex')}`,
-  };
+  return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
 }
 
 export function projectSessionCatalogRecord(record: SessionCatalogRecord): SessionCatalogItem {
@@ -752,8 +761,13 @@ export function projectSessionCatalogRecord(record: SessionCatalogRecord): Sessi
   const projection: SessionCatalogProjection = {
     id: header.id,
     revision: record.revision,
-    cwd: header.cwd,
-    ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
+    workspace: {
+      target:
+        typeof header.projectId === 'string'
+          ? { kind: 'project', projectId: header.projectId }
+          : { kind: 'host_path', path: header.cwd },
+      hostCwd: header.cwd,
+    },
     createdAt: header.createdAt,
     lastUsedAt: header.lastUsedAt,
     name: header.name,
@@ -985,16 +999,6 @@ function catalogActivityAt(header: SessionHeader): number {
   return header.lastMessageAt ?? header.lastUsedAt ?? header.createdAt;
 }
 
-async function canonicalSessionDirectory(path: string): Promise<string> {
-  try {
-    const canonical = await realpath(resolve(path));
-    if ((await stat(canonical)).isDirectory()) return canonical;
-  } catch {
-    // Project a stable request error below.
-  }
-  throw new SessionOperationFailure('invalid_request', 'Session cwd is not an existing directory');
-}
-
 function normalizedSessionName(name: string): string {
   const normalized = normalizeUserSessionName(name);
   if (!normalized.ok) throw new SessionOperationFailure('invalid_request', normalized.error);
@@ -1051,7 +1055,9 @@ function configurationSuccess(
   return { ok: true, result };
 }
 
-function cwdSuccess(result: SessionUpdateResult): OperationOutcome<'session.cwd.relocate'> {
+function workspaceSuccess(
+  result: SessionUpdateResult,
+): OperationOutcome<'session.workspace.relocate'> {
   return { ok: true, result };
 }
 
@@ -1099,10 +1105,10 @@ function configurationFailure(
   return { ok: false, error: { code, message } };
 }
 
-function cwdFailure(
-  code: OperationError<'session.cwd.relocate'>['code'],
+function workspaceFailure(
+  code: OperationError<'session.workspace.relocate'>['code'],
   message: string,
-): Extract<OperationOutcome<'session.cwd.relocate'>, { readonly ok: false }> {
+): Extract<OperationOutcome<'session.workspace.relocate'>, { readonly ok: false }> {
   return { ok: false, error: { code, message } };
 }
 

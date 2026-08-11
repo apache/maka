@@ -46,6 +46,21 @@
   overflow-x: auto;
 }
 
+/* Tab counters follow the reference count spec (T5-F): one step smaller and
+   quieter than their label, tabular so they don't wobble as values change.
+   (The references also set counters in mono, but the role table has no
+   small-mono role and the Role-Not-Axes rule outranks an imported spec —
+   tabular-nums is the part that carries the effect.) */
+.settingsUsageTabsBar [role="tab"] span {
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+  font-variant-numeric: tabular-nums;
+}
+
+.settingsUsageTabsBar [role="tab"][aria-selected="true"] span {
+  color: inherit;
+}
+
 .settingsUsageTabPanel {
   gap: var(--space-3);
   min-height: 0;

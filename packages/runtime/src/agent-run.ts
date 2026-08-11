@@ -5,9 +5,11 @@ import type {
   EmittedAgentRunEvent,
   RuntimeEvent,
   RuntimeEventStore,
+  RunCompositionSnapshot,
   ToolBoundaryProtocol,
 } from '@maka/core';
 import {
+  decodeRunCompositionSnapshot,
   DurableStoreWriteError,
   RunSealedError,
   isSessionInlineRun,
@@ -223,6 +225,8 @@ export class AgentRun {
   private runtimePartialBufferBytes = 0;
   private runtimePartialFlushTimer: ReturnType<typeof setTimeout> | undefined;
   private traceWriteError: string | undefined;
+  private runComposition: RunCompositionSnapshot | undefined;
+  private runCompositionWrite: Promise<void> | undefined;
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
   private lastTs = 0;
@@ -386,6 +390,31 @@ export class AgentRun {
         this.runId,
         traceToRunEvent(event, this.runId),
       );
+    });
+  }
+
+  recordRunComposition(snapshot: RunCompositionSnapshot): Promise<void> {
+    if (!this.input.runStore) {
+      return Promise.reject(new Error('AgentRun store is not configured'));
+    }
+    const normalized = decodeRunCompositionSnapshot(snapshot);
+    if (this.runComposition && !isDeepStrictEqual(this.runComposition, normalized)) {
+      return Promise.reject(new Error('AgentRun Run Composition changed after resolution'));
+    }
+    this.runComposition ??= normalized;
+    if (this.runCompositionWrite) return this.runCompositionWrite;
+    const write = this.enqueueRequiredRunStoreWrite('commit Run Composition', async () => {
+      await this.input.runStore?.updateRun(
+        this.sessionId,
+        this.runId,
+        { runComposition: normalized },
+        { durable: this.requiresDurablePersistence() },
+      );
+    });
+    this.runCompositionWrite = write;
+    return write.catch((error: unknown) => {
+      if (this.runCompositionWrite === write) this.runCompositionWrite = undefined;
+      throw error;
     });
   }
 

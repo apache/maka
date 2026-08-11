@@ -9,6 +9,7 @@ import type { ProviderType } from './provider-registry.js';
 import type { RelayModelProfile } from './model-thinking.js';
 import type { ChatDefaultPermissionMode, ProxyProtocol } from './settings.js';
 import type { SubagentSettings } from './subagent-settings.js';
+import type { JsonObject } from './request-customization.js';
 import {
   WEB_SEARCH_PROVIDERS,
   type WebSearchCredentialProvider,
@@ -23,7 +24,6 @@ export {
 } from './runtime-policy/domain-codec.js';
 export {
   decodeCanonicalRuntimePolicy,
-  decodeLegacyRuntimePolicyV1,
   normalizeRuntimePolicyMutation,
 } from './runtime-policy/policy-codec.js';
 export {
@@ -61,6 +61,25 @@ export {
   normalizeDeleteCredentialInput,
   normalizeSetCredentialInput,
 } from './runtime-policy/credential-vault-codec.js';
+export {
+  normalizeRequestBodyOverlay,
+  normalizeOptionalRequestBodyOverlay,
+  normalizeRequestHeaderUpdates,
+  normalizeRequestHeaders,
+  parseRequestHeaders,
+  REQUEST_BODY_OVERLAY_MAX_BYTES,
+  REQUEST_HEADERS_MAX_BYTES,
+  RequestCustomizationValidationError,
+  serializeRequestHeaders,
+} from './request-customization.js';
+export type {
+  JsonArray,
+  JsonObject,
+  JsonPrimitive,
+  JsonValue,
+  RequestHeaderUpdate,
+  SavedRequestHeaders,
+} from './request-customization.js';
 
 export type Revision = number;
 export type EntityId = string;
@@ -192,6 +211,7 @@ export interface ConnectionConfiguration {
    * Execution paths read it through the shared `relayModelProfile` seam.
    */
   readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
+  readonly requestBodyOverlay?: JsonObject;
 }
 
 export interface ConnectionCatalogEntry extends ConnectionConfiguration {
@@ -218,6 +238,8 @@ export interface ConnectionCatalogEntryUpdate {
    * Profile-blind writers simply omit the key and can never clobber.
    */
   readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>> | null;
+  /** Absent leaves the overlay unchanged; null clears it; an object replaces it. */
+  readonly requestBodyOverlay?: JsonObject | null;
 }
 
 export interface ConnectionVersionBasis {
@@ -273,7 +295,7 @@ export type CredentialLocator =
   | {
       readonly scope: 'connection';
       readonly connectionId: EntityId;
-      readonly kind: 'api_key' | 'oauth_token';
+      readonly kind: 'api_key' | 'oauth_token' | 'request_headers';
     }
   | {
       readonly scope: 'web_search';

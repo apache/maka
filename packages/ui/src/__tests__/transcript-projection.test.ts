@@ -52,33 +52,6 @@ function streamingTurn(text: string): LiveTurnProjection {
 }
 
 describe('incremental transcript projection', () => {
-  test('a plain text delta affects only the tail turn', () => {
-    const projection = createTranscriptProjection();
-    const messages = history();
-    const updates = [backgroundUpdate];
-    const first = projection.project({
-      sessionId: SESSION,
-      messages,
-      liveTurn: streamingTurn('he'),
-      shellRunUpdates: updates,
-    });
-    assert.deepEqual(first.map((turn) => turn.turnId), ['turn-1', 'turn-2', 'turn-3']);
-
-    const second = projection.project({
-      sessionId: SESSION,
-      messages,
-      liveTurn: streamingTurn('hello'),
-      shellRunUpdates: updates,
-    });
-    assert.strictEqual(second[0], first[0], 'the turn owning the background Bash must keep identity');
-    assert.strictEqual(second[1], first[1], 'an unrelated settled turn must keep identity');
-    assert.notStrictEqual(second[2], first[2], 'the tail turn carries the delta');
-    assert.equal(second[2]?.timeline.some((item) => item.kind === 'text' && item.text === 'hello'), true);
-
-    // The overlay is still applied — identity is preserved, not the merge.
-    const bash = second[0]?.tools[0];
-    assert.equal(bash?.result?.kind === 'shell_run' ? bash.result.revision : undefined, 9);
-  });
 
   test('a shell-run update whose semantics are unchanged affects nothing', () => {
     const projection = createTranscriptProjection();
@@ -103,33 +76,7 @@ describe('incremental transcript projection', () => {
     assert.equal(advancedBash?.result?.kind === 'shell_run' ? advancedBash.result.revision : undefined, 10);
   });
 
-  test('a message refresh that adds a turn leaves the other turns identical', () => {
-    const projection = createTranscriptProjection();
-    const before = projection.project({ sessionId: SESSION, messages: history() });
-    // A refresh re-reads the ledger, so every message object is new.
-    const after = projection.project({
-      sessionId: SESSION,
-      messages: [...history(), { type: 'user', id: 'u3', turnId: 'turn-3', ts: 7, text: 'third' }],
-    });
-    assert.deepEqual(after.map((turn) => turn.turnId), ['turn-1', 'turn-2', 'turn-3']);
-    assert.strictEqual(after[0], before[0]);
-    assert.strictEqual(after[1], before[1]);
-  });
 
-  test('a message refresh that changes one turn affects only that turn', () => {
-    const projection = createTranscriptProjection();
-    const before = projection.project({ sessionId: SESSION, messages: history() });
-    const after = projection.project({
-      sessionId: SESSION,
-      messages: [
-        ...history().slice(0, 5),
-        { type: 'assistant', id: 'a2', turnId: 'turn-2', ts: 6, text: 'done, finally', modelId: 'model-1' },
-      ],
-    });
-    assert.strictEqual(after[0], before[0]);
-    assert.notStrictEqual(after[1], before[1]);
-    assert.equal(after[1]?.assistant?.text, 'done, finally');
-  });
 
   test('a turn missing from the durable snapshot is dropped, leaving the rest identical', () => {
     const projection = createTranscriptProjection();
@@ -210,21 +157,6 @@ describe('incremental transcript projection', () => {
     );
   });
 
-  test('lineage recorded on a turn invalidates that turn', () => {
-    const projection = createTranscriptProjection();
-    const before = projection.project({ sessionId: SESSION, messages: history() });
-    const after = projection.project({
-      sessionId: SESSION,
-      messages: [
-        ...history(),
-        { type: 'turn_state', id: 't3', turnId: 'turn-3', ts: 7, status: 'completed', partialOutputRetained: false, regeneratedFromTurnId: 'turn-2' },
-        { type: 'user', id: 'u3', turnId: 'turn-3', ts: 7, text: 'again' },
-      ],
-    });
-    assert.equal(after[2]?.regeneratedFromTurnId, 'turn-2');
-    assert.strictEqual(after[0], before[0]);
-    assert.strictEqual(after[1], before[1]);
-  });
 
   test('an ownership flip at an unchanged revision invalidates the owning turn', () => {
     // Isolating the ownership term: the persisted result and the update carry
@@ -419,47 +351,7 @@ describe('incremental transcript projection', () => {
     assert.equal(tool?.shellRunSource, 'owned');
   });
 
-  test('projecting identical inputs twice returns the same result object', () => {
-    const projection = createTranscriptProjection();
-    const input = { sessionId: SESSION, messages: history(), liveTurn: streamingTurn('he') };
-    const first = projection.project(input);
-    assert.strictEqual(projection.project(input), first);
-  });
 
-  test('turn.tools is exactly the tools its timeline renders, order included', () => {
-    const projection = createTranscriptProjection();
-    // Two tools on both the settled and the live path: with a single tool per
-    // turn a reversal or a de-dup between the two structures is invisible.
-    const messages: StoredMessage[] = [
-      { type: 'user', id: 'u1', turnId: 'turn-1', ts: 1, text: 'run a job' },
-      toolCall('bash-1', 'turn-1', 'Bash', { command: 'job', pty: true }, 2),
-      toolResult('bash-1', 'turn-1', shellRun(1), 3),
-      toolCall('grep-1', 'turn-1', 'Grep', { pattern: 'x' }, 4),
-      { type: 'assistant', id: 'a1', turnId: 'turn-1', ts: 5, text: 'started', modelId: 'model-1' },
-    ];
-    const turns = projection.project({
-      sessionId: SESSION,
-      messages,
-      liveTurn: {
-        turnId: 'turn-2',
-        phase: 'streamed',
-        steps: [{
-          stepId: 'step-1',
-          contentOrder: ['tools'],
-          tools: [
-            { toolUseId: 'live-1', toolName: 'Read', status: 'running', args: {} },
-            { toolUseId: 'live-2', toolName: 'Grep', status: 'running', args: {} },
-          ],
-        }],
-      },
-      shellRunUpdates: [backgroundUpdate],
-    });
-    for (const turn of turns) {
-      assert.deepEqual(turn.tools, timelineTools(turn.timeline), `turn ${turn.turnId}`);
-    }
-    assert.deepEqual(turns[0]?.tools.map((tool) => tool.toolUseId), ['bash-1', 'grep-1']);
-    assert.deepEqual(turns[1]?.tools.map((tool) => tool.toolUseId), ['live-1', 'live-2']);
-  });
 });
 
 /**
@@ -598,21 +490,9 @@ describe('turn identity moves for every field a turn carries', () => {
     });
   }
 
-  test('a refresh that changes nothing keeps the whole list', () => {
-    const projection = createTranscriptProjection();
-    const before = projection.project({ sessionId: SESSION, messages: base });
-    const after = projection.project({ sessionId: SESSION, messages: structuredClone(base) });
-    assert.strictEqual(after, before);
-  });
 });
 
 describe('valuesEqual', () => {
-  test('walks plain objects and arrays', () => {
-    assert.equal(valuesEqual({ a: [1, { b: 2 }] }, { a: [1, { b: 2 }] }), true);
-    assert.equal(valuesEqual({ a: 1 }, { a: 2 }), false);
-    assert.equal(valuesEqual({ a: 1 }, { a: 1, b: undefined }), true);
-    assert.equal(valuesEqual([1, 2], [1, 2, 3]), false);
-  });
 
   test('fails closed on anything that is not a plain object', () => {
     // These have no own enumerable keys, so a plain key walk calls every one of

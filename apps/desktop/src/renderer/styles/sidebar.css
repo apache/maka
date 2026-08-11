@@ -90,8 +90,14 @@
  * paddingBlock, so Settings sat tight under the line and airy above the window
  * edge.
  */
+/* Visual System 2.0 (T2): consume the border ladder instead of a hand-rolled
+ * 5% ink mix. `--border-soft` (6%) is DESIGN.md §4's "quiet separation inside a
+ * plate — rails, row dividers that fills can't carry", which is exactly this
+ * line's job. The 1-point alpha change is the cost of having one authority for
+ * quiet lines; a private 5% is indistinguishable from the tier it was drifting
+ * from and only made the ladder unenforceable. */
 .maka-session-panel {
-  --maka-rail-hairline: oklch(from var(--foreground) l c h / 0.05);
+  --maka-rail-hairline: var(--border-soft);
 }
 
 /* Continuous Collapse: the hairlines separate the history column from the
@@ -299,6 +305,9 @@
   margin-left: auto;
   padding: 0;
   border: 0;
+  /* Same as .settingsAboutHero: un-chroming a <kbd>, not squaring a box. With
+     no padding, border, fill or shadow there is nothing for a radius to act
+     on. */
   border-radius: 0;
   background: transparent;
   box-shadow: none;

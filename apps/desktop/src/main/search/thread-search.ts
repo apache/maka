@@ -80,7 +80,7 @@ export const THREAD_SOURCE = 'thread' as const;
  */
 export interface ThreadSearchDeps {
   listSessions(): Promise<SessionSummary[]>;
-  readMessages(sessionId: string): Promise<StoredMessage[]>;
+  readMessages(sessionId: string): Promise<StoredMessage[] | null>;
   /**
    * Main-authority workspace privacy snapshot. Returned as `unknown`
    * deliberately — the helper validates the payload with
@@ -97,8 +97,9 @@ export interface ThreadSearchDeps {
  *
  * Accepts `unknown` because the IPC payload crosses a process boundary —
  * TypeScript's `SearchRequest` annotation in the handler is compile-time
- * only. A renderer can send anything; we must fail closed with an error
- * envelope, never throw. Same defense pattern as PR-MEMORY-1
+ * only. A renderer can send anything; malformed input must fail closed
+ * with an error envelope. Dependency adapters project ordinary I/O
+ * failures before calling this function. Same defense pattern as PR-MEMORY-1
  * `validateMemoryWriteRequest` and PR-UI-IPC-1 baseUrl normalize
  * (@xuan msg `2f1aba55` fixup).
  */
@@ -210,14 +211,8 @@ export async function runThreadSearch(
       }
     }
 
-    let messages: StoredMessage[];
-    try {
-      messages = await deps.readMessages(session.id);
-    } catch {
-      // Skip unreadable sessions silently — they shouldn't break the
-      // whole search. Generalized error never leaks into a result.
-      continue;
-    }
+    const messages = await deps.readMessages(session.id);
+    if (!messages) continue;
 
     for (const message of messages) {
       if (results.length >= maxResults) {

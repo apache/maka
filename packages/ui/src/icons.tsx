@@ -11,6 +11,24 @@
 
 export type { LucideIcon, LucideProps } from 'lucide-react';
 
+/**
+ * The five-rung icon scale. Pick by the role the glyph plays, not by eye.
+ *
+ * A size has to be passed at every lucide call site: Astryx's `sm` button
+ * bounds the icon slot at 16px (Button.tsx's `iconSizeStyles`) but does not
+ * resize the glyph inside it, so an unsized lucide icon keeps its own 24px
+ * height and renders 16×24, squashed. `chrome` (16) exactly fills that slot;
+ * the other rungs sit around it. Mirrored as `--icon-*` in maka-tokens.css
+ * for the CSS-clamped sites.
+ */
+export const ICON_SIZE = {
+  meta: 13,    // inline with text: dense metadata, markers, badge glyphs
+  control: 14, // row icons, IconButton sm, toolbars, list startContent
+  chrome: 16,  // nav/affordance chrome; == Astryx Icon sm / Button sm icon slot
+  empty: 20,   // EmptyState glyphs (DESIGN.md §10 tier 2/3)
+  plate: 28,   // glyph inside an icon plate or hero mark
+} as const;
+
 export {
   Accessibility,
   Activity,

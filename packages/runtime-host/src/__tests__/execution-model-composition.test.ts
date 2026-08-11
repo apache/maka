@@ -8,10 +8,12 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { z } from 'zod';
+import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
   createWorkspaceWritePermissionProfile,
+  decodeRunCompositionSnapshot,
   decodeCanonicalToolResultContent,
   type ModelCallKind,
   type RuntimeEvent,
@@ -35,6 +37,9 @@ import {
   buildParentAgentTools,
   SESSION_RECAP_INSTRUCTION,
   createToolResultArchiveCapability,
+  stableHash,
+  toolAvailabilityHash,
+  toolCatalogHash,
 } from '@maka/runtime';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -61,9 +66,13 @@ import {
 } from '../server/execution-model-authority.js';
 import {
   createHostAiSdkBackend,
-  createHostExecutionModelComposition,
+  resolveCollaborationPermissionMode,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
+import {
+  createInteractiveRunComposer,
+  createInteractiveRunComposerFactory,
+} from '../server/interactive-run-composer.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
@@ -82,6 +91,10 @@ const SUMMARY_TEXT = '## Goal\nContinue hosted real-model execution.';
 const CLIENT_CAPABILITY_RESULT_TEXT = 'HOSTED_CLIENT_CAPABILITY_RESULT_SENTINEL';
 const CHILD_AGENT_RESULT_TEXT = 'HOSTED_CHILD_AGENT_RESULT_SENTINEL';
 const WEB_RESEARCH_CHILD_RESULT_TEXT = 'HOSTED_WEB_RESEARCH_RESULT_SENTINEL';
+const MAX_IMPLEMENTATION_CHILD_PTY_READS = 5;
+const MIN_IMPLEMENTATION_CHILD_REQUESTS = 6;
+const MAX_IMPLEMENTATION_CHILD_REQUESTS =
+  MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
 const execFileAsync = promisify(execFile);
 
 test('backend creation aborts a stalled canonical connection read', async () => {
@@ -126,6 +139,44 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
     name: 'AbortError',
     message: 'Pricing resolution was interrupted',
   });
+});
+
+test('provider dispatch fails closed when the Run Composition commit fails', async () => {
+  const provider = await startProvider();
+  let commits = 0;
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        recordRunComposition: async (_runId, snapshot) => {
+          commits += 1;
+          decodeRunCompositionSnapshot(snapshot);
+          throw new Error('Run Composition store unavailable');
+        },
+      }),
+    );
+    const events = [];
+    for await (const event of backend.send({
+      invocationId: 'composition-invocation',
+      runId: 'composition-run',
+      turnId: 'composition-turn',
+      text: 'This request must not reach the provider.',
+      context: [],
+    })) {
+      events.push(event);
+    }
+
+    assert.equal(commits, 1);
+    assert.equal(provider.requests.length, 0);
+    assert.ok(events.some((event) => event.type === 'error'));
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
 });
 
 test('backend abort cannot cancel the authority-owned OAuth refresh used by its successor', async () => {
@@ -293,62 +344,14 @@ test('backend creation does not acquire Client Capabilities beyond a bound tool 
   }
 });
 
-test('backend creation routes a bound WebSearch tool without widening the child ceiling', async () => {
-  const clientSearch: MakaTool = {
-    name: 'WebSearch',
-    description: 'Client web search',
-    parameters: {},
-    impl: async () => undefined,
-  };
-  const ready = {
-    kind: 'ready' as const,
-    connection: {
-      slug: 'deepseek-responses',
-      providerType: 'deepseek' as const,
-      enabledModelIds: ['deepseek-v4-flash'],
-      models: [{ id: 'deepseek-v4-flash', apiProtocol: 'openai-responses' as const }],
-    },
-    networkProxy: { enabled: false },
-    secretMaterial: { connection: { secret: API_KEY } },
-  };
-  const policy = {
-    ...createDefaultRuntimePolicy(),
-    webSearch: { enabled: true, defaultProvider: 'model' as const },
-  };
-  const runtimePolicy = {
-    operations: { resolveExecutionConnection: async () => ready },
-    runtimePolicy: {
-      getSnapshot: async () => ({ revision: 1, policy }),
-    },
-  } as unknown as RuntimePolicyStoresWriter;
-  const backend = await createHostAiSdkBackend(
-    backendCreationFixture({
-      abortSignal: new AbortController().signal,
-      resolveExecutionConnection: async () => ready,
-      readPricing: async () => ({ revision: 0, overrides: [] }),
-      runtimePolicy,
-      tools: [clientSearch],
-      modelId: 'deepseek-v4-flash',
-    }),
-  );
-  try {
-    const input = (backend as unknown as { input: AiSdkBackendInput }).input;
-    assert.deepEqual(
-      input.tools.map((tool) => tool.name),
-      ['WebSearch'],
-    );
-    assert.equal(input.tools[0]?.providerTool?.kind, 'openai-web-search');
-  } finally {
-    await backend.dispose();
-  }
-});
-
 test('production backend creation continues after a Session Client Capability is lost', async () => {
   const coordinator = new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
-  const provider = coordinator.attachConnection('provider-a', { send: async () => undefined });
+  const provider = coordinator.attachConnection(clientCapabilityConnectionIdentity('provider-a'), {
+    send: async () => undefined,
+  });
   const context: ConnectionContext = {
     hostEpoch: 'backend-creation-epoch',
     connectionId: 'provider-a',
@@ -364,6 +367,7 @@ test('production backend creation continues after a Session Client Capability is
           offerId: 'browser',
           version: '0',
           affinity: 'session',
+          hostPathAccess: 'cwd',
           label: 'Browser',
           tools: [
             {
@@ -414,25 +418,28 @@ test('production backend preserves coordinator Client Capability semantics acros
   let connection: ReturnType<HostClientCapabilityCoordinator['attachConnection']> | undefined;
   let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
   try {
-    connection = coordinator.attachConnection('client-capability-provider', {
-      send: async (frame) => {
-        if (frame.kind !== 'client.capability.call') return;
-        calls.push(frame);
-        queueMicrotask(() => {
-          connection?.accept({
-            kind: 'client.capability.accepted',
-            invocationId: frame.invocationId,
+    connection = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity('client-capability-provider'),
+      {
+        send: async (frame) => {
+          if (frame.kind !== 'client.capability.call') return;
+          calls.push(frame);
+          queueMicrotask(() => {
+            connection?.accept({
+              kind: 'client.capability.accepted',
+              invocationId: frame.invocationId,
+            });
+            connection?.accept({
+              kind: 'client.capability.result',
+              invocationId: frame.invocationId,
+              result: {
+                content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
+              },
+            });
           });
-          connection?.accept({
-            kind: 'client.capability.result',
-            invocationId: frame.invocationId,
-            result: {
-              content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
-            },
-          });
-        });
+        },
       },
-    });
+    );
     const context = {
       hostEpoch: 'client-capability-host-epoch',
       connectionId: 'client-capability-provider',
@@ -448,6 +455,7 @@ test('production backend preserves coordinator Client Capability semantics acros
             offerId: 'hosted-browser',
             version: '0',
             affinity: 'session',
+            hostPathAccess: 'cwd',
             label: 'Hosted Browser',
             tools: [
               {
@@ -496,7 +504,11 @@ test('production backend preserves coordinator Client Capability semantics acros
     backend = await createHostAiSdkBackend(
       backendCreationFixture({
         abortSignal: new AbortController().signal,
-        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        resolveExecutionConnection: async () =>
+          readyExecutionConnection(provider.baseUrl, {
+            requestHeaders: { 'X-Maka-Test': 'tui-shared-setting' },
+            requestBodyOverlay: { provider: { only: ['deepseek'] } },
+          }),
         readPricing: async () => ({ revision: 0, overrides: [] }),
         snapshotClientCapabilities: () => coordinator.snapshotForSession(sessionId),
         executionBoundary: createBypassExecutionBoundary(0),
@@ -526,6 +538,11 @@ test('production backend preserves coordinator Client Capability semantics acros
       JSON.stringify({ events, requests: provider.requests, trace }),
     );
     assert.equal(calls.length, 1);
+    assert.ok(provider.requests.length > 0);
+    for (const request of provider.requests) {
+      assert.equal(request.customHeader, 'tui-shared-setting');
+      assert.deepEqual(request.body.provider, { only: ['deepseek'] });
+    }
     assert.deepEqual(calls[0]?.arguments, {
       url: 'https://example.test/client-capability',
     });
@@ -777,6 +794,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'MakaSettingsGet',
       'MakaSettingsUpdate',
       'Read',
+      'ScheduledTask',
       'Skill',
       'SkillSearch',
       'StopBackgroundTask',
@@ -1045,6 +1063,11 @@ test('production Host executes and durably supervises an Agent Graph over a real
       }),
     );
     assert.equal(finish?.resultIds.length, 1);
+    const rootRun = runs.find((run) => run.runId === initialTerminal.runId);
+    assert.equal(rootRun?.runComposition?.composerId, 'maka.interactive');
+    assert.equal(rootRun?.runComposition?.contextWindow, 32_768);
+    assert.match(rootRun?.runComposition?.baseSystemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
+    assert.ok(rootRun?.runComposition?.toolNames.includes('view_agent_graph'));
     const wakeRuns = runs.filter((run) => run.agentGraphWakeAttemptId !== undefined);
     assert.ok(wakeRuns.length > 0);
     assert.ok(wakeRuns.every((run) => run.status === 'completed'));
@@ -1326,8 +1349,20 @@ test('production Host publishes and retires an implementation child patch', asyn
   try {
     await mkdir(project);
     await writeFile(join(project, 'README.md'), '# Hosted child fixture\n');
+    await writeFile(
+      join(project, 'pty-child.mjs'),
+      [
+        "process.stdin.setEncoding('utf8');",
+        "process.stdout.write('READY\\n');",
+        "process.stdin.once('data', (data) => {",
+        '  process.stdout.write(`CHILD_PTY_OK:${data.trim()}\\n`);',
+        '  setTimeout(() => {}, 30_000);',
+        '});',
+        '',
+      ].join('\n'),
+    );
     await git(project, 'init', '--initial-branch=main');
-    await git(project, 'add', 'README.md');
+    await git(project, 'add', 'README.md', 'pty-child.mjs');
     await git(
       project,
       '-c',
@@ -1419,7 +1454,11 @@ test('production Host publishes and retires an implementation child patch', asyn
     );
 
     const requests = provider.requests.filter((request) => request.body.stream === true);
-    assert.equal(requests.length, 5);
+    assert.ok(
+      requests.length >= MIN_IMPLEMENTATION_CHILD_REQUESTS + 3 &&
+        requests.length <= MAX_IMPLEMENTATION_CHILD_REQUESTS + 3,
+      JSON.stringify(providerRequestTrace(requests)),
+    );
     assert.ok(toolNames(requests[0]?.body).includes('load_tools'));
     assert.equal(toolNames(requests[0]?.body).includes('agent_spawn'), false);
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
@@ -1427,17 +1466,26 @@ test('production Host publishes and retires an implementation child patch', asyn
       'local_read',
       'implementation',
     ]);
-    assert.deepEqual(toolNames(requests[2]?.body), [
+    const childToolNames = [
       'ArchiveRead',
       'Bash',
       'Edit',
       'Glob',
       'Grep',
       'Read',
+      'StopBackgroundTask',
       'Write',
-    ]);
-    assert.deepEqual(toolNames(requests[3]?.body), toolNames(requests[2]?.body));
-    assert.ok(toolNames(requests[4]?.body).includes('agent_spawn'));
+      'WriteStdin',
+    ];
+    const childRequests = requests.slice(2, -1);
+    assert.ok(
+      childRequests.length >= MIN_IMPLEMENTATION_CHILD_REQUESTS &&
+        childRequests.length <= MAX_IMPLEMENTATION_CHILD_REQUESTS,
+    );
+    for (const request of childRequests) {
+      assert.deepEqual(toolNames(request.body), childToolNames);
+    }
+    assert.ok(toolNames(requests.at(-1)?.body).includes('agent_spawn'));
 
     const sessions = await execution.sessionStore.listForRecovery();
     const child = sessions.find((session) => session.id !== parent.id);
@@ -1460,10 +1508,10 @@ test('production Host publishes and retires an implementation child patch', asyn
     );
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
-    assert.equal(childArtifacts.length, 4);
+    assert.equal(childArtifacts.length, childRequests.length + 2);
     assert.equal(
       childArtifacts.filter((artifact) => artifact.source === 'provider_request_capture').length,
-      2,
+      childRequests.length,
     );
     assert.ok(
       childArtifacts.some(
@@ -2037,7 +2085,6 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
       workspaceInstructions: { enabled: false },
     },
   };
-  let policyReads = 0;
   let inventoryReads = 0;
   let inventory: readonly ScannedSkill[] = [skillFixture('old', 'OLD_DESCRIPTION', 'OLD_BODY')];
   const skills = {
@@ -2054,13 +2101,8 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
       body: 'MEMORY_BODY',
     }),
   } as unknown as HostMemoryCoordinator;
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => {
-        policyReads += 1;
-        return policy;
-      },
-    },
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: policy,
     skills,
     memory,
     taskLedger: {} as TaskLedgerStore,
@@ -2072,11 +2114,10 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
     workspaceRoot: '/workspace',
   } as const;
 
-  const firstPrompt = await composition.systemPrompt(firstContext);
+  const firstPrompt = (await composition.resolveSystemPrompt(firstContext)).text;
   assert.match(firstPrompt ?? '', /^You are Maka,/);
   assert.match(firstPrompt ?? '', /OLD_DESCRIPTION/);
   assert.match(firstPrompt ?? '', /MEMORY_BODY/);
-  assert.equal(policyReads, 0);
   assert.equal(inventoryReads, 1);
 
   inventory = [skillFixture('new', 'NEW_DESCRIPTION', 'NEW_BODY')];
@@ -2110,310 +2151,96 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
   );
   assert.equal(inventoryReads, 1);
 
-  const nextPrompt = await composition.systemPrompt({ ...firstContext, turnId: 'turn-2' });
+  const nextPrompt = (await composition.resolveSystemPrompt({ ...firstContext, turnId: 'turn-2' }))
+    .text;
   assert.match(nextPrompt ?? '', /NEW_DESCRIPTION/);
   assert.doesNotMatch(nextPrompt ?? '', /OLD_DESCRIPTION/);
   assert.equal(inventoryReads, 2);
 });
 
-test('Client Capability tools join the existing load_tools catalog without a parallel loader', () => {
-  const capabilityTool: MakaTool = {
-    name: 'mcp__opaque__inspect',
-    description: 'Fixture Client Capability tool.',
-    parameters: {},
-    categoryHint: 'client_capability',
-    impl: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
-  };
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => ({
-        revision: 0,
-        policy: createDefaultRuntimePolicy(),
-      }),
-    },
+test('one composer freezes Runtime Policy while each Run freezes its remaining prompt sources', async () => {
+  let policyRevision = 3;
+  let memoryRevision = 'memory-3';
+  let memoryBody = 'MEMORY_THREE';
+  let skillRevision = 'skills-3';
+  let skillDescription = 'SKILL_THREE';
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: { revision: policyRevision, policy: createDefaultRuntimePolicy() },
     skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
+      readCanonicalModelInventory: async () => ({
+        revision: skillRevision,
+        inventory: [skillFixture('fixture', skillDescription, 'BODY')],
+      }),
     } as unknown as HostSkillCatalogCoordinator,
-    memory: {} as HostMemoryCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        bundleRevision: `bundle-${memoryRevision}`,
+        memoryRevision,
+        body: memoryBody,
+      }),
+    } as unknown as HostMemoryCoordinator,
     taskLedger: {} as TaskLedgerStore,
-    clientCapabilities: {
-      tools: [capabilityTool],
-      groups: [
-        {
-          id: 'client_fixture',
-          label: 'Opaque fixture',
-          description: 'Loaded through the canonical tool connector.',
-          toolNames: [capabilityTool.name],
-        },
-      ],
-    },
   });
-
-  assert.ok(composition.tools.includes(capabilityTool));
-  assert.deepEqual(
-    composition.toolAvailability.groups?.find((group) => group.id === 'client_fixture'),
-    {
-      id: 'client_fixture',
-      label: 'Opaque fixture',
-      description: 'Loaded through the canonical tool connector.',
-      toolNames: [capabilityTool.name],
-    },
-  );
-});
-
-test('Side conversations end the Host-owned system prompt with an isolation boundary', async () => {
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
-    },
-    skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
-    } as unknown as HostSkillCatalogCoordinator,
-    memory: {
-      readPromptProjection: async () => ({
-        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
-      }),
-    } as unknown as HostMemoryCoordinator,
-    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
-    sideConversation: true,
-  });
-
-  const prompt =
-    (await composition.systemPrompt({
-      sessionId: 'side-session',
-      turnId: 'turn-1',
-      cwd: '/workspace',
-      workspaceRoot: '/workspace',
-    })) ?? '';
-  assert.match(prompt, /Side conversation boundary/);
-  assert.match(prompt, /inherited parent history is reference context only/i);
-  assert.equal(
-    prompt.trimEnd().endsWith('Workspace changes may be visible to both conversations.'),
-    true,
-  );
-});
-
-test('Deep Research composition keeps one read-only research surface and prompt', async () => {
-  const tool = (name: string, categoryHint?: MakaTool['categoryHint']): MakaTool => ({
-    name,
-    description: `${name} fixture`,
-    parameters: {},
-    ...(categoryHint ? { categoryHint } : {}),
-    impl: async () => name,
-  });
-  const read = tool('Read');
-  const webSearch = tool('WebSearch');
-  const shell = tool('Shell');
-  const deepResearchStatus = tool('deep_research_status');
-  const unsafeDeepResearchTool = tool('deep_research_unsafe_fixture');
-  const clientMutation = tool('mcp__opaque__mutate', 'client_capability');
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
-    },
-    skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
-    } as unknown as HostSkillCatalogCoordinator,
-    memory: {
-      readPromptProjection: async () => ({
-        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
-      }),
-    } as unknown as HostMemoryCoordinator,
-    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
-    hostTools: [read, webSearch, shell, unsafeDeepResearchTool],
-    parentAgentTools: buildParentAgentTools(),
-    clientCapabilities: {
-      tools: [clientMutation],
-      groups: [
-        {
-          id: 'client_fixture',
-          label: 'Opaque fixture',
-          toolNames: [clientMutation.name],
-        },
-      ],
-    },
-    deepResearch: { tools: [deepResearchStatus] },
-  });
-
-  assert.deepEqual(composition.tools.map((candidate) => candidate.name).sort(), [
-    'AskUserQuestion',
-    'ExploreAgent',
-    'Read',
-    'WebSearch',
-    'deep_research_status',
-  ]);
-  assert.equal(composition.tools.includes(shell), false);
-  assert.equal(composition.tools.includes(clientMutation), false);
-  assert.equal(composition.tools.includes(unsafeDeepResearchTool), false);
-  assert.equal(
-    composition.tools.some((candidate) => candidate.categoryHint === 'subagent'),
-    true,
-  );
-  assert.equal(
-    composition.toolAvailability.groups?.find((group) => group.id === 'client_fixture'),
-    undefined,
-  );
-  const prompt =
-    (await composition.systemPrompt({
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      cwd: process.cwd(),
-      workspaceRoot: process.cwd(),
-    })) ?? '';
-  assert.match(prompt, /Deep research mode is active/);
-  assert.match(prompt, /ExploreAgent/);
-  // The Deep Research contract is a trailing assertion that constrains the
-  // fragments before it; it must be the last non-empty fragment. With no skills
-  // or workspace instructions in this fixture, the contract follows identity.
-  const drIndex = prompt.indexOf('Deep research mode is active');
-  assert.ok(drIndex > 0, 'deep research contract must be present');
-  assert.ok(prompt.indexOf('You are Maka,') < drIndex, 'identity must lead the contract');
-});
-
-test('Plan composition admits only planning tools before approval and execution controls after', async () => {
-  const proposal = {
-    planId: 'plan-1',
-    proposalId: 'proposal-1',
-    sessionId: 'session-1',
+  const context = {
+    sessionId: 'session',
     turnId: 'turn-1',
-    revision: 1,
-    title: 'Host Plan',
-    steps: [{ id: 'step-1', title: 'Implement', description: 'Implement the approved work' }],
-    status: 'pending_approval' as const,
-    submittedAt: 1,
-  };
-  const pending: PlanSessionState = {
-    schemaVersion: 1,
-    sessionId: 'session-1',
-    storeVersion: 1,
-    proposals: [proposal],
-    executions: [],
-    latestProposalId: proposal.proposalId,
-  };
-  const store = { readState: async () => pending } as unknown as PlanStore;
-  const base = {
-    policy: {
-      getSnapshot: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
-    },
+    cwd: '/workspace',
+    workspaceRoot: '/workspace',
+  } as const;
+
+  const first = await composition.resolveSystemPrompt(context);
+  policyRevision = 4;
+  memoryRevision = 'memory-4';
+  memoryBody = 'MEMORY_FOUR';
+  skillRevision = 'skills-4';
+  skillDescription = 'SKILL_FOUR';
+  const repeated = await composition.resolveSystemPrompt(context);
+  const next = await composition.resolveSystemPrompt({ ...context, turnId: 'turn-2' });
+
+  assert.deepEqual(repeated, first);
+  assert.deepEqual(first.sourceRevisions, [
+    { id: 'memory', revision: 'memory-3' },
+    { id: 'memory-bundle', revision: 'bundle-memory-3' },
+    { id: 'runtime-policy', revision: '3' },
+    { id: 'skill-catalog', revision: 'skills-3' },
+  ]);
+  assert.match(first.text ?? '', /MEMORY_THREE/u);
+  assert.match(first.text ?? '', /SKILL_THREE/u);
+  assert.deepEqual(next.sourceRevisions, [
+    { id: 'memory', revision: 'memory-4' },
+    { id: 'memory-bundle', revision: 'bundle-memory-4' },
+    { id: 'runtime-policy', revision: '3' },
+    { id: 'skill-catalog', revision: 'skills-4' },
+  ]);
+  assert.match(next.text ?? '', /MEMORY_FOUR/u);
+  assert.match(next.text ?? '', /SKILL_FOUR/u);
+
+  const nextComposition = createInteractiveRunComposer({
+    runtimePolicy: { revision: policyRevision, policy: createDefaultRuntimePolicy() },
     skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
+      readCanonicalModelInventory: async () => ({
+        revision: skillRevision,
+        inventory: [skillFixture('fixture', skillDescription, 'BODY')],
+      }),
     } as unknown as HostSkillCatalogCoordinator,
     memory: {
       readPromptProjection: async () => ({
-        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+        bundleRevision: `bundle-${memoryRevision}`,
+        memoryRevision,
+        body: memoryBody,
       }),
     } as unknown as HostMemoryCoordinator,
-    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
-  };
-  const planning = createHostExecutionModelComposition({
-    ...base,
-    plan: { store, state: pending, mode: 'plan' },
-  });
-  assert.deepEqual(planning.tools.map((tool) => tool.name).sort(), [
-    'AskUserQuestion',
-    'SubmitPlan',
-  ]);
-  assert.match(
-    (await planning.systemPrompt({
-      sessionId: 'session-1',
-      turnId: 'turn-2',
-      cwd: process.cwd(),
-      workspaceRoot: process.cwd(),
-    })) ?? '',
-    /Collaboration Mode: Plan/,
-  );
-
-  const execution = {
-    executionId: 'execution-1',
-    planId: proposal.planId,
-    proposalId: proposal.proposalId,
-    sessionId: proposal.sessionId,
-    status: 'active' as const,
-    steps: proposal.steps.map((step) => ({
-      ...step,
-      status: 'pending' as const,
-      updatedAt: 2,
-    })),
-    startedAt: 2,
-    updatedAt: 2,
-  };
-  const active: PlanSessionState = {
-    ...pending,
-    storeVersion: 2,
-    proposals: [{ ...proposal, status: 'approved' }],
-    executions: [execution],
-    activeExecutionId: execution.executionId,
-  };
-  const executing = createHostExecutionModelComposition({
-    ...base,
-    parentAgentTools: buildParentAgentTools(),
-    plan: { store, state: active, mode: 'agent' },
-  });
-  assert.ok(executing.tools.some((tool) => tool.name === 'update_plan'));
-  assert.ok(executing.tools.some((tool) => tool.name === 'cancel_plan'));
-  assert.equal(
-    executing.tools.some((tool) => tool.categoryHint === 'subagent'),
-    false,
-  );
-  assert.match(
-    await executing.turnTailPrompt({
-      sessionId: 'session-1',
-      turnId: 'turn-3',
-      cwd: process.cwd(),
-      workspaceRoot: process.cwd(),
-    }),
-    /plan_execution_context/,
-  );
-});
-
-test('Host model composition routes managed file tools through its filesystem worker', async () => {
-  let workerInput: FilesystemWorkerExecuteInput | undefined;
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => ({
-        revision: 0,
-        policy: createDefaultRuntimePolicy(),
-      }),
-    },
-    skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
-    } as unknown as HostSkillCatalogCoordinator,
-    memory: {} as HostMemoryCoordinator,
     taskLedger: {} as TaskLedgerStore,
-    builtinTools: {
-      filesystemWorker: {
-        execute: async (input) => {
-          workerInput = input;
-          return { kind: 'read', content: 'read by Host worker' };
-        },
-      },
-      sandboxPlatform: 'darwin',
-    },
   });
-  const read = composition.tools.find((tool) => tool.name === 'Read');
-  assert.ok(read);
-
-  const result = await read.impl(
-    { path: 'resource.txt' },
-    {
-      sessionId: 'session',
-      turnId: 'turn',
-      toolCallId: 'read-call',
-      cwd: process.cwd(),
-      permissionMode: 'ask',
-      executionBoundary: createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),
-      abortSignal: new AbortController().signal,
-      emitOutput: () => {},
-    },
+  assert.deepEqual(
+    (await nextComposition.resolveSystemPrompt({ ...context, turnId: 'turn-3' })).sourceRevisions,
+    [
+      { id: 'memory', revision: 'memory-4' },
+      { id: 'memory-bundle', revision: 'bundle-memory-4' },
+      { id: 'runtime-policy', revision: '4' },
+      { id: 'skill-catalog', revision: 'skills-4' },
+    ],
   );
-
-  assert.deepEqual(result, { content: 'read by Host worker' });
-  assert.ok(workerInput);
-  assert.deepEqual(workerInput.operation, { kind: 'read', path: 'resource.txt' });
-  assert.equal(workerInput.cwd, process.cwd());
-  assert.equal(workerInput.executionBoundary?.kind, 'managed');
-  assert.equal(workerInput.mode, 'ask');
-  assert.ok(workerInput.abortSignal instanceof AbortSignal);
 });
 
 test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
@@ -2436,13 +2263,8 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     parameters: {},
     impl: async () => 'automation',
   };
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => ({
-        revision: 0,
-        policy: createDefaultRuntimePolicy(),
-      }),
-    },
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
     skills: {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
@@ -2469,30 +2291,6 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     composition.toolAvailability.groups?.some((group) => group.id === 'client_fixture'),
     false,
   );
-});
-
-test('root model composition defers the canonical parent-agent tool group', () => {
-  const parentAgentTools = buildParentAgentTools();
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => ({
-        revision: 0,
-        policy: createDefaultRuntimePolicy(),
-      }),
-    },
-    skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
-    } as unknown as HostSkillCatalogCoordinator,
-    memory: {} as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
-    parentAgentTools,
-  });
-
-  assert.deepEqual(
-    composition.toolAvailability.groups?.find((group) => group.id === 'agent')?.toolNames,
-    ['agent_spawn', 'agent_list', 'agent_output'],
-  );
-  assert.ok(parentAgentTools.every((tool) => composition.tools.includes(tool)));
 });
 
 function skillFixture(id: string, description: string, content: string): ScannedSkill {
@@ -2648,8 +2446,48 @@ function backendCreationFixture(input: {
   loadTurnRuntimeEvents?: () => Promise<RuntimeEvent[]>;
   recordRunTrace?: (event: RunTraceEvent) => unknown;
   runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
+  recordRunComposition?: BackendFactoryContext['recordRunComposition'];
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
+  createRunComposer?: HostAiSdkBackendInput['createRunComposer'];
 }): HostAiSdkBackendInput {
+  const runtimePolicy =
+    input.runtimePolicy ??
+    ({
+      operations: {
+        resolveExecutionConnection: input.resolveExecutionConnection,
+      },
+      runtimePolicy: {
+        getSnapshot: async () => ({
+          revision: 0,
+          policy: createDefaultRuntimePolicy(),
+        }),
+      },
+    } as unknown as RuntimePolicyStoresWriter);
+  const createRunComposer =
+    input.createRunComposer ??
+    createInteractiveRunComposerFactory({
+      skills: {
+        readCanonicalModelInventory: async () => ({
+          revision: 'skills-fixture',
+          projectRoot: '/workspace',
+          inventory: [],
+          diagnostics: [],
+          discoveryDiagnostics: [],
+        }),
+      } as unknown as HostSkillCatalogCoordinator,
+      memory: {
+        readPromptProjection: async () => ({
+          policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+          bundleRevision: null,
+          memoryRevision: null,
+          body: '',
+        }),
+      } as unknown as HostMemoryCoordinator,
+      taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+      clientCapabilities: {
+        snapshotForSession: input.snapshotClientCapabilities ?? (() => undefined),
+      } as unknown as HostClientCapabilityCoordinator,
+    });
   return {
     context: {
       sessionId: 'backend-creation-session',
@@ -2666,38 +2504,16 @@ function backendCreationFixture(input: {
         ? { loadTurnRuntimeEvents: input.loadTurnRuntimeEvents }
         : {}),
       ...(input.recordRunTrace ? { recordRunTrace: input.recordRunTrace } : {}),
+      ...(input.recordRunComposition ? { recordRunComposition: input.recordRunComposition } : {}),
       store: {
         appendMessage: async () => undefined,
         readExecutionBoundary: async () => input.executionBoundary,
       },
     } as unknown as BackendFactoryContext,
-    runtimePolicy: input.runtimePolicy ?? {
-      operations: {
-        resolveExecutionConnection: input.resolveExecutionConnection,
-      },
-      runtimePolicy: {
-        getSnapshot: async () => ({
-          revision: 0,
-          policy: createDefaultRuntimePolicy(),
-        }),
-      },
-    },
+    runtimePolicy,
     ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
     ...(input.claudeDeviceId ? { claudeDeviceId: input.claudeDeviceId } : {}),
-    skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
-    },
-    memory: {
-      readPromptProjection: async () => ({
-        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
-        bundleRevision: null,
-        memoryRevision: null,
-        body: '',
-      }),
-    },
-    taskLedger: {
-      list: async () => [],
-    },
+    createRunComposer,
     artifacts: {},
     executionArtifacts: {
       recordToolArtifacts: async () => undefined,
@@ -2717,21 +2533,27 @@ function backendCreationFixture(input: {
       },
     },
     requestDrain: () => undefined,
-    clientCapabilities: {
-      snapshotForSession: input.snapshotClientCapabilities ?? (() => undefined),
-    },
     ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
     ...(input.createFetchTransport ? { createFetchTransport: input.createFetchTransport } : {}),
   } as unknown as HostAiSdkBackendInput;
 }
 
-function readyExecutionConnection(baseUrl?: string) {
+function readyExecutionConnection(
+  baseUrl?: string,
+  customization: {
+    readonly requestHeaders?: Readonly<Record<string, string>>;
+    readonly requestBodyOverlay?: Readonly<Record<string, unknown>>;
+  } = {},
+) {
   return {
     kind: 'ready',
     connection: {
       slug: 'backend-creation-connection',
       providerType: 'moonshot',
       ...(baseUrl ? { baseUrl } : {}),
+      ...(customization.requestBodyOverlay
+        ? { requestBodyOverlay: customization.requestBodyOverlay }
+        : {}),
       enabledModelIds: [MODEL_ID],
       models: [
         {
@@ -2745,6 +2567,9 @@ function readyExecutionConnection(baseUrl?: string) {
     networkProxy: { enabled: false },
     secretMaterial: {
       connection: { secret: API_KEY },
+      ...(customization.requestHeaders
+        ? { requestHeaders: { secret: JSON.stringify(customization.requestHeaders) } }
+        : {}),
     },
   };
 }
@@ -2876,21 +2701,35 @@ function toolNames(body: Record<string, unknown> | undefined): string[] {
 
 function providerRequestTrace(requests: readonly ProviderRequest[]): readonly unknown[] {
   return requests.map((request) => {
-    const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-    const lastToolResult = messages
-      .filter(
-        (message): message is Record<string, unknown> =>
-          Boolean(message) && typeof message === 'object' && message.role === 'tool',
-      )
-      .at(-1)?.content;
-    const serializedToolResult =
-      typeof lastToolResult === 'string' ? lastToolResult : JSON.stringify(lastToolResult);
     return {
       stream: request.body.stream,
       tools: toolNames(request.body),
-      lastToolResult: serializedToolResult?.slice(0, 1_000),
+      lastToolResult: latestToolResultText(request.body)?.slice(0, 1_000),
     };
   });
+}
+
+function latestToolResultText(body: Record<string, unknown>): string | undefined {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const content = messages
+    .filter(
+      (message): message is Record<string, unknown> =>
+        Boolean(message) && typeof message === 'object' && message.role === 'tool',
+    )
+    .at(-1)?.content;
+  return typeof content === 'string'
+    ? content
+    : content === undefined
+      ? undefined
+      : JSON.stringify(content);
+}
+
+function requireLatestToolResult(body: Record<string, unknown>): Record<string, unknown> {
+  const serialized = latestToolResultText(body);
+  assert.ok(serialized, 'provider fixture expected a tool result in model history');
+  const result: unknown = JSON.parse(serialized);
+  assert.ok(result && typeof result === 'object' && !Array.isArray(result));
+  return result as Record<string, unknown>;
 }
 
 function toolParameterEnum(
@@ -2906,6 +2745,12 @@ function toolParameterEnum(
   }) as { function?: { parameters?: { properties?: Record<string, unknown> } } } | undefined;
   const schema = tool?.function?.parameters?.properties?.[property];
   return schema && typeof schema === 'object' ? (schema as { enum?: unknown }).enum : undefined;
+}
+
+function requireRuntimeResourceRef(body: Record<string, unknown>): string {
+  const ref = JSON.stringify(body).match(/maka:\/\/runtime\/background-tasks\/[A-Za-z0-9_-]+/)?.[0];
+  assert.ok(ref, 'provider fixture expected a background-task ref in model history');
+  return ref;
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -2926,6 +2771,7 @@ async function fileExists(path: string): Promise<boolean> {
 interface ProviderRequest {
   readonly url: string;
   readonly authorization: string | undefined;
+  readonly customHeader: string | undefined;
   readonly body: Record<string, unknown>;
 }
 
@@ -2936,7 +2782,12 @@ type ProviderFlow =
       readonly groupId: string;
       readonly toolName: string;
     }
-  | { readonly kind: 'child_agent' | 'implementation_child_agent' }
+  | { readonly kind: 'child_agent' }
+  | {
+      readonly kind: 'implementation_child_agent';
+      ptyReadCount: number;
+      stopRequested: boolean;
+    }
   | { readonly kind: 'agent_graph'; readonly scenario: AgentGraphProviderScenario };
 
 async function startProvider(): Promise<{
@@ -2971,7 +2822,7 @@ async function startProvider(): Promise<{
     },
     configureImplementationChildAgentFlow: () => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
-      flow = { kind: 'implementation_child_agent' };
+      flow = { kind: 'implementation_child_agent', ptyReadCount: 0, stopRequested: false };
     },
     configureAgentGraphFlow: () => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
@@ -2995,6 +2846,7 @@ async function handleProviderRequest(
   requests.push({
     url: request.url ?? '',
     authorization: request.headers.authorization,
+    customHeader: request.headers['x-maka-test'] as string | undefined,
     body,
   });
   if (body.stream !== true) {
@@ -3087,7 +2939,9 @@ async function handleProviderRequest(
       'Glob',
       'Grep',
       'Read',
+      'StopBackgroundTask',
       'Write',
+      'WriteStdin',
     ]);
     respondProviderToolCall(response, streamRequestIndex, 'Write', {
       path: 'implementation.txt',
@@ -3096,6 +2950,57 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 4) {
+    respondProviderToolCall(response, streamRequestIndex, 'Bash', {
+      command: 'node pty-child.mjs',
+      run_in_background: true,
+      pty: true,
+    });
+    return;
+  }
+  if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 5) {
+    respondProviderToolCall(response, streamRequestIndex, 'WriteStdin', {
+      ref: requireRuntimeResourceRef(body),
+      actions: [
+        { type: 'text', text: 'ping' },
+        { type: 'key', key: 'enter' },
+      ],
+    });
+    return;
+  }
+  if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 6) {
+    flow.ptyReadCount = 1;
+    respondProviderToolCall(response, streamRequestIndex, 'Read', {
+      ref: requireRuntimeResourceRef(body),
+    });
+    return;
+  }
+  if (
+    flow.kind === 'implementation_child_agent' &&
+    streamRequestIndex >= 7 &&
+    !toolNames(body).includes('agent_spawn')
+  ) {
+    const latestResult = latestToolResultText(body) ?? '';
+    if (!flow.stopRequested) {
+      if (!latestResult.includes('CHILD_PTY_OK:ping')) {
+        assert.ok(
+          flow.ptyReadCount < MAX_IMPLEMENTATION_CHILD_PTY_READS,
+          'PTY child did not publish its input response',
+        );
+        flow.ptyReadCount += 1;
+        respondProviderToolCall(response, streamRequestIndex, 'Read', {
+          ref: requireRuntimeResourceRef(body),
+        });
+        return;
+      }
+      flow.stopRequested = true;
+      respondProviderToolCall(response, streamRequestIndex, 'StopBackgroundTask', {
+        ref: requireRuntimeResourceRef(body),
+      });
+      return;
+    }
+    const stopResult = requireLatestToolResult(body);
+    assert.equal(stopResult.status, 'cancelled');
+    assert.deepEqual(stopResult.operation, { kind: 'stop', applied: true });
     respondProviderText(response, CHILD_AGENT_RESULT_TEXT);
     return;
   }

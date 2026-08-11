@@ -308,18 +308,6 @@ describe('buildCaptureCommand', () => {
       assert.equal(match[1], JSON.stringify({ PATH: '/usr/bin' }));
     });
 
-    it('tcsh / csh collapse to the legacy single -ic argv', () => {
-      const tcsh = buildCaptureCommand('tcsh', '/usr/bin/node', MARK);
-      assert.deepEqual(tcsh.shellArgs, ['-ic']);
-      const csh = buildCaptureCommand('csh', '/usr/bin/node', MARK);
-      assert.deepEqual(csh.shellArgs, ['-ic']);
-      // Same flush-marker payload as the rest of the POSIX family.
-      assert.equal(
-        tcsh.command,
-        `'/usr/bin/node' -p '"${MARK}" + JSON.stringify({ PATH: process.env.PATH }) + "${MARK}"'`,
-      );
-    });
-
     it('round-trips an apostrophe in execPath via the close-quote / escape / reopen sequence', () => {
       // POSIX single-quoting cannot contain a literal `'`; the safe escape is
       // to close the quote, emit a backslash-escaped quote, and reopen.
@@ -393,13 +381,4 @@ describe('buildMarkerRegex', () => {
     assert.equal(match[1], body);
   });
 
-  it('does NOT match the old xonsh shape `mark {...} mark` (space-separated)', () => {
-    // The dropped xonsh branch ran Python `print(mark, json, mark)`, whose
-    // default sep joins args with a SPACE — producing `mark {...} mark`. That
-    // shape never satisfied the flush-marker regex, which is exactly why the
-    // branch was dead. This test is the guard that would have caught review
-    // item #3 before it shipped.
-    const xonshShape = `${MARK} {"k":"v"} ${MARK}`;
-    assert.equal(buildMarkerRegex(MARK).exec(xonshShape), null);
-  });
 });

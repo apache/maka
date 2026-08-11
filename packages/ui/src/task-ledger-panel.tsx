@@ -1,12 +1,14 @@
 import { useMemo, type CSSProperties, type ReactNode } from 'react';
-import { Collapsible, IconButton } from '@astryxdesign/core';
+import { Banner, Collapsible, EmptyState, IconButton, Spinner } from '@astryxdesign/core';
 import type { Task, TaskStatus } from '@maka/core';
 import {
+  ICON_SIZE,
   AlertCircle,
   Ban,
   CheckCircle2,
   CircleGauge,
   Clock,
+  ListTodo,
   RefreshCcw,
   X,
 } from './icons.js';
@@ -57,9 +59,12 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
   return (
     <section className="maka-task-ledger-panel" aria-label={copy.ariaLabel}>
       {props.error ? (
-        <div className="maka-task-ledger-message" role="alert">
-          <span>{props.error}</span>
-          {props.onRetry && (
+        <Banner
+          status="error"
+          role="alert"
+          className="maka-task-ledger-message"
+          title={props.error}
+          endContent={props.onRetry ? (
             <IconButton
               variant="ghost"
               size="sm"
@@ -67,12 +72,12 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
               onClick={props.onRetry}
               label={copy.retry}
               tooltip={copy.retry}
-              icon={<RefreshCcw size={14} aria-hidden="true" />}
+              icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
             />
-          )}
-        </div>
+          ) : undefined}
+        />
       ) : props.loading && props.tasks.length === 0 ? (
-        <div className="maka-task-ledger-message" role="status">{copy.loading}</div>
+        <Spinner size="sm" shade="subtle" label={copy.loading} className="maka-task-ledger-message" />
       ) : (
         <>
           {model.activeCount > 0 ? (
@@ -80,7 +85,12 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
               <TaskLedgerTree tasks={model.activeTree} copy={copy} />
             </div>
           ) : (
-            <p className="maka-task-ledger-empty">{copy.empty}</p>
+            <EmptyState
+              isCompact
+              className="maka-task-ledger-empty"
+              icon={<ListTodo size={ICON_SIZE.empty} aria-hidden="true" />}
+              title={copy.empty}
+            />
           )}
           {model.recentTerminalCount > 0 && (
             <Collapsible
@@ -159,7 +169,7 @@ function TaskLedgerRow({ task, copy, level, position, setSize, children }: {
       data-status={task.status}
       style={{ '--task-depth': Math.min(depth, 6) } as CSSProperties}
     >
-      <StatusIcon size={14} aria-hidden="true" />
+      <StatusIcon size={ICON_SIZE.control} aria-hidden="true" />
       <code className="maka-task-ledger-key">{task.key}</code>
       <span className="maka-task-ledger-subject" title={task.subject}>{task.subject}</span>
       <span className="maka-task-ledger-meta">

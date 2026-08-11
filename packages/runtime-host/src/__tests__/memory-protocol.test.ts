@@ -3,12 +3,12 @@ import { describe, test } from 'node:test';
 import {
   decodeClientFrame,
   decodeHostFrame,
-  encodeProtocolFrame,
+  encodeProtocolMessage,
   HOST_OPERATION_SPECS,
   MEMORY_DOCUMENT_CHUNK_MAX_BYTES,
   MEMORY_ENTRY_PAGE_MAX_ITEMS,
   MEMORY_RESULT_MAX_BYTES,
-  RUNTIME_HOST_MAX_FRAME_BYTES,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RuntimeHostProtocolError,
 } from '../protocol/index.js';
 
@@ -88,12 +88,12 @@ describe('Memory protocol', () => {
     assert.doesNotThrow(() => response('memory.query', result));
     assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') <= MEMORY_RESULT_MAX_BYTES);
     assert.ok(
-      encodeProtocolFrame({
+      encodeProtocolMessage({
         requestId: 'memory-page',
         operation: 'memory.query',
         ok: true,
         result,
-      }).byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES,
+      }).byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES,
     );
 
     const input = {
@@ -104,11 +104,11 @@ describe('Memory protocol', () => {
     };
     assert.doesNotThrow(() => request('memory.mutate', input));
     assert.ok(
-      encodeProtocolFrame({
+      encodeProtocolMessage({
         requestId: 'memory-chunk',
         operation: 'memory.mutate',
         input,
-      }).byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES,
+      }).byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES,
     );
     assert.throws(
       () =>

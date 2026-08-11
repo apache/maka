@@ -66,7 +66,7 @@ export interface AppShellCommandListOptions {
   startModeSession: (mode: SessionStartMode) => Promise<boolean>;
   isComposerImportOwnerActive: (owner: ComposerImportOwner) => boolean;
   openHelp: () => void;
-  openPlanReminderForm: () => void;
+  openScheduledTaskForm: () => void;
   openProjectFolder: () => Promise<void>;
   openSessionInChat: (sessionId: string) => void;
   openSettings: () => void;
@@ -107,7 +107,7 @@ export function buildAppShellCommandList(
       const { startModeSession } = optionsRef.current;
       await startModeSession("deep_research");
     },
-    onStartPlanReminder: () => optionsRef.current.openPlanReminderForm(),
+    onStartScheduledTask: () => optionsRef.current.openScheduledTaskForm(),
     onOpenSettings: () => optionsRef.current.openSettings(),
     onOpenSettingsSection: (section) =>
       optionsRef.current.openSettingsSection(section),

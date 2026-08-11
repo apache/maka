@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
 import {
   assertMissing,
   assertPackagedResources,
@@ -32,7 +33,7 @@ function runCommandFromRepo(command, args, options = {}) {
 
 // macOS-only: the worker exists to enforce a sandbox profile, and Windows has no
 // implementation of one, so the app there runs file tools in-process instead.
-async function smokePackagedFilesystemWorker(
+export async function smokePackagedFilesystemWorker(
   executable,
   worker,
   { workingDirectory, run = runCommand } = {},
@@ -46,7 +47,7 @@ async function smokePackagedFilesystemWorker(
     },
   };
   const request = {
-    version: 4,
+    version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
     requestId: 'release-filesystem-worker-smoke',
     operation: { kind: 'write', cwd: workspace, path: target, content },
     operationBoundary,

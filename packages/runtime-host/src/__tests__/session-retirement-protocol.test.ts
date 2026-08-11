@@ -117,36 +117,16 @@ describe('Session retirement protocol', () => {
       },
     );
   });
-
-  test('correlates unsupported legacy lifecycle results without inventing lifecycle fields', () => {
-    const legacy = {
-      kind: 'unsupported_legacy_record' as const,
-      id: 'session-1',
-      revision: 2,
-      reason: 'not_wire_representable' as const,
-    };
-    assert.doesNotThrow(() =>
-      HOST_OPERATION_SPECS['session.lifecycle.set'].assertOutputForInput?.(
-        { sessionId: 'session-1', state: 'archived' },
-        legacy,
-      ),
-    );
-    assert.throws(
-      () =>
-        HOST_OPERATION_SPECS['session.lifecycle.set'].assertOutputForInput?.(
-          { sessionId: 'session-2', state: 'archived' },
-          legacy,
-        ),
-      isInvalidFrame,
-    );
-  });
 });
 
 function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionCatalogProjection {
   return {
     id: 'session-1',
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: 'Session',

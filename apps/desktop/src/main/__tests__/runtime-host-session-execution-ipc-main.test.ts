@@ -696,6 +696,7 @@ function observerWithTranscript(
           },
           interactions: { pending: [] },
         },
+        activeAssistantStreams: [],
         transcript: Promise.resolve([...transcript]),
         events: waitForEnd(eventsFinished),
         async close() {
@@ -706,8 +707,6 @@ function observerWithTranscript(
     emitSessionsChanged() {},
   });
 }
-
-async function* emptyEvents(): AsyncIterable<never> {}
 
 async function* waitForEnd(done: Promise<void>): AsyncIterable<never> {
   await done;
@@ -742,15 +741,22 @@ function ipcHarness() {
 }
 
 function registerExecutionIpc(
-  deps: Omit<RuntimeHostSessionExecutionIpcDeps, 'sessionCopyCleanup' | 'onBackgroundError'> &
+  deps: Omit<
+    RuntimeHostSessionExecutionIpcDeps,
+    'sessionCopyCleanup' | 'onBackgroundError' | 'observations'
+  > &
     Partial<
-      Pick<RuntimeHostSessionExecutionIpcDeps, 'sessionCopyCleanup' | 'onBackgroundError'>
+      Pick<
+        RuntimeHostSessionExecutionIpcDeps,
+        'sessionCopyCleanup' | 'onBackgroundError' | 'observations'
+      >
     >,
   ipcMain: Pick<IpcMain, 'handle'>,
 ): (sessionId: string) => Promise<void> {
   return registerRuntimeHostSessionExecutionIpc(
     {
       ...deps,
+      observations: deps.observations ?? deps.observer,
       sessionCopyCleanup: deps.sessionCopyCleanup ?? unusedSessionCopyCleanup(),
       onBackgroundError: deps.onBackgroundError ?? (() => undefined),
     },
@@ -774,7 +780,10 @@ function session(cwd = "/workspace"): SessionCatalogProjection {
   return {
     id: "session-1",
     revision: 1,
-    cwd,
+    workspace: {
+      target: { kind: 'host_path', path: cwd },
+      hostCwd: cwd,
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: "Session",

@@ -9,6 +9,7 @@ import type {
   ConnectionCatalogSnapshot,
   CredentialLocator,
 } from '@maka/core/runtime-policy';
+import { REQUEST_BODY_OVERLAY_MAX_BYTES } from '@maka/core/runtime-policy';
 import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend, type MakaToolContext } from '@maka/runtime';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
@@ -16,6 +17,7 @@ import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storag
 import {
   CONNECTION_CATALOG_PAGE_MAX_BYTES,
   CONNECTION_CATALOG_PAGE_MAX_ITEMS,
+  RUNTIME_POLICY_OPERATION_SPECS,
   type ConnectionCatalogPageItem,
 } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
@@ -572,7 +574,7 @@ test('invalidates when a real published mutation loses its commit reply', {
 });
 
 test('credential control-plane results never retain or expose secret material', async () => {
-  await withCoordinator(async ({ coordinator }) => {
+  await withCoordinator(async ({ coordinator, stores }) => {
     const locator: CredentialLocator = { scope: 'network_proxy', kind: 'password' };
     const secret = 'runtime-host-secret-that-must-not-escape';
     const set = await coordinator.handlers['credential.vault.set'](
@@ -611,6 +613,37 @@ test('credential control-plane results never retain or expose secret material', 
       updatedAt: null,
     });
     assert.equal(JSON.stringify(deleted).includes(secret), false);
+
+    const created = await stores.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'custom-headers',
+        name: 'Custom headers',
+        providerType: 'openrouter',
+        enabled: true,
+        enabledModelIds: ['deepseek/deepseek-v4-flash-0731'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connectionId = created.snapshot.connections[0]!.connectionId;
+    const headerSecret = 'request-header-secret-that-must-not-escape';
+    const replaced = await coordinator.handlers['connection.request-headers.replace'](
+      {
+        connectionId,
+        headers: [{ name: 'X-Tenant', value: headerSecret }],
+      },
+      context,
+    );
+    assert.deepEqual(replaced, {
+      ok: true,
+      result: { kind: 'committed', names: ['X-Tenant'] },
+    });
+    assert.equal(JSON.stringify(replaced).includes(headerSecret), false);
+    assert.deepEqual(
+      await coordinator.handlers['connection.request-headers.query']({ connectionId }, context),
+      { ok: true, result: { kind: 'found', names: ['X-Tenant'] } },
+    );
   });
 });
 
@@ -773,6 +806,49 @@ test('a fully profiled relay catalog paginates with profiles riding per item', a
     for (const item of seen) {
       assert.deepEqual(item.relayProfile, profiles[item.modelId]);
     }
+  });
+});
+
+test('catalog protocol preserves an extra request body after a committed update', async () => {
+  await withCoordinator(async ({ coordinator, stores }) => {
+    const emptyBodyBytes = Buffer.byteLength(JSON.stringify({ padding: '' }), 'utf8');
+    const requestBodyOverlay = {
+      padding: 'x'.repeat(REQUEST_BODY_OVERLAY_MAX_BYTES - emptyBodyBytes),
+    };
+    assert.equal(
+      Buffer.byteLength(JSON.stringify(requestBodyOverlay), 'utf8'),
+      REQUEST_BODY_OVERLAY_MAX_BYTES,
+    );
+    const created = await stores.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'custom-request',
+        name: 'Custom request',
+        providerType: 'openai-compatible',
+        baseUrl: `https://example.test/${'a'.repeat(2_048 - 'https://example.test/'.length)}`,
+        enabled: true,
+        enabledModelIds: ['deepseek/deepseek-v4-flash-0731'],
+        requestBodyOverlay,
+      },
+    });
+    assert.equal(created.kind, 'committed');
+
+    const queried = await coordinator.handlers['connection.catalog.query'](
+      { kind: 'start' },
+      context,
+    );
+    assert.equal(queried.ok, true);
+    if (!queried.ok || queried.result.kind !== 'page') return;
+
+    const decoded = RUNTIME_POLICY_OPERATION_SPECS['connection.catalog.query'].decodeOutput(
+      queried.result,
+    );
+    assert.deepEqual(decoded, queried.result);
+    const header =
+      decoded.kind === 'page'
+        ? decoded.items.find((item) => item.kind === 'connection')
+        : undefined;
+    assert.deepEqual(header?.requestBodyOverlay, requestBodyOverlay);
   });
 });
 

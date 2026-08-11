@@ -14,8 +14,7 @@
  * silently drop and break the launch.
  *
  * Inheriting `process.env` wholesale leaks:
- *   - provider keys, which auto-bootstrap a connection and break the "true
- *     first-run" assertion;
+ *   - provider keys, which auto-bootstrap a connection and change the fixture;
  *   - `VITE_DEV_SERVER_URL`, which loads the dev server instead of the built
  *     bundle — so the run silently measures something other than the build
  *     under test;

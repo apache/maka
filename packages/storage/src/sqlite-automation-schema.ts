@@ -1,8 +1,20 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_AUTOMATION_SCHEMA_VERSION = 1;
+export const SQLITE_AUTOMATION_SCHEMA_VERSION = 2;
 
 export function migrateSqliteAutomationDatabase(db: DatabaseSync): void {
+  const legacyDefinition = db
+    .prepare(
+      "SELECT 1 AS present FROM pragma_table_info('automation_definitions') WHERE name = 'durable'",
+    )
+    .get() as { present?: number } | undefined;
+  if (legacyDefinition?.present === 1) {
+    db.exec(`
+      DROP TABLE IF EXISTS automation_pending_fires;
+      DROP TABLE IF EXISTS automation_definitions;
+      DROP TABLE IF EXISTS automation_authority_state;
+    `);
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS automation_authority_state (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -17,7 +29,6 @@ export function migrateSqliteAutomationDatabase(db: DatabaseSync): void {
       session_id TEXT NOT NULL,
       created_at INTEGER NOT NULL CHECK (created_at >= 0),
       status TEXT NOT NULL,
-      durable INTEGER NOT NULL CHECK (durable IN (0, 1)),
       record_json TEXT NOT NULL
     );
 

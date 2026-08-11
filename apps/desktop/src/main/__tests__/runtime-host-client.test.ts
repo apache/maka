@@ -51,6 +51,7 @@ function subscription(
   return {
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
+    activeAssistantStreams: [],
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: {
@@ -67,7 +68,7 @@ function subscription(
       queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
       interactions: { pending: [] },
     },
-    loadTranscript: async <T>(decodeMessage: (value: unknown) => T) => {
+    loadTranscript: async <T>(_decodeMessage: (value: unknown) => T) => {
       lifecycle.push(`${sessionId}:transcript`);
       return [] as T[];
     },

@@ -102,17 +102,14 @@
   background: oklch(0.30 0 0);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .settingsThemePreview { transition: none; }
-}
 
 /* PR-THEME-PRODUCT-PALETTES-0: palette picker. Each option shows a
    round swatch whose color is the palette's accent token. The swatch
    colors are hard-coded here (not pulled from --accent) so a non-
    active palette still previews its real color. */
 .settingsPaletteSwatch {
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   border: var(--border-width-thick) solid var(--border);
   box-shadow: inset 0 0 0 2px oklch(1 0 0 / 0.25);

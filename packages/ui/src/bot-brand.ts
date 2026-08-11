@@ -10,7 +10,7 @@ export interface BotBrand {
 }
 
 // Shared bot brand metadata. Both Settings → 机器人对话 and the chat-side
-// Plan Reminder delivery picker need real brand logos here so the same
+// ScheduledTask delivery picker needs real brand logos here so the same
 // channel reads as the same channel everywhere in the product (kenji
 // audit 2026-06-25 msg `e4cfbfb0` finding #2).
 //

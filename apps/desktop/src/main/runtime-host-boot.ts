@@ -1,11 +1,12 @@
-import { app, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
+import { app, clipboard, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
 import { randomUUID } from "node:crypto";
+import { arch as osArch, homedir, release as osRelease } from "node:os";
 import { basename, join } from "node:path";
 import {
   type ConnectionEvent,
-  type SandboxBoundaryResponse,
   type SessionChangedEvent,
   type SessionChangedReason,
+  isBotDeliveryProvider,
   resolveSystemUiLocale,
   resolveUiLocale,
 } from "@maka/core";
@@ -15,16 +16,19 @@ import {
 } from "@maka/core/llm-connections";
 import {
   BotRegistry,
+  SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID,
+  SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_VERSION,
   buildMcpTools,
   type BotIncomingMessage,
 } from "@maka/runtime";
+import { loadOrCreateRuntimeHostClientInstanceId } from "@maka/runtime-host/client";
+import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { McpClientManager } from "@maka/mcp";
 import {
   createSettingsStore,
   createMcpConfigStore,
-  createProjectCatalog,
-  createSqlitePlanReminderStore,
 } from "@maka/storage";
+import { resolveStorageRoot } from "@maka/storage/root-authority";
 import { registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { createAppUpdateService } from "./app-update-service.js";
@@ -37,20 +41,23 @@ import { releaseBrowserSession } from "./browser/session.js";
 import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
+import { registerDesktopDiagnosticsIpc } from "./desktop-diagnostics-ipc-main.js";
 import { assembleDesktopNativeCapabilities } from "./desktop-native-capability-assembly.js";
 import { buildRiveWorkflowTool } from "./rive-workflow-tool.js";
 import { installDesktopShellPresentation } from "./desktop-shell-presentation.js";
 import {
-  getE2eFixtureState,
   resolveE2eFixture,
-  retireE2eFixtureSandboxBoundaryRequest,
   seedE2eFixture,
 } from "./e2e-fixture.js";
 import { createKeepSystemAwakeController } from "./keep-system-awake.js";
-import { createMainWindowController } from "./main-window.js";
 import {
-  resolveDesktopSessionSelection,
-  resolveNewSessionProjectInput,
+  readWithFallback,
+  type ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
+import { createMainWindowController } from "./main-window.js";
+import { mainProcessLogBuffer } from "./main-process-diagnostics.js";
+import {
+  resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
 import { registerMcpIpcMain } from "./mcp-ipc-main.js";
 import { createOnboardingService } from "./onboarding-service.js";
@@ -58,16 +65,17 @@ import { registerOnboardingIpc } from "./onboarding-ipc-main.js";
 import {
   createDesktopTaskSubmissionReadinessService,
   registerTaskSubmissionReadinessIpc,
+  type DesktopModelTargetResolution,
 } from "./task-submission-readiness-main.js";
 import { registerNotificationsIpc } from "./notifications-ipc-main.js";
-import { registerPlanReminderIpc } from "./plan-reminders-ipc-main.js";
-import { createPlanReminderMainService } from "./plan-reminders-main.js";
+import { registerScheduledTaskIpc } from "./scheduled-tasks-ipc-main.js";
 import { registerPetPackIpc } from "./pet-pack-import.js";
 import {
   createPermissionOverlayMain,
   registerPermissionOverlayIpc,
 } from "./permission-overlay/permission-overlay-main.js";
 import { resolveProjectContextRoot } from "./project-context-root.js";
+import { resolveDefaultPermissionMode } from "./permission-mode-default.js";
 import { createProjectManagementService } from "./project-management-service.js";
 import type { ProjectManagementService } from "./project-management-service.js";
 import { createProjectRootController } from "./project-root-controller.js";
@@ -88,15 +96,17 @@ import { registerRuntimeHostInspectorIpc } from "./runtime-host-inspector-ipc-ma
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { DesktopRuntimeHostCandidateControls } from "./runtime-host-desktop-candidate.js";
 import {
+  RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopOwner,
   type RuntimeHostDesktopOwner,
 } from "./runtime-host-desktop-owner.js";
+import { runtimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
 import { registerRuntimeHostSearchIpc } from "./runtime-host-search-ipc-main.js";
-import { createRuntimeHostProjectSessionCatalog } from "./runtime-host-project-session-catalog.js";
+import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import {
   loadRuntimeHostSettings,
@@ -104,7 +114,6 @@ import {
   updateRuntimeHostSettings,
 } from "./runtime-host-settings-ipc-main.js";
 import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js";
-import { hasRuntimeHostInterruptibleWork } from "./runtime-host-update-activity.js";
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
 import { registerRuntimeHostWebSearchIpc } from "./runtime-host-web-search-ipc-main.js";
 import { registerRuntimeHostWorkspaceIpc } from "./runtime-host-workspace-ipc-main.js";
@@ -126,10 +135,12 @@ await resolveShellEnv();
 
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 const userDataDir = app.getPath("userData");
+const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
+  join(userDataDir, "runtime-host-client.json"),
+);
+const runtimeHostGeneration = app.isPackaged ? app.getVersion() : randomUUID();
 const e2eFixture = resolveDesktopE2eFixture();
-const useBotOnboardingFixture =
-  e2eFixture?.scenario === "settings-bots" ||
-  e2eFixture?.scenario === "settings-bots-onboarding";
+const useBotOnboardingFixture = e2eFixture?.scenario === "settings-bots-onboarding";
 const workspaceRoot = join(
   userDataDir,
   "workspaces",
@@ -140,23 +151,21 @@ if (e2eFixture) {
     `[e2e-fixture] scenario=${e2eFixture.scenario} workspace=${workspaceRoot}`,
   );
   await seedE2eFixture({ workspaceRoot, fixture: e2eFixture });
-} else {
-  const storageRoot = await startupStep(
+}
+const storageRoot = e2eFixture
+  ? await resolveStorageRoot({ path: workspaceRoot, kind: "interactive" })
+  : await startupStep(
     "storage root",
     resolveDesktopStorageRoot(workspaceRoot, {
       confirmRepair: () => confirmDesktopStorageRootRepair(workspaceRoot),
     }),
   );
-  if (!storageRoot) {
-    app.exit(0);
-    await new Promise<never>(() => {});
-  }
+if (!storageRoot) {
+  app.exit(0);
+  await new Promise<never>(() => {});
+  throw new Error("Desktop storage root resolution did not complete");
 }
 const settingsStore = createSettingsStore(workspaceRoot);
-const projectCatalog = createProjectCatalog(workspaceRoot, {
-  onLegacyImportFailure: (error) =>
-    console.error("[projects] projects.json could not be imported:", error),
-});
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
@@ -175,7 +184,6 @@ function ensureMcpReady(): Promise<void> {
   }
   return mcpStartup;
 }
-const planReminderStore = createSqlitePlanReminderStore(workspaceRoot);
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
 const startHidden =
   (Boolean(e2eFixture) || isIsolatedE2e) &&
@@ -223,24 +231,20 @@ onMainWindowClose = () => {
   native.computerUsePip.destroyAll();
 };
 const projectRoot = createProjectRootController({
-  lastProjectPathFile: join(workspaceRoot, "last-project-path.json"),
+  rootId: storageRoot.rootId,
+  preferenceFile: join(workspaceRoot, "project-preferences.json"),
   fallbackRoots: () => [process.cwd(), app.getAppPath()],
 });
 const attachmentApprovals = createAttachmentApprovalRegistry();
-const oauthPresentation = new RuntimeHostOAuthPresentation(
-  e2eFixture?.scenario === "oauth-relogin"
-    ? async () => undefined
-    : (url) => shell.openExternal(url),
-);
+const oauthPresentation = new RuntimeHostOAuthPresentation((url) => shell.openExternal(url));
 let owner: RuntimeHostDesktopOwner | undefined;
 let runtimePolicyClient: DesktopRuntimeHostClient | undefined;
+const projectCatalog = createRuntimeHostProjectCatalog(() => {
+  if (!runtimePolicyClient) throw new Error("Runtime Host client is unavailable");
+  return runtimePolicyClient;
+});
 const projectManagement: ProjectManagementService = createProjectManagementService({
   catalog: projectCatalog,
-  sessions: {
-    listHeaders: () => runtimeHostProjectSessionCatalog().listHeaders(),
-    updateHeader: (sessionId, patch) =>
-      runtimeHostProjectSessionCatalog().updateHeader(sessionId, patch),
-  },
   chooseDirectory: async () => {
     const result = await mainWindowController.showOpenDialog({
       title: "Add project",
@@ -250,17 +254,21 @@ const projectManagement: ProjectManagementService = createProjectManagementServi
   },
   selection: projectRoot,
 });
-function runtimeHostProjectSessionCatalog() {
-  if (!runtimePolicyClient) throw new Error("Runtime Host client is unavailable");
-  return createRuntimeHostProjectSessionCatalog(runtimePolicyClient);
-}
+const currentDesktopWorkspaceTarget = async (): Promise<WorkspaceTarget> => {
+  const current = await projectManagement.current();
+  return typeof current.projectId === "string"
+    ? { kind: "project", projectId: current.projectId }
+    : { kind: "host_path", path: current.path };
+};
 const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
-  mcpManager.toolSnapshotRevision(),
+  mcpManager.toolSnapshot().revision,
 );
 let settingsBotsIpc: SettingsBotsIpcHandle | undefined;
 const botRegistry = new BotRegistry({
   onIncomingMessage: (message: BotIncomingMessage) => {
-    void owner?.handleBotIncomingMessage(message);
+    void owner
+      ?.handleBotIncomingMessage(message)
+      .catch((error) => console.error("[runtime-host] bot message failed:", error));
   },
   onStatusChange: (status) => {
     mainWindowController.send("settings:bots:statusChanged", status);
@@ -322,35 +330,10 @@ const updateService = createAppUpdateService({
   mockState: updateMockState,
   onStatusChange: (status) =>
     mainWindowController.send("app:updateStatusChanged", status),
-  hasActiveTasks: () => {
-    if (!runtimePolicyClient) {
-      throw new Error("Runtime Host activity is unavailable");
-    }
-    return hasRuntimeHostInterruptibleWork(runtimePolicyClient);
+  prepareInstall: async (input) => {
+    if (!owner) throw new Error("Runtime Host owner is unavailable");
+    return owner.prepareForUpdate(input.allowInterruptActiveTasks);
   },
-});
-const planReminders = createPlanReminderMainService({
-  store: planReminderStore,
-  getPrivacyContext: async () => {
-    if (!runtimePolicyClient) {
-      throw new Error("Runtime Host policy is unavailable");
-    }
-    return {
-      incognitoActive: (await runtimePolicyClient.queryRuntimePolicy()).policy
-        .privacy.incognitoActive,
-    };
-  },
-  sendBotMessage: (platform, chatId, text) =>
-    botRegistry.sendMessage(platform, chatId, text),
-  emitChanged: (reason, reminder) => {
-    mainWindowController.send("plans:changed", {
-      type: "plans_changed",
-      reason,
-      reminderId: reminder.id,
-      ts: Date.now(),
-    });
-  },
-  emitDue: (reminder) => mainWindowController.send("plans:due", reminder),
 });
 mcpManager.onChange(() => {
   mainWindowController.send("mcp:changed", mcpManager.statuses());
@@ -373,6 +356,8 @@ const sessionCopyOwnerProcessId = randomUUID();
 owner = await startRuntimeHostDesktopOwner(
   {
     rootPath: workspaceRoot,
+    clientInstanceId: runtimeHostClientInstanceId,
+    generation: runtimeHostGeneration,
     candidateEntrypoint: new URL(
       import.meta.resolve(
         isE2e
@@ -419,51 +404,56 @@ owner = await startRuntimeHostDesktopOwner(
               ]),
         ];
       },
+      additionalServices: () => [
+        {
+          serviceId: SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID,
+          version: SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_VERSION,
+          async call(method, input) {
+            if (method === "notify_local") {
+              const taskId = requireScheduledTaskEffectString(input.taskId, "taskId");
+              const title = requireScheduledTaskEffectString(input.title, "title");
+              mainWindowController.send("scheduled-tasks:fired", { id: taskId, title });
+              return { ok: true };
+            }
+            if (method === "notify_bot") {
+              const platform = input.platform;
+              if (!isBotDeliveryProvider(platform)) {
+                throw new Error("ScheduledTask bot platform is invalid");
+              }
+              const chatId = requireScheduledTaskEffectString(input.chatId, "chatId");
+              const title = requireScheduledTaskEffectString(input.title, "title");
+              const body = typeof input.body === "string" ? input.body.trim() : "";
+              const text = [`【定时任务】${title}`, ...(body ? ["", body] : [])].join("\n");
+              const sent = await botRegistry.sendMessage(platform, chatId, text);
+              if (!sent) throw new Error("ScheduledTask bot channel is unavailable");
+              return { ok: true };
+            }
+            throw new Error(`Unknown ScheduledTask native effect: ${method}`);
+          },
+        },
+      ],
       oauthPresentation,
       releaseComputerUseSession,
     },
     botRegistry,
-    resolveBotCreateTarget: async () => ({ cwd: await projectRoot.current() }),
+    resolveBotCreateTarget: async () => ({
+      workspace: await currentDesktopWorkspaceTarget(),
+    }),
     resolveSessionCreateProject: async (input) => {
-      const selected = await resolveDesktopSessionSelection(input, {
-        ...projectManagement,
-        defaultProjectId: async () =>
-          (await settingsStore.get()).projects.defaultProjectId,
-      });
-      return resolveNewSessionProjectInput(selected, projectCatalog);
+      return resolveDesktopSessionWorkspace(
+        input,
+        {
+          ...projectManagement,
+          defaultProjectId: async () =>
+            (await settingsStore.get()).projects.defaultProjectId,
+        },
+        projectCatalog,
+      );
     },
     emitSessionsChanged,
     emitModeChanged: (sessionId) =>
       emitSessionsChanged("mode-change", sessionId),
     completeComputerUseTurn,
-    ...(e2eFixture
-      ? {
-          e2eInteractions: {
-            list: (sessionId: string) => {
-              const request = getE2eFixtureState(e2eFixture)
-                ?.sandboxBoundaryBySession?.[sessionId];
-              return request ? [request] : [];
-            },
-            respondToSandboxBoundary: async (
-              sessionId: string,
-              response: SandboxBoundaryResponse,
-            ) => {
-              const request = getE2eFixtureState(e2eFixture)
-                ?.sandboxBoundaryBySession?.[sessionId];
-              if (request?.requestId !== response.requestId) {
-                return { handled: false as const };
-              }
-              retireE2eFixtureSandboxBoundaryRequest(response.requestId);
-              return {
-                handled: true as const,
-                ...(response.decision === "allow"
-                  ? { permissionMode: "ask" as const }
-                  : {}),
-              };
-            },
-          },
-        }
-      : {}),
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({
         workspaceRoot,
@@ -478,12 +468,24 @@ owner = await startRuntimeHostDesktopOwner(
     registerClientIpc: registerHostClientIpc,
   },
   {
+    upgradePrompts: runtimeHostUpgradePrompts,
     onFatalError: (error) => {
+      if (error instanceof RuntimeHostUpgradeCancelledError) {
+        app.quit();
+        return;
+      }
       console.error("[runtime-host] fatal:", error);
       app.quit();
     },
   },
-);
+).catch((error: unknown) => {
+  if (error instanceof RuntimeHostUpgradeCancelledError) {
+    app.exit(0);
+    return new Promise<never>(() => undefined);
+  }
+  throw error;
+});
+
 const stopComputerUseSession = (sessionId: string): void => {
   void owner
     ?.stopSession(sessionId)
@@ -492,7 +494,6 @@ const stopComputerUseSession = (sessionId: string): void => {
 native.computerUsePip.setStopHandler(stopComputerUseSession);
 native.computerUseStatusItem.setStopHandler(stopComputerUseSession);
 
-await planReminders.refreshTimers();
 updateService.start();
 void ensureMcpReady()
   .then(() => mcpCapabilityPublisher.refreshIfChanged())
@@ -508,7 +509,7 @@ wireLifecycle();
 
 function registerHostClientIpc(
   client: DesktopRuntimeHostClient,
-  scopedIpc: Pick<typeof ipcMain, "handle">,
+  scopedIpc: ReconnectableReadIpcMain,
   controls: DesktopRuntimeHostCandidateControls,
 ): () => Promise<void> {
   const unsubscribeConfigurationChanges = client.subscribeConfigurationChanges(() => {
@@ -518,6 +519,27 @@ function registerHostClientIpc(
   const unsubscribeSessionCatalogChanges = client.subscribeSessionCatalogChanges(
     ({ sessionId }) => emitSessionsChanged("updated", sessionId),
   );
+  const unsubscribeProjectCatalogChanges = client.subscribeProjectCatalogChanges(() => {
+    mainWindowController.send("projects:changed");
+  });
+  const unsubscribeScheduledTaskChanges = client.subscribeScheduledTaskChanges((frame) => {
+    mainWindowController.send("scheduled-tasks:changed", {
+      type: "scheduled_tasks_changed",
+      reason: frame.reason,
+      taskId: frame.taskId,
+      ts: Date.now(),
+    });
+    if (frame.reason !== "fired") return;
+    void client
+      .getScheduledTask(frame.taskId)
+      .then((task) => {
+        if (!task) return;
+        if (task.effect.kind === "agent_run" || task.effect.channel === "bot") {
+          mainWindowController.send("scheduled-tasks:fired", task);
+        }
+      })
+      .catch(() => undefined);
+  });
   const capabilityBinding = mcpCapabilityPublisher.bind(
     controls.refreshClientCapabilities,
   );
@@ -635,7 +657,9 @@ function registerHostClientIpc(
     client,
     workspaceRoot,
     mainWindowController,
-    getCurrentProjectRoot: () => projectRoot.current(),
+    getCurrentWorkspaceTarget: currentDesktopWorkspaceTarget,
+    getDefaultPermissionMode: () =>
+      resolveDefaultPermissionMode(() => loadRuntimeHostSettings(settingsIpcDeps)),
     openPath: (path) => shell.openPath(path),
   });
   registerRuntimeHostSearchIpc({ ipcMain: scopedIpc, client });
@@ -647,13 +671,9 @@ function registerHostClientIpc(
   });
   registerRuntimeHostWebSearchIpc({ ipcMain: scopedIpc, client });
   registerRuntimeHostWorkspaceIpc({ ipcMain: scopedIpc, client });
-  registerPlanReminderIpc({
+  registerScheduledTaskIpc({
     ipcMain: scopedIpc,
-    planReminders,
-    getWorkspacePrivacyContext: async () => ({
-      incognitoActive: (await client.queryRuntimePolicy()).policy.privacy
-        .incognitoActive,
-    }),
+    client,
   });
   const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
     resolveProjectContextRoot(sessionId, {
@@ -661,7 +681,7 @@ function registerHostClientIpc(
       readSessionCwd: async (id) => {
         const session = await client.getSession(id);
         if (!session) throw new Error(`No such Session: ${id}`);
-        return session.cwd;
+        return session.workspace.hostCwd;
       },
     });
   registerAppIpc(
@@ -702,57 +722,59 @@ function registerHostClientIpc(
     upsertMilestone: (id, status) =>
       settingsStore.upsertOnboardingMilestone(id, status),
     clearMilestone: (id) => settingsStore.clearOnboardingMilestone(id),
-    hasCredential: async (connection) => {
-      if (!providerAuthRequiresSecret(connection.providerType)) return true;
-      const catalog = await client.loadConnectionCatalog();
-      const entry = catalog.connections.find(
-        ({ slug }) => slug === connection.slug,
-      );
-      if (!entry) return false;
-      const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
-      const status = await client.queryCredential({
-        scope: "connection",
-        connectionId: entry.connectionId,
-        kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
-      });
-      return status?.configured === true;
-    },
+    hasCredential: (connection) =>
+      readWithFallback(async () => {
+        if (!providerAuthRequiresSecret(connection.providerType)) return true;
+        const catalog = await client.loadConnectionCatalog();
+        const entry = catalog.connections.find(
+          ({ slug }) => slug === connection.slug,
+        );
+        if (!entry) return false;
+        const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+        const status = await client.queryCredential({
+          scope: "connection",
+          connectionId: entry.connectionId,
+          kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
+        });
+        return status?.configured === true;
+      }, false),
   });
   const taskSubmissionReadinessService = createDesktopTaskSubmissionReadinessService({
     workspaceRoot,
     runtimeState: () => ({ state: client.lifecycleState, checkedAt: Date.now() }),
-    resolveModelTarget: async (requestedSlug) => {
-      const catalog = await client.loadConnectionCatalog();
-      const connections = projectHostConnections(catalog);
-      const connectionSlug = requestedSlug ?? (catalog.defaultTarget === null
-        ? undefined
-        : catalog.connections.find(
-            ({ connectionId }) => connectionId === catalog.defaultTarget?.connectionId,
-          )?.slug);
-      if (!connectionSlug) return { kind: "missing_default" };
-      const connection = connections.find(({ slug }) => slug === connectionSlug);
-      if (!connection) return { kind: "connection_missing", connectionSlug };
-      if (!providerAuthRequiresSecret(connection.providerType)) {
-        return { kind: "resolved", connection, hasSecret: true };
-      }
-      const entry = catalog.connections.find(({ slug }) => slug === connection.slug);
-      if (!entry) return { kind: "connection_missing", connectionSlug };
-      const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
-      const hasSecret = await client.queryCredential({
+    resolveModelTarget: (requestedSlug) =>
+      readWithFallback<DesktopModelTargetResolution>(async () => {
+        const catalog = await client.loadConnectionCatalog();
+        const connections = projectHostConnections(catalog);
+        const connectionSlug = requestedSlug ?? (catalog.defaultTarget === null
+          ? undefined
+          : catalog.connections.find(
+              ({ connectionId }) => connectionId === catalog.defaultTarget?.connectionId,
+            )?.slug);
+        if (!connectionSlug) return { kind: "missing_default" } as const;
+        const connection = connections.find(({ slug }) => slug === connectionSlug);
+        if (!connection) return { kind: "connection_missing", connectionSlug } as const;
+        if (!providerAuthRequiresSecret(connection.providerType)) {
+          return { kind: "resolved", connection, hasSecret: true } as const;
+        }
+        const entry = catalog.connections.find(({ slug }) => slug === connection.slug);
+        if (!entry) return { kind: "connection_missing", connectionSlug } as const;
+        const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+        const hasSecret = await client.queryCredential({
           scope: "connection",
           connectionId: entry.connectionId,
           kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
-        })
-        .then((status) => status?.configured === true)
-        .catch(() => undefined);
-      return { kind: "resolved", connection, hasSecret };
-    },
+        }).then((status) => status?.configured === true);
+        return { kind: "resolved", connection, hasSecret } as const;
+      }, { kind: "unknown" }),
   });
   registerOnboardingIpc({ onboardingService, ipcMain: scopedIpc });
   registerTaskSubmissionReadinessIpc(taskSubmissionReadinessService, scopedIpc);
   return async () => {
     unsubscribeConfigurationChanges();
     unsubscribeSessionCatalogChanges();
+    unsubscribeProjectCatalogChanges();
+    unsubscribeScheduledTaskChanges();
     candidateSettingsBotsIpc.dispose();
     if (settingsBotsIpc === candidateSettingsBotsIpc) {
       settingsBotsIpc = undefined;
@@ -763,7 +785,47 @@ function registerHostClientIpc(
   };
 }
 
+function requireScheduledTaskEffectString(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`ScheduledTask native effect requires ${label}`);
+  }
+  return value.trim();
+}
+
 function registerPersistentClientIpc(): void {
+  registerDesktopDiagnosticsIpc({
+    ipcMain,
+    environment: () => ({
+      appVersion: app.getVersion(),
+      buildMode: buildInfo.mode,
+      buildCommit: buildInfo.commit,
+      electronVersion: process.versions.electron ?? "",
+      nodeVersion: process.versions.node,
+      chromeVersion: process.versions.chrome ?? "",
+      platform: process.platform,
+      arch: osArch(),
+      osRelease: osRelease(),
+      locale: app.getLocale(),
+      workspacePath: workspaceRoot,
+      homePath: homedir(),
+      processUptimeSeconds: process.uptime(),
+    }),
+    mainLogs: () => mainProcessLogBuffer.snapshot(),
+    getRuntimeHostDiagnostics: async () => {
+      if (!runtimePolicyClient) throw new Error("Runtime Host is unavailable");
+      return runtimePolicyClient.queryHostDiagnostics();
+    },
+    getRuntimeHostTurnTrace: async (sessionId, turnId) => {
+      if (!runtimePolicyClient) throw new Error("Runtime Host is unavailable");
+      const result = await runtimePolicyClient.queryExecutionInspect({
+        kind: "turn_trace",
+        sessionId,
+        turnId,
+      });
+      return result.kind === "turn_trace" ? result.turn : undefined;
+    },
+    writeClipboard: (report) => clipboard.writeText(report),
+  });
   ipcMain.handle("attachments:pickFiles", async (event) => {
     const result = await mainWindowController.showOpenDialog({
       title: "Add attachments",
@@ -853,7 +915,6 @@ function wireLifecycle(): void {
 
 async function closeRuntimeHostDesktop(): Promise<void> {
   clientSettingsWatcher.stop();
-  planReminders.stopTimers();
   updateService.dispose();
   settingsBotsIpc?.dispose();
   permissionOverlay.dismiss();
@@ -867,7 +928,6 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     Promise.resolve().then(() => native.computerUseStatusItem.destroy()),
     Promise.resolve().then(() => native.computerUseScreenLock.dispose()),
     Promise.resolve().then(() => native.computerUse.backend?.dispose?.()),
-    planReminderStore.ready().then(() => planReminderStore.close()),
   ]);
   for (const result of results) {
     if (result.status === "rejected")

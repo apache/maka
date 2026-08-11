@@ -42,7 +42,10 @@ describe('interactive Automation authority', () => {
         assert.equal(committed.snapshot.revision, 1);
 
         automation.name = 'mutated after commit';
-        assert.equal((await second.read()).automations[0]?.name, 'daily summary');
+        const persisted = (await second.read()).automations[0];
+        assert.equal(persisted?.name, 'daily summary');
+        assert.deepEqual(persisted?.capabilityRequirements, [capabilityRequirement()]);
+        assert.equal(persisted?.waiting?.reason, 'client_capability_provider_unavailable');
 
         assert.deepEqual(
           await second.commit({ expectedRevision: 0, automations: [], pendingFires: [] }),
@@ -185,7 +188,6 @@ describe('interactive Automation authority', () => {
 function definition(): AutomationDefinition {
   return {
     id: 'automation-1',
-    kind: 'cron',
     name: 'daily summary',
     status: 'active',
     prompt: 'Summarize the workspace.',
@@ -201,15 +203,6 @@ function definition(): AutomationDefinition {
     expiresAt: 604_800_001,
     lastError: null,
     consecutiveFailures: 0,
-    durable: true,
-    execution: {
-      cwd: '/workspace',
-      backend: 'ai-sdk',
-      llmConnectionSlug: 'openrouter',
-      model: 'openrouter/free',
-      collaborationMode: 'agent',
-      orchestrationMode: 'default',
-    },
   };
 }
 
@@ -220,6 +213,12 @@ function definitionWithPendingFire(): AutomationDefinition {
     nextFireAt: 120_002,
     lastFireAt: 60_002,
     fireCount: 1,
+    capabilityRequirements: [capabilityRequirement()],
+    waiting: {
+      reason: 'client_capability_provider_unavailable',
+      since: 60_002,
+      message: 'Capability provider is offline',
+    },
   };
 }
 
@@ -227,26 +226,26 @@ function pendingFire(): AutomationPendingFire {
   return {
     id: 'fire-1',
     automationId: 'automation-1',
-    automationKind: 'cron',
     automationName: 'daily summary',
     prompt: 'Summarize the workspace.',
     scheduledFor: 60_001,
-    targetSessionId: 'automation-session-1',
+    targetSessionId: 'creator-session',
     turnId: 'turn-1',
     runId: 'run-1',
     userMessageId: 'message-1',
     status: 'admitted',
     admittedAt: 60_002,
     updatedAt: 60_002,
-    execution: {
-      cwd: '/workspace',
-      backend: 'ai-sdk',
-      llmConnectionSlug: 'openrouter',
-      model: 'openrouter/free',
-      collaborationMode: 'agent',
-      orchestrationMode: 'default',
-    },
+    capabilityRequirements: [capabilityRequirement()],
   };
+}
+
+function capabilityRequirement() {
+  return {
+    principalId: 'automation-provider',
+    clientInstanceId: 'provider-instance',
+    contractId: 'provider-contract',
+  } as const;
 }
 
 async function withWriter(

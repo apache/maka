@@ -426,7 +426,7 @@ Schema 9 进一步要求该 authority stream 在首次写入前绑定 authentica
 | `core/runtime-event.ts` | typed `actions.workspaceFact` 与 control-plane stream 说明 |
 | `core/runtime-event-store.ts` | baseline authority capability 与专用 writer contract |
 | `storage/runtime-event-authority.ts` | workspace fact/authority stream generic-writer reservation |
-| `storage/sqlite-runtime-schema.ts` | schema 7 facts/projections/capability；schema 8 headless task events；schema 9 singleton durable storage-root binding |
+| `storage/sqlite-runtime-schema.ts` | schema 7 facts/projections/capability；schema 9 singleton durable storage-root binding；schema 12 删除已废弃 TaskRun event table |
 | `storage/sqlite-runtime-store.ts` | atomic baseline bundle、read cross-check、rebuild、failpoints |
 | `storage/agent-run-store.ts` | JSONL 与 conversation copy fail closed |
 | `storage/conversation-operational-state.ts` | ordinary Session purge 不得删除 authority stream |

@@ -23,7 +23,7 @@
  * govern, not buried in a 7000-line file.
  */
 
-import { Sparkles } from './icons.js';
+import { ICON_SIZE, Sparkles } from './icons.js';
 import { Item } from '@astryxdesign/core/Item';
 
 import { MakaWordmark } from './maka-wordmark.js';
@@ -108,7 +108,7 @@ export function DeepResearchEmptyHero(props: { onPromptSuggestion?(prompt: strin
     <section className="maka-hero maka-hero-empty-chat maka-hero-deep-research" aria-label={copy.ariaLabel}>
       <header>
         <span className="maka-hero-eyebrow">
-          <Sparkles size={12} aria-hidden="true" />
+          <Sparkles size={ICON_SIZE.meta} aria-hidden="true" />
           <span>{copy.eyebrow}</span>
         </span>
         <h1>{copy.title}</h1>

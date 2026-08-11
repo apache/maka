@@ -10,15 +10,10 @@ import {
   type AgentGraphCoordinator,
   type AgentGraphOperatorInspection as RuntimeAgentGraphOperatorInspection,
 } from '@maka/runtime';
-import {
-  AGENT_GRAPH_RESULT_MAX_BYTES,
-  decodeAgentGraphClientSnapshot,
-  decodeAgentGraphOperatorInspection,
-} from '../protocol/index.js';
+import { AGENT_GRAPH_RESULT_MAX_BYTES, decodeAgentGraphClientSnapshot } from '../protocol/index.js';
 import {
   HostAgentGraphCoordinator,
   projectAgentGraphClientSnapshot,
-  projectAgentGraphOperatorInspection,
 } from '../server/agent-graph-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
@@ -32,21 +27,22 @@ describe('Host Agent Graph coordinator', () => {
     let listener: AgentGraphClientChangedListener | undefined;
     let unsubscribed = false;
     const invalidations: unknown[] = [];
+    const authority = {
+      getSnapshot: async () => snapshot,
+      inspectOperator: async () => inspection,
+      subscribeAll: (candidate: AgentGraphClientChangedListener) => {
+        listener = candidate;
+        return () => {
+          unsubscribed = true;
+        };
+      },
+    } satisfies GraphAuthority;
     const coordinator = new HostAgentGraphCoordinator({
-      authority: {
-        getSnapshot: async () => snapshot,
-        inspectOperator: async () => inspection,
-        stop: async (rootSessionId) => {
-          stoppedRoot = rootSessionId;
-        },
-        subscribeAll: (candidate) => {
-          listener = candidate;
-          return () => {
-            unsubscribed = true;
-          };
-        },
-      } satisfies GraphAuthority,
+      authority,
       continuity: { enqueueAgentGraphChanged: (event) => invalidations.push(event) },
+      stopExecution: async (rootSessionId) => {
+        stoppedRoot = rootSessionId;
+      },
     });
 
     const queried = await coordinator.handlers['agent.graph.query'](
@@ -110,18 +106,18 @@ describe('Host Agent Graph coordinator', () => {
       inspectOperator: async () => {
         throw new AgentGraphClientOperationError('not_found', 'Agent graph operator was not found');
       },
-      stop: async () => {
-        throw new AgentGraphClientOperationError(
-          'session_archived',
-          'Archived Sessions cannot supervise an agent graph',
-        );
-      },
       subscribeAll: () => () => undefined,
     } satisfies GraphAuthority;
 
     const child = new HostAgentGraphCoordinator({
       authority,
       continuity: { enqueueAgentGraphChanged: () => undefined },
+      stopExecution: async () => {
+        throw new AgentGraphClientOperationError(
+          'session_archived',
+          'Archived Sessions cannot supervise an agent graph',
+        );
+      },
     });
     const childQuery = await child.handlers['agent.graph.query'](
       { rootSessionId: 'root-1' },
@@ -209,51 +205,6 @@ describe('Host Agent Graph coordinator', () => {
     assert.equal(cursor.recordId, projected.terminalHistory.records.at(-1)?.recordId);
   });
 
-  test('bounds a large operator inspection without changing its identity', () => {
-    const snapshot = graphSnapshot();
-    const source = operatorInspection(snapshot);
-    source.inboundEdges = Array.from({ length: 100 }, (_, index) => ({
-      edgeId: `edge-in-${index}`,
-      fromOperatorId: `upstream-${index}`,
-      toOperatorId: 'operator-1',
-    }));
-    source.outboundEdges = Array.from({ length: 100 }, (_, index) => ({
-      edgeId: `edge-out-${index}`,
-      fromOperatorId: 'operator-1',
-      toOperatorId: `downstream-${index}`,
-    }));
-    source.recentRecords = Array.from({ length: 128 }, (_, index) => activity(index));
-
-    const projected = projectAgentGraphOperatorInspection(source);
-    assert.ok(Buffer.byteLength(JSON.stringify(projected), 'utf8') <= AGENT_GRAPH_RESULT_MAX_BYTES);
-    assert.equal(projected.operator.operatorId, 'operator-1');
-    assert.equal(
-      projected.inboundEdges.length + projected.omitted.inboundEdges,
-      source.inboundEdges.length,
-    );
-    assert.equal(
-      projected.outboundEdges.length + projected.omitted.outboundEdges,
-      source.outboundEdges.length,
-    );
-    assert.equal(
-      projected.recentRecords.length + projected.omitted.records,
-      source.recentRecords.length,
-    );
-    assert.deepEqual(
-      projected.inboundEdges.map((edge) => edge.edgeId),
-      source.inboundEdges
-        .slice(source.inboundEdges.length - projected.inboundEdges.length)
-        .map((edge) => edge.edgeId),
-    );
-    assert.deepEqual(
-      projected.recentRecords.map((record) => record.recordId),
-      source.recentRecords
-        .slice(source.recentRecords.length - projected.recentRecords.length)
-        .map((record) => record.recordId),
-    );
-    assert.doesNotThrow(() => decodeAgentGraphOperatorInspection(projected));
-  });
-
   test('projects only allowlisted Runtime fields onto the wire', () => {
     const source = graphSnapshot();
     Object.assign(source.operators[0]!, { privatePrompt: 'operator-secret' });
@@ -270,7 +221,7 @@ describe('Host Agent Graph coordinator', () => {
 
 type GraphAuthority = Pick<
   AgentGraphCoordinator,
-  'getSnapshot' | 'inspectOperator' | 'stop' | 'subscribeAll'
+  'getSnapshot' | 'inspectOperator' | 'subscribeAll'
 >;
 
 function graphSnapshot(): RuntimeAgentGraphClientSnapshot {

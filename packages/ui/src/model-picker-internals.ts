@@ -1,6 +1,10 @@
 import type { SelectorDivider, SelectorOptionData } from '@astryxdesign/core/Selector';
-import type { ProviderType } from '@maka/core';
-import { type ModelMenuGroup, modelChoiceValue } from './chat-model-helpers.js';
+import type { ProviderType, UiLocale } from '@maka/core';
+import {
+  type ModelMenuGroup,
+  modelChoiceDescription,
+  modelChoiceValue,
+} from './chat-model-helpers.js';
 
 export type ModelPickerOption = SelectorOptionData;
 
@@ -60,4 +64,18 @@ export function buildModelPickerProviderTypes(
     entries.unshift([leadingOption.value, leadingOption.providerType]);
   }
   return new Map(entries);
+}
+
+export function buildModelPickerDescriptions(
+  groups: readonly ModelMenuGroup[],
+  locale: UiLocale,
+): ReadonlyMap<string, string | undefined> {
+  return new Map(
+    groups.flatMap((group) =>
+      group.choices.map((choice) => [
+        modelChoiceValue(choice.connectionSlug, choice.model),
+        modelChoiceDescription(choice, locale),
+      ] as const),
+    ),
+  );
 }

@@ -79,6 +79,7 @@ export function ChatReasoning(props: ChatReasoningProps) {
       {...rest}
     >
       <div
+        data-slot="activity-card-header"
         role="button"
         tabIndex={0}
         aria-expanded={isExpanded}
@@ -89,7 +90,7 @@ export function ChatReasoning(props: ChatReasoningProps) {
             toggle();
           }
         }}
-        className="x78zum5 x6s0dn4 x1s4dlld x1ypdohk x87ps6o xjwf9q1 x13f7esw"
+        className="maka-activity-card-header x78zum5 x6s0dn4 x1s4dlld x1ypdohk x87ps6o xjwf9q1 x13f7esw"
       >
         <span className="x3nfvp2 x6s0dn4 xl56j7k x2lah0s x1kky2od xlup9mm xv1l7n4">
           <ThinkingIcon />

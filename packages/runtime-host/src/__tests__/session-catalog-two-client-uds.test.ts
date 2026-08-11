@@ -24,8 +24,11 @@ import {
 } from '../client/index.js';
 import {
   decodeHostFrame,
+  encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  RuntimeHostProtocolError,
+  type ClientFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,
   type SessionCreateInput,
@@ -68,7 +71,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       });
       const createInput: SessionCreateInput = {
         sessionId: 'stable-session',
-        cwd: root,
+        workspace: { kind: 'host_path', path: root },
         name: 'Stable Session',
         labels: ['catalog'],
         modelTarget: { kind: 'default' },
@@ -170,14 +173,15 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       await assert.rejects(
         desktop.request('session.create', {
           sessionId: 'relative-session',
-          cwd: '.',
+          workspace: { kind: 'host_path', path: '.' },
           modelTarget: { kind: 'default' },
         }),
-        operationError('invalid_request'),
+        (error: unknown) =>
+          error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame',
       );
       const planSession = await desktop.request('session.create', {
         sessionId: 'plan-session',
-        cwd: root,
+        workspace: { kind: 'host_path', path: root },
         modelTarget: { kind: 'default' },
         collaborationMode: 'plan',
       });
@@ -186,7 +190,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       const researchSession = requireSessionProjection(
         await desktop.request('session.create', {
           sessionId: 'deep-research-session',
-          cwd: root,
+          workspace: { kind: 'host_path', path: root },
           mode: 'deep_research',
           name: 'Caller override',
           labels: ['customer-label'],
@@ -319,15 +323,15 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       const secondCwd = join(base, 'workspace-second');
       await Promise.all([mkdir(firstCwd), mkdir(secondCwd)]);
       const relocationOutcomes = await Promise.all([
-        desktop.relocateSessionCwd({
+        desktop.relocateSessionWorkspace({
           sessionId: narrowedSession.id,
           expectedRevision: narrowedSession.revision,
-          cwd: firstCwd,
+          workspace: { kind: 'host_path', path: firstCwd },
         }),
-        tui.relocateSessionCwd({
+        tui.relocateSessionWorkspace({
           sessionId: narrowedSession.id,
           expectedRevision: narrowedSession.revision,
-          cwd: secondCwd,
+          workspace: { kind: 'host_path', path: secondCwd },
         }),
       ]);
       assert.deepEqual(relocationOutcomes.map((outcome) => outcome.kind).sort(), [
@@ -339,8 +343,8 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       if (relocated?.kind !== 'committed') assert.fail('One Session relocation must commit');
       const relocatedSession = requireSessionProjection(relocated.session);
       assert.ok(
-        relocatedSession.cwd === (await realpath(firstCwd)) ||
-          relocatedSession.cwd === (await realpath(secondCwd)),
+        relocatedSession.workspace.hostCwd === (await realpath(firstCwd)) ||
+          relocatedSession.workspace.hostCwd === (await realpath(secondCwd)),
       );
       assert.deepEqual(await querySession(tui, narrowedSession.id), relocatedSession);
 
@@ -349,7 +353,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       await assert.rejects(
         desktop.request('session.create', {
           sessionId: rejectedSessionId,
-          cwd: root,
+          workspace: { kind: 'host_path', path: root },
           modelTarget: { kind: 'default' },
         }),
         operationError('invalid_request'),
@@ -401,7 +405,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
           Array.from({ length: 34 }, (_, index) =>
             desktop.request('session.create', {
               sessionId: `bulk-${String(index).padStart(2, '0')}`,
-              cwd: root,
+              workspace: { kind: 'host_path', path: root },
               labels: ['paged'],
               modelTarget: { kind: 'default' },
             }),
@@ -504,7 +508,6 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       const heartbeat = await desktop.request('automation.mutate', {
         kind: 'create',
         sessionId: created.id,
-        automationKind: 'heartbeat',
         name: 'Retirement blocker',
         prompt: 'Remain attached to this Session.',
         schedule: { type: 'interval', seconds: 3_600 },
@@ -685,7 +688,7 @@ test('stable Session creation survives response loss and Host restart', {
     host = await startHost(root, capability.rootId);
     const input: SessionCreateInput = {
       sessionId: 'response-loss-session',
-      cwd: root,
+      workspace: { kind: 'host_path', path: root },
       name: 'Response Loss Session',
       labels: ['catalog'],
       modelTarget: { kind: 'default' },
@@ -693,7 +696,7 @@ test('stable Session creation survives response loss and Host restart', {
     dropped = await sendCreateWithoutReadingResponse(host.endpoint, input);
     const observer = await connectClient(root, 'tui');
     const committed = await waitForSession(observer, input.sessionId);
-    dropped.destroy();
+    dropped.abort();
     dropped = undefined;
     await observer.close();
 
@@ -711,7 +714,7 @@ test('stable Session creation survives response loss and Host restart', {
     await stopHost(host);
     host = undefined;
   } finally {
-    dropped?.destroy();
+    dropped?.abort();
     await terminateHost(host);
     await rm(join(resolveRootControlNamespace(), capability.rootId), {
       recursive: true,
@@ -1060,23 +1063,28 @@ async function sendCreateWithoutReadingResponse(
   input: SessionCreateInput,
 ): Promise<FramedTransport> {
   const transport = new FramedTransport(await openSocket(endpoint));
-  await transport.write({
+  await writeClientFrame(transport, {
     kind: 'hello',
     clientInstanceId: randomUUID(),
     surface: 'desktop',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    compositionId: 'maka.interactive',
   });
   const handshake = decodeHostFrame(await transport.read(2_000));
   assert.ok('kind' in handshake);
   assert.equal(handshake.kind, 'accepted');
-  await transport.write({
+  await writeClientFrame(transport, {
     requestId: randomUUID(),
     operation: 'session.create',
     input,
   });
   return transport;
+}
+
+function writeClientFrame(transport: FramedTransport, frame: ClientFrame): Promise<void> {
+  return transport.write(encodeProtocolMessage(frame));
 }
 
 function openSocket(path: string): Promise<Socket> {

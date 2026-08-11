@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { useRovingRowFocus } from './use-roving-row-focus.js';
 import {
+  ICON_SIZE,
   Blocks,
   BookOpen,
   Download,
@@ -67,15 +68,6 @@ import { useToast } from './toast.js';
 const MARKET_CATEGORY_ALL = '__all__';
 type MarketSort = 'name' | 'recent';
 type SkillTab = 'market' | 'builtin' | 'installed';
-
-/**
- * Icon sizes by the role the glyph plays, not by call site. Eight hand-written
- * numbers were scattered through this file; the values are unchanged, but a
- * size is now a decision recorded once.
- */
-const SKILL_ROW_ICON_SIZE = 18;
-const SKILL_INLINE_ICON_SIZE = 16;
-const SKILL_META_ICON_SIZE = 14;
 
 export function SkillsModuleMain(props: {
   skills?: SkillEntry[];
@@ -332,7 +324,7 @@ export function SkillsModuleMain(props: {
         isDisabled={installed || skillActionBusy || !onInstall}
         label={copy.install.action(name)}
         tooltip={installed ? copy.install.installedTitle : copy.install.action(name)}
-        icon={installing ? <Loader2 size={SKILL_INLINE_ICON_SIZE} aria-hidden="true" /> : <Download size={SKILL_INLINE_ICON_SIZE} aria-hidden="true" />}
+        icon={installing ? <Loader2 size={ICON_SIZE.chrome} aria-hidden="true" /> : <Download size={ICON_SIZE.chrome} aria-hidden="true" />}
       />
     );
   }
@@ -354,14 +346,19 @@ export function SkillsModuleMain(props: {
     <div className="maka-module-page-panel">
       {searchSummary}
       {allManagedSources.length === 0 ? (
+        /* With a query in play this is a search empty, so it carries the clear
+           action (DESIGN.md §10); without one it stays a plain panel empty. */
         <EmptyState
-          icon={<BookOpen />}
+          icon={<BookOpen size={ICON_SIZE.empty} />}
           title={normalizedSkillQuery ? copy.market.emptySearchTitle : copy.market.emptyTitle}
           description={normalizedSkillQuery ? copy.market.emptySearchBody : copy.market.emptyBody}
+          actions={normalizedSkillQuery ? (
+            <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} />
+          ) : undefined}
         />
       ) : marketSources.length === 0 ? (
         <EmptyState
-          icon={<Search />}
+          icon={<Search size={ICON_SIZE.empty} />}
           title={copy.market.emptySearchTitle}
           description={copy.market.emptyFilterBody}
           actions={(
@@ -393,7 +390,7 @@ export function SkillsModuleMain(props: {
                   .join(' · ')}
                 startContent={(
                   <span className="maka-module-market-icon" aria-hidden="true">
-                    <Blocks size={SKILL_ROW_ICON_SIZE} />
+                    <Blocks size={ICON_SIZE.empty} />
                   </span>
                 )}
                 endContent={catalogInstallButton(
@@ -416,13 +413,13 @@ export function SkillsModuleMain(props: {
       {searchSummary}
       {bundledCatalog.length === 0 ? (
         <EmptyState
-          icon={<Blocks />}
+          icon={<Blocks size={ICON_SIZE.empty} />}
           title={copy.builtin.emptyTitle}
           description={copy.builtin.emptyBody}
         />
       ) : bundledCatalogFiltered.length === 0 ? (
         <EmptyState
-          icon={<Search />}
+          icon={<Search size={ICON_SIZE.empty} />}
           title={copy.builtin.noMatchTitle}
           description={copy.builtin.noMatchBody}
           actions={<UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} />}
@@ -460,7 +457,7 @@ export function SkillsModuleMain(props: {
                 .join(' · ')}
               startContent={(
                 <span className="maka-module-market-icon" aria-hidden="true">
-                  <Blocks size={SKILL_ROW_ICON_SIZE} />
+                  <Blocks size={ICON_SIZE.empty} />
                 </span>
               )}
               endContent={catalogInstallButton(
@@ -492,18 +489,22 @@ export function SkillsModuleMain(props: {
       {searchSummary}
       {skills.length === 0 ? (
         <EmptyState
-          icon={<Blocks />}
+          icon={<Blocks size={ICON_SIZE.empty} />}
           title={normalizedSkillQuery ? copy.installed.emptySearchTitle : copy.installed.emptyTitle}
           description={normalizedSkillQuery ? copy.installed.emptySearchBody : installedEmptyBody}
           actions={(
-            props.onRefreshSkills
-              ? <UiButton variant="ghost" label={pendingSkillAction === 'refresh' ? copy.installed.refreshPending : copy.installed.refresh} onClick={() => void runSkillAction('refresh', refreshSkillData)} isDisabled={skillActionBusy} />
-              : undefined
+            // A search that matched nothing exits through clear (DESIGN.md
+            // §10); only the true first-run empty offers the refresh.
+            normalizedSkillQuery
+              ? <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} />
+              : props.onRefreshSkills
+                ? <UiButton variant="ghost" size="sm" label={pendingSkillAction === 'refresh' ? copy.installed.refreshPending : copy.installed.refresh} onClick={() => void runSkillAction('refresh', refreshSkillData)} isDisabled={skillActionBusy} />
+                : undefined
           )}
         />
       ) : filteredSkills.length === 0 ? (
         <EmptyState
-          icon={<Search />}
+          icon={<Search size={ICON_SIZE.empty} />}
           title={copy.installed.emptySearchTitle}
           description={copy.installed.emptySearchBody}
           actions={<UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} />}
@@ -620,7 +621,7 @@ export function SkillsModuleMain(props: {
             <DropdownMenu
               button={{
                 label: copy.page.moreActions,
-                icon: <MoreHorizontal size={SKILL_INLINE_ICON_SIZE} aria-hidden="true" />,
+                icon: <MoreHorizontal size={ICON_SIZE.chrome} aria-hidden="true" />,
                 isIconOnly: true,
                 variant: 'ghost',
                 isDisabled: skillActionBusy,
@@ -628,21 +629,21 @@ export function SkillsModuleMain(props: {
             >
               {props.onOpenSkillsFolder ? (
                 <DropdownMenuItem
-                  icon={<FolderOpen size={SKILL_META_ICON_SIZE} aria-hidden="true" />}
+                  icon={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
                   label={copy.page.openFolder}
                   onClick={() => runPageActionAfterMenuClose('folder', props.onOpenSkillsFolder)}
                 />
               ) : null}
               {props.onImportManagedSkillSource ? (
                 <DropdownMenuItem
-                  icon={<Download size={SKILL_META_ICON_SIZE} aria-hidden="true" />}
+                  icon={<Download size={ICON_SIZE.control} aria-hidden="true" />}
                   label={copy.market.importLocal}
                   onClick={() => runPageActionAfterMenuClose('source:import', props.onImportManagedSkillSource)}
                 />
               ) : null}
               {canRefreshSkillData ? (
                 <DropdownMenuItem
-                  icon={<RefreshCcw size={SKILL_META_ICON_SIZE} aria-hidden="true" />}
+                  icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
                   label={pendingSkillAction === 'refresh' ? copy.page.refreshing : copy.page.refresh}
                   onClick={() => runPageActionAfterMenuClose('refresh', refreshSkillData)}
                 />

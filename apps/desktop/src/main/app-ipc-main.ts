@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { arch as osArch, homedir, release as osRelease } from 'node:os';
-import { app, ipcMain, shell, type IpcMain } from 'electron';
+import { app, ipcMain, shell } from 'electron';
 import { resolveOperationalStateDatabasePath } from '@maka/storage';
 import { resolveProjectGitInfo } from '@maka/runtime';
 import type { createMainWindowController } from './main-window.js';
@@ -14,6 +14,10 @@ import type {
   AppUpdateStatus,
 } from './app-update-service.js';
 import type { ProjectManagementService } from './project-management-service.js';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 type E2eFixture = ReturnType<typeof resolveE2eFixture>;
@@ -33,7 +37,7 @@ export interface AppIpcDeps {
 
 export function registerAppIpc(
   deps: AppIpcDeps,
-  targetIpc: Pick<IpcMain, 'handle'> = ipcMain,
+  targetIpc: ReconnectableReadIpcMain = ipcMain,
 ): void {
   const { mainWindowController, projectRoot, workspaceRoot, buildInfo, e2eFixture, updateService } = deps;
   // Call-time read of the shared project-root authority: every handler must
@@ -89,12 +93,13 @@ export function registerAppIpc(
     };
   });
   targetIpc.handle('app:updateStatus', (): AppUpdateStatus => updateService.getStatus());
+  targetIpc.handle('app:checkForUpdates', () => updateService.checkForUpdatesNow());
   targetIpc.handle('app:retryUpdateDownload', () => updateService.retryUpdateDownload());
   targetIpc.handle('app:installUpdate', (_event, input: unknown) => {
     if (!isAppUpdateInstallRequest(input)) throw new TypeError('Invalid app update install request');
     return updateService.installUpdate(input);
   });
-  targetIpc.handle('projects:list', () => deps.projectManagement.list());
+  handleReconnectableRead(targetIpc, 'projects:list', () => deps.projectManagement.list());
   targetIpc.handle('projects:add', () => deps.projectManagement.add());
   targetIpc.handle('projects:select', (_event, projectId: unknown) =>
     deps.projectManagement.select(projectId));
@@ -119,7 +124,7 @@ export function registerAppIpc(
     deps.projectManagement.archive(projectId));
   targetIpc.handle('projects:restore', (_event, projectId: unknown) =>
     deps.projectManagement.restore(projectId));
-  targetIpc.handle('app:sessionProjectInfo', async (_event, sessionId: unknown) => {
+  handleReconnectableRead(targetIpc, 'app:sessionProjectInfo', async (_event, sessionId: unknown) => {
     if (typeof sessionId !== 'string' || !sessionId) {
       throw new Error('Invalid project-context session id.');
     }

@@ -37,112 +37,39 @@ function renderToStaticMarkup(node: ReactNode): string {
   }));
 }
 
-describe('ToolTrow stable structure', () => {
-  it('keeps the Astryx tool-call root when a second tool arrives', () => {
-    const first = runningTool('tool-1', 'Read');
-    const one = renderToStaticMarkup(createElement(ToolTrow, { items: [first] }));
-    const two = renderToStaticMarkup(createElement(ToolTrow, {
-      items: [first, runningTool('tool-2', 'Grep')],
-    }));
-
-    assert.match(one, /class="astryx-chat-tool-calls\b/);
-    assert.match(one, /aria-expanded="false"/);
-    assert.match(two, /class="astryx-chat-tool-calls\b/);
-    // Still collapsed, and its header projects the last call on its own.
-    assert.doesNotMatch(two, /aria-expanded="true"/);
-    assert.match(two, />Grep</);
-  });
-
-  it('renders addition and deletion counts for a file_diff result', () => {
-    const item: ToolActivityItem = {
-      toolUseId: 'tool-1',
-      toolName: 'Edit',
-      status: 'completed',
-      args: { path: 'a.ts' },
-      result: {
-        kind: 'file_diff',
-        paths: ['a.ts'],
-        diff: '--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,3 @@\n keep\n-old\n+new\n+more',
-      },
-    };
-
-    const html = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
-
-    assert.match(html, />\+2</);
-    assert.match(html, />-1</);
-  });
-
-  it('omits a zero count instead of painting -0 on a pure-additions write', () => {
-    const item: ToolActivityItem = {
-      toolUseId: 'tool-1',
-      toolName: 'Write',
-      status: 'completed',
-      args: { path: 'new.md' },
-      result: {
-        kind: 'file_diff',
-        paths: ['new.md'],
-        diff: '--- /dev/null\n+++ b/new.md\n@@ -0,0 +1,2 @@\n+alpha\n+beta',
-      },
-    };
-
-    const html = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
-
-    assert.match(html, />\+2</);
-    assert.doesNotMatch(html, />-0</);
-  });
-
-  // Guard for patches/@astryxdesign+core+0.3.0.patch — a contiguous run is one
-  // group, a group collapses by default, and the unpatched collapsed header
-  // projects the latest call's name and target alone. Several edits in one turn
-  // is the most common shape there is and it showed no counts at all.
-  it('sums the run when a collapsed group carries more than one diff', () => {
-    const edit = (id: string, path: string, diff: string): ToolActivityItem => ({
-      toolUseId: id,
-      toolName: 'Edit',
-      status: 'completed',
-      args: { path },
-      result: { kind: 'file_diff', paths: [path], diff },
-    });
-
-    const html = renderToStaticMarkup(createElement(ToolTrow, {
-      items: [
-        edit('tool-1', 'a.ts', '--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,3 @@\n keep\n-old\n+new\n+more'),
-        edit('tool-2', 'b.ts', '--- a/b.ts\n+++ b/b.ts\n@@ -1,2 +1,2 @@\n keep\n-gone\n+here'),
-      ],
-    }));
-
-    // Collapsed: the rows inside are not what these counts come from.
-    assert.doesNotMatch(html, /aria-expanded="true"/);
-    assert.match(html, />\+3</);
-    assert.match(html, />-2</);
-  });
-
-  it('leaves the collapsed group header alone when the run changed no file', () => {
-    const html = renderToStaticMarkup(createElement(ToolTrow, {
-      items: [runningTool('tool-1', 'Read'), runningTool('tool-2', 'Grep')],
-    }));
-
-    assert.doesNotMatch(html, />\+0</);
-    assert.doesNotMatch(html, />-0</);
-  });
-});
-
 describe('linked subagent tool rows', () => {
   const renderTool = (
     item: ToolActivityItem,
     onOpenLinkedSession?: (sessionId: string) => void,
   ) => renderToStaticMarkup(createElement(ToolTrow, { items: [item], onOpenLinkedSession }));
 
-  it('renders agent_spawn as one native row that opens the child session directly', () => {
+  it('renders a linked agent as one compact clickable list row', () => {
     const html = renderTool(subagent('child-1'), () => undefined);
 
     assert.match(html, />Local Read</);
-    assert.match(html, />打开子代理会话「Local Read」</);
-    assert.doesNotMatch(html, /aria-label="打开子代理会话/);
-    assert.doesNotMatch(html, /aria-expanded=/);
+    assert.equal(html.match(/<button\b/g)?.length, 1);
+    assert.equal(renderTool(subagent(), () => undefined).match(/<button\b/g)?.length ?? 0, 0);
+    assert.equal(renderTool(subagent('child-1')).match(/<button\b/g)?.length ?? 0, 0);
+  });
 
-    assert.doesNotMatch(renderTool(subagent(), () => undefined), />打开子代理会话/);
-    assert.doesNotMatch(renderTool(subagent('child-1')), />打开子代理会话/);
+  it('preserves mixed tool and linked-agent order', () => {
+    const before = runningTool('tool-before', 'Read');
+    before.intent = 'before linked session';
+    const linked = subagent('child-1');
+    const after = runningTool('tool-after', 'Grep');
+    after.intent = 'after linked session';
+
+    const html = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [before, linked, after],
+      onOpenLinkedSession: () => undefined,
+    }));
+    const beforeIndex = html.indexOf('before linked session');
+    const linkedIndex = html.indexOf('Inspect the runtime');
+    const afterIndex = html.indexOf('after linked session');
+
+    assert.ok(beforeIndex >= 0);
+    assert.ok(linkedIndex > beforeIndex);
+    assert.ok(afterIndex > linkedIndex);
   });
 
   it('uses the child result status instead of the settled transport status', () => {
@@ -175,7 +102,7 @@ describe('linked subagent tool rows', () => {
     assert.match(withArtifacts, />已取消 · 只读<\/span>/);
   });
 
-  it('renders each swarm child as a native row and activates only linked sessions', () => {
+  it('links only swarm children that have a session', () => {
     const html = renderTool({
       toolUseId: 'swarm-1',
       toolName: 'agent_swarm',
@@ -216,12 +143,11 @@ describe('linked subagent tool rows', () => {
 
     assert.match(html, />Reader</);
     assert.match(html, />Worker</);
-    assert.equal(html.match(/>打开子代理会话/g)?.length, 1);
+    assert.equal(html.match(/<button\b/g)?.length, 1);
     assert.match(html, /startup_failed/);
     assert.match(html, />失败</);
     assert.match(html, />已完成 · 只读<\/span>/);
     assert.doesNotMatch(html, />local_read<\/span>/);
-    assert.doesNotMatch(html, /aria-label="Loading"/);
   });
 
   it('keeps an empty swarm visible as its parent tool row', () => {

@@ -1,3 +1,0 @@
-{"id":"legacy-noturnstate-1","workspaceRoot":"/Users/fixture/Library/Application Support/Maka/workspaces/default","cwd":"/Users/fixture/work/no-turnstate-project","createdAt":1783922000000,"lastUsedAt":1783922010000,"name":"No Turn State","isFlagged":false,"labels":[],"isArchived":false,"status":"active","statusUpdatedAt":1783922010000,"hasUnread":false,"backend":"ai-sdk","llmConnectionSlug":"openai-compatible","connectionLocked":true,"model":"demo-model","permissionMode":"ask","schemaVersion":1,"lastMessageAt":1783922010000}
-{"type":"user","id":"msg-user-noturn-1","turnId":"turn-noturn-1","ts":1783922005000,"text":"hello"}
-{"type":"assistant","id":"msg-assistant-noturn-1","turnId":"turn-noturn-1","ts":1783922009000,"text":"Hello back","modelId":"demo-model"}

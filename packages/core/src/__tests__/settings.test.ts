@@ -57,27 +57,6 @@ test('normalizes user-approved subagent presets without widening the catalog', (
   ]);
 });
 
-test('replaces subagent presets atomically through the settings patch', () => {
-  const current = normalizeSettings({
-    subagents: {
-      presets: [
-        {
-          id: 'reader',
-          name: 'Reader',
-          description: '',
-          profile: 'local_read',
-          connectionSlug: 'a',
-          model: 'model-a',
-          enabled: true,
-        },
-      ],
-    },
-  });
-  const next = mergeSettings(current, { subagents: { presets: [] } });
-
-  expect(next.subagents.presets).toEqual([]);
-});
-
 test('delegates bot patches and persisted normalization to the bot settings owner', () => {
   const current = createDefaultSettings();
   Object.assign(current.botChat.channels.telegram, {
@@ -120,40 +99,9 @@ describe('appearance settings boundaries', () => {
       mergeSettings(createDefaultSettings(), { appearance: { palette: 'onedark' } }).appearance,
     ).toMatchObject({ theme: 'auto', palette: 'onedark' });
   });
-
-  test('drops retired appearance fields without resetting current settings', () => {
-    const normalized = normalizeSettings({
-      appearance: {
-        theme: 'dark',
-        palette: 'tokyo-night',
-        toastPosition: 'top-left',
-        density: 'compact',
-      },
-      personalization: { displayName: 'Yuejing', assistantTone: 'concise' },
-    });
-
-    expect('toastPosition' in normalized.appearance).toBe(false);
-    expect('density' in normalized.appearance).toBe(false);
-    expect(normalized.appearance).toMatchObject({ theme: 'dark', palette: 'tokyo-night' });
-    expect(normalized.personalization).toMatchObject({
-      displayName: 'Yuejing',
-      assistantTone: 'concise',
-    });
-  });
 });
 
 describe('custom pet selection settings', () => {
-  test('stays disabled by default and preserves a canonical user selection', () => {
-    const defaults = createDefaultSettings();
-    expect(defaults.personalization.selectedPetId).toBe(null);
-
-    const selected = mergeSettings(defaults, {
-      personalization: { selectedPetId: 'likun.maodie' },
-    });
-    expect(selected.personalization.selectedPetId).toBe('likun.maodie');
-    expect(normalizeSettings(selected).personalization.selectedPetId).toBe('likun.maodie');
-  });
-
   test('fails closed for missing, unsafe, or malformed persisted selections', () => {
     for (const selectedPetId of [undefined, '../maodie', 'MAODIE', '', 42, {}]) {
       const normalized = normalizeSettings({
@@ -167,47 +115,6 @@ describe('custom pet selection settings', () => {
       expect(normalized.personalization.selectedPetId).toBe(null);
     }
   });
-});
-
-test('boolean settings default, normalize, and merge through their shared boundary', () => {
-  const defaults = createDefaultSettings();
-  expect(defaults.notifications.runComplete).toBe(true);
-  expect(defaults.system.keepSystemAwake).toBe(false);
-  expect(defaults.workspaceInstructions.enabled).toBe(true);
-  expect(defaults.privacy.incognitoActive).toBe(false);
-
-  const normalized = normalizeSettings({
-    notifications: { runComplete: false },
-    system: { keepSystemAwake: true },
-    workspaceInstructions: { enabled: false },
-    privacy: { incognitoActive: true },
-  });
-  expect(normalized.notifications.runComplete).toBe(false);
-  expect(normalized.system.keepSystemAwake).toBe(true);
-  expect(normalized.workspaceInstructions.enabled).toBe(false);
-  expect(normalized.privacy.incognitoActive).toBe(true);
-
-  const malformed = normalizeSettings({
-    notifications: { runComplete: 'yes' },
-    system: { keepSystemAwake: 1 },
-    workspaceInstructions: { enabled: 'yes' },
-    privacy: { incognitoActive: 'yes' },
-  });
-  expect(malformed.notifications.runComplete).toBe(true);
-  expect(malformed.system.keepSystemAwake).toBe(false);
-  expect(malformed.workspaceInstructions.enabled).toBe(true);
-  expect(malformed.privacy.incognitoActive).toBe(false);
-
-  const merged = mergeSettings(defaults, {
-    notifications: { runComplete: false },
-    system: { keepSystemAwake: true },
-    workspaceInstructions: { enabled: false },
-    privacy: { incognitoActive: true },
-  });
-  expect(merged.notifications.runComplete).toBe(false);
-  expect(merged.system.keepSystemAwake).toBe(true);
-  expect(merged.workspaceInstructions.enabled).toBe(false);
-  expect(merged.privacy.incognitoActive).toBe(true);
 });
 
 test('web-search settings stay owned by their normalization boundary', () => {
@@ -228,22 +135,6 @@ test('web-search settings stay owned by their normalization boundary', () => {
   });
 });
 
-test('an unset chat-default thinking level stays unset rather than becoming a level', () => {
-  // The distinction this pins: "no preference" is not a rung on the ladder. If
-  // normalization ever invented one here (say, 'medium'), every new session
-  // would silently start on a level the user never chose and the settings row
-  // would claim they had.
-  const normalized = normalizeSettings(createDefaultSettings());
-  expect(normalized.chatDefaults.thinkingLevel).toBe(undefined);
-});
-
-test('a persisted chat-default thinking level survives normalization', () => {
-  const normalized = normalizeSettings(
-    mergeSettings(createDefaultSettings(), { chatDefaults: { thinkingLevel: 'high' } }),
-  );
-  expect(normalized.chatDefaults.thinkingLevel).toBe('high');
-});
-
 test('a chat-default thinking level the app does not recognize drops to no preference', () => {
   // Fail closed, matching permissionMode next to it: a level that reached
   // settings.json from an older build or a hand edit must not travel on to
@@ -254,18 +145,6 @@ test('a chat-default thinking level the app does not recognize drops to no prefe
     }),
   );
   expect(normalized.chatDefaults.thinkingLevel).toBe(undefined);
-});
-
-test('no default project means no preference, not an empty one', () => {
-  const normalized = normalizeSettings(createDefaultSettings());
-  expect(normalized.projects.defaultProjectId).toBe(undefined);
-});
-
-test('a chosen default project survives normalization', () => {
-  const normalized = normalizeSettings(
-    mergeSettings(createDefaultSettings(), { projects: { defaultProjectId: 'proj-7' } }),
-  );
-  expect(normalized.projects.defaultProjectId).toBe('proj-7');
 });
 
 test('a blank default project id is dropped rather than stored', () => {

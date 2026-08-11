@@ -343,65 +343,6 @@ describe('chat readiness guard', () => {
     assert.deepEqual(updates, []);
   });
 
-  test('does not rebind locked legacy fake sessions', async () => {
-    const updates: unknown[] = [];
-
-    await assertRejectsReadiness(
-      'locked fake session',
-      () => ensureSessionCanSendOrRebind(
-        'session-locked-fake',
-        header({ backend: 'fake', llmConnectionSlug: 'fake', model: 'fake-model', connectionLocked: true }),
-        {
-          readyConnectionDeps: keyedDeps({
-            anthropic: { connection: connection(), apiKey: 'sk-test' },
-          }),
-          async getDefaultSlug() {
-            return 'anthropic';
-          },
-          async listConnectionSlugs() {
-            return [];
-          },
-          async updateSession(_sessionId, patch) {
-            updates.push(patch);
-          },
-        },
-      ),
-      '旧的本地模拟连接',
-      'fake_backend',
-    );
-
-    assert.deepEqual(updates, []);
-  });
-
-  test('rebinds old fake sessions to a ready default connection before send', async () => {
-    const updates: unknown[] = [];
-    const result = await ensureSessionCanSendOrRebind(
-      'session-1',
-      header({ backend: 'fake', llmConnectionSlug: 'fake', model: 'fake-model' }),
-      {
-        readyConnectionDeps: keyedDeps({
-          anthropic: { connection: connection(), apiKey: 'sk-test' },
-        }),
-        async getDefaultSlug() {
-          return 'anthropic';
-        },
-        async listConnectionSlugs() {
-          return [];
-        },
-        async updateSession(_sessionId, patch) {
-          updates.push(patch);
-        },
-      },
-    );
-
-    assert.deepEqual(result, {
-      rebound: true,
-      connectionSlug: 'anthropic',
-      modelId: 'claude-3-5-sonnet-20241022',
-    });
-    assert.equal(updates.length, 1);
-  });
-
   test('rebinds an unknown-provider session to the first existing ready connection', async () => {
     const updates: unknown[] = [];
     const rebindDeps = {

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import {
   ToolAvailabilityRuntime,
   LOAD_TOOLS_NAME,
+  toolAvailabilityHash,
   type RuntimeEventLike,
   type StepLike,
 } from '../tool-availability.js';
@@ -29,6 +30,21 @@ const ctx = {
   abortSignal: new AbortController().signal,
   emitOutput: () => {},
 };
+
+test('tool availability hash captures policy while canonicalizing group members', () => {
+  const full = toolAvailabilityHash({ economy: false });
+  const economy = toolAvailabilityHash({
+    economy: true,
+    groups: [{ id: 'docs', toolNames: ['docs_read', 'docs_edit', 'docs_read'] }],
+  });
+  const reordered = toolAvailabilityHash({
+    economy: true,
+    groups: [{ id: 'docs', toolNames: ['docs_edit', 'docs_read'] }],
+  });
+
+  assert.notEqual(full, economy);
+  assert.equal(economy, reordered);
+});
 
 // rive/docs grouped; Read/Write ungrouped (always visible).
 function runtime(economy: boolean) {
@@ -154,20 +170,6 @@ describe('ToolAvailabilityRuntime — durable ledger seed', () => {
     assert.ok(!plan.activeTools.includes('docs_edit'), 'unseeded group still hidden');
   });
 
-  test('historical load_tool (PR#30) and connect_tool_source (PR#34) calls also seed', () => {
-    const fromDeferred = runtime(true).prepare([event('load_tool', { namespace: 'docs' })]);
-    assert.ok(
-      fromDeferred.activeTools.includes('docs_edit'),
-      'load_tool namespace seeds the group',
-    );
-
-    const fromEconomy = runtime(true).prepare([event('connect_tool_source', { source: 'rive' })]);
-    assert.ok(
-      fromEconomy.activeTools.includes('rive_run'),
-      'connect_tool_source source seeds the group',
-    );
-  });
-
   test('an unknown seeded group id is ignored (forward compatible)', () => {
     const plan = runtime(true).prepare([event(LOAD_TOOLS_NAME, { group: 'ghost' })]);
     assert.ok(!plan.activeTools.includes('rive_run'));
@@ -250,28 +252,6 @@ describe('ToolAvailabilityRuntime — activation robustness', () => {
       completedSteps: [{ toolCalls: [{ toolName: LOAD_TOOLS_NAME, input: 'not json' }] }],
     });
     assert.ok(!after.activeTools.includes('rive_run'), 'malformed input activates nothing');
-  });
-
-  test('same-turn activation honors only load_tools({group}) — historical names and other keys are inert', () => {
-    const cases: Array<{ toolName: string; input: unknown }> = [
-      { toolName: 'load_tool', input: { namespace: 'rive' } }, // PR#30 name — ledger-only
-      { toolName: 'connect_tool_source', input: { source: 'rive' } }, // PR#34 name — ledger-only
-      { toolName: LOAD_TOOLS_NAME, input: { namespace: 'rive' } }, // right name, wrong key
-      { toolName: LOAD_TOOLS_NAME, input: { source: 'rive' } }, // right name, wrong key
-    ];
-    for (const c of cases) {
-      const plan = runtime(true).prepare([]);
-      const next = plan.projectActiveTools!({ completedSteps: [{ toolCalls: [c] }] });
-      assert.ok(
-        !next.activeTools.includes('rive_run'),
-        `step ${c.toolName}(${JSON.stringify(c.input)}) must NOT activate a group`,
-      );
-    }
-    // Only the live connector with the `group` arg activates same-turn.
-    const ok = runtime(true).prepare([]).projectActiveTools!({
-      completedSteps: [loadStep('rive')],
-    });
-    assert.ok(ok.activeTools.includes('rive_run'));
   });
 
   test('a non-function_call ledger event does not seed a group', () => {

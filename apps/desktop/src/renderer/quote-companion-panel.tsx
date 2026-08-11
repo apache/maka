@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, type ComponentProps } from 'react';
+import { Banner } from '@astryxdesign/core/Banner';
+import { Spinner } from '@astryxdesign/core/Spinner';
 import {
   ChatView,
   ChatSurfaceLayout,
@@ -10,7 +12,6 @@ import {
   type ChatModelChoice,
   type ComposerHandle,
 } from '@maka/ui';
-import { Loader2 } from '@maka/ui/icons';
 import type { SessionSummary } from '@maka/core';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useAppShellComposerAttachments } from './use-app-shell-composer-attachments';
@@ -177,13 +178,12 @@ export function QuoteCompanionPanel(props: {
       data-preparing={companion.preparing || undefined}
     >
       <ChatSurfaceLayout
-        // #2205: keyed on the companion session so switching quote sources
-        // resets ChatLayout's new-message indicator and scroll lock without
-        // remounting the layout (a remount would drop the composer draft).
         conversationKey={companion.companionSession?.id ?? props.sourceSession?.id}
         composer={
           <>
-            {companion.error && <div className="maka-quote-companion-error">{companion.error}</div>}
+            {companion.error && (
+              <Banner status="error" role="alert" title={companion.error} />
+            )}
             {(companion.activeSandboxBoundary || companion.activeQuestion) && (
               <div className="maka-composer-interaction-slot">
                 {companion.activeSandboxBoundary && (
@@ -226,7 +226,7 @@ export function QuoteCompanionPanel(props: {
                 return accepted;
               }}
               onStop={() => void companion.stop()}
-              onSteer={(text: string) => companion.steer(text)}
+              onStreamingSubmit={(text: string) => companion.steer(text)}
               hidden={Boolean(activeInteraction)}
               streaming={companion.streaming}
               processing={companion.processing}
@@ -278,18 +278,8 @@ export function QuoteCompanionPanel(props: {
           }}
           emptyOverride={
             companion.preparing ? (
-              <div
-                className="maka-quote-companion-preparing maka-turn-processing"
-                role="status"
-                aria-busy="true"
-                aria-live="polite"
-              >
-                <Loader2
-                  size={15}
-                  aria-hidden="true"
-                  className="maka-turn-processing-spinner"
-                />
-                <span className="maka-turn-indicator-text">{copy.preparing}</span>
+              <div className="maka-quote-companion-preparing maka-turn-processing">
+                <Spinner size="sm" shade="subtle" label={copy.preparing} />
               </div>
             ) : (
               <div className="maka-quote-companion-empty" aria-hidden="true" />

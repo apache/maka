@@ -29,7 +29,12 @@ export interface ProviderRequestUsage {
 export interface ProviderRequestUsageLike {
   inputTokens?:
     | number
-    | { total?: number; noCache?: number; cacheRead?: number; cacheWrite?: number };
+    | {
+        total?: number;
+        noCache?: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+      };
   outputTokens?: number | { total?: number; text?: number; reasoning?: number };
   raw?: Record<string, unknown>;
 }
@@ -110,6 +115,12 @@ export interface ProviderRequestTrackerInput {
     capture: ProviderRequestCaptureRecord,
   ) => Promise<Pick<ProviderRequestCaptureRef, 'artifactId'>>;
   recordAttempt: (attempt: ProviderRequestAttemptRecord) => void | Promise<void>;
+  /**
+   * Durable run metadata that must exist before any physical provider call.
+   * Kept outside accounting because a dispatch gate is an execution contract,
+   * not a metering concern.
+   */
+  beforeDispatch?: () => void | Promise<void>;
 
   /**
    * Canonical metering. Present as a unit or not at all: a `ModelCallAttempt`
@@ -298,6 +309,8 @@ export class ProviderRequestTracker {
 
   async trackStream(input: TrackProviderStreamInput): Promise<ProviderStreamResult> {
     throwIfAbortedBeforeDispatch(input.abortSignal);
+    await this.input.beforeDispatch?.();
+    throwIfAbortedBeforeDispatch(input.abortSignal);
     this.input.accounting?.assertReady?.();
     const step = this.step;
     const capture = await this.capture(step, input);
@@ -363,6 +376,8 @@ export class ProviderRequestTracker {
 
   async trackGenerate(input: TrackProviderGenerateInput): Promise<ProviderGenerateResult> {
     throwIfAbortedBeforeDispatch(input.abortSignal);
+    await this.input.beforeDispatch?.();
+    throwIfAbortedBeforeDispatch(input.abortSignal);
     this.input.accounting?.assertReady?.();
     const step = this.step;
     const capture = await this.capture(step, input);
@@ -413,6 +428,7 @@ export class ProviderRequestTracker {
     // frozen as a permanently token-less, cost-less record.
     let settled = false;
     let provisionallyRecorded = false;
+    let accountingSettlement = Promise.resolve();
     let abortListener: (() => void) | undefined;
     const finalize = async (
       status: ProviderRequestAttemptStatus,
@@ -436,7 +452,10 @@ export class ProviderRequestTracker {
         step,
         attempt,
         ...(capture.ref
-          ? { captureId: capture.ref.captureId, captureArtifactId: capture.ref.artifactId }
+          ? {
+              captureId: capture.ref.captureId,
+              captureArtifactId: capture.ref.artifactId,
+            }
           : {}),
         providerId: input.providerId,
         modelId: input.modelId,
@@ -452,16 +471,19 @@ export class ProviderRequestTracker {
         ...(timeToFirstTokenMs !== undefined ? { timeToFirstTokenMs } : {}),
         ...(usage ?? {}),
       };
-      try {
-        await this.input.recordAttempt(record);
-      } catch {
-        // Attempt telemetry is diagnostic. The provider outcome remains authoritative.
-      }
-      await this.emitModelCallAttempt(record, {
-        logicalCallId,
-        usage,
-        contextWindow,
+      accountingSettlement = accountingSettlement.then(async () => {
+        try {
+          await this.input.recordAttempt(record);
+        } catch {
+          // Attempt telemetry is diagnostic. The provider outcome remains authoritative.
+        }
+        await this.emitModelCallAttempt(record, {
+          logicalCallId,
+          usage,
+          contextWindow,
+        });
       });
+      await accountingSettlement;
     };
     const observeOutput = () => {
       if (timeToFirstTokenMs === undefined) {
@@ -473,7 +495,10 @@ export class ProviderRequestTracker {
         void finalize('aborted');
       };
       if (input.abortSignal.aborted) void finalize('aborted');
-      else input.abortSignal.addEventListener('abort', abortListener, { once: true });
+      else
+        input.abortSignal.addEventListener('abort', abortListener, {
+          once: true,
+        });
     }
     return { observeOutput, finalize };
   }

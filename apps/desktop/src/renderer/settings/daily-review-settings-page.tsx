@@ -6,6 +6,7 @@ import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
 import { getDailyReviewSettingsCopy, type DailyReviewSettingsCopy } from '../locales/settings-daily-review-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
+import { SettingsSkeletonStack } from './settings-skeleton';
 import { useActionGuard } from './use-action-guard';
 
 const DAILY_REVIEW_DEFAULT_MODEL_VALUE = '__maka_daily_review_default_model__';
@@ -92,6 +93,14 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
   const scheduleDisabled = formDisabled;
   const selectedModelValue = config?.modelKey.trim() || DAILY_REVIEW_DEFAULT_MODEL_VALUE;
 
+  if (loading) {
+    return (
+      <SettingsPage aria-label={copy.aria}>
+        <SettingsSkeletonStack label={copy.aria} />
+      </SettingsPage>
+    );
+  }
+
   return (
     <SettingsPage aria-label={copy.aria}>
       {!hasConfigIpc ? <Banner status="info" title={copy.unavailable} /> : null}
@@ -146,6 +155,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             label={copy.model}
             isLabelHidden
             options={modelOptions}
+            placement="below"
             isDisabled={formDisabled || modelOptions.length === 0}
             onChange={(value) => void patchConfig('modelKey', {
               modelKey: value === DAILY_REVIEW_DEFAULT_MODEL_VALUE ? '' : value,

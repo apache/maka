@@ -1,5 +1,8 @@
 import { app, dialog } from 'electron';
+import { installMainProcessLogCapture } from './main-process-diagnostics.js';
 import { isIsolatedE2e } from './startup-context.js';
+
+installMainProcessLogCapture();
 
 // The macOS app menu title and app.getName() consumers read this name. Set it
 // before ready, unchanged from its historical pre-ready position.

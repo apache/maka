@@ -12,7 +12,7 @@ import {
   type SettingsSection,
 } from '@maka/core';
 import { Button, MakaWordmark, useUiLocale } from '@maka/ui';
-import { AlertCircle, ChevronRight, Cpu, KeyRound } from '@maka/ui/icons';
+import { ICON_SIZE, AlertCircle, ChevronRight, Cpu, KeyRound } from '@maka/ui/icons';
 import {
   Banner,
   Card,
@@ -65,7 +65,7 @@ export function OnboardingHero(props: OnboardingHeroProps) {
       return (
         <RecoveryCard
           state={state}
-          icon={<KeyRound size={14} aria-hidden="true" />}
+          icon={<KeyRound size={ICON_SIZE.control} aria-hidden="true" />}
           connection={connectionLabel(state.connectionSlug, props.connections)}
           {...recoveryCallbacks(props)}
         />
@@ -74,7 +74,7 @@ export function OnboardingHero(props: OnboardingHeroProps) {
       return (
         <RecoveryCard
           state={state}
-          icon={<Cpu size={14} aria-hidden="true" />}
+          icon={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
           connection={connectionLabel(state.connectionSlug, props.connections)}
           {...recoveryCallbacks(props)}
         />
@@ -84,7 +84,7 @@ export function OnboardingHero(props: OnboardingHeroProps) {
       return (
         <RecoveryCard
           state={state}
-          icon={<AlertCircle size={14} aria-hidden="true" />}
+          icon={<AlertCircle size={ICON_SIZE.control} aria-hidden="true" />}
           {...recoveryCallbacks(props)}
         />
       );
@@ -148,7 +148,7 @@ function NeedsConnectionCard(props: {
                 startContent={<ProviderLogo type={type} compact />}
                 label={display.name}
                 description={display.description}
-                endContent={<ChevronRight size={16} aria-hidden="true" />}
+                endContent={<ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />}
                 onClick={() => props.onAddProvider(type)}
               />
             );

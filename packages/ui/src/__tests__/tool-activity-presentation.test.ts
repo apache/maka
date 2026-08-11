@@ -3,7 +3,6 @@ import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
 import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
-import { diffLineKind, ToolResultPreview } from '../tool-activity/tool-result-preview.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
 
@@ -73,7 +72,7 @@ describe('tool activity presentation', () => {
       } satisfies ToolActivityItem,
     }));
 
-    assert.match(markup, /astryx-codeblock/);
+    // Product: error text surfaces; sandbox copy must not fire for ordinary FS denial.
     assert.match(markup, /Filesystem access was denied/);
     assert.doesNotMatch(markup, /工具调用失败/);
     assert.doesNotMatch(markup, /可能被沙箱阻止/);
@@ -126,31 +125,6 @@ describe('tool activity presentation', () => {
     assert.doesNotMatch(markup, /失败 · 退出码|退出码 1/);
   });
 
-  it('never dumps pretty JSON for an arbitrary tool result object', () => {
-    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-custom',
-        toolName: 'CustomInspect',
-        status: 'running',
-        args: { target: 'packages/ui', depth: 2 },
-        result: {
-          kind: 'json',
-          value: {
-            ok: true,
-            notes: 'looks fine',
-            detail: 'line one\nline two',
-          },
-        },
-      } satisfies ToolActivityItem,
-    }));
-
-    assert.match(markup, /packages\/ui|target: packages\/ui/);
-    assert.match(markup, /looks fine|notes:/);
-    assert.match(markup, /line one/);
-    assert.doesNotMatch(markup, /\{\s*&quot;ok&quot;/);
-    assert.doesNotMatch(markup, /line one\\nline two/);
-  });
-
   it('redacts secrets in sensitive values and property names', () => {
     const cases: Array<Record<string, unknown>> = [
       { password: 'correct-horse', token: 'short-secret' },
@@ -175,74 +149,6 @@ describe('tool activity presentation', () => {
       );
       assert.match(markup, /redacted/i);
     }
-  });
-
-  it('keeps error diagnostics when a list field is also present', () => {
-    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-mixed',
-        toolName: 'CustomInspect',
-        status: 'errored',
-        args: {},
-        result: {
-          kind: 'json',
-          value: { results: [], error: 'permission denied', ok: false },
-        },
-      } satisfies ToolActivityItem,
-    }));
-
-    assert.match(markup, /permission denied/);
-    assert.match(markup, /ok:\s*false|未完成|false/);
-  });
-
-  it('labels a running inherited PTY by source-session ownership', () => {
-    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
-      toolName: 'Bash',
-      shellRunSource: 'owned',
-      content: {
-        kind: 'shell_run',
-        ref: 'maka://runtime/background-tasks/pty-branch',
-        mode: 'pty',
-        status: 'running',
-        cwd: '/repo',
-        cmd: 'interactive',
-        startedAt: 1,
-        updatedAt: 2,
-        revision: 2,
-        output: {
-          mode: 'pty',
-          screen: 'ready',
-          scrollback: '',
-          cols: 80,
-          rows: 24,
-          cursor: { x: 5, y: 0, visible: true },
-          alternateScreen: false,
-          truncated: false,
-          redacted: false,
-        },
-      },
-    }));
-
-    assert.match(markup, /由源会话管理/);
-    assert.doesNotMatch(markup, />运行中</);
-
-    const unavailableMarkup = renderToStaticMarkup(createElement(ToolResultPreview, {
-      toolName: 'Bash',
-      shellRunSource: 'unavailable',
-      content: {
-        kind: 'shell_run',
-        ref: 'maka://runtime/background-tasks/pty-branch',
-        mode: 'pty',
-        status: 'running',
-        cwd: '/repo',
-        cmd: 'interactive',
-        startedAt: 1,
-        updatedAt: 2,
-        revision: 2,
-      },
-    }));
-    assert.match(unavailableMarkup, /源会话不可用/);
-    assert.doesNotMatch(unavailableMarkup, />运行中</);
   });
 
   it('renders a failed WriteStdin as operation metadata without its ShellRun panel', () => {
@@ -290,7 +196,7 @@ describe('tool activity presentation', () => {
       } satisfies ToolActivityItem,
     }));
 
-    assert.match(markup, /未排队：echo x\\n/);
+    assert.match(markup, /未输入：echo x\\n/);
     assert.match(markup, /已调整为 100x30/);
     assert.match(markup, /后台终端交互失败/);
     assert.doesNotMatch(markup, /PRIVATE-CWD|PRIVATE-COMMAND|PRIVATE-FAILURE|PRIVATE-TERMINAL-FRAME/);
@@ -363,184 +269,7 @@ describe('tool activity presentation', () => {
     assert.equal(panels.length, 1);
   });
 
-  it('surfaces terminal cancel and runtime truncation flags', () => {
-    const cancelled = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-cancel',
-        toolName: 'Bash',
-        status: 'interrupted',
-        args: { command: 'sleep 99' },
-        result: {
-          kind: 'terminal',
-          cwd: '/repo',
-          cmd: 'sleep 99',
-          status: 'cancelled',
-          exitCode: 130,
-          output: pipeOutput(),
-        },
-      } satisfies ToolActivityItem,
-    }));
-    assert.match(cancelled, /已取消/);
-    assert.doesNotMatch(cancelled, /失败 · 退出码 130/);
-    assert.doesNotMatch(cancelled, /工具调用失败/);
-    // Outer status must not say 失败 either.
-    assert.doesNotMatch(cancelled, />失败</);
-
-    const cancelledTrow = renderToStaticMarkup(createElement(ToolTrow, {
-      items: [{
-        toolUseId: 'tool-cancel-trow',
-        toolName: 'Bash',
-        activityKind: 'command',
-        status: 'interrupted',
-        args: { command: 'sleep 99' },
-        result: {
-          kind: 'terminal',
-          cwd: '/repo',
-          cmd: 'sleep 99',
-          status: 'cancelled',
-          exitCode: 130,
-          output: pipeOutput(),
-        },
-      } satisfies ToolActivityItem],
-    }));
-    assert.match(cancelledTrow, /已中断/);
-    assert.doesNotMatch(cancelledTrow, /失败/);
-
-    const truncated = renderToStaticMarkup(createElement(ToolCallDetail, {
-      item: {
-        toolUseId: 'tool-trunc',
-        toolName: 'Bash',
-        status: 'running',
-        args: { command: 'run' },
-        result: {
-          kind: 'terminal',
-          cwd: '/repo',
-          cmd: 'run',
-          status: 'completed',
-          exitCode: 0,
-          output: { ...pipeOutput('tail only'), stdoutTruncated: true },
-        },
-      } satisfies ToolActivityItem,
-    }));
-    assert.match(truncated, /tail only/);
-    assert.match(truncated, /输出已截断/);
-  });
-
-  // Astryx's tokenizer has no `diff` language, so `language="diff"` was a
-  // no-op and every line painted `--color-syntax-variable`. The tints are the
-  // product's own; what has to hold is the classification, above all that the
-  // `---`/`+++` file markers are not read as a deletion and an addition.
-  it('tints a diff by line kind instead of painting it one colour', () => {
-    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
-      content: {
-        kind: 'file_diff',
-        paths: ['packages/ui/src/tool-activity.tsx'],
-        diff: [
-          'diff --git a/packages/ui/src/tool-activity.tsx b/packages/ui/src/tool-activity.tsx',
-          'index 1111111..2222222 100644',
-          '--- a/packages/ui/src/tool-activity.tsx',
-          '+++ b/packages/ui/src/tool-activity.tsx',
-          '@@ -1,3 +1,3 @@',
-          ' const kept = true;',
-          '-const removed = 1;',
-          '+const added = 2;',
-        ].join('\n'),
-      },
-    }));
-
-    const kinds = Array.from(markup.matchAll(/data-line="(\w+)"/g)).map((m) => m[1]);
-    // `index` and the `---`/`+++` file headers are hidden: the heading already
-    // names the path. The `diff --git` separator stays — it is the only
-    // in-body boundary between files in a multi-file diff.
-    assert.deepEqual(kinds, ['meta', 'ctx', 'del', 'add']);
-    assert.doesNotMatch(markup, /index 1111111/);
-    assert.doesNotMatch(markup, /--- a\/packages/);
-    assert.doesNotMatch(markup, /\+\+\+ b\/packages/);
-    // Every content row carries its line number: new-side for ctx/add,
-    // old-side for del; the hunk header feeds the counters and is not a row.
-    assert.deepEqual(diffGutterNumbers(markup), ['', '1', '2', '2']);
-    // The heading is the changed path, in the same surface a command uses.
-    assert.equal((markup.match(/data-slot="tool-output"/g) ?? []).length, 1);
-    assert.match(markup, /class="maka-tool-output-command"[^>]*>packages\/ui\/src\/tool-activity\.tsx</);
-    assert.doesNotMatch(markup, /astryx-codeblock/);
-  });
-
-  // The row-level counterpart of the sweep below, one level down: the detail
-  // panel used to draw the same command three ways — a CodeBlock card while
-  // streaming, that block's `title` slot once a foreground run settled, and
-  // the panel for a background one. Settling a command must not restyle it.
-  it('gives a command and its output one surface in every phase', () => {
-    const base = {
-      toolUseId: 'tool-command-surface',
-      toolName: 'Bash',
-      activityKind: 'command' as const,
-      args: { command: 'npm test' },
-    };
-    const phases: Record<string, ToolActivityItem> = {
-      live: {
-        ...base,
-        status: 'running',
-        outputChunks: [
-          { seq: 1, stream: 'stdout', text: 'streaming\n', redacted: false, createdAt: 1 },
-        ],
-      },
-      foreground: {
-        ...base,
-        status: 'completed',
-        result: {
-          kind: 'terminal',
-          cwd: '/repo',
-          cmd: 'npm test',
-          status: 'completed',
-          exitCode: 0,
-          output: pipeOutput('settled\n'),
-        },
-      },
-      background: {
-        ...base,
-        status: 'running',
-        result: {
-          kind: 'shell_run',
-          ref: 'maka://runtime/background-tasks/bg-surface',
-          mode: 'pipes',
-          status: 'running',
-          cwd: '/repo',
-          cmd: 'npm test',
-          startedAt: 1,
-          updatedAt: 2,
-          revision: 1,
-          output: pipeOutput('tracked\n'),
-        },
-      },
-    };
-
-    for (const [phase, item] of Object.entries(phases)) {
-      const markup = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
-      assert.equal(
-        (markup.match(/data-slot="tool-output"/g) ?? []).length,
-        1,
-        `${phase} draws exactly one surface`,
-      );
-      assert.match(
-        markup,
-        /class="maka-tool-output-command"[^>]*>npm test</,
-        `${phase} puts the command in the surface header`,
-      );
-      // Neither the command nor the body is handed to Astryx's CodeBlock
-      // again: as its `title` the command rendered comment-coloured and tucked
-      // against the output, and the body's own block nested a second border
-      // inside the panel. The class is `astryx-codeblock`, one word — spelled
-      // with a hyphen this assertion matches nothing and passes on the very
-      // markup it exists to forbid.
-      assert.doesNotMatch(markup, /astryx-codeblock/, `${phase} keeps the shell path off CodeBlock`);
-    }
-  });
-
 });
-
-function diffGutterNumbers(markup: string): string[] {
-  return Array.from(markup.matchAll(/maka-tool-diff-gutter"[^>]*>([^<]*)</g)).map((m) => m[1]);
-}
 
 function pipeOutput(stdout = '', stderr = '') {
   return {

@@ -57,10 +57,10 @@ import type {
   AuthorizationUrlPayload,
   SubscriptionAccountState,
   SubscriptionActionResult,
-  PlanReminder,
+  CreateScheduledTaskInput,
+  ScheduledTask,
+  UpdateScheduledTaskInput,
   ProjectRecord,
-  PlanReminderDeliveryTarget,
-  PlanReminderRecurrence,
   DailyReviewArchive,
   QueueEnqueueOutcome,
   DailyReviewArchiveSummary,
@@ -82,6 +82,10 @@ import type {
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+import type {
+  DesktopDiagnosticCopyResult,
+  DesktopErrorDiagnosticInput,
+} from './diagnostics-contract.js';
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core';
 import type {
@@ -91,7 +95,6 @@ import type {
   McpTestResult,
 } from '@maka/core/mcp';
 import type {
-  AgentGraphClientChangedEvent,
   AgentGraphClientSnapshot,
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
@@ -280,7 +283,7 @@ export interface MakaBridge {
     stop(rootSessionId: string): Promise<void>;
     subscribe(
       rootSessionId: string,
-      handler: (event: AgentGraphClientChangedEvent) => void,
+      handler: () => void,
     ): () => void;
   };
   sessions: {
@@ -322,6 +325,12 @@ export interface MakaBridge {
     readMessages(sessionId: string): Promise<StoredMessage[]>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;
+    subscribeActiveInteractions(
+      handler: (event: {
+        sessionId: string;
+        interactions: ActiveInteractionRequestEvent[];
+      }) => void,
+    ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
     compact(sessionId: string): Promise<void>;
     resumeLatest(sessionId: string): Promise<
@@ -377,7 +386,6 @@ export interface MakaBridge {
     list(input: {
       adapterId: string;
       includeArchived?: boolean;
-      cwd?: string;
       cursor?: string;
     }): Promise<{ sessions: ExternalSessionSummary[]; nextCursor: string | null }>;
     import(input: {
@@ -387,6 +395,7 @@ export interface MakaBridge {
   };
   projects: {
     list(): Promise<ProjectRecord[]>;
+    subscribeChanges(handler: () => void): () => void;
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     >;
@@ -422,6 +431,7 @@ export interface MakaBridge {
     }): Promise<ShellRunUpdate | null>;
     subscribeUpdates(handler: (update: ShellRunUpdate) => void): () => void;
     subscribePtyData(handler: (event: ShellRunPtyDataEvent) => void): () => void;
+    subscribeResync(handler: (event: { sessionId: string }) => void): () => void;
   };
   gitReview: {
     read(input: {
@@ -454,6 +464,11 @@ export interface MakaBridge {
     test(slug: string, opts?: { model?: string }): Promise<ConnectionTestResult>;
     fetchModels(slug: string): Promise<ModelDiscoveryResult>;
     hasSecret(slug: string): Promise<boolean>;
+    getRequestHeaders(slug: string): Promise<import('@maka/core').SavedRequestHeaders>;
+    setRequestHeaders(
+      slug: string,
+      headers: readonly import('@maka/core').RequestHeaderUpdate[],
+    ): Promise<import('@maka/core').SavedRequestHeaders>;
     subscribeEvents(handler: (event: ConnectionEvent) => void): () => void;
   };
   mcp: {
@@ -658,22 +673,22 @@ export interface MakaBridge {
     refreshTokens(): Promise<SubscriptionActionResult>;
     logout(): Promise<SubscriptionActionResult>;
   };
-  plans: {
-    list(): Promise<PlanReminder[]>;
-    create(input: { title: string; note?: string; runAt: number | string; recurrence?: PlanReminderRecurrence; cronExpression?: string; delivery?: PlanReminderDeliveryTarget }): Promise<PlanReminder>;
+  scheduledTasks: {
+    list(): Promise<ScheduledTask[]>;
+    create(input: Omit<CreateScheduledTaskInput, 'createdBy'>): Promise<ScheduledTask>;
     update(
       id: string,
-      patch: { title?: string; note?: string; runAt?: number | string; recurrence?: PlanReminderRecurrence; cronExpression?: string; delivery?: PlanReminderDeliveryTarget; enabled?: boolean },
-    ): Promise<PlanReminder>;
-    setEnabled(id: string, enabled: boolean): Promise<PlanReminder>;
-    triggerNow(id: string): Promise<PlanReminder>;
-    snooze(id: string): Promise<PlanReminder>;
-    clearRunHistory(id: string): Promise<PlanReminder>;
+      patch: UpdateScheduledTaskInput,
+    ): Promise<ScheduledTask>;
+    setEnabled(id: string, enabled: boolean): Promise<ScheduledTask>;
+    triggerNow(id: string): Promise<ScheduledTask>;
+    snooze(id: string): Promise<ScheduledTask>;
+    clearRunHistory(id: string): Promise<ScheduledTask>;
     delete(id: string): Promise<void>;
     subscribeChanges(
-      handler: (event: { type: 'plans_changed'; reason: string; reminderId?: string; ts: number }) => void,
+      handler: (event: { type: 'scheduled_tasks_changed'; reason: string; taskId?: string; ts: number }) => void,
     ): () => void;
-    subscribeDue(handler: (reminder: PlanReminder) => void): () => void;
+    subscribeDue(handler: (task: Pick<ScheduledTask, 'id' | 'title'>) => void): () => void;
   };
   inspector: {
     /** Read-only per-session causal trace (#1625). */
@@ -763,6 +778,7 @@ export interface MakaBridge {
     }>;
     subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void;
     updateStatus(): Promise<AppUpdateStatus>;
+    checkForUpdates(): Promise<AppUpdateStatus>;
     retryUpdateDownload(): Promise<AppUpdateStatus>;
     installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult>;
     sessionProjectInfo(sessionId: string): Promise<{
@@ -804,6 +820,9 @@ export interface MakaBridge {
         }
     >;
     saveArtifactAs(sessionId: string, artifactId: string): Promise<ArtifactSaveResult>;
+  };
+  diagnostics: {
+    copyErrorReport(input: DesktopErrorDiagnosticInput): Promise<DesktopDiagnosticCopyResult>;
   };
   workspace: {
     searchFiles(

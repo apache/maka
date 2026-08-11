@@ -1,27 +1,18 @@
-import type { Dispatch, RefObject, SetStateAction } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import type { SettingsSection, ThemePreference, UiLocale } from '@maka/core';
-import type { ComposerHandle, InteractionQueues, LiveTurnProjection } from '@maka/ui';
 import type { NavSelection } from '@maka/ui';
 import { applyTheme } from './theme';
 import type { SessionWorkbarTabKind } from './session-workbar-tabs';
-
-type StateUpdater<T> = (updater: (current: T) => T) => void;
 
 export interface AppShellE2eFixtureActions {
   applyE2eFixture(): Promise<void>;
 }
 
 export function createAppShellE2eFixtureActions(options: {
-  openPalette: () => void;
-  composerRef: RefObject<ComposerHandle | null>;
   openSettingsSection: (section: SettingsSection) => void;
-  openConnectionDetail: (slug: string) => void;
   refreshSessions: () => Promise<unknown>;
   setActiveId: (sessionId: string | undefined) => void;
-  setLiveBrowserSessionIds: Dispatch<SetStateAction<string[]>>;
-  setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
   setNavSelection: Dispatch<SetStateAction<NavSelection>>;
-  setInteractionBySession: StateUpdater<InteractionQueues>;
   setSearchModalOpen: Dispatch<SetStateAction<boolean>>;
   setSessionListCollapsed: Dispatch<SetStateAction<boolean>>;
   setWorkbarCollapsed: Dispatch<SetStateAction<boolean>>;
@@ -34,16 +25,10 @@ export function createAppShellE2eFixtureActions(options: {
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
 }): AppShellE2eFixtureActions {
   const {
-    openPalette,
-    composerRef,
     openSettingsSection,
-    openConnectionDetail,
     refreshSessions,
     setActiveId,
-    setLiveBrowserSessionIds,
-    setLiveTurnBySession,
     setNavSelection,
-    setInteractionBySession,
     setSearchModalOpen,
     setSessionListCollapsed,
     setWorkbarCollapsed,
@@ -63,16 +48,6 @@ export function createAppShellE2eFixtureActions(options: {
       Date.now = () => state.now!;
     }
     document.documentElement.setAttribute('data-maka-e2e-fixture', 'true');
-    if (state.liveTurnBySession) {
-      setLiveTurnBySession((current) => ({ ...current, ...state.liveTurnBySession }));
-    }
-    if (state.sandboxBoundaryBySession) {
-      const seeded: InteractionQueues = {};
-      for (const [seedSessionId, request] of Object.entries(state.sandboxBoundaryBySession)) {
-        if (request) seeded[seedSessionId] = [request];
-      }
-      setInteractionBySession((current) => ({ ...current, ...seeded }));
-    }
     // PR-IR-01b: theme override applied BEFORE the persisted user pref so
     // the rendered fixture matches the `<theme>-<viewport>-<motion>` variant
     // exactly. `applyTheme` writes both the React state + the `.dark` class
@@ -118,13 +93,6 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.activeSessionId) {
       setActiveId(state.activeSessionId);
     }
-    // #819: seed live browser session ids so BrowserPanel mounts for the
-    // active session (app-shell gates on `activeId &&
-    // liveBrowserSessionIds.includes(activeId)`). Only the `browser-empty`
-    // scenario sets this; real users never receive an e2e-fixture state.
-    if (state.liveBrowserSessionIds) {
-      setLiveBrowserSessionIds(state.liveBrowserSessionIds);
-    }
     if (state.sidebarCollapsed !== undefined) {
       setSessionListCollapsed(state.sidebarCollapsed);
     }
@@ -141,12 +109,7 @@ export function createAppShellE2eFixtureActions(options: {
         preview: state.workbarPreview,
       });
     }
-    if (state.openConnectionDetailSlug) {
-      // oauth-relogin fixture: open Settings → 模型 with the seeded
-      // needs_reauth connection's detail sheet expanded so the re-login
-      // affordance is exposed. Takes precedence over a bare section open.
-      openConnectionDetail(state.openConnectionDetailSlug);
-    } else if (state.openSettingsSection) {
+    if (state.openSettingsSection) {
       openSettingsSection(state.openSettingsSection);
     }
     // PR-SIDEBAR-IA-0 Phase 2 fixup v3 (xuan msg `dce5a6fb` #2): when
@@ -157,14 +120,8 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.searchModalOpen) {
       setSearchModalOpen(true);
     }
-    // PR-shared primitive-COMMAND-INPUT-0: e2e-fixture-only opener for the command
-    // palette so its input shell is covered without
-    // requiring Cmd/Ctrl+K.
-    if (state.paletteOpen) {
-      openPalette();
-    }
     if (state.sidebarSection === 'automations') {
-      setNavSelection({ section: 'automations', module: 'plan-reminders' });
+      setNavSelection({ section: 'automations', module: 'scheduled-tasks' });
     } else if (state.sidebarSection === 'skills') {
       setNavSelection({ section: 'extensions', module: 'skills' });
     } else if (state.sidebarSection === 'mcp') {
@@ -174,35 +131,7 @@ export function createAppShellE2eFixtureActions(options: {
     } else if (state.sidebarSection === 'sessions') {
       setNavSelection({ section: 'sessions', filter: 'chats' });
     }
-    if (state.composerText !== undefined) {
-      // Wait for the active session + its Skill inventory to commit, then use
-      // the real Composer input path. This keeps the screenshot representative
-      // of keyboard interaction instead of mounting a test-only popup.
-      await nextVisualSmokeFrame();
-      await nextVisualSmokeFrame();
-      // The input is controlled now, so `setText` alone commits the draft —
-      // no synthetic input event is needed to make the surface catch up.
-      composerRef.current?.setText(state.composerText);
-      await nextVisualSmokeFrame();
-    }
-    // focusActiveRow: SideNavItem marks the selected control with
-    // aria-current="page" on the primary button itself (not a ListItem
-    // aria-current=true). Focus that control after paint.
-    if (state.focusActiveRow) {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const activeControl = document.querySelector<HTMLElement>(
-            '[data-maka-contract="session-row"] [aria-current="page"]',
-          );
-          activeControl?.focus({ preventScroll: true });
-        });
-      });
-    }
   }
 
   return { applyE2eFixture };
-}
-
-function nextVisualSmokeFrame(): Promise<void> {
-  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }

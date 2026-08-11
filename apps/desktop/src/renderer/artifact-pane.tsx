@@ -28,6 +28,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import {
+  ICON_SIZE,
   AlertTriangle,
   ArrowLeft,
   FileCode,
@@ -92,7 +93,6 @@ export function ArtifactPane(props: {
   const recordsSessionIdRef = useRef<string | undefined>(undefined);
   const pendingArtifactListRetryRef = useRef(false);
   const pendingArtifactActionRef = useRef<string | null>(null);
-  const pendingCreatedArtifactIdRef = useRef<string | null>(null);
 
   artifactPaneSessionIdRef.current = sessionId;
 
@@ -103,7 +103,6 @@ export function ArtifactPane(props: {
       artifactListRequestSeqRef.current += 1;
       pendingArtifactListRetryRef.current = false;
       pendingArtifactActionRef.current = null;
-      pendingCreatedArtifactIdRef.current = null;
     };
   }, []);
 
@@ -155,9 +154,6 @@ export function ArtifactPane(props: {
     // (one session's worth) and the metadata is already in memory on main.
     const unsubscribe = window.maka.artifacts.subscribeChanges((event) => {
       if (event.sessionId === sessionId) {
-        if (event.reason === 'created') {
-          pendingCreatedArtifactIdRef.current = event.artifactId;
-        }
         void refresh();
       }
     });
@@ -178,17 +174,6 @@ export function ArtifactPane(props: {
 
   // 已删除墓碑记录保持可选，用于展示明确失败态；只有选中 id 彻底消失时才回退到最新 live artifact。
   useEffect(() => {
-    const pendingId = pendingCreatedArtifactIdRef.current;
-    if (pendingId && recordsSessionId === sessionId) {
-      if (activeRecords.some((record) => record.id === pendingId)) {
-        pendingCreatedArtifactIdRef.current = null;
-        if (selectedId !== pendingId) setSelectedId(pendingId);
-        return;
-      }
-      if (records.some((record) => record.id === pendingId)) {
-        pendingCreatedArtifactIdRef.current = null;
-      }
-    }
     if (activeRecords.length === 0) {
       if (selectedId !== null) setSelectedId(null);
       return;
@@ -196,7 +181,7 @@ export function ArtifactPane(props: {
     if (!selectedId || !activeRecords.some((record) => record.id === selectedId)) {
       setSelectedId(preferredArtifactSelectionId(activeRecords));
     }
-  }, [activeRecords, records, recordsSessionId, selectedId, sessionId]);
+  }, [activeRecords, selectedId]);
 
   const previewRecord = useMemo(
     () => view.kind === 'preview'
@@ -405,7 +390,7 @@ export function ArtifactPane(props: {
         <Banner
           status="error"
           className="maka-artifact-list-error"
-          icon={<AlertTriangle size={14} aria-hidden="true" />}
+          icon={<AlertTriangle size={ICON_SIZE.control} aria-hidden="true" />}
           title={copy.pane.listLoadFailed}
           description={activeListError}
           endContent={(
@@ -413,11 +398,9 @@ export function ArtifactPane(props: {
               variant="secondary"
               size="sm"
               onClick={() => void retryArtifactListRefresh()}
-              isDisabled={pendingArtifactListRetry}
-              aria-busy={pendingArtifactListRetry ? 'true' : undefined}
-              data-pending={pendingArtifactListRetry ? 'true' : undefined}
-              icon={<RefreshCcw size={13} aria-hidden="true" />}
-              label={pendingArtifactListRetry ? copy.pane.retrying : copy.pane.retry}
+              isLoading={pendingArtifactListRetry}
+              icon={<RefreshCcw size={ICON_SIZE.meta} aria-hidden="true" />}
+              label={copy.pane.retry}
             />
           )}
         />
@@ -473,8 +456,7 @@ export function ArtifactPane(props: {
         ) : (
           <AstryxEmptyState
             className="maka-artifact-list-empty"
-            isCompact
-            icon={<FileText aria-hidden="true" />}
+            icon={<FileText size={ICON_SIZE.empty} aria-hidden="true" />}
             {...emptyStateCopy}
           />
         )
@@ -485,7 +467,7 @@ export function ArtifactPane(props: {
               variant="ghost"
               size="sm"
               isIconOnly
-              icon={<ArrowLeft size={16} aria-hidden="true" />}
+              icon={<ArrowLeft size={ICON_SIZE.chrome} aria-hidden="true" />}
               label={copy.pane.back}
               onClick={returnToList}
             />
@@ -505,18 +487,18 @@ export function ArtifactPane(props: {
               items={[
                 {
                   label: copy.pane.openInFinder,
-                  icon: <FolderOpen size={14} aria-hidden="true" />,
+                  icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
                   onClick: () => void runArtifactAction(`${previewRecord.id}:open`, () => openInFinder(previewRecord.id)),
                 },
                 {
                   label: copy.pane.saveAs,
-                  icon: <Save size={14} aria-hidden="true" />,
+                  icon: <Save size={ICON_SIZE.control} aria-hidden="true" />,
                   onClick: () => void runArtifactAction(`${previewRecord.id}:save`, () => saveAs(previewRecord.id)),
                 },
                 ...(isTextKind(previewRecord.kind)
                   ? [{
                       label: copy.pane.copy,
-                      icon: <Copy size={14} aria-hidden="true" />,
+                      icon: <Copy size={ICON_SIZE.control} aria-hidden="true" />,
                       onClick: () => void runArtifactAction(`${previewRecord.id}:copy`, () => copyText(previewRecord.id)),
                     }]
                   : []),
@@ -527,7 +509,7 @@ export function ArtifactPane(props: {
                     previewRecord.source === 'tool_result_archive'
                       ? copy.pane.deleteReadOnly
                       : copy.pane.delete,
-                  icon: <Trash2 size={14} aria-hidden="true" />,
+                  icon: <Trash2 size={ICON_SIZE.control} aria-hidden="true" />,
                   isDisabled:
                     previewRecord.source === 'deep_research' ||
                     previewRecord.source === 'tool_result_archive',
@@ -595,15 +577,15 @@ function artifactActionErrorMessage(error: unknown, locale: UiLocale, copy: Arti
 function KindIcon(props: { kind: ArtifactKind }) {
   switch (props.kind) {
     case 'file':
-      return <FileText size={14} />;
+      return <FileText size={ICON_SIZE.control} />;
     case 'diff':
-      return <GitMerge size={14} />;
+      return <GitMerge size={ICON_SIZE.control} />;
     case 'html':
-      return <FileCode size={14} />;
+      return <FileCode size={ICON_SIZE.control} />;
     case 'image':
-      return <FileImage size={14} />;
+      return <FileImage size={ICON_SIZE.control} />;
     case 'pdf':
-      return <FileType size={14} />;
+      return <FileType size={ICON_SIZE.control} />;
   }
 }
 

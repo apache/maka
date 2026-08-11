@@ -13,6 +13,7 @@ export * from './orchestration.js';
 export * from './tool-mode.js';
 export * from './swarm-command.js';
 export * from './graph-command.js';
+export * from './slash-command-catalog.js';
 export * from './plan.js';
 export * from './agent-graph-control.js';
 export * from './agent-graph-schedule.js';
@@ -224,32 +225,12 @@ export {
   workspaceAuthorityIdentity,
 } from './workspace-version-authority.js';
 
-// execution-evidence.ts — shared cross-ledger identity and source coverage.
-// This contract references canonical facts; it does not create another fact
-// authority. Subpath `@maka/core/execution-evidence` is preferred.
 export type {
-  ExecutionIdentityRef,
-  TaskIdentityRef,
   ExecutionLogCursor,
   ExecutionLogCoverage,
-  WorkspaceRevisionRef,
-  TargetSnapshotRef,
-  ExecutionEvidenceRef,
   ExecutionLogLedger,
-  ExecutionLogCursorComparison,
-  WorkspaceRevisionKind,
-  ExecutionEvidenceValidationIssue,
-  ExecutionEvidenceValidationResult,
-} from './execution-evidence.js';
-export {
-  EXECUTION_EVIDENCE_REF_SCHEMA_VERSION,
-  EXECUTION_LOG_LEDGERS,
-  WORKSPACE_REVISION_KINDS,
-  executionLogCursorsShareStream,
-  compareExecutionLogCursors,
-  validateExecutionEvidenceRef,
-  isExecutionEvidenceRef,
-} from './execution-evidence.js';
+} from './execution-log-coverage.js';
+export { EXECUTION_LOG_LEDGERS } from './execution-log-coverage.js';
 
 // runtime-event-store.ts
 export type { RuntimeEventStore } from './runtime-event-store.js';
@@ -424,6 +405,17 @@ export {
   isSessionInlineRun,
 } from './agent-run.js';
 
+export type {
+  RunCompositionSnapshot,
+  RunCompositionSnapshotInput,
+  RunCompositionSourceRevision,
+} from './run-composition.js';
+export {
+  createRunCompositionSnapshot,
+  decodeRunCompositionSnapshot,
+  RUN_COMPOSITION_SCHEMA_VERSION,
+} from './run-composition.js';
+
 // model-call-attempt.ts
 export type {
   ModelCallAttempt,
@@ -492,6 +484,36 @@ export {
   ptyTuiTerminalRows,
 } from './pty-output-view.js';
 export type { PtyTuiTerminalView } from './pty-output-view.js';
+export { TerminalMouseInputRejectedError } from './terminal-mouse-input.js';
+export {
+  encodeTerminalInputActions,
+  encodedTerminalInputActionsByteLength,
+  formatTerminalInputActions,
+  isTerminalCharacterKey,
+  isTerminalInputModifier,
+  isTerminalInputNamedKey,
+  isWellFormedTerminalInput,
+  normalizeTerminalInputActionDefaults,
+  parseTerminalInputAction,
+  TERMINAL_INPUT_MODIFIERS,
+  TERMINAL_INPUT_NAMED_KEYS,
+  TERMINAL_MOUSE_BUTTONS,
+  TERMINAL_MOUSE_EVENTS,
+  TERMINAL_MOUSE_SCROLL_DIRECTIONS,
+  type TerminalInputAction,
+  type TerminalInputModes,
+  type TerminalInputModifier,
+  type TerminalInputNamedKey,
+  type TerminalInputState,
+  type TerminalKeyInputAction,
+  type TerminalMouseButton,
+  type TerminalMouseEncoding,
+  type TerminalMouseEvent,
+  type TerminalMouseInputAction,
+  type TerminalMouseScrollDirection,
+  type TerminalMouseTrackingMode,
+  type TerminalTextInputAction,
+} from './terminal-input.js';
 export {
   formatWriteStdinPermissionInspection,
   projectToolActivityArgs,
@@ -830,7 +852,6 @@ export {
 
 // e2e-fixture.ts
 export type {
-  E2eFixtureLiveTool,
   E2eFixtureScenario,
   E2eFixtureState,
 } from './e2e-fixture.js';
@@ -1004,7 +1025,6 @@ export type {
   WorkspacePrivacyContextResult,
 } from './incognito.js';
 export {
-  WORKSPACE_PRIVACY_CONTEXT_INVALID_REASONS,
   defaultWorkspacePrivacyContext,
   isWorkspacePrivacyContext,
   validateWorkspacePrivacyContext,
@@ -1014,63 +1034,51 @@ export {
 export type {
   CompiledCronExpression,
   CompileCronExpressionResult,
-  CronCompatibilityProfile,
   CronCompileError,
   CronCompileErrorCode,
   CronFieldName,
   CronSearchBounds,
 } from './cron-expression.js';
-export {
-  CRON_COMPATIBILITY_PROFILES,
-  compileCronExpression,
-  matchesCronField,
-} from './cron-expression.js';
+export { compileCronExpression } from './cron-expression.js';
 
-// plan-reminders.ts (PR-PLAN-REMINDER-MVP-0)
+// scheduled-task.ts — the only 定时任务 domain contract
 export type {
-  CreatePlanReminderInput,
-  PlanReminder,
-  PlanReminderBlockReason,
-  PlanReminderBotDeliveryTarget,
-  PlanReminderCronSchedule,
-  PlanReminderDeliveryTarget,
-  PlanReminderLocalDeliveryTarget,
-  PlanReminderNormalizeResult,
-  PlanReminderOnceSchedule,
-  PlanReminderRecurrence,
-  PlanReminderRecurringFrequency,
-  PlanReminderRecurringSchedule,
-  PlanReminderRunRecord,
-  PlanReminderRunStatus,
-  PlanReminderSchedule,
-  PlanReminderStatus,
-  UpdatePlanReminderInput,
-} from './plan-reminders.js';
+  CreateScheduledTaskInput,
+  ScheduledTask,
+  ScheduledTaskCreatedBy,
+  ScheduledTaskCreatedByKind,
+  ScheduledTaskEffect,
+  ScheduledTaskExecutionTemplate,
+  ScheduledTaskNormalizeResult,
+  ScheduledTaskRun,
+  ScheduledTaskRunOutcome,
+  ScheduledTaskSchedule,
+  ScheduledTaskStatus,
+  UpdateScheduledTaskInput,
+} from './scheduled-task.js';
 export {
-  PLAN_REMINDER_CRON_EXPRESSION_MAX_CHARS,
-  PLAN_REMINDER_DELIVERY_CHAT_ID_MAX_CHARS,
-  PLAN_REMINDER_MAX_DELAY_MS,
-  PLAN_REMINDER_NOTE_MAX_CHARS,
-  PLAN_REMINDER_RECURRENCES,
-  PLAN_REMINDER_RUN_STATUSES,
-  PLAN_REMINDER_STATUSES,
-  PLAN_REMINDER_TITLE_MAX_CHARS,
-  createPlanReminderSchedule,
-  formatPlanReminderDeliveryMessage,
-  formatPlanReminderDeliveryTarget,
-  isPlanReminderDue,
-  isPlanReminderStatus,
-  nextPlanReminderRunAtAfter,
-  nextPlanReminderStateAfterTrigger,
-  normalizeCreatePlanReminderInput,
-  normalizePlanReminderCronExpression,
-  normalizePlanReminderDeliveryChatId,
-  normalizePlanReminderDeliveryTarget,
-  normalizePlanReminderNote,
-  normalizePlanReminderRunAt,
-  normalizePlanReminderTitle,
-  normalizeUpdatePlanReminderInput,
-} from './plan-reminders.js';
+  SCHEDULED_TASK_CHAT_ID_MAX_CHARS,
+  SCHEDULED_TASK_CRON_MAX_CHARS,
+  SCHEDULED_TASK_INTENT_MAX_CHARS,
+  SCHEDULED_TASK_MAX_DELAY_MS,
+  SCHEDULED_TASK_MAX_INTERVAL_SECONDS,
+  SCHEDULED_TASK_MIN_INTERVAL_SECONDS,
+  SCHEDULED_TASK_RUN_HISTORY_LIMIT,
+  SCHEDULED_TASK_RUN_MESSAGE_MAX_CHARS,
+  SCHEDULED_TASK_RUN_OUTCOMES,
+  SCHEDULED_TASK_STATUSES,
+  SCHEDULED_TASK_TITLE_MAX_CHARS,
+  appendScheduledTaskRun,
+  compareScheduledTasksForList,
+  computeNextFireAt,
+  isScheduledTaskDue,
+  isScheduledTaskStatus,
+  nextScheduledTaskStateAfterFire,
+  normalizeCreateScheduledTaskInput,
+  normalizeUpdateScheduledTaskInput,
+  pauseScheduledTask,
+  resumeScheduledTask,
+} from './scheduled-task.js';
 // foreign-session.ts (#1057) — untrusted Claude Code / Codex session
 // contracts + defensive parsing. Subpath @maka/core/foreign-session preferred.
 export type {
@@ -1380,12 +1388,15 @@ export type {
   ModelDiscoveryResult,
   ModelDiscoverySource,
   ModelInfo,
+  ApplyPatchProtocol,
   ProviderCategory,
   ProviderCatalogGroup,
   ProviderDefaults,
   ProviderRuntimeAdapter,
   ProviderType,
   RuntimeExecutionConnection,
+  RequestHeaderUpdate,
+  SavedRequestHeaders,
   UpdateConnectionInput,
 } from './llm-connections.js';
 export {
@@ -1404,9 +1415,7 @@ export {
   reconcileConnectionAfterEnabledModelsChange,
   reconcileConnectionAfterModelFetch,
   effectiveBaseUrl,
-  migrateConnectionV1ToV2,
   normalizeConnectionBaseUrl,
-  normalizeProviderType,
   persistedBaseUrl,
   providerSupportsModelDiscovery,
   validateConnectionBaseUrl,
@@ -1540,6 +1549,8 @@ export {
 // model-metadata.ts
 export {
   modelMetadataIdsForProvider,
+  resolveModelInputModalities,
+  resolveModelPdfSupport,
   resolveModelVisionSupport,
 } from './model-metadata.js';
 export type {
@@ -1556,7 +1567,6 @@ export type {
   ChatDefaultPermissionMode,
   ChatDefaultsSettings,
   NetworkProxySettings,
-  NetworkSettings,
   NotificationSettings,
   PrivacySettings,
   ProxyProtocol,
@@ -1880,8 +1890,6 @@ export type { AttachmentByteReader } from './attachments.js';
 export type {
   AutomationAuthoritySnapshot,
   AutomationDefinition,
-  AutomationExecutionTemplate,
-  AutomationKind,
   AutomationPendingFire,
   AutomationSchedule,
   AutomationStatus,

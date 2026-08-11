@@ -40,6 +40,8 @@ export function SettingsExpandableRow(props: {
   /** Label for the affordance that opens the editor (更改 / 设置 / 编辑).
    *  Unused when `end` supplies the row's own cluster. */
   actionLabel?: string;
+  /** A specific accessible name when neighboring rows share the same visible action label. */
+  actionAriaLabel?: string;
   /**
    * Replaces the built-in 更改 trigger for rows that already own their end
    * slot — a project row carries a default Badge, a 设为默认 button and a …
@@ -103,6 +105,7 @@ export function SettingsExpandableRow(props: {
             isDisabled={props.isDisabled}
             onClick={props.onEdit}
             label={props.actionLabel ?? ''}
+            aria-label={props.actionAriaLabel}
           />
         )}
       />
@@ -110,7 +113,7 @@ export function SettingsExpandableRow(props: {
   }
 
   return (
-    <SettingsField>
+    <SettingsField className="settingsExpandableField">
       <div ref={editorRef} className="settingsExpandableEditor">
         {/* The label survives the swap. Collapsed, the row's own label names
             the value; expanded, the editor would otherwise be an unlabelled
@@ -119,7 +122,7 @@ export function SettingsExpandableRow(props: {
             name is stated once. */}
         <Text type="body" weight="semibold">{props.label}</Text>
         {props.children}
-        <HStack gap={2}>
+        <HStack gap={2} hAlign="end">
           <Button
             variant="primary"
             isDisabled={props.isDisabled || props.canSave === false}

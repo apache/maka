@@ -76,6 +76,42 @@ it('projects WriteStdin activity to a bounded human-readable input preview', () 
   assert.equal(projectWriteStdinPermissionSummary(invalidSize).size, undefined);
 });
 
+it('projects ordered terminal actions without exposing encoded control bytes', () => {
+  const args = {
+    ref: 'maka://runtime/background-tasks/one',
+    actions: [
+      { type: 'key', key: 'b', modifiers: ['ctrl'], text: null },
+      { type: 'text', text: 'c', key: null, modifiers: null },
+      {
+        type: 'mouse',
+        event: 'click',
+        button: 'left',
+        x: 2,
+        y: 3,
+        text: null,
+        key: null,
+        direction: null,
+        modifiers: null,
+      },
+    ],
+    size: { cols: 0, rows: 0 },
+  };
+
+  assert.deepEqual(projectToolActivityArgs('WriteStdin', args), {
+    ref: args.ref,
+    inputPreview: {
+      text: 'Ctrl-B → "c" → Click Left @ (2, 3)',
+      bytes: 20,
+      truncated: false,
+    },
+  });
+  assert.equal(
+    formatWriteStdinPermissionInspection(args),
+    'ref: "maka://runtime/background-tasks/one"\n' +
+      'actions: { key: Ctrl-B } -> { text: "c" } -> { mouse: Click Left @ (2, 3) }',
+  );
+});
+
 it('names terminal controls, redacts secrets, escapes invisible input, and caps previews', () => {
   assert.deepEqual(projectWriteStdinInput('\u0003'), {
     text: 'Ctrl-C',

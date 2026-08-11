@@ -36,7 +36,7 @@ Tracked `notes/` files were retired as an undocumented parallel authority. Point
 
 The dated runtime files are completed execution plans. Each file records the pull request that landed its implementation.
 
-`heavy-task-mainline-system-design.md` preserves the original PR, trace, and rollout chronicle. Backend architecture chapters 4–5 and the headless source own current heavy-task mechanisms.
+`heavy-task-mainline-system-design.md` preserves the original PR, trace, and rollout chronicle. The Headless heavy-task mechanism it describes was retired by #2598 and has no current implementation authority.
 
 `deepseek-reasonix-cost-runtime-design.md` preserves the original implementation slices and open decisions. Backend architecture chapters and runtime source own current request-shape, replay, compaction, and cost mechanisms.
 

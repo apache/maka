@@ -19,7 +19,13 @@ export type ModelUnavailableReason =
   | 'stale';
 
 export type ModelCatalogAvailability = 'available' | 'warning' | 'blocked';
-export type ModelCatalogLifecycle = 'active' | 'deprecated' | 'retired' | 'unknown';
+export type ModelCatalogLifecycle =
+  | 'active'
+  | 'beta'
+  | 'alpha'
+  | 'deprecated'
+  | 'retired'
+  | 'unknown';
 
 export interface KnownModelCapabilities {
   chat?: true;
@@ -59,6 +65,7 @@ export interface ModelCatalogProvenanceSources {
 export interface ModelCatalogEntry {
   id: string;
   displayName?: string;
+  description?: string;
   providerType: ProviderType;
   connectionSlug?: string;
   source: 'provider_api' | 'static_catalog' | 'unknown';
@@ -72,7 +79,12 @@ export interface ModelCatalogEntry {
   recommendedRank?: number;
   docsUrl?: string;
   contextWindow?: number;
+  inputLimit?: number;
   maxOutputTokens?: number;
+  knowledgeCutoff?: string;
+  structuredOutput?: boolean;
+  lastUpdated?: string;
+  modalities?: ModelInfo['modalities'];
   pricing?: ModelCatalogPricing;
   provenance: {
     modelSource?: ModelDiscoverySource;
@@ -258,7 +270,13 @@ function makeEntry(
   const metadata = lookupModelMetadata(input.providerType, normalizedModel.id);
   const recommendedRank = recommendedRanks.get(normalizedModel.id);
   const contextWindow = normalizedModel.contextWindow ?? metadata.contextWindow;
+  const inputLimit = normalizedModel.inputLimit ?? metadata.inputLimit;
   const maxOutputTokens = normalizedModel.maxOutputTokens ?? metadata.maxOutputTokens;
+  const description = normalizedModel.description ?? metadata.description;
+  const knowledgeCutoff = normalizedModel.knowledgeCutoff ?? metadata.knowledgeCutoff;
+  const structuredOutput = normalizedModel.structuredOutput ?? metadata.structuredOutput;
+  const lastUpdated = normalizedModel.lastUpdated ?? metadata.lastUpdated;
+  const modalities = normalizedModel.modalities ?? metadata.modalities;
   const capabilities = mergeCapabilities(normalizedModel.capabilities, metadata.capabilities);
   const unavailableReason = deriveModelUnavailableReason(input, {
     ...normalizedModel,
@@ -267,6 +285,7 @@ function makeEntry(
   return {
     id: normalizedModel.id,
     ...displayNameForModel(input.providerType, normalizedModel),
+    ...(description !== undefined ? { description } : {}),
     providerType: input.providerType,
     ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
     source,
@@ -284,7 +303,12 @@ function makeEntry(
     ...(recommendedRank ? { recommendedRank } : {}),
     ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...(inputLimit !== undefined ? { inputLimit } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    ...(knowledgeCutoff !== undefined ? { knowledgeCutoff } : {}),
+    ...(structuredOutput !== undefined ? { structuredOutput } : {}),
+    ...(lastUpdated !== undefined ? { lastUpdated } : {}),
+    ...(modalities !== undefined ? { modalities } : {}),
     ...(pricing ? { pricing } : {}),
     provenance: {
       modelSource,
@@ -330,6 +354,7 @@ function makeMissingDefaultEntry(
   return {
     id,
     ...displayNameForKnownModel(input.providerType, id),
+    ...(metadata.description !== undefined ? { description: metadata.description } : {}),
     providerType: input.providerType,
     ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
     source: 'unknown',
@@ -343,9 +368,18 @@ function makeMissingDefaultEntry(
     ...(recommendedRank ? { recommendedRank } : {}),
     ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),
     ...(metadata.contextWindow !== undefined ? { contextWindow: metadata.contextWindow } : {}),
+    ...(metadata.inputLimit !== undefined ? { inputLimit: metadata.inputLimit } : {}),
     ...(metadata.maxOutputTokens !== undefined
       ? { maxOutputTokens: metadata.maxOutputTokens }
       : {}),
+    ...(metadata.knowledgeCutoff !== undefined
+      ? { knowledgeCutoff: metadata.knowledgeCutoff }
+      : {}),
+    ...(metadata.structuredOutput !== undefined
+      ? { structuredOutput: metadata.structuredOutput }
+      : {}),
+    ...(metadata.lastUpdated !== undefined ? { lastUpdated: metadata.lastUpdated } : {}),
+    ...(metadata.modalities !== undefined ? { modalities: metadata.modalities } : {}),
     provenance: {
       modelSource,
       ...(input.modelsFetchedAt ? { modelsFetchedAt: input.modelsFetchedAt } : {}),
@@ -368,6 +402,7 @@ function makeMissingUserChoiceEntry(
   return {
     id,
     ...displayNameForKnownModel(input.providerType, id),
+    ...(metadata.description !== undefined ? { description: metadata.description } : {}),
     providerType: input.providerType,
     ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
     source: 'unknown',
@@ -381,9 +416,18 @@ function makeMissingUserChoiceEntry(
     ...(recommendedRank ? { recommendedRank } : {}),
     ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),
     ...(metadata.contextWindow !== undefined ? { contextWindow: metadata.contextWindow } : {}),
+    ...(metadata.inputLimit !== undefined ? { inputLimit: metadata.inputLimit } : {}),
     ...(metadata.maxOutputTokens !== undefined
       ? { maxOutputTokens: metadata.maxOutputTokens }
       : {}),
+    ...(metadata.knowledgeCutoff !== undefined
+      ? { knowledgeCutoff: metadata.knowledgeCutoff }
+      : {}),
+    ...(metadata.structuredOutput !== undefined
+      ? { structuredOutput: metadata.structuredOutput }
+      : {}),
+    ...(metadata.lastUpdated !== undefined ? { lastUpdated: metadata.lastUpdated } : {}),
+    ...(metadata.modalities !== undefined ? { modalities: metadata.modalities } : {}),
     provenance: {
       modelSource,
       ...(input.modelsFetchedAt ? { modelsFetchedAt: input.modelsFetchedAt } : {}),

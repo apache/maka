@@ -108,29 +108,6 @@ body`);
     );
   });
 
-  it('recovers legacy scalar colons and tab-indented lists with an explicit warning', () => {
-    const result = validateSkillMetadata(`---
-name: Legacy Writer
-description: Use when: the user asks for writing help.
-allowed-tools: Read, Write
-required-tools:
-\t- Bash
----
-# Legacy Writer`);
-
-    assert.equal(result.valid, true);
-    assert.equal(result.manifest.description, 'Use when: the user asks for writing help.');
-    assert.deepEqual(result.manifest.allowedTools, ['Read', 'Write']);
-    assert.deepEqual(result.manifest.requiredTools, ['Bash']);
-    assert.deepEqual(
-      result.issues.map((issue) => ({
-        code: issue.code,
-        severity: issue.severity,
-      })),
-      [{ code: 'malformed_frontmatter', severity: 'warning' }],
-    );
-  });
-
   it('keeps compatible skills loadable while reporting non-blocking metadata warnings', () => {
     const result = validateSkillMetadata(`---
 name: ${'N'.repeat(65)}
@@ -776,14 +753,6 @@ Use host tools.`,
       assert.equal(result.ok, false);
       if (result.ok) return;
       assert.equal(result.reason, 'host_incompatible');
-
-      // without host: legacy behavior, loads ok.
-      const legacyTool = buildSkillAgentTool(workspaceRoot);
-      const legacy = await legacyTool.impl(
-        { name: 'gated-helper' },
-        {} as unknown as MakaToolContext,
-      );
-      assert.equal(legacy.ok, true);
     });
   });
 
@@ -816,10 +785,6 @@ Use host tools.`,
         toolNames: new Set(['Read', 'ImaginaryTool']),
       });
       assert.equal(ok.ok, true);
-
-      // no host: legacy behavior, load ok.
-      const legacy = await loadSkillInstructions(workspaceRoot, 'gated-helper');
-      assert.equal(legacy.ok, true);
     });
   });
 
@@ -899,12 +864,6 @@ Plain work.`,
       assert.ok(full);
       assert.match(full, /<available-skill id="plain-helper"/);
       assert.match(full, /<available-skill id="gated-helper"/);
-
-      // no host (undefined): legacy behavior, both shown (no gating).
-      const legacy = await buildSkillsPromptFragment(workspaceRoot);
-      assert.ok(legacy);
-      assert.match(legacy, /<available-skill id="plain-helper"/);
-      assert.match(legacy, /<available-skill id="gated-helper"/);
     });
   });
 
@@ -1331,102 +1290,6 @@ Body.`,
       const searched = await searchTool.impl({ query: 'obsidian lantern' }, context);
       assert.equal(searched.totalEligible, 1);
       assert.deepEqual(searched.matches, []);
-    });
-  });
-
-  it('reads v1 id preferences and writes v2 scope-aware pinned preferences', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(
-        workspaceRoot,
-        'writer',
-        '---\nname: Writer\ndescription: Draft project prose.\n---\n# Writer',
-      );
-      await mkdir(join(workspaceRoot, '.maka'), { recursive: true });
-      await writeFile(
-        join(workspaceRoot, '.maka', 'skills-state.json'),
-        JSON.stringify({ schemaVersion: 1, skills: { writer: { enabled: false } } }),
-        'utf8',
-      );
-
-      const legacyState = await readSkillRuntimeState(workspaceRoot);
-      assert.equal(legacyState.ok, true);
-      if (!legacyState.ok) return;
-      assert.equal(legacyState.schemaVersion, 1);
-      assert.deepEqual(legacyState.preferences.get('writer'), { enabled: false, pinned: false });
-      assert.equal((await scanWorkspaceSkills(workspaceRoot))[0].runtimeStatus, 'disabled');
-
-      const ref = 'workspace:legacy:writer';
-      assert.equal(
-        (
-          await writeSkillRuntimePreferences(
-            workspaceRoot,
-            new Map([[ref, { enabled: true, pinned: true }]]),
-          )
-        ).ok,
-        true,
-      );
-      const state = await readSkillRuntimeState(workspaceRoot);
-      assert.equal(state.ok, true);
-      if (!state.ok) return;
-      assert.equal(state.schemaVersion, 2);
-      assert.equal(state.preferences.get(ref)?.enabled, true);
-      assert.equal(state.preferences.get(ref)?.pinned, true);
-      const skill = (await scanWorkspaceSkills(workspaceRoot))[0];
-      assert.equal(skill.ref, ref);
-      assert.equal(skill.pinned, true);
-    });
-  });
-
-  it('applies case-only legacy preferences across real multi-scope consumers', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const projectRoot = join(workspaceRoot, 'project');
-      const homeDir = join(workspaceRoot, 'home');
-      await mkdir(projectRoot, { recursive: true });
-      await mkdir(homeDir);
-      await writeSkillInDirectory(
-        join(projectRoot, '.maka', 'skills'),
-        'Writer',
-        'Writer',
-        'Draft project prose.',
-      );
-      await mkdir(join(workspaceRoot, '.maka'), { recursive: true });
-      await writeFile(
-        join(workspaceRoot, '.maka', 'skills-state.json'),
-        JSON.stringify({ schemaVersion: 1, skills: { writer: { enabled: false } } }),
-        'utf8',
-      );
-
-      const source = resolveSkillDiscoveryPaths(projectRoot, workspaceRoot, homeDir);
-      const scan = await scanSkillsWithDiagnostics(source);
-      assert.equal(scan.inventory[0].ref, 'project:maka:Writer');
-      assert.equal(scan.inventory[0].runtimeStatus, 'disabled');
-      assert.equal(await buildSkillsPromptFragment(source), undefined);
-
-      const context = {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        cwd: projectRoot,
-      } as MakaToolContext;
-      const skillTool = buildSkillAgentTool(source);
-      const loaded = await skillTool.impl({ name: 'Writer' }, context);
-      assert.deepEqual(
-        { ok: loaded.ok, reason: loaded.ok ? undefined : loaded.reason },
-        { ok: false, reason: 'disabled' },
-      );
-
-      const searchTool = buildSkillSearchAgentTool(source);
-      const searched = await searchTool.impl({ query: 'project prose' }, context);
-      assert.equal(searched.matches.length, 0);
-      assert.equal(searched.totalEligible, 0);
-
-      const [invoked] = await resolveSkillInvocations(source, undefined, ['Writer']);
-      assert.deepEqual(
-        {
-          ok: invoked.result.ok,
-          reason: invoked.result.ok ? undefined : invoked.result.reason,
-        },
-        { ok: false, reason: 'disabled' },
-      );
     });
   });
 

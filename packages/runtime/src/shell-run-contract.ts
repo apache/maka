@@ -1,6 +1,10 @@
 import {
+  encodedTerminalInputActionsByteLength,
   isShellRunId,
+  isWellFormedTerminalInput,
+  parseTerminalInputAction,
   SHELL_RUN_ID_MAX_CHARS,
+  type TerminalInputAction,
   type ShellRunStore,
   type ShellRunUpdate,
   type ToolResultContent,
@@ -13,6 +17,7 @@ import type { SandboxType } from './sandbox/types.js';
 export const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 export const MAX_FOREGROUND_BASH_TIMEOUT_MS = 10 * 60 * 1_000;
 export const MAX_WRITE_STDIN_INPUT_BYTES = 64 * 1024;
+export const MAX_WRITE_STDIN_ACTIONS = 64;
 export const MIN_PTY_COLS = 2;
 export const MAX_PTY_COLS = 240;
 export const MIN_PTY_ROWS = 1;
@@ -27,6 +32,8 @@ export const SHELL_RUN_CONTEXT_SUMMARY_LIMIT = 8;
 export const SHELL_RUN_RESOURCE_PREFIX = 'maka://runtime/background-tasks';
 export const MAX_SHELL_RUN_RESOURCE_REF_CHARS =
   SHELL_RUN_RESOURCE_PREFIX.length + 1 + SHELL_RUN_ID_MAX_CHARS;
+
+export { isWellFormedTerminalInput };
 
 const SHELL_RUN_RESOURCE_PATH_PATTERN = /^\/background-tasks\/([^/]+)$/;
 
@@ -85,6 +92,7 @@ export interface ShellRunWriteInput {
   sessionId: string;
   ref: string;
   input?: string;
+  actions?: readonly TerminalInputAction[];
   size?: { cols: number; rows: number };
   abortSignal?: AbortSignal;
 }
@@ -125,8 +133,11 @@ export interface PtyControlWriter {
 }
 
 export function validateWriteStdinInput(input: ShellRunWriteInput): void {
-  if (input.input === undefined && input.size === undefined) {
-    throw new Error('WriteStdin requires input and/or size');
+  if (input.input !== undefined && input.actions !== undefined) {
+    throw new Error('WriteStdin raw input and terminal actions are mutually exclusive');
+  }
+  if (input.input === undefined && input.actions === undefined && input.size === undefined) {
+    throw new Error('WriteStdin requires input, actions, and/or size');
   }
   if (input.input !== undefined) {
     if (input.input.length === 0) throw new Error('WriteStdin input must not be empty');
@@ -137,6 +148,7 @@ export function validateWriteStdinInput(input: ShellRunWriteInput): void {
       throw new Error(`WriteStdin input exceeds the ${MAX_WRITE_STDIN_INPUT_BYTES}-byte limit`);
     }
   }
+  if (input.actions !== undefined) validateTerminalInputActions(input.actions);
   if (input.size) {
     if (
       !Number.isInteger(input.size.cols) ||
@@ -155,19 +167,17 @@ export function validateWriteStdinInput(input: ShellRunWriteInput): void {
   }
 }
 
-export function isWellFormedTerminalInput(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      if (index + 1 >= value.length) return false;
-      const next = value.charCodeAt(index + 1);
-      if (next < 0xdc00 || next > 0xdfff) return false;
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      return false;
-    }
+function validateTerminalInputActions(actions: readonly TerminalInputAction[]): void {
+  if (actions.length === 0) throw new Error('WriteStdin actions must not be empty');
+  if (actions.length > MAX_WRITE_STDIN_ACTIONS) {
+    throw new Error(`WriteStdin actions must not exceed ${MAX_WRITE_STDIN_ACTIONS} entries`);
   }
-  return true;
+  for (const action of actions) {
+    parseTerminalInputAction(action);
+  }
+  if (encodedTerminalInputActionsByteLength(actions) > MAX_WRITE_STDIN_INPUT_BYTES) {
+    throw new Error(`WriteStdin actions exceed the ${MAX_WRITE_STDIN_INPUT_BYTES}-byte limit`);
+  }
 }
 
 export function shellRunResourceRef(shellRunId: string): string {

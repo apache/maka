@@ -3,15 +3,15 @@ import { describe, it } from 'node:test';
 import type { ArtifactRecord, ArtifactSource } from '@maka/core';
 import { filterUserVisibleArtifacts } from '../../renderer/artifact-visibility.js';
 
-function artifact(source?: ArtifactSource): ArtifactRecord {
+function artifact(source: ArtifactSource): ArtifactRecord {
   return {
-    id: source ?? 'legacy',
+    id: source,
     sessionId: 'session-1',
     turnId: 'turn-1',
     source,
     kind: 'file',
-    name: `${source ?? 'legacy'}.json`,
-    relativePath: `${source ?? 'legacy'}.json`,
+    name: `${source}.json`,
+    relativePath: `${source}.json`,
     sizeBytes: 4096,
     createdAt: 1,
     status: 'live',
@@ -32,16 +32,22 @@ describe('generated artifact visibility', () => {
     assert.deepEqual(filterUserVisibleArtifacts(hiddenSources.map(artifact)), []);
   });
 
-  it('preserves user-facing generated files and legacy records without a source', () => {
-    const visibleSources: Array<ArtifactSource | undefined> = [
+  it('excludes generic tool traces from generated files', () => {
+    const hiddenSources: ArtifactSource[] = [
       'tool_result',
       'tool_result_archive',
+    ];
+
+    assert.deepEqual(filterUserVisibleArtifacts(hiddenSources.map(artifact)), []);
+  });
+
+  it('preserves user-facing generated files', () => {
+    const visibleSources: ArtifactSource[] = [
       'subagent_writeback',
       'deep_research',
       'export',
       'snapshot',
       'fixture',
-      undefined,
     ];
     const records = visibleSources.map(artifact);
 

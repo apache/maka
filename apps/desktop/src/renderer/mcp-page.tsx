@@ -31,6 +31,7 @@ import {
   ListItem,
   SegmentedControl,
   SegmentedControlItem,
+  Skeleton,
   StackItem,
   StatusDot,
   Switch,
@@ -61,6 +62,7 @@ import {
 } from '@maka/ui';
 
 import {
+  ICON_SIZE,
   FileCode,
   Globe,
   Loader2,
@@ -396,7 +398,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       {searchSummary}
       {marketEntries.length === 0 ? (
         <EmptyState
-          icon={<Search />}
+          icon={<Search size={ICON_SIZE.empty} />}
           title={copy.page.noMarket}
           description={copy.page.noMarketDetail(query)}
           actions={<Button variant="ghost" size="sm" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
@@ -462,17 +464,32 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       </p>
       {searchSummary}
       {busy === 'load' ? (
-        <div className="maka-mcp-loading" role="status">{copy.page.loading}</div>
+        /* Loading (DESIGN.md §10): the installed list's structure is predictable,
+           so it loads as row-shaped skeletons in the rows' own geometry — three
+           rows, this surface's typical ready count. Skeleton's radius scale has
+           no 6px step, so the tile takes the nearest one (8px) to the real
+           tile's control radius. */
+        <div className="maka-module-list-skeleton" role="status" aria-busy="true" aria-label={copy.page.loading}>
+          {[0, 1, 2].map((index) => (
+            <div key={index} className="maka-module-list-skeleton-row" aria-hidden="true">
+              <Skeleton width={28} height={28} radius={2} index={index} />
+              <div className="maka-module-list-skeleton-lines">
+                <Skeleton width="32%" height={12} radius="rounded" index={index} />
+                <Skeleton width="68%" height={10} radius="rounded" index={index} />
+              </div>
+            </div>
+          ))}
+        </div>
       ) : entries.length === 0 ? (
         <EmptyState
-          icon={<Plug />}
+          icon={<Plug size={ICON_SIZE.empty} />}
           title={copy.page.noInstalled}
           description={copy.page.noInstalledDetail}
           actions={<Button variant="primary" label={copy.page.browseMarket} onClick={() => switchTab('market')} />}
         />
       ) : installedEntries.length === 0 ? (
         <EmptyState
-          icon={<Search />}
+          icon={<Search size={ICON_SIZE.empty} />}
           title={copy.page.noInstalledMatch}
           description={copy.page.noInstalledMatchDetail(query)}
           actions={<Button variant="ghost" size="sm" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
@@ -552,14 +569,14 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             role="group"
             aria-label={copy.page.actionsAria}
           >
-            <Button variant="primary" onClick={() => openManual()} icon={<Plus aria-hidden="true" />} label={copy.page.add} />
+            <Button variant="primary" onClick={() => openManual()} icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />} label={copy.page.add} />
             <IconButton
               variant="ghost"
               label={busy === 'load' ? copy.page.refreshing : copy.page.refresh}
               tooltip={copy.page.refresh}
               onClick={() => void reload()}
               isDisabled={busy === 'load'}
-              icon={<RefreshCcw aria-hidden="true" />}
+              icon={<RefreshCcw size={ICON_SIZE.chrome} aria-hidden="true" />}
             />
           </div>
         }
@@ -601,7 +618,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           <div className="maka-module-page-panel">
             <Banner
               status="info"
-              icon={<Plug aria-hidden="true" />}
+              icon={<Plug size={ICON_SIZE.chrome} aria-hidden="true" />}
               title={copy.page.setupTitle}
               description={copy.page.setupDescription}
             />
@@ -677,10 +694,10 @@ function McpInstallButton(props: {
       isDisabled={cancelling}
       icon={props.phase ? (
         <span className="maka-mcp-install-icon" data-phase={props.phase}>
-          <Loader2 className="maka-mcp-install-spinner" aria-hidden="true" />
-          <X className="maka-mcp-install-cancel" aria-hidden="true" />
+          <Loader2 size={ICON_SIZE.chrome} className="maka-mcp-install-spinner" aria-hidden="true" />
+          <X size={ICON_SIZE.chrome} className="maka-mcp-install-cancel" aria-hidden="true" />
         </span>
-      ) : <Plus aria-hidden="true" />}
+      ) : <Plus size={ICON_SIZE.chrome} aria-hidden="true" />}
     />
   );
 }
@@ -732,7 +749,7 @@ function McpServerInspector(props: {
           variant="secondary"
           onClick={props.onTest}
           isDisabled={props.busy === `test:${serverId}`}
-          icon={<RefreshCcw aria-hidden="true" />}
+          icon={<RefreshCcw size={ICON_SIZE.chrome} aria-hidden="true" />}
           label={props.busy === `test:${serverId}` ? copy.row.testing : copy.row.test}
         />
         <Button
@@ -743,11 +760,10 @@ function McpServerInspector(props: {
         />
         <Button
           size="sm"
-          variant="ghost"
+          variant="destructive"
           onClick={props.onRemove}
           isDisabled={props.busy === `remove:${serverId}`}
           label={copy.row.delete}
-          style={{ color: 'var(--destructive-text)' }}
         />
       </HStack>
 
@@ -846,7 +862,7 @@ function McpEditorDialog(props: {
       <Layout
         header={
           <DialogHeader
-            startContent={props.state.mode === 'json' ? <FileCode /> : <Plug />}
+            startContent={props.state.mode === 'json' ? <FileCode size={ICON_SIZE.chrome} /> : <Plug size={ICON_SIZE.chrome} />}
             title={props.state.mode === 'json' ? props.copy.editor.importTitle : editing ? props.copy.editor.editTitle(props.state.draft.id) : props.copy.editor.addTitle}
             subtitle={props.state.mode === 'json' ? props.copy.editor.importSubtitle : props.copy.editor.manualSubtitle}
             onOpenChange={props.onOpenChange}
@@ -875,12 +891,12 @@ function McpEditorDialog(props: {
             <RadioListItem
               value="manual"
               label={props.copy.editor.manual}
-              startContent={<Terminal className="maka-mcp-choice-icon" aria-hidden="true" />}
+              startContent={<Terminal size={ICON_SIZE.control} className="maka-mcp-choice-icon" aria-hidden="true" />}
             />
             <RadioListItem
               value="json"
               label={props.copy.editor.pasteJson}
-              startContent={<FileCode className="maka-mcp-choice-icon" aria-hidden="true" />}
+              startContent={<FileCode size={ICON_SIZE.control} className="maka-mcp-choice-icon" aria-hidden="true" />}
             />
           </RadioList>
         )}
@@ -909,12 +925,12 @@ function McpEditorDialog(props: {
               <RadioListItem
                 value="stdio"
                 label={props.copy.editor.localStdio}
-                startContent={<Terminal className="maka-mcp-choice-icon" aria-hidden="true" />}
+                startContent={<Terminal size={ICON_SIZE.control} className="maka-mcp-choice-icon" aria-hidden="true" />}
               />
               <RadioListItem
                 value="remote"
                 label={props.copy.editor.remoteUrl}
-                startContent={<Globe className="maka-mcp-choice-icon" aria-hidden="true" />}
+                startContent={<Globe size={ICON_SIZE.control} className="maka-mcp-choice-icon" aria-hidden="true" />}
               />
             </RadioList>
             <div className="maka-mcp-form-fields">

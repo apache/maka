@@ -101,9 +101,6 @@ export interface AppNetworkSettings {
   proxy: NetworkProxySettings;
 }
 
-/** @deprecated Use AppNetworkSettings for the persisted application settings shape. */
-export type NetworkSettings = AppNetworkSettings;
-
 export type UsageRange = '24h' | '7d' | '30d' | 'all';
 export type UsageStatus = 'all' | 'success' | 'error';
 export type UsageTab = 'requests' | 'providers' | 'models' | 'tools' | 'pricing';

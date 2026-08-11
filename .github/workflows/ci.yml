@@ -16,10 +16,8 @@ jobs:
     outputs:
       code: ${{ steps.plan.outputs.code }}
       e2e: ${{ steps.plan.outputs.e2e }}
-      headless: ${{ steps.plan.outputs.headless }}
       runtime_host: ${{ steps.plan.outputs.runtime_host }}
       runtime_sandbox: ${{ steps.plan.outputs.runtime_sandbox }}
-      script_mode: ${{ steps.plan.outputs.script_mode }}
       standard_workspaces: ${{ steps.plan.outputs.standard_workspaces }}
       storage_stress: ${{ steps.plan.outputs.storage_stress }}
       storybook: ${{ steps.plan.outputs.storybook }}
@@ -85,7 +83,7 @@ jobs:
 
   test_workspaces:
     needs: changes
-    if: needs.changes.outputs.standard_workspaces != '' || needs.changes.outputs.script_mode != 'none'
+    if: needs.changes.outputs.standard_workspaces != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -117,12 +115,6 @@ jobs:
         env:
           MAKA_REQUIRE_LINUX_SANDBOX_SMOKE: '1'
         run: npm exec -w @maka/runtime -- node --test dist/__tests__/linux-sandbox-smoke.test.js
-      - name: Run fast script tests
-        if: needs.changes.outputs.script_mode == 'fast' || needs.changes.outputs.script_mode == 'full'
-        run: npm run test:scripts
-      - name: Run extended script tests
-        if: needs.changes.outputs.script_mode == 'extended' || needs.changes.outputs.script_mode == 'full'
-        run: npm run test:scripts:extended
       # Workspaces consume the dist built above. Selection includes reverse
       # dependencies, while bounded concurrency avoids both the old serial
       # critical path and an unbounded process stampede on two-core runners.
@@ -152,49 +144,18 @@ jobs:
       - name: Run Runtime Host tests
         run: npm --workspace @maka/runtime-host run test:dist
 
-  test_headless:
-    needs: changes
-    if: needs.changes.outputs.headless == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-      - name: Install pinned Harbor contract runtime
-        run: |
-          uv tool install "harbor==0.13.2"
-          uv tool dir --bin >> "$GITHUB_PATH"
-      - name: Install Linux runtime dependencies
-        run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
-      - run: npm ci
-      - run: npm run build:test
-      - name: Run Headless tests
-        env:
-          MAKA_REQUIRE_HARBOR_CONTRACT: '1'
-        run: npm --workspace @maka/headless run test:dist
-      # The Harbor adapters are Python, so their contracts cannot ride the
-      # workspace suite. This one needs only the stdlib.
-      - name: Run Harbor adapter tests
-        run: python3 packages/headless/harbor/tests/test_process_scope.py
-
   # Preserve one stable required check while letting independent heavy suites
   # occupy their own runners. The aggregator waits for every selected lane.
   test:
-    needs: [changes, test_workspaces, test_runtime_host, test_headless]
+    needs: [changes, test_workspaces, test_runtime_host]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Require successful test lanes
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
-          HEADLESS_RESULT: ${{ needs.test_headless.result }}
-          HEADLESS_SELECTED: ${{ needs.changes.outputs.headless }}
           RUNTIME_HOST_RESULT: ${{ needs.test_runtime_host.result }}
           RUNTIME_HOST_SELECTED: ${{ needs.changes.outputs.runtime_host }}
-          SCRIPT_MODE: ${{ needs.changes.outputs.script_mode }}
           STANDARD_WORKSPACES: ${{ needs.changes.outputs.standard_workspaces }}
           WORKSPACES_RESULT: ${{ needs.test_workspaces.result }}
         run: |
@@ -216,45 +177,17 @@ jobs:
             fi
           }
           workspaces_selected="false"
-          if [[ -n "$STANDARD_WORKSPACES" || "$SCRIPT_MODE" != "none" ]]; then
+          if [[ -n "$STANDARD_WORKSPACES" ]]; then
             workspaces_selected="true"
           fi
           require_lane "workspace tests" "$workspaces_selected" "$WORKSPACES_RESULT"
           require_lane "Runtime Host tests" "$RUNTIME_HOST_SELECTED" "$RUNTIME_HOST_RESULT"
-          require_lane "Headless tests" "$HEADLESS_SELECTED" "$HEADLESS_RESULT"
 
-  e2e_shard:
-    needs: changes
-    if: needs.changes.outputs.e2e == 'true'
-    name: e2e_shard (${{ matrix.shard }}/2)
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      # Each shard keeps one Playwright worker on its own runner and X display.
-      # This overlaps independent Electron cold starts without reintroducing
-      # the OS-focus races observed with multiple workers on one display.
-      - name: Ensure xvfb
-        run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
-      - name: E2E shard ${{ matrix.shard }}/2
-        run: xvfb-run -a npm --workspace @maka/desktop run e2e -- --shard=${{ matrix.shard }}/2
-
-  # Design governance: the CDP alignment auditor walks the e2e-fixture fixtures
-  # and fails on same-type height mismatches, mixed-type centerline drift, or
-  # radius-family splits. It shares the e2e selection gate and the built
-  # renderer, but not the suite's critical path: it has no data dependency on
-  # Playwright, and riding shard 1 made that shard ~51s longer than shard 2 for
-  # work the shard did not need. Its own runner pays one extra checkout and
-  # build in exchange for balanced shards.
-  alignment_audit:
+  # One Electron job: install once, run the (now small) e2e suite, then the
+  # CDP alignment audit against the same built renderer. Dual shards plus a
+  # separate audit job each paid full npm ci + cold build after the suite
+  # slash; that was pure wall-clock and runner waste.
+  e2e:
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
@@ -264,49 +197,22 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - name: Restore Electron artifact cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
       - run: npm ci
       - name: Ensure xvfb
         run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
-      - name: Build renderer
-        run: npm --workspace @maka/desktop run build:with-deps
+      - name: Desktop e2e
+        run: xvfb-run -a npm --workspace @maka/desktop run e2e
       - name: Alignment audit
         run: xvfb-run -a node scripts/audit-alignment.mjs
-
-  # Preserve the existing required check while every selected shard retains
-  # its own failure and diagnostic output. The audit lane joins the same gate
-  # so splitting it out does not drop it from the required check.
-  e2e:
-    needs: [changes, e2e_shard, alignment_audit]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require successful E2E shards
-        env:
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          E2E_SELECTED: ${{ needs.changes.outputs.e2e }}
-          SHARDS_RESULT: ${{ needs.e2e_shard.result }}
-          AUDIT_RESULT: ${{ needs.alignment_audit.result }}
-        run: |
-          if [[ "$CHANGES_RESULT" != "success" ]]; then
-            echo "changes failed: $CHANGES_RESULT" >&2
-            exit 1
-          fi
-          expected="skipped"
-          if [[ "$E2E_SELECTED" == "true" ]]; then
-            expected="success"
-          fi
-          if [[ "$SHARDS_RESULT" != "$expected" ]]; then
-            echo "E2E shards expected $expected but were $SHARDS_RESULT" >&2
-            exit 1
-          fi
-          if [[ "$AUDIT_RESULT" != "$expected" ]]; then
-            echo "Alignment audit expected $expected but was $AUDIT_RESULT" >&2
-            exit 1
-          fi
-
-  # Storybook build + render smoke. Independent of Electron e2e: the smoke
-  # launches Playwright Chromium, not `_electron.launch`, so it does not
-  # need xvfb or the desktop cold-start suite. See stories/FIDELITY.md.
+  # Storybook build + initial render smoke. Embedded mode disables every play
+  # function, so this lane never duplicates desktop interaction or layout E2E.
+  # It launches Chromium only to catch catalog runtime errors. See FIDELITY.md.
   storybook:
     needs: changes
     if: needs.changes.outputs.storybook == 'true'

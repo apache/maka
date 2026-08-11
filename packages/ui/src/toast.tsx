@@ -31,7 +31,7 @@ import {
   useToast as useAstryxToast,
   type ToastDismissFn,
 } from '@astryxdesign/core/Toast';
-import { AlertCircle, AlertTriangle, CheckCircle2, Info } from './icons.js';
+import { ICON_SIZE, AlertCircle, AlertTriangle, CheckCircle2, Info } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
@@ -42,9 +42,24 @@ export interface ToastAction {
   onClick(): void;
 }
 
+export interface ToastErrorAction {
+  label: string;
+  onClick(
+    input: Pick<ToastInput, 'title' | 'description' | 'diagnosticDetails' | 'diagnosticTarget'>,
+  ): void;
+}
+
+export interface ToastDiagnosticTarget {
+  sessionId: string;
+  turnId: string;
+  eventId: string;
+}
+
 export interface ToastInput {
   title: string;
   description?: string;
+  diagnosticDetails?: string;
+  diagnosticTarget?: ToastDiagnosticTarget;
   variant?: ToastVariant;
   /** Auto-dismiss after this many ms. 0 disables the timer. Default 4000. */
   duration?: number;
@@ -62,7 +77,12 @@ export interface ConfirmInput {
 export interface ToastApi {
   toast(input: ToastInput): string;
   success(title: string, description?: string): string;
-  error(title: string, description?: string): string;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: ToastDiagnosticTarget,
+  ): string;
   info(title: string, description?: string): string;
   warning(title: string, description?: string): string;
   confirm(input: ConfirmInput): Promise<boolean>;
@@ -83,15 +103,15 @@ interface ActiveConfirm {
 const DEFAULT_DURATION = 4000;
 const ToastContext = createContext<ToastApi | null>(null);
 
-export function ToastProvider(props: { children: ReactNode }) {
+export function ToastProvider(props: { children: ReactNode; errorAction?: ToastErrorAction }) {
   return (
     <LayerProvider toast={{ position: 'bottomEnd' }}>
-      <ToastController>{props.children}</ToastController>
+      <ToastController errorAction={props.errorAction}>{props.children}</ToastController>
     </LayerProvider>
   );
 }
 
-function ToastController(props: { children: ReactNode }) {
+function ToastController(props: { children: ReactNode; errorAction?: ToastErrorAction }) {
   const showToast = useAstryxToast();
   const [confirmState, setConfirmState] = useState<ActiveConfirm | null>(null);
   const activeConfirmRef = useRef<PendingConfirm | null>(null);
@@ -104,22 +124,37 @@ function ToastController(props: { children: ReactNode }) {
       const id = `t${++idSeed.current}`;
       let dismissCurrent: ToastDismissFn | undefined;
       const duration = input.duration ?? DEFAULT_DURATION;
+      const errorAction = props.errorAction;
+      const actions = [
+        input.action,
+        input.variant === 'error' && errorAction
+          ? {
+              label: errorAction.label,
+              onClick: () => errorAction.onClick(input),
+            }
+          : undefined,
+      ].filter((action): action is ToastAction => action !== undefined);
       dismissCurrent = showToast({
         uniqueID: id,
         body: <ToastBody input={input} />,
         type: input.variant === 'error' ? 'error' : 'info',
         isAutoHide: duration > 0,
         autoHideDuration: duration > 0 ? duration : DEFAULT_DURATION,
-        endContent: input.action ? (
-          <AstryxButton
-            variant="ghost"
-            size="sm"
-            label={input.action.label}
-            onClick={() => {
-              input.action?.onClick();
-              dismissCurrent?.();
-            }}
-          />
+        endContent: actions.length > 0 ? (
+          <HStack gap={1}>
+            {actions.map((action, index) => (
+              <AstryxButton
+                key={`${index}:${action.label}`}
+                variant="ghost"
+                size="sm"
+                label={action.label}
+                onClick={() => {
+                  action.onClick();
+                  dismissCurrent?.();
+                }}
+              />
+            ))}
+          </HStack>
         ) : undefined,
         onHide: () => {
           dismissByIdRef.current.delete(id);
@@ -128,7 +163,7 @@ function ToastController(props: { children: ReactNode }) {
       dismissByIdRef.current.set(id, dismissCurrent);
       return id;
     },
-    [showToast],
+    [props.errorAction, showToast],
   );
 
   const dismiss = useCallback((id: string) => {
@@ -209,7 +244,15 @@ function ToastController(props: { children: ReactNode }) {
     () => ({
       toast: push,
       success: (title, description) => push({ title, description, variant: 'success' }),
-      error: (title, description) => push({ title, description, variant: 'error', duration: 6000 }),
+      error: (title, description, diagnosticDetails, diagnosticTarget) =>
+        push({
+          title,
+          description,
+          diagnosticDetails,
+          diagnosticTarget,
+          variant: 'error',
+          duration: 6000,
+        }),
       info: (title, description) => push({ title, description, variant: 'info' }),
       warning: (title, description) => push({ title, description, variant: 'warning' }),
       confirm,
@@ -244,10 +287,10 @@ export function useToast(): ToastApi {
 }
 
 const VARIANT_ICON: Record<ToastVariant, ReactNode> = {
-  info: <Info size={16} aria-hidden="true" />,
-  success: <CheckCircle2 size={16} aria-hidden="true" />,
-  warning: <AlertTriangle size={16} aria-hidden="true" />,
-  error: <AlertCircle size={16} aria-hidden="true" />,
+  info: <Info size={ICON_SIZE.chrome} aria-hidden="true" />,
+  success: <CheckCircle2 size={ICON_SIZE.chrome} aria-hidden="true" />,
+  warning: <AlertTriangle size={ICON_SIZE.chrome} aria-hidden="true" />,
+  error: <AlertCircle size={ICON_SIZE.chrome} aria-hidden="true" />,
 };
 
 function ToastBody({ input }: { input: ToastInput }) {

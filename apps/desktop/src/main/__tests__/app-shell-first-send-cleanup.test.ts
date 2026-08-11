@@ -70,6 +70,7 @@ function createActionsDeps() {
       sessionId: undefined,
       navSection: 'sessions' as const,
     }),
+    checkTaskSubmissionReadiness: async () => true,
     clearPendingSessionAction: () => undefined,
     isNewChatSendSurfaceActive: () => true,
     isShellSurfaceOwnerActive: () => true,
@@ -95,6 +96,41 @@ function createActionsDeps() {
 }
 
 describe('composer first-send cleanup', () => {
+  it('cancels when the composer owner changes during the readiness check', async () => {
+    const readiness = deferred<boolean>();
+    const activeIdRef = { current: 'session-a' as string | undefined };
+    let sends = 0;
+    const restoreWindow = installWindow({
+      sessions: {
+        send: async () => {
+          sends += 1;
+          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+        },
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        captureComposerImportOwner: () => ({
+          sessionId: activeIdRef.current,
+          navSection: 'sessions',
+        }),
+        checkTaskSubmissionReadiness: () => readiness.promise,
+        isShellSurfaceOwnerActive: (owner) => owner.sessionId === activeIdRef.current,
+      });
+      const sending = actions.send('hello');
+      activeIdRef.current = 'session-b';
+      readiness.resolve(true);
+
+      assert.equal(await sending, false);
+      assert.equal(sends, 0, 'readiness for session A must never authorize a send to session B');
+    } finally {
+      restoreWindow();
+    }
+  });
+
   it('passes the effective offered model when creating the first session', async () => {
     let createInput: unknown;
     const restoreWindow = installWindow({
@@ -238,6 +274,14 @@ describe('composer first-send cleanup', () => {
     assert.deepEqual(removed, []);
   });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
 
 /**
  * #1433 round 5: the failure feedback for a send is addressed to the surface

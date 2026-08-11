@@ -13,6 +13,7 @@ import {
   EXTERNAL_SESSION_RESULT_MAX_BYTES,
   EXTERNAL_SESSION_SOURCE_MAX_ITEMS,
   EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES,
+  type ExternalSessionCatalogItem,
   type ExternalSessionCatalogQueryInput,
   type ExternalSessionImportInput,
   type OperationError,
@@ -23,19 +24,26 @@ import {
   projectSessionCatalogRecord,
   SessionOperationFailure,
 } from './session-catalog-coordinator.js';
+import type { SessionAdmissionGate } from './session-admission-gate.js';
+import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
 
 type ExternalSessionStore = {
   createImportedSession(
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
   ): Promise<SessionHeader>;
+  listHeaders(): Promise<SessionHeader[]>;
   readCatalogRecord(sessionId: string): Promise<SessionCatalogRecord>;
 };
 
 export interface HostExternalSessionCoordinatorOptions {
   readonly adapters: ExternalSessionAdapterRegistry;
+  readonly admission: SessionAdmissionGate;
   readonly sessions: ExternalSessionStore;
+  readonly workspaceResolver: Pick<HostWorkspaceResolver, 'resolve'>;
   readonly resolveTarget: () => Promise<Omit<CreateSessionInput, 'cwd' | 'name'>>;
+  readonly prepareImportedSessionHistory: (sessionId: string) => Promise<void>;
+  readonly discardImportedSession: (sessionId: string) => Promise<void>;
   readonly requestDrain: () => void;
 }
 
@@ -48,15 +56,32 @@ export class HostExternalSessionCoordinator {
   };
 
   readonly #adapters: ExternalSessionAdapterRegistry;
+  readonly #admission: SessionAdmissionGate;
   readonly #sessions: ExternalSessionStore;
+  readonly #workspaceResolver: Pick<HostWorkspaceResolver, 'resolve'>;
   readonly #resolveTarget: HostExternalSessionCoordinatorOptions['resolveTarget'];
+  readonly #prepareImportedSessionHistory: HostExternalSessionCoordinatorOptions['prepareImportedSessionHistory'];
+  readonly #discardImportedSession: HostExternalSessionCoordinatorOptions['discardImportedSession'];
   readonly #requestDrain: () => void;
 
   constructor(options: HostExternalSessionCoordinatorOptions) {
     this.#adapters = options.adapters;
+    this.#admission = options.admission;
     this.#sessions = options.sessions;
+    this.#workspaceResolver = options.workspaceResolver;
     this.#resolveTarget = options.resolveTarget;
+    this.#prepareImportedSessionHistory = options.prepareImportedSessionHistory;
+    this.#discardImportedSession = options.discardImportedSession;
     this.#requestDrain = options.requestDrain;
+  }
+
+  async recover(): Promise<void> {
+    const headers = await this.#sessions.listHeaders();
+    for (const header of headers) {
+      if (header.transcriptLedgerVersion === 0) {
+        await this.#prepareStagedSession(header.id);
+      }
+    }
   }
 
   async listSources(): Promise<OperationOutcome<'external-session.source.query'>> {
@@ -88,17 +113,20 @@ export class HostExternalSessionCoordinator {
       return queryFailure('operation_unavailable', 'External Session source is unavailable');
     }
     try {
+      const cwd = input.workspace
+        ? (await this.#workspaceResolver.resolve(input.workspace)).cwd
+        : undefined;
       const offset = input.cursor === undefined ? 0 : Number(input.cursor);
       const sessions = (
         await adapter.listSessions({
-          ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+          ...(cwd === undefined ? {} : { cwd }),
           ...(input.includeArchived === undefined
             ? {}
             : { includeArchived: input.includeArchived }),
         })
       )
         .map(toWireSummary)
-        .filter((summary): summary is ExternalSessionSummary => summary !== undefined);
+        .filter((summary): summary is ExternalSessionCatalogItem => summary !== undefined);
       const page = boundedCatalogPage(sessions, offset);
       const nextOffset = offset + page.length;
       return {
@@ -108,7 +136,10 @@ export class HostExternalSessionCoordinator {
           nextCursor: nextOffset < sessions.length ? String(nextOffset) : null,
         },
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof WorkspaceResolutionError) {
+        return queryFailure('invalid_request', error.message);
+      }
       return queryFailure('persistence_failed', 'External Session catalog could not be read');
     }
   }
@@ -139,14 +170,13 @@ export class HostExternalSessionCoordinator {
         return this.#sessions.createImportedSession(sessionInput, messages);
       },
     });
+    let header: SessionHeader;
     try {
-      const header = await importer.import({
+      header = await importer.import({
         adapterId: input.adapterId,
         sourceSessionId: input.sourceSessionId,
         target,
       });
-      const record = await this.#sessions.readCatalogRecord(header.id);
-      return { ok: true, result: { session: projectSessionCatalogRecord(record) } };
     } catch (error) {
       if (!commitAttempted) {
         return importFailure(
@@ -162,6 +192,31 @@ export class HostExternalSessionCoordinator {
         'External Session import outcome is unknown; check the Session list before retrying',
       );
     }
+
+    let prepared: boolean;
+    try {
+      prepared = await this.#prepareStagedSession(header.id);
+    } catch {
+      this.#requestDrain();
+      return importFailure(
+        'commit_outcome_unknown',
+        'External Session import outcome is unknown; check the Session list before retrying',
+      );
+    }
+    if (!prepared) {
+      return importFailure('persistence_failed', 'External Session history could not be prepared');
+    }
+
+    try {
+      const record = await this.#sessions.readCatalogRecord(header.id);
+      return { ok: true, result: { session: projectSessionCatalogRecord(record) } };
+    } catch {
+      this.#requestDrain();
+      return importFailure(
+        'commit_outcome_unknown',
+        'External Session import outcome is unknown; check the Session list before retrying',
+      );
+    }
   }
 
   async #isDetected(adapter: ExternalSessionAdapter): Promise<boolean> {
@@ -171,9 +226,21 @@ export class HostExternalSessionCoordinator {
       return false;
     }
   }
+
+  async #prepareStagedSession(sessionId: string): Promise<boolean> {
+    return this.#admission.run(sessionId, async () => {
+      try {
+        await this.#prepareImportedSessionHistory(sessionId);
+        return true;
+      } catch {
+        await this.#discardImportedSession(sessionId);
+        return false;
+      }
+    });
+  }
 }
 
-function toWireSummary(summary: ExternalSessionSummary): ExternalSessionSummary | undefined {
+function toWireSummary(summary: ExternalSessionSummary): ExternalSessionCatalogItem | undefined {
   if (
     !wireSourceSessionId(summary.id) ||
     typeof summary.name !== 'string' ||
@@ -188,7 +255,7 @@ function toWireSummary(summary: ExternalSessionSummary): ExternalSessionSummary 
   return {
     id: summary.id,
     name,
-    cwd: truncateUtf8(summary.cwd, EXTERNAL_SESSION_CWD_MAX_BYTES),
+    hostCwd: truncateUtf8(summary.cwd, EXTERNAL_SESSION_CWD_MAX_BYTES),
     ...(createdAt === undefined ? {} : { createdAt }),
     ...(updatedAt === undefined ? {} : { updatedAt }),
     ...(typeof summary.archived === 'boolean' ? { archived: summary.archived } : {}),
@@ -196,10 +263,10 @@ function toWireSummary(summary: ExternalSessionSummary): ExternalSessionSummary 
 }
 
 function boundedCatalogPage(
-  sessions: readonly ExternalSessionSummary[],
+  sessions: readonly ExternalSessionCatalogItem[],
   offset: number,
-): ExternalSessionSummary[] {
-  const page: ExternalSessionSummary[] = [];
+): ExternalSessionCatalogItem[] {
+  const page: ExternalSessionCatalogItem[] = [];
   const end = Math.min(sessions.length, offset + EXTERNAL_SESSION_PAGE_MAX_ITEMS);
   for (let index = offset; index < end; index += 1) {
     const candidate = sessions[index];

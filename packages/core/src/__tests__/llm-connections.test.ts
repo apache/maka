@@ -1,16 +1,16 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
-  CATALOG_PROVIDER_TYPES,
-  PROVIDER_DEFAULTS,
+  CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES,
+  lookupModelMetadata,
+  modelIdAliasesForProvider,
+} from '../model-metadata.js';
+import { curatedCatalogFallbackModelsForProvider } from '../model-metadata.js';
+import {
   PROVIDER_REGISTRY,
-  READY_PROVIDER_TYPES,
-  RECOMMENDED_PROVIDER_TYPES,
   backendKindOf,
   effectiveBaseUrl,
-  migrateConnectionV1ToV2,
   normalizeConnectionBaseUrl,
-  normalizeProviderType,
   persistedBaseUrl,
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
@@ -18,39 +18,6 @@ import {
   validateConnectionBaseUrl,
   type ProviderType,
 } from '../llm-connections.js';
-
-test('provider registry satisfies shared structural invariants', () => {
-  assert.equal(PROVIDER_DEFAULTS, PROVIDER_REGISTRY);
-  const providerIds = new Set(Object.keys(PROVIDER_REGISTRY));
-  for (const list of [CATALOG_PROVIDER_TYPES, READY_PROVIDER_TYPES, RECOMMENDED_PROVIDER_TYPES]) {
-    assert.equal(
-      list.every((id) => providerIds.has(id)),
-      true,
-    );
-  }
-
-  for (const [id, provider] of Object.entries(PROVIDER_REGISTRY)) {
-    assert.ok(provider.label.trim(), `${id}: label`);
-    assert.equal(validateConnectionBaseUrl(provider.baseUrl), null, `${id}: baseUrl`);
-    assert.equal(
-      provider.fallbackModels.every((modelId) => modelId === modelId.trim() && modelId.length > 0),
-      true,
-      `${id}: fallback model ids`,
-    );
-    assert.equal(
-      new Set(provider.fallbackModels).size,
-      provider.fallbackModels.length,
-      `${id}: duplicate fallback model id`,
-    );
-  }
-
-  for (const orderField of ['readyOrder', 'catalogOrder', 'recommendedOrder'] as const) {
-    const orders = Object.values(PROVIDER_REGISTRY)
-      .map((provider) => provider[orderField])
-      .filter((order): order is number => order !== undefined);
-    assert.equal(new Set(orders).size, orders.length, `${orderField} must be unique`);
-  }
-});
 
 test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs', () => {
   for (const value of [
@@ -141,24 +108,6 @@ test('unknown provider ids fail closed without breaking persisted connections', 
   assert.equal(providerAuthSupportsApiKey(unknown), false);
 });
 
-test('persisted provider aliases migrate without rewriting identity', () => {
-  assert.equal(normalizeProviderType('codex-subscription'), 'openai-codex');
-  assert.equal(normalizeProviderType('anthropic'), 'anthropic');
-  assert.equal(normalizeProviderType('branch-only-provider'), 'branch-only-provider');
-
-  const migrated = migrateConnectionV1ToV2({
-    slug: 'codex-subscription',
-    name: 'OpenAI OAuth',
-    providerType: 'codex-subscription',
-    defaultModel: 'gpt-5.5',
-    enabled: true,
-    createdAt: 1,
-    updatedAt: 1,
-  });
-  assert.equal(migrated.providerType, 'openai-codex');
-  assert.equal(migrated.slug, 'codex-subscription');
-});
-
 test('model reconciliation keeps live choices and repairs stale defaults', () => {
   assert.deepEqual(
     reconcileConnectionAfterModelFetch(
@@ -219,4 +168,60 @@ test('model reconciliation never invents a default the user cleared', () => {
     ),
     { defaultModel: '', enabledModelIds: ['picked'] },
   );
+});
+
+test('a renamed id follows its model, and only for a caller that supplies the table', () => {
+  const curated = [{ id: 'claude-opus-5' }, { id: 'claude-haiku-4-5' }];
+  const stored = {
+    defaultModel: 'claude-haiku-4-5-20251001',
+    enabledModelIds: ['claude-haiku-4-5-20251001'],
+    hasModelInventory: true,
+  };
+  // `claude-opus-5` leads the inventory, so without the table this falls through
+  // to the first live id — the two behaviours differ and the assertion can fail.
+  assert.deepEqual(reconcileConnectionAfterModelFetch(stored, curated), {
+    defaultModel: 'claude-opus-5',
+    enabledModelIds: ['claude-opus-5'],
+  });
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(stored, curated, {
+      aliases: CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES,
+    }),
+    { defaultModel: 'claude-haiku-4-5', enabledModelIds: ['claude-haiku-4-5'] },
+  );
+  // Both forms enabled collapse onto one entry rather than duplicating, on the
+  // path that returns its list without the dedupe the others inherit.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: '',
+        enabledModelIds: ['claude-haiku-4-5', 'claude-haiku-4-5-20251001'],
+        hasModelInventory: true,
+      },
+      curated,
+      { aliases: CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES },
+    ),
+    { defaultModel: '', enabledModelIds: ['claude-haiku-4-5'] },
+  );
+});
+
+test('the alias table is selected by provider and names only renames', () => {
+  assert.equal(
+    modelIdAliasesForProvider('claude-subscription'),
+    CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES,
+  );
+  for (const providerType of Object.keys(PROVIDER_REGISTRY) as ProviderType[]) {
+    if (providerType === 'claude-subscription') continue;
+    assert.equal(
+      modelIdAliasesForProvider(providerType),
+      undefined,
+      `${providerType} must keep its model ids opaque`,
+    );
+  }
+  const offered = curatedCatalogFallbackModelsForProvider('claude-subscription') ?? [];
+  for (const [renamed, target] of Object.entries(CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES)) {
+    assert.ok(offered.includes(target), `${target} is not offered by the curated inventory`);
+    // A withdrawn model must be repaired against the live list, never rewritten.
+    assert.notEqual(lookupModelMetadata('anthropic', renamed).lifecycle, 'deprecated');
+  }
 });

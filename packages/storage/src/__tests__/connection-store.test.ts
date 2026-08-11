@@ -72,34 +72,6 @@ describe('FileConnectionStore', () => {
     });
   });
 
-  test('migrates a legacy connection to only its default model enabled', async () => {
-    await withConnectionStore(async (store, dir) => {
-      await writeFile(
-        join(dir, 'llm-connections.json'),
-        JSON.stringify({
-          defaultSlug: 'openrouter-main',
-          connections: [
-            {
-              slug: 'openrouter-main',
-              name: 'OpenRouter',
-              providerType: 'openrouter',
-              defaultModel: 'openrouter/auto',
-              enabled: true,
-              models: [{ id: 'openrouter/auto' }, { id: 'anthropic/claude-opus-4.8' }],
-              createdAt: 1,
-              updatedAt: 1,
-            },
-          ],
-        }),
-        'utf8',
-      );
-
-      const migrated = await store.get('openrouter-main');
-
-      assert.deepEqual(migrated?.enabledModelIds, ['openrouter/auto']);
-    });
-  });
-
   test('relay profiles sanitize on create and prune when a model is disabled', async () => {
     await withConnectionStore(async (store) => {
       const created = await store.create({
@@ -1184,38 +1156,6 @@ describe('FileConnectionStore', () => {
         await store.setDefault(null);
 
         assert.equal(await store.getDefaultConnection(), null);
-      });
-    });
-
-    test('tolerates an unrelated invalid entry instead of failing the read', async () => {
-      await withConnectionStore(async (store, dir) => {
-        // A valid default plus an unrelated stale entry that cannot migrate
-        // (no providerType, no slug, unknown backend). getDefaultConnection must
-        // drop the bad entry and still resolve the valid default.
-        await writeFile(
-          join(dir, 'llm-connections.json'),
-          JSON.stringify({
-            defaultSlug: 'valid-default',
-            connections: [
-              {
-                slug: 'valid-default',
-                name: 'Valid',
-                providerType: 'anthropic',
-                defaultModel: 'claude-sonnet-4-20250514',
-                enabled: true,
-                createdAt: 1,
-                updatedAt: 1,
-              },
-              { backend: 'totally-unknown-legacy-backend' },
-            ],
-          }),
-          'utf8',
-        );
-
-        const conn = await store.getDefaultConnection();
-
-        assert.equal(conn?.slug, 'valid-default');
-        assert.equal(conn?.defaultModel, 'claude-sonnet-4-20250514');
       });
     });
   });

@@ -1,46 +1,18 @@
 import { useLayoutEffect, useRef, useState } from 'react';
+import { Button } from '@astryxdesign/core/Button';
+import { IconButton } from '@astryxdesign/core/IconButton';
 import { TextQuote, X } from './icons.js';
 import { cn } from './utils.js';
 import type { QuoteRef } from '@maka/core';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
-/**
- * Inline quoted-excerpt chip, shown inside the composer (removable) and inside
- * a sent user message (read-only). A single-line pill rather than a card: a
- * quote is a *reference*, so it should read as one token beside the message
- * instead of competing with it for vertical space.
- *
- * An excerpt too long for the pill stays clipped until the user asks for it —
- * clicking expands the chip in place to the full text. The model receives the
- * excerpt verbatim either way (formatTextWithInlineRefs); this is presentation
- * only. Expandability is measured, not guessed from a character count, so it
- * holds for CJK and latin alike.
- *
- * Keeping the chip on the sent message is deliberate — a quote the user can
- * see before sending but not afterwards makes the turn unauditable.
- */
-
-/**
- * Strip a leading ATX heading marker from a quoted excerpt for display
- * (#2213).
- *
- * A quote can carry markdown source verbatim (selection capture keeps the raw
- * text), so a heading line such as `### Description` would render in the chip
- * as cramped literal hashes. The selection capture normalizes whitespace into
- * a single line, so an ATX marker can survive at the start of the excerpt
- * (other line prefixes like `- `, `> `, `1. ` survive too but are out of
- * scope); mid-text `#` runs are treated as content and left alone.
- *
- * Presentation only — the model still receives `quote.text` verbatim via
- * formatTextWithInlineRefs. CommonMark allows up to six `#` and requires a
- * space (or end of line) after the marker; `###Description` (no space) is not
- * a heading and is preserved.
- */
+/** Display-only: strip a leading ATX heading marker (`### Title`) from chip text. */
 export function stripQuoteHeadingMarkers(text: string): string {
   return text.replace(/^#{1,6}[ \t]+/, '');
 }
 
+/** Inline quote chip for the composer (removable) and sent user messages (read-only). */
 export function QuoteRefChip(props: {
   quote: QuoteRef;
   onRemove?: () => void;
@@ -49,18 +21,24 @@ export function QuoteRefChip(props: {
   const copy = getConversationCopy(useUiLocale()).messages;
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
-  const textRef = useRef<HTMLButtonElement>(null);
+  // Measure the clipped text node itself — Astryx Button wraps children in an
+  // internal label span, so Button.root scrollWidth no longer reflects ellipsis.
+  const measureRef = useRef<HTMLSpanElement>(null);
   const label = props.quote.label;
   const displayText = stripQuoteHeadingMarkers(props.quote.text);
   const full = label ? `${label}: ${displayText}` : displayText;
 
   useLayoutEffect(() => {
-    const el = textRef.current;
+    const el = measureRef.current;
     if (!el || expanded) return;
     setClipped(el.scrollWidth > el.clientWidth + 1);
   }, [expanded, displayText, label]);
 
   const canExpand = clipped || expanded;
+  const a11yLabel = canExpand
+    ? (expanded ? copy.quoteCollapseAriaLabel : copy.quoteExpandAriaLabel)
+    : full;
+
   return (
     <span
       className={cn(
@@ -75,34 +53,41 @@ export function QuoteRefChip(props: {
         className={cn('maka-quote-chip-icon', expanded && 'maka-quote-chip-icon-expanded')}
         aria-hidden="true"
       />
-      <button
-        ref={textRef}
+      <Button
         type="button"
-        {...(canExpand
-          ? {
-              onClick: () => setExpanded((open) => !open),
-              'aria-expanded': expanded,
-              'aria-label': expanded ? copy.quoteCollapseAriaLabel : copy.quoteExpandAriaLabel,
-            }
-          : { tabIndex: -1 })}
+        variant="ghost"
+        size="sm"
+        label={a11yLabel}
         className={cn(
           'maka-quote-chip-text',
-          expanded ? 'maka-quote-chip-text-expanded' : 'maka-quote-chip-text-clipped',
+          expanded && 'maka-quote-chip-text-expanded',
         )}
+        tabIndex={canExpand ? undefined : -1}
+        aria-expanded={canExpand ? expanded : undefined}
+        onClick={canExpand ? () => setExpanded((open) => !open) : undefined}
       >
-        {label ? <span className="maka-quote-chip-label">{label} </span> : null}
-        {displayText}
-      </button>
-      {props.onRemove && (
-        <button
-          type="button"
-          onClick={props.onRemove}
-          className="maka-quote-chip-remove"
-          aria-label={copy.removeQuoteAriaLabel}
+        <span
+          ref={measureRef}
+          className={cn(
+            'maka-quote-chip-text-body',
+            !expanded && 'maka-quote-chip-text-clipped',
+          )}
         >
-          <X />
-        </button>
-      )}
+          {label ? <span className="maka-quote-chip-label">{label} </span> : null}
+          {displayText}
+        </span>
+      </Button>
+      {props.onRemove ? (
+        <IconButton
+          type="button"
+          variant="ghost"
+          size="sm"
+          label={copy.removeQuoteAriaLabel}
+          icon={<X aria-hidden="true" />}
+          className="maka-quote-chip-remove"
+          onClick={props.onRemove}
+        />
+      ) : null}
     </span>
   );
 }

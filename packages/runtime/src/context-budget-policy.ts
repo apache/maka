@@ -421,10 +421,21 @@ export function resolveSelectedModelContextWindow(
   const declared = relayModelProfile(connection, selectedModelId)?.contextWindow;
   if (declared !== undefined) return declared;
   const model = connection.models?.find((candidate) => candidate.id === selectedModelId);
-  return (
-    model?.contextWindow ??
-    lookupModelMetadata(connection.providerType, selectedModelId).contextWindow
+  const metadata = lookupModelMetadata(connection.providerType, selectedModelId);
+  // Provider/access-path facts outrank static metadata. Within one source,
+  // use the narrowest positive bound: models.dev's input limit can be lower
+  // than its total context window, while an access path can expose a narrower
+  // context window than the public catalog.
+  const modelLimit = narrowestPositiveLimit(model?.contextWindow, model?.inputLimit);
+  const metadataLimit = narrowestPositiveLimit(metadata.contextWindow, metadata.inputLimit);
+  return modelLimit ?? metadataLimit;
+}
+
+function narrowestPositiveLimit(...values: Array<number | undefined>): number | undefined {
+  const positiveValues = values.filter(
+    (value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0,
   );
+  return positiveValues.length > 0 ? Math.min(...positiveValues) : undefined;
 }
 
 export interface ContextBudgetCapacity {

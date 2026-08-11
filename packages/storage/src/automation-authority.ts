@@ -1,17 +1,16 @@
-import { isCollaborationMode } from '@maka/core/collaboration';
-import { isOrchestrationMode } from '@maka/core/orchestration';
-import { isThinkingLevel } from '@maka/core/model-thinking';
 import {
   AUTOMATION_CRON_EXPRESSION_LIMIT,
   AUTOMATION_LAST_ERROR_LIMIT,
+  AUTOMATION_MAX_CLIENT_CAPABILITY_REQUIREMENTS,
   AUTOMATION_NAME_LIMIT,
   AUTOMATION_PROMPT_LIMIT,
   isAutomationTextWithinLimit,
   type AutomationAuthoritySnapshot,
+  type AutomationClientCapabilityRequirement,
   type AutomationDefinition,
-  type AutomationExecutionTemplate,
   type AutomationPendingFire,
   type AutomationSchedule,
+  type AutomationWaitingState,
 } from '@maka/core/automation';
 import {
   acquireOperationalStateDatabase,
@@ -29,7 +28,6 @@ const MAX_PENDING_FIRES = 10_000;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const DEFINITION_KEYS = new Set([
   'id',
-  'kind',
   'name',
   'status',
   'prompt',
@@ -45,14 +43,13 @@ const DEFINITION_KEYS = new Set([
   'expiresAt',
   'lastError',
   'consecutiveFailures',
-  'durable',
   'deferredFireCount',
-  'execution',
+  'capabilityRequirements',
+  'waiting',
 ]);
 const PENDING_FIRE_KEYS = new Set([
   'id',
   'automationId',
-  'automationKind',
   'automationName',
   'prompt',
   'scheduledFor',
@@ -63,8 +60,9 @@ const PENDING_FIRE_KEYS = new Set([
   'status',
   'admittedAt',
   'updatedAt',
+  'transientDeferredSince',
   'startedAt',
-  'execution',
+  'capabilityRequirements',
 ]);
 
 const writerBrand: unique symbol = Symbol('InteractiveAutomationAuthorityWriter');
@@ -204,7 +202,7 @@ class SqliteAutomationAuthority implements AutomationAuthorityRepository {
     const revision = readRevision(this.#lease);
     const automations = this.#lease.database
       .prepare(`
-        SELECT automation_id, session_id, created_at, status, durable, record_json
+        SELECT automation_id, session_id, created_at, status, record_json
         FROM automation_definitions
         ORDER BY created_at, automation_id
       `)
@@ -256,13 +254,12 @@ class SqliteAutomationAuthority implements AutomationAuthorityRepository {
       }
       const upsertDefinition = this.#lease.database.prepare(`
         INSERT INTO automation_definitions(
-          automation_id, session_id, created_at, status, durable, record_json
-        ) VALUES (?, ?, ?, ?, ?, ?)
+          automation_id, session_id, created_at, status, record_json
+        ) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(automation_id) DO UPDATE SET
           session_id = excluded.session_id,
           created_at = excluded.created_at,
           status = excluded.status,
-          durable = excluded.durable,
           record_json = excluded.record_json
       `);
       for (const automation of input.automations) {
@@ -273,7 +270,6 @@ class SqliteAutomationAuthority implements AutomationAuthorityRepository {
           automation.sessionId,
           automation.createdAt,
           automation.status,
-          automation.durable === true ? 1 : 0,
           encoded,
         );
       }
@@ -355,15 +351,14 @@ function assertSnapshotRelationships(
       throw new Error(`Pending Automation fire has no definition: ${fire.id}`);
     }
     if (
-      automation.kind !== fire.automationKind ||
       automation.name !== fire.automationName ||
       automation.prompt !== fire.prompt ||
       automation.fireCount === 0 ||
       automation.lastFireAt === null ||
       automation.lastFireAt > fire.admittedAt ||
-      (automation.kind === 'heartbeat' && automation.sessionId !== fire.targetSessionId) ||
-      (automation.kind === 'cron' &&
-        JSON.stringify(automation.execution) !== JSON.stringify(fire.execution))
+      automation.sessionId !== fire.targetSessionId ||
+      JSON.stringify(automation.capabilityRequirements ?? []) !==
+        JSON.stringify(fire.capabilityRequirements ?? [])
     ) {
       throw new Error(`Pending Automation fire contradicts its definition: ${fire.id}`);
     }
@@ -375,12 +370,9 @@ function normalizeAutomationDefinition(value: unknown): AutomationDefinition {
     throw new Error('Invalid Automation definition');
   }
   const schedule = normalizeSchedule(value.schedule);
-  const execution =
-    value.execution === undefined ? undefined : normalizeExecutionTemplate(value.execution);
+  const capabilityRequirements = normalizeCapabilityRequirements(value.capabilityRequirements);
+  const waiting = value.waiting === undefined ? undefined : normalizeWaitingState(value.waiting);
   if (!isId(value.id) || !isId(value.sessionId)) throw new Error('Invalid Automation identity');
-  if (value.kind !== 'heartbeat' && value.kind !== 'cron') {
-    throw new Error('Invalid Automation kind');
-  }
   if (
     (value.status !== 'active' &&
       value.status !== 'paused' &&
@@ -403,17 +395,12 @@ function normalizeAutomationDefinition(value: unknown): AutomationDefinition {
     !isNullableNonnegativeInteger(value.expiresAt) ||
     lastError === undefined ||
     !isNonnegativeInteger(value.consecutiveFailures) ||
-    !(value.durable === undefined || typeof value.durable === 'boolean') ||
     !(value.deferredFireCount === undefined || isNonnegativeInteger(value.deferredFireCount))
   ) {
     throw new Error('Invalid Automation counters or timestamps');
   }
-  if (execution && value.kind !== 'cron') {
-    throw new Error('Only cron Automations may carry an execution template');
-  }
   return structuredClone({
     id: value.id,
-    kind: value.kind,
     name: value.name,
     status: value.status,
     prompt: value.prompt,
@@ -429,11 +416,11 @@ function normalizeAutomationDefinition(value: unknown): AutomationDefinition {
     expiresAt: value.expiresAt,
     lastError,
     consecutiveFailures: value.consecutiveFailures,
-    ...(value.durable === undefined ? {} : { durable: value.durable }),
     ...(value.deferredFireCount === undefined
       ? {}
       : { deferredFireCount: value.deferredFireCount }),
-    ...(execution ? { execution } : {}),
+    ...(capabilityRequirements.length === 0 ? {} : { capabilityRequirements }),
+    ...(waiting ? { waiting } : {}),
   } satisfies AutomationDefinition);
 }
 
@@ -448,7 +435,6 @@ function normalizePendingFire(value: unknown): AutomationPendingFire {
     !isId(value.turnId) ||
     !isId(value.runId) ||
     !isId(value.userMessageId) ||
-    (value.automationKind !== 'heartbeat' && value.automationKind !== 'cron') ||
     !isAutomationTextWithinLimit(value.automationName, AUTOMATION_NAME_LIMIT, {
       nonblank: true,
     }) ||
@@ -462,18 +448,25 @@ function normalizePendingFire(value: unknown): AutomationPendingFire {
   }
   const startedAt =
     value.startedAt === undefined ? undefined : requireNonnegativeInteger(value.startedAt);
+  const transientDeferredSince =
+    value.transientDeferredSince === undefined
+      ? undefined
+      : requireNonnegativeInteger(value.transientDeferredSince);
   if ((value.status === 'running') !== (startedAt !== undefined)) {
     throw new Error('Pending Automation fire start state is inconsistent');
   }
-  const execution =
-    value.execution === undefined ? undefined : normalizeExecutionTemplate(value.execution);
-  if ((value.automationKind === 'cron') !== (execution !== undefined)) {
-    throw new Error('Pending cron fire must freeze its execution template');
+  if (
+    transientDeferredSince !== undefined &&
+    (value.status === 'running' ||
+      transientDeferredSince < value.admittedAt ||
+      transientDeferredSince > value.updatedAt)
+  ) {
+    throw new Error('Pending Automation fire deferral state is inconsistent');
   }
+  const capabilityRequirements = normalizeCapabilityRequirements(value.capabilityRequirements);
   return structuredClone({
     id: value.id,
     automationId: value.automationId,
-    automationKind: value.automationKind,
     automationName: value.automationName,
     prompt: value.prompt,
     scheduledFor: value.scheduledFor,
@@ -484,9 +477,59 @@ function normalizePendingFire(value: unknown): AutomationPendingFire {
     status: value.status,
     admittedAt: value.admittedAt,
     updatedAt: value.updatedAt,
+    ...(transientDeferredSince === undefined ? {} : { transientDeferredSince }),
     ...(startedAt === undefined ? {} : { startedAt }),
-    ...(execution ? { execution } : {}),
+    ...(capabilityRequirements.length === 0 ? {} : { capabilityRequirements }),
   } satisfies AutomationPendingFire);
+}
+
+function normalizeCapabilityRequirements(value: unknown): AutomationClientCapabilityRequirement[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > AUTOMATION_MAX_CLIENT_CAPABILITY_REQUIREMENTS) {
+    throw new Error('Invalid Automation Client Capability requirements');
+  }
+  const requirements = value.map((entry) => {
+    if (
+      !isRecord(entry) ||
+      !hasOnlyKeys(entry, new Set(['principalId', 'clientInstanceId', 'contractId'])) ||
+      typeof entry.principalId !== 'string' ||
+      !/^[A-Za-z0-9_.:-]{1,128}$/.test(entry.principalId) ||
+      !isId(entry.clientInstanceId) ||
+      !isId(entry.contractId)
+    ) {
+      throw new Error('Invalid Automation Client Capability requirement');
+    }
+    return {
+      principalId: entry.principalId,
+      clientInstanceId: entry.clientInstanceId,
+      contractId: entry.contractId,
+    };
+  });
+  const identities = requirements.map(
+    (requirement) =>
+      `${requirement.principalId}\0${requirement.clientInstanceId}\0${requirement.contractId}`,
+  );
+  if (new Set(identities).size !== identities.length) {
+    throw new Error('Duplicate Automation Client Capability requirement');
+  }
+  return requirements;
+}
+
+function normalizeWaitingState(value: unknown): AutomationWaitingState {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, new Set(['reason', 'since', 'message'])) ||
+    value.reason !== 'client_capability_provider_unavailable' ||
+    !isNonnegativeInteger(value.since) ||
+    !isAutomationTextWithinLimit(value.message, AUTOMATION_LAST_ERROR_LIMIT)
+  ) {
+    throw new Error('Invalid Automation waiting state');
+  }
+  return {
+    reason: value.reason,
+    since: value.since,
+    message: value.message,
+  };
 }
 
 function normalizeSchedule(value: unknown): AutomationSchedule {
@@ -519,45 +562,6 @@ function normalizeSchedule(value: unknown): AutomationSchedule {
   throw new Error('Invalid Automation schedule');
 }
 
-function normalizeExecutionTemplate(value: unknown): AutomationExecutionTemplate {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(
-      value,
-      new Set([
-        'cwd',
-        'projectId',
-        'backend',
-        'llmConnectionSlug',
-        'model',
-        'thinkingLevel',
-        'collaborationMode',
-        'orchestrationMode',
-      ]),
-    ) ||
-    !isBoundedString(value.cwd, 4_096) ||
-    !(value.projectId === undefined || value.projectId === null || isId(value.projectId)) ||
-    (value.backend !== 'ai-sdk' && value.backend !== 'fake' && value.backend !== 'pi-agent') ||
-    !isId(value.llmConnectionSlug) ||
-    !isBoundedString(value.model, 256) ||
-    !(value.thinkingLevel === undefined || isThinkingLevel(value.thinkingLevel)) ||
-    !isCollaborationMode(value.collaborationMode) ||
-    !isOrchestrationMode(value.orchestrationMode)
-  ) {
-    throw new Error('Invalid Automation execution template');
-  }
-  return {
-    cwd: value.cwd,
-    ...(value.projectId === undefined ? {} : { projectId: value.projectId }),
-    backend: value.backend,
-    llmConnectionSlug: value.llmConnectionSlug,
-    model: value.model,
-    ...(value.thinkingLevel === undefined ? {} : { thinkingLevel: value.thinkingLevel }),
-    collaborationMode: value.collaborationMode,
-    orchestrationMode: value.orchestrationMode,
-  };
-}
-
 function readDefinitionRow(value: unknown): AutomationDefinition {
   if (!isRecord(value) || typeof value.record_json !== 'string') {
     throw new Error('Invalid SQLite Automation definition row');
@@ -567,8 +571,7 @@ function readDefinitionRow(value: unknown): AutomationDefinition {
     value.automation_id !== definition.id ||
     value.session_id !== definition.sessionId ||
     value.created_at !== definition.createdAt ||
-    value.status !== definition.status ||
-    value.durable !== (definition.durable === true ? 1 : 0)
+    value.status !== definition.status
   ) {
     throw new Error(`SQLite Automation definition index mismatch: ${definition.id}`);
   }
@@ -625,10 +628,6 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: ReadonlySet<string>):
 
 function isId(value: unknown): value is string {
   return typeof value === 'string' && ID_PATTERN.test(value);
-}
-
-function isBoundedString(value: unknown, max: number): value is string {
-  return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value, 'utf8') <= max;
 }
 
 function normalizeLastError(value: unknown): string | null | undefined {

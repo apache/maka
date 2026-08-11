@@ -47,6 +47,10 @@ const ALLOW = new Map([
     'Runtime Host reconnect exhaustion is fatal before the Desktop can present an in-app error; no credentials or provider payloads.',
   ],
   [
+    'apps/desktop/src/main/runtime-host-session-observer.ts',
+    'bounded Session subscription recovery diagnostics contain only Session/Turn/Run identities and internal failure metadata.',
+  ],
+  [
     'apps/desktop/src/main/startup-step.ts',
     'names a startup step that has not come back, before any window exists to show it in; a step name and no secrets.',
   ],
@@ -78,14 +82,8 @@ const ALLOW = new Map([
     'packages/runtime/src/telemetry/record-tool-invocation.ts',
     'message routed through generalizedErrorMessage.',
   ],
-  [
-    'packages/headless/src/cli.ts',
-    'CLI entrypoint prints command progress, usage, and failures to stdout/stderr by design.',
-  ],
-  [
-    'packages/headless/src/harbor-cli.ts',
-    'Harbor CLI subcommand prints usage and command failures to stderr by design.',
-  ],
+  ['CLI entrypoint prints command progress, usage, and failures to stdout/stderr by design.'],
+  ['Harbor CLI subcommand prints usage and command failures to stderr by design.'],
   [
     'apps/desktop/src/main/shell-env.ts',
     'login-shell PATH resolution diagnostics at startup (PATH-entry count and sanitized failure reason); non-fatal, no shell-controlled output.',
@@ -157,7 +155,12 @@ async function main() {
         CONSOLE_RE.lastIndex = 0;
         const match = CONSOLE_RE.exec(line);
         if (match) {
-          offenders.push({ path: rel, line: i + 1, method: match[1], code: line.trim() });
+          offenders.push({
+            path: rel,
+            line: i + 1,
+            method: match[1],
+            code: line.trim(),
+          });
         }
       });
     }

@@ -125,11 +125,15 @@ export interface MakaTool<P = any, R = unknown> {
   /** Optional trusted facts about the executor that runs this tool. */
   executionFacts?: ToolExecutionFacts;
   /**
-   * Provider-native tool declaration. The provider executes this tool inside
-   * the primary model request; ToolRuntime must never dispatch `impl` for it.
+   * Provider-native tool declaration. Hosted tools execute at the provider;
+   * client-executed tools such as ApplyPatch still settle through ToolRuntime.
    */
   providerTool?: {
-    readonly kind: 'openai-web-search' | 'anthropic-web-search-20250305';
+    readonly kind:
+      | 'openai-apply-patch'
+      | 'openai-custom-apply-patch'
+      | 'openai-web-search'
+      | 'anthropic-web-search-20250305';
     readonly searchContextSize?: 'low' | 'medium' | 'high';
     readonly maxUses?: number;
   };
@@ -690,7 +694,12 @@ export class ToolRuntime {
   async settleToolCall(call: ResolvedMakaToolCall): Promise<ToolSettlement> {
     const settlement = await this.settleToolCallRaw(call);
     const modelOutput = settlement.providerError
-      ? { type: 'error-text' as const, value: new Error(settlement.providerError).toString() }
+      ? call.tool.providerTool?.kind === 'openai-apply-patch'
+        ? {
+            type: 'json' as const,
+            value: { status: 'failed' as const, output: settlement.providerError },
+          }
+        : { type: 'error-text' as const, value: new Error(settlement.providerError).toString() }
       : call.tool.toModelOutput
         ? await call.tool.toModelOutput({
             toolCallId: call.toolCallId,

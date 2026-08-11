@@ -14,18 +14,23 @@
   text-align: center;
   /* Deep-review fix: the retired `.settingsWechatQrState` pane carried a
      180px floor; without one the dialog collapses in the generating/expired/
-     error states and snaps taller when the QR (224px frame) arrives. */
-  min-height: 224px;
+     error states and snaps taller when the QR frame arrives — the floor
+     tracks the frame token so the two cannot drift. */
+  min-height: var(--qr-frame-size);
 }
 
 .settingsWechatQrFrame {
-  width: 224px;
-  height: 224px;
+  /* Shared with the bot onboarding QR frame (settings/bot.css): both read
+     --qr-frame-size so the paired dialogs present one QR spec. */
+  width: var(--qr-frame-size);
+  height: var(--qr-frame-size);
   display: grid;
   place-items: center;
   border: var(--border-width-hairline) solid color-mix(in srgb, var(--brand-wechat) 20%, var(--border));
   border-radius: var(--radius-surface);
-  background: white;
+  /* Paper, not a ladder tier: a QR code has to stay dark-on-light to be
+     scannable at all. See --surface-paper in maka-tokens.css. */
+  background: var(--surface-paper);
   padding: var(--space-3);
 }
 

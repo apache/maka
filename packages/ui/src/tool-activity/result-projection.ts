@@ -5,7 +5,7 @@ import { isConnectorTool } from './display-name.js';
 import { getToolActivityCopy } from './copy.js';
 
 // Mirror of runtime's AUTOMATION_TOOL_NAME. @maka/ui must not depend on
-// @maka/runtime, so the unified Automation tool's name is duplicated here as
+// @maka/runtime, so the heartbeat Automation tool's name is duplicated here as
 // the single hook for its friendly card (same pattern as CONNECTOR_TOOL_NAMES).
 const AUTOMATION_TOOL_NAME = 'Automation';
 

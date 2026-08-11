@@ -1,8 +1,8 @@
-import type { IpcMain } from 'electron';
 import type {
   ConnectionTestResult,
   CreateConnectionInput,
   LlmConnection,
+  SavedRequestHeaders,
   UpdateConnectionInput,
 } from '@maka/core';
 import {
@@ -17,8 +17,13 @@ import type {
   ConnectionCatalogSnapshot,
   CredentialLocator,
 } from '@maka/core/runtime-policy';
+import { normalizeRequestHeaderUpdates } from '@maka/core/runtime-policy';
 import type { ConnectionTestRunResult } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 import {
   normalizeConnectionBaseUrlForIpc,
   normalizeConnectionPatchSecretsForIpc,
@@ -31,9 +36,11 @@ type HostConnectionsClient = Pick<
   | 'createConnection'
   | 'deleteCredential'
   | 'fetchConnectionModels'
+  | 'getConnectionRequestHeaders'
   | 'loadConnectionCatalog'
   | 'queryCredential'
   | 'removeConnection'
+  | 'replaceConnectionRequestHeaders'
   | 'setCredential'
   | 'setDefaultConnectionTarget'
   | 'testConnection'
@@ -41,7 +48,7 @@ type HostConnectionsClient = Pick<
 >;
 
 export interface RuntimeHostConnectionsIpcDeps {
-  readonly ipcMain: Pick<IpcMain, 'handle'>;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: HostConnectionsClient;
   readonly emitConnectionListChanged: () => void;
 }
@@ -52,12 +59,12 @@ export function registerRuntimeHostConnectionsIpc(
   const snapshot = () => deps.client.loadConnectionCatalog();
   const projected = async () => projectHostConnections(await snapshot());
 
-  deps.ipcMain.handle('connections:list', projected);
-  deps.ipcMain.handle('connections:getDefault', async () => {
+  handleReconnectableRead(deps.ipcMain, 'connections:list', projected);
+  handleReconnectableRead(deps.ipcMain, 'connections:getDefault', async () => {
     const catalog = await snapshot();
     return defaultConnection(catalog)?.slug ?? null;
   });
-  deps.ipcMain.handle('connections:hasSecret', async (_event, slug: unknown) => {
+  handleReconnectableRead(deps.ipcMain, 'connections:hasSecret', async (_event, slug: unknown) => {
     const catalog = await snapshot();
     const connection = requireConnection(catalog, slug);
     if (!providerAuthRequiresSecret(connection.providerType)) return true;
@@ -66,6 +73,29 @@ export function registerRuntimeHostConnectionsIpc(
         ?.configured === true
     );
   });
+  handleReconnectableRead(
+    deps.ipcMain,
+    'connections:getRequestHeaders',
+    async (_event, slug: unknown) => {
+      const connection = requireConnection(await snapshot(), slug);
+      const result = await deps.client.getConnectionRequestHeaders(connection.connectionId);
+      if (result.kind !== 'found') throw new Error('Connection no longer exists');
+      return { names: result.names } satisfies SavedRequestHeaders;
+    },
+  );
+  deps.ipcMain.handle(
+    'connections:setRequestHeaders',
+    async (_event, slug: unknown, rawUpdates: unknown) => {
+      const connection = requireConnection(await snapshot(), slug);
+      const result = await deps.client.replaceConnectionRequestHeaders(
+        connection.connectionId,
+        normalizeRequestHeaderUpdates(rawUpdates),
+      );
+      if (result.kind === 'connection_not_found') throw new Error('Connection no longer exists');
+      if (result.kind === 'committed') deps.emitConnectionListChanged();
+      return { names: result.names } satisfies SavedRequestHeaders;
+    },
+  );
   deps.ipcMain.handle('connections:setDefault', async (_event, slug: unknown) => {
     const catalog = await snapshot();
     const target = slug === null
@@ -103,21 +133,37 @@ export function registerRuntimeHostConnectionsIpc(
         enabledModelIds: defaultEnabledModelIdsWhenOmitted(input.providerType),
       }),
       ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+      ...(input.requestBodyOverlay === undefined
+        ? {}
+        : { requestBodyOverlay: input.requestBodyOverlay }),
     });
     if (created.kind !== 'committed') {
       throw new Error(`Unable to create Connection: ${created.kind}`);
     }
-    if (input.apiKey) {
+    try {
       const entry = requireConnection(await snapshot(), input.slug);
-      const credential = await deps.client.setCredential({
-        locator: connectionCredential(entry),
-        expected: null,
-        secret: input.apiKey,
-      });
-      if (credential.kind !== 'committed') {
-        await deps.client.removeConnection(created.connection).catch(() => undefined);
-        throw new Error(`Unable to save Connection credential: ${credential.kind}`);
+      if (input.apiKey) {
+        const credential = await deps.client.setCredential({
+          locator: connectionCredential(entry),
+          expected: null,
+          secret: input.apiKey,
+        });
+        if (credential.kind !== 'committed') {
+          throw new Error(`Unable to save Connection credential: ${credential.kind}`);
+        }
       }
+      if (input.requestHeaders && Object.keys(input.requestHeaders).length > 0) {
+        const requestHeaders = await deps.client.replaceConnectionRequestHeaders(
+          entry.connectionId,
+          Object.entries(input.requestHeaders).map(([name, value]) => ({ name, value })),
+        );
+        if (requestHeaders.kind !== 'committed') {
+          throw new Error(`Unable to save custom request headers: ${requestHeaders.kind}`);
+        }
+      }
+    } catch (error) {
+      await deps.client.removeConnection(created.connection).catch(() => undefined);
+      throw error;
     }
     deps.emitConnectionListChanged();
     return requireProjectedConnection(await snapshot(), input.slug);
@@ -145,6 +191,9 @@ export function registerRuntimeHostConnectionsIpc(
         ...(patch.relayModelProfiles === undefined
           ? {}
           : { relayModelProfiles: normalizeRelayModelProfiles(patch.relayModelProfiles) ?? null }),
+        ...(patch.requestBodyOverlay === undefined
+          ? {}
+          : { requestBodyOverlay: patch.requestBodyOverlay }),
       },
     );
     if (updated.kind !== 'committed') {
@@ -168,16 +217,38 @@ export function registerRuntimeHostConnectionsIpc(
     return requireProjectedConnection(await snapshot(), current.slug);
   });
   deps.ipcMain.handle('connections:delete', async (_event, slug: unknown) => {
-    const catalog = await snapshot();
-    const current = requireConnection(catalog, slug);
-    requireCommitted(
-      await deps.client.removeConnection({
+    // OAuth/model-fetch can bump the connection revision under the UI. Retry
+    // on connection_stale with a fresh snapshot so delete does not fail with a
+    // opaque "service unavailable" after the user already confirmed.
+    const maxAttempts = 6;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const catalog = await snapshot();
+      let current: ReturnType<typeof requireConnection>;
+      try {
+        current = requireConnection(catalog, slug);
+      } catch (error) {
+        // Only treat a missing slug as success. Invalid input must still fail.
+        if (error instanceof Error && error.message.startsWith('No such Connection:')) {
+          deps.emitConnectionListChanged();
+          return;
+        }
+        throw error;
+      }
+      const result = await deps.client.removeConnection({
         connectionId: current.connectionId,
         revision: current.revision,
-      }),
-      'delete Connection',
-    );
-    deps.emitConnectionListChanged();
+      });
+      // RemoveCatalogConnectionResult is only committed | connection_stale.
+      if (result.kind === 'committed') {
+        deps.emitConnectionListChanged();
+        return;
+      }
+      if (attempt < maxAttempts - 1) {
+        continue;
+      }
+      // English so renderer locale mapping (provider-panel-shared) can choose zh/en.
+      throw new Error('Unable to delete Connection: connection_stale');
+    }
   });
   deps.ipcMain.handle('connections:fetchModels', async (_event, slug: unknown) => {
     const current = requireConnection(await snapshot(), slug);
@@ -248,6 +319,9 @@ export function projectHostConnections(catalog: ConnectionCatalogSnapshot): LlmC
       ...(connection.relayModelProfiles === undefined
         ? {}
         : { relayModelProfiles: connection.relayModelProfiles }),
+      ...(connection.requestBodyOverlay === undefined
+        ? {}
+        : { requestBodyOverlay: connection.requestBodyOverlay }),
       ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
       ...(connection.modelsFetchedAt === undefined
         ? {}

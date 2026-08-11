@@ -1,6 +1,9 @@
-import { createHash } from 'node:crypto';
 import { agentRunMatchesHostedRootExecution, type AgentRunHeader } from '@maka/core/agent-run';
-import type { AutomationDefinition, AutomationPendingFire } from '@maka/core/automation';
+import type {
+  AutomationDefinition,
+  AutomationPendingFire,
+  AutomationWaitingState,
+} from '@maka/core/automation';
 import type { MessageContent } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';
 import {
@@ -10,7 +13,6 @@ import {
   HEARTBEAT_IDLE_STATUSES,
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
-  type RuntimeHostedRootAuthority,
   type SessionManager,
 } from '@maka/runtime';
 import {
@@ -20,16 +22,16 @@ import {
 } from '@maka/storage/execution-stores';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { AutomationAuthorityInvariantError } from './automation-errors.js';
+import type { AutomationClientCapabilityAuthority } from './client-capability-service.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import { runtimeHostAutomationSessionUnavailableReason } from './host-session-availability.js';
+import type { HostedExecutionAuthority, HostedExecutionRef } from './hosted-execution-authority.js';
+import { waitForHostedExecutionTerminal } from './hosted-execution-wait.js';
 
-type AutomationSessions = Pick<
-  ExecutionSessionWriter,
-  'createStableSession' | 'readHeaderSnapshot'
->;
+type AutomationSessions = Pick<ExecutionSessionWriter, 'readHeaderSnapshot'>;
 type AutomationRuns = Pick<ExecutionAgentRunWriter, 'readRun'>;
 type AutomationRuntime = Pick<SessionManager, 'sendMessage'>;
-type AutomationRoot = Pick<RuntimeHostedRootAuthority, 'executeRoot'>;
+type AutomationRoot = Pick<HostedExecutionAuthority, 'admit' | 'reconcile' | 'subscribe'>;
 
 export interface AutomationFireStateAuthority {
   listPendingFires(): Promise<readonly AutomationPendingFire[]>;
@@ -39,12 +41,21 @@ export interface AutomationFireStateAuthority {
     expectedSchedule: number | null,
     skip: boolean,
   ): Promise<boolean>;
+  recordPrerequisiteWaiting(
+    automationId: string,
+    expectedSchedule: number | null,
+    waiting: AutomationWaitingState,
+  ): Promise<boolean>;
   admitFire(
     automationId: string,
     expectedSchedule: number | null,
   ): Promise<AutomationPendingFire | undefined>;
   assertPendingFire(fire: AutomationPendingFire): Promise<void>;
-  recordFireDeferred(fire: AutomationPendingFire): Promise<void>;
+  recordFireDeferred(fire: AutomationPendingFire, transientDeferredSince: number): Promise<void>;
+  recordFirePrerequisiteWaiting(
+    fire: AutomationPendingFire,
+    waiting: AutomationWaitingState,
+  ): Promise<void>;
   failFire(fire: AutomationPendingFire, error: string): Promise<void>;
   markFireRunning(fire: AutomationPendingFire): Promise<void>;
   settleFire(fire: AutomationPendingFire, run: AgentRunHeader): Promise<void>;
@@ -58,6 +69,7 @@ export interface HostAutomationFireCoordinatorInput {
   readonly runtime: AutomationRuntime;
   readonly root: AutomationRoot;
   readonly runtimePolicy: RuntimePolicyStoresWriter;
+  readonly clientCapabilities: AutomationClientCapabilityAuthority;
   readonly isSessionActive: (sessionId: string) => boolean;
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly requestDrain: () => void;
@@ -86,6 +98,26 @@ class AutomationFireDeferredError extends Error {
   readonly name = 'AutomationFireDeferredError';
 }
 
+class AutomationFirePrerequisiteError extends Error {
+  readonly name = 'AutomationFirePrerequisiteError';
+
+  constructor(
+    message: string,
+    readonly waiting: AutomationWaitingState,
+  ) {
+    super(message);
+  }
+}
+
+type AutomationFireReadiness =
+  | { readonly ready: true }
+  | { readonly ready: false; readonly reason: 'transient_gate' }
+  | {
+      readonly ready: false;
+      readonly reason: 'prerequisite_unavailable';
+      readonly waiting: AutomationWaitingState;
+    };
+
 /** Owns timers and execution side effects; canonical state stays behind its narrow port. */
 export class HostAutomationFireCoordinator {
   readonly #state: AutomationFireStateAuthority;
@@ -94,6 +126,7 @@ export class HostAutomationFireCoordinator {
   readonly #runtime: AutomationRuntime;
   readonly #root: AutomationRoot;
   readonly #runtimePolicy: RuntimePolicyStoresWriter;
+  readonly #clientCapabilities: AutomationClientCapabilityAuthority;
   readonly #isSessionActive: (sessionId: string) => boolean;
   readonly #acquireResidency: () => RuntimeHostResidency;
   readonly #requestDrain: () => void;
@@ -118,6 +151,7 @@ export class HostAutomationFireCoordinator {
     this.#runtime = input.runtime;
     this.#root = input.root;
     this.#runtimePolicy = input.runtimePolicy;
+    this.#clientCapabilities = input.clientCapabilities;
     this.#isSessionActive = input.isSessionActive;
     this.#acquireResidency = input.acquireResidency;
     this.#requestDrain = input.requestDrain;
@@ -208,15 +242,24 @@ export class HostAutomationFireCoordinator {
     }
     for (const automation of await this.#state.listDueAutomations(this.#now())) {
       if (this.isDraining) return;
-      let allowed: boolean;
+      let readiness: AutomationFireReadiness;
       try {
-        allowed = await this.#canFire(automation);
+        readiness = await this.#canFire(automation);
       } catch (error) {
         this.#requestDrain();
         throw error;
       }
-      if (!allowed) {
-        await this.#recordDeferred(automation);
+      if (!readiness.ready) {
+        if (readiness.reason === 'prerequisite_unavailable') {
+          this.#deferredFires.delete(automation.id);
+          await this.#state.recordPrerequisiteWaiting(
+            automation.id,
+            automation.nextFireAt,
+            readiness.waiting,
+          );
+        } else {
+          await this.#recordDeferred(automation);
+        }
         continue;
       }
       const fire = await this.#state.admitFire(automation.id, automation.nextFireAt);
@@ -227,11 +270,13 @@ export class HostAutomationFireCoordinator {
     }
   }
 
-  async #canFire(automation: Pick<AutomationDefinition, 'kind' | 'sessionId'>): Promise<boolean> {
-    if (this.isDraining) return false;
-    if (automation.kind === 'heartbeat' && this.#isSessionActive(automation.sessionId))
-      return false;
-    return evaluateAutomationCanFire(automation, {
+  async #canFire(
+    automation: Pick<AutomationDefinition, 'sessionId' | 'capabilityRequirements'>,
+  ): Promise<AutomationFireReadiness> {
+    if (this.isDraining) return { ready: false, reason: 'transient_gate' };
+    if (this.#isSessionActive(automation.sessionId))
+      return { ready: false, reason: 'transient_gate' };
+    const allowed = await evaluateAutomationCanFire(automation, {
       isIncognitoActive: async () =>
         (await this.#runtimePolicy.runtimePolicy.getSnapshot()).policy.privacy.incognitoActive,
       readSessionHeader: async (sessionId) => {
@@ -248,6 +293,17 @@ export class HostAutomationFireCoordinator {
         }
       },
     });
+    if (!allowed) return { ready: false, reason: 'transient_gate' };
+    const availability = await this.#clientCapabilities.checkAutomationRequirements(
+      automation.capabilityRequirements ?? [],
+    );
+    return availability.ok
+      ? { ready: true }
+      : {
+          ready: false,
+          reason: 'prerequisite_unavailable',
+          waiting: capabilityWaiting(availability.message, this.#now()),
+        };
   }
 
   async #recordDeferred(
@@ -265,7 +321,10 @@ export class HostAutomationFireCoordinator {
     if (skip) {
       this.#deferredFires.delete(automation.id);
     } else if (!deferred) {
-      this.#deferredFires.set(automation.id, { firstDeferredAt: now, count: 1 });
+      this.#deferredFires.set(automation.id, {
+        firstDeferredAt: now,
+        count: 1,
+      });
     } else {
       deferred.count += 1;
     }
@@ -292,8 +351,8 @@ export class HostAutomationFireCoordinator {
 
   async #runFire(fire: AutomationPendingFire, established: Deferred): Promise<void> {
     try {
-      await this.#ensureFireTarget(fire);
       const existingRun = await this.#readRun(fire);
+      const execution = fireExecutionRef(fire);
       if (existingRun) {
         assertFireRunIdentity(fire, existingRun);
         if (isTerminalRun(existingRun)) {
@@ -301,51 +360,64 @@ export class HostAutomationFireCoordinator {
           established.resolve();
           return;
         }
-        established.resolve();
       }
-      await this.#root.executeRoot({
-        sessionId: fire.targetSessionId,
-        turnId: fire.turnId,
-        runId: fire.runId,
-        userMessageId: fire.userMessageId,
-        execution: { kind: 'automation', automationId: fire.automationId },
-        content: fireContent(fire),
-        admitExecution: async () => {
-          await this.#assertFireCanEnterRuntime(fire);
-          return 'executing';
-        },
-        start: ({ runId, userMessageId, onRunStarted }) => {
-          if (runId !== fire.runId || userMessageId !== fire.userMessageId) {
-            throw new AutomationAuthorityInvariantError(
-              'Runtime Host changed the pending Automation fire identity',
-            );
-          }
-          return this.#runtime.sendMessage(
-            fire.targetSessionId,
-            {
-              turnId: fire.turnId,
-              ...fireContent(fire),
-              origin: { kind: 'automation', automationId: fire.automationId },
-            },
-            {
-              runId: fire.runId,
-              userMessageId: fire.userMessageId,
-              durability: 'required',
-              onRunStarted: async (startedRunId) => {
-                if (startedRunId !== fire.runId) {
-                  throw new AutomationAuthorityInvariantError(
-                    'Runtime started a different Automation Run identity',
-                  );
-                }
-                await this.#state.markFireRunning(fire);
-                await onRunStarted();
+      await this.#assertFireCapabilityRequirements(fire);
+      if (existingRun) {
+        established.resolve();
+        await waitForHostedExecutionTerminal(
+          this.#root,
+          execution,
+          await this.#root.reconcile(execution),
+        );
+      } else {
+        const admitted = await this.#root.admit({
+          sessionId: fire.targetSessionId,
+          turnId: fire.turnId,
+          runId: fire.runId,
+          userMessageId: fire.userMessageId,
+          execution: { kind: 'automation', automationId: fire.automationId },
+          content: fireContent(fire),
+          admitExecution: async () => {
+            await this.#assertFireCanEnterRuntime(fire);
+            return 'executing';
+          },
+          start: ({ runId, userMessageId, onRunStarted }) => {
+            if (runId !== fire.runId || userMessageId !== fire.userMessageId) {
+              throw new AutomationAuthorityInvariantError(
+                'Runtime Host changed the pending Automation fire identity',
+              );
+            }
+            return this.#runtime.sendMessage(
+              fire.targetSessionId,
+              {
+                turnId: fire.turnId,
+                ...fireContent(fire),
+                origin: { kind: 'automation', automationId: fire.automationId },
               },
-            },
-          );
-        },
-        onReady: () => established.resolve(),
-      });
-      established.resolve();
+              {
+                runId: fire.runId,
+                userMessageId: fire.userMessageId,
+                durability: 'required',
+                onRunStarted: async (startedRunId) => {
+                  if (startedRunId !== fire.runId) {
+                    throw new AutomationAuthorityInvariantError(
+                      'Runtime started a different Automation Run identity',
+                    );
+                  }
+                  await this.#state.markFireRunning(fire);
+                  await onRunStarted();
+                },
+              },
+            );
+          },
+          onReady: () => established.resolve(),
+        });
+        established.resolve();
+        await waitForHostedExecutionTerminal(this.#root, execution, admitted.snapshot, {
+          completion: admitted.completion,
+        });
+        await admitted.settled;
+      }
       const run = await this.#readRun(fire);
       if (!run || !isTerminalRun(run)) {
         throw new AutomationAuthorityInvariantError(
@@ -375,6 +447,7 @@ export class HostAutomationFireCoordinator {
       }
       if (
         error instanceof AutomationFireDeferredError ||
+        error instanceof AutomationFirePrerequisiteError ||
         error instanceof RuntimeHostedRootConflictError ||
         error instanceof RuntimeHostedRootUnavailableError
       ) {
@@ -383,10 +456,17 @@ export class HostAutomationFireCoordinator {
           return;
         }
         try {
-          if (this.#now() - fire.admittedAt >= DEFER_WINDOW_MS) {
-            await this.#state.failFire(fire, automationAdmissionFailure(error));
+          if (error instanceof AutomationFirePrerequisiteError) {
+            await this.#state.recordFirePrerequisiteWaiting(fire, error.waiting);
           } else {
-            await this.#state.recordFireDeferred(fire);
+            const now = this.#now();
+            const transientDeferredSince =
+              fire.transientDeferredSince ?? Math.max(fire.admittedAt, now);
+            if (now - transientDeferredSince >= DEFER_WINDOW_MS) {
+              await this.#state.failFire(fire, automationAdmissionFailure(error));
+            } else {
+              await this.#state.recordFireDeferred(fire, transientDeferredSince);
+            }
           }
         } catch (stateError) {
           established.reject(stateError);
@@ -397,37 +477,6 @@ export class HostAutomationFireCoordinator {
       }
       established.reject(error);
       throw error;
-    }
-  }
-
-  async #ensureFireTarget(fire: AutomationPendingFire): Promise<void> {
-    if (fire.automationKind === 'heartbeat') return;
-    if (!fire.execution) {
-      throw new AutomationAuthorityInvariantError('Pending cron fire has no execution template');
-    }
-    const result = await this.#sessions.createStableSession({
-      sessionId: fire.targetSessionId,
-      requestFingerprint: automationSessionFingerprint(fire),
-      input: {
-        cwd: fire.execution.cwd,
-        ...(fire.execution.projectId === undefined ? {} : { projectId: fire.execution.projectId }),
-        name: fire.automationName,
-        labels: ['automation', 'cron'],
-        backend: fire.execution.backend,
-        llmConnectionSlug: fire.execution.llmConnectionSlug,
-        model: fire.execution.model,
-        ...(fire.execution.thinkingLevel === undefined
-          ? {}
-          : { thinkingLevel: fire.execution.thinkingLevel }),
-        permissionMode: 'explore',
-        collaborationMode: fire.execution.collaborationMode,
-        orchestrationMode: fire.execution.orchestrationMode,
-      },
-    });
-    if (result.kind === 'conflict') {
-      throw new AutomationAuthorityInvariantError(
-        `Cron Session identity conflicts for fire ${fire.id}`,
-      );
     }
   }
 
@@ -454,8 +503,22 @@ export class HostAutomationFireCoordinator {
     if (runtimeHostAutomationSessionUnavailableReason(header)) {
       throw new AutomationFireDeferredError('Automation target Session is unavailable');
     }
-    if (fire.automationKind === 'heartbeat' && !HEARTBEAT_IDLE_STATUSES.has(header.status)) {
+    if (!HEARTBEAT_IDLE_STATUSES.has(header.status)) {
       throw new AutomationFireDeferredError('Automation target Session is not idle');
+    }
+    await this.#assertFireCapabilityRequirements(fire);
+  }
+
+  async #assertFireCapabilityRequirements(fire: AutomationPendingFire): Promise<void> {
+    const availability = await this.#clientCapabilities.bindAutomationSession(
+      fire.targetSessionId,
+      fire.capabilityRequirements ?? [],
+    );
+    if (!availability.ok) {
+      throw new AutomationFirePrerequisiteError(
+        availability.message,
+        capabilityWaiting(availability.message, this.#now()),
+      );
     }
   }
 
@@ -469,36 +532,30 @@ export class HostAutomationFireCoordinator {
   }
 }
 
+function capabilityWaiting(message: string, since: number): AutomationWaitingState {
+  return {
+    reason: 'client_capability_provider_unavailable',
+    since,
+    message,
+  };
+}
+
+function fireExecutionRef(fire: AutomationPendingFire): HostedExecutionRef {
+  return {
+    sessionId: fire.targetSessionId,
+    turnId: fire.turnId,
+    runId: fire.runId,
+  };
+}
+
 function automationAdmissionFailure(error: Error): string {
   return `Automation execution could not enter Runtime within its retry window: ${error.message}`;
 }
 
 export function fireContent(fire: AutomationPendingFire): MessageContent {
   return {
-    text:
-      fire.automationKind === 'heartbeat'
-        ? `[Automation: ${fire.automationName}]\n\n${fire.prompt}`
-        : fire.prompt,
+    text: `[Automation: ${fire.automationName}]\n\n${fire.prompt}`,
   };
-}
-
-export function automationSessionId(fireId: string): string {
-  const digest = createHash('sha256').update(`automation-session-v0\0${fireId}`).digest('hex');
-  return `automation_session_${digest.slice(0, 48)}`;
-}
-
-function automationSessionFingerprint(fire: AutomationPendingFire): string {
-  return `sha256:${createHash('sha256')
-    .update(
-      JSON.stringify({
-        protocol: 'automation-session-v0',
-        fireId: fire.id,
-        automationId: fire.automationId,
-        targetSessionId: fire.targetSessionId,
-        execution: fire.execution,
-      }),
-    )
-    .digest('hex')}`;
 }
 
 export function assertFireRunIdentity(fire: AutomationPendingFire, run: AgentRunHeader): void {

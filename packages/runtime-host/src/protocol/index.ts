@@ -1,7 +1,10 @@
-import { TextDecoder } from 'node:util';
 import { requireCount, requireId, requireRecord, requireString } from './codec.js';
 import { invalidProtocolFrame, RuntimeHostProtocolError } from './errors.js';
-import { requireHostLifecycleState } from './host-status.js';
+import {
+  decodeHostActivitySnapshot,
+  requireHostLifecycleState,
+  type HostActivitySnapshot,
+} from './host-status.js';
 import {
   decodeSubscriptionFrame,
   isSubscriptionFrameKind,
@@ -24,6 +27,14 @@ import {
   type SessionCatalogChangedFrame,
 } from './session-catalog-change.js';
 import {
+  decodeScheduledTaskChangedFrame,
+  type ScheduledTaskChangedFrame,
+} from './scheduled-task-change.js';
+import {
+  decodeProjectCatalogChangedFrame,
+  type ProjectCatalogChangedFrame,
+} from './project-catalog-change.js';
+import {
   decodeRequestFrame,
   decodeResponseFrame,
   type HostLifecycleState,
@@ -32,6 +43,7 @@ import {
 } from './operations.js';
 
 export { RuntimeHostProtocolError } from './errors.js';
+export * from './access-authority.js';
 export * from './agent-graph.js';
 export * from './interaction.js';
 export * from './automation.js';
@@ -39,7 +51,10 @@ export * from './daily-review.js';
 export * from './client-capability.js';
 export * from './configuration-change.js';
 export * from './goal.js';
+export * from './hosted-execution.js';
 export * from './plan.js';
+export * from './project-catalog.js';
+export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
 export * from './external-session.js';
 export * from './message.js';
@@ -47,24 +62,39 @@ export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
 export * from './session-catalog-change.js';
+export * from './scheduled-task-change.js';
 export * from './session-retirement.js';
 export * from './session-transcript.js';
 export * from './task-ledger.js';
+export * from './workspace.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
-// The wire version remains v0 before the first release. This independent epoch
-// lets a new Client retire a stale same-version Host whose closed schema is no
-// longer safe to use.
-// 8: external Session discovery and import added three closed operation keys.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 8 as const;
+// Increment when the same protocol version no longer guarantees safe Client-Host
+// interoperability. Mismatches are rejected before domain commands are admitted.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 17 as const;
 // A legal sandbox-boundary expansion can consume 64 KiB before its Interaction
 // envelope and independently bounded justification are added. Keep transport
 // capacity large enough to represent that domain value; narrower surfaces such
 // as Session continuity retain their own limits.
-export const RUNTIME_HOST_MAX_FRAME_BYTES = 96 * 1024;
+export const RUNTIME_HOST_MAX_MESSAGE_BYTES = 96 * 1024;
+export const RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS = 64;
+export const INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID = 'maka.interactive' as const;
 
-export type ClientSurface = 'desktop' | 'tui' | 'run' | 'activation' | 'bot' | 'inspect';
+declare const encodedProtocolMessageBrand: unique symbol;
+
+export type EncodedProtocolMessage = Buffer & {
+  readonly [encodedProtocolMessageBrand]: true;
+};
+
+export type ClientSurface =
+  | 'desktop'
+  | 'tui'
+  | 'run'
+  | 'activation'
+  | 'bot'
+  | 'inspect'
+  | 'capability-provider';
 
 export interface ProtocolRange {
   min: number;
@@ -77,17 +107,21 @@ export interface ClientHello {
   surface: ClientSurface;
   protocolMin: number;
   protocolMax: number;
-  /** A missing pre-epoch v0 wire field is decoded as epoch 0. */
   compatibilityEpoch: number;
+  compositionId: string;
+  generation?: string;
+  takeover?: { expectedHostEpoch: string };
 }
 
 export interface HostAccepted {
   kind: 'accepted';
+  rootId: string;
   hostEpoch: string;
   connectionId: string;
   selectedProtocol: number;
-  /** A missing pre-epoch v0 wire field is decoded as epoch 0. */
   compatibilityEpoch: number;
+  compositionId: string;
+  compositionRevision: string;
   state: Exclude<HostLifecycleState, 'draining'>;
 }
 
@@ -96,15 +130,20 @@ export interface HostIncompatible {
   hostEpoch: string;
   protocolMin: number;
   protocolMax: number;
-  /** A missing pre-epoch v0 wire field is decoded as epoch 0. */
   compatibilityEpoch: number;
+  compositionId: string;
+  compositionRevision: string;
+  generation?: string;
   state: HostLifecycleState;
   replacement: 'blocked_by_residency' | 'wait_for_idle_exit';
+  activity?: HostActivitySnapshot;
 }
 
 export interface HostDraining {
   kind: 'draining';
   hostEpoch: string;
+  compositionId: string;
+  compositionRevision: string;
 }
 
 export type HostHandshakeResult = HostAccepted | HostIncompatible | HostDraining;
@@ -116,7 +155,9 @@ export type HostFrame =
   | SubscriptionFrame
   | ClientCapabilityHostFrame
   | ConfigurationChangedFrame
-  | SessionCatalogChangedFrame;
+  | ProjectCatalogChangedFrame
+  | SessionCatalogChangedFrame
+  | ScheduledTaskChangedFrame;
 
 export interface HostRegistration {
   kind: 'maka-runtime-host';
@@ -126,8 +167,11 @@ export interface HostRegistration {
   endpoint: string;
   protocolMin: number;
   protocolMax: number;
-  /** A missing pre-epoch v0 registration field is decoded as epoch 0. */
   compatibilityEpoch: number;
+  compositionId: string;
+  compositionRevision: string;
+  lifecycleMode?: 'ephemeral' | 'service';
+  generation?: string;
   state: HostLifecycleState;
   pid: number;
   createdAt: string;
@@ -155,12 +199,22 @@ export function requireClientInstanceId(value: unknown): string {
   return requireId(value, 'clientInstanceId');
 }
 
+export function requireHostGeneration(value: unknown): string {
+  return requireId(value, 'generation');
+}
+
 export function decodeClientFrame(value: unknown): ClientFrame {
   const frame = requireRecord(value, 'client frame');
   if (frame.kind === 'hello') {
     const protocolMin = requireProtocolVersion(frame.protocolMin, 'protocolMin');
     const protocolMax = requireProtocolVersion(frame.protocolMax, 'protocolMax');
     validateProtocolRange({ min: protocolMin, max: protocolMax });
+    const generation =
+      frame.generation === undefined ? undefined : requireHostGeneration(frame.generation);
+    const takeover = decodeTakeover(frame.takeover);
+    if (takeover !== undefined && generation === undefined) {
+      throw invalidProtocolFrame('Runtime Host takeover requires a generation');
+    }
     return {
       kind: 'hello',
       clientInstanceId: requireClientInstanceId(frame.clientInstanceId),
@@ -168,6 +222,9 @@ export function decodeClientFrame(value: unknown): ClientFrame {
       protocolMin,
       protocolMax,
       compatibilityEpoch: decodeCompatibilityEpoch(frame.compatibilityEpoch),
+      compositionId: decodeCompositionId(frame.compositionId),
+      ...(generation === undefined ? {} : { generation }),
+      ...(takeover === undefined ? {} : { takeover }),
     } satisfies ClientHello;
   }
   if (isClientCapabilityClientFrameKind(frame.kind)) {
@@ -181,10 +238,13 @@ export function decodeHostFrame(value: unknown): HostFrame {
   if (frame.kind === 'accepted') {
     return {
       kind: 'accepted',
+      rootId: requireHostRootId(frame.rootId),
       hostEpoch: requireId(frame.hostEpoch, 'hostEpoch'),
       connectionId: requireId(frame.connectionId, 'connectionId'),
       selectedProtocol: requireProtocolVersion(frame.selectedProtocol, 'selectedProtocol'),
       compatibilityEpoch: decodeCompatibilityEpoch(frame.compatibilityEpoch),
+      compositionId: decodeCompositionId(frame.compositionId),
+      compositionRevision: decodeCompositionRevision(frame.compositionRevision),
       state: requireAcceptedState(frame.state),
     } satisfies HostAccepted;
   }
@@ -198,14 +258,24 @@ export function decodeHostFrame(value: unknown): HostFrame {
       protocolMin,
       protocolMax,
       compatibilityEpoch: decodeCompatibilityEpoch(frame.compatibilityEpoch),
+      compositionId: decodeCompositionId(frame.compositionId),
+      compositionRevision: decodeCompositionRevision(frame.compositionRevision),
+      ...(frame.generation === undefined
+        ? {}
+        : { generation: requireHostGeneration(frame.generation) }),
       state: requireHostLifecycleState(frame.state),
       replacement: requireReplacement(frame.replacement),
+      ...(frame.activity === undefined
+        ? {}
+        : { activity: decodeHostActivitySnapshot(frame.activity) }),
     } satisfies HostIncompatible;
   }
   if (frame.kind === 'draining') {
     return {
       kind: 'draining',
       hostEpoch: requireId(frame.hostEpoch, 'hostEpoch'),
+      compositionId: decodeCompositionId(frame.compositionId),
+      compositionRevision: decodeCompositionRevision(frame.compositionRevision),
     };
   }
   if (isSubscriptionFrameKind(frame.kind)) return decodeSubscriptionFrame(frame);
@@ -213,7 +283,9 @@ export function decodeHostFrame(value: unknown): HostFrame {
     return decodeClientCapabilityHostFrame(frame);
   }
   if (frame.kind === 'configuration.changed') return decodeConfigurationChangedFrame(frame);
+  if (frame.kind === 'project.catalog.changed') return decodeProjectCatalogChangedFrame(frame);
   if (frame.kind === 'session.catalog.changed') return decodeSessionCatalogChangedFrame(frame);
+  if (frame.kind === 'scheduled-task.changed') return decodeScheduledTaskChangedFrame(frame);
   return decodeResponseFrame(frame);
 }
 
@@ -228,8 +300,7 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
   const protocolMin = requireProtocolVersion(registration.protocolMin, 'protocolMin');
   const protocolMax = requireProtocolVersion(registration.protocolMax, 'protocolMax');
   validateProtocolRange({ min: protocolMin, max: protocolMax });
-  const rootId = requireString(registration.rootId, 'rootId', 128);
-  if (!/^[a-f0-9]{64}$/.test(rootId)) throw invalidProtocolFrame('Invalid rootId');
+  const rootId = requireHostRootId(registration.rootId);
   const pid = requireCount(registration.pid, 'pid');
   if (pid === 0) throw invalidProtocolFrame('Invalid pid');
   return {
@@ -244,79 +315,40 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
       registration.compatibilityEpoch === undefined
         ? 0
         : requireCompatibilityEpoch(registration.compatibilityEpoch),
+    compositionId: decodeCompositionId(registration.compositionId),
+    compositionRevision: decodeCompositionRevision(registration.compositionRevision),
+    ...(registration.lifecycleMode === undefined
+      ? {}
+      : { lifecycleMode: requireHostLifecycleMode(registration.lifecycleMode) }),
+    ...(registration.generation === undefined
+      ? {}
+      : { generation: requireHostGeneration(registration.generation) }),
     state: requireHostLifecycleState(registration.state),
     pid,
     createdAt: requireString(registration.createdAt, 'createdAt', 64),
   };
 }
 
-export function encodeProtocolFrame(value: ClientFrame | HostFrame): Buffer {
-  const encoded = Buffer.from(`${JSON.stringify(value)}\n`, 'utf8');
-  if (encoded.byteLength > RUNTIME_HOST_MAX_FRAME_BYTES) {
-    throw new RuntimeHostProtocolError(
-      'frame_too_large',
-      'Runtime Host frame exceeds the byte limit',
-    );
-  }
-  return encoded;
+function requireHostLifecycleMode(value: unknown): 'ephemeral' | 'service' {
+  if (value === 'ephemeral' || value === 'service') return value;
+  throw invalidProtocolFrame('Invalid Runtime Host lifecycle mode');
 }
 
-export class ProtocolFrameDecoder {
-  readonly #decoder = new TextDecoder('utf-8', { fatal: true });
-  #pending = Buffer.alloc(0);
+function decodeTakeover(value: unknown): ClientHello['takeover'] {
+  if (value === undefined) return undefined;
+  const takeover = requireRecord(value, 'Runtime Host takeover');
+  return { expectedHostEpoch: requireId(takeover.expectedHostEpoch, 'expectedHostEpoch') };
+}
 
-  push(chunk: Uint8Array): unknown[] {
-    const frames: unknown[] = [];
-    let offset = 0;
-    while (offset < chunk.byteLength) {
-      const newline = chunk.indexOf(0x0a, offset);
-      const end = newline === -1 ? chunk.byteLength : newline;
-      const segment = Buffer.from(chunk.subarray(offset, end));
-      const delimiterBytes = newline === -1 ? 0 : 1;
-      if (
-        this.#pending.byteLength + segment.byteLength + delimiterBytes >
-        RUNTIME_HOST_MAX_FRAME_BYTES
-      ) {
-        throw new RuntimeHostProtocolError(
-          'frame_too_large',
-          'Runtime Host frame exceeds the byte limit',
-        );
-      }
-      if (segment.byteLength > 0) this.#pending = Buffer.concat([this.#pending, segment]);
-      if (newline === -1) break;
-      frames.push(this.#decodePending());
-      this.#pending = Buffer.alloc(0);
-      offset = newline + 1;
-    }
-    return frames;
+export function encodeProtocolMessage(value: ClientFrame | HostFrame): EncodedProtocolMessage {
+  const encoded = Buffer.from(JSON.stringify(value), 'utf8');
+  if (encoded.byteLength > RUNTIME_HOST_MAX_MESSAGE_BYTES) {
+    throw new RuntimeHostProtocolError(
+      'frame_too_large',
+      'Runtime Host message exceeds the byte limit',
+    );
   }
-
-  end(): void {
-    if (this.#pending.byteLength !== 0) {
-      throw new RuntimeHostProtocolError(
-        'invalid_frame',
-        'Runtime Host stream ended with a partial frame',
-      );
-    }
-  }
-
-  #decodePending(): unknown {
-    if (this.#pending.byteLength === 0) {
-      throw invalidProtocolFrame('Runtime Host frame is empty');
-    }
-    let text: string;
-    try {
-      const bytes = this.#pending.at(-1) === 0x0d ? this.#pending.subarray(0, -1) : this.#pending;
-      text = this.#decoder.decode(bytes);
-    } catch {
-      throw new RuntimeHostProtocolError('invalid_utf8', 'Runtime Host frame is not valid UTF-8');
-    }
-    try {
-      return JSON.parse(text) as unknown;
-    } catch {
-      throw new RuntimeHostProtocolError('invalid_json', 'Runtime Host frame is not valid JSON');
-    }
-  }
+  return encoded as EncodedProtocolMessage;
 }
 
 function requireProtocolVersion(value: unknown, label: string): number {
@@ -332,7 +364,40 @@ function requireCompatibilityEpoch(value: unknown): number {
   return epoch;
 }
 
+export function requireHostCompositionId(value: unknown): string {
+  const id = requireString(value, 'compositionId', 128);
+  if (!/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/.test(id)) {
+    throw invalidProtocolFrame('Invalid compositionId');
+  }
+  return id;
+}
+
+export function requireHostRootId(value: unknown): string {
+  const rootId = requireString(value, 'rootId', 64);
+  if (!/^[a-f0-9]{64}$/.test(rootId)) throw invalidProtocolFrame('Invalid rootId');
+  return rootId;
+}
+
+function requireCompositionRevision(value: unknown): string {
+  const revision = requireString(value, 'compositionRevision', 128);
+  if (revision.length === 0 || /[\u0000-\u001f\u007f]/u.test(revision)) {
+    throw invalidProtocolFrame('Invalid compositionRevision');
+  }
+  return revision;
+}
+
+function decodeCompositionId(value: unknown): string {
+  return value === undefined
+    ? INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID
+    : requireHostCompositionId(value);
+}
+
+function decodeCompositionRevision(value: unknown): string {
+  return value === undefined ? 'legacy' : requireCompositionRevision(value);
+}
+
 function decodeCompatibilityEpoch(value: unknown): number {
+  // Epoch 0 represents peers and registrations that do not publish this field.
   return value === undefined ? 0 : requireCompatibilityEpoch(value);
 }
 
@@ -343,7 +408,8 @@ function requireSurface(value: unknown): ClientSurface {
     value === 'run' ||
     value === 'activation' ||
     value === 'bot' ||
-    value === 'inspect'
+    value === 'inspect' ||
+    value === 'capability-provider'
   )
     return value;
   throw invalidProtocolFrame('Invalid surface');

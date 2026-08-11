@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
+import { ICON_SIZE, Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
 import {
   IconButton,
   InputGroup,
@@ -123,8 +123,8 @@ export function PasswordInput(props: {
             onClick={() => void copyValue()}
             label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
             icon={justCopied
-              ? <Check size={16} aria-hidden="true" />
-              : <Copy size={16} aria-hidden="true" />}
+              ? <Check size={ICON_SIZE.chrome} aria-hidden="true" />
+              : <Copy size={ICON_SIZE.chrome} aria-hidden="true" />}
           />
         )}
         <IconButton
@@ -134,7 +134,7 @@ export function PasswordInput(props: {
           isDisabled={props.isDisabled}
           label={visible ? copy.hide : copy.show}
           aria-pressed={visible}
-          icon={visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+          icon={visible ? <EyeOff size={ICON_SIZE.chrome} aria-hidden="true" /> : <Eye size={ICON_SIZE.chrome} aria-hidden="true" />}
         />
       </InputGroupText>
     </InputGroup>

@@ -2,7 +2,7 @@
 /**
  * Run each workspace's `test:dist` script.
  *
- * Default: parallel batch, then serial-only workspaces.
+ * Default: parallel batch.
  * `--serial`: every workspace in package.json workspaces order (CI).
  * `--concurrency N`: cap the parallel batch to avoid overloading small runners.
  * `--workspaces a,b`: run only the selected workspace paths.
@@ -22,17 +22,11 @@ import { fileURLToPath } from 'node:url';
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = dirname(dirname(scriptPath));
 
-// Headless is kept out of the concurrent batch after observed flakes when
-// co-scheduled with other workspace suites. Isolation of HOME/XDG is already
-// handled inside scripts/run-headless-tests.mjs; serial scheduling is extra
-// conservatism for root orchestration, not a claim that its suite shares FS
-// state with other packages.
-//
 // Additions to this list need a measured, precisely stated reason. runtime
 // and runtime-host sat here temporarily while three tests relied on fixed
 // waits that missed their window under load; #2132 replaced those waits with
 // explicit barriers and the entries came out again.
-export const SERIAL_WORKSPACE_DIRS = ['packages/headless'];
+export const SERIAL_WORKSPACE_DIRS = [];
 export const DEFAULT_WORKSPACE_TIMEOUT_MS = 15 * 60_000;
 
 const PROCESS_TERMINATION_GRACE_MS = 1_000;

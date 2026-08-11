@@ -9,7 +9,7 @@
 // shell.
 import type { ReactNode } from 'react';
 import { Heading, HStack, IconButton, Text, Toolbar, VStack } from '@astryxdesign/core';
-import { ArrowLeft } from '@maka/ui/icons';
+import { ICON_SIZE, ArrowLeft } from '@maka/ui/icons';
 
 export function SettingsRouteHeader(props: {
   onBack(): void;
@@ -33,12 +33,12 @@ export function SettingsRouteHeader(props: {
             variant="ghost"
             label={props.backLabel}
             tooltip={props.backLabel}
-            icon={<ArrowLeft size={16} aria-hidden="true" />}
+            icon={<ArrowLeft size={ICON_SIZE.chrome} aria-hidden="true" />}
             isDisabled={props.isBackDisabled}
             onClick={props.onBack}
           />
           {props.logo}
-          <VStack gap={0}>
+          <VStack gap={0.5}>
             <HStack gap={2} vAlign="center">
               <Heading level={3} id={props.titleId}>{props.title}</Heading>
               {props.badge}

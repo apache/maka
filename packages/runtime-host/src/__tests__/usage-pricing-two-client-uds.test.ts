@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { lstat, mkdtemp, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,7 +12,6 @@ import type { PricingConfig } from '@maka/core/usage-stats/types';
 import { BUILTIN_PRICING } from '@maka/runtime';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
-  createHeadlessRootLease,
   resolveRootControlNamespace,
   resolveStorageRoot,
   StorageRootAuthorityError,
@@ -45,24 +45,12 @@ const CONNECTION_CONTEXT: ConnectionContext = {
   acquireResidency: () => ({ release() {} }),
 };
 
-test('Headless root leases cannot open the Interactive usage authority', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-usage-pricing-headless-'));
-  try {
-    const capability = await resolveStorageRoot({
-      path: join(base, 'headless-root'),
-      kind: 'headless',
-    });
-    const headlessLease = createHeadlessRootLease(capability, 'write');
-    await assert.rejects(
-      openInteractiveUsageStoresForWrite(
-        headlessLease as unknown as StorageRootLease<'interactive', 'write'>,
-      ),
-      (error: unknown) =>
-        error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
-    );
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
+test('forged root leases cannot open the Interactive usage authority', async () => {
+  await assert.rejects(
+    openInteractiveUsageStoresForWrite({} as StorageRootLease<'interactive', 'write'>),
+    (error: unknown) =>
+      error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
+  );
 });
 
 test('usage authority drain rejects a new pricing mutation with typed lifecycle failure', async () => {
@@ -457,7 +445,7 @@ describe('production Usage/Pricing UDS', () => {
       host = await RuntimeHostKernel.start({
         owner: firstOwner,
         idleGraceMs: 30_000,
-        compositionFactory: createExecutionRuntimeHostComposition,
+        composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
       });
       firstOwner = undefined;
       preHostUsageStores = undefined;
@@ -502,16 +490,9 @@ describe('production Usage/Pricing UDS', () => {
         },
       ]);
 
-      const initial = requirePricingPage(
-        await desktop.request('pricing.query', { kind: 'start' }, REQUEST_TIMEOUT_MS),
-      );
-      assert.deepEqual(initial, {
-        kind: 'page',
-        revision: 0,
-        offset: 0,
-        entries: builtinPricingEntries(),
-        nextOffset: null,
-      });
+      const initial = await readPricing(desktop);
+      assert.equal(initial.revision, 0);
+      assert.deepEqual(initial.entries, builtinPricingEntries());
       const decomposedModelKey = 'e\u0301';
       const composedModelKey = '\u00e9';
       const candidates = [pricing(decomposedModelKey, 1), pricing(composedModelKey, 2)] as const;
@@ -659,7 +640,7 @@ describe('production Usage/Pricing UDS', () => {
       successor = await RuntimeHostKernel.start({
         owner: successorOwner,
         idleGraceMs: 30_000,
-        compositionFactory: createExecutionRuntimeHostComposition,
+        composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
       });
       successorOwner = undefined;
       const [desktopAfterRestart, tuiAfterRestart] = await Promise.all([
@@ -790,7 +771,23 @@ async function readCoordinatorPricing(
   );
   assert.equal(outcome.ok, true);
   if (!outcome.ok) throw new Error('Expected an effective pricing page');
-  return requirePricingPage(outcome.result);
+  const first = requirePricingPage(outcome.result);
+  const entries = [...first.entries];
+  let nextOffset = first.nextOffset;
+  while (nextOffset !== null) {
+    const nextOutcome = await coordinator.handlers['pricing.query'](
+      { kind: 'continue', revision: first.revision, offset: nextOffset },
+      CONNECTION_CONTEXT,
+    );
+    assert.equal(nextOutcome.ok, true);
+    if (!nextOutcome.ok) throw new Error('Expected an effective pricing page');
+    const page = requirePricingPage(nextOutcome.result);
+    assert.equal(page.revision, first.revision);
+    assert.equal(page.offset, nextOffset);
+    entries.push(...page.entries);
+    nextOffset = page.nextOffset;
+  }
+  return { ...first, entries, nextOffset: null };
 }
 
 function builtinPricingEntries(): readonly EffectivePricingEntry[] {

@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -32,7 +33,7 @@ test('two Clients share one durable Session recap effect', async () => {
   const host = await RuntimeHostKernel.start({
     owner,
     idleGraceMs: 10_000,
-    compositionFactory: async (context) => {
+    composition: defineInteractiveRuntimeHostComposition(async (context) => {
       const artifacts = await openInteractiveArtifactStoreForWrite(context.owner.lease);
       const coordinator = new HostSessionEffectCoordinator({
         model: {
@@ -57,7 +58,7 @@ test('two Clients share one durable Session recap effect', async () => {
         readSessionHeader: async () =>
           ({ isArchived: false, status: 'active' }) as unknown as SessionHeader,
         sessionAdmission: new SessionAdmissionGate(),
-        acquireResidency: context.acquireResidency,
+        acquireResidency: () => context.acquireResidency('session-effect'),
         requestDrain: context.requestDrain,
       });
       return {
@@ -72,7 +73,7 @@ test('two Clients share one durable Session recap effect', async () => {
           artifacts.close();
         },
       };
-    },
+    }),
   });
   let desktop: RuntimeHostConnection | undefined;
   let tui: RuntimeHostConnection | undefined;

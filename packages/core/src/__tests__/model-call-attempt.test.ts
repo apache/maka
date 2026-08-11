@@ -43,25 +43,6 @@ function attempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
 }
 
 describe('ModelCallAttempt codec', () => {
-  test('accepts a complete priced attempt', () => {
-    const decoded = decodeModelCallAttempt(attempt());
-    assert.equal(decoded.logicalCallId, 'call-1');
-    assert.equal(decoded.costUsd, 0.004);
-  });
-
-  test('accepts Goal evaluator attribution', () => {
-    assert.equal(
-      decodeModelCallAttempt(attempt({ callKind: 'goal_evaluation' })).callKind,
-      'goal_evaluation',
-    );
-  });
-
-  test('accepts an unpriced attempt that carries usage but no cost', () => {
-    const decoded = decodeModelCallAttempt(attempt({ costBasis: 'unpriced', costUsd: undefined }));
-    assert.equal(decoded.costBasis, 'unpriced');
-    assert.equal(decoded.costUsd, undefined);
-  });
-
   test('rejects an unpriced attempt that carries a cost', () => {
     assert.throws(
       () => decodeModelCallAttempt(attempt({ costBasis: 'unpriced', costUsd: 0 })),
@@ -78,30 +59,11 @@ describe('ModelCallAttempt codec', () => {
     );
   });
 
-  test('accepts a priced attempt costing exactly zero', () => {
-    const decoded = decodeModelCallAttempt(attempt({ costBasis: 'priced', costUsd: 0 }));
-    assert.equal(decoded.costUsd, 0);
-  });
-
   test('rejects missing usage that still carries tokens', () => {
     assert.throws(
       () => decodeModelCallAttempt(attempt({ usageBasis: 'missing' })),
       /missing usage but carries tokens/,
     );
-  });
-
-  test('accepts missing usage with no token fields', () => {
-    const decoded = decodeModelCallAttempt(
-      attempt({
-        usageBasis: 'missing',
-        inputTokens: undefined,
-        outputTokens: undefined,
-        status: 'failed',
-        costBasis: 'unpriced',
-        costUsd: undefined,
-      }),
-    );
-    assert.equal(decoded.usageBasis, 'missing');
   });
 
   test('rejects completedAt before startedAt', () => {

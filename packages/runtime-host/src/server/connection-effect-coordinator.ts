@@ -4,6 +4,7 @@ import type {
   ConnectionTestErrorClass,
   ConnectionTestSummary,
 } from '@maka/core/runtime-policy';
+import { parseRequestHeaders } from '@maka/core/runtime-policy';
 import {
   PROVIDER_DEFAULTS,
   deriveConnectionSlug,
@@ -11,6 +12,7 @@ import {
 } from '@maka/core/llm-connections';
 import {
   createConnectionEffectFetchTransport,
+  createRequestCustomizationFetch,
   isOAuthSubscriptionProvider,
   runConnectionModelDiscoveryEffect,
   runConnectionTestEffect,
@@ -339,7 +341,16 @@ export class HostConnectionEffectCoordinator {
     const secret = await this.#connectionSecret(prepared, proxy);
     const transport = this.#createTransport(proxy);
     try {
-      return await run(transport.fetch, secret);
+      const requestHeaders = prepared.secretMaterial.requestHeaders
+        ? parseRequestHeaders(prepared.secretMaterial.requestHeaders.secret)
+        : {};
+      return await run(
+        createRequestCustomizationFetch(transport.fetch, {
+          headers: requestHeaders,
+          bodyOverlay: prepared.connection.requestBodyOverlay,
+        }),
+        secret,
+      );
     } finally {
       await transport.close();
     }

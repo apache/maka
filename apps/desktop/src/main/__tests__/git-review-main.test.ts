@@ -104,6 +104,28 @@ describe('Git Review snapshot authority', () => {
     );
   });
 
+  it('compares a branch from its merge base when the base branch has advanced', async () => {
+    const root = await repository();
+    await git(root, 'checkout', '-b', 'feature/review');
+    await writeFile(join(root, 'feature.txt'), 'feature\n', 'utf8');
+    await git(root, 'add', 'feature.txt');
+    await git(root, 'commit', '-m', 'feature');
+
+    await git(root, 'checkout', 'main');
+    await writeFile(join(root, 'main-only.txt'), 'main only\n', 'utf8');
+    await git(root, 'add', 'main-only.txt');
+    await git(root, 'commit', '-m', 'advance main');
+    await git(root, 'checkout', 'feature/review');
+
+    const result = await readGitReview(root, 'branch');
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(
+      result.snapshot.files.map((file) => file.path),
+      ['feature.txt'],
+    );
+  });
+
   it('stages and unstages only paths admitted by the current snapshot', async () => {
     const root = await repository();
     await writeFile(join(root, 'base.txt'), 'base\nchanged\n', 'utf8');

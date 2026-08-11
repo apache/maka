@@ -12,6 +12,7 @@ import {
   type SessionHeader,
 } from '@maka/core';
 import { SessionConfigurationTransitionError, headerToSummary } from '@maka/runtime';
+import { type ProjectCatalog, ProjectUnavailableError } from '@maka/storage';
 import {
   SessionMetadataVersionConflictError,
   type SessionCatalogRecord,
@@ -21,6 +22,8 @@ import {
   type SessionConfigurationUpdateInput,
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import { HostProjectMembershipGate } from '../server/project-membership-gate.js';
+import { HostWorkspaceResolver } from '../server/workspace-resolver.js';
 import {
   HostSessionCatalogCoordinator,
   type HostSessionCatalogCoordinatorOptions,
@@ -223,7 +226,7 @@ test('creation rejects reserved execution labels before claiming a Session ident
   const outcome = await fixture.coordinator.handlers['session.create'](
     {
       sessionId: fixture.sessionId,
-      cwd: process.cwd(),
+      workspace: { kind: 'host_path', path: process.cwd() },
       labels: [DEEP_RESEARCH_SESSION_LABEL],
       modelTarget: { kind: 'default' },
     },
@@ -268,7 +271,7 @@ test('creation on a relay connection honours declared levels via the catalog pro
   const outcome = await fixture.coordinator.handlers['session.create'](
     {
       sessionId: fixture.sessionId,
-      cwd: process.cwd(),
+      workspace: { kind: 'host_path', path: process.cwd() },
       modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'relay-model' },
       thinkingLevel: 'low',
     },
@@ -302,7 +305,7 @@ test('creation on a relay connection without declarations still fails closed on 
   const outcome = await fixture.coordinator.handlers['session.create'](
     {
       sessionId: fixture.sessionId,
-      cwd: process.cwd(),
+      workspace: { kind: 'host_path', path: process.cwd() },
       modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'relay-model' },
       thinkingLevel: 'low',
     },
@@ -333,7 +336,7 @@ test('creation rejects explore permission without a declared mode', async () => 
   const outcome = await fixture.coordinator.handlers['session.create'](
     {
       sessionId: fixture.sessionId,
-      cwd: process.cwd(),
+      workspace: { kind: 'host_path', path: process.cwd() },
       modelTarget: { kind: 'default' },
       permissionMode: 'explore',
     },
@@ -368,7 +371,7 @@ test('creation materializes Deep Research semantics inside the Host transaction'
   const outcome = await fixture.coordinator.handlers['session.create'](
     {
       sessionId: fixture.sessionId,
-      cwd: process.cwd(),
+      workspace: { kind: 'host_path', path: process.cwd() },
       mode: 'deep_research',
       name: 'Caller override',
       labels: ['customer-label'],
@@ -412,7 +415,7 @@ test('configuration update admits Plan mode through Runtime authority', async ()
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('creation fingerprints and persists the canonical cwd behind a symlink', async () => {
+test('creation persists a canonical cwd while fingerprints retain exact target intent', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-create-cwd-'));
   const target = join(root, 'target');
   const link = join(root, 'link');
@@ -441,7 +444,7 @@ test('creation fingerprints and persists the canonical cwd behind a symlink', as
       const outcome = await fixture.coordinator.handlers['session.create'](
         {
           sessionId: fixture.sessionId,
-          cwd,
+          workspace: { kind: 'host_path', path: cwd },
           modelTarget: { kind: 'default' },
         },
         context,
@@ -452,13 +455,147 @@ test('creation fingerprints and persists the canonical cwd behind a symlink', as
     assert.equal(requests.length, 2);
     assert.equal(requests[0]?.input.cwd, await realpath(target));
     assert.equal(requests[1]?.input.cwd, await realpath(target));
-    assert.equal(requests[0]?.requestFingerprint, requests[1]?.requestFingerprint);
+    assert.notEqual(requests[0]?.requestFingerprint, requests[1]?.requestFingerprint);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test('cwd relocation canonicalizes once and commits through Runtime authority', async () => {
+test('exact Project creation retry succeeds after the Project becomes archived', async () => {
+  const fixture = createFixture({
+    projectCatalog: {
+      list: async () => [
+        {
+          id: 'project-1',
+          name: 'Project',
+          locations: [{ path: '/archived', isWorktree: false }],
+          archivedAt: 1,
+          available: true,
+          preferredPath: '/archived',
+        },
+      ],
+    } as never,
+    stores: {
+      probeStableSessionCreate: async () => ({
+        kind: 'existing',
+        record: headerSnapshot(sessionHeader('session-1', ['user-label']), 3),
+      }),
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'project', projectId: 'project-1' },
+      modelTarget: { kind: 'default' },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('creation resolves a Project alias and records Host-owned usage', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-create-project-'));
+  const currentPath = join(root, 'current');
+  await mkdir(currentPath);
+  try {
+    let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
+    const touches: Array<{ projectId: string; path?: string }> = [];
+    let projectChanges = 0;
+    const fixture = createFixture({
+      onProjectChanged: () => {
+        projectChanges += 1;
+      },
+      projectCatalog: {
+        list: async () => [
+          {
+            id: 'project-current',
+            aliases: ['project-stale'],
+            name: 'Project',
+            locations: [{ path: currentPath, isWorktree: false }],
+            available: true,
+            preferredPath: currentPath,
+          },
+        ],
+        touch: async (projectId: string, path?: string) => {
+          touches.push({ projectId, path });
+          return {} as never;
+        },
+      } as never,
+      stores: {
+        createStableSession: async (request) => {
+          created = request;
+          return {
+            kind: 'existing',
+            record: headerSnapshot(
+              {
+                ...sessionHeader(request.sessionId, []),
+                cwd: request.input.cwd,
+                projectId: request.input.projectId,
+              },
+              1,
+            ),
+          };
+        },
+      },
+    });
+
+    const outcome = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        workspace: { kind: 'project', projectId: 'project-stale' },
+        modelTarget: { kind: 'default' },
+      },
+      context,
+    );
+
+    assert.equal(outcome.ok, true);
+    assert.equal(created?.input.cwd, currentPath);
+    assert.equal(created?.input.projectId, 'project-current');
+    assert.deepEqual(touches, [{ projectId: 'project-current', path: currentPath }]);
+    assert.equal(projectChanges, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('creation reports a Project path lost before usage recording without draining', async () => {
+  const fixture = createFixture({
+    projectCatalog: {
+      list: async () => [
+        {
+          id: 'project-1',
+          name: 'Project',
+          locations: [{ path: '/missing', isWorktree: false }],
+          available: true,
+          preferredPath: '/missing',
+        },
+      ],
+      touch: async () => {
+        throw new ProjectUnavailableError('project-1');
+      },
+    } as never,
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'project', projectId: 'project-1' },
+      modelTarget: { kind: 'default' },
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: { code: 'operation_conflict', message: 'Project is unavailable: project-1' },
+  });
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('Host-path relocation canonicalizes once and commits through Runtime authority', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-relocate-cwd-'));
   const target = join(root, 'target');
   const link = join(root, 'link');
@@ -467,12 +604,11 @@ test('cwd relocation canonicalizes once and commits through Runtime authority', 
   try {
     const fixture = createFixture();
     const expectedRevision = fixture.revision();
-    const outcome = await fixture.coordinator.handlers['session.cwd.relocate'](
+    const outcome = await fixture.coordinator.handlers['session.workspace.relocate'](
       {
         sessionId: fixture.sessionId,
         expectedRevision,
-        cwd: link,
-        projectId: 'project-2',
+        workspace: { kind: 'host_path', path: link },
       },
       context,
     );
@@ -482,9 +618,9 @@ test('cwd relocation canonicalizes once and commits through Runtime authority', 
     if ('kind' in outcome.result.session) {
       assert.fail('Relocated Session must remain wire-representable');
     }
-    assert.equal(outcome.result.session.cwd, await realpath(target));
+    assert.equal(outcome.result.session.workspace.hostCwd, await realpath(target));
     assert.equal(fixture.header().cwd, await realpath(target));
-    assert.equal(fixture.header().projectId, 'project-2');
+    assert.equal(fixture.header().projectId, null);
     assert.equal(fixture.revision(), expectedRevision + 1);
     assert.equal(fixture.drainRequests(), 0);
   } finally {
@@ -492,7 +628,7 @@ test('cwd relocation canonicalizes once and commits through Runtime authority', 
   }
 });
 
-test('cwd relocation reports a stale Session revision without mutating Runtime state', async () => {
+test('workspace relocation reports a stale Session revision without mutating Runtime state', async () => {
   let relocationAttempts = 0;
   const fixture = createFixture({
     manager: {
@@ -502,11 +638,11 @@ test('cwd relocation reports a stale Session revision without mutating Runtime s
       },
     },
   });
-  const outcome = await fixture.coordinator.handlers['session.cwd.relocate'](
+  const outcome = await fixture.coordinator.handlers['session.workspace.relocate'](
     {
       sessionId: fixture.sessionId,
       expectedRevision: fixture.revision() - 1,
-      cwd: process.cwd(),
+      workspace: { kind: 'host_path', path: process.cwd() },
     },
     context,
   );
@@ -523,7 +659,7 @@ test('cwd relocation reports a stale Session revision without mutating Runtime s
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('same-cwd relocation still enters Runtime eligibility authority', async () => {
+test('same-workspace relocation still enters Runtime eligibility authority', async () => {
   let relocationAttempts = 0;
   const cwd = await realpath(process.cwd());
   const fixture = createFixture({
@@ -539,11 +675,11 @@ test('same-cwd relocation still enters Runtime eligibility authority', async () 
     },
   });
 
-  const outcome = await fixture.coordinator.handlers['session.cwd.relocate'](
+  const outcome = await fixture.coordinator.handlers['session.workspace.relocate'](
     {
       sessionId: fixture.sessionId,
       expectedRevision: fixture.revision(),
-      cwd,
+      workspace: { kind: 'host_path', path: cwd },
     },
     context,
   );
@@ -605,6 +741,8 @@ function createFixture(
     readonly manager?: Partial<ConfigurationAuthority>;
     readonly continuity?: Partial<SessionContinuity>;
     readonly connection?: FixtureConnection;
+    readonly projectCatalog?: ProjectCatalog;
+    readonly onProjectChanged?: () => void;
   } = {},
 ) {
   const sessionId = 'session-1';
@@ -670,6 +808,11 @@ function createFixture(
     manager,
     admission: new SessionAdmissionGate(),
     continuity,
+    workspaceResolver: new HostWorkspaceResolver(
+      options.projectCatalog ?? ({ list: async () => [] } as never),
+      new HostProjectMembershipGate(),
+      options.onProjectChanged ?? (() => undefined),
+    ),
     requestDrain: () => {
       drains += 1;
     },

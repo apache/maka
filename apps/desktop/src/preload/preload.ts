@@ -17,6 +17,10 @@ import type {
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type {
+  DesktopDiagnosticCopyResult,
+  DesktopErrorDiagnosticInput,
+} from './diagnostics-contract.js';
+import type {
   ConnectionEvent,
   ConnectionTestResult,
   CreateConnectionInput,
@@ -74,10 +78,10 @@ import type {
   AuthorizationUrlPayload,
   SubscriptionAccountState,
   SubscriptionActionResult,
-  PlanReminder,
+  CreateScheduledTaskInput,
+  ScheduledTask,
+  UpdateScheduledTaskInput,
   ProjectRecord,
-  PlanReminderDeliveryTarget,
-  PlanReminderRecurrence,
   DailyReviewArchive,
   DailyReviewArchiveSummary,
   QueueEnqueueOutcome,
@@ -96,7 +100,6 @@ import type {
 } from '@maka/core';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type {
-  AgentGraphClientChangedEvent,
   AgentGraphClientSnapshot,
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
@@ -194,16 +197,26 @@ const makaBridge = {
     },
     subscribe(
       rootSessionId: string,
-      handler: (event: AgentGraphClientChangedEvent) => void,
+      handler: () => void,
     ): () => void {
-      const listener = (
+      const changedListener = (
         _event: Electron.IpcRendererEvent,
-        payload: AgentGraphClientChangedEvent,
+        payload: { rootSessionId: string },
       ) => {
-        if (payload.rootSessionId === rootSessionId) handler(payload);
+        if (payload.rootSessionId === rootSessionId) handler();
       };
-      ipcRenderer.on('graphs:changed', listener);
-      return () => ipcRenderer.off('graphs:changed', listener);
+      const resyncListener = (
+        _event: Electron.IpcRendererEvent,
+        payload: { rootSessionId: string },
+      ) => {
+        if (payload.rootSessionId === rootSessionId) handler();
+      };
+      ipcRenderer.on('graphs:changed', changedListener);
+      ipcRenderer.on('graphs:resync', resyncListener);
+      return () => {
+        ipcRenderer.off('graphs:changed', changedListener);
+        ipcRenderer.off('graphs:resync', resyncListener);
+      };
     },
   },
   sessions: {
@@ -277,6 +290,19 @@ const makaBridge = {
     },
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]> {
       return ipcRenderer.invoke('sessions:listActiveInteractions', sessionId);
+    },
+    subscribeActiveInteractions(
+      handler: (event: {
+        sessionId: string;
+        interactions: ActiveInteractionRequestEvent[];
+      }) => void,
+    ): () => void {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: { sessionId: string; interactions: ActiveInteractionRequestEvent[] },
+      ) => handler(payload);
+      ipcRenderer.on('sessions:active-interactions-changed', listener);
+      return () => ipcRenderer.off('sessions:active-interactions-changed', listener);
     },
     listTurns(sessionId: string): Promise<TurnRecord[]> {
       return ipcRenderer.invoke('sessions:listTurns', sessionId);
@@ -407,7 +433,6 @@ const makaBridge = {
     list(input: {
       adapterId: string;
       includeArchived?: boolean;
-      cwd?: string;
       cursor?: string;
     }): Promise<{ sessions: ExternalSessionSummary[]; nextCursor: string | null }> {
       return ipcRenderer.invoke('external-sessions:list', input);
@@ -422,6 +447,11 @@ const makaBridge = {
   projects: {
     list(): Promise<ProjectRecord[]> {
       return ipcRenderer.invoke('projects:list');
+    },
+    subscribeChanges(handler: () => void): () => void {
+      const listener = () => handler();
+      ipcRenderer.on('projects:changed', listener);
+      return () => ipcRenderer.off('projects:changed', listener);
     },
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
@@ -498,6 +528,12 @@ const makaBridge = {
       ipcRenderer.on('shell-runs:pty-data', listener);
       return () => ipcRenderer.off('shell-runs:pty-data', listener);
     },
+    subscribeResync(handler: (event: { sessionId: string }) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { sessionId: string }) =>
+        handler(payload);
+      ipcRenderer.on('shell-runs:resync', listener);
+      return () => ipcRenderer.off('shell-runs:resync', listener);
+    },
   },
   gitReview: {
     read(input: {
@@ -555,6 +591,15 @@ const makaBridge = {
     },
     hasSecret(slug: string): Promise<boolean> {
       return ipcRenderer.invoke('connections:hasSecret', slug);
+    },
+    getRequestHeaders(slug: string): Promise<import('@maka/core').SavedRequestHeaders> {
+      return ipcRenderer.invoke('connections:getRequestHeaders', slug);
+    },
+    setRequestHeaders(
+      slug: string,
+      headers: readonly import('@maka/core').RequestHeaderUpdate[],
+    ): Promise<import('@maka/core').SavedRequestHeaders> {
+      return ipcRenderer.invoke('connections:setRequestHeaders', slug, headers);
     },
     subscribeEvents(handler: (event: ConnectionEvent) => void): () => void {
       const listener = (_event: Electron.IpcRendererEvent, payload: ConnectionEvent) => handler(payload);
@@ -895,40 +940,43 @@ const makaBridge = {
       return ipcRenderer.invoke('antigravity-subscription:logout');
     },
   },
-  plans: {
-    list(): Promise<PlanReminder[]> {
-      return ipcRenderer.invoke('plans:list');
+  scheduledTasks: {
+    list(): Promise<ScheduledTask[]> {
+      return ipcRenderer.invoke('scheduled-tasks:list');
     },
-    create(input: { title: string; note?: string; runAt: number | string; recurrence?: PlanReminderRecurrence; cronExpression?: string; delivery?: PlanReminderDeliveryTarget }): Promise<PlanReminder> {
-      return ipcRenderer.invoke('plans:create', input);
+    create(input: Omit<CreateScheduledTaskInput, 'createdBy'>): Promise<ScheduledTask> {
+      return ipcRenderer.invoke('scheduled-tasks:create', input);
     },
-    update(id: string, patch: { title?: string; note?: string; runAt?: number | string; recurrence?: PlanReminderRecurrence; cronExpression?: string; delivery?: PlanReminderDeliveryTarget; enabled?: boolean }): Promise<PlanReminder> {
-      return ipcRenderer.invoke('plans:update', id, patch);
+    update(id: string, patch: UpdateScheduledTaskInput): Promise<ScheduledTask> {
+      return ipcRenderer.invoke('scheduled-tasks:update', id, patch);
     },
-    setEnabled(id: string, enabled: boolean): Promise<PlanReminder> {
-      return ipcRenderer.invoke('plans:setEnabled', id, enabled);
+    setEnabled(id: string, enabled: boolean): Promise<ScheduledTask> {
+      return ipcRenderer.invoke('scheduled-tasks:setEnabled', id, enabled);
     },
-    triggerNow(id: string): Promise<PlanReminder> {
-      return ipcRenderer.invoke('plans:triggerNow', id);
+    triggerNow(id: string): Promise<ScheduledTask> {
+      return ipcRenderer.invoke('scheduled-tasks:triggerNow', id);
     },
-    snooze(id: string): Promise<PlanReminder> {
-      return ipcRenderer.invoke('plans:snooze', id);
+    snooze(id: string): Promise<ScheduledTask> {
+      return ipcRenderer.invoke('scheduled-tasks:snooze', id);
     },
-    clearRunHistory(id: string): Promise<PlanReminder> {
-      return ipcRenderer.invoke('plans:clearRunHistory', id);
+    clearRunHistory(id: string): Promise<ScheduledTask> {
+      return ipcRenderer.invoke('scheduled-tasks:clearRunHistory', id);
     },
     delete(id: string): Promise<void> {
-      return ipcRenderer.invoke('plans:delete', id);
+      return ipcRenderer.invoke('scheduled-tasks:delete', id);
     },
-    subscribeChanges(handler: (event: { type: 'plans_changed'; reason: string; reminderId?: string; ts: number }) => void): () => void {
-      const listener = (_event: Electron.IpcRendererEvent, payload: { type: 'plans_changed'; reason: string; reminderId?: string; ts: number }) => handler(payload);
-      ipcRenderer.on('plans:changed', listener);
-      return () => ipcRenderer.off('plans:changed', listener);
+    subscribeChanges(handler: (event: { type: 'scheduled_tasks_changed'; reason: string; taskId?: string; ts: number }) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { type: 'scheduled_tasks_changed'; reason: string; taskId?: string; ts: number }) => handler(payload);
+      ipcRenderer.on('scheduled-tasks:changed', listener);
+      return () => ipcRenderer.off('scheduled-tasks:changed', listener);
     },
-    subscribeDue(handler: (reminder: PlanReminder) => void): () => void {
-      const listener = (_event: Electron.IpcRendererEvent, payload: PlanReminder) => handler(payload);
-      ipcRenderer.on('plans:due', listener);
-      return () => ipcRenderer.off('plans:due', listener);
+    subscribeDue(handler: (task: Pick<ScheduledTask, 'id' | 'title'>) => void): () => void {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: Pick<ScheduledTask, 'id' | 'title'>,
+      ) => handler(payload);
+      ipcRenderer.on('scheduled-tasks:fired', listener);
+      return () => ipcRenderer.off('scheduled-tasks:fired', listener);
     },
   },
   settings: {
@@ -1127,6 +1175,9 @@ const makaBridge = {
     updateStatus(): Promise<AppUpdateStatus> {
       return ipcRenderer.invoke('app:updateStatus');
     },
+    checkForUpdates(): Promise<AppUpdateStatus> {
+      return ipcRenderer.invoke('app:checkForUpdates');
+    },
     retryUpdateDownload(): Promise<AppUpdateStatus> {
       return ipcRenderer.invoke('app:retryUpdateDownload');
     },
@@ -1171,6 +1222,11 @@ const makaBridge = {
     },
     saveArtifactAs(sessionId: string, artifactId: string): Promise<ArtifactSaveResult> {
       return ipcRenderer.invoke('app:saveArtifactAs', sessionId, artifactId);
+    },
+  },
+  diagnostics: {
+    copyErrorReport(input: DesktopErrorDiagnosticInput): Promise<DesktopDiagnosticCopyResult> {
+      return ipcRenderer.invoke('diagnostics:copyErrorReport', input);
     },
   },
   workspace: {

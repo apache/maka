@@ -7,12 +7,12 @@ import type { IpcMain } from 'electron';
 import type { BotRegistry, ComputerUseToolSet, MakaTool } from '@maka/runtime';
 import { connectRuntimeHost } from '@maka/runtime-host/client';
 import {
-  HOST_OPERATION_SPECS,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  type OperationKey,
   type SessionCatalogProjection,
 } from '@maka/runtime-host/protocol';
 import {
+  createUnavailableDomainOperationHandlers,
+  defineInteractiveRuntimeHostComposition,
   RuntimeHostKernel,
   type RuntimeHostComposition,
 } from '@maka/runtime-host/server';
@@ -39,7 +39,7 @@ test('drives Desktop Session operations through a real Runtime Host connection',
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 10_000,
-      compositionFactory: async ({ hostEpoch }) => ({
+      composition: defineInteractiveRuntimeHostComposition(async ({ hostEpoch }) => ({
         handlers: handlers({
           'session.catalog.query': async (input) =>
             input.kind === 'get'
@@ -61,7 +61,7 @@ test('drives Desktop Session operations through a real Runtime Host connection',
         beginDrain() {},
         async recover() {},
         async close() {},
-      }),
+      })),
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
@@ -108,7 +108,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 10_000,
-      compositionFactory: async () => ({
+      composition: defineInteractiveRuntimeHostComposition(async () => ({
         handlers: handlers({
           'client.capability.replace': async (input) => ({
             ok: true,
@@ -141,8 +141,10 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
           'session.create': async (input) => {
             assert.deepEqual(input.modelTarget, { kind: 'default' });
             assert.equal(input.permissionMode, undefined);
+            assert.equal(input.workspace.kind, 'host_path');
+            if (input.workspace.kind !== 'host_path') throw new Error('Expected Host path');
             projected = session(input.sessionId, {
-              cwd: input.cwd,
+              workspace: { target: input.workspace, hostCwd: input.workspace.path },
               name: input.name,
               connectionLocked: false,
             });
@@ -185,12 +187,13 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         beginDrain() {},
         async recover() {},
         async close() {},
-      }),
+      })),
     });
     const ipc = ipcHarness();
     const changes: Array<{ reason: string; sessionId?: string }> = [];
     const started = await startDesktopRuntimeHostCandidate({
       rootPath: base,
+      candidateEntrypoint: new URL('file:///unused-runtime-host-candidate.js'),
       ipcMain: ipc,
       workspaceRoot: base,
       attachmentApprovals: createAttachmentApprovalRegistry(),
@@ -205,8 +208,10 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         releaseComputerUseSession() {},
       },
       botRegistry: {} as BotRegistry,
-      resolveBotCreateTarget: async () => ({ cwd: base }),
-      resolveSessionCreateProject: async () => ({ cwd: base }),
+      resolveBotCreateTarget: async () => ({
+        workspace: { kind: 'host_path', path: base },
+      }),
+      resolveSessionCreateProject: async () => ({ kind: 'host_path', path: base }),
       emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
       emitModeChanged() {},
       completeComputerUseTurn() {},
@@ -260,7 +265,7 @@ test('drives the renderer Session execution facade through real UDS framing', as
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 10_000,
-      compositionFactory: async () => ({
+      composition: defineInteractiveRuntimeHostComposition(async () => ({
         handlers: handlers({
           'session.catalog.query': async (input) => ({
             ok: true,
@@ -297,7 +302,7 @@ test('drives the renderer Session execution facade through real UDS framing', as
         beginDrain() {},
         async recover() {},
         async close() {},
-      }),
+      })),
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
@@ -316,6 +321,7 @@ test('drives the renderer Session execution facade through real UDS framing', as
       {
         client,
         observer,
+        observations: observer,
         attachmentApprovals: createAttachmentApprovalRegistry(),
         emitSessionsChanged() {},
         stat: async () => ({ size: 0 }),
@@ -366,7 +372,7 @@ test('drives bounded Session domain projections through real UDS framing', async
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 10_000,
-      compositionFactory: async () => ({
+      composition: defineInteractiveRuntimeHostComposition(async () => ({
         handlers: handlers({
           'task.ledger.query': async (input) => ({
             ok: true,
@@ -421,7 +427,7 @@ test('drives bounded Session domain projections through real UDS framing', async
         beginDrain() {},
         async recover() {},
         async close() {},
-      }),
+      })),
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
@@ -465,21 +471,10 @@ test('drives bounded Session domain projections through real UDS framing', async
 type TestHandlers = Partial<RuntimeHostComposition['handlers']>;
 
 function handlers(overrides: TestHandlers): RuntimeHostComposition['handlers'] {
-  const unavailable = Object.fromEntries(
-    (Object.keys(HOST_OPERATION_SPECS) as OperationKey[])
-      .filter((operation) => operation !== 'host.status')
-      .map((operation) => [
-        operation,
-        async () => ({
-          ok: false,
-          error: {
-            code: 'operation_unavailable',
-            message: `${operation} is unavailable in the Desktop adapter fixture`,
-          },
-        }),
-      ]),
-  );
-  return { ...unavailable, ...overrides } as RuntimeHostComposition['handlers'];
+  return {
+    ...createUnavailableDomainOperationHandlers(),
+    ...overrides,
+  } as RuntimeHostComposition['handlers'];
 }
 
 function catalogRevision(seed: string): `sha256:${string}` {
@@ -532,7 +527,10 @@ function session(
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: 'Desktop Host Session',

@@ -1,4 +1,4 @@
-import type { PlanReminder, PlanReminderRunStatus } from './plan-reminders.js';
+import type { ScheduledTask, ScheduledTaskRunOutcome } from './scheduled-task.js';
 
 export const SOURCE_RECORD_TYPES = ['mcp', 'api', 'local'] as const;
 export type SourceRecordType = (typeof SOURCE_RECORD_TYPES)[number];
@@ -90,7 +90,7 @@ export interface DeriveCapabilityAuditReportInput {
   now?: number;
   sources?: readonly SourceRecord[];
   skills?: readonly CapabilityAuditSkillInput[];
-  planReminders?: readonly PlanReminder[];
+  scheduledTasks?: readonly ScheduledTask[];
 }
 
 export function deriveCapabilityAuditReport(
@@ -106,7 +106,7 @@ export function deriveCapabilityAuditReport(
     needsLocalSkillSource && !sources.some((source) => source.slug === LOCAL_SKILL_SOURCE_SLUG)
       ? [localSkillSource(skills.length, declaredToolKindCount, now), ...sources]
       : sources;
-  const automations = (input.planReminders ?? []).map(planReminderToAutomationRecord);
+  const automations = (input.scheduledTasks ?? []).map(scheduledTaskToAutomationRecord);
 
   return {
     checkedAt: now,
@@ -172,29 +172,28 @@ function localSkillSource(
   };
 }
 
-function planReminderToAutomationRecord(reminder: PlanReminder): AutomationRecord {
+function scheduledTaskToAutomationRecord(task: ScheduledTask): AutomationRecord {
+  const lastRun = task.runs[0];
   return {
-    id: reminder.id,
-    name: reminder.title,
-    enabled: reminder.enabled && reminder.status === 'scheduled',
+    id: task.id,
+    name: task.title,
+    enabled: task.status === 'active',
     trigger: 'schedule',
-    permissionMode: planReminderPermissionMode(reminder),
-    ...(typeof reminder.lastRun?.at === 'number' ? { lastRunAt: reminder.lastRun.at } : {}),
-    ...(reminder.lastRun
-      ? { lastRunStatus: mapPlanReminderRunStatus(reminder.lastRun.status) }
-      : {}),
+    permissionMode: scheduledTaskPermissionMode(task),
+    ...(lastRun ? { lastRunAt: lastRun.at } : {}),
+    ...(lastRun ? { lastRunStatus: mapScheduledTaskRunOutcome(lastRun.outcome) } : {}),
   };
 }
 
-function planReminderPermissionMode(reminder: PlanReminder): CapabilityAuditPermissionMode {
-  if (reminder.status === 'completed') return 'explore';
-  if (!reminder.enabled || reminder.status === 'paused') return 'ask';
+function scheduledTaskPermissionMode(task: ScheduledTask): CapabilityAuditPermissionMode {
+  if (task.status === 'completed' || task.status === 'expired') return 'explore';
+  if (task.status === 'paused') return 'ask';
   return 'execute';
 }
 
-function mapPlanReminderRunStatus(status: PlanReminderRunStatus): AutomationLastRunStatus {
-  if (status === 'triggered') return 'ok';
-  if (status === 'blocked') return 'skipped';
+function mapScheduledTaskRunOutcome(outcome: ScheduledTaskRunOutcome): AutomationLastRunStatus {
+  if (outcome === 'ok') return 'ok';
+  if (outcome === 'blocked') return 'skipped';
   return 'error';
 }
 
