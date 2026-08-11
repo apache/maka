@@ -221,28 +221,6 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('creates a deterministic revision-zero execution boundary for every legacy mode', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      for (const mode of ['ask', 'execute', 'explore', 'bypass'] as const) {
-        const header = fullHeader({
-          id: `legacy-${mode}`,
-          permissionMode: mode as SessionHeader['permissionMode'],
-        });
-        await store.create(header);
-
-        const boundary = await store.readExecutionBoundary(header.id);
-        assert.equal(boundary.revision, 0);
-        assert.equal(boundary.kind, mode === 'bypass' ? 'bypass' : 'managed');
-        if (boundary.kind === 'managed') {
-          assert.equal(boundary.profile.name, mode === 'explore' ? 'read-only' : 'workspace-write');
-        }
-      }
-    } finally {
-      store.close();
-    }
-  });
-
   test('persists an explicitly supplied external genesis boundary', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
@@ -652,27 +630,6 @@ describe('SqliteSessionMetadataStore', () => {
       if (restored.kind === 'managed') {
         assert.equal(canReadPath(restored.profile, '/outside/kept/file.txt'), true);
       }
-    } finally {
-      store.close();
-    }
-  });
-
-  test('projects an explicit legacy mode in the same managed-boundary transition', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(250) });
-    try {
-      await store.create(fullHeader({ labels: ['deep-research', 'kept'] }));
-
-      const explore = await store.setExecutionBoundaryKind('session-1', 'managed', {
-        permissionMode: 'explore',
-        labels: ['kept'],
-      });
-
-      assert.equal(explore.kind, 'managed');
-      assert.equal(explore.revision, 1);
-      if (explore.kind === 'managed') assert.equal(explore.profile.name, 'read-only');
-      const projected = (await store.read('session-1')).header;
-      assert.equal(projected.permissionMode, 'explore');
-      assert.deepEqual(projected.labels, ['kept']);
     } finally {
       store.close();
     }

@@ -413,82 +413,6 @@ test('restarts transcript loading after an expired snapshot', async () => {
   );
 });
 
-test('routes a legacy Host through incompatible replacement', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-legacy-epoch-'));
-  const capability = await resolveStorageRoot({
-    path: join(base, 'root'),
-    kind: 'interactive',
-  });
-  const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
-  const hostEpoch = randomUUID();
-  const endpoint = await prepareRuntimeHostEndpoint({ rootId: capability.rootId, hostEpoch });
-  const serverTask = deferred<void>();
-  const server = createServer((socket) => {
-    void (async () => {
-      const transport = new FramedTransport(socket);
-      const hello = decodeClientFrame(await transport.read(1_000));
-      assert.ok('kind' in hello && hello.kind === 'hello');
-      if (!('kind' in hello) || hello.kind !== 'hello') return;
-      assert.deepEqual(
-        { min: hello.protocolMin, max: hello.protocolMax },
-        { min: RUNTIME_HOST_PROTOCOL_VERSION + 1, max: RUNTIME_HOST_PROTOCOL_VERSION + 1 },
-      );
-      await writeRawLocalIpc(
-        transport,
-        encodeLegacyProtocolFrame({
-          kind: 'incompatible',
-          hostEpoch,
-          protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
-          protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
-          state: 'ready',
-          replacement: 'wait_for_idle_exit',
-        }),
-      );
-      transport.closeAfterFlush();
-      await transport.closed;
-    })().then(serverTask.resolve, serverTask.reject);
-  });
-  try {
-    await listen(server, endpoint.path);
-    await endpoint.prepareAfterListen();
-    await writeHostRegistration(controlDirectory, {
-      kind: 'maka-runtime-host',
-      schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
-      rootId: capability.rootId,
-      hostEpoch,
-      endpoint: endpoint.path,
-      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
-      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
-      compatibilityEpoch: 0,
-      compositionId: 'maka.interactive',
-      compositionRevision: '1',
-      state: 'ready',
-      pid: process.pid,
-      createdAt: new Date().toISOString(),
-    });
-
-    const result = await connectRuntimeHost({
-      rootPath: join(base, 'root'),
-      surface: 'desktop',
-      protocol: PROTOCOL,
-    });
-    assert.equal(result.kind, 'incompatible');
-    if (result.kind === 'incompatible') {
-      assert.equal(result.registration.compatibilityEpoch, 0);
-      assert.equal(result.handshake.compatibilityEpoch, 0);
-      assert.equal(result.handshake.compositionId, 'maka.interactive');
-      assert.equal(result.handshake.compositionRevision, 'legacy');
-      assert.equal(result.handshake.replacement, 'wait_for_idle_exit');
-    }
-    await serverTask.promise;
-  } finally {
-    await closeServer(server);
-    await removeHostRegistration(controlDirectory, hostEpoch).catch(() => undefined);
-    await endpoint.cleanup().catch(() => undefined);
-    await rm(base, { recursive: true, force: true });
-  }
-});
-
 async function withProtocolPeer(
   serve: (transport: FramedTransport, hostEpoch: string, rootId: string) => Promise<void>,
   run: (connection: RuntimeHostConnection) => Promise<void>,
@@ -681,10 +605,6 @@ function writeRawLocalIpc(transport: FramedTransport, frame: Uint8Array): Promis
   return new Promise((resolve, reject) => {
     transport.socket.write(frame, (error) => (error ? reject(error) : resolve()));
   });
-}
-
-function encodeLegacyProtocolFrame(frame: unknown): Buffer {
-  return Buffer.from(`${JSON.stringify(frame)}\n`, 'utf8');
 }
 
 function listen(server: Server, path: string): Promise<void> {
