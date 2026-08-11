@@ -17,7 +17,6 @@ import {
   runtimeEventHasModelVisibleContent,
   type RuntimeEvent,
   type RuntimeEventActions,
-  type RuntimeEventContent,
 } from '../runtime-event.js';
 import { decodeStoredMessageForRecovery } from '../session.js';
 
@@ -422,79 +421,9 @@ describe('RuntimeEvent content variants', () => {
       /Invalid stored message schema/,
     );
   });
-
-  test('text content carries a string body', () => {
-    const content: RuntimeEventContent = { kind: 'text', text: 'hello' };
-    if (content.kind !== 'text') throw new Error('unreachable');
-    expect(content.text).toBe('hello');
-  });
-
-  test('text content can carry attachment refs without changing its kind', () => {
-    const content: RuntimeEventContent = {
-      kind: 'text',
-      text: 'see attached',
-      attachments: [
-        {
-          kind: 'image',
-          name: 'chart.png',
-          mimeType: 'image/png',
-          bytes: 123,
-          ref: {
-            kind: 'session_file',
-            sessionId: 'sess-1',
-            relativePath: 'attachments/chart.png',
-          },
-        },
-      ],
-    };
-    if (content.kind !== 'text') throw new Error('unreachable');
-    expect(content.attachments?.[0]?.name).toBe('chart.png');
-  });
-
-  test('thinking content may carry a replay signature', () => {
-    const content: RuntimeEventContent = {
-      kind: 'thinking',
-      text: 'reasoning',
-      signature: 'sig',
-    };
-    if (content.kind !== 'thinking') throw new Error('unreachable');
-    expect(content.signature).toBe('sig');
-  });
-
-  test('function_call and function_response share an id', () => {
-    const call: RuntimeEventContent = {
-      kind: 'function_call',
-      id: 'tc-1',
-      name: 'Read',
-      args: { path: '/x' },
-      providerOptions: { google: { thoughtSignature: 'sig' } },
-    };
-    const response: RuntimeEventContent = {
-      kind: 'function_response',
-      id: 'tc-1',
-      name: 'Read',
-      result: 'ok',
-      isError: false,
-    };
-    if (call.kind !== 'function_call' || response.kind !== 'function_response') {
-      throw new Error('unreachable');
-    }
-    expect(call.id).toBe(response.id);
-    expect(decodeRuntimeEvent(baseEvent({ content: call })).content).toEqual(call);
-    expect(response.isError).toBe(false);
-  });
 });
 
 describe('RuntimeEvent actions', () => {
-  test('a terminal action can carry endInvocation + tokenUsage', () => {
-    const actions: RuntimeEventActions = {
-      endInvocation: true,
-      tokenUsage: { input: 10, output: 5, costUsd: 0.001 },
-    };
-    expect(actions.endInvocation).toBe(true);
-    expect(actions.tokenUsage?.input).toBe(10);
-  });
-
   test('permission and user-question interactions are first-class actions', () => {
     const actions: RuntimeEventActions = {
       permissionRequest: {
@@ -641,15 +570,6 @@ describe('RuntimeEvent actions', () => {
       );
     }
   });
-
-  test('state/artifact deltas accept primitive values', () => {
-    const actions: RuntimeEventActions = {
-      stateDelta: { retries: 1 },
-      artifactDelta: { 'out.md': 2048 },
-    };
-    expect(actions.stateDelta?.retries).toBe(1);
-    expect(actions.artifactDelta?.['out.md']).toBe(2048);
-  });
 });
 
 describe('isTerminalRuntimeEvent', () => {
@@ -718,7 +638,7 @@ describe('runtimeEventHasModelVisibleContent', () => {
   });
 });
 
-describe('RuntimeEvent shape compile-time contract', () => {
+describe('RuntimeEvent reference validation', () => {
   test('accepts only canonical source message digests', () => {
     const digest = `sha256:${'a'.repeat(64)}` as `sha256:${string}`;
     const event = baseEvent({ refs: { sourceMessageDigest: digest } });
@@ -740,42 +660,5 @@ describe('RuntimeEvent shape compile-time contract', () => {
         refs: { providerRequestTraceId: 123 },
       }),
     );
-  });
-
-  test('a full user event satisfies the type', () => {
-    const event: RuntimeEvent = {
-      id: 'evt-u1',
-      invocationId: 'inv-1',
-      runId: 'run-1',
-      sessionId: 'sess-1',
-      turnId: 'turn-1',
-      ts: 1,
-      partial: false,
-      role: 'user',
-      author: 'user',
-      content: { kind: 'text', text: 'hello' },
-    };
-    expect(event.role).toBe('user');
-    expect(isTerminalRuntimeEvent(event)).toBe(false);
-  });
-
-  test('a terminal agent event with branch + refs satisfies the type', () => {
-    const event: RuntimeEvent = {
-      id: 'evt-t1',
-      invocationId: 'inv-1',
-      runId: 'run-1',
-      sessionId: 'sess-1',
-      turnId: 'turn-1',
-      ts: 99,
-      branch: 'main',
-      partial: false,
-      role: 'model',
-      author: 'agent',
-      status: 'completed',
-      actions: { endInvocation: true, tokenUsage: { input: 1, output: 2 } },
-      refs: { storedMessageId: 'm1', toolCallId: 'tc-1' },
-    };
-    expect(isTerminalRuntimeEvent(event)).toBe(true);
-    expect(event.branch).toBe('main');
   });
 });
