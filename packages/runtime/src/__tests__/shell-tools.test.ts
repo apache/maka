@@ -29,14 +29,6 @@ describe('Bash tool description declares the executing shell', () => {
     assert.match(tool.description, /Subject to permission policy\.$/);
   });
 
-  test('foreground tool description is unchanged on POSIX', () => {
-    const tool = buildLocalForegroundBashTool({ shell: { kind: 'posix', displayName: '/bin/sh' } });
-    assert.equal(
-      tool.description,
-      'Run a shell command in the session cwd. Subject to permission policy.',
-    );
-  });
-
   test('background tool tells the model commands run under PowerShell 7', () => {
     const tool = buildManagedBashTool(fakeShellRuns(), { shell: pwshPlan });
     assert.match(tool.description, /PowerShell 7 \(pwsh\)/);

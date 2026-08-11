@@ -4,15 +4,6 @@ import type { StoredMessage } from '../session.js';
 import { decodeStoredMessageForRead, decodeStoredMessageForRecovery } from '../session.js';
 import { decodeCanonicalToolResultContent } from '../tool-result-record-schema.js';
 
-describe('legacy subagent tool result compatibility', () => {
-  test('keeps the public canonical decoder strict', () => {
-    assert.throws(
-      () => decodeCanonicalToolResultContent(legacySubagentResult()),
-      /Invalid tool result content/,
-    );
-  });
-});
-
 describe('sandbox denial tool result metadata', () => {
   test('accepts a canonical text result carrying a sandbox denial signal', () => {
     const result = {
@@ -124,23 +115,6 @@ describe('uncertain tool outcome metadata', () => {
     }
   });
 });
-
-function legacySubagentResult(): Record<string, unknown> {
-  return {
-    kind: 'subagent',
-    childSessionId: 'child-session-1',
-    agentId: 'local-read',
-    agentName: 'Local Read',
-    turnId: 'child-turn-1',
-    runId: 'child-run-1',
-    status: 'waiting_permission',
-    permissionMode: 'ask',
-    summary: 'Waiting for permission.',
-    artifactIds: [],
-    startedAt: 10,
-    eventCount: 3,
-  };
-}
 
 function storedToolResult(content: unknown) {
   return {

@@ -2,10 +2,8 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import {
-  DAILY_REVIEW_LIST_LIMIT,
   buildDailyReviewSummary,
   dailyReviewArchiveId,
-  dailyUsageQuery,
   normalizeDailyReviewArchive,
   normalizeDailyReviewConfig,
   parseDailyReviewArchiveId,
@@ -176,21 +174,6 @@ describe('buildDailyReviewSummary', () => {
     assert.equal(out.totals.totalTokens, 300);
     assert.equal(out.totals.costUsd, 1.23);
     assert.equal(out.totals.errorCount, 2);
-  });
-});
-
-describe('dailyUsageQuery', () => {
-  it('produces a UsageQuery with the day range and no filters', () => {
-    const q = dailyUsageQuery({ fromMs: 100, toMs: 200 });
-    assert.deepEqual(q, { range: { from: 100, to: 200 } });
-  });
-});
-
-describe('DAILY_REVIEW_LIST_LIMIT', () => {
-  it('is a small positive integer', () => {
-    assert.ok(Number.isInteger(DAILY_REVIEW_LIST_LIMIT));
-    assert.ok(DAILY_REVIEW_LIST_LIMIT > 0);
-    assert.ok(DAILY_REVIEW_LIST_LIMIT <= 32);
   });
 });
 

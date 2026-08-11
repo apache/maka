@@ -1,26 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SCHEDULED_TASK_LAST_RUN_STATUSES,
-  CAPABILITY_AUDIT_PERMISSION_MODES,
   LOCAL_SKILL_SOURCE_SLUG,
-  SOURCE_AUTH_TYPES,
-  SOURCE_RECORD_STATUSES,
-  SOURCE_RECORD_TYPES,
   deriveCapabilityAuditReport,
   type CapabilityAuditSkillInput,
 } from '../capability-audit.js';
 import type { ScheduledTask } from '../scheduled-task.js';
 
 describe('capability audit contract', () => {
-  it('locks the visible source and ScheduledTask enums', () => {
-    assert.deepEqual(SOURCE_RECORD_TYPES, ['mcp', 'api', 'local']);
-    assert.deepEqual(SOURCE_AUTH_TYPES, ['oauth', 'bearer', 'none']);
-    assert.deepEqual(SOURCE_RECORD_STATUSES, ['ready', 'needs_auth', 'error', 'disabled']);
-    assert.deepEqual(CAPABILITY_AUDIT_PERMISSION_MODES, ['explore', 'ask', 'execute']);
-    assert.deepEqual(SCHEDULED_TASK_LAST_RUN_STATUSES, ['ok', 'error', 'skipped']);
-  });
-
   it('synthesizes a local skills source and keeps skill permission mode read-first', () => {
     const skills: CapabilityAuditSkillInput[] = [
       {

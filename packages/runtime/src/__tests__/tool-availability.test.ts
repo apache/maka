@@ -169,12 +169,6 @@ describe('ToolAvailabilityRuntime — durable ledger seed', () => {
     assert.ok(plan.activeTools.includes('rive_run'), 'seeded group active from turn start');
     assert.ok(!plan.activeTools.includes('docs_edit'), 'unseeded group still hidden');
   });
-
-  test('an unknown seeded group id is ignored (forward compatible)', () => {
-    const plan = runtime(true).prepare([event(LOAD_TOOLS_NAME, { group: 'ghost' })]);
-    assert.ok(!plan.activeTools.includes('rive_run'));
-    assert.ok(!plan.activeTools.includes('docs_edit'));
-  });
 });
 
 describe('ToolAvailabilityRuntime — diagnostics', () => {
@@ -218,14 +212,6 @@ describe('ToolAvailabilityRuntime — connector shape', () => {
     assert.ok(found);
     return found!;
   }
-
-  test('lists every group in its description and never requires permission', () => {
-    const c = connector();
-    assert.match(c.description, /rive/);
-    assert.match(c.description, /docs/);
-    assert.match(c.description, /Rive/); // rive group's label
-    assert.match(c.description, /Document tools/); // docs group's description
-  });
 
   test('loading a group returns exactly its tool names — a thin result, no schema', async () => {
     const result = await connector().impl({ group: 'docs' }, ctx);

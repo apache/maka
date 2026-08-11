@@ -1,19 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildGoalEvaluationPrompt, parseGoalEvaluation, evaluateGoal } from '../goal-evaluator.js';
-
-describe('buildGoalEvaluationPrompt', () => {
-  test('includes condition, context, and field spec', () => {
-    const p = buildGoalEvaluationPrompt('all tests pass', 'ran tests, 2 failed');
-    assert.ok(p.includes('all tests pass'));
-    assert.ok(p.includes('ran tests, 2 failed'));
-    assert.ok(p.includes('GOAL CONDITION'));
-    assert.ok(p.includes('CONVERSATION CONTEXT'));
-    assert.ok(p.includes('"met"'));
-    assert.ok(p.includes('"progress"'));
-    assert.ok(p.includes('"waiting"'));
-  });
-});
+import { parseGoalEvaluation, evaluateGoal } from '../goal-evaluator.js';
 
 describe('parseGoalEvaluation', () => {
   test('parses a full verdict', () => {

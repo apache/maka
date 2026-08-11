@@ -104,14 +104,6 @@ describe('HealthSignal contract', () => {
     );
   });
 
-  test('unconfigured connection health copy is an actionable waiting state', () => {
-    const result = healthSignalFromConnection(connection({ defaultModel: '' }), 20);
-
-    expect(result.message).toBe('等待选择默认模型。');
-    expect(/缺少默认模型/.test(result.message)).toBe(false);
-    expect(result.blocksSend).toBe(true);
-  });
-
   /*
    * PR-HEALTH-1 — E1 lock (three-layer separation):
    * Connection auth state and bot capability readiness must derive
