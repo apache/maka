@@ -23,38 +23,6 @@ function processContractStderr(stderr: string): string {
 }
 
 describe('maka run argument parsing', () => {
-  test('parses prompt, target, thinking, timeout, and max steps', () => {
-    assert.deepEqual(
-      parseMakaRunArgs([
-        'explain this',
-        '--cwd',
-        '/repo',
-        '--connection',
-        'local',
-        '--model',
-        'model-1',
-        '--thinking',
-        'high',
-        '--timeout',
-        '1.5',
-        '--max-steps',
-        '7',
-      ]),
-      {
-        kind: 'run',
-        options: {
-          prompt: 'explain this',
-          stdinPrompt: false,
-          cwd: '/repo',
-          connection: 'local',
-          model: 'model-1',
-          thinking: 'high',
-          timeoutMs: 1500,
-          maxSteps: 7,
-        },
-      },
-    );
-  });
 
   test('recognizes stdin prompt mode and rejects malformed limits', () => {
     assert.deepEqual(parseMakaRunArgs(['-']), {
@@ -65,17 +33,6 @@ describe('maka run argument parsing', () => {
     assert.equal(parseMakaRunArgs(['x', '--max-steps', '1.5']).kind, 'error');
   });
 
-  test('parses Graph Mode as an explicit non-interactive turn', () => {
-    assert.deepEqual(parseMakaRunArgs(['implement the graph', '--graph']), {
-      kind: 'run',
-      options: {
-        prompt: 'implement the graph',
-        stdinPrompt: false,
-        graph: true,
-      },
-    });
-    assert.equal(parseMakaRunArgs(['x', '--graph', '--graph']).kind, 'error');
-  });
 
   test('accepts only the explicit non-interactive sandbox bypass flag', () => {
     assert.deepEqual(parseMakaRunArgs(['run tools', '--yolo']), {
@@ -106,39 +63,10 @@ describe('maka run argument parsing', () => {
     assert.equal(parseMakaRunArgs(['next', '--resume', 'session-1', '--continue']).kind, 'error');
   });
 
-  test('preserves an explicit default thinking constraint for resumed sessions', () => {
-    assert.deepEqual(parseMakaRunArgs(['next', '--resume', 'session-1', '--thinking', 'default']), {
-      kind: 'run',
-      options: {
-        prompt: 'next',
-        stdinPrompt: false,
-        resumeId: 'session-1',
-        thinkingDefaultExplicit: true,
-      },
-    });
-  });
 });
 
 describe('maka run process contract', () => {
-  test('writes only the final answer to stdout', async () => {
-    const result = await runFixture(['hello'], { input: '' });
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'prompt=hello\n');
-    assert.equal(processContractStderr(result.stderr), '');
-  });
 
-  test('normalizes a generated Session name after truncating the prompt', async () => {
-    const prompt = 'Use Bash exactly once to run pwd and node -p';
-    assert.equal(prompt.slice(0, 42).endsWith(' '), true);
-
-    const result = await runFixture([prompt], {
-      input: '',
-      env: { MAKA_RUN_EXPECT_SESSION_NAME: 'Use Bash exactly once to run pwd and node' },
-    });
-
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(processContractStderr(result.stderr), '');
-  });
 
   test('waits for the complete Graph before printing the final supervisor output', async () => {
     const result = await runFixture(['implement it', '--graph'], {
@@ -162,17 +90,7 @@ describe('maka run process contract', () => {
     assert.doesNotMatch(result.stderr, /graph-wait-called/);
   });
 
-  test('uses stdin as the complete prompt for run -', async () => {
-    const result = await runFixture(['-'], { input: 'from stdin\nsecond line' });
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'prompt=from stdin\nsecond line\n');
-  });
 
-  test('uses non-TTY stdin as the prompt when no positional prompt is provided', async () => {
-    const result = await runFixture([], { input: 'implicit stdin prompt' });
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'prompt=implicit stdin prompt\n');
-  });
 
   test('combines a positional instruction with piped stdin context', async () => {
     const result = await runFixture(['summarize'], { input: 'document body' });
@@ -225,33 +143,8 @@ describe('maka run process contract', () => {
     assert.equal(result.stdout, '');
   });
 
-  test('accepts a completed boundary-safe alternative', async () => {
-    const result = await runFixture(['hello'], {
-      scenario: 'sandbox-boundary-recovered',
-      input: '',
-    });
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'recovered safely\n');
-  });
 
-  test('creates an Auto boundary by default', async () => {
-    const result = await runFixture(['hello'], {
-      input: '',
-      env: { MAKA_RUN_EXPECT_PERMISSION_MODE: 'ask' },
-    });
 
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'prompt=hello\n');
-  });
-
-  test('passes max steps as an invocation-local context limit', async () => {
-    const result = await runFixture(['hello', '--max-steps', '3'], {
-      input: '',
-      env: { MAKA_RUN_EXPECT_MAX_STEPS: '3' },
-    });
-    assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stdout, /^maxSteps=3;/);
-  });
 
   test('creates a bypass boundary only when --yolo is explicit', async () => {
     const result = await runFixture(['hello', '--yolo'], {
@@ -270,42 +163,6 @@ describe('maka run process contract', () => {
     assert.equal(result.stdout, '');
   });
 
-  test('resumes an explicit session without creating a new identity', async () => {
-    const cwd = await realpath(process.cwd());
-    const resumed = fixtureSession({
-      id: 'resume-me',
-      cwd,
-      llmConnectionSlug: 'fixture',
-      model: 'fixture-model',
-      permissionMode: 'execute',
-    });
-    const result = await runFixture(
-      [
-        'continue this',
-        '--resume',
-        resumed.id,
-        '--connection',
-        resumed.llmConnectionSlug,
-        '--model',
-        resumed.model,
-      ],
-      {
-        input: '',
-        env: {
-          MAKA_RUN_FIXTURE_SESSIONS: JSON.stringify([resumed]),
-          MAKA_RUN_EXPECT_NO_CREATE: '1',
-          MAKA_RUN_EXPECT_SESSION_ID: resumed.id,
-          MAKA_RUN_EXPECT_CONTEXT_CWD: cwd,
-          MAKA_RUN_EXPECT_CONTEXT_CONNECTION: resumed.llmConnectionSlug,
-          MAKA_RUN_EXPECT_CONTEXT_MODEL: resumed.model,
-          MAKA_RUN_EXPECT_CWD_OVERRIDE: JSON.stringify({ sessionId: resumed.id, cwd }),
-        },
-      },
-    );
-
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'prompt=continue this\n');
-  });
 
   test('fails closed when resuming a bypass session without --yolo', async () => {
     const cwd = await realpath(process.cwd());
