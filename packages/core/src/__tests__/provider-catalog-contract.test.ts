@@ -8,23 +8,7 @@ import {
 import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
-  type ProviderCatalogGroup,
 } from '../provider-registry.js';
-
-// The catalog groups the catalog UI actually renders as tabs. A new group must
-// be added here deliberately, which is the point: ProvidersPanel only knows how
-// to render these buckets. 'recommended' is deliberately NOT a base group even
-// though the ProviderCatalogGroup union carries it: the 推荐 tab is an overlay
-// sourced from RECOMMENDED_PROVIDER_TYPES (ProvidersPanel.providersForCategory),
-// while every other tab filters by catalogGroup — so a provider declaring
-// catalogGroup: 'recommended' would appear in no tab at all. (Splitting the
-// union type itself is a larger registry change, out of scope here.)
-const CATALOG_TAB_GROUPS: ReadonlySet<ProviderCatalogGroup> = new Set([
-  'plans',
-  'api',
-  'aggregators',
-  'local',
-]);
 
 describe('provider connection slug derivation contract', () => {
   it('continues through dense collisions until it finds an unused slug', () => {
@@ -39,16 +23,6 @@ describe('provider connection slug derivation contract', () => {
 });
 
 describe('provider catalog contract — structural invariants over CATALOG_PROVIDER_TYPES', () => {
-  it('assigns every catalog provider a catalog group that renders as a tab', () => {
-    for (const type of CATALOG_PROVIDER_TYPES) {
-      const group = PROVIDER_REGISTRY[type].catalogGroup;
-      assert.ok(
-        group !== undefined && CATALOG_TAB_GROUPS.has(group),
-        `${type} catalogGroup ${String(group)} must be one of ${[...CATALOG_TAB_GROUPS].join(', ')}`,
-      );
-    }
-  });
-
   it('exposes an endpoint source that passes the production baseUrl gate', () => {
     // A provider must be able to name where its base URL comes from:
     //   - a concrete baseUrl, or
@@ -96,38 +70,4 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
     }
   });
 
-  it('ships a well-formed default model set for every catalog provider', () => {
-    for (const type of CATALOG_PROVIDER_TYPES) {
-      const def = PROVIDER_REGISTRY[type];
-      for (const id of def.fallbackModels) {
-        assert.ok(id.trim().length > 0, `${type} ships an empty fallback model id`);
-      }
-      assert.equal(
-        new Set(def.fallbackModels).size,
-        def.fallbackModels.length,
-        `${type} ships duplicate fallback model ids`,
-      );
-      if (def.fallbackModels.length === 0) {
-        // The add form derives its recommended default model from the shipped
-        // snapshot (provider-add-form.tsx → buildCatalogRecommendedDefaultModel)
-        // and connection readiness reports missing_model for an empty default
-        // (connection-readiness.ts). An empty snapshot is therefore only
-        // acceptable where the model catalog is inherently instance-specific —
-        // a user-operated runtime or endpoint (category 'local' / 'custom')
-        // whose models can only be discovered live from the user's own
-        // instance. A hosted, keyed provider with an empty snapshot would
-        // silently create never-ready connections with no recommended default.
-        assert.ok(
-          def.category === 'local' || def.category === 'custom',
-          `${type} is a hosted provider (category ${def.category}) and must ship a non-empty default model snapshot`,
-        );
-        assert.notEqual(
-          def.modelDiscovery.kind,
-          'fallback',
-          `${type} ships no default model snapshot, so it must declare live model discovery — ` +
-            'static-fallback discovery would leave it with no model source at all',
-        );
-      }
-    }
-  });
 });

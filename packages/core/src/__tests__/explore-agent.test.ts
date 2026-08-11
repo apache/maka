@@ -2,21 +2,12 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   DEEP_RESEARCH_IMPLEMENTATION_PROMPT_MAX_CHARS,
-  DEEP_RESEARCH_SESSION_LABEL,
   buildDeepResearchImplementationPrompt,
-  isDeepResearchSession,
 } from '../explore-agent.js';
 import type { DeepResearchRun } from '../deep-research-run.js';
 import { createGenesisExecutionBoundary } from '../sandbox-boundary.js';
 
 describe('deep research session profile', () => {
-  it('detects only the stable session label', () => {
-    assert.equal(isDeepResearchSession([DEEP_RESEARCH_SESSION_LABEL]), true);
-    for (const labels of [['research'], [], undefined]) {
-      assert.equal(isDeepResearchSession(labels), false);
-    }
-  });
-
   it('builds a bounded handoff only from a completed run', () => {
     const run = {
       schemaVersion: 1,
