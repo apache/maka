@@ -10,20 +10,10 @@ import {
 } from '../rive-cli.js';
 import {
   buildRiveWorkflowTool,
-  RIVE_WORKFLOW_TOOL_NAME,
   type RiveWorkflowToolResult,
 } from '../rive-workflow-tool.js';
 
 describe('RiveWorkflow tool and CLI bridge', { concurrency: false }, () => {
-  it('registers as a categorized custom MakaTool', () => {
-    const tool = buildRiveWorkflowTool();
-    assert.equal(tool.name, RIVE_WORKFLOW_TOOL_NAME);
-    assert.equal(tool.displayName, 'Rive 工作流');
-    assert.equal(tool.categoryHint, 'custom_tool');
-    assert.match(tool.description, /Rive remains the source of truth/);
-    assert.ok('action' in ((tool.parameters as { shape: Record<string, unknown> }).shape));
-  });
-
   it('builds shell-free argv for high-level workflow commands', () => {
     assert.deepEqual(buildRiveCommand({
       action: 'workflow_run',

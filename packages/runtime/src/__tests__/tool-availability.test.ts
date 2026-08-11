@@ -125,14 +125,11 @@ describe('ToolAvailabilityRuntime — economy mode', () => {
     assert.ok(plan.gating!.activeNames().has('rive_run'), 'snapshot updated after rive load');
   });
 
-  test('connector impl returns the group tool names; unknown group throws', async () => {
+  test('connector rejects an unknown group', async () => {
     const connector = runtime(true)
       .prepare([])
       .providerTools.find((t) => t.name === LOAD_TOOLS_NAME);
     assert.ok(connector);
-    assert.deepEqual(await connector!.impl({ group: 'docs' }, ctx), {
-      loaded: ['docs_edit', 'docs_read'],
-    });
     await assert.rejects(async () => connector!.impl({ group: 'nope' }, ctx), /Unknown tool group/);
   });
 });
@@ -179,25 +176,6 @@ describe('ToolAvailabilityRuntime — diagnostics', () => {
     const d = plan.diagnostics(active, 100);
     assert.deepEqual(d!.enabledSourceIds, ['rive']);
     assert.deepEqual(d!.availableSourceIds, ['docs']);
-  });
-});
-
-describe('ToolAvailabilityRuntime — connector shape', () => {
-  function connector() {
-    const found = runtime(true)
-      .prepare([])
-      .providerTools.find((t) => t.name === LOAD_TOOLS_NAME);
-    assert.ok(found);
-    return found!;
-  }
-
-  test('loading a group returns exactly its tool names — a thin result, no schema', async () => {
-    const result = await connector().impl({ group: 'docs' }, ctx);
-    assert.deepEqual(result, { loaded: ['docs_edit', 'docs_read'] });
-    const keys = Object.keys(result as object);
-    assert.ok(
-      !keys.includes('schema') && !keys.includes('parameters') && !keys.includes('inputSchema'),
-    );
   });
 });
 

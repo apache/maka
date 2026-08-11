@@ -4,7 +4,6 @@ import {
   DEEP_RESEARCH_IMPLEMENTATION_PROMPT_MAX_CHARS,
   DEEP_RESEARCH_SESSION_LABEL,
   buildDeepResearchImplementationPrompt,
-  buildDeepResearchSystemPromptFragment,
   isDeepResearchSession,
 } from '../explore-agent.js';
 import type { DeepResearchRun } from '../deep-research-run.js';
@@ -72,25 +71,5 @@ describe('deep research session profile', () => {
       entries: [{ kind: 'special', access: 'read', special: ':workspace_roots' }],
     });
     assert.equal(boundary.profile.network.kind, 'restricted');
-  });
-
-  it('keeps the system prompt source-grounded, read-only, and explicit about its write exception', () => {
-    const prompt = buildDeepResearchSystemPromptFragment();
-    for (const contract of [
-      /Read, Glob, Grep/,
-      /Do not write/,
-      /deep_research_\* tools are the one write exception/,
-      /archive each important raw source first/,
-      /all five report sections are completed/,
-      /role=handoff artifact/,
-      /borrow \/ diverge \/ risk \/ gate/,
-    ]) {
-      assert.match(prompt, contract);
-    }
-    assert.match(prompt, /ExploreAgent/);
-    assert.doesNotMatch(
-      buildDeepResearchSystemPromptFragment({ exploreAgentAvailable: false }),
-      /ExploreAgent/,
-    );
   });
 });

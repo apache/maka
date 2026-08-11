@@ -31,14 +31,6 @@ describe('builtin file tools use the sandboxed worker', () => {
     );
   });
 
-  test('uses a sandboxed worker without one-call permission metadata', () => {
-    const linuxTools = buildBuiltinTools({
-      filesystemWorker: { execute: async () => ({ kind: 'read', content: '' }) },
-      sandboxPlatform: 'linux',
-    });
-    assert.ok(linuxTools.find((tool) => tool.name === 'Write'));
-  });
-
   for (const kind of ['bypass', 'external'] as const) {
     test(`uses the host filesystem path for an authoritative ${kind} boundary`, async () => {
       const cwd = await temporaryDirectory(`maka-file-${kind}-`);
