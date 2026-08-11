@@ -498,6 +498,7 @@ function projectQueueUpdate(
     turnId,
     ts: now,
     queueRevision: queue.queueRevision,
+    ...(queue.paused === true ? { paused: true } : {}),
     steering: queue.steering.map((entry) => entry.content.text),
     followup: queue.followup.map((entry) => entry.content.text),
     steeringEntries: queue.steering.map((entry) => ({

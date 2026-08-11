@@ -88,6 +88,7 @@ import type {
   DesktopDiagnosticCopyResult,
   DesktopErrorDiagnosticInput,
 } from './diagnostics-contract.js';
+
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core';
 import type {
@@ -302,6 +303,7 @@ export interface MakaBridge {
             displayText?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
+            retainedAttachments?: import('@maka/core').AttachmentRef[];
             turnOrchestration?: TurnOrchestration;
             quotes?: import('@maka/core').QuoteRef[];
             workspaceFileReferences?: Array<
@@ -335,6 +337,7 @@ export interface MakaBridge {
         text: string;
         displayText?: string;
         attachmentItems?: RendererIngestInput[];
+        retainedAttachments?: import('@maka/core').AttachmentRef[];
         quotes?: import('@maka/core').QuoteRef[];
         workspaceFileReferences?: Array<
           Pick<import('@maka/core').InlineReference, 'value' | 'start'>
@@ -350,7 +353,7 @@ export interface MakaBridge {
       sessionId: string,
       input: { expectedQueueRevision?: number; mutation: MessageQueueMutation },
     ): Promise<{ ok: boolean; queueRevision?: number }>;
-    retractQueue(sessionId: string): Promise<string>;
+    retractQueue(sessionId: string): Promise<MessageContent>;
     readMessages(sessionId: string): Promise<StoredMessage[]>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;

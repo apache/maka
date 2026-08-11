@@ -11,6 +11,7 @@ import {
 } from 'react';
 import type {
   FollowUpMode,
+  InlineReference,
   MessageQueueMutation,
   ScheduledTask,
   QuoteRef,
@@ -108,6 +109,7 @@ import {
 } from './app-update-install';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
+
 import {
   addOptimisticQueuedMessage,
   removeOptimisticQueuedMessage,
@@ -158,6 +160,7 @@ import { createAppShellSessionEventHandlers } from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import {
   createAppShellChatActions,
+  retainedAttachmentRefs,
   toRendererIngestItems,
   type WorkspaceFileReferencePosition,
 } from './app-shell-chat-actions';
@@ -222,6 +225,29 @@ import {
 } from './session-workspace-errors';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
 import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
+
+function mergeWorkspaceReferences(
+  text: string,
+  live: readonly WorkspaceFileReferencePosition[] | undefined,
+  restored: readonly InlineReference[] | undefined,
+): WorkspaceFileReferencePosition[] {
+  const merged = new Map<string, WorkspaceFileReferencePosition>();
+  for (const reference of live ?? []) {
+    merged.set(`${reference.start}:${reference.value}`, { ...reference });
+  }
+  let cursor = 0;
+  for (const reference of restored ?? []) {
+    if (reference.kind !== 'workspace_file') continue;
+    let start = reference.start;
+    if (text.slice(start, start + reference.value.length) !== reference.value) {
+      start = text.indexOf(reference.value, cursor);
+    }
+    if (start < 0) continue;
+    cursor = start + reference.value.length;
+    merged.set(`${start}:${reference.value}`, { value: reference.value, start });
+  }
+  return [...merged.values()].sort((left, right) => left.start - right.start);
+}
 
 type ComposerImportOwner = {
   sessionId: string | undefined;
@@ -382,10 +408,11 @@ function AppShellContent({
     pendingAttachments,
     pickAttachments,
     attachFilePaths,
+    restoreAttachments,
     removeAttachment,
     clearSubmittedAttachments,
   } = useAppShellComposerAttachments({ draftKey: attachmentDraftKey, toastApi });
-  const { pendingQuotes, addQuote, removeQuote, clearQuotes } = useAppShellComposerQuotes({
+  const { pendingQuotes, addQuote, removeQuote, clearQuotes, restoreQuotes } = useAppShellComposerQuotes({
     draftKey: attachmentDraftKey,
   });
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
@@ -616,6 +643,7 @@ function AppShellContent({
   const [externalImportOpen, setExternalImportOpen] = useState(false);
   const [viewMode, setViewMode] = useState<SessionViewMode>('conversation');
   const composerRef = useRef<ComposerHandle>(null);
+  const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
   // The rail's toggle has to reach Astryx's resizable state, not just this
   // boolean — see the prop's note on SessionListPanel. The sidenav is mounted
   // for the whole shell, so the handle is always live by the time it is called.
@@ -1954,6 +1982,13 @@ function AppShellContent({
     );
     const slashCommand = parseDesktopSlashCommand(text);
     const activeSessionId = activeIdRef.current;
+    const workspaceFileReferences = mergeWorkspaceReferences(
+      text,
+      metadata?.workspaceFileReferences,
+      activeSessionId
+        ? retractedWorkspaceReferencesRef.current[activeSessionId]
+        : undefined,
+    );
     const activeProjection = activeSessionId
       ? liveTurnBySessionRef.current[activeSessionId]
       : undefined;
@@ -1973,6 +2008,12 @@ function AppShellContent({
       try {
         const attachments =
           pendingAttachments.length > 0 ? [...pendingAttachments] : undefined;
+        const uploadAttachments = attachments
+          ? toRendererIngestItems(attachments)
+          : [];
+        const retainedAttachments = attachments
+          ? retainedAttachmentRefs(attachments)
+          : [];
         const quotes = pendingQuotes.length > 0 ? [...pendingQuotes] : undefined;
         setMessageQueueBySession((current) =>
           addOptimisticQueuedMessage(current, sessionId, {
@@ -1991,17 +2032,19 @@ function AppShellContent({
           placement,
           {
             text,
-            ...(attachments
-              ? { attachmentItems: toRendererIngestItems(attachments) }
+            ...(uploadAttachments.length > 0
+              ? { attachmentItems: uploadAttachments }
               : {}),
+            ...(retainedAttachments.length > 0 ? { retainedAttachments } : {}),
             ...(quotes ? { quotes } : {}),
-            ...(metadata?.workspaceFileReferences?.length
-              ? { workspaceFileReferences: [...metadata.workspaceFileReferences] }
+            ...(workspaceFileReferences.length > 0
+              ? { workspaceFileReferences }
               : {}),
           },
         );
         if (attachments) clearSubmittedAttachments(attachments);
         if (quotes) clearQuotes();
+        delete retractedWorkspaceReferencesRef.current[sessionId];
         if (outcome.kind === 'started') {
           setMessageQueueBySession((current) =>
             removeOptimisticQueuedMessage(current, sessionId, optimisticEntryId),
@@ -2078,7 +2121,7 @@ function AppShellContent({
       if (
         pendingAttachments.length > 0 ||
         pendingQuotes.length > 0 ||
-        (metadata?.workspaceFileReferences?.length ?? 0) > 0
+        workspaceFileReferences.length > 0
       ) {
         toastApi.info(
           shellCopy.sideChatContextPendingTitle,
@@ -2118,12 +2161,12 @@ function AppShellContent({
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
-        ...(metadata?.workspaceFileReferences?.length
+        ...(workspaceFileReferences.length > 0
           ? {
               workspaceFileReferences: rebaseWorkspaceFileReferences(
                 text,
                 swarmCommand.task,
-                metadata.workspaceFileReferences,
+                workspaceFileReferences,
               ),
             }
           : {}),
@@ -2161,12 +2204,12 @@ function AppShellContent({
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
-        ...(metadata?.workspaceFileReferences?.length
+        ...(workspaceFileReferences.length > 0
           ? {
               workspaceFileReferences: rebaseWorkspaceFileReferences(
                 text,
                 graphCommand.task,
-                metadata.workspaceFileReferences,
+                workspaceFileReferences,
               ),
             }
           : {}),
@@ -2182,12 +2225,15 @@ function AppShellContent({
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
       ...(quotes ? { quotes } : {}),
-      ...(metadata?.workspaceFileReferences?.length
-        ? { workspaceFileReferences: metadata.workspaceFileReferences }
+      ...(workspaceFileReferences.length > 0
+        ? { workspaceFileReferences }
         : {}),
     });
     if (ok !== false && pending) clearSubmittedAttachments(pending);
     if (ok !== false && quotes) clearQuotes();
+    if (ok !== false && activeSessionId) {
+      delete retractedWorkspaceReferencesRef.current[activeSessionId];
+    }
     if (ok !== false && revisionSend) {
       if (expectedRevisionDraft) {
         completeTurnRevisionCopyAttempt(expectedRevisionDraft);
@@ -2246,15 +2292,28 @@ function AppShellContent({
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     try {
-      const text = await window.maka.sessions.retractQueue(sessionId);
+      const content = await window.maka.sessions.retractQueue(sessionId);
       setMessageQueueBySession((current) => {
         if (!(sessionId in current)) return current;
         const next = { ...current };
         delete next[sessionId];
         return next;
       });
-      if (!text || activeIdRef.current !== sessionId) return;
-      composerRef.current?.appendDraft?.(sessionId, text);
+      if (activeIdRef.current !== sessionId) return;
+      const displayText = content.displayText ?? content.text;
+      const before = composerRef.current?.getText() ?? '';
+      composerRef.current?.appendDraft?.(sessionId, displayText);
+      const after = composerRef.current?.getText() ?? displayText;
+      const insertionStart = Math.max(0, after.lastIndexOf(displayText, before.length + 2));
+      retractedWorkspaceReferencesRef.current[sessionId] = (
+        content.inlineReferences ?? []
+      ).flatMap((reference) =>
+        reference.kind === 'workspace_file'
+          ? [{ ...reference, start: insertionStart + reference.start }]
+          : [],
+      );
+      restoreAttachments(content.attachments ?? []);
+      restoreQuotes(content.quotes ?? []);
     } catch (error) {
       if (activeIdRef.current !== sessionId) return;
       const copy = getConversationCopy(uiLocale).composer;

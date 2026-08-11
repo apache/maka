@@ -9,7 +9,10 @@ import {
   SIDE_CONVERSATION_SESSION_LABEL,
   type AttachmentRef,
 } from "@maka/core";
-import type { SessionCatalogProjection } from "@maka/runtime-host/protocol";
+import type {
+  SessionCatalogProjection,
+  SessionMessageQueueProjection,
+} from "@maka/runtime-host/protocol";
 import { createAttachmentApprovalRegistry } from "../attachment-approval.js";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
 import {
@@ -703,11 +706,14 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
     }),
     { ok: true, queueRevision: 3 },
   );
-  assert.equal(
+  assert.deepEqual(
     await ipc.invoke("sessions:retractQueue", "session-1"),
-    "Continue later",
+    { text: "Continue later" },
   );
-  await ipc.invoke("sessions:stop", "session-1");
+  await ipc.invoke("sessions:stop", "session-1", {
+    source: "stop_button",
+    preserveQueuedMessages: true,
+  });
   assert.deepEqual(stopLifecycle, ["teardown", "interrupt"]);
 
   assert.deepEqual(submits, [
@@ -748,8 +754,72 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       interruptId: "id-5",
       turnId: "turn-1",
       runId: "run-1",
+      preserveQueuedMessages: true,
     },
   ]);
+  await observer.close();
+});
+
+test("returns rich queued content intact for composer restoration", async () => {
+  let retractCalls = 0;
+  const observer = observerWithTranscript([], {
+    hostEpoch: "host-1",
+    queueRevision: 2,
+    steering: [],
+    followup: [
+      {
+        entryId: "entry-rich",
+        messageId: "message-rich",
+        content: {
+          text: "Continue with context",
+          quotes: [{ text: "Important context" }],
+        },
+        placement: "next_turn",
+        state: "queued",
+      },
+    ],
+  });
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        retractQueue: async () => {
+          retractCalls += 1;
+          return {
+            queueRevision: 3,
+            retracted: [
+              {
+                entryId: "entry-rich",
+                messageId: "message-rich",
+                content: {
+                  text: "Continue with context",
+                  quotes: [{ text: "Important context" }],
+                },
+                placement: "next_turn",
+                state: "retracted",
+              },
+            ],
+          };
+        },
+      }),
+      observer,
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke("sessions:retractQueue", "session-1"),
+    {
+      text: "Continue with context",
+      quotes: [{ text: "Important context" }],
+    },
+  );
+  assert.equal(retractCalls, 1);
   await observer.close();
 });
 
@@ -798,6 +868,12 @@ function observerWithSnapshot(): RuntimeHostSessionObserver {
 
 function observerWithTranscript(
   transcript: readonly import("@maka/core").StoredMessage[],
+  queue: SessionMessageQueueProjection = {
+    hostEpoch: "host-1",
+    queueRevision: 0,
+    steering: [],
+    followup: [],
+  },
 ): RuntimeHostSessionObserver {
   let finishEvents!: () => void;
   const eventsFinished = new Promise<void>((resolve) => {
@@ -824,12 +900,7 @@ function observerWithTranscript(
             status: "running",
           },
           goal: null,
-          queue: {
-            hostEpoch: "host-1",
-            queueRevision: 0,
-            steering: [],
-            followup: [],
-          },
+          queue,
           interactions: { pending: [] },
         },
         activeAssistantStreams: [],

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { IpcMainInvokeEvent } from "electron";
 import {
+  MAX_ATTACHMENT_COUNT,
+  aggregateMessageContents,
   deriveTurnRecords,
   SIDE_CONVERSATION_SESSION_LABEL,
   type ActiveInteractionRequestEvent,
@@ -22,7 +24,9 @@ import {
   normalizeRuntimeHostReviseBeforeTurnInput,
   normalizeSandboxBoundaryResponse,
   normalizeSessionSendCommand,
+  normalizeStopSessionInput,
   normalizeUserQuestionResponse,
+  type NormalizedStopSessionInput,
 } from "./permission-response-guard.js";
 import {
   handleReconnectableRead,
@@ -172,7 +176,10 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (!session)
         throw new Error(`Runtime Host Session not found: ${sessionId}`);
       const turnId = command.turnId ?? newId();
-      let attachments: AttachmentRef[] = [];
+      let attachments = retainedAttachmentsForSession(
+        sessionId,
+        command.retainedAttachments ?? [],
+      );
       if (command.attachmentItems !== undefined) {
         const files = await resolveIngestItems({
           senderId: event.sender.id,
@@ -180,7 +187,9 @@ export function registerRuntimeHostSessionExecutionIpc(
           approvals: deps.attachmentApprovals,
           stat: deps.stat,
         });
-        attachments = await resolveAttachmentRefs({
+        attachments = [
+          ...attachments,
+          ...(await resolveAttachmentRefs({
           files,
           cwd: session.workspace.hostCwd,
           sessionId,
@@ -193,7 +202,11 @@ export function registerRuntimeHostSessionExecutionIpc(
               mimeType,
               content,
             }),
-        });
+          })),
+        ];
+      }
+      if (attachments.length > MAX_ATTACHMENT_COUNT) {
+        throw new Error("Too many attachments");
       }
       const displayText =
         command.displayText ??
@@ -288,7 +301,10 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (!session) {
         throw new Error(`Runtime Host Session not found: ${sessionId}`);
       }
-      let attachments: AttachmentRef[] = [];
+      let attachments = retainedAttachmentsForSession(
+        sessionId,
+        command.retainedAttachments ?? [],
+      );
       if (command.attachmentItems !== undefined) {
         const files = await resolveIngestItems({
           senderId: event.sender.id,
@@ -296,7 +312,9 @@ export function registerRuntimeHostSessionExecutionIpc(
           approvals: deps.attachmentApprovals,
           stat: deps.stat,
         });
-        attachments = await resolveAttachmentRefs({
+        attachments = [
+          ...attachments,
+          ...(await resolveAttachmentRefs({
           files,
           cwd: session.workspace.hostCwd,
           sessionId,
@@ -309,7 +327,11 @@ export function registerRuntimeHostSessionExecutionIpc(
               mimeType,
               content,
             }),
-        });
+          })),
+        ];
+      }
+      if (attachments.length > MAX_ATTACHMENT_COUNT) {
+        throw new Error("Too many attachments");
       }
       const displayText = command.displayText ?? command.text;
       const inlineReferences = mergeWorkspaceFileInlineReferences({
@@ -353,7 +375,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       sessionId,
       retractId: newId(),
     });
-    return result.retracted.map((entry) => entry.content.text).join("\n\n");
+    return aggregateMessageContents(result.retracted.map((entry) => entry.content));
   });
   ipcMain.handle(
     "sessions:mutateQueue",
@@ -371,8 +393,8 @@ export function registerRuntimeHostSessionExecutionIpc(
       return { ok: true, queueRevision: result.queueRevision };
     },
   );
-  ipcMain.handle("sessions:stop", async (_event, sessionId: string) =>
-    stopSession(sessionId),
+  ipcMain.handle("sessions:stop", async (_event, sessionId: string, input: unknown) =>
+    stopSession(sessionId, normalizeStopSessionInput(input)),
   );
 
   ipcMain.handle(
@@ -535,14 +557,32 @@ export function registerRuntimeHostSessionExecutionIpc(
   return stopSession;
 }
 
+function retainedAttachmentsForSession(
+  sessionId: string,
+  attachments: readonly AttachmentRef[],
+): AttachmentRef[] {
+  return attachments.map((attachment) => {
+    if (attachment.ref.kind === "external_file") {
+      throw new Error("External file attachments must be selected again");
+    }
+    if (
+      attachment.ref.kind === "session_file" &&
+      attachment.ref.sessionId !== sessionId
+    ) {
+      throw new Error("Retained attachment belongs to another Session");
+    }
+    return structuredClone(attachment);
+  });
+}
+
 function createRuntimeHostSessionStop(
   deps: Pick<
     RuntimeHostSessionExecutionIpcDeps,
     "beforeStop" | "client" | "observer" | "emitSessionsChanged"
   >,
   newId: () => string = randomUUID,
-): (sessionId: string) => Promise<void> {
-  return async (sessionId) => {
+): (sessionId: string, input?: NormalizedStopSessionInput) => Promise<void> {
+  return async (sessionId, input = {}) => {
     await deps.beforeStop(sessionId);
     const turn = (await deps.observer.snapshot(sessionId)).rootTurn;
     if (!turn || isTerminalStatus(turn.status)) return;
@@ -551,6 +591,9 @@ function createRuntimeHostSessionStop(
       interruptId: newId(),
       turnId: turn.turnId,
       runId: turn.runId,
+      ...(input.preserveQueuedMessages === true
+        ? { preserveQueuedMessages: true }
+        : {}),
     });
     deps.emitSessionsChanged("turn-status-change", sessionId, {
       turnId: turn.turnId,

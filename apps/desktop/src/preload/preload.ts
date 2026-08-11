@@ -113,6 +113,7 @@ import type {
 import type { GoalState } from '@maka/runtime';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from '@maka/ui';
 import type { ConfigCategory } from '@maka/storage';
+
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core';
@@ -245,6 +246,7 @@ const makaBridge = {
             displayText?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
+            retainedAttachments?: AttachmentRef[];
             turnOrchestration?: TurnOrchestration;
             quotes?: QuoteRef[];
             workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
@@ -297,6 +299,7 @@ const makaBridge = {
         text: string;
         displayText?: string;
         attachmentItems?: RendererIngestInput[];
+        retainedAttachments?: AttachmentRef[];
         quotes?: import('@maka/core').QuoteRef[];
         workspaceFileReferences?: Array<
           Pick<import('@maka/core').InlineReference, 'value' | 'start'>
@@ -322,7 +325,7 @@ const makaBridge = {
     ): Promise<{ ok: boolean; queueRevision?: number }> {
       return ipcRenderer.invoke('sessions:mutateQueue', sessionId, input);
     },
-    retractQueue(sessionId: string): Promise<string> {
+    retractQueue(sessionId: string): Promise<MessageContent> {
       return ipcRenderer.invoke('sessions:retractQueue', sessionId);
     },
     readMessages(sessionId: string): Promise<StoredMessage[]> {

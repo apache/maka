@@ -512,34 +512,32 @@ function InteractiveQueueShell({ paused = false }: { paused?: boolean }) {
       state: 'queued',
     }],
     followup: [{
-      entryId: paused ? 'queue-paused-1' : 'queue-followup-1',
-      messageId: paused ? 'queue-paused-message-1' : 'queue-message-2',
-      content: paused
-        ? { text: '恢复后继续完成视觉验收与完整测试' }
-        : {
-            text: '当前实现完成后跑完整 Desktop 测试并整理逆向结论',
-            attachments: [{
-              kind: 'other',
-              name: 'queue-notes.md',
-              mimeType: 'text/markdown',
-              bytes: 128,
-              ref: {
-                kind: 'session_file',
-                sessionId: activeSession.id,
-                relativePath: 'queue-notes.md',
-              },
-            }],
-            quotes: [{ text: 'Codex queue behavior evidence' }],
+      entryId: 'queue-followup-1',
+      messageId: 'queue-message-2',
+      content: {
+        text: '当前实现完成后跑完整 Desktop 测试并整理逆向结论',
+        attachments: [{
+          kind: 'other',
+          name: 'queue-notes.md',
+          mimeType: 'text/markdown',
+          bytes: 128,
+          ref: {
+            kind: 'session_file',
+            sessionId: activeSession.id,
+            relativePath: 'queue-notes.md',
           },
+        }],
+        quotes: [{ text: 'Codex queue behavior evidence' }],
+      },
       placement: 'next_turn',
       state: 'queued',
-    }, ...(paused ? [] : [{
+    }, {
       entryId: 'queue-followup-2',
       messageId: 'queue-message-3',
       content: { text: '最后更新逆向文档中的完成状态与剩余边界' },
       placement: 'next_turn' as const,
       state: 'queued' as const,
-    }])],
+    }],
   });
 
   function mutateQueue(mutation: MessageQueueMutation): boolean {
@@ -587,7 +585,7 @@ function InteractiveQueueShell({ paused = false }: { paused?: boolean }) {
 
   return (
     <ComposedShell
-      session={{ status: paused ? 'done' : 'running', streaming: !paused }}
+      session={{ status: queue.paused ? 'done' : 'running', streaming: !queue.paused }}
       composer={{
         followUpMode: 'queue',
         queuedMessages: queue,
@@ -595,7 +593,7 @@ function InteractiveQueueShell({ paused = false }: { paused?: boolean }) {
         onRetractQueued: noop,
         onQueueMutation: mutateQueue,
       }}
-      chat={paused ? undefined : {
+      chat={queue.paused ? undefined : {
         runningStatus: true,
         messages: [
           user('msg-q-1', 'turn-q', 3, '对照 Codex 把消息队列接到 Desktop，并把交互打磨好。'),

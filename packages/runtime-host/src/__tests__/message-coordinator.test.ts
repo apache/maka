@@ -249,6 +249,108 @@ test('queue mutations update, reorder, promote, and remove exact queued entries'
   await fixture.coordinator.close();
 });
 
+test('queue mutation rejects a stale candidate after runtime consumption during preflight', async () => {
+  const preflightStarted = deferred<void>();
+  const releasePreflight = deferred<void>();
+  const fixture = createFixture(undefined, async (_sessionId, candidate) => {
+    if (candidate.queue?.queueRevision === 3) {
+      preflightStarted.resolve(undefined);
+      await releasePreflight.promise;
+    }
+    return true;
+  });
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  await submit(fixture, 'steering-1', 'steer now', 'current_turn');
+  await submit(fixture, 'follow-1', 'edit later', 'next_turn');
+  const projection = fixture.coordinator.projection(ROOT.sessionId);
+  const target = projection.followup[0];
+  assert.ok(target);
+
+  const mutating = fixture.coordinator.handlers['queue.mutate'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      mutationId: 'mutation-race',
+      expectedQueueRevision: projection.queueRevision,
+      mutation: { kind: 'update', entryId: target.entryId, text: 'stale edit' },
+    },
+    operationContext(),
+  );
+  await preflightStarted.promise;
+  const [lease] = owner.pull();
+  assert.ok(lease);
+  releasePreflight.resolve(undefined);
+
+  const outcome = await mutating;
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) assert.equal(outcome.error.code, 'operation_conflict');
+  assert.equal(
+    fixture.coordinator.projection(ROOT.sessionId).followup[0]?.content.text,
+    'edit later',
+  );
+
+  owner.ack([lease.id]);
+  await fixture.coordinator.handlers['queue.retract'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      retractId: 'cleanup-mutation-race',
+    },
+    operationContext(),
+  );
+  owner.release();
+  fixture.coordinator.completeIdle(fixture.coordinator.beginTerminalTransition(ROOT));
+  await fixture.coordinator.close();
+});
+
+test('queue text editing clears positional inline references', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  const submitted = await submitContent(
+    fixture,
+    'workspace-reference',
+    {
+      text: 'open @old.txt',
+      inlineReferences: [{ kind: 'workspace_file', value: '@old.txt', label: 'old.txt', start: 5 }],
+    },
+    'next_turn',
+  );
+  assert.equal(submitted.ok, true);
+  const projection = fixture.coordinator.projection(ROOT.sessionId);
+  const target = projection.followup[0];
+  assert.ok(target);
+
+  const mutated = await fixture.coordinator.handlers['queue.mutate'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      mutationId: 'mutation-workspace-reference',
+      expectedQueueRevision: projection.queueRevision,
+      mutation: { kind: 'update', entryId: target.entryId, text: 'open @renamed.txt' },
+    },
+    operationContext(),
+  );
+  if (!mutated.ok) assert.fail(`${mutated.error.code}: ${mutated.error.message}`);
+  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).followup[0]?.content, {
+    text: 'open @renamed.txt',
+    inlineReferences: [],
+  });
+
+  await fixture.coordinator.handlers['queue.retract'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      retractId: 'cleanup-workspace-reference',
+    },
+    operationContext(),
+  );
+  owner.release();
+  fixture.coordinator.completeIdle(fixture.coordinator.beginTerminalTransition(ROOT));
+  await fixture.coordinator.close();
+});
+
 test('partitions a mixed-Client follow-up queue across root handoffs', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
@@ -799,6 +901,87 @@ test('an interrupt generation fence makes a late nack discard its in-flight entr
   owner.release();
   const batch = fixture.coordinator.beginTerminalTransition(ROOT);
   fixture.coordinator.completeIdle(batch);
+});
+
+test('preserved interrupt pauses queued work and resume starts exactly one successor root', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  await submit(fixture, 'steer-preserved', 'adjust then continue', 'current_turn');
+  await submit(fixture, 'follow-preserved', 'continue after stop', 'next_turn');
+
+  const interrupted = fixture.coordinator.handlers['turn.interrupt'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      interruptId: 'interrupt-preserve',
+      turnId: ROOT.turnId,
+      runId: ROOT.runId,
+      preserveQueuedMessages: true,
+    },
+    operationContext(),
+  );
+  await fixture.stopClaimed.promise;
+  fixture.resolveTerminal({
+    ...ROOT,
+    status: 'cancelled',
+    terminalEventId: 'terminal-preserved',
+    abortSource: 'user_interrupt',
+  });
+  const outcome = await interrupted;
+  assert.equal(outcome.ok, true);
+  if (outcome.ok) assert.deepEqual(outcome.result.retracted, []);
+
+  owner.release();
+  const stoppedBatch = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(stoppedBatch.sources, []);
+  fixture.coordinator.completeIdle(stoppedBatch);
+  const paused = fixture.coordinator.projection(ROOT.sessionId);
+  assert.equal(paused.paused, true);
+  assert.deepEqual(paused.steering, []);
+  assert.deepEqual(
+    paused.followup.map((entry) => entry.content.text),
+    ['adjust then continue', 'continue after stop'],
+  );
+
+  fixture.setRootState({ kind: 'idle' });
+  const resumed = await fixture.coordinator.handlers['queue.mutate'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      mutationId: 'resume-preserved',
+      expectedQueueRevision: paused.queueRevision,
+      mutation: { kind: 'resume' },
+    },
+    operationContext(),
+  );
+  assert.equal(resumed.ok, true);
+  if (resumed.ok) assert.equal(resumed.result.disposition, 'resumed');
+  assert.equal(fixture.startCalls(), 1);
+  const active = fixture.coordinator.projection(ROOT.sessionId);
+  assert.equal(active.paused, undefined);
+  assert.deepEqual(
+    active.followup.map((entry) => entry.content.text),
+    ['continue after stop'],
+  );
+
+  const resumedIdentity = {
+    sessionId: ROOT.sessionId,
+    turnId: 'resumed-turn',
+    runId: 'resumed-run',
+  };
+  const resumedOwner = fixture.coordinator.bindRun(resumedIdentity);
+  await fixture.coordinator.handlers['queue.retract'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      retractId: 'cleanup-resumed-queue',
+    },
+    operationContext(),
+  );
+  resumedOwner.release();
+  fixture.coordinator.completeIdle(fixture.coordinator.beginTerminalTransition(resumedIdentity));
+  await fixture.coordinator.close();
 });
 
 test('interrupt receipt deletion reclaims state after terminal completion wins the race', async () => {
@@ -1698,6 +1881,18 @@ function createFixture(
       );
       rootState = { kind: 'active', sessionId: input.sessionId, turnId, runId: 'idle-run' };
       coordinator.reserveRootTurn(rootState);
+      return { turnId };
+    },
+    startPausedFollowup: async (batch) => {
+      startCalls += 1;
+      const turnId = 'resumed-turn';
+      const identity = {
+        sessionId: batch.sessionId,
+        turnId,
+        runId: 'resumed-run',
+      };
+      rootState = { kind: 'active', ...identity };
+      coordinator.commitNextRoot(batch, identity);
       return { turnId };
     },
     prepareMessage: (input) => prepareMessage(input),

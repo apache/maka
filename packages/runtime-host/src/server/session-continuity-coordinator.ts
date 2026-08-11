@@ -900,6 +900,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       previous.delta.turnId !== frame.delta.turnId ||
       previous.delta.runId !== frame.delta.runId ||
       previous.delta.messageId !== frame.delta.messageId ||
+      previous.delta.reset === true ||
+      previous.delta.complete === true ||
+      frame.delta.reset === true ||
+      frame.delta.complete === true ||
       previous.delta.startOffset + previous.delta.text.length !== frame.delta.startOffset
     ) {
       return false;

@@ -114,6 +114,10 @@ export interface HostMessageRootPort {
     input: HostMessageStartInput,
     admission: SessionAdmissionLease,
   ): Promise<{ readonly turnId: string } | { readonly error: string }>;
+  startPausedFollowup(
+    batch: RootFollowupBatch,
+    admission: SessionAdmissionLease,
+  ): Promise<{ readonly turnId: string } | { readonly error: string }>;
   prepareMessage(
     input: HostMessagePreparationInput,
   ): Promise<
@@ -216,6 +220,7 @@ interface SessionState {
   revision: number;
   generation: number;
   phase: 'open' | 'closed';
+  paused: boolean;
   steering: LiveEntry[];
   inFlight: Map<string, LiveEntry>;
   followup: LiveEntry[];
@@ -224,8 +229,10 @@ interface SessionState {
   transition?: TerminalTransition;
   stopFence?: {
     readonly identity: RuntimeMessageRunIdentity;
+    readonly preserveQueuedMessages: boolean;
     readonly result: QueueFenceResult;
   };
+  pausedFrom?: RuntimeMessageRunIdentity;
   interruptReceipts: Map<string, InterruptReceipt>;
 }
 
@@ -351,6 +358,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   reserveRootTurn(identity: RuntimeMessageRunIdentity): void {
     const state = this.#state(identity.sessionId);
+    if (state.paused) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Cannot reserve a root Turn while the message queue is paused',
+      );
+    }
     if (state.reservedRoot) {
       if (sameRun(state.reservedRoot, identity)) return;
       throw new RuntimeMessageAuthorityInvariantError('Session already reserved another root Turn');
@@ -416,7 +428,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       this.#mutated(state);
     }
     state.run = undefined;
-    const entries = nextFollowupEntry(state.followup);
+    const entries = state.paused ? [] : nextFollowupEntry(state.followup);
     const followup = canonicalFollowupBatch(entries);
     const transition: TerminalTransition = {
       transitionId: this.#createId(),
@@ -444,6 +456,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     state.generation += 1;
     state.reservedRoot = { ...identity };
     state.phase = 'open';
+    state.paused = false;
+    state.pausedFrom = undefined;
     this.#mutated(state);
   }
 
@@ -783,7 +797,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   }
 
   #mutateAdmitted(input: QueueMutateInput): Promise<MessageOutcome<QueueMutateResult>> {
-    return this.#sessionAdmission.run(input.sessionId, async () => {
+    return this.#sessionAdmission.run(input.sessionId, async (admission) => {
       if (this.#failStopped) {
         return failure('host_draining', 'Runtime Host message authority has failed');
       }
@@ -806,6 +820,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       if (state.revision !== input.expectedQueueRevision) {
         return failure('operation_conflict', 'Message queue revision changed');
       }
+      if (input.mutation.kind === 'resume') {
+        return this.#resumePausedQueue(input, state, admission);
+      }
       const candidate = mutateQueueProjection(this.#project(state), input.mutation);
       if (!candidate) {
         return failure('operation_conflict', 'Queued message no longer matches the mutation');
@@ -813,8 +830,22 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       if (!projectionFitsEveryEntryState(candidate)) {
         return failure('session_busy', 'Message queue projection capacity is full');
       }
+      const candidateRevision = state.revision;
+      const candidateGeneration = state.generation;
+      const candidateReservedRoot = state.reservedRoot ? { ...state.reservedRoot } : undefined;
+      const candidateRun = state.run ? { ...state.run, released: state.run.released } : undefined;
       if (!(await this.#preflightSessionSnapshot(input.sessionId, { queue: candidate }))) {
         return failure('session_busy', 'Session projection capacity is full');
+      }
+      if (
+        state.phase !== 'open' ||
+        state.transition ||
+        state.revision !== candidateRevision ||
+        state.generation !== candidateGeneration ||
+        !sameOptionalRun(state.reservedRoot, candidateReservedRoot) ||
+        !sameOptionalBoundRun(state.run, candidateRun)
+      ) {
+        return failure('operation_conflict', 'Message queue changed during mutation preflight');
       }
       if (!mutationPreservesRootAdmission(state, input.mutation)) {
         return failure('session_busy', 'Message queue mutation exceeds root admission capacity');
@@ -841,6 +872,94 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       }
       return success(result);
     });
+  }
+
+  async #resumePausedQueue(
+    input: QueueMutateInput,
+    state: SessionState,
+    admission: SessionAdmissionLease,
+  ): Promise<MessageOutcome<QueueMutateResult>> {
+    if (!state.paused || !state.pausedFrom || state.reservedRoot || state.run || state.transition) {
+      return failure('operation_conflict', 'Message queue is not paused at an idle boundary');
+    }
+    if (state.followup.length === 0) {
+      return failure('operation_conflict', 'Paused message queue is empty');
+    }
+    const rootState = await this.#root.readRootState(input.sessionId);
+    if (rootState.kind !== 'idle') {
+      return failure('session_busy', 'A root Turn is already active or reserved');
+    }
+    const entries = nextFollowupEntry(state.followup);
+    const followup = canonicalFollowupBatch(entries);
+    const transition: TerminalTransition = {
+      transitionId: this.#createId(),
+      identity: { ...state.pausedFrom },
+      entries,
+    };
+    const batch: RootFollowupBatch = {
+      transitionId: transition.transitionId,
+      sessionId: state.sessionId,
+      previousTurnId: transition.identity.turnId,
+      initiatingConnectionId: entries[0]?.initiatingConnectionId,
+      content: followup.content,
+      submittedContent: followup.submittedContent,
+      sources: followup.sources,
+    };
+    const current = this.#project(state);
+    const candidate: SessionMessageQueueProjection = {
+      hostEpoch: current.hostEpoch,
+      queueRevision: current.queueRevision + 1,
+      steering: current.steering,
+      followup: current.followup.slice(entries.length),
+    };
+    if (!projectionFitsEveryEntryState(candidate)) {
+      return failure('session_busy', 'Resumed message queue projection exceeds capacity');
+    }
+    if (!(await this.#preflightSessionSnapshot(input.sessionId, { queue: candidate }))) {
+      return failure('session_busy', 'Resumed Session projection exceeds capacity');
+    }
+    if (
+      !state.paused ||
+      state.transition ||
+      state.revision !== input.expectedQueueRevision ||
+      !state.pausedFrom ||
+      !sameRun(state.pausedFrom, transition.identity) ||
+      state.followup[0] !== entries[0]
+    ) {
+      return failure('operation_conflict', 'Paused message queue changed during resume preflight');
+    }
+
+    state.transition = transition;
+    try {
+      const started = await this.#root.startPausedFollowup(batch, admission);
+      if ('error' in started) {
+        if (state.transition === transition) state.transition = undefined;
+        return failure('operation_conflict', started.error);
+      }
+      if (state.transition || state.paused || state.revision !== candidate.queueRevision) {
+        throw new RuntimeMessageAuthorityInvariantError(
+          'Paused queue resume did not commit its prepared transition',
+        );
+      }
+      const result = {
+        queueRevision: state.revision,
+        disposition: 'resumed',
+      } satisfies QueueMutateResult;
+      try {
+        await this.#commitReceipt('mutate', input.sessionId, input.mutationId, input, result);
+      } catch (error) {
+        this.#failStop();
+        throw error;
+      }
+      return success(result);
+    } catch (error) {
+      if (state.transition === transition) {
+        state.transition = undefined;
+      } else {
+        this.#failStop();
+      }
+      throw error;
+    }
   }
 
   #retractAdmitted(input: QueueRetractInput): Promise<MessageOutcome<QueueRetractResult>> {
@@ -986,7 +1105,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
                 'Message authority failed before the stop fence commit',
               );
             }
-            fence ??= this.#commitQueueFence(rootState);
+            fence ??= this.#commitQueueFence(rootState, input.preserveQueuedMessages === true);
             return fence;
           },
           admission,
@@ -1310,7 +1429,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     run.released = true;
   }
 
-  #commitQueueFence(identity: RuntimeMessageRunIdentity): QueueFenceResult {
+  #commitQueueFence(
+    identity: RuntimeMessageRunIdentity,
+    preserveQueuedMessages = false,
+  ): QueueFenceResult {
     const state = this.#requireState(identity.sessionId);
     if (state.transition) {
       throw new RuntimeMessageAuthorityInvariantError(
@@ -1322,6 +1444,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       if (!sameRun(existing.identity, identity)) {
         throw new RuntimeMessageAuthorityInvariantError('Stop fence belongs to another root Turn');
       }
+      if (existing.preserveQueuedMessages !== preserveQueuedMessages) {
+        throw new RuntimeMessageAuthorityInvariantError(
+          'Stop fence changed queued-message preservation semantics',
+        );
+      }
       return existing.result;
     }
     if (!state.reservedRoot || !sameRun(state.reservedRoot, identity)) {
@@ -1329,17 +1456,34 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         'Stop fence does not match the reserved root Turn',
       );
     }
-    if (!interruptResultFits(this.#project(state), identity)) {
+    if (!interruptResultFits(this.#project(state), identity, preserveQueuedMessages)) {
       throw new RuntimeMessageAuthorityInvariantError(
         'Stop fence interrupt result exceeds protocol capacity',
       );
     }
     state.phase = 'closed';
-    const retracted = this.#retractQueued(state);
+    let retracted: RetractedMessageSnapshot[];
+    if (preserveQueuedMessages) {
+      const folded = state.steering.splice(0);
+      for (const entry of folded) {
+        entry.placement = 'next_turn';
+        entry.disposition = 'followup';
+      }
+      if (folded.length > 0) state.followup.unshift(...folded);
+      state.paused = state.followup.length > 0;
+      state.pausedFrom = state.paused ? { ...identity } : undefined;
+      retracted = [];
+    } else {
+      retracted = this.#retractQueued(state);
+    }
     state.generation += 1;
     this.#mutated(state);
     const result = { queueRevision: state.revision, retracted };
-    state.stopFence = { identity: { ...identity }, result };
+    state.stopFence = {
+      identity: { ...identity },
+      preserveQueuedMessages,
+      result,
+    };
     return result;
   }
 
@@ -1347,6 +1491,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     const entries = [...state.steering, ...state.followup];
     state.steering = [];
     state.followup = [];
+    state.paused = false;
+    state.pausedFrom = undefined;
     for (const entry of entries) this.#releaseEntry(entry);
     return entries.map(retractedSnapshot);
   }
@@ -1406,6 +1552,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         revision: 0,
         generation: 0,
         phase: 'open',
+        paused: false,
         steering: [],
         inFlight: new Map(),
         followup: [],
@@ -1447,6 +1594,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     return {
       hostEpoch: this.#hostEpoch,
       queueRevision: state.revision,
+      ...(state.paused ? { paused: true } : {}),
       steering: [
         ...[...state.inFlight.values()].map(inFlightSnapshot),
         ...steering.map(queuedSteeringSnapshot),
@@ -1479,11 +1627,7 @@ function mutateQueueProjection(
       matched = true;
       return {
         ...entry,
-        content: normalizeMessageContent({
-          ...entry.content,
-          text: mutation.text,
-          displayText: mutation.text,
-        }),
+        content: updatedQueueContent(entry.content, mutation.text),
       };
     };
     const steering = current.steering.map(update);
@@ -1548,16 +1692,8 @@ function applyLiveQueueMutation(
       (candidate) => candidate.entryId === mutation.entryId,
     );
     if (!entry) throw new RuntimeMessageAuthorityInvariantError('Missing queue update target');
-    entry.content = normalizeMessageContent({
-      ...entry.content,
-      text: mutation.text,
-      displayText: mutation.text,
-    });
-    entry.modelContent = normalizeMessageContent({
-      ...entry.modelContent,
-      text: mutation.text,
-      displayText: mutation.text,
-    });
+    entry.content = updatedQueueContent(entry.content, mutation.text);
+    entry.modelContent = updatedQueueContent(entry.modelContent, mutation.text);
     return;
   }
   if (mutation.kind === 'remove') {
@@ -1580,7 +1716,9 @@ function applyLiveQueueMutation(
     return;
   }
   if (mutation.kind === 'resume') {
-    throw new RuntimeMessageAuthorityInvariantError('Queue resume is not hosted here');
+    throw new RuntimeMessageAuthorityInvariantError(
+      'Queue resume must use the paused admission path',
+    );
   }
   const lane = mutation.placement === 'current_turn' ? state.steering : state.followup;
   const byId = new Map(lane.map((entry) => [entry.entryId, entry]));
@@ -1590,6 +1728,15 @@ function applyLiveQueueMutation(
   }
   if (mutation.placement === 'current_turn') state.steering = reordered as LiveEntry[];
   else state.followup = reordered as LiveEntry[];
+}
+
+function updatedQueueContent(content: MessageContent, text: string): MessageContent {
+  return normalizeMessageContent({
+    ...content,
+    text,
+    displayText: text,
+    ...(content.inlineReferences !== undefined ? { inlineReferences: [] } : {}),
+  });
 }
 
 function mutationDisposition(mutation: QueueMutation): QueueMutateResult['disposition'] {
@@ -1604,18 +1751,10 @@ function mutationPreservesRootAdmission(state: SessionState, mutation: QueueMuta
   if (mutation.kind !== 'update') return true;
   const sources = allLiveEntries(state).map((entry) => {
     if (entry.entryId !== mutation.entryId) return sourceFromEntry(entry);
-    const submittedContent = normalizeMessageContent({
-      ...entry.content,
-      text: mutation.text,
-      displayText: mutation.text,
-    });
+    const submittedContent = updatedQueueContent(entry.content, mutation.text);
     return {
       ...sourceFromEntry(entry),
-      content: normalizeMessageContent({
-        ...entry.modelContent,
-        text: mutation.text,
-        displayText: mutation.text,
-      }),
+      content: updatedQueueContent(entry.modelContent, mutation.text),
       submittedContentDigest: messageContentDigest(submittedContent),
     };
   }) satisfies RootTurnSourceMessage[];
@@ -1684,6 +1823,21 @@ function samePayload(left: object, right: object): boolean {
 function sameRun(left: RuntimeMessageRunIdentity, right: RuntimeMessageRunIdentity): boolean {
   return (
     left.sessionId === right.sessionId && left.turnId === right.turnId && left.runId === right.runId
+  );
+}
+
+function sameOptionalRun(
+  left: RuntimeMessageRunIdentity | undefined,
+  right: RuntimeMessageRunIdentity | undefined,
+): boolean {
+  return left === undefined ? right === undefined : right !== undefined && sameRun(left, right);
+}
+
+function sameOptionalBoundRun(left: BoundRun | undefined, right: BoundRun | undefined): boolean {
+  return (
+    sameOptionalRun(left, right) &&
+    left?.generation === right?.generation &&
+    left?.released === right?.released
   );
 }
 
@@ -1765,7 +1919,11 @@ function allLiveEntries(state: SessionState): LiveEntry[] {
 
 function hasLiveMessageState(state: SessionState): boolean {
   return Boolean(
-    state.reservedRoot || state.run || state.transition || allLiveEntries(state).length !== 0,
+    state.paused ||
+      state.reservedRoot ||
+      state.run ||
+      state.transition ||
+      allLiveEntries(state).length !== 0,
   );
 }
 
@@ -1861,10 +2019,13 @@ function rootAdmissionPayloadFits(sources: readonly RootTurnSourceMessage[]): bo
 function interruptResultFits(
   projection: SessionMessageQueueProjection,
   identity: RuntimeMessageRunIdentity,
+  preserveQueuedMessages = false,
 ): boolean {
-  const retracted = [...projection.steering, ...projection.followup]
-    .filter((entry) => entry.state === 'queued')
-    .map((entry): RetractedMessageSnapshot => ({ ...entry, state: 'retracted' }));
+  const retracted = preserveQueuedMessages
+    ? []
+    : [...projection.steering, ...projection.followup]
+        .filter((entry) => entry.state === 'queued')
+        .map((entry): RetractedMessageSnapshot => ({ ...entry, state: 'retracted' }));
   const worstCaseTurn = worstCaseFailedTurnSnapshot(identity);
   return fitsEncodedByteLimit(
     { queueRevision: Number.MAX_SAFE_INTEGER, retracted, turn: worstCaseTurn },

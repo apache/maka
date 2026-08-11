@@ -54,6 +54,7 @@ export type SteeringMessageSnapshot =
 export interface SessionMessageQueueProjection {
   readonly hostEpoch: string;
   readonly queueRevision: number;
+  readonly paused?: boolean;
   readonly steering: readonly SteeringMessageSnapshot[];
   readonly followup: readonly QueuedMessageSnapshot[];
 }
@@ -103,6 +104,7 @@ export interface TurnInterruptInput {
   readonly interruptId: string;
   readonly turnId: string;
   readonly runId: string;
+  readonly preserveQueuedMessages?: boolean;
 }
 
 export interface TurnInterruptResult {
@@ -155,12 +157,17 @@ export const MESSAGE_OPERATION_SPECS = {
 } as const;
 
 export function decodeSessionMessageQueueProjection(value: unknown): SessionMessageQueueProjection {
-  const record = requireExactRecord(value, 'Session message queue projection', [
-    'hostEpoch',
-    'queueRevision',
-    'steering',
-    'followup',
-  ]);
+  const record = requireRecord(value, 'Session message queue projection');
+  assertExactKeys(
+    record,
+    'Session message queue projection',
+    record.paused === undefined
+      ? ['hostEpoch', 'queueRevision', 'steering', 'followup']
+      : ['hostEpoch', 'queueRevision', 'paused', 'steering', 'followup'],
+  );
+  if (record.paused !== undefined && typeof record.paused !== 'boolean') {
+    throw invalidProtocolFrame('Invalid queue paused state');
+  }
   const steering = decodeSteeringMessages(record.steering);
   const followup = decodeFollowupMessages(record.followup);
   if (steering.length + followup.length > MESSAGE_QUEUE_MAX_ENTRIES) {
@@ -170,6 +177,7 @@ export function decodeSessionMessageQueueProjection(value: unknown): SessionMess
   const projection = {
     hostEpoch: requireId(record.hostEpoch, 'queue hostEpoch'),
     queueRevision: requireCount(record.queueRevision, 'queueRevision'),
+    ...(record.paused === true ? { paused: true } : {}),
     steering,
     followup,
   };
@@ -313,19 +321,34 @@ function decodeQueueMutateResult(value: unknown): QueueMutateResult {
 }
 
 function decodeTurnInterruptInput(value: unknown): TurnInterruptInput {
-  const record = requireExactRecord(value, 'turn.interrupt input', [
-    'originHostEpoch',
-    'sessionId',
-    'interruptId',
-    'turnId',
-    'runId',
-  ]);
+  const record = requireRecord(value, 'turn.interrupt input');
+  assertExactKeys(
+    record,
+    'turn.interrupt input',
+    record.preserveQueuedMessages === undefined
+      ? ['originHostEpoch', 'sessionId', 'interruptId', 'turnId', 'runId']
+      : [
+          'originHostEpoch',
+          'sessionId',
+          'interruptId',
+          'turnId',
+          'runId',
+          'preserveQueuedMessages',
+        ],
+  );
+  if (
+    record.preserveQueuedMessages !== undefined &&
+    typeof record.preserveQueuedMessages !== 'boolean'
+  ) {
+    throw invalidProtocolFrame('Invalid preserve queued messages flag');
+  }
   return {
     originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     interruptId: requireEntityId(record.interruptId, 'interruptId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
     runId: requireEntityId(record.runId, 'runId'),
+    ...(record.preserveQueuedMessages === true ? { preserveQueuedMessages: true } : {}),
   };
 }
 

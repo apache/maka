@@ -141,3 +141,24 @@ test('dispatches a staged slash command instead of queueing it during a running 
   ).toBeVisible();
   await page.getByRole('button', { name: '停止' }).click();
 });
+
+test('preserves queued work across Stop and resumes the successor turn', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill(FAKE_HOLD_OPEN_PROMPT);
+  await composer.press('Enter');
+  await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
+
+  await composer.fill('continue after stop');
+  await composer.press('Enter');
+  await expect(
+    page.locator('.maka-composer-queue-row', { hasText: 'continue after stop' }),
+  ).toBeVisible();
+
+  await page.getByRole('button', { name: '停止' }).click();
+  await expect(page.getByText('由于你中断了当前响应，队列已暂停')).toBeVisible();
+  await page.locator('.maka-composer-queue-resume').click();
+
+  await expect(page.getByText('Fake backend received: continue after stop')).toBeVisible();
+});

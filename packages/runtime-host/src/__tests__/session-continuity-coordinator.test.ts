@@ -676,6 +676,48 @@ test('coalesces rapid text deltas behind an active slow send without evicting De
   coordinator.close();
 });
 
+test('keeps assistant completion separate from coalesced deltas behind a slow send', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const firstSend = deferred<void>();
+  const sink = new BlockingFirstSink(firstSend.promise);
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(2));
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', 'chunk-1chunk-2'),
+  );
+  assert.equal(sink.frames.length, 1, 'the first frame remains in flight');
+
+  firstSend.resolve();
+  await waitFor(() => sink.frames.length === 3);
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.session_delta'
+        ? {
+            sequence: frame.sequence,
+            text: frame.delta.text,
+            complete: frame.delta.complete === true,
+          }
+        : frame.kind,
+    ),
+    [
+      { sequence: 1, text: 'chunk-1', complete: false },
+      { sequence: 2, text: 'chunk-2', complete: false },
+      { sequence: 3, text: '', complete: true },
+    ],
+  );
+  coordinator.close();
+});
+
 test('removal closes every Session subscriber at the admitted sequence boundary', async () => {
   const admission = new SessionAdmissionGate();
   const coordinator = new SessionContinuityCoordinator(

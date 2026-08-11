@@ -223,3 +223,29 @@ Rebasing onto the August 11 mainline exposed two integration boundaries:
   workbar is absent before the first Session exists, so retaining an expanded
   state made it appear only after the first send and looked like send had opened
   it. Existing Sessions still preserve a workbar the user opened deliberately.
+
+## Review hardening
+
+The August 11 correctness review found five boundaries that happy-path tests
+had not exercised:
+
+- Stop carried a renderer-only preservation flag. Runtime Host now owns a
+  paused queue state: the stop fence folds undelivered steering into follow-up,
+  terminal transition does not auto-admit a successor, and `queue.mutate`
+  `resume` admits exactly the queue head before clearing `paused`.
+- Assistant delta coalescing accepted terminal frames. Coalescing is now
+  restricted to ordinary append deltas; `reset` and `complete` retain their own
+  sequence and wire semantics behind a blocked sink.
+- Queue mutation could apply a candidate prepared before runtime pull/ack/nack.
+  Revision, generation, reservation, and run ownership are revalidated after
+  asynchronous snapshot preflight and before live mutation.
+- Retract-to-editor projected rich content to text. IPC now returns aggregated
+  `MessageContent`; Desktop restores retained attachment refs, quotes, and
+  workspace-reference metadata and sends them back through validated fields.
+- Text editing preserved positional inline references from the previous text.
+  Update preparation, live state, and root-admission proof now clear those
+  positions together, while preserving attachments and quotes.
+
+Regression coverage includes a blocked-sink delta-plus-completion test, a
+runtime-consumption mutation race, Host pause/resume admission, structured
+retract IPC, and a real Electron Stop-to-Resume successor flow.
