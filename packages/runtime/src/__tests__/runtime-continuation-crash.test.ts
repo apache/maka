@@ -17,7 +17,8 @@ import { FakeBackend } from '../fake-backend.js';
 import { terminateChildProcessTree } from '../process-tree-terminator.js';
 
 const CRASH_CHILD_ENV = 'MAKA_RUNTIME_CONTINUATION_CRASH_CHILD';
-const CRASH_HARNESS_TIMEOUT_MS = process.platform === 'win32' ? 120_000 : 60_000;
+const CRASH_CHILD_READY_TIMEOUT_MS = process.platform === 'win32' ? 30_000 : 10_000;
+const CRASH_HARNESS_TIMEOUT_MS = process.platform === 'win32' ? 180_000 : 60_000;
 const FAILPOINTS: readonly RuntimeContinuationFailpoint[] = [
   'after_continuation_claim_committed',
   'after_run_created',
@@ -286,7 +287,7 @@ async function crashContinuationAt(
   // Wait for `close` so the following reopen and recursive cleanup cannot race
   // a dead child that still owns the SQLite files.
   const closed = once(child, 'close') as Promise<[number | null, NodeJS.Signals | null]>;
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + CRASH_CHILD_READY_TIMEOUT_MS;
   while (
     !stdout.includes(`READY:${failpoint}\n`) &&
     child.exitCode === null &&
