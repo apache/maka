@@ -10,6 +10,7 @@ import {
 } from '@maka/storage/execution-stores';
 import type { StoredInteractionRequest } from '@maka/storage/interaction-store';
 import { acquireOperationalStateDatabase } from '@maka/storage';
+import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '@maka/runtime';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   TURN_MESSAGE_TEXT_MAX_BYTES,
@@ -327,27 +328,55 @@ test('preflights the worst-case failed Turn before accepting more queued content
 test('projects a failed Turn message from the canonical terminal event', async () => {
   await withStores(async (root, stores) => {
     const { sessionId, rootAdmissions } = await createRunningRoot(root, stores);
-    await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', {
-      id: 'terminal-failed-1',
-      invocationId: 'run-1',
+    const memory = createSessionEventMapMemory();
+    const context = {
       sessionId,
-      turnId: 'turn-1',
+      invocationId: 'run-1',
       runId: 'run-1',
-      ts: 12,
-      partial: false,
-      status: 'failed',
-      role: 'system',
-      author: 'system',
-      content: {
-        kind: 'error',
+      turnId: 'turn-1',
+      source: 'test',
+      startedAt: 10,
+      request: {
+        sessionId,
+        invocationId: 'run-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        text: 'hello',
+        source: 'test',
+      },
+      newId: () => 'unused',
+      now: () => 12,
+    } as const;
+    const errorEvent = mapSessionEventToRuntimeEvent(
+      {
+        type: 'error',
+        id: 'provider-error-1',
+        turnId: 'turn-1',
+        ts: 12,
+        recoverable: false,
         code: 'provider_error',
         message: 'canonical provider failure api_key=sk-test-secret-value',
       },
-    });
+      context,
+      memory,
+    );
+    const terminalEvent = mapSessionEventToRuntimeEvent(
+      {
+        type: 'complete',
+        id: 'terminal-failed-1',
+        turnId: 'turn-1',
+        ts: 13,
+        stopReason: 'error',
+      },
+      context,
+      memory,
+    );
+    await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', errorEvent);
+    await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', terminalEvent);
     await stores.agentRunStore.updateRun(sessionId, 'run-1', {
       status: 'failed',
-      updatedAt: 12,
-      completedAt: 12,
+      updatedAt: 13,
+      completedAt: 13,
       failureClass: 'provider_error',
       failureMessage: 'stale Run header failure',
     });

@@ -889,8 +889,12 @@ function registerPersistentClientIpc(): void {
     },
     getRuntimeHostTurnTrace: async (sessionId, turnId) => {
       if (!runtimePolicyClient) throw new Error("Runtime Host is unavailable");
-      const trace = await runtimePolicyClient.loadSessionTrace(sessionId);
-      return trace.turns.find((turn) => turn.turnId === turnId);
+      const result = await runtimePolicyClient.queryExecutionInspect({
+        kind: "turn_trace",
+        sessionId,
+        turnId,
+      });
+      return result.kind === "turn_trace" ? result.turn : undefined;
     },
     writeClipboard: (report) => clipboard.writeText(report),
   });

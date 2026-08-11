@@ -508,6 +508,7 @@ describe('AiSdkFlow seam', () => {
 
     assert.equal(out[1].status, 'failed');
     assert.equal(isTerminalRuntimeEvent(out[1]), true);
+    assert.deepEqual(out[1].content, err.content);
   });
 
   test('synthesizes a failed terminal event when the backend exhausts without one', async () => {

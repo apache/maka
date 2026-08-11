@@ -141,6 +141,50 @@ describe('HostExecutionInspectCoordinator', () => {
     });
   });
 
+  test('reads one Turn trace without charging unrelated Session runs', async () => {
+    await withCoordinator(async ({ stores, coordinator }) => {
+      const session = await stores.sessionStore.create(sessionInput('Target Turn'));
+      for (let index = 0; index <= EXECUTION_INSPECT_SESSION_MAX_RUNS; index += 1) {
+        await stores.agentRunStore.createRun(runHeader(session.id, `unrelated-${index}`, index));
+      }
+      const runId = 'target-run';
+      const turnId = `turn-${runId}`;
+      await stores.agentRunStore.admitRootTurn({
+        sessionId: session.id,
+        turnId,
+        proposedRunId: runId,
+        proposedUserMessageId: 'target-user-message',
+        execution: { kind: 'external_message' },
+        previousRootTurnId: null,
+        normalizedInput: { text: 'diagnose this' },
+        sourceMessages: [],
+        admittedAt: 100,
+      });
+      await stores.agentRunStore.createRun(runHeader(session.id, runId, 100));
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        runId,
+        runtimeEvent(session.id, runId, 101),
+      );
+
+      const sessionTrace = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'session_trace_start', sessionId: session.id },
+        connectionContext(),
+      );
+      assert.equal(sessionTrace.ok, false);
+
+      const target = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'turn_trace', sessionId: session.id, turnId },
+        connectionContext(),
+      );
+      assert.equal(target.ok, true);
+      if (!target.ok || target.result.kind !== 'turn_trace') return;
+      assert.equal(target.result.turn.turnId, turnId);
+      assert.equal(target.result.turn.runId, runId);
+      assert.equal(target.result.turn.failure?.message, 'fixture failure');
+    });
+  });
+
   test('rejects oversized evidence at the bounded Store read boundary', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Large evidence'));
