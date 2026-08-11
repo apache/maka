@@ -409,6 +409,13 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
       thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'], toggle: true },
     },
   },
+  atlascloud: {
+    'qwen/qwen3.8-max': {
+      displayName: 'Qwen3.8 Max',
+      lifecycle: 'active',
+      capabilities: { chat: true, reasoning: true, functionCalling: true },
+    },
+  },
   groq: {
     // Groq documents reasoning_effort only for the gpt-oss family
     // (low/medium/high) and qwen3.6-27b (none/default); see

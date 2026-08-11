@@ -184,6 +184,10 @@ export const PROVIDER_DISPLAY_COPY = {
     zh: { name: 'DeepInfra', description: '开源模型托管推理 · OpenAI 兼容', badge: 'API' },
     en: { name: 'DeepInfra', description: 'Hosted open-model inference · OpenAI-compatible', badge: 'API' },
   },
+  atlascloud: {
+    zh: { name: 'Atlas Cloud', description: '开源模型托管推理 · OpenAI 兼容', badge: 'API' },
+    en: { name: 'Atlas Cloud', description: 'Hosted open-model inference · OpenAI-compatible', badge: 'API' },
+  },
   cohere: {
     zh: { name: 'Cohere', description: 'Cohere 官方接入', badge: 'API' },
     en: { name: 'Cohere', description: 'Official Cohere Chat API access.', badge: 'API' },
