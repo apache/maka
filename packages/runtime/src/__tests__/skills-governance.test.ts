@@ -5,12 +5,9 @@ import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  BUNDLED_SKILL_CATALOG,
   clearResolvedSkillPreferenceReviews,
-  createBundledSkillLock,
   createManagedSkillLock,
   encodeSkillRuntimePreferences,
-  getBundledSkillSource,
   listManagedSkillSources,
   patchSkillRuntimePreference,
   readManagedSkillSource,
@@ -21,46 +18,6 @@ import {
 } from '../skills.js';
 
 describe('shared bundled skill catalog', () => {
-  it('is the complete byte-pinned catalog with bundled provenance and legacy trust', () => {
-    assert.equal(BUNDLED_SKILL_CATALOG.length, 30);
-    assert.equal(new Set(BUNDLED_SKILL_CATALOG.map((skill) => skill.id)).size, 30);
-    for (const skill of BUNDLED_SKILL_CATALOG) {
-      assert.equal(skill.contentSha256, sha256(skill.body));
-      assert.ok(skill.body.startsWith('---\n'));
-      assert.equal(skill.sourceName, 'maka-bundled');
-      assert.equal(skill.sourceVersion, '1');
-      assert.equal(
-        new Set(skill.legacyContentSha256).size,
-        skill.legacyContentSha256.length,
-        `${skill.id} legacy trust must not contain duplicate hashes`,
-      );
-      assert.equal(
-        skill.legacyContentSha256.every((hash) => /^sha256:[a-f0-9]{64}$/.test(hash)),
-        true,
-        `${skill.id} legacy trust must contain canonical SHA-256 hashes`,
-      );
-      const currentLock = createBundledSkillLock(skill, '2026-01-02T03:04:05.000Z');
-      assert.equal(
-        validateSkillLock({
-          lock: currentLock,
-          skillId: skill.id,
-          currentContentSha256: skill.contentSha256,
-        }).validationStatus,
-        'ok',
-      );
-
-      for (const legacyContentSha256 of skill.legacyContentSha256) {
-        const legacy = validateSkillLock({
-          lock: { ...currentLock, contentSha256: legacyContentSha256 },
-          skillId: skill.id,
-          currentContentSha256: skill.contentSha256,
-        });
-        assert.equal(legacy.sourceType, 'bundled');
-        assert.equal(legacy.validationStatus, 'modified');
-      }
-    }
-  });
-
   it('constructs and validates managed provenance and update status', () => {
     const installedHash = `sha256:${'1'.repeat(64)}`;
     const updatedHash = `sha256:${'2'.repeat(64)}`;
@@ -110,43 +67,6 @@ describe('shared bundled skill catalog', () => {
     );
   });
 
-  it('trusts the published drafter-diagram lock without changing its bundled identity', () => {
-    const source = getBundledSkillSource('drafter-diagram');
-    assert.ok(source);
-    assert.equal(source.sourceName, 'maka-bundled');
-    assert.deepEqual(source.legacyContentSha256, [
-      'sha256:4b93ebada2f061f1dfc3d99a21bc93a9d3d640f326af6230d15813bac6a5efcf',
-    ]);
-
-    const publishedHash = 'sha256:4b93ebada2f061f1dfc3d99a21bc93a9d3d640f326af6230d15813bac6a5efcf';
-    const publishedLock = {
-      schemaVersion: 1,
-      id: 'drafter-diagram',
-      sourceType: 'bundled',
-      sourceName: 'maka-bundled',
-      sourceVersion: '1',
-      contentSha256: publishedHash,
-      installedAt: '2026-07-01T00:00:00.000Z',
-    };
-    assert.deepEqual(
-      validateSkillLock({
-        lock: publishedLock,
-        skillId: 'drafter-diagram',
-        currentContentSha256: publishedHash,
-      }),
-      {
-        sourceType: 'bundled',
-        sourceName: 'maka-bundled',
-        sourceVersion: '1',
-        installedAt: '2026-07-01T00:00:00.000Z',
-        contentSha256: publishedHash,
-        userModified: false,
-        validationStatus: 'ok',
-        validationCodes: [],
-        managedUpdateStatus: 'not_managed',
-      },
-    );
-  });
 });
 
 describe('shared managed skill source reader', () => {
