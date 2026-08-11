@@ -28,9 +28,13 @@ import { type ConnectionEffectFetchDependency } from '@maka/runtime/connection-e
 import {
   authenticateRuntimePolicyStoresWriter,
   RuntimePolicyStoreError,
+  type BeginConnectionProfileModelFetchResult,
+  type BeginConnectionProfileTestResult,
   type BeginConnectionTestResult,
   type BeginModelFetchResult,
   type ConnectionEffectCompletionResult,
+  type ConnectionProfileModelFetchCompletionResult,
+  type ConnectionProfileTestCompletionResult,
   type RuntimePolicyStoresWriter,
 } from '@maka/storage/runtime-policy-stores';
 import type {
@@ -42,6 +46,11 @@ import type {
   ConnectionOnboardingVerifyInput,
   ConnectionOnboardingSaveInput,
   ConnectionOnboardingSaveResult,
+  ConnectionProfileEffectRejectionReason,
+  ConnectionProfileModelFetchInput,
+  ConnectionProfileModelFetchResult,
+  ConnectionProfileTestRunInput,
+  ConnectionProfileTestRunResult,
   ConnectionTestProjection,
   ConnectionTestRunInput,
   ConnectionTestRunResult,
@@ -85,6 +94,8 @@ export class HostConnectionEffectCoordinator {
     'connection.onboarding.verify': (input) => this.#verifyOnboarding(input),
     'connection.models.fetch': (input) => this.#fetchModels(input),
     'connection.test.run': (input) => this.#testConnection(input),
+    'connection.profile.test.run': (input) => this.#testConnectionProfile(input),
+    'connection.profile.models.fetch': (input) => this.#fetchConnectionProfileModels(input),
   };
 
   readonly #stores: RuntimePolicyStoresWriter;
@@ -303,10 +314,96 @@ export class HostConnectionEffectCoordinator {
     });
   }
 
+  #testConnectionProfile(
+    input: ConnectionProfileTestRunInput,
+  ): Promise<OperationOutcome<'connection.profile.test.run'>> {
+    return this.#admit(input.connectionId, 'connection.profile.test.run', async () => {
+      const prepared = await this.#stores.operations.beginConnectionProfileTest(
+        input.connectionId,
+        input.profileId,
+        input.modelId,
+      );
+      if (prepared.kind !== 'ready') return preparationResult(prepared);
+
+      const effect = await this.#withTransport(prepared, (fetch, secret) =>
+        this.#runConnectionTest(
+          prepared.connection,
+          secret,
+          { fetch },
+          prepared.modelId ?? undefined,
+        ),
+      );
+      const projected = projectConnectionTest(effect, this.#now());
+      const completion = await this.#complete(() =>
+        this.#stores.operations.completeConnectionProfileTest(prepared.ticket, {
+          summary: connectionTestSummary(projected),
+          modelId: projected.modelId,
+        }),
+      );
+      return completion.kind === 'committed'
+        ? { kind: 'committed', verification: completion.verification, test: projected }
+        : completion.kind === 'superseded'
+          ? projectSuperseded(completion)
+          : projectProfileCompletionFailure(completion);
+    });
+  }
+
+  #fetchConnectionProfileModels(
+    input: ConnectionProfileModelFetchInput,
+  ): Promise<OperationOutcome<'connection.profile.models.fetch'>> {
+    return this.#admit(input.connectionId, 'connection.profile.models.fetch', async () => {
+      const prepared = await this.#stores.operations.beginConnectionProfileModelFetch(
+        input.connectionId,
+        input.profileId,
+      );
+      if (prepared.kind !== 'ready') return preparationResult(prepared);
+
+      const effect = await this.#withTransport(prepared, (fetch, secret) =>
+        this.#runModelDiscovery(prepared.connection, secret, { fetch }),
+      );
+      if (!effect.ok || effect.models.length === 0) {
+        return {
+          kind: 'failed',
+          errorClass: effect.ok ? 'invalid_response' : effect.error.kind,
+        };
+      }
+      const result: ConnectionModelDiscoveryResult = {
+        models: effect.models,
+        source: 'fetched',
+        fetchedAt: this.#now(),
+      };
+      const completion = await this.#complete(() =>
+        this.#stores.operations.completeConnectionProfileModelFetch(
+          prepared.ticket,
+          result,
+          'positive_only',
+        ),
+      );
+      return completion.kind === 'committed'
+        ? {
+            kind: 'committed',
+            catalogRevision: completion.catalogRevision,
+            connection: committedConnectionBasis(
+              completion.snapshot.connections,
+              prepared.connection.connectionId,
+            ),
+            verification: completion.verification,
+            modelCount: result.models.length,
+            source: result.source,
+            fetchedAt: result.fetchedAt,
+          }
+        : completion.kind === 'superseded'
+          ? projectSuperseded(completion)
+          : projectProfileCompletionFailure(completion);
+    });
+  }
+
   #admit<
     K extends
       | 'connection.models.fetch'
       | 'connection.test.run'
+      | 'connection.profile.test.run'
+      | 'connection.profile.models.fetch'
       | 'connection.onboarding.verify'
       | 'connection.onboarding.save',
   >(
@@ -331,7 +428,10 @@ export class HostConnectionEffectCoordinator {
 
   async #withTransport<T>(
     prepared: Pick<
-      BeginModelFetchReady | BeginConnectionTestReady,
+      | BeginModelFetchReady
+      | BeginConnectionTestReady
+      | BeginConnectionProfileTestReady
+      | BeginConnectionProfileModelFetchReady,
       'connection' | 'networkProxy' | 'secretMaterial'
     >,
     run: (fetch: typeof globalThis.fetch, secret: string) => Promise<T>,
@@ -360,7 +460,10 @@ export class HostConnectionEffectCoordinator {
 
   async #connectionSecret(
     prepared: Pick<
-      BeginModelFetchReady | BeginConnectionTestReady,
+      | BeginModelFetchReady
+      | BeginConnectionTestReady
+      | BeginConnectionProfileTestReady
+      | BeginConnectionProfileModelFetchReady,
       'connection' | 'secretMaterial'
     >,
     proxy: ConnectionEffectProxySnapshot | null,
@@ -377,9 +480,12 @@ export class HostConnectionEffectCoordinator {
     return (await binding.resolve()).access_token;
   }
 
-  async #complete(
-    commit: () => Promise<ConnectionEffectCompletionResult>,
-  ): Promise<ConnectionEffectCompletionResult> {
+  async #complete<T extends
+    | ConnectionEffectCompletionResult
+    | ConnectionProfileTestCompletionResult
+    | ConnectionProfileModelFetchCompletionResult>(
+    commit: () => Promise<T>,
+  ): Promise<T> {
     return this.#activation.runMutation(async () => {
       try {
         const result = await commit();
@@ -411,6 +517,14 @@ export class HostConnectionEffectCoordinator {
 
 type BeginModelFetchReady = Extract<BeginModelFetchResult, { readonly kind: 'ready' }>;
 type BeginConnectionTestReady = Extract<BeginConnectionTestResult, { readonly kind: 'ready' }>;
+type BeginConnectionProfileTestReady = Extract<
+  BeginConnectionProfileTestResult,
+  { readonly kind: 'ready' }
+>;
+type BeginConnectionProfileModelFetchReady = Extract<
+  BeginConnectionProfileModelFetchResult,
+  { readonly kind: 'ready' }
+>;
 
 type OnboardingDiscovery =
   | {
@@ -431,20 +545,72 @@ function preparationResult(
   prepared: Exclude<BeginConnectionTestResult, { readonly kind: 'ready' }>,
 ): Extract<ConnectionTestRunResult, { readonly kind: 'rejected' }>;
 function preparationResult(
-  prepared: Exclude<BeginModelFetchResult | BeginConnectionTestResult, { readonly kind: 'ready' }>,
-): Extract<ConnectionModelFetchResult, { readonly kind: 'rejected' }> {
+  prepared: Exclude<BeginConnectionProfileTestResult, { readonly kind: 'ready' }>,
+): Extract<ConnectionProfileTestRunResult, { readonly kind: 'rejected' }>;
+function preparationResult(
+  prepared: Exclude<BeginConnectionProfileModelFetchResult, { readonly kind: 'ready' }>,
+): Extract<ConnectionProfileModelFetchResult, { readonly kind: 'rejected' }>;
+function preparationResult(
+  prepared: Exclude<
+    | BeginModelFetchResult
+    | BeginConnectionTestResult
+    | BeginConnectionProfileTestResult
+    | BeginConnectionProfileModelFetchResult,
+    { readonly kind: 'ready' }
+  >,
+): Extract<
+  | ConnectionModelFetchResult
+  | ConnectionTestRunResult
+  | ConnectionProfileTestRunResult
+  | ConnectionProfileModelFetchResult,
+  { readonly kind: 'rejected' }
+> {
   return {
     kind: 'rejected',
-    reason: prepared.kind satisfies ConnectionEffectRejectionReason,
+    reason: prepared.kind satisfies ConnectionProfileEffectRejectionReason,
+  };
+}
+
+function projectProfileCompletionFailure(
+  completion: Exclude<
+    ConnectionProfileTestCompletionResult | ConnectionProfileModelFetchCompletionResult,
+    { readonly kind: 'committed' } | { readonly kind: 'superseded' }
+  >,
+): Extract<
+  ConnectionProfileTestRunResult | ConnectionProfileModelFetchResult,
+  { readonly kind: 'rejected' } | { readonly kind: 'superseded' }
+> {
+  if (completion.kind === 'connection_stale') {
+    return { kind: 'superseded', changed: ['connection' as const] };
+  }
+  if (completion.kind === 'invalid_request') {
+    throw new Error('Connection profile effect completion returned an invalid request');
+  }
+  return {
+    kind: 'rejected',
+    reason: completion.kind satisfies ConnectionProfileEffectRejectionReason,
   };
 }
 
 function projectSuperseded(
-  completion: Extract<ConnectionEffectCompletionResult, { readonly kind: 'superseded' }>,
-): Extract<ConnectionModelFetchResult | ConnectionTestRunResult, { readonly kind: 'superseded' }> {
+  completion: Extract<
+    | ConnectionEffectCompletionResult
+    | ConnectionProfileTestCompletionResult
+    | ConnectionProfileModelFetchCompletionResult,
+    { readonly kind: 'superseded' }
+  >,
+): Extract<
+  | ConnectionModelFetchResult
+  | ConnectionTestRunResult
+  | ConnectionProfileTestRunResult
+  | ConnectionProfileModelFetchResult,
+  { readonly kind: 'superseded' }
+> {
   return {
     kind: 'superseded',
-    changed: completion.changed.map((domain) => domain satisfies ConnectionEffectChangedDomain),
+    changed: completion.changed.map(
+      (domain: ConnectionEffectChangedDomain) => domain satisfies ConnectionEffectChangedDomain,
+    ),
   };
 }
 
@@ -499,6 +665,8 @@ function storeFailure<
   K extends
     | 'connection.models.fetch'
     | 'connection.test.run'
+    | 'connection.profile.test.run'
+    | 'connection.profile.models.fetch'
     | 'connection.onboarding.verify'
     | 'connection.onboarding.save',
 >(error: unknown): OperationOutcome<K> {
@@ -524,6 +692,8 @@ function operationFailure<
   K extends
     | 'connection.models.fetch'
     | 'connection.test.run'
+    | 'connection.profile.test.run'
+    | 'connection.profile.models.fetch'
     | 'connection.onboarding.verify'
     | 'connection.onboarding.save',
 >(

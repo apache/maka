@@ -2,6 +2,10 @@ import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
+  CONNECTION_CREDENTIAL_PROFILE_LABEL_MAX_LENGTH,
+  CONNECTION_CREDENTIAL_PROFILE_MAX,
+  CONNECTION_CREDENTIAL_PROFILE_WEIGHT_MAX,
+  CONNECTION_CREDENTIAL_PROFILE_WEIGHT_MIN,
   decodeCanonicalConnectionBaseUrl,
   decodeCanonicalRuntimePolicy,
   decodeConnectionModel,
@@ -37,6 +41,8 @@ import {
   type ConnectionCatalogEntry,
   type ConnectionModel,
   type ConnectionTarget,
+  type ConnectionTestErrorClass,
+  type ConnectionTestSummary,
   type ConnectionVersionBasis,
   type CreateCatalogConnectionInput,
   type CreateCredentialProfileInput,
@@ -62,7 +68,13 @@ import { normalizeRelayModelProfiles, type RelayModelProfile } from '@maka/core/
 // The client subgraph cannot import core subpaths directly (dependency
 // boundary); the wire types it needs are re-exported through this file.
 export type { RelayModelProfile, RelayModelProfiles } from '@maka/core/model-thinking';
-import { requireExactRecord, requireShapedRecord, requireRecord } from './codec.js';
+import {
+  requireCount,
+  requireEntityId,
+  requireExactRecord,
+  requireShapedRecord,
+  requireRecord,
+} from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
@@ -253,6 +265,48 @@ export type SetCredentialRoutingModeResult =
   | ConnectionStale
   | { readonly kind: 'auth_not_supported'; readonly providerType: string }
   | { readonly kind: 'balanced_activation_rejected'; readonly reason: string };
+
+export type CredentialProfileRoutingMode = 'legacy_primary' | 'balanced';
+
+export interface CredentialProfileReadinessItem {
+  readonly profileId: string;
+  readonly revision: number;
+  readonly label: string;
+  readonly enabled: boolean;
+  readonly weight: number;
+  readonly primary: boolean;
+  readonly credentialConfigured: boolean;
+  readonly lastTest:
+    | {
+        readonly status: ConnectionTestSummary['status'];
+        readonly checkedAt: string;
+        readonly errorClass?: ConnectionTestErrorClass;
+      }
+    | null;
+  readonly supportedModels: readonly string[];
+  readonly circuit:
+    | {
+        readonly state: 'closed' | 'open' | 'half_open' | 'invalid';
+        readonly blockedUntil: number | null;
+        readonly nextProbeAt: number | null;
+      }
+    | null;
+}
+
+export interface CredentialProfileQueryInput {
+  readonly connectionId: string;
+}
+
+export type CredentialProfileQueryResult =
+  | {
+      readonly kind: 'found';
+      readonly connectionId: string;
+      readonly connectionRevision: number;
+      readonly routingMode: CredentialProfileRoutingMode;
+      readonly readyCandidateCount: number;
+      readonly profiles: readonly CredentialProfileReadinessItem[];
+    }
+  | { readonly kind: 'connection_not_found' };
 
 export type CredentialProfileCreateInput = CreateCredentialProfileInput;
 export type CredentialProfileUpdateInput = UpdateCredentialProfileInput;
@@ -476,6 +530,17 @@ export const RUNTIME_POLICY_OPERATION_SPECS = {
     errors: MUTATION_ERRORS,
     decodeInput: decodeCredentialProfileSetRoutingModeInput,
     decodeOutput: decodeCredentialProfileSetRoutingModeResult,
+  }),
+  'credential.profile.query': defineOperation<
+    CredentialProfileQueryInput,
+    CredentialProfileQueryResult,
+    (typeof CREDENTIAL_QUERY_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: CREDENTIAL_QUERY_ERRORS,
+    decodeInput: decodeCredentialProfileQueryInput,
+    decodeOutput: decodeCredentialProfileQueryResult,
   }),
 } as const;
 
@@ -1327,6 +1392,141 @@ function decodeCredentialProfileSetRoutingModeResult(
     };
   }
   throw invalidProtocolFrame('Invalid credential profile set routing mode result');
+}
+
+function decodeCredentialProfileQueryInput(value: unknown): CredentialProfileQueryInput {
+  const item = requireExactRecord(value, 'credential profile query input', ['connectionId']);
+  return { connectionId: requireEntityId(item.connectionId, 'connectionId') };
+}
+
+function decodeCredentialProfileQueryResult(value: unknown): CredentialProfileQueryResult {
+  const item = requireRecord(value, 'credential profile query result');
+  if (item.kind === 'connection_not_found') {
+    requireExactRecord(item, 'credential profile connection not found result', ['kind']);
+    return { kind: 'connection_not_found' };
+  }
+  if (item.kind !== 'found') {
+    throw invalidProtocolFrame('Invalid credential profile query result kind');
+  }
+  const found = requireExactRecord(item, 'credential profile found result', [
+    'kind',
+    'connectionId',
+    'connectionRevision',
+    'routingMode',
+    'readyCandidateCount',
+    'profiles',
+  ]);
+  if (found.kind !== 'found') throw invalidProtocolFrame('Invalid credential profile found result');
+  if (
+    found.routingMode !== 'legacy_primary' &&
+    found.routingMode !== 'balanced'
+  ) {
+    throw invalidProtocolFrame('Invalid credential profile routing mode');
+  }
+  if (
+    !Array.isArray(found.profiles) ||
+    found.profiles.length > CONNECTION_CREDENTIAL_PROFILE_MAX
+  ) {
+    throw invalidProtocolFrame('Invalid credential profile readiness profiles');
+  }
+  return {
+    kind: 'found',
+    connectionId: requireEntityId(found.connectionId, 'connectionId'),
+    connectionRevision: revision(found.connectionRevision, 'connection revision'),
+    routingMode: found.routingMode,
+    readyCandidateCount: integer(
+      found.readyCandidateCount,
+      'ready candidate count',
+      0,
+      CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
+    ),
+    profiles: found.profiles.map(decodeCredentialProfileReadinessItem),
+  };
+}
+
+function decodeCredentialProfileReadinessItem(value: unknown): CredentialProfileReadinessItem {
+  const item = requireExactRecord(value, 'credential profile readiness item', [
+    'profileId',
+    'revision',
+    'label',
+    'enabled',
+    'weight',
+    'primary',
+    'credentialConfigured',
+    'lastTest',
+    'supportedModels',
+    'circuit',
+  ]);
+  if (
+    typeof item.enabled !== 'boolean' ||
+    typeof item.primary !== 'boolean' ||
+    typeof item.credentialConfigured !== 'boolean'
+  ) {
+    throw invalidProtocolFrame('Invalid credential profile readiness flags');
+  }
+  const label = stringValue(item.label, 'profile label');
+  if (label.length > CONNECTION_CREDENTIAL_PROFILE_LABEL_MAX_LENGTH) {
+    throw invalidProtocolFrame('Invalid credential profile readiness label length');
+  }
+  const weight = integer(
+    item.weight,
+    'profile weight',
+    CONNECTION_CREDENTIAL_PROFILE_WEIGHT_MIN,
+    CONNECTION_CREDENTIAL_PROFILE_WEIGHT_MAX,
+  );
+  if (!Array.isArray(item.supportedModels)) {
+    throw invalidProtocolFrame('Invalid credential profile supported models');
+  }
+  if (item.supportedModels.length > CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS) {
+    throw invalidProtocolFrame('Invalid credential profile supported model count');
+  }
+  const supportedModels = item.supportedModels.map((modelId) =>
+    decodeDomain(() => decodeConnectionModelId(modelId)),
+  );
+  if (new Set(supportedModels).size !== supportedModels.length) {
+    throw invalidProtocolFrame('Duplicate credential profile supported model');
+  }
+  return {
+    profileId: requireEntityId(item.profileId, 'profileId'),
+    revision: revision(item.revision, 'profile revision'),
+    label,
+    enabled: item.enabled,
+    weight,
+    primary: item.primary,
+    credentialConfigured: item.credentialConfigured,
+    lastTest: item.lastTest === null ? null : decodeCredentialProfileLastTest(item.lastTest),
+    supportedModels,
+    circuit: item.circuit === null ? null : decodeCredentialProfileCircuit(item.circuit),
+  };
+}
+
+function decodeCredentialProfileLastTest(
+  value: unknown,
+): NonNullable<CredentialProfileReadinessItem['lastTest']> {
+  return decodeDomain(() => decodeConnectionTestSummary(value));
+}
+
+function decodeCredentialProfileCircuit(
+  value: unknown,
+): NonNullable<CredentialProfileReadinessItem['circuit']> {
+  const item = requireExactRecord(value, 'credential profile circuit', [
+    'state',
+    'blockedUntil',
+    'nextProbeAt',
+  ]);
+  if (
+    item.state !== 'closed' &&
+    item.state !== 'open' &&
+    item.state !== 'half_open' &&
+    item.state !== 'invalid'
+  ) {
+    throw invalidProtocolFrame('Invalid credential profile circuit state');
+  }
+  return {
+    state: item.state,
+    blockedUntil: item.blockedUntil === null ? null : requireCount(item.blockedUntil, 'blocked until'),
+    nextProbeAt: item.nextProbeAt === null ? null : requireCount(item.nextProbeAt, 'next probe at'),
+  };
 }
 
 function credentialProfileCommitted(value: unknown): CredentialProfileCommitted {

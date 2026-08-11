@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
+  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   CONNECTION_CREDENTIAL_PROFILE_MAX,
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionTarget,
@@ -709,6 +710,60 @@ export class ConnectionCatalogDocumentOwner {
       index,
       testBasisChanged ? discoveredWithoutLastTest : discovered,
       defaultTarget,
+    );
+  }
+
+  /**
+   * Profile discovery metadata merge (RFC 11.2/13.2). Appends model metadata
+   * the Profile discovered that the Connection inventory has not seen yet.
+   * Never deletes inventory entries, never changes `enabledModelIds` or the
+   * model source — the endpoint inventory authority stays with Connection-level
+   * discovery, so a single Profile's missing models can never drive a deletion.
+   */
+  async mergeConnectionProfileDiscoveryMetadata(
+    root: string,
+    current: ConnectionCatalogDocument,
+    expected: ConnectionVersionBasis,
+    rawResult: ConnectionModelDiscoveryResult,
+  ): Promise<ConnectionCatalogSnapshot> {
+    const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
+    if (result.models.length === 0) {
+      throw codecError('invalid_connection_input', 'Profile model discovery result must not be empty');
+    }
+    const index = findConnectionIndex(current, expected);
+    const previous = current.connections[index];
+    if (!previous || previous.revision !== expected.revision) {
+      throw codecError('invalid_document', 'Coordinator admitted a stale profile model discovery result');
+    }
+    const known = new Set(previous.models.map((model) => model.id));
+    const merged = [...previous.models];
+    for (const model of result.models) {
+      if (known.has(model.id)) continue;
+      if (merged.length >= CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) break;
+      merged.push(model);
+      known.add(model.id);
+    }
+    if (merged.length === previous.models.length) return catalogSnapshot(current);
+    const discovered: ConnectionCatalogEntry = {
+      ...previous,
+      revision: nextRevision(previous.revision),
+      models: merged,
+      // A Profile discovery can seed a previously empty inventory: without a
+      // source the persisted document would violate the canonical invariant.
+      ...(previous.modelSource === undefined
+        ? { modelSource: result.source, modelsFetchedAt: result.fetchedAt }
+        : {}),
+    };
+    const testBasisChanged = !sameConnectionTestModelBasis(
+      connectionTestModelBasis(previous),
+      connectionTestModelBasis(discovered),
+    );
+    const { lastTest: _lastTest, ...discoveredWithoutLastTest } = discovered;
+    return this.writePatchedResult(
+      root,
+      current,
+      index,
+      testBasisChanged ? discoveredWithoutLastTest : discovered,
     );
   }
 

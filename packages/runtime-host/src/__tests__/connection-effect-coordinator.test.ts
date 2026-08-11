@@ -690,6 +690,250 @@ test('projects credential changes during provider I/O as semantic superseded and
   });
 });
 
+test('profile test through the host coordinator writes verification and readiness evidence', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(stores, 0, connectionDraft('profile-host', 'openai'));
+    const secret = 'profile-secret-must-not-escape';
+    await setConnectionCredential(stores, connection, 'primary-secret');
+    const created = await stores.operations.createCredentialProfile({
+      expected: { connectionId: connection.connectionId, revision: connection.revision },
+      label: 'backup',
+      weight: 1,
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const routing = created.snapshot.connections.find(
+      (item) => item.connectionId === connection.connectionId,
+    )!.credentialRouting!;
+    const secondary = routing.profiles.find(
+      (profile) => profile.profileId !== connection.connectionId,
+    )!;
+    await stores.credentialVault.set({
+      locator: {
+        scope: 'connection_profile',
+        connectionId: connection.connectionId,
+        profileId: secondary.profileId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret,
+    });
+    await stores.operations.setCredentialProfileEnabled({
+      expected: {
+        connectionId: connection.connectionId,
+        connectionRevision: created.snapshot.revision,
+        profileId: secondary.profileId,
+        profileRevision: secondary.revision,
+      },
+      enabled: true,
+    });
+
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => Date.parse('2026-07-29T12:00:00.000Z'),
+      createTransport: () => recordingTransport(() => undefined),
+      runConnectionTest: async (_connection, apiKey, _options, modelId) => {
+        assert.equal(apiKey, secret);
+        assert.equal(modelId, 'gpt-5');
+        return { ok: true, modelId: 'gpt-5', latencyMs: 11 };
+      },
+    });
+
+    const outcome = await coordinator.handlers['connection.profile.test.run'](
+      { connectionId: connection.connectionId, profileId: secondary.profileId, modelId: 'gpt-5' },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok || outcome.result.kind !== 'committed') {
+      throw new Error('profile test did not commit');
+    }
+    assert.equal(outcome.result.verification, 'recorded');
+    assert.deepEqual(outcome.result.test, {
+      kind: 'verified',
+      checkedAt: '2026-07-29T12:00:00.000Z',
+      modelId: 'gpt-5',
+      latencyMs: 11,
+    });
+
+    const readiness = await stores.operations.readCredentialProfileReadiness(
+      connection.connectionId,
+    );
+    assert.equal(readiness.kind, 'found');
+    if (readiness.kind !== 'found') return;
+    const secondaryReadiness = readiness.profiles.find(
+      (profile) => profile.profileId === secondary.profileId,
+    );
+    assert.deepEqual(secondaryReadiness?.supportedModels, ['gpt-5']);
+    assert.deepEqual(secondaryReadiness?.lastTest, {
+      status: 'verified',
+      checkedAt: '2026-07-29T12:00:00.000Z',
+    });
+    assertRedacted(outcome, [secret]);
+    assertRedacted(readiness, [secret]);
+  });
+});
+
+test('profile test supersedes when the profile credential rotates during provider I/O', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(stores, 0, connectionDraft('profile-rotate', 'openai'));
+    await setConnectionCredential(stores, connection, 'primary-secret');
+    const created = await stores.operations.createCredentialProfile({
+      expected: { connectionId: connection.connectionId, revision: connection.revision },
+      label: 'backup',
+      weight: 1,
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const routing = created.snapshot.connections.find(
+      (item) => item.connectionId === connection.connectionId,
+    )!.credentialRouting!;
+    const secondary = routing.profiles.find(
+      (profile) => profile.profileId !== connection.connectionId,
+    )!;
+    const locator = {
+      scope: 'connection_profile',
+      connectionId: connection.connectionId,
+      profileId: secondary.profileId,
+      kind: 'api_key',
+    } as const;
+    await stores.credentialVault.set({ locator, expected: null, secret: 'profile-v1' });
+    await stores.operations.setCredentialProfileEnabled({
+      expected: {
+        connectionId: connection.connectionId,
+        connectionRevision: created.snapshot.revision,
+        profileId: secondary.profileId,
+        profileRevision: secondary.revision,
+      },
+      enabled: true,
+    });
+
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      createTransport: () => recordingTransport(() => undefined),
+      runConnectionTest: async () => {
+        started.resolve(undefined);
+        await release.promise;
+        return { ok: true, modelId: 'gpt-5', latencyMs: 4 };
+      },
+    });
+
+    const pending = coordinator.handlers['connection.profile.test.run'](
+      { connectionId: connection.connectionId, profileId: secondary.profileId, modelId: 'gpt-5' },
+      context,
+    );
+    await started.promise;
+    const status = await stores.credentialVault.getStatus(locator);
+    assert.equal(status.kind, 'status');
+    if (status.kind !== 'status') return;
+    await stores.credentialVault.set({
+      locator,
+      expected: { credentialId: status.status.credentialId!, revision: status.status.revision! },
+      secret: 'profile-v2',
+    });
+    release.resolve(undefined);
+
+    assert.deepEqual(await pending, {
+      ok: true,
+      result: { kind: 'superseded', changed: ['credential'] },
+    });
+    const readiness = await stores.operations.readCredentialProfileReadiness(
+      connection.connectionId,
+    );
+    assert.equal(readiness.kind, 'found');
+    if (readiness.kind !== 'found') return;
+    const secondaryReadiness = readiness.profiles.find(
+      (profile) => profile.profileId === secondary.profileId,
+    );
+    assert.deepEqual(secondaryReadiness?.supportedModels, []);
+  });
+});
+
+test('profile model fetch through the host coordinator records verification and merges metadata', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(stores, 0, connectionDraft('profile-fetch-host', 'openai'));
+    await setConnectionCredential(stores, connection, 'primary-secret');
+    const created = await stores.operations.createCredentialProfile({
+      expected: { connectionId: connection.connectionId, revision: connection.revision },
+      label: 'backup',
+      weight: 1,
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const routing = created.snapshot.connections.find(
+      (item) => item.connectionId === connection.connectionId,
+    )!.credentialRouting!;
+    const secondary = routing.profiles.find(
+      (profile) => profile.profileId !== connection.connectionId,
+    )!;
+    await stores.credentialVault.set({
+      locator: {
+        scope: 'connection_profile',
+        connectionId: connection.connectionId,
+        profileId: secondary.profileId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: 'profile-secret',
+    });
+    await stores.operations.setCredentialProfileEnabled({
+      expected: {
+        connectionId: connection.connectionId,
+        connectionRevision: created.snapshot.revision,
+        profileId: secondary.profileId,
+        profileRevision: secondary.revision,
+      },
+      enabled: true,
+    });
+
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => Date.parse('2026-07-29T12:00:00.000Z'),
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async () => ({
+        ok: true,
+        models: [{ id: 'gpt-5' }, { id: 'gpt-6' }],
+      }),
+    });
+
+    const outcome = await coordinator.handlers['connection.profile.models.fetch'](
+      { connectionId: connection.connectionId, profileId: secondary.profileId },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok || outcome.result.kind !== 'committed') {
+      throw new Error('profile model fetch did not commit');
+    }
+    assert.equal(outcome.result.verification, 'recorded');
+    assert.equal(outcome.result.modelCount, 2);
+
+    const readiness = await stores.operations.readCredentialProfileReadiness(
+      connection.connectionId,
+    );
+    assert.equal(readiness.kind, 'found');
+    if (readiness.kind !== 'found') return;
+    const secondaryReadiness = readiness.profiles.find(
+      (profile) => profile.profileId === secondary.profileId,
+    );
+    assert.deepEqual(secondaryReadiness?.supportedModels, ['gpt-5']);
+    const snapshot = await stores.connectionCatalog.getSnapshot();
+    const current = snapshot.connections.find(
+      (item) => item.connectionId === connection.connectionId,
+    )!;
+    assert.deepEqual(
+      current.models.map((model) => model.id),
+      ['gpt-5', 'gpt-6'],
+    );
+  });
+});
+
 type Writer = RuntimePolicyStoresWriter;
 
 async function withFixture(

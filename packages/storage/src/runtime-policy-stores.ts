@@ -32,6 +32,8 @@ export {
   type RuntimePolicyStoreErrorCode,
 } from './runtime-policy/errors.js';
 export type {
+  BeginConnectionProfileModelFetchResult,
+  BeginConnectionProfileTestResult,
   BeginConnectionTestResult,
   BeginInteractiveOAuthLoginResult,
   BeginModelFetchResult,
@@ -39,17 +41,24 @@ export type {
   CompareAndSetOAuthCredentialResult,
   ConnectionEffectChangedDomain,
   ConnectionEffectCompletionResult,
+  ConnectionProfileModelFetchCompletionResult,
+  ConnectionProfileTestCompletionInput,
+  ConnectionProfileTestCompletionResult,
   CommitConnectionOnboardingInput,
   CommitConnectionOnboardingResult,
   ConnectionEffectPreparationFailure,
   ConnectionTestTicket,
   CreateCredentialProfileInput,
   CredentialProfileMutationResult,
+  CredentialProfileReadinessEntry,
+  CredentialProfileReadinessResult,
   InteractiveOAuthLoginCompletionResult,
   InteractiveOAuthLoginProvider,
   InteractiveOAuthLoginTicket,
   CredentialStatusQueryResult,
   ModelFetchTicket,
+  ProfileModelFetchTicket,
+  ProfileTestTicket,
   ProviderAuthKind,
   RemoveCredentialProfileInput,
   RuntimePolicyCredentialMaterial,
@@ -253,6 +262,16 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
         coordinator.beginConnectionTest(connectionId, modelId),
       completeConnectionTest: (ticket, result) =>
         coordinator.completeConnectionTest(ticket, result),
+      beginConnectionProfileTest: (connectionId, profileId, modelId) =>
+        coordinator.beginConnectionProfileTest(connectionId, profileId, modelId),
+      completeConnectionProfileTest: (ticket, result) =>
+        coordinator.completeConnectionProfileTest(ticket, result),
+      beginConnectionProfileModelFetch: (connectionId, profileId) =>
+        coordinator.beginConnectionProfileModelFetch(connectionId, profileId),
+      completeConnectionProfileModelFetch: (ticket, result, evidence) =>
+        coordinator.completeConnectionProfileModelFetch(ticket, result, evidence),
+      readCredentialProfileReadiness: (connectionId) =>
+        coordinator.readCredentialProfileReadiness(connectionId),
     },
   };
   freezeFacade(stores);

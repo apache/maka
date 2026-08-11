@@ -72,12 +72,15 @@ describe('Runtime Host bootstrap protocol', () => {
       'connection.models.fetch',
       'connection.onboarding.save',
       'connection.onboarding.verify',
+      'connection.profile.models.fetch',
+      'connection.profile.test.run',
       'connection.request-headers.query',
       'connection.request-headers.replace',
       'connection.test.run',
       'context.compact',
       'context.diagnostics.query',
       'credential.profile.create',
+      'credential.profile.query',
       'credential.profile.remove',
       'credential.profile.set-enabled',
       'credential.profile.set-routing-mode',
@@ -507,12 +510,13 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-  test('declares exactly the seventeen Runtime Policy operations in the current framework', () => {
+  test('declares exactly the eighteen Runtime Policy operations in the current framework', () => {
     const queries = [
       'runtime.policy.query',
       'connection.catalog.query',
       'connection.request-headers.query',
       'credential.vault.query',
+      'credential.profile.query',
     ] as const;
     const mutations = [
       'runtime.policy.mutate',
@@ -642,6 +646,84 @@ describe('Runtime Host bootstrap protocol', () => {
       kind: 'auth_not_supported',
       providerType: 'openai',
     });
+  });
+
+  test('keeps the Credential Profile readiness query exact and secret-free', () => {
+    const connectionId = '00000000-0000-4000-8000-000000000001';
+    const profileId = '00000000-0000-4000-8000-00000000000a';
+    const query = RUNTIME_POLICY_OPERATION_SPECS['credential.profile.query'];
+    assert.deepEqual(query.decodeInput({ connectionId }), { connectionId });
+    assert.throws(() => query.decodeInput({ connectionId: 'x'.repeat(129) }), isInvalidFrame);
+    assert.throws(() => query.decodeInput({ connectionId, secret: 'forbidden' }), isInvalidFrame);
+    assert.deepEqual(query.decodeOutput({ kind: 'connection_not_found' }), {
+      kind: 'connection_not_found',
+    });
+
+    const found = {
+      kind: 'found',
+      connectionId,
+      connectionRevision: 4,
+      routingMode: 'balanced',
+      readyCandidateCount: 1,
+      profiles: [
+        {
+          profileId,
+          revision: 1,
+          label: 'backup',
+          enabled: true,
+          weight: 2,
+          primary: false,
+          credentialConfigured: true,
+          lastTest: {
+            status: 'verified',
+            checkedAt: '2026-07-29T00:00:00.000Z',
+          },
+          supportedModels: ['model-1'],
+          circuit: { state: 'closed', blockedUntil: null, nextProbeAt: null },
+        },
+      ],
+    };
+    assert.deepEqual(query.decodeOutput(found), found);
+    assert.throws(
+      () =>
+        query.decodeOutput({
+          ...found,
+          profiles: [{ ...found.profiles[0], apiKeySecret: 'leaked' }],
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        query.decodeOutput({
+          ...found,
+          profiles: [{ ...found.profiles[0], weight: 0 }],
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        query.decodeOutput({
+          ...found,
+          profiles: [{ ...found.profiles[0], supportedModels: ['model-1', 'model-1'] }],
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        query.decodeOutput({
+          ...found,
+          profiles: [{ ...found.profiles[0], circuit: { state: 'tripped' } }],
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        query.decodeOutput({
+          ...found,
+          routingMode: 'random',
+        }),
+      isInvalidFrame,
+    );
   });
 
   test('allows larger credential frames only for validated custom request headers', () => {

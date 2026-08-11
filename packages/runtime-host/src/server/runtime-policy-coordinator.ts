@@ -31,6 +31,7 @@ import {
   type CredentialVaultQueryInput,
   type CredentialVaultSetInput,
   type CredentialProfileCreateInput,
+  type CredentialProfileQueryInput,
   type CredentialProfileRemoveInput,
   type CredentialProfileSetEnabledInput,
   type CredentialProfileSetRoutingModeInput,
@@ -96,6 +97,7 @@ export class HostRuntimePolicyCoordinator {
     'credential.profile.set-enabled': (input) => this.#setCredentialProfileEnabled(input),
     'credential.profile.remove': (input) => this.#removeCredentialProfile(input),
     'credential.profile.set-routing-mode': (input) => this.#setCredentialRoutingMode(input),
+    'credential.profile.query': (input) => this.#queryCredentialProfileReadiness(input),
     'connection.request-headers.query': (input) => this.#queryConnectionRequestHeaders(input),
     'connection.request-headers.replace': (input) => this.#replaceConnectionRequestHeaders(input),
   };
@@ -315,6 +317,26 @@ export class HostRuntimePolicyCoordinator {
         input.expected.connectionId,
         'credential profile set routing mode',
       ) as SetCredentialRoutingModeResult;
+    });
+  }
+
+  async #queryCredentialProfileReadiness(
+    input: CredentialProfileQueryInput,
+  ): Promise<OperationOutcome<'credential.profile.query'>> {
+    return this.#storeCredentialQuery(async () => {
+      const result = await this.#stores.operations.readCredentialProfileReadiness(
+        input.connectionId,
+      );
+      return result.kind === 'found'
+        ? {
+            kind: 'found' as const,
+            connectionId: result.connectionId,
+            connectionRevision: result.connectionRevision,
+            routingMode: result.routingMode,
+            readyCandidateCount: result.readyCandidateCount,
+            profiles: result.profiles,
+          }
+        : { kind: 'connection_not_found' as const };
     });
   }
 

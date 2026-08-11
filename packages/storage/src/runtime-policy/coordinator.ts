@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 import {
   decodeConnectionModelId,
   decodeConnectionSlug,
+  decodeConnectionTestSummary,
   decodeRuntimePolicyEntityId,
   decodeCredentialLocator,
+  normalizeConnectionModelDiscoveryResult,
   normalizeDeleteCredentialInput,
   normalizeRemoveCatalogConnectionInput,
   normalizeRemoveCredentialProfileInput,
@@ -20,6 +22,7 @@ import {
   normalizeCredentialSecret,
   type ConnectionCatalogEntry,
   type ConnectionCatalogSnapshot,
+  type ConnectionCredentialProfileEntry,
   type ConnectionVersionBasis,
   type ConnectionModelDiscoveryResult,
   type ConnectionTestSummary,
@@ -44,6 +47,7 @@ import {
   type UpdateCatalogConnectionInput,
   type UpdateCredentialProfileInput,
 } from '@maka/core/runtime-policy';
+import type { CredentialProfileVerificationRecord } from '@maka/core/provider-credential-routing';
 import { deriveProviderAuthContract, type ProviderAuthAction } from '@maka/core/provider-auth';
 import {
   deriveConnectionSlug,
@@ -94,17 +98,26 @@ import {
   type RecordCredentialProfileVerificationResult,
   type BeginConnectionTestResult,
   type BeginModelFetchResult,
+  type BeginConnectionProfileTestResult,
+  type BeginConnectionProfileModelFetchResult,
   type BeginInteractiveOAuthLoginResult,
   type CompareAndSetOAuthCredentialInput,
   type ConnectionEffectChangedDomain,
   type ConnectionEffectCompletionResult,
+  type ConnectionProfileModelFetchCompletionResult,
+  type ConnectionProfileTestCompletionInput,
+  type ConnectionProfileTestCompletionResult,
   type CommitConnectionOnboardingInput,
   type CommitConnectionOnboardingResult,
   type ConnectionTestTicket,
+  type CredentialProfileReadinessEntry,
+  type CredentialProfileReadinessResult,
   type InteractiveOAuthLoginCompletionResult,
   type InteractiveOAuthLoginProvider,
   type InteractiveOAuthLoginTicket,
   type ModelFetchTicket,
+  type ProfileModelFetchTicket,
+  type ProfileTestTicket,
   type ProviderAuthKind,
   type RuntimePolicyCredentialMaterial,
   type RuntimePolicyOperationSecretMaterial,
@@ -136,9 +149,15 @@ interface PreparedConnectionMaterial {
   readonly proxyCredentialStatus: CredentialStatus | null;
   readonly secretMaterial: RuntimePolicyOperationSecretMaterial;
   readonly networkProxy: RuntimePolicy['networkProxy'];
+  /** Present only for Profile-scoped operations. */
+  readonly profile?: ConnectionCredentialProfileEntry;
 }
 
-type ConnectionTicketKind = 'model_fetch' | 'connection_test';
+type ConnectionTicketKind =
+  | 'model_fetch'
+  | 'connection_test'
+  | 'profile_test'
+  | 'profile_model_fetch';
 type TicketState = 'available' | 'in_flight' | 'consumed';
 
 type EffectiveProxyConfigurationBasis =
@@ -174,13 +193,31 @@ type SemanticConnectionBasis =
       readonly kind: 'connection_test';
       readonly requestBodyOverlayJson: string;
       readonly model: ConnectionTestModelBasis;
-    });
+    })
+  | (CommonSemanticConnectionBasis &
+      ProfileSemanticConnectionBasisFields & {
+        readonly kind: 'profile_model_fetch';
+        readonly enabledModelIds: readonly string[];
+      })
+  | (CommonSemanticConnectionBasis &
+      ProfileSemanticConnectionBasisFields & {
+        readonly kind: 'profile_test';
+        readonly modelId: string | null;
+        readonly requestBodyOverlayJson: string;
+        readonly model: ConnectionTestModelBasis;
+      });
 
-interface ConnectionTicketRecord {
-  readonly kind: ConnectionTicketKind;
-  readonly basis: SemanticConnectionBasis;
-  state: TicketState;
+interface ProfileSemanticConnectionBasisFields {
+  readonly profileId: string;
+  readonly profileEnabled: true;
+  readonly profileRevision: number;
 }
+
+type ConnectionTicketRecord<K extends ConnectionTicketKind = ConnectionTicketKind> = {
+  readonly kind: K;
+  readonly basis: Extract<SemanticConnectionBasis, { readonly kind: K }>;
+  state: TicketState;
+};
 
 interface InteractiveOAuthLoginTicketRecord {
   readonly kind: 'interactive_oauth_login';
@@ -639,69 +676,79 @@ export class RuntimePolicyCoordinator {
   recordCredentialProfileVerification(
     input: RecordCredentialProfileVerificationInput,
   ): Promise<RecordCredentialProfileVerificationResult> {
-    return this.inLane(async (root) => {
-      const catalog = await this.catalog.read(root);
-      const connection = findConnection(catalog, { connectionId: input.connectionId });
-      if (!connection) {
-        return deepFreeze({ kind: 'connection_not_found' as const });
-      }
-      if (connection.revision !== input.connectionRevision) {
-        return deepFreeze({
-          kind: 'connection_stale' as const,
-          expectedRevision: input.connectionRevision,
-          actualRevision: connection.revision,
-        });
-      }
-      const routing = connection.credentialRouting;
-      const profile = routing?.profiles.find(
-        (candidate) => candidate.profileId === input.profileId,
-      );
-      if (!profile || profile.revision !== input.profileRevision) {
-        return deepFreeze({ kind: 'profile_not_found' as const });
-      }
-      if (!connection.enabledModelIds.includes(input.modelId)) {
-        return deepFreeze({
-          kind: 'invalid_request' as const,
-          reason: 'verification can only be recorded for an enabled model',
-        });
-      }
-      const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
-      const locator =
-        input.profileId === connection.connectionId
-          ? connectionCredentialLocator(connection.connectionId, authKind)
-          : connectionProfileCredentialLocator(connection.connectionId, input.profileId, authKind);
-      if (!locator) {
-        return deepFreeze({
-          kind: 'invalid_request' as const,
-          reason: 'provider auth does not support credential profiles',
-        });
-      }
-      const vault = await this.vault.read(root);
-      const credential = findCredential(vault, locator);
-      if (!credential) {
-        return deepFreeze({ kind: 'credential_not_configured' as const });
-      }
-      const digest = await this.connectionExecutionBasisDigest(
-        root,
-        vault,
-        connection,
-        input.modelId,
-      );
-      await this.routingStoreFor(root).upsertVerification({
-        connectionId: connection.connectionId,
-        profileId: input.profileId,
-        credentialId: credential.credentialId,
-        credentialRevision: credential.revision,
-        executionBasisDigest: digest,
-        modelId: input.modelId,
-        status: input.status,
-        source: input.source,
-        evidence: input.evidence,
-        checkedAt: input.checkedAt,
-        ...(input.testSummary ? { testSummary: input.testSummary } : {}),
+    return this.inLane((root) => this.recordCredentialProfileVerificationInLane(root, input));
+  }
+
+  /**
+   * In-lane verification writer shared by the public CAS entry point and the
+   * Profile effect completions. Must never be called outside an active lane:
+   * it reads Catalog/Vault state and writes the routing authority.
+   */
+  private async recordCredentialProfileVerificationInLane(
+    root: string,
+    input: RecordCredentialProfileVerificationInput,
+  ): Promise<RecordCredentialProfileVerificationResult> {
+    const catalog = await this.catalog.read(root);
+    const connection = findConnection(catalog, { connectionId: input.connectionId });
+    if (!connection) {
+      return deepFreeze({ kind: 'connection_not_found' as const });
+    }
+    if (connection.revision !== input.connectionRevision) {
+      return deepFreeze({
+        kind: 'connection_stale' as const,
+        expectedRevision: input.connectionRevision,
+        actualRevision: connection.revision,
       });
-      return deepFreeze({ kind: 'committed' as const });
+    }
+    const routing = connection.credentialRouting;
+    const profile = routing?.profiles.find(
+      (candidate) => candidate.profileId === input.profileId,
+    );
+    if (!profile || profile.revision !== input.profileRevision) {
+      return deepFreeze({ kind: 'profile_not_found' as const });
+    }
+    if (!connection.enabledModelIds.includes(input.modelId)) {
+      return deepFreeze({
+        kind: 'invalid_request' as const,
+        reason: 'verification can only be recorded for an enabled model',
+      });
+    }
+    const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+    const locator =
+      input.profileId === connection.connectionId
+        ? connectionCredentialLocator(connection.connectionId, authKind)
+        : connectionProfileCredentialLocator(connection.connectionId, input.profileId, authKind);
+    if (!locator) {
+      return deepFreeze({
+        kind: 'invalid_request' as const,
+        reason: 'provider auth does not support credential profiles',
+      });
+    }
+    const vault = await this.vault.read(root);
+    const credential = findCredential(vault, locator);
+    if (!credential) {
+      return deepFreeze({ kind: 'credential_not_configured' as const });
+    }
+    const digest = await this.connectionExecutionBasisDigest(
+      root,
+      vault,
+      connection,
+      input.modelId,
+    );
+    await this.routingStoreFor(root).upsertVerification({
+      connectionId: connection.connectionId,
+      profileId: input.profileId,
+      credentialId: credential.credentialId,
+      credentialRevision: credential.revision,
+      executionBasisDigest: digest,
+      modelId: input.modelId,
+      status: input.status,
+      source: input.source,
+      evidence: input.evidence,
+      checkedAt: input.checkedAt,
+      ...(input.testSummary ? { testSummary: input.testSummary } : {}),
     });
+    return deepFreeze({ kind: 'committed' as const });
   }
 
   /**
@@ -1450,6 +1497,417 @@ export class RuntimePolicyCoordinator {
     );
   }
 
+  beginConnectionProfileTest(
+    rawConnectionId: string,
+    rawProfileId: string,
+    rawModelId: string | null,
+  ): Promise<BeginConnectionProfileTestResult> {
+    return this.inLane(async (root) => {
+      const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
+      const profileId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawProfileId));
+      const prepared = await this.prepareConnectionProfileOperation(
+        root,
+        connectionId,
+        profileId,
+        'test_credentials',
+      );
+      if (prepared.kind !== 'ready') return prepared;
+      const modelId =
+        rawModelId === null
+          ? null
+          : decodeConnectionInput(() => decodeConnectionModelId(rawModelId));
+      if (modelId !== null && !isCanonicalConnectionTestModel(prepared.connection, modelId)) {
+        throw codecError(
+          'invalid_connection_input',
+          'Profile test model is not in the canonical model set',
+        );
+      }
+      const ticket = this.issueTicket('profile_test', profileTestSemanticBasis(prepared, modelId));
+      return deepFreeze({
+        kind: 'ready' as const,
+        ticket: ticket as ProfileTestTicket,
+        connection: structuredClone(prepared.connection),
+        profile: structuredClone(prepared.profile!),
+        modelId,
+        secretMaterial: prepared.secretMaterial,
+        networkProxy: structuredClone(prepared.networkProxy),
+      });
+    });
+  }
+
+  async completeConnectionProfileTest(
+    ticket: ProfileTestTicket,
+    result: ConnectionProfileTestCompletionInput,
+  ): Promise<ConnectionProfileTestCompletionResult> {
+    const claimed = this.claimTicket(ticket, 'profile_test');
+    return this.completeClaimedTicket(claimed, () =>
+      this.inLane(async (root) => {
+        const catalog = await this.catalog.read(root);
+        const checked = await this.checkSemanticConnectionBasis(root, catalog, claimed.basis);
+        if (checked.changed.length > 0 || !checked.connection) {
+          return deepFreeze({ kind: 'superseded' as const, changed: checked.changed });
+        }
+        const summary = decodeConnectionInput(() => decodeConnectionTestSummary(result.summary));
+        if (
+          summary.status === 'verified' &&
+          result.modelId !== null &&
+          checked.connection.enabledModelIds.includes(result.modelId)
+        ) {
+          const verification = await this.recordCredentialProfileVerificationInLane(root, {
+            connectionId: checked.connection.connectionId,
+            connectionRevision: checked.connection.revision,
+            profileId: claimed.basis.profileId,
+            profileRevision: claimed.basis.profileRevision,
+            modelId: result.modelId,
+            status: 'supported',
+            source: 'tested',
+            evidence: 'positive_only',
+            checkedAt: Date.parse(summary.checkedAt),
+            testSummary: summary,
+          });
+          switch (verification.kind) {
+            case 'committed':
+              return deepFreeze({ kind: 'committed' as const, verification: 'recorded' as const });
+            case 'connection_not_found':
+              return deepFreeze({ kind: 'connection_not_found' as const });
+            case 'connection_stale':
+              return deepFreeze({
+                kind: 'connection_stale' as const,
+                expectedRevision: verification.expectedRevision,
+                actualRevision: verification.actualRevision,
+              });
+            case 'profile_not_found':
+              return deepFreeze({ kind: 'profile_not_found' as const });
+            case 'credential_not_configured':
+              return deepFreeze({ kind: 'credential_not_configured' as const });
+            case 'invalid_request':
+              return deepFreeze({
+                kind: 'invalid_request' as const,
+                reason: verification.reason,
+              });
+          }
+        }
+        // A failed or model-less test never writes verification evidence.
+        return deepFreeze({ kind: 'committed' as const, verification: 'not_recorded' as const });
+      }),
+    );
+  }
+
+  beginConnectionProfileModelFetch(
+    rawConnectionId: string,
+    rawProfileId: string,
+  ): Promise<BeginConnectionProfileModelFetchResult> {
+    return this.inLane(async (root) => {
+      const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
+      const profileId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawProfileId));
+      const prepared = await this.prepareConnectionProfileOperation(
+        root,
+        connectionId,
+        profileId,
+        'fetch_models',
+      );
+      if (prepared.kind !== 'ready') return prepared;
+      const ticket = this.issueTicket(
+        'profile_model_fetch',
+        profileModelFetchSemanticBasis(prepared),
+      );
+      return deepFreeze({
+        kind: 'ready' as const,
+        ticket: ticket as ProfileModelFetchTicket,
+        connection: structuredClone(prepared.connection),
+        profile: structuredClone(prepared.profile!),
+        secretMaterial: prepared.secretMaterial,
+        networkProxy: structuredClone(prepared.networkProxy),
+      });
+    });
+  }
+
+  async completeConnectionProfileModelFetch(
+    ticket: ProfileModelFetchTicket,
+    result: ConnectionModelDiscoveryResult,
+    evidence: 'positive_only' | 'authoritative',
+  ): Promise<ConnectionProfileModelFetchCompletionResult> {
+    const claimed = this.claimTicket(ticket, 'profile_model_fetch');
+    return this.completeClaimedTicket(claimed, () =>
+      this.inLane(async (root) => {
+        const catalog = await this.catalog.read(root);
+        const checked = await this.checkSemanticConnectionBasis(root, catalog, claimed.basis);
+        if (checked.changed.length > 0 || !checked.connection) {
+          return deepFreeze({ kind: 'superseded' as const, changed: checked.changed });
+        }
+        const discovery = decodeConnectionInput(() =>
+          normalizeConnectionModelDiscoveryResult(result),
+        );
+        if (discovery.models.length === 0) {
+          throw codecError(
+            'invalid_connection_input',
+            'Profile model discovery result must not be empty',
+          );
+        }
+        const connection = checked.connection;
+        const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+        const locator =
+          claimed.basis.profileId === connection.connectionId
+            ? connectionCredentialLocator(connection.connectionId, authKind)
+            : connectionProfileCredentialLocator(
+                connection.connectionId,
+                claimed.basis.profileId,
+                authKind,
+              );
+        const vault = await this.vault.read(root);
+        const credential = locator ? findCredential(vault, locator) : undefined;
+        if (!credential) {
+          return deepFreeze({ kind: 'credential_not_configured' as const });
+        }
+        const supportedModelIds = discovery.models
+          .map((model) => model.id)
+          .filter((modelId) => connection.enabledModelIds.includes(modelId));
+        if (supportedModelIds.length > 0) {
+          const store = this.routingStoreFor(root);
+          if (evidence === 'authoritative') {
+            // Atomically replace each basis group: rows the current
+            // authoritative discovery dropped (same credential + digest) are
+            // removed, other digest groups are untouched.
+            const modelIdsByDigest = new Map<string, string[]>();
+            for (const modelId of supportedModelIds) {
+              const digest = await this.connectionExecutionBasisDigest(root, vault, connection, modelId);
+              const group = modelIdsByDigest.get(digest) ?? [];
+              group.push(modelId);
+              modelIdsByDigest.set(digest, group);
+            }
+            for (const [digest, modelIds] of modelIdsByDigest) {
+              await store.replaceVerificationBasis(
+                connection.connectionId,
+                claimed.basis.profileId,
+                credential.credentialId,
+                credential.revision,
+                digest,
+                modelIds.map(
+                  (modelId): CredentialProfileVerificationRecord => ({
+                    connectionId: connection.connectionId,
+                    profileId: claimed.basis.profileId,
+                    credentialId: credential.credentialId,
+                    credentialRevision: credential.revision,
+                    executionBasisDigest: digest,
+                    modelId,
+                    status: 'supported',
+                    source: 'discovered',
+                    evidence: 'authoritative',
+                    checkedAt: discovery.fetchedAt,
+                  }),
+                ),
+              );
+            }
+          } else {
+            for (const modelId of supportedModelIds) {
+              const digest = await this.connectionExecutionBasisDigest(root, vault, connection, modelId);
+              await store.upsertVerification({
+                connectionId: connection.connectionId,
+                profileId: claimed.basis.profileId,
+                credentialId: credential.credentialId,
+                credentialRevision: credential.revision,
+                executionBasisDigest: digest,
+                modelId,
+                status: 'supported',
+                source: 'discovered',
+                evidence: 'positive_only',
+                checkedAt: discovery.fetchedAt,
+              });
+            }
+          }
+        }
+        // Verification is persisted first; the Catalog metadata merge runs
+        // after, so a crash in between leaves at most "evidence present but
+        // inventory not yet shown" — a safe state (RFC 13.2).
+        const snapshot = await this.catalog.mergeConnectionProfileDiscoveryMetadata(
+          root,
+          catalog,
+          connectionBasis(connection),
+          discovery,
+        );
+        return deepFreeze({
+          kind: 'committed' as const,
+          verification: supportedModelIds.length > 0 ? ('recorded' as const) : ('not_recorded' as const),
+          catalogRevision: snapshot.revision,
+          snapshot,
+        });
+      }),
+    );
+  }
+
+  readCredentialProfileReadiness(
+    rawConnectionId: string,
+  ): Promise<CredentialProfileReadinessResult> {
+    return this.inLane(async (root) => {
+      const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
+      const catalog = await this.catalog.read(root);
+      const connection = findConnection(catalog, { connectionId });
+      if (!connection) {
+        return deepFreeze({ kind: 'connection_not_found' as const });
+      }
+      const routing = connection.credentialRouting;
+      if (!routing) {
+        return deepFreeze({
+          kind: 'found' as const,
+          connectionId: connection.connectionId,
+          connectionRevision: connection.revision,
+          routingMode: 'legacy_primary' as const,
+          readyCandidateCount: 0,
+          profiles: [],
+        });
+      }
+      const vault = await this.vault.read(root);
+      const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+      const store = this.routingStoreFor(root);
+      const entries: CredentialProfileReadinessEntry[] = [];
+      const readyProfileIdsByModel = new Map<string, string[]>();
+      for (const profile of routing.profiles) {
+        const locator =
+          profile.profileId === connection.connectionId
+            ? connectionCredentialLocator(connection.connectionId, authKind)
+            : connectionProfileCredentialLocator(connection.connectionId, profile.profileId, authKind);
+        const credential = locator ? findCredential(vault, locator) : undefined;
+        const verificationRecords = await store.readProfileVerification(
+          connection.connectionId,
+          profile.profileId,
+        );
+        const supportedModels: string[] = [];
+        let lastTest: CredentialProfileReadinessEntry['lastTest'] = null;
+        let circuit:
+          | CredentialProfileReadinessEntry['circuit']
+          | null = null;
+        if (credential) {
+          for (const record of verificationRecords) {
+            if (
+              record.credentialId !== credential.credentialId ||
+              record.credentialRevision !== credential.revision ||
+              record.status !== 'supported'
+            ) {
+              continue;
+            }
+            if (connection.enabledModelIds.includes(record.modelId)) {
+              supportedModels.push(record.modelId);
+            }
+            if (
+              record.source === 'tested' &&
+              record.testSummary &&
+              (!lastTest || record.checkedAt > Date.parse(lastTest.checkedAt))
+            ) {
+              lastTest = record.testSummary;
+            }
+          }
+          const digestModels = new Map<string, string[]>();
+          for (const modelId of supportedModels) {
+            const digest = await this.connectionExecutionBasisDigest(root, vault, connection, modelId);
+            const group = digestModels.get(digest) ?? [];
+            group.push(modelId);
+            digestModels.set(digest, group);
+          }
+          for (const [digest, modelIds] of digestModels) {
+            const health = await store.readHealth(
+              connection.connectionId,
+              profile.profileId,
+              credential.credentialId,
+              credential.revision,
+              digest,
+            );
+            for (const row of health) {
+              if (!modelIds.includes(row.modelId)) continue;
+              if (row.circuitState === 'closed') continue;
+              const severity =
+                row.circuitState === 'invalid'
+                  ? 3
+                  : row.circuitState === 'open'
+                    ? 2
+                    : 1;
+              const current =
+                circuit?.state === 'invalid'
+                  ? 3
+                  : circuit?.state === 'open'
+                    ? 2
+                    : circuit?.state === 'half_open'
+                      ? 1
+                      : 0;
+              if (severity > current) {
+                circuit = {
+                  state: row.circuitState,
+                  blockedUntil: row.blockedUntil,
+                  nextProbeAt: row.nextProbeAt,
+                };
+              }
+            }
+          }
+        }
+        entries.push(
+          deepFreeze({
+            profileId: profile.profileId,
+            revision: profile.revision,
+            label: profile.label,
+            enabled: profile.enabled,
+            weight: profile.weight,
+            primary: profile.profileId === connection.connectionId,
+            credentialConfigured: credential !== undefined,
+            lastTest,
+            supportedModels,
+            circuit,
+          }),
+        );
+        if (profile.enabled && credential) {
+          const ready = (circuit === null || circuit.state === 'closed' || circuit.state === 'half_open') && supportedModels.length > 0;
+          if (ready) {
+            for (const modelId of supportedModels) {
+              const list = readyProfileIdsByModel.get(modelId) ?? [];
+              if (!list.includes(profile.profileId)) list.push(profile.profileId);
+              readyProfileIdsByModel.set(modelId, list);
+            }
+          }
+        }
+      }
+      const readyCandidateCount = [...readyProfileIdsByModel.values()].filter(
+        (profileIds) => profileIds.length >= 2,
+      ).length;
+      return deepFreeze({
+        kind: 'found' as const,
+        connectionId: connection.connectionId,
+        connectionRevision: connection.revision,
+        routingMode: routing.mode,
+        readyCandidateCount,
+        profiles: entries,
+      });
+    });
+  }
+
+  private async prepareConnectionProfileOperation(
+    root: string,
+    connectionId: string,
+    profileId: string,
+    action: ProviderAuthAction,
+  ): Promise<
+    | PreparedConnectionMaterial
+    | Exclude<BeginConnectionProfileTestResult | BeginConnectionProfileModelFetchResult, { readonly kind: 'ready' }>
+  > {
+    const catalog = await this.catalog.read(root);
+    const connection = findConnection(catalog, { connectionId });
+    if (!connection) return deepFreeze({ kind: 'connection_not_found' as const });
+    if (!connection.enabled) return deepFreeze({ kind: 'connection_disabled' as const });
+    const routing = connection.credentialRouting;
+    const profile = routing?.profiles.find((candidate) => candidate.profileId === profileId);
+    if (!profile) return deepFreeze({ kind: 'profile_not_found' as const });
+    if (!profile.enabled) return deepFreeze({ kind: 'profile_disabled' as const });
+
+    const contract = deriveProviderAuthContract({
+      providerType: connection.providerType,
+      enabled: true,
+      hasSecret: true,
+      lastTestStatus: connection.lastTest?.status,
+    });
+    const availability = contract.actionAvailability[action];
+    if (availability !== 'available') {
+      return deepFreeze({ kind: 'provider_action_unavailable' as const, availability });
+    }
+    return this.prepareConnectionMaterial(root, connection, contract.requiresSecret, profile);
+  }
+
   private async prepareConnectionOperation(
     root: string,
     connectionId: string,
@@ -1479,12 +1937,17 @@ export class RuntimePolicyCoordinator {
     root: string,
     connection: ConnectionCatalogEntry,
     requiresConnectionSecret: boolean,
+    profile?: ConnectionCredentialProfileEntry,
   ): Promise<
     | PreparedConnectionMaterial
     | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
   > {
     const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
-    const locator = connectionCredentialLocator(connection.connectionId, authKind);
+    const locator = profile
+      ? profile.profileId === connection.connectionId
+        ? connectionCredentialLocator(connection.connectionId, authKind)
+        : connectionProfileCredentialLocator(connection.connectionId, profile.profileId, authKind)
+      : connectionCredentialLocator(connection.connectionId, authKind);
     const policy = await this.policy.read(root);
     const networkProxy = structuredClone(policy.policy.networkProxy);
     const proxyLocator = requiresNetworkProxyCredential(networkProxy)
@@ -1541,6 +2004,7 @@ export class RuntimePolicyCoordinator {
       proxyCredentialStatus,
       secretMaterial,
       networkProxy,
+      ...(profile ? { profile } : {}),
     };
   }
 
@@ -1627,14 +2091,23 @@ export class RuntimePolicyCoordinator {
       connection.providerType !== basis.providerType ||
       !connection.enabled ||
       canonicalEffectiveEndpoint(connection) !== basis.effectiveEndpoint ||
-      (basis.kind === 'model_fetch' &&
+      ((basis.kind === 'model_fetch' || basis.kind === 'profile_model_fetch') &&
         !sameStringArray(connection.enabledModelIds, basis.enabledModelIds)) ||
-      (basis.kind === 'connection_test' &&
+      ((basis.kind === 'connection_test' || basis.kind === 'profile_test') &&
         JSON.stringify(connection.requestBodyOverlay ?? {}) !== basis.requestBodyOverlayJson) ||
-      (basis.kind === 'connection_test' &&
+      ((basis.kind === 'connection_test' || basis.kind === 'profile_test') &&
         !sameConnectionTestModelBasis(connectionTestModelBasis(connection), basis.model))
     ) {
       changed.push('connection');
+    }
+    if (basis.kind === 'profile_test' || basis.kind === 'profile_model_fetch') {
+      const routing = connection?.credentialRouting;
+      const profile = routing?.profiles.find(
+        (candidate) => candidate.profileId === basis.profileId,
+      );
+      if (!connection || !profile || !profile.enabled || profile.revision !== basis.profileRevision) {
+        changed.push('connection');
+      }
     }
 
     const policy = await this.policy.read(root);
@@ -1700,7 +2173,10 @@ export class RuntimePolicyCoordinator {
     return ticket as InteractiveOAuthLoginTicket;
   }
 
-  private claimTicket(ticket: object, expectedKind: ConnectionTicketKind): ConnectionTicketRecord {
+  private claimTicket<K extends ConnectionTicketKind>(
+    ticket: object,
+    expectedKind: K,
+  ): ConnectionTicketRecord<K> {
     const record = ticket && typeof ticket === 'object' ? this.tickets.get(ticket) : undefined;
     if (!record || record.kind !== expectedKind || record.state !== 'available') {
       throw codecError(
@@ -1709,7 +2185,7 @@ export class RuntimePolicyCoordinator {
       );
     }
     record.state = 'in_flight';
-    return record;
+    return record as unknown as ConnectionTicketRecord<K>;
   }
 
   private claimInteractiveOAuthLoginTicket(
@@ -1850,6 +2326,45 @@ function connectionTestSemanticBasis(
   };
 }
 
+function profileSemanticBasisFields(
+  prepared: PreparedConnectionMaterial,
+): ProfileSemanticConnectionBasisFields {
+  const profile = prepared.profile;
+  if (!profile) {
+    throw codecError('invalid_connection_input', 'Profile ticket requires a Profile operation');
+  }
+  return {
+    profileId: profile.profileId,
+    profileEnabled: true,
+    profileRevision: profile.revision,
+  };
+}
+
+function profileTestSemanticBasis(
+  prepared: PreparedConnectionMaterial,
+  modelId: string | null,
+): Extract<SemanticConnectionBasis, { readonly kind: 'profile_test' }> {
+  return {
+    kind: 'profile_test',
+    ...commonSemanticConnectionBasis(prepared),
+    ...profileSemanticBasisFields(prepared),
+    modelId,
+    requestBodyOverlayJson: JSON.stringify(prepared.connection.requestBodyOverlay ?? {}),
+    model: connectionTestModelBasis(prepared.connection),
+  };
+}
+
+function profileModelFetchSemanticBasis(
+  prepared: PreparedConnectionMaterial,
+): Extract<SemanticConnectionBasis, { readonly kind: 'profile_model_fetch' }> {
+  return {
+    kind: 'profile_model_fetch',
+    ...commonSemanticConnectionBasis(prepared),
+    ...profileSemanticBasisFields(prepared),
+    enabledModelIds: [...prepared.connection.enabledModelIds],
+  };
+}
+
 function isCanonicalConnectionTestModel(
   connection: ConnectionCatalogEntry,
   modelId: string,
@@ -1972,7 +2487,16 @@ function sameCredentialLocator(actual: CredentialLocator, expected: CredentialLo
 }
 
 function ticketLabel(kind: ConnectionTicketKind): string {
-  return kind === 'model_fetch' ? 'model fetch' : 'connection test';
+  switch (kind) {
+    case 'model_fetch':
+      return 'model fetch';
+    case 'connection_test':
+      return 'connection test';
+    case 'profile_test':
+      return 'profile test';
+    case 'profile_model_fetch':
+      return 'profile model fetch';
+  }
 }
 
 function networkProxyCredentialLocator(): Extract<CredentialLocator, { scope: 'network_proxy' }> {

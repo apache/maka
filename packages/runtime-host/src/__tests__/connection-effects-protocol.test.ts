@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { decodeClientFrame, decodeHostFrame } from '../protocol/index.js';
+import { CONNECTION_EFFECT_OPERATION_SPECS } from '../protocol/connection-effects.js';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 
 const EXPECTED = {
@@ -9,6 +10,41 @@ const EXPECTED = {
 };
 
 describe('Runtime Host connection effects protocol', () => {
+  test('declares ready commands with bounded mutation errors', () => {
+    assert.deepEqual(Object.keys(CONNECTION_EFFECT_OPERATION_SPECS).sort(), [
+      'connection.models.fetch',
+      'connection.onboarding.save',
+      'connection.onboarding.verify',
+      'connection.profile.models.fetch',
+      'connection.profile.test.run',
+      'connection.test.run',
+    ]);
+    for (const operation of Object.keys(CONNECTION_EFFECT_OPERATION_SPECS) as Array<
+      keyof typeof CONNECTION_EFFECT_OPERATION_SPECS
+    >) {
+      assert.deepEqual(
+        {
+          mode: CONNECTION_EFFECT_OPERATION_SPECS[operation].mode,
+          availability: CONNECTION_EFFECT_OPERATION_SPECS[operation].availability,
+          errors: CONNECTION_EFFECT_OPERATION_SPECS[operation].errors,
+        },
+        {
+          mode: 'command',
+          availability: 'ready',
+          errors: [
+            'host_not_ready',
+            'host_draining',
+            'operation_unavailable',
+            'invalid_request',
+            'internal_failure',
+            'persistence_failed',
+            'commit_outcome_unknown',
+          ],
+        },
+      );
+    }
+  });
+
   test('bounds transient onboarding secrets, models, and save selections', () => {
     const verify = request('connection.onboarding.verify', {
       providerType: 'openrouter',
@@ -171,6 +207,144 @@ describe('Runtime Host connection effects protocol', () => {
     assertInvalidResponse('connection.test.run', {
       ...failedResult,
       test: { ...failedResult.test, statusCode: 600 },
+    });
+  });
+
+  test('profile effects require an explicit profile identity and bounded model selection', () => {
+    const profileTest = request('connection.profile.test.run', {
+      connectionId: EXPECTED.connectionId,
+      profileId: '00000000-0000-4000-8000-00000000000a',
+      modelId: 'model-1',
+    });
+    const defaultModelProfileTest = request('connection.profile.test.run', {
+      connectionId: EXPECTED.connectionId,
+      profileId: '00000000-0000-4000-8000-00000000000a',
+      modelId: null,
+    });
+    const profileFetch = request('connection.profile.models.fetch', {
+      connectionId: EXPECTED.connectionId,
+      profileId: '00000000-0000-4000-8000-00000000000a',
+    });
+    assert.deepEqual(decodeClientFrame(profileTest), profileTest);
+    assert.deepEqual(decodeClientFrame(defaultModelProfileTest), defaultModelProfileTest);
+    assert.deepEqual(decodeClientFrame(profileFetch), profileFetch);
+
+    assertInvalidRequest('connection.profile.test.run', {
+      connectionId: EXPECTED.connectionId,
+      profileId: '00000000-0000-4000-8000-00000000000a',
+    });
+    assertInvalidRequest('connection.profile.test.run', {
+      connectionId: EXPECTED.connectionId,
+      profileId: 'x'.repeat(129),
+      modelId: null,
+    });
+    assertInvalidRequest('connection.profile.test.run', {
+      connectionId: EXPECTED.connectionId,
+      profileId: '00000000-0000-4000-8000-00000000000a',
+      modelId: 'x'.repeat(1_025),
+    });
+    assertInvalidRequest('connection.profile.test.run', {
+      connectionId: EXPECTED.connectionId,
+      profileId: '00000000-0000-4000-8000-00000000000a',
+      modelId: null,
+      secret: 'forbidden',
+    });
+    assertInvalidRequest('connection.profile.models.fetch', {
+      connectionId: EXPECTED.connectionId,
+    });
+    assertInvalidRequest('connection.profile.models.fetch', {
+      connectionId: EXPECTED.connectionId,
+      profileId: '00000000-0000-4000-8000-00000000000a',
+      profileLabel: 'smuggled metadata',
+    });
+  });
+
+  test('profile effect results carry only verification outcomes and never secrets', () => {
+    const profileTestCommitted = response('connection.profile.test.run', {
+      kind: 'committed',
+      verification: 'recorded',
+      test: {
+        kind: 'verified',
+        checkedAt: '2026-07-29T00:00:00.000Z',
+        modelId: 'model-1',
+        latencyMs: 12,
+      },
+    });
+    const profileTestNotRecorded = response('connection.profile.test.run', {
+      kind: 'committed',
+      verification: 'not_recorded',
+      test: {
+        kind: 'failed',
+        checkedAt: '2026-07-29T00:00:00.000Z',
+        modelId: 'model-1',
+        latencyMs: null,
+        statusCode: 429,
+        errorClass: 'provider_unavailable',
+      },
+    });
+    const profileFetchCommitted = response('connection.profile.models.fetch', {
+      kind: 'committed',
+      catalogRevision: 3,
+      connection: { ...EXPECTED, revision: 3 },
+      verification: 'recorded',
+      modelCount: 2_048,
+      source: 'fetched',
+      fetchedAt: 1_000,
+    });
+    assert.deepEqual(decodeHostFrame(profileTestCommitted), profileTestCommitted);
+    assert.deepEqual(decodeHostFrame(profileTestNotRecorded), profileTestNotRecorded);
+    assert.deepEqual(decodeHostFrame(profileFetchCommitted), profileFetchCommitted);
+
+    for (const result of [
+      { kind: 'rejected', reason: 'profile_not_found' },
+      { kind: 'rejected', reason: 'profile_disabled' },
+      { kind: 'rejected', reason: 'credential_not_configured' },
+      { kind: 'superseded', changed: ['connection'] },
+      { kind: 'failed', errorClass: 'timeout' },
+    ]) {
+      const frame = response('connection.profile.test.run', result);
+      assert.deepEqual(decodeHostFrame(frame), frame);
+    }
+
+    assertInvalidResponse('connection.profile.test.run', {
+      kind: 'committed',
+      verification: 'recorded',
+      test: {
+        kind: 'verified',
+        checkedAt: '2026-07-29T00:00:00.000Z',
+        modelId: 'model-1',
+        latencyMs: 12,
+        apiKey: 'leaked',
+      },
+    });
+    assertInvalidResponse('connection.profile.test.run', {
+      kind: 'committed',
+      verification: 'maybe',
+      test: {
+        kind: 'verified',
+        checkedAt: '2026-07-29T00:00:00.000Z',
+        modelId: 'model-1',
+        latencyMs: 12,
+      },
+    });
+    assertInvalidResponse('connection.profile.test.run', {
+      kind: 'rejected',
+      reason: 'connection_disabled',
+      detail: 'provider body',
+    });
+    assertInvalidResponse('connection.profile.models.fetch', {
+      kind: 'committed',
+      catalogRevision: 3,
+      connection: { ...EXPECTED, revision: 3 },
+      verification: 'recorded',
+      modelCount: 2_048,
+      source: 'fetched',
+      fetchedAt: 1_000,
+      models: [{ id: 'secret-model-list' }],
+    });
+    assertInvalidResponse('connection.profile.models.fetch', {
+      kind: 'rejected',
+      reason: 'profile_missing',
     });
   });
 });

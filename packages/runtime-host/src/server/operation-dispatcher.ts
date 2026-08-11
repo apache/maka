@@ -61,6 +61,8 @@ export type ConnectionEffectOperationKey = Extract<
   OperationKey,
   | 'connection.models.fetch'
   | 'connection.test.run'
+  | 'connection.profile.test.run'
+  | 'connection.profile.models.fetch'
   | 'connection.onboarding.verify'
   | 'connection.onboarding.save'
 >;

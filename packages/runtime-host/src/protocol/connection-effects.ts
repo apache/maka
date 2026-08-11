@@ -45,6 +45,14 @@ export const CONNECTION_EFFECT_REJECTION_REASONS = [
 ] as const;
 export type ConnectionEffectRejectionReason = (typeof CONNECTION_EFFECT_REJECTION_REASONS)[number];
 
+export const CONNECTION_PROFILE_EFFECT_REJECTION_REASONS = [
+  ...CONNECTION_EFFECT_REJECTION_REASONS,
+  'profile_not_found',
+  'profile_disabled',
+] as const;
+export type ConnectionProfileEffectRejectionReason =
+  (typeof CONNECTION_PROFILE_EFFECT_REJECTION_REASONS)[number];
+
 export const CONNECTION_EFFECT_FAILURE_CLASSES = [
   'auth',
   'timeout',
@@ -62,6 +70,17 @@ export interface ConnectionModelFetchInput {
 export interface ConnectionTestRunInput {
   readonly connectionId: string;
   readonly modelId: string | null;
+}
+
+export interface ConnectionProfileTestRunInput {
+  readonly connectionId: string;
+  readonly profileId: string;
+  readonly modelId: string | null;
+}
+
+export interface ConnectionProfileModelFetchInput {
+  readonly connectionId: string;
+  readonly profileId: string;
 }
 
 export interface ConnectionOnboardingVerifyInput {
@@ -147,6 +166,32 @@ export type ConnectionTestRunResult =
   | ConnectionEffectRejected
   | ConnectionEffectSuperseded;
 
+interface ConnectionProfileEffectRejected {
+  readonly kind: 'rejected';
+  readonly reason: ConnectionProfileEffectRejectionReason;
+}
+
+export type ConnectionProfileTestRunResult =
+  | {
+      readonly kind: 'committed';
+      readonly verification: 'recorded' | 'not_recorded';
+      readonly test: ConnectionTestProjection;
+    }
+  | ConnectionProfileEffectRejected
+  | ConnectionEffectSuperseded
+  | ConnectionEffectFailed;
+
+export type ConnectionProfileModelFetchResult =
+  | (ConnectionEffectCommitted & {
+      readonly verification: 'recorded' | 'not_recorded';
+      readonly modelCount: number;
+      readonly source: ModelDiscoverySource;
+      readonly fetchedAt: number;
+    })
+  | ConnectionProfileEffectRejected
+  | ConnectionEffectSuperseded
+  | ConnectionEffectFailed;
+
 export const CONNECTION_EFFECT_OPERATION_SPECS = {
   'connection.onboarding.save': defineOperation<
     ConnectionOnboardingSaveInput,
@@ -191,6 +236,28 @@ export const CONNECTION_EFFECT_OPERATION_SPECS = {
     errors: EFFECT_ERRORS,
     decodeInput: decodeConnectionTestRunInput,
     decodeOutput: decodeConnectionTestRunResult,
+  }),
+  'connection.profile.test.run': defineOperation<
+    ConnectionProfileTestRunInput,
+    ConnectionProfileTestRunResult,
+    (typeof EFFECT_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: EFFECT_ERRORS,
+    decodeInput: decodeConnectionProfileTestRunInput,
+    decodeOutput: decodeConnectionProfileTestRunResult,
+  }),
+  'connection.profile.models.fetch': defineOperation<
+    ConnectionProfileModelFetchInput,
+    ConnectionProfileModelFetchResult,
+    (typeof EFFECT_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: EFFECT_ERRORS,
+    decodeInput: decodeConnectionProfileModelFetchInput,
+    decodeOutput: decodeConnectionProfileModelFetchResult,
   }),
 } as const;
 
@@ -368,6 +435,131 @@ export function decodeConnectionTestRunResult(value: unknown): ConnectionTestRun
     };
   }
   return decodeNonEffectResult(result, 'connection test result');
+}
+
+export function decodeConnectionProfileTestRunInput(
+  value: unknown,
+): ConnectionProfileTestRunInput {
+  const input = requireExactRecord(value, 'connection profile test input', [
+    'connectionId',
+    'profileId',
+    'modelId',
+  ]);
+  return {
+    connectionId: requireEntityId(input.connectionId, 'connectionId'),
+    profileId: requireEntityId(input.profileId, 'profileId'),
+    modelId:
+      input.modelId === null ? null : decodeDomain(() => decodeConnectionModelId(input.modelId)),
+  };
+}
+
+export function decodeConnectionProfileModelFetchInput(
+  value: unknown,
+): ConnectionProfileModelFetchInput {
+  const input = requireExactRecord(value, 'connection profile model fetch input', [
+    'connectionId',
+    'profileId',
+  ]);
+  return {
+    connectionId: requireEntityId(input.connectionId, 'connectionId'),
+    profileId: requireEntityId(input.profileId, 'profileId'),
+  };
+}
+
+export function decodeConnectionProfileTestRunResult(
+  value: unknown,
+): ConnectionProfileTestRunResult {
+  const result = requireRecord(value, 'connection profile test result');
+  if (result.kind === 'committed') {
+    const committed = requireExactRecord(result, 'connection profile test committed result', [
+      'kind',
+      'verification',
+      'test',
+    ]);
+    if (committed.kind !== 'committed') {
+      throw invalidProtocolFrame('Invalid connection profile test committed result');
+    }
+    if (committed.verification !== 'recorded' && committed.verification !== 'not_recorded') {
+      throw invalidProtocolFrame('Invalid connection profile verification outcome');
+    }
+    return {
+      kind: 'committed',
+      verification: committed.verification,
+      test: decodeConnectionTestProjection(committed.test),
+    };
+  }
+  if (result.kind === 'failed') {
+    const failed = requireExactRecord(result, 'connection profile test failed result', [
+      'kind',
+      'errorClass',
+    ]);
+    return { kind: 'failed', errorClass: effectFailureClass(failed.errorClass) };
+  }
+  return decodeProfileNonEffectResult(result, 'connection profile test result');
+}
+
+export function decodeConnectionProfileModelFetchResult(
+  value: unknown,
+): ConnectionProfileModelFetchResult {
+  const result = requireRecord(value, 'connection profile model fetch result');
+  if (result.kind === 'committed') {
+    const committed = requireExactRecord(result, 'connection profile model fetch committed result', [
+      'kind',
+      'catalogRevision',
+      'connection',
+      'verification',
+      'modelCount',
+      'source',
+      'fetchedAt',
+    ]);
+    if (committed.kind !== 'committed') {
+      throw invalidProtocolFrame('Invalid connection profile model fetch committed result');
+    }
+    if (committed.verification !== 'recorded' && committed.verification !== 'not_recorded') {
+      throw invalidProtocolFrame('Invalid connection profile verification outcome');
+    }
+    return {
+      ...decodeCommitted(committed, 'connection profile model fetch committed result'),
+      verification: committed.verification,
+      modelCount: boundedInteger(
+        committed.modelCount,
+        'model count',
+        1,
+        CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
+      ),
+      source: modelDiscoverySource(committed.source),
+      fetchedAt: requireCount(committed.fetchedAt, 'models fetched at'),
+    };
+  }
+  if (result.kind === 'failed') {
+    const failed = requireExactRecord(result, 'connection profile model fetch failed result', [
+      'kind',
+      'errorClass',
+    ]);
+    return { kind: 'failed', errorClass: effectFailureClass(failed.errorClass) };
+  }
+  return decodeProfileNonEffectResult(result, 'connection profile model fetch result');
+}
+
+function decodeProfileNonEffectResult(
+  value: Record<string, unknown>,
+  label: string,
+): ConnectionProfileEffectRejected | ConnectionEffectSuperseded {
+  if (value.kind === 'rejected') {
+    const rejected = requireExactRecord(value, label, ['kind', 'reason']);
+    return { kind: 'rejected', reason: profileRejectionReason(rejected.reason) };
+  }
+  return decodeNonEffectResult(value, label);
+}
+
+function profileRejectionReason(value: unknown): ConnectionProfileEffectRejectionReason {
+  if (
+    typeof value === 'string' &&
+    (CONNECTION_PROFILE_EFFECT_REJECTION_REASONS as readonly string[]).includes(value)
+  ) {
+    return value as ConnectionProfileEffectRejectionReason;
+  }
+  throw invalidProtocolFrame('Invalid connection profile effect rejection reason');
 }
 
 function decodeConnectionTestProjection(value: unknown): ConnectionTestProjection {

@@ -1,7 +1,9 @@
 import type {
   ConnectionCatalogEntry,
   ConnectionCatalogSnapshot,
+  ConnectionCredentialProfileEntry,
   ConnectionModelDiscoveryResult,
+  ConnectionTestErrorClass,
   ConnectionTestSummary,
   CredentialMutationResult,
   CredentialLocator,
@@ -164,6 +166,14 @@ export interface ConnectionTestTicket {
   readonly [operationTicketBrand]: 'connection_test';
 }
 
+export interface ProfileTestTicket {
+  readonly [operationTicketBrand]: 'profile_test';
+}
+
+export interface ProfileModelFetchTicket {
+  readonly [operationTicketBrand]: 'profile_model_fetch';
+}
+
 export interface InteractiveOAuthLoginTicket {
   readonly [operationTicketBrand]: 'interactive_oauth_login';
 }
@@ -241,6 +251,127 @@ export type ConnectionEffectCompletionResult =
       readonly kind: 'superseded';
       readonly changed: readonly ConnectionEffectChangedDomain[];
     };
+
+export type ConnectionProfileEffectPreparationFailure =
+  | ConnectionEffectPreparationFailure
+  | { readonly kind: 'profile_not_found' }
+  | { readonly kind: 'profile_disabled' };
+
+export type BeginConnectionProfileTestResult =
+  | ConnectionProfileEffectPreparationFailure
+  | {
+      readonly kind: 'ready';
+      readonly ticket: ProfileTestTicket;
+      readonly connection: ConnectionCatalogEntry;
+      readonly profile: ConnectionCredentialProfileEntry;
+      readonly modelId: string | null;
+      readonly secretMaterial: RuntimePolicyOperationSecretMaterial;
+      readonly networkProxy: RuntimePolicy['networkProxy'];
+    };
+
+export type BeginConnectionProfileModelFetchResult =
+  | ConnectionProfileEffectPreparationFailure
+  | {
+      readonly kind: 'ready';
+      readonly ticket: ProfileModelFetchTicket;
+      readonly connection: ConnectionCatalogEntry;
+      readonly profile: ConnectionCredentialProfileEntry;
+      readonly secretMaterial: RuntimePolicyOperationSecretMaterial;
+      readonly networkProxy: RuntimePolicy['networkProxy'];
+    };
+
+export interface ConnectionProfileTestCompletionInput {
+  readonly summary: ConnectionTestSummary;
+  readonly modelId: string | null;
+}
+
+export type ConnectionProfileTestCompletionResult =
+  | {
+      readonly kind: 'committed';
+      readonly verification: 'recorded' | 'not_recorded';
+    }
+  | {
+      readonly kind: 'superseded';
+      readonly changed: readonly ConnectionEffectChangedDomain[];
+    }
+  | { readonly kind: 'connection_not_found' }
+  | {
+      readonly kind: 'connection_stale';
+      readonly expectedRevision: number;
+      readonly actualRevision: number;
+    }
+  | { readonly kind: 'profile_not_found' }
+  | { readonly kind: 'credential_not_configured' }
+  | { readonly kind: 'invalid_request'; readonly reason: string };
+
+export type ConnectionProfileModelFetchCompletionResult =
+  | {
+      readonly kind: 'committed';
+      readonly verification: 'recorded' | 'not_recorded';
+      readonly catalogRevision: number;
+      readonly snapshot: ConnectionCatalogSnapshot;
+    }
+  | {
+      readonly kind: 'superseded';
+      readonly changed: readonly ConnectionEffectChangedDomain[];
+    }
+  | { readonly kind: 'connection_not_found' }
+  | {
+      readonly kind: 'connection_stale';
+      readonly expectedRevision: number;
+      readonly actualRevision: number;
+    }
+  | { readonly kind: 'profile_not_found' }
+  | { readonly kind: 'credential_not_configured' }
+  | { readonly kind: 'invalid_request'; readonly reason: string };
+
+/**
+ * Readiness projection for one Credential Profile (RFC 13.1/13.3). A pure
+ * composition of the Catalog (metadata + routing declaration), the Credential
+ * Vault (configured status) and the routing Verification/Health authority —
+ * never a fourth authority, never carries secret material.
+ */
+export interface CredentialProfileReadinessEntry {
+  readonly profileId: string;
+  readonly revision: number;
+  readonly label: string;
+  readonly enabled: boolean;
+  readonly weight: number;
+  readonly primary: boolean;
+  readonly credentialConfigured: boolean;
+  readonly lastTest:
+    | {
+        readonly status: ConnectionTestSummary['status'];
+        readonly checkedAt: string;
+        readonly errorClass?: ConnectionTestErrorClass;
+      }
+    | null;
+  /** Enabled models with a current supported verification for this Profile. */
+  readonly supportedModels: readonly string[];
+  /** Most severe circuit across the Profile's current basis/health rows. */
+  readonly circuit:
+    | {
+        readonly state: 'closed' | 'open' | 'half_open' | 'invalid';
+        readonly blockedUntil: number | null;
+        readonly nextProbeAt: number | null;
+      }
+    | null;
+}
+
+export type CredentialProfileReadinessResult =
+  | {
+      readonly kind: 'found';
+      readonly connectionId: string;
+      readonly connectionRevision: number;
+      readonly routingMode: 'legacy_primary' | 'balanced';
+      /**
+       * Number of enabled models that currently have two or more ready
+       * candidates (enabled + configured + verified + not circuit-blocked).
+       */
+      readonly readyCandidateCount: number;
+      readonly profiles: readonly CredentialProfileReadinessEntry[];
+    }
+  | { readonly kind: 'connection_not_found' };
 
 export interface CommitConnectionOnboardingInput {
   readonly providerType: ConnectionCatalogEntry['providerType'];
@@ -332,6 +463,27 @@ export interface RuntimePolicyOperationCoordinator {
     ticket: ConnectionTestTicket,
     result: ConnectionTestSummary,
   ): Promise<ConnectionEffectCompletionResult>;
+  beginConnectionProfileTest(
+    connectionId: string,
+    profileId: string,
+    modelId: string | null,
+  ): Promise<BeginConnectionProfileTestResult>;
+  completeConnectionProfileTest(
+    ticket: ProfileTestTicket,
+    result: ConnectionProfileTestCompletionInput,
+  ): Promise<ConnectionProfileTestCompletionResult>;
+  beginConnectionProfileModelFetch(
+    connectionId: string,
+    profileId: string,
+  ): Promise<BeginConnectionProfileModelFetchResult>;
+  completeConnectionProfileModelFetch(
+    ticket: ProfileModelFetchTicket,
+    result: ConnectionModelDiscoveryResult,
+    evidence: 'positive_only' | 'authoritative',
+  ): Promise<ConnectionProfileModelFetchCompletionResult>;
+  readCredentialProfileReadiness(
+    connectionId: string,
+  ): Promise<CredentialProfileReadinessResult>;
 }
 
 export function connectionCredentialLocator(
