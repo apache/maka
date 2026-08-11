@@ -446,6 +446,43 @@ test('projects runtime policy CAS results without returning the committed snapsh
   });
 });
 
+test('rejects a Host-invalid shell preference before it reaches durable policy', async () => {
+  await withCoordinator(async ({ stores }) => {
+    const coordinator = new HostRuntimePolicyCoordinator(
+      stores,
+      new RuntimePolicyActivationGate(),
+      async () => {},
+      async (input) => {
+        if (input.operation.kind === 'set_shell') throw new Error('not GNU Bash');
+      },
+    );
+    const result = await coordinator.handlers['runtime.policy.mutate'](
+      {
+        expectedRevision: 0,
+        operation: {
+          kind: 'set_shell',
+          value: {
+            preference: 'git_bash',
+            executable: 'C:\\tools\\bash.exe',
+          },
+        },
+      },
+      context,
+    );
+    assert.deepEqual(result, {
+      ok: false,
+      error: {
+        code: 'invalid_request',
+        message: 'Runtime policy mutation is invalid for the current state',
+      },
+    });
+    assert.deepEqual((await stores.runtimePolicy.getSnapshot()).policy.shell, {
+      preference: 'auto',
+      executable: '',
+    });
+  });
+});
+
 test('awaits committed mutation invalidation before returning the outcome', async () => {
   await withCoordinator(async ({ stores }) => {
     let releaseInvalidation!: () => void;

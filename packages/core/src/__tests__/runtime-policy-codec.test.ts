@@ -82,6 +82,42 @@ test('keeps user-approved subagent presets canonical in Runtime Policy', () => {
   );
 });
 
+test('normalizes the explicit Git Bash preference and rejects arbitrary shell kinds', () => {
+  assert.deepEqual(
+    normalizeRuntimePolicyMutation({
+      expectedRevision: 3,
+      operation: {
+        kind: 'set_shell',
+        value: {
+          preference: 'git_bash',
+          executable: ' C:\\Program Files\\Git\\bin\\bash.exe ',
+        },
+      },
+    }),
+    {
+      expectedRevision: 3,
+      operation: {
+        kind: 'set_shell',
+        value: {
+          preference: 'git_bash',
+          executable: 'C:\\Program Files\\Git\\bin\\bash.exe',
+        },
+      },
+    },
+  );
+  assert.throws(
+    () =>
+      normalizeRuntimePolicyMutation({
+        expectedRevision: 3,
+        operation: {
+          kind: 'set_shell',
+          value: { preference: 'custom', executable: 'C:\\tools\\fish.exe' },
+        },
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
 test('normalizes only the bounded agent settings patch surface', () => {
   assert.deepEqual(
     normalizeRuntimePolicyMutation({

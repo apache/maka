@@ -275,6 +275,66 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.activeResidencies, 0);
   });
 
+  test('starts the interactive terminal with the Host-resolved Git Bash plan', async () => {
+    const shell = {
+      kind: 'git-bash' as const,
+      displayName: 'Git Bash',
+      exe: 'C:\\Program Files\\Git\\bin\\bash.exe',
+    };
+    const harness = createHarness({ resolveShell: async () => shell });
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'desktop-launch-git-bash' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, true);
+    assert.deepEqual(harness.lastBackgroundInput?.shell, shell);
+    assert.equal(harness.lastBackgroundInput?.command, 'exec "$SHELL" -l');
+    assert.equal(harness.lastBackgroundInput?.env?.SHELL, shell.exe);
+    harness.finishBackground({ successful: true });
+  });
+
+  test('makes the Host-resolved shell authoritative over a caller plan', async () => {
+    const shell = {
+      kind: 'git-bash' as const,
+      displayName: 'Git Bash',
+      exe: 'C:\\Program Files\\Git\\bin\\bash.exe',
+    };
+    const harness = createHarness({ resolveShell: async () => shell });
+    await harness.coordinator.runForegroundBash({
+      ...backgroundInput(),
+      shell: { kind: 'cmd', displayName: 'cmd.exe' },
+    });
+
+    assert.deepEqual(harness.lastForegroundInput?.shell, shell);
+  });
+
+  test('does not start a process when draining begins during shell resolution', async () => {
+    let announceResolution!: () => void;
+    const resolving = new Promise<void>((resolve) => {
+      announceResolution = resolve;
+    });
+    let releaseResolution!: () => void;
+    const resolved = new Promise<void>((resolve) => {
+      releaseResolution = resolve;
+    });
+    const harness = createHarness({
+      resolveShell: async () => {
+        announceResolution();
+        await resolved;
+        return { kind: 'posix', displayName: '/bin/sh' };
+      },
+    });
+
+    const foreground = harness.coordinator.runForegroundBash(backgroundInput());
+    await resolving;
+    harness.coordinator.beginDrain();
+    releaseResolution();
+
+    await assert.rejects(foreground, /Runtime resources are draining/);
+    assert.equal(harness.lastForegroundInput, undefined);
+  });
+
   test('lets stop bypass the controller, releases terminal ownership, and keeps control replay safe', async () => {
     const harness = createHarness();
     const firstConnection = connection('connection-1');
@@ -413,7 +473,7 @@ describe('Host Runtime Resource coordinator', () => {
   });
 });
 
-function createHarness() {
+function createHarness(options: Pick<HostRuntimeResourceCoordinatorInput, 'resolveShell'> = {}) {
   let backgroundCompletion: ShellRunBashInput['onCompletion'];
   let currentSnapshot = ptySnapshot();
   const state = {
@@ -428,13 +488,16 @@ function createHarness() {
     stateReadFailure: undefined as Error | undefined,
     activeResidencies: 0,
     lastBackgroundInput: undefined as ShellRunBashInput | undefined,
+    lastForegroundInput: undefined as ShellRunBashInput | undefined,
     foregroundRun: undefined as
       | HostRuntimeResourceCoordinatorInput['manager']['runForegroundBash']
       | undefined,
   };
   const manager: HostRuntimeResourceCoordinatorInput['manager'] = {
-    runForegroundBash: (input) =>
-      state.foregroundRun?.(input) ?? Promise.resolve(foregroundResult()),
+    runForegroundBash: (input) => {
+      state.lastForegroundInput = input;
+      return state.foregroundRun?.(input) ?? Promise.resolve(foregroundResult());
+    },
     runBackgroundBash: async (input) => {
       state.lastBackgroundInput = input;
       backgroundCompletion = input.onCompletion;
@@ -541,6 +604,7 @@ function createHarness() {
     requestDrain: () => {
       state.drainCount += 1;
     },
+    ...options,
   });
   return Object.assign(state, {
     coordinator,

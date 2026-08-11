@@ -41,6 +41,7 @@ import {
 } from '@maka/runtime/agent-swarm-status-tool';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
+import { resolveShellPlan, validateShellPreference } from '@maka/runtime/shell-detect';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import {
@@ -303,6 +304,11 @@ export async function createExecutionRuntimeHostComposition(
       runtimePolicyStores,
       runtimePolicyActivation,
       applyRuntimePolicyMutationEffects,
+      async (input) => {
+        if (input.operation.kind === 'set_shell') {
+          await validateShellPreference(input.operation.value);
+        }
+      },
     );
     const sessionAdmission = new SessionAdmissionGate();
     const memoryExtractionLane = new MemoryExtractionSessionLane();
@@ -376,6 +382,8 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       acquireResidency: () => context.acquireResidency('runtime-resource'),
       requestDrain: context.requestDrain,
+      resolveShell: async () =>
+        resolveShellPlan((await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.shell),
       onProjectionChanged: (update) =>
         requireContinuity(continuity).enqueueRuntimeResourceChanged(update),
     });
@@ -782,6 +790,7 @@ export async function createExecutionRuntimeHostComposition(
         const runProfile = hostedExecutionRunProfile(header.toolProfile);
         return createInteractiveRunComposer({
           runtimePolicy,
+          shell: resolveShellPlan(runtimePolicy.policy.shell),
           skills,
           memory: requireMemory(memory),
           taskLedger,
@@ -843,6 +852,7 @@ export async function createExecutionRuntimeHostComposition(
           });
           return createInteractiveRunComposer({
             runtimePolicy,
+            shell: resolveShellPlan(runtimePolicy.policy.shell),
             skills,
             memory: requireMemory(memory),
             taskLedger,
@@ -890,11 +900,20 @@ export async function createExecutionRuntimeHostComposition(
     sessionEffects = sessionEffectCoordinator;
     const resolveChildTools = async (sessionId: string): Promise<readonly MakaTool[]> => {
       const header = await stores.sessionStore.readHeader(sessionId);
+      const shell = resolveShellPlan(
+        (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.shell,
+      );
+      const childTools = createHostChildAgentToolComposition({
+        taskLedger,
+        builtinTools: { ...builtinTools, shell },
+        hostTools,
+        worktreePatchWriteBackAvailable: true,
+      }).childTools;
       const { surface } = await resolveInteractiveToolSurface({
         connectionSlug: header.llmConnectionSlug,
         modelId: header.model,
         hostTools: [],
-        childTools: childAgentTools.childTools,
+        childTools,
       });
       return surface.childTools ?? [];
     };

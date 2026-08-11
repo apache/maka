@@ -13,7 +13,7 @@ import {
   isShellRunResourceRef,
 } from '@maka/runtime/shell-run-contract';
 import { type ShellRunLauncher } from '@maka/runtime/shell-tools';
-import { defaultShellPlan } from '@maka/runtime/shell-detect';
+import { defaultShellPlan, type ShellPlan } from '@maka/runtime/shell-detect';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import {
   decodeRuntimeResourceControllerAcquireResult,
@@ -81,6 +81,7 @@ export interface HostRuntimeResourceCoordinatorInput {
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly requestDrain: () => void;
   readonly onProjectionChanged?: (update: ShellRunUpdate) => void;
+  readonly resolveShell?: () => Promise<ShellPlan> | ShellPlan;
 }
 
 interface ControllerState {
@@ -118,6 +119,7 @@ export class HostRuntimeResourceCoordinator
   readonly #acquireResidency: () => RuntimeHostResidency;
   readonly #requestDrain: () => void;
   readonly #onProjectionChanged: (update: ShellRunUpdate) => void;
+  readonly #resolveShell: () => Promise<ShellPlan> | ShellPlan;
   readonly #resourceQueue = new ResourceSerialQueue();
   readonly #controllers = new Map<string, ControllerState>();
   readonly #controllerResources = new Map<string, string>();
@@ -133,6 +135,7 @@ export class HostRuntimeResourceCoordinator
     this.#acquireResidency = input.acquireResidency;
     this.#requestDrain = input.requestDrain;
     this.#onProjectionChanged = input.onProjectionChanged ?? (() => undefined);
+    this.#resolveShell = input.resolveShell ?? defaultShellPlan;
   }
 
   async runForegroundBash(
@@ -145,7 +148,9 @@ export class HostRuntimeResourceCoordinator
         if (this.#draining) throw new Error('Runtime resources are draining');
         await this.#assertActiveSession(input.sessionId);
         if (this.#draining) throw new Error('Runtime resources are draining');
-        return { execution: this.#manager.runForegroundBash(input) };
+        const shell = await this.#resolveShell();
+        if (this.#draining) throw new Error('Runtime resources are draining');
+        return { execution: this.#manager.runForegroundBash({ ...input, shell }) };
       });
       return await execution;
     } finally {
@@ -170,8 +175,12 @@ export class HostRuntimeResourceCoordinator
     };
     try {
       return await this.#sessionAdmission.run(input.sessionId, async () => {
+        if (this.#draining) throw new Error('Runtime resources are draining');
         await this.#assertActiveSession(input.sessionId);
-        return this.#manager.runBackgroundBash({ ...input, onCompletion: complete });
+        if (this.#draining) throw new Error('Runtime resources are draining');
+        const shell = await this.#resolveShell();
+        if (this.#draining) throw new Error('Runtime resources are draining');
+        return this.#manager.runBackgroundBash({ ...input, shell, onCompletion: complete });
       });
     } catch (error) {
       complete({ successful: false });
@@ -327,11 +336,16 @@ export class HostRuntimeResourceCoordinator
     if (unavailable) return mutationFailure('runtime.resource.start', unavailable);
     try {
       const header = await this.#sessionHeaders.readHeader(input.sessionId);
-      const shell = defaultShellPlan();
+      const shell = await this.#resolveShell();
       const env = { ...process.env };
       let command: string;
-      if (shell.kind === 'posix') {
-        env.SHELL ||= userInfo().shell || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh');
+      if (shell.kind === 'posix' || shell.kind === 'git-bash' || shell.kind === 'legacy-wsl-bash') {
+        if (shell.kind === 'git-bash' || shell.kind === 'legacy-wsl-bash') {
+          env.SHELL = shell.exe;
+        } else {
+          env.SHELL ||=
+            userInfo().shell || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh');
+        }
         env.DISABLE_AUTO_UPDATE = 'true';
         env.DISABLE_UPDATE_PROMPT = 'true';
         command = 'exec "$SHELL" -l';
