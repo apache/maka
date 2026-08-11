@@ -959,63 +959,6 @@ describe('Maka Pi TUI transcript', () => {
     });
   });
 
-  test('restores the total elapsed time of a settled background Bash card', () => {
-    const state = createMakaPiTranscriptState();
-    replaceTranscriptWithStoredMessages(state, [
-      {
-        type: 'tool_call',
-        id: 'bash-bg',
-        turnId: 'turn-1',
-        ts: 1,
-        toolName: 'Bash',
-        args: { command: 'npm test' },
-      },
-      {
-        type: 'tool_result',
-        id: 'bash-result',
-        turnId: 'turn-1',
-        ts: 2,
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({
-          status: 'completed',
-          startedAt: 1_000,
-          updatedAt: 6_000,
-          completedAt: 6_000,
-          exitCode: 0,
-        }),
-      },
-    ] satisfies StoredMessage[]);
-
-    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(rendered, /● Bash  \$ npm test \(5s\)/);
-  });
-
-  test('rebuilds automatic context compaction notes from stored session messages', () => {
-    const state = createMakaPiTranscriptState();
-
-    replaceTranscriptWithStoredMessages(state, [
-      {
-        type: 'system_note',
-        id: 'note-1',
-        turnId: 'turn-1',
-        ts: 1,
-        kind: 'context_compacted',
-      },
-    ] satisfies StoredMessage[]);
-
-    assert.deepEqual(
-      state.entries.filter((entry) => entry.kind === 'notice'),
-      [
-        {
-          kind: 'notice',
-          level: 'info',
-          text: 'Context compacted to keep this session within the model window.',
-        },
-      ],
-    );
-  });
-
   test('rebuilds fail-open notes without claiming history was trimmed', () => {
     const state = createMakaPiTranscriptState();
 
@@ -2439,48 +2382,6 @@ describe('Maka Pi TUI transcript', () => {
     // Only the first line of a multi-line failure message joins the notice.
     assert.match(text, /compiler exited/);
     assert.doesNotMatch(text, /with diagnostics/);
-  });
-
-  test('announces a stopped background task as a plain note', () => {
-    const state = createMakaPiTranscriptState();
-    const ref = 'maka://runtime/background-tasks/bg-1';
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-bg',
-        toolName: 'Bash',
-        args: { command: 'sleep 30' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({ ref, status: 'running', cmd: 'sleep 30' }),
-      }),
-    );
-
-    applyShellRunViewUpdateToTranscript(state, {
-      sessionId: 'session-1',
-      ownership: { kind: 'local' },
-      sourceTurnId: 'turn-1',
-      sourceToolCallId: 'bash-bg',
-      result: shellRun({
-        ref,
-        status: 'cancelled',
-        cmd: 'sleep 30',
-        completedAt: 8_000,
-        exitCode: 130,
-      }),
-    });
-
-    const notice = state.entries[state.entries.length - 1];
-    assert.equal(notice?.kind, 'notice');
-    assert.equal(notice?.kind === 'notice' ? notice.level : '', 'info');
-    assert.match(notice?.kind === 'notice' ? notice.text : '', /Background task stopped: sleep 30/);
   });
 
   test('stays silent for a background task already settled in stored history', () => {

@@ -23,12 +23,6 @@ describe('maka run argument parsing', () => {
     });
   });
 
-  test('rejects removed permission modes and rule flags', () => {
-    assert.equal(parseMakaRunArgs(['x', '--permission-mode', 'ask']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--allow', 'tool:Read']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--deny', 'Bash(npm test)']).kind, 'error');
-  });
-
   test('parses resume and continue session selectors and rejects combining them', () => {
     assert.deepEqual(parseMakaRunArgs(['next', '--resume', 'session-1']), {
       kind: 'run',

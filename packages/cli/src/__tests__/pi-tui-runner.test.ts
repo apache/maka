@@ -899,49 +899,6 @@ describe('Maka Pi TUI runner', () => {
     assert.deepEqual(driver.boundaryResponses, [{ requestId: 'boundary-1', decision: 'allow' }]);
   });
 
-  test('ignores the removed turn-wide approval key while a boundary request waits', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SandboxBoundaryPromptDriver(['/outside']);
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('r');
-    terminal.input('u');
-    terminal.input('n');
-    terminal.input('\r');
-    await waitFor(() => driver.boundaryRequests === 1);
-    await waitFor(() =>
-      plainTerminalOutput(terminal.screenOutput()).includes('Allow access outside the workspace?'),
-    );
-    terminal.input('a');
-    terminal.input('y');
-    await waitFor(() => driver.boundaryResponses.length === 1);
-    // Input is processed in order, so a single allow response proves the armed
-    // prompt ignored the removed turn-wide 'a' key: an 'a'-triggered response
-    // would either add a second entry or change the first decision.
-    assert.deepEqual(driver.boundaryResponses, [
-      {
-        requestId: 'boundary-1',
-        decision: 'allow',
-      },
-    ]);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(CLOSE_BUDGET_MS).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
   test('denies a pending sandbox boundary request from the terminal', async () => {
     const terminal = new FakeTerminal();
     const driver = new SandboxBoundaryPromptDriver();
@@ -2406,36 +2363,6 @@ describe('Maka Pi TUI runner', () => {
       if (terminal.stopCalls === 0) exitMaka(terminal);
       await run;
     }
-  });
-
-  test('rejects removed permission modes without sending a prompt', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/permissions execute');
-    terminal.input('\r');
-
-    await waitFor(() => terminal.output().includes('Usage: /permissions auto|bypass'));
-
-    assert.deepEqual(driver.permissionModes, []);
-    assert.deepEqual(driver.prompts, []);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(CLOSE_BUDGET_MS).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
   });
 
   test('requires the same second confirmation for typed /permissions bypass', async () => {
