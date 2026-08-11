@@ -119,6 +119,9 @@ test('dispatches a staged slash command instead of queueing it during a running 
   await composer.fill('/compact explain');
   await expect(page.getByRole('button', { name: '排队' })).toBeVisible();
   await composer.press('Enter');
+  await expect(
+    page.locator('.maka-composer-queue-row', { hasText: '/compact explain' }),
+  ).toBeVisible();
 
   await composer.fill('/');
   const menu = page.getByRole('listbox', { name: '命令和技能' });
@@ -133,6 +136,8 @@ test('dispatches a staged slash command instead of queueing it during a running 
   await composer.press('Enter');
 
   await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(1);
-  await expect(page.getByText('Fake backend received: /compact explain')).toBeVisible();
+  await expect(
+    page.locator('.maka-composer-queue-row', { hasText: '/compact explain' }),
+  ).toBeVisible();
   await page.getByRole('button', { name: '停止' }).click();
 });
