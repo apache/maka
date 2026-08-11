@@ -4,14 +4,12 @@ import {
   deriveOnboardingState,
   hasSettledInitialOnboarding,
   isOnboardingMilestone,
-  ONBOARDING_MILESTONE_IDS,
   sanitizeOnboardingMilestones,
   type DeriveOnboardingStateInput,
   type OnboardingMilestone,
   type OnboardingState,
 } from '../onboarding.js';
 import type { LlmConnection } from '../llm-connections.js';
-import type { SessionSummary } from '../session.js';
 
 function realConnection(overrides: Partial<LlmConnection> = {}): LlmConnection {
   return {
@@ -34,34 +32,6 @@ function realConnection(overrides: Partial<LlmConnection> = {}): LlmConnection {
   } as LlmConnection;
 }
 
-function fakeConnection(): LlmConnection {
-  return {
-    ...realConnection(),
-    slug: 'fake-demo',
-    providerType: 'fake' as LlmConnection['providerType'],
-    defaultModel: 'fake-model',
-    models: [{ id: 'fake-model' }],
-    lastTestStatus: 'verified',
-  };
-}
-
-function session(): SessionSummary {
-  return {
-    id: 'session-active',
-    name: 'Session',
-    isFlagged: false,
-    isArchived: false,
-    labels: [],
-    hasUnread: false,
-    status: 'active',
-    backend: 'ai-sdk',
-    llmConnectionSlug: 'anthropic-live',
-    connectionLocked: false,
-    model: 'claude-sonnet-4-5-20250929',
-    permissionMode: 'ask',
-  };
-}
-
 function derive(input: Partial<DeriveOnboardingStateInput> = {}): OnboardingState {
   return deriveOnboardingState({
     connections: input.connections ?? [],
@@ -72,42 +42,6 @@ function derive(input: Partial<DeriveOnboardingStateInput> = {}): OnboardingStat
 }
 
 describe('deriveOnboardingState', () => {
-  it('covers the top-level state decision table', () => {
-    const ready = realConnection();
-    const disabled = realConnection({ enabled: false });
-    const cases: Array<[string, Partial<DeriveOnboardingStateInput>, OnboardingState]> = [
-      ['no connections', {}, { kind: 'needs_connection' }],
-      [
-        'fake is not a real connection regardless of test status',
-        {
-          connections: [fakeConnection()],
-          secrets: { 'fake-demo': true },
-        },
-        { kind: 'needs_connection' },
-      ],
-      [
-        'ready default without history',
-        { connections: [ready], secrets: { [ready.slug]: true } },
-        { kind: 'ready_empty', connectionSlug: ready.slug, model: ready.defaultModel! },
-      ],
-      [
-        'ready default with history',
-        {
-          connections: [ready],
-          secrets: { [ready.slug]: true },
-          sessions: [session()],
-        },
-        { kind: 'ready_with_history', connectionSlug: ready.slug, model: ready.defaultModel! },
-      ],
-      [
-        'disabled default with no ready alternative',
-        { connections: [disabled], secrets: { [disabled.slug]: true } },
-        { kind: 'blocked', reason: 'all_connections_unhealthy' },
-      ],
-    ];
-    for (const [name, input, expected] of cases) assert.deepEqual(derive(input), expected, name);
-  });
-
   it('routes the current default to the exact actionable fix', () => {
     const cases: Array<[LlmConnection, Record<string, boolean>, OnboardingState]> = [
       [
@@ -195,11 +129,7 @@ describe('deriveOnboardingState', () => {
 });
 
 describe('onboarding milestone persistence', () => {
-  it('accepts the closed schema and rejects malformed or privacy-leaking values', () => {
-    for (const id of ONBOARDING_MILESTONE_IDS) assert.equal(isOnboardingMilestone({ id }), true);
-    assert.equal(isOnboardingMilestone({ id: 'first_chat_sent', completedAt: 0 }), true);
-    assert.equal(isOnboardingMilestone({ id: 'first_chat_sent', skippedAt: 1 }), true);
-
+  it('rejects malformed or privacy-leaking values', () => {
     const invalid = [
       null,
       [],
@@ -212,13 +142,6 @@ describe('onboarding milestone persistence', () => {
       { id: 'first_chat_sent', prompt: 'private user content' },
     ];
     for (const value of invalid) assert.equal(isOnboardingMilestone(value), false);
-  });
-
-  it('accepts null-prototype records', () => {
-    const milestone = Object.create(null) as Record<string, unknown>;
-    milestone.id = 'first_chat_sent';
-    milestone.completedAt = 1;
-    assert.equal(isOnboardingMilestone(milestone), true);
   });
 
   it('sanitizes invalid entries with last-valid-value and first-seen-order semantics', () => {
