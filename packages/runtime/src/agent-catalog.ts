@@ -138,7 +138,7 @@ export const LOCAL_READ_AGENT_DEFINITION: AgentDefinition = {
   systemPrompt: [
     'You are a foreground local-read child agent.',
     'Use the provided Read, Glob, and Grep tools for repository exploration.',
-    'When available and relevant, SearchHistory and ReadHistory may recover prior Maka conversation context.',
+    'When available and relevant, SearchHistory globally searches visible Maka conversation records; ReadHistory optionally opens context around a hit.',
     'Do not use shell, web, browser, write, or nested agent tools.',
     'Return a concise answer with concrete file or symbol evidence.',
   ].join('\n'),
@@ -163,7 +163,7 @@ export const WEB_RESEARCH_AGENT_DEFINITION: AgentDefinition = {
   systemPrompt: [
     'You are a foreground web-research child agent.',
     'Use WebSearch for current external sources.',
-    'When available and relevant, SearchHistory and ReadHistory may recover prior Maka conversation context.',
+    'When available and relevant, SearchHistory globally searches visible Maka conversation records; ReadHistory optionally opens context around a hit.',
     'Do not read local files, use shell, browser, write, or nested agent tools.',
     'Return concise findings with source titles and URLs for every external claim.',
     'Separate sourced facts from your own inference.',
@@ -201,7 +201,7 @@ export const IMPLEMENTATION_AGENT_DEFINITION: AgentDefinition = {
     'You are a foreground implementation child agent.',
     'Run only inside a dedicated worktree child executor when the host provides one.',
     'Use local file and shell tools for the assigned implementation task.',
-    'When available and relevant, SearchHistory and ReadHistory may recover prior Maka conversation context.',
+    'When available and relevant, SearchHistory globally searches visible Maka conversation records; ReadHistory optionally opens context around a hit.',
     'Do not use web, browser, or nested agent tools.',
     'Return a concise patch-oriented summary with verification results.',
   ].join('\n'),

@@ -23,8 +23,9 @@
  *   - Per-result snippet capped at `SNIPPET_MAX_CODE_POINTS`.
  *   - Returns `SearchResult[]` per PR-SEARCH-0 shape with
  *     `source: 'thread'` and `target: { kind:'thread', sessionId, turnId? }`
- *     per PR-SEARCH-1.5. `url` is left undefined (thread navigation does NOT
- *     use `maka://session` — see `packages/ui/src/maka-uri.ts:24`).
+ *     per PR-SEARCH-1.5, extended with stable message id, match kind, and
+ *     timestamp anchors for Agent global search. `url` is left undefined
+ *     (thread navigation does NOT use `maka://session`).
  *
  * Hard no-go (enforced by source gate at review):
  *   - No `fetch` / `XMLHttpRequest` / `new WebSocket` / `BrowserWindow`.
@@ -37,7 +38,7 @@
 import { validateWorkspacePrivacyContext } from './incognito.js';
 import { redactSecrets } from './redaction.js';
 import { normalizeSearchLimit, normalizeSearchQuery } from './search.js';
-import type { SearchErrorReason, SearchResult } from './search.js';
+import type { SearchErrorReason, SearchResult, ThreadSearchMatchKind } from './search.js';
 import { collapseSessionRevisions } from './session-revisions.js';
 import type { SessionSummary, StoredMessage } from './session.js';
 
@@ -102,6 +103,8 @@ export async function runThreadSearch(
   options: {
     readonly activeSessionId?: string;
     readonly excludeSessionIds?: ReadonlySet<string>;
+    /** Keeps Agent global search from matching the user/tool text of its active turn. */
+    readonly excludeTurnIds?: ReadonlySet<string>;
   } = {},
 ): Promise<SearchResult[] | { ok: false; reason: SearchErrorReason; message: string }> {
   // L1: runtime shape guard. Renderer payload is untrusted across the
@@ -200,6 +203,7 @@ export async function runThreadSearch(
         target: {
           kind: 'thread',
           sessionId: session.id,
+          matchKind: 'session_title',
         },
       });
       if (results.length >= maxResults) {
@@ -216,6 +220,9 @@ export async function runThreadSearch(
         truncated = true;
         break;
       }
+
+      const turnId = (message as { turnId?: string }).turnId;
+      if (turnId && options.excludeTurnIds?.has(turnId)) continue;
 
       const candidate = collectSearchableText(message);
       if (candidate === undefined) continue;
@@ -236,7 +243,6 @@ export async function runThreadSearch(
       }
       totalBytes += snippetBytes;
 
-      const turnId = (message as { turnId?: string }).turnId;
       results.push({
         source: THREAD_SOURCE,
         title: redactSecrets(session.name),
@@ -248,6 +254,9 @@ export async function runThreadSearch(
           kind: 'thread',
           sessionId: session.id,
           ...(turnId ? { turnId } : {}),
+          messageId: message.id,
+          matchKind: threadSearchMatchKind(message),
+          messageTimestamp: message.ts,
         },
       });
     }
@@ -258,6 +267,25 @@ export async function runThreadSearch(
   }
 
   return results;
+}
+
+/** Stable result classification shared by Desktop navigation and Agent tools. */
+export function threadSearchMatchKind(message: StoredMessage): ThreadSearchMatchKind {
+  switch (message.type) {
+    case 'user':
+      return 'user_message';
+    case 'assistant':
+      return 'assistant_message';
+    case 'tool_call':
+      return 'tool_intent';
+    case 'tool_result':
+      return 'tool_result';
+    case 'permission_decision':
+    case 'token_usage':
+    case 'turn_state':
+    case 'system_note':
+      throw new Error(`Message type ${message.type} is not searchable`);
+  }
 }
 
 export function formatSearchResultSummary(message: StoredMessage): string {

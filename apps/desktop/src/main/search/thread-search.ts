@@ -17,5 +17,6 @@ export {
   foldForMatch,
   formatSearchResultSummary,
   runThreadSearch,
+  threadSearchMatchKind,
   type ThreadSearchDeps,
 } from '@maka/core/thread-search';

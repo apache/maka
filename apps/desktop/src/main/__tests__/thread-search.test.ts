@@ -214,7 +214,11 @@ describe('runThreadSearch', () => {
     const titleHit = expectResults(
       await runThreadSearch({ source: 'thread', query: 'roadmap', limit: 5 }, makeDeps(entries)),
     )[0]!;
-    assert.deepEqual(titleHit.target, { kind: 'thread', sessionId: 's1' });
+    assert.deepEqual(titleHit.target, {
+      kind: 'thread',
+      sessionId: 's1',
+      matchKind: 'session_title',
+    });
     assert.equal(titleHit.summary, '任务标题');
     assert.equal(titleHit.url, undefined);
     assert.match(titleHit.snippet ?? '', /\[redacted\]/);
@@ -228,6 +232,9 @@ describe('runThreadSearch', () => {
       sessionId: 's1',
       turnId: 'turn-user',
       sequence: 0,
+      messageId: 'u1',
+      matchKind: 'user_message',
+      messageTimestamp: 1_700_000_000_000,
     });
     assert.equal(messageHit.summary, '用户消息');
     assert.equal(messageHit.url, undefined);
@@ -302,11 +309,22 @@ describe('thread search text projection', () => {
     assert.ok(capped.endsWith('…'));
   });
 
-  it('bounds serialized tool results', () => {
+  it('bounds and classifies serialized tool results', async () => {
     assert.equal(collectSearchableText(toolResult({ result: 'short' })), '{"result":"short"}');
     const extracted = collectSearchableText(toolResult({ data: 'X'.repeat(100_000) }));
     assert.ok(extracted);
     assert.ok(Buffer.byteLength(extracted, 'utf8') <= TOOL_RESULT_SCAN_CAP_BYTES);
+
+    const hits = expectResults(
+      await runThreadSearch(
+        { source: 'thread', query: 'short', limit: 5 },
+        makeDeps({
+          s1: { session: session({ id: 's1' }), messages: [toolResult({ result: 'short' })] },
+        }),
+      ),
+    );
+    assert.equal(hits[0]?.target?.matchKind, 'tool_result');
+    assert.equal(hits[0]?.target?.messageId, 'tr1');
   });
 
   it('indexes tool intent but not tool names or display names', async () => {
@@ -324,15 +342,15 @@ describe('thread search text projection', () => {
         [],
       );
     }
-    assert.equal(
-      expectResults(
-        await runThreadSearch(
-          { source: 'thread', query: 'disk usage', limit: 5 },
-          makeDeps(entries),
-        ),
-      ).length,
-      1,
+    const hits = expectResults(
+      await runThreadSearch(
+        { source: 'thread', query: 'disk usage', limit: 5 },
+        makeDeps(entries),
+      ),
     );
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0]?.target?.matchKind, 'tool_intent');
+    assert.equal(hits[0]?.target?.messageId, 'tc1');
   });
 
   it('indexes assistant answers without exposing thinking', async () => {
@@ -359,6 +377,8 @@ describe('thread search text projection', () => {
       ),
     );
     assert.equal(visible.length, 1);
+    assert.equal(visible[0]?.target?.matchKind, 'assistant_message');
+    assert.equal(visible[0]?.target?.messageId, 'a1');
     assert.equal(visible[0]?.snippet?.includes('private reasoning'), false);
   });
 

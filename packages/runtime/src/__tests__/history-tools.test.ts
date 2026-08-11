@@ -10,7 +10,7 @@ import {
 } from '../history-tools.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 
-test('history tools expose a strict two-stage schema', () => {
+test('history tools expose strict global-search and anchored-read schemas', () => {
   const deps = historyDeps([], new Map());
   const tools = buildHistoryTools(deps);
   assert.deepEqual(
@@ -22,15 +22,27 @@ test('history tools expose a strict two-stage schema', () => {
   const read = tools[1]!.parameters as ZodType;
   assert.deepEqual(search.parse({ query: 'release notes' }), { query: 'release notes' });
   assert.throws(() => search.parse({ query: '', session_id: 'past' }));
-  assert.deepEqual(read.parse({ session_id: 'past', turn_id: 'turn-1', max_turns: 2 }), {
-    session_id: 'past',
-    turn_id: 'turn-1',
-    max_turns: 2,
-  });
-  assert.throws(() => read.parse({ session_id: 'past', max_turns: 99 }));
+  assert.deepEqual(
+    read.parse({
+      session_id: 'past',
+      message_id: 'assistant-turn-1',
+      turn_id: 'turn-1',
+      before: 1,
+      after: 1,
+    }),
+    {
+      session_id: 'past',
+      message_id: 'assistant-turn-1',
+      turn_id: 'turn-1',
+      before: 1,
+      after: 1,
+    },
+  );
+  assert.throws(() => read.parse({ session_id: 'past', before: 4, after: 4 }));
+  assert.throws(() => read.parse({ session_id: 'past', max_turns: 2 }));
 });
 
-test('SearchHistory excludes the current and fake sessions and redacts snippets', async () => {
+test('SearchHistory returns typed message hits from current and other sessions', async () => {
   const sessions = [
     { ...session('current', 'Current session', 3), revisionRootSessionId: 'current-family' },
     {
@@ -43,7 +55,13 @@ test('SearchHistory excludes the current and fake sessions and redacts snippets'
     session('fixture', 'Fixture', 1, 'fake'),
   ];
   const messages = new Map<string, StoredMessage[]>([
-    ['current', [user('deploy current request', 'current-turn')]],
+    [
+      'current',
+      [
+        user('deploy from an older current-session turn', 'current-old-turn'),
+        user('deploy from the active turn must not match itself', 'current-turn'),
+      ],
+    ],
     ['current-newer-revision', [user('deploy sibling revision', 'sibling-turn')]],
     [
       'past',
@@ -63,7 +81,22 @@ test('SearchHistory excludes the current and fake sessions and redacts snippets'
 
   assert.equal(result.kind, 'history_search');
   assert.ok(result.rows.length > 0);
-  assert.ok(result.rows.every((row) => row.session_id === 'past'));
+  assert.deepEqual(new Set(result.rows.map((row) => row.session_id)), new Set(['current', 'past']));
+  assert.ok(result.rows.every((row) => row.session_id !== 'current-newer-revision'));
+  const messageRows = result.rows.filter((row) => row.match_kind !== 'session_title');
+  assert.ok(messageRows.every((row) => typeof row.message_id === 'string'));
+  assert.ok(messageRows.every((row) => typeof row.message_timestamp === 'number'));
+  assert.deepEqual(
+    new Set(result.rows.map((row) => row.match_kind)),
+    new Set(['session_title', 'user_message', 'assistant_message']),
+  );
+  assert.equal(result.rows.find((row) => row.session_id === 'current')?.is_current_session, true);
+  assert.ok(result.rows.every((row) => row.turn_id !== 'current-turn'));
+  assert.ok(
+    result.rows
+      .filter((row) => row.session_id === 'past')
+      .every((row) => row.is_current_session === false),
+  );
   assert.match(JSON.stringify(result.rows), /\[redacted\]/u);
   assert.doesNotMatch(JSON.stringify(result.rows), /sk-ant-test-secret-token-12345/u);
 });
@@ -110,7 +143,7 @@ test('ReadHistory returns a bounded visible excerpt without reasoning or raw too
   );
 
   const result = await tool.impl(
-    { session_id: 'past', turn_id: 'turn-1', max_turns: 1 },
+    { session_id: 'past', message_id: 'tool-result', before: 0, after: 0 },
     context(),
   );
   const serialized = JSON.stringify(result);
@@ -118,12 +151,80 @@ test('ReadHistory returns a bounded visible excerpt without reasoning or raw too
   assert.match(serialized, /history_read/u);
   assert.match(serialized, /\[redacted\]/u);
   assert.match(serialized, /Check deployment status/u);
+  assert.match(serialized, /"anchor_message_id":"tool-result"/u);
+  assert.match(serialized, /"message_id":"assistant-thinking"/u);
+  assert.match(serialized, /"match_kind":"assistant_message"/u);
   assert.doesNotMatch(
     serialized,
     /private chain of thought|raw-tool-secret|raw-result-secret|sk-ant-title-secret-12345/u,
   );
   assert.ok(Buffer.byteLength(serialized, 'utf8') < HISTORY_READ_MAX_BYTES + 2_000);
   assert.match(serialized, /"truncated":true/u);
+});
+
+test('ReadHistory can open the current session around a message anchor', async () => {
+  const messages = new Map<string, StoredMessage[]>([
+    [
+      'current',
+      [
+        user('first question', 'turn-1'),
+        assistant('first answer', 'turn-1'),
+        user('second question', 'turn-2'),
+        assistant('second answer', 'turn-2'),
+        user('third question', 'turn-3'),
+        assistant('third answer', 'turn-3'),
+      ],
+    ],
+  ]);
+  const tool = buildReadHistoryTool(historyDeps([session('current', 'Current', 3)], messages));
+
+  const result = (await tool.impl(
+    { session_id: 'current', message_id: 'assistant-turn-2', before: 1, after: 0 },
+    context(),
+  )) as Record<string, unknown>;
+
+  assert.equal(result.kind, 'history_read');
+  assert.equal(result.is_current_session, true);
+  assert.equal(result.anchor_turn_id, 'turn-2');
+  assert.equal(result.has_more_before, false);
+  assert.equal(result.has_more_after, true);
+  assert.deepEqual(
+    (result.turns as Array<{ turn_id: string }>).map((turn) => turn.turn_id),
+    ['turn-1', 'turn-2'],
+  );
+});
+
+test('ReadHistory rejects mismatched or hidden message anchors', async () => {
+  const messages = new Map<string, StoredMessage[]>([
+    [
+      'past',
+      [
+        user('visible', 'turn-1'),
+        {
+          type: 'system_note',
+          id: 'hidden-note',
+          ts: 2,
+          kind: 'session_start',
+          data: {},
+        },
+      ],
+    ],
+  ]);
+  const tool = buildReadHistoryTool(historyDeps([session('past', 'Past', 1)], messages));
+
+  assert.match(
+    JSON.stringify(
+      await tool.impl(
+        { session_id: 'past', message_id: 'user-turn-1', turn_id: 'turn-other' },
+        context(),
+      ),
+    ),
+    /anchor_mismatch/u,
+  );
+  assert.match(
+    JSON.stringify(await tool.impl({ session_id: 'past', message_id: 'hidden-note' }, context())),
+    /message_not_found/u,
+  );
 });
 
 test('history access fails closed before transcript reads in incognito mode', async () => {

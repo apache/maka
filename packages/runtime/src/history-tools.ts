@@ -5,19 +5,25 @@ import {
   normalizeSearchLimit,
   normalizeSearchQuery,
   type SearchError,
+  type ThreadSearchMatchKind,
 } from '@maka/core/search';
 import { collapseSessionRevisions } from '@maka/core/session-revisions';
 import { redactSecrets } from '@maka/core/redaction';
 import { validateWorkspacePrivacyContext } from '@maka/core/incognito';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
-import { runThreadSearch, type ThreadSearchDeps } from '@maka/core/thread-search';
+import {
+  collectSearchableText,
+  runThreadSearch,
+  type ThreadSearchDeps,
+} from '@maka/core/thread-search';
 import { z } from 'zod';
 import type { MakaTool } from './tool-runtime.js';
 
 export const SEARCH_HISTORY_TOOL_NAME = 'SearchHistory';
 export const READ_HISTORY_TOOL_NAME = 'ReadHistory';
-export const HISTORY_READ_DEFAULT_TURNS = 3;
 export const HISTORY_READ_MAX_TURNS = 5;
+export const HISTORY_READ_DEFAULT_BEFORE_TURNS = 1;
+export const HISTORY_READ_DEFAULT_AFTER_TURNS = 1;
 export const HISTORY_READ_MAX_BYTES = 32 * 1024;
 export const HISTORY_READ_MAX_MESSAGE_BYTES = 8 * 1024;
 
@@ -26,12 +32,15 @@ export type HistoryToolDeps = ThreadSearchDeps;
 type HistoryReadErrorReason =
   | 'incognito_active'
   | 'session_not_found'
-  | 'current_session'
+  | 'message_not_found'
+  | 'anchor_mismatch'
   | 'turn_not_found'
   | 'empty_transcript'
   | 'aborted';
 
 interface HistoryTurnMessage {
+  readonly messageId: string;
+  readonly matchKind: Exclude<ThreadSearchMatchKind, 'session_title' | 'tool_result'>;
   readonly role: 'user' | 'assistant' | 'tool';
   readonly text: string;
   readonly timestamp: number;
@@ -43,9 +52,9 @@ interface HistoryTurn {
 }
 
 /**
- * Builds the two-stage, read-only cross-Session history surface.
- * Search is intentionally separate from bounded transcript reading so a model
- * cannot pull entire conversations into one turn.
+ * Builds the read-only global conversation search surface. Search returns
+ * message-level hits from every logical Session; reading nearby turns is an
+ * optional follow-up rather than a required second phase.
  */
 export function buildHistoryTools(deps: HistoryToolDeps): readonly MakaTool[] {
   return [buildSearchHistoryTool(deps), buildReadHistoryTool(deps)];
@@ -58,7 +67,7 @@ export function buildSearchHistoryTool(deps: HistoryToolDeps): MakaTool {
     activityKind: 'read',
     categoryHint: 'read',
     description:
-      'Search earlier Maka sessions when the user refers to previous conversations or work. Returns only bounded, redacted matches from other sessions. Call ReadHistory with a returned session_id and optional turn_id when more context is needed.',
+      'Search all Maka conversation sessions, including the current session, by visible title, user text, assistant text, tool intent, or bounded tool result. Returns redacted message-level hits. Use ReadHistory only when a hit needs surrounding context.',
     parameters: z
       .object({
         query: z
@@ -66,7 +75,7 @@ export function buildSearchHistoryTool(deps: HistoryToolDeps): MakaTool {
           .trim()
           .min(1)
           .max(SEARCH_QUERY_MAX_CHARS)
-          .describe('Text to find in earlier session titles or visible transcript content.'),
+          .describe('Text to find globally in session titles or visible transcript content.'),
         limit: z
           .number()
           .int()
@@ -101,7 +110,7 @@ export function buildSearchHistoryTool(deps: HistoryToolDeps): MakaTool {
         },
         {
           activeSessionId: context.sessionId,
-          excludeSessionIds: new Set([context.sessionId]),
+          excludeTurnIds: new Set([context.turnId]),
         },
       );
       if (!Array.isArray(result)) return historySearchError(result);
@@ -124,6 +133,12 @@ export function buildSearchHistoryTool(deps: HistoryToolDeps): MakaTool {
             {
               session_id: row.target.sessionId,
               ...(row.target.turnId ? { turn_id: row.target.turnId } : {}),
+              ...(row.target.messageId ? { message_id: row.target.messageId } : {}),
+              ...(row.target.matchKind ? { match_kind: row.target.matchKind } : {}),
+              ...(row.target.messageTimestamp !== undefined
+                ? { message_timestamp: row.target.messageTimestamp }
+                : {}),
+              is_current_session: row.target.sessionId === context.sessionId,
               title: row.title,
               summary: redactSecrets(row.summary ?? ''),
               snippet: row.snippet ?? '',
@@ -146,31 +161,66 @@ export function buildReadHistoryTool(deps: HistoryToolDeps): MakaTool {
     activityKind: 'read',
     categoryHint: 'read',
     description:
-      'Read a small, redacted excerpt from an earlier Maka session returned by SearchHistory. If turn_id is omitted, reads the most recent visible turns. This cannot read the current session or hidden reasoning, permission records, or raw tool arguments/results.',
+      'Optionally read bounded visible turns around a message-level SearchHistory hit, from any session including the current one. Use message_id as the preferred anchor. Hidden reasoning, permission records, and raw tool arguments/results are never returned.',
     parameters: z
       .object({
         session_id: z.string().trim().min(1).max(256).describe('Session id from SearchHistory.'),
+        message_id: z
+          .string()
+          .trim()
+          .min(1)
+          .max(256)
+          .optional()
+          .describe('Preferred message id anchor from SearchHistory; absent for title matches.'),
         turn_id: z
           .string()
           .trim()
           .min(1)
           .max(256)
           .optional()
-          .describe('Optional matching turn id from SearchHistory.'),
-        max_turns: z
+          .describe('Optional turn id anchor from SearchHistory, retained for title/legacy hits.'),
+        before: z
           .number()
           .int()
-          .min(1)
-          .max(HISTORY_READ_MAX_TURNS)
+          .min(0)
+          .max(HISTORY_READ_MAX_TURNS - 1)
           .optional()
-          .describe(`Maximum adjacent visible turns; defaults to ${HISTORY_READ_DEFAULT_TURNS}.`),
+          .describe(
+            `Visible turns before the anchor; defaults to ${HISTORY_READ_DEFAULT_BEFORE_TURNS}.`,
+          ),
+        after: z
+          .number()
+          .int()
+          .min(0)
+          .max(HISTORY_READ_MAX_TURNS - 1)
+          .optional()
+          .describe(
+            `Visible turns after the anchor; defaults to ${HISTORY_READ_DEFAULT_AFTER_TURNS}.`,
+          ),
       })
-      .strict(),
-    impl: async ({ session_id: sessionId, turn_id: turnId, max_turns: maxTurns }, context) => {
+      .strict()
+      .superRefine((value, ctx) => {
+        const before = value.before ?? HISTORY_READ_DEFAULT_BEFORE_TURNS;
+        const after = value.after ?? HISTORY_READ_DEFAULT_AFTER_TURNS;
+        if (before + 1 + after > HISTORY_READ_MAX_TURNS) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['after'],
+            message: `before + anchor + after must be at most ${HISTORY_READ_MAX_TURNS} turns`,
+          });
+        }
+      }),
+    impl: async (
+      {
+        session_id: sessionId,
+        message_id: messageId,
+        turn_id: requestedTurnId,
+        before = HISTORY_READ_DEFAULT_BEFORE_TURNS,
+        after = HISTORY_READ_DEFAULT_AFTER_TURNS,
+      },
+      context,
+    ) => {
       if (context.abortSignal.aborted) return historyError('aborted', 'History read was aborted.');
-      if (sessionId === context.sessionId) {
-        return historyError('current_session', 'ReadHistory only reads earlier sessions.');
-      }
 
       const privacy = validateWorkspacePrivacyContext(await deps.getPrivacyContext());
       if (!privacy.ok) {
@@ -191,33 +241,44 @@ export function buildReadHistoryTool(deps: HistoryToolDeps): MakaTool {
         (candidate) => candidate.id === sessionId && candidate.backend !== 'fake',
       );
       if (!session) {
-        return historyError('session_not_found', 'The requested earlier session was not found.');
+        return historyError('session_not_found', 'The requested session was not found.');
       }
       if (context.abortSignal.aborted) return historyError('aborted', 'History read was aborted.');
 
       const messages = await deps.readMessages(sessionId);
       if (!messages) {
-        return historyError('session_not_found', 'The requested earlier session was not found.');
+        return historyError('session_not_found', 'The requested session was not found.');
       }
+      const anchor = resolveHistoryAnchor(messages, messageId, requestedTurnId);
+      if (!anchor.ok) return historyError(anchor.reason, anchor.message);
       const turns = projectHistoryTurns(messages);
       if (turns.length === 0) {
         return historyError('empty_transcript', 'The requested session has no visible transcript.');
       }
-      const selected = selectHistoryTurns(turns, turnId, maxTurns ?? HISTORY_READ_DEFAULT_TURNS);
+      const selected = selectHistoryTurns(turns, anchor.turnId, before, after);
       if (!selected) {
         return historyError('turn_not_found', 'The requested turn was not found in that session.');
       }
-      const bounded = boundHistoryTurns(selected, HISTORY_READ_MAX_BYTES);
+      const bounded = boundHistoryTurns(selected.turns, HISTORY_READ_MAX_BYTES);
       return {
         kind: 'history_read' as const,
         session_id: session.id,
+        is_current_session: session.id === context.sessionId,
+        ...(messageId ? { anchor_message_id: messageId } : {}),
+        ...(anchor.turnId ? { anchor_turn_id: anchor.turnId } : {}),
         title: redactSecrets(session.name),
         ...(session.lastMessageAt !== undefined ? { last_message_at: session.lastMessageAt } : {}),
         turns: bounded.turns.map((turn) => ({
           turn_id: turn.turnId,
-          messages: turn.messages,
+          messages: turn.messages.map(({ messageId: id, matchKind, ...message }) => ({
+            message_id: id,
+            match_kind: matchKind,
+            ...message,
+          })),
         })),
-        ...(bounded.truncated || selected.length < turns.length ? { truncated: true } : {}),
+        has_more_before: selected.hasMoreBefore,
+        has_more_after: selected.hasMoreAfter,
+        ...(bounded.truncated ? { truncated: true } : {}),
       };
     },
   };
@@ -239,16 +300,30 @@ function projectHistoryMessage(message: StoredMessage): HistoryTurnMessage | und
   switch (message.type) {
     case 'user':
       return {
+        messageId: message.id,
+        matchKind: 'user_message',
         role: 'user',
         text: redactSecrets(message.displayText ?? message.text),
         timestamp: message.ts,
       };
     case 'assistant':
       if (!message.text.trim()) return undefined;
-      return { role: 'assistant', text: redactSecrets(message.text), timestamp: message.ts };
+      return {
+        messageId: message.id,
+        matchKind: 'assistant_message',
+        role: 'assistant',
+        text: redactSecrets(message.text),
+        timestamp: message.ts,
+      };
     case 'tool_call':
       if (!message.intent?.trim()) return undefined;
-      return { role: 'tool', text: redactSecrets(message.intent), timestamp: message.ts };
+      return {
+        messageId: message.id,
+        matchKind: 'tool_intent',
+        role: 'tool',
+        text: redactSecrets(message.intent),
+        timestamp: message.ts,
+      };
     case 'tool_result':
     case 'permission_decision':
     case 'token_usage':
@@ -258,18 +333,67 @@ function projectHistoryMessage(message: StoredMessage): HistoryTurnMessage | und
   }
 }
 
+function resolveHistoryAnchor(
+  messages: readonly StoredMessage[],
+  messageId: string | undefined,
+  requestedTurnId: string | undefined,
+):
+  | { readonly ok: true; readonly turnId: string | undefined }
+  | {
+      readonly ok: false;
+      readonly reason: Extract<HistoryReadErrorReason, 'message_not_found' | 'anchor_mismatch'>;
+      readonly message: string;
+    } {
+  if (!messageId) return { ok: true, turnId: requestedTurnId };
+  const message = messages.find(
+    (candidate) => candidate.id === messageId && collectSearchableText(candidate) !== undefined,
+  );
+  if (!message || !('turnId' in message) || !message.turnId) {
+    return {
+      ok: false,
+      reason: 'message_not_found',
+      message: 'The requested searchable message was not found in that session.',
+    };
+  }
+  if (requestedTurnId && requestedTurnId !== message.turnId) {
+    return {
+      ok: false,
+      reason: 'anchor_mismatch',
+      message: 'The requested message_id and turn_id do not identify the same result.',
+    };
+  }
+  return { ok: true, turnId: message.turnId };
+}
+
 function selectHistoryTurns(
   turns: readonly HistoryTurn[],
   turnId: string | undefined,
-  maxTurns: number,
-): HistoryTurn[] | undefined {
-  if (!turnId) return turns.slice(-maxTurns);
+  before: number,
+  after: number,
+):
+  | {
+      readonly turns: HistoryTurn[];
+      readonly hasMoreBefore: boolean;
+      readonly hasMoreAfter: boolean;
+    }
+  | undefined {
+  if (!turnId) {
+    const start = Math.max(0, turns.length - (before + 1 + after));
+    return {
+      turns: turns.slice(start),
+      hasMoreBefore: start > 0,
+      hasMoreAfter: false,
+    };
+  }
   const target = turns.findIndex((turn) => turn.turnId === turnId);
   if (target < 0) return undefined;
-  let start = Math.max(0, target - Math.floor((maxTurns - 1) / 2));
-  let end = Math.min(turns.length, start + maxTurns);
-  start = Math.max(0, end - maxTurns);
-  return turns.slice(start, end);
+  const start = Math.max(0, target - before);
+  const end = Math.min(turns.length, target + after + 1);
+  return {
+    turns: turns.slice(start, end),
+    hasMoreBefore: start > 0,
+    hasMoreAfter: end < turns.length,
+  };
 }
 
 function boundHistoryTurns(
