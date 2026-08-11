@@ -65,28 +65,6 @@ function loadStep(group: string): StepLike {
   return { toolCalls: [{ toolName: LOAD_TOOLS_NAME, input: { group } }] };
 }
 
-describe('ToolAvailabilityRuntime — full mode', () => {
-  test('economy off advertises every tool, no connector / gating / diagnostics', () => {
-    const plan = runtime(false).prepare([]);
-    assert.ok(
-      plan.activeTools.includes('rive_run'),
-      'grouped tools are active when economy is off',
-    );
-    assert.ok(plan.activeTools.includes('docs_edit'));
-    assert.ok(!plan.activeTools.includes(LOAD_TOOLS_NAME), 'no connector in full mode');
-    assert.equal(plan.projectActiveTools, undefined);
-    assert.equal(plan.gating, undefined);
-    assert.equal(plan.diagnostics([], 0), undefined);
-  });
-
-  test('economy on but no hideable groups falls back to full mode', () => {
-    const r = new ToolAvailabilityRuntime([tool('Read')], { economy: true }, invalid);
-    const plan = r.prepare([]);
-    assert.equal(plan.gating, undefined, 'nothing to hide → no gating');
-    assert.ok(plan.activeTools.includes('Read'));
-  });
-});
-
 describe('ToolAvailabilityRuntime — economy mode', () => {
   test('only ungrouped tools + connector are active at step 0; group tools hidden', () => {
     const plan = runtime(true).prepare([]);

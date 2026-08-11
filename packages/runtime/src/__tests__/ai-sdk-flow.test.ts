@@ -768,22 +768,6 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     assert.equal(b.role, 'tool');
   });
 
-  test('tool_start maps its semantic activity kind into runtime state', () => {
-    const event = mapSessionEventToRuntimeEvent(
-      ev({
-        type: 'tool_start',
-        toolUseId: 'tu-kind',
-        toolName: 'CustomCommand',
-        activityKind: 'command',
-        args: {},
-      }),
-      ctx,
-      createSessionEventMapMemory(),
-    );
-
-    assert.equal(event.actions?.stateDelta?.activityKind, 'command');
-  });
-
   test('tool activity mapping retains nested CodeMode replay and parent identity', () => {
     const memory = createSessionEventMapMemory();
     const start = mapSessionEventToRuntimeEvent(

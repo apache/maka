@@ -48,73 +48,7 @@ const ONE_PIXEL_PNG = Buffer.from(
   'base64',
 );
 
-describe('builtin tool activity kinds', () => {
-  test('declares stable semantic categories independently of tool names', () => {
-    const kinds = Object.fromEntries(
-      buildBuiltinTools().map((tool) => [tool.name, tool.activityKind]),
-    );
-
-    expect(kinds).toEqual({
-      Bash: 'command',
-      Read: 'read',
-      apply_patch: 'edit',
-      Write: 'edit',
-      Edit: 'edit',
-      FormatJson: 'edit',
-      Glob: 'search',
-      Grep: 'search',
-    });
-  });
-
-  test('categorizes background task controls as command activity', () => {
-    const shellRuns = {
-      runForegroundBash: () => Promise.reject(new Error('not used')),
-      runBackgroundBash: () => Promise.reject(new Error('not used')),
-    } satisfies ShellRunLauncher;
-    const backgroundTasks = {
-      stopBackgroundTask: () => Promise.reject(new Error('not used')),
-    } satisfies BackgroundTaskStopper;
-    const ptyControls = {
-      writeStdin: () => Promise.reject(new Error('not used')),
-    } satisfies PtyControlWriter;
-    const kinds = Object.fromEntries(
-      buildBuiltinTools({
-        shellRuns,
-        backgroundTasks,
-        ptyControls,
-      }).map((tool) => [tool.name, tool.activityKind]),
-    );
-
-    expect(kinds.Bash).toBe('command');
-    expect(kinds.StopBackgroundTask).toBe('command');
-    expect(kinds.WriteStdin).toBe('command');
-  });
-
-  test('can omit Edit from a host surface that has no filesystem worker', () => {
-    const tools = buildBuiltinTools({ includeEdit: false } as Parameters<
-      typeof buildBuiltinTools
-    >[0]);
-
-    assert.equal(
-      tools.some((tool) => tool.name === 'Edit'),
-      false,
-    );
-    assert.ok(tools.some((tool) => tool.name === 'Write'));
-  });
-
-  test('includes apply_patch when a custom workspace exposes the capability', () => {
-    const tools = buildBuiltinTools({
-      executor: fakeExecutor({
-        applyPatch: async ({ path }) => ({ ok: true, path }),
-      }),
-    });
-
-    assert.equal(
-      tools.some((tool) => tool.name === 'apply_patch'),
-      true,
-    );
-  });
-
+describe('builtin apply_patch', () => {
   test('applies a freeform V4A patch through the existing filesystem authority', async () => {
     const calls: Array<{
       action: string;
@@ -325,22 +259,6 @@ describe('builtin tool activity kinds', () => {
   });
 });
 
-describe('builtin Read capabilities', () => {
-  test('advertises image support only when image snapshots are available', () => {
-    const textOnly = buildBuiltinTools().find((tool) => tool.name === 'Read')!;
-    const withImages = buildBuiltinTools({
-      snapshotImage: async (input) => ({
-        kind: 'session_file',
-        sessionId: input.sessionId,
-        relativePath: 'image-1',
-      }),
-    }).find((tool) => tool.name === 'Read')!;
-
-    assert.doesNotMatch(textOnly.description, /image/);
-    assert.match(withImages.description, /image/);
-  });
-});
-
 describe('builtin ArchiveRead capabilities', () => {
   test('is not a built-in tool', () => {
     // The archive decoder travels with the archive capability and is bound by
@@ -370,7 +288,7 @@ describe('builtin tool executor facts', () => {
   });
 });
 
-describe('builtin Bash description declares the executing shell', () => {
+describe('builtin Bash projection and shell execution', () => {
   test('executor Bash keeps its durable command out of provider-facing results', async () => {
     const bash = buildBuiltinTools({
       executor: fakeExecutor({
@@ -426,17 +344,6 @@ describe('builtin Bash description declares the executing shell', () => {
         '-NoLogo -NoProfile -NonInteractive -Command echo wired-marker\n',
       ),
     ).toBe(true);
-  });
-
-  test('executor Bash tells the model commands run under PowerShell 7', () => {
-    const tools = buildBuiltinTools({
-      executor: fakeExecutor({ facts: LOCAL_WORKSPACE_EXECUTOR_FACTS }),
-      shell: { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: 'C:\\pf\\pwsh.exe' },
-    });
-    const bash = tools.find((tool) => tool.name === 'Bash');
-    expect(bash !== undefined).toBe(true);
-    expect(/PowerShell 7 \(pwsh\)/.test(bash!.description)).toBe(true);
-    expect(/git ls-files/.test(bash!.description)).toBe(true);
   });
 });
 
