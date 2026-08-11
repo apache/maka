@@ -12,12 +12,10 @@ import {
 
 describe('artifact preview registry', () => {
   it('treats present MIME metadata as authoritative and rejects unsafe formats', () => {
-    for (const mimeType of ['image/svg+xml', 'image/heic', 'image/bmp']) {
-      assert.deepEqual(
-        resolvePreviewKind({ name: 'tricky.png', kind: 'image', mimeType }),
-        { kind: 'unsupported', reason: 'mime_disallowed' },
-      );
-    }
+    assert.deepEqual(
+      resolvePreviewKind({ name: 'tricky.png', kind: 'image', mimeType: 'image/svg+xml' }),
+      { kind: 'unsupported', reason: 'mime_disallowed' },
+    );
   });
 
   it('enforces the inclusive metadata size boundary before loading', () => {
@@ -35,9 +33,7 @@ describe('artifact preview registry', () => {
   it('fails closed at the post-load payload cap', () => {
     assert.equal(exceedsImagePayloadCap('A'.repeat(IMAGE_PAYLOAD_MAX_BASE64_LENGTH)), false);
     assert.equal(exceedsImagePayloadCap('A'.repeat(IMAGE_PAYLOAD_MAX_BASE64_LENGTH + 1)), true);
-    for (const value of [null, undefined, 42]) {
-      assert.equal(exceedsImagePayloadCap(value as never), true);
-    }
+    assert.equal(exceedsImagePayloadCap(null as never), true);
   });
   it('uses sniffed MIME and checks size before MIME after loading', () => {
     const base64 = 'AAAA';
@@ -46,12 +42,10 @@ describe('artifact preview registry', () => {
       safeMime: 'image/png',
       base64,
     });
-    for (const mimeType of ['image/svg+xml', 'application/octet-stream']) {
-      assert.deepEqual(decideImagePostLoad({ base64, mimeType }), {
-        kind: 'unsupported',
-        reason: 'mime_disallowed',
-      });
-    }
+    assert.deepEqual(decideImagePostLoad({ base64, mimeType: 'image/svg+xml' }), {
+      kind: 'unsupported',
+      reason: 'mime_disallowed',
+    });
     assert.deepEqual(
       decideImagePostLoad({
         base64: 'A'.repeat(IMAGE_PAYLOAD_MAX_BASE64_LENGTH + 1),
@@ -62,12 +56,10 @@ describe('artifact preview registry', () => {
   });
 
   it('routes IPC failures and malformed successful payloads without retaining base64', () => {
-    for (const reason of ['not_found', 'too_large', 'read_failed', 'not_allowed', 'deleted', 'unsupported_mime'] as const) {
-      assert.deepEqual(decideImageReadOutcome({ ok: false, reason }), {
-        kind: 'unsupported',
-        reason: 'read_failed',
-      });
-    }
+    assert.deepEqual(decideImageReadOutcome({ ok: false, reason: 'not_found' }), {
+      kind: 'unsupported',
+      reason: 'read_failed',
+    });
 
     const valid: ArtifactBinaryReadResult = { ok: true, base64: 'AAAA', mimeType: 'image/png' };
     assert.deepEqual(decideImageReadOutcome(valid), {

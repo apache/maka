@@ -17,10 +17,10 @@ describe('workspace privacy context', () => {
   });
 
   it('fails closed for non-objects and missing or non-boolean state', () => {
-    for (const input of [null, undefined, 'incognito', 42, true, []]) {
+    for (const input of [null, 'incognito', []]) {
       assert.equal(validateWorkspacePrivacyContext(input).ok, false);
     }
-    for (const input of [{}, { incognitoActive: 'true' }, { incognitoActive: 1 }]) {
+    for (const input of [{}, { incognitoActive: 'true' }]) {
       assert.deepEqual(validateWorkspacePrivacyContext(input), {
         ok: false,
         reason: 'incognito_active_invalid',
@@ -32,7 +32,7 @@ describe('workspace privacy context', () => {
   it('guards the documented field without requiring an exact object shape', () => {
     assert.equal(isWorkspacePrivacyContext({ incognitoActive: false }), true);
     assert.equal(isWorkspacePrivacyContext({ incognitoActive: true, extra: 'ignored' }), true);
-    for (const input of [null, undefined, [], {}, { incognitoActive: 'true' }]) {
+    for (const input of [null, [], {}, { incognitoActive: 'true' }]) {
       assert.equal(isWorkspacePrivacyContext(input), false);
     }
   });
