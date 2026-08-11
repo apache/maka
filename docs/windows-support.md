@@ -154,7 +154,8 @@ The root test timeout is tracked separately from individual test failures. Phase
 - CLI `--help`, `--version`, TUI startup, and non-interactive commands are native Node.js paths.
 - Desktop development startup uses the Windows Electron binary.
 - Runtime Host endpoints use Windows named pipes rather than Unix domain sockets.
-- Shell selection prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`.
+- Automatic shell selection prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`.
+- Desktop can explicitly select a GNU Bash `bash.exe` on the Runtime Host machine (Git Bash or the legacy `System32\bash.exe` WSL shim). The Host validates the executable before persisting it and fails closed if the configured path later disappears; remote Desktop clients do not resolve the path on their own machine.
 - PTY execution uses ConPTY through `node-pty`; process-tree termination uses `taskkill /T` where required.
 - Restricted managed profiles use the packaged AppContainer broker when available and fail closed
   when the native capability or requested policy is unavailable.
