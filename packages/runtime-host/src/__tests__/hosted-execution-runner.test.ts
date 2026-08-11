@@ -42,6 +42,44 @@ test('hosted execution reads usage only after execution residencies settle', asy
   assert.equal(usageRead, true);
 });
 
+test('abort after terminal completion preserves the completed result', async () => {
+  const result = await runWithAbortAfterTerminal();
+  assert.equal(result.kind, 'settled');
+  if (result.kind === 'settled') assert.equal(result.status, 'completed');
+});
+
+test('abort after terminal failure preserves the failure reason', async () => {
+  const result = await runWithAbortAfterTerminal(() => terminalTurn('failed'));
+  assert.equal(result.kind, 'settled');
+  if (result.kind !== 'settled') return;
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failureReason, 'subject failed');
+});
+
+async function runWithAbortAfterTerminal(query?: () => unknown) {
+  const abort = new AbortController();
+  const residency = deferred();
+  const settling = deferred();
+  const runner = new HostHostedExecutionRunner({
+    handlers: handlers(query ? { query } : {}),
+    context: context(),
+    requestDrain: () => {},
+    waitForExecutionResidencies: () => {
+      settling.resolve();
+      return residency.promise;
+    },
+    waitForAllResidencies: () => residency.promise,
+    now: sequence(100, 200),
+  });
+
+  const execution = runner.run(input(), abort.signal);
+  await settling.promise;
+  abort.abort();
+  residency.resolve();
+
+  return execution;
+}
+
 test('hosted execution cancellation drains the Host and waits for canonical stop', async () => {
   const abort = new AbortController();
   const started = deferred();
@@ -210,8 +248,13 @@ function runningTurn() {
   };
 }
 
-function terminalTurn(status: 'completed' | 'cancelled') {
-  return { ...runningTurn(), status, completedAt: 150 };
+function terminalTurn(status: 'completed' | 'failed' | 'cancelled') {
+  return {
+    ...runningTurn(),
+    status,
+    completedAt: 150,
+    ...(status === 'failed' ? { failureClass: 'subject failed' } : {}),
+  };
 }
 
 function usageSummary() {

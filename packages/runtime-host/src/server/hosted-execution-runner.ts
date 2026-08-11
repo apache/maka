@@ -70,10 +70,8 @@ export class HostHostedExecutionRunner {
       return {
         executionId: input.executionId,
         kind: 'settled',
-        status: signal.aborted ? 'cancelled' : terminalStatus(terminal),
-        ...(!signal.aborted && terminal.status === 'failed'
-          ? { failureReason: terminal.failureClass }
-          : {}),
+        status: terminalStatus(terminal),
+        ...(terminal.status === 'failed' ? { failureReason: terminal.failureClass } : {}),
         usage: {
           inputTokens: usage.summary.totalTokens.input,
           outputTokens: usage.summary.totalTokens.output,

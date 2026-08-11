@@ -17,13 +17,26 @@ export interface RunHostedExecutionInput {
   readonly hostSettlementTimeoutMs?: number;
 }
 
+interface RunHostedExecutionDependencies {
+  readonly connectOwnedRuntimeHost: typeof connectOwnedRuntimeHost;
+}
+
+const defaultDependencies: RunHostedExecutionDependencies = { connectOwnedRuntimeHost };
+
 export async function runHostedExecution(
   input: RunHostedExecutionInput,
+): Promise<HostedExecutionProjection> {
+  return runHostedExecutionWithDependencies(input, defaultDependencies);
+}
+
+export async function runHostedExecutionWithDependencies(
+  input: RunHostedExecutionInput,
+  dependencies: RunHostedExecutionDependencies,
 ): Promise<HostedExecutionProjection> {
   if (input.signal?.aborted) {
     return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
   }
-  const connected = await connectOwnedRuntimeHost({
+  const connected = await dependencies.connectOwnedRuntimeHost({
     rootPath: input.rootPath,
     surface: 'run',
     protocol: {
@@ -37,7 +50,6 @@ export async function runHostedExecution(
   }
 
   let projection: HostedExecutionProjection;
-  let environmentResourcesRemain = false;
   try {
     const target = input.execution.session.modelTarget;
     if (target.kind === 'explicit') {
@@ -49,17 +61,6 @@ export async function runHostedExecution(
       });
     }
     projection = await executeHostedExecution(connected.connection, input.execution, input.signal);
-    if (preservesHostedExecutionEnvironment(projection) && input.signal?.aborted) {
-      projection = await connected.connection.request('hosted.execution.cancel', {
-        executionId: input.execution.executionId,
-      });
-    }
-    if (preservesHostedExecutionEnvironment(projection)) {
-      const diagnostics = await connected.connection.queryHostDiagnostics();
-      environmentResourcesRemain = diagnostics.residencies.some(
-        ({ label, count }) => label === 'runtime-resource' && count > 0,
-      );
-    }
   } catch {
     projection = indeterminate(
       input.execution.executionId,
@@ -69,7 +70,7 @@ export async function runHostedExecution(
     await connected.connection.close().catch(() => undefined);
   }
 
-  if (preservesHostedExecutionEnvironment(projection) && environmentResourcesRemain) {
+  if (preservesHostedExecutionEnvironment(projection)) {
     connected.host.releaseToEnvironment();
     return projection;
   }
