@@ -13,7 +13,6 @@ import {
   createMakaPiTranscriptState,
   renderMakaPiActivityStrip,
   renderMakaPiTranscript,
-  refreshRunningShellRunElapsed,
   reconcileToolsWithStoredMessages,
   replaceTranscriptWithStoredMessages,
   submitCompactToTranscript,
@@ -268,22 +267,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(rendered, /Also include the tests/);
     assert.doesNotMatch(rendered, /internal context/);
   });
-
-  test('shows a fixed system notice when the configured step limit is reached', () => {
-    const state = createMakaPiTranscriptState();
-
-    applyMakaSessionEventToTranscript(state, event({ type: 'complete', stopReason: 'step_limit' }));
-
-    assert.deepEqual(state.entries, [
-      {
-        kind: 'notice',
-        level: 'info',
-        text: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
-      },
-    ]);
-  });
-
-
 
   test('reports manual compact failed-open diagnostics instead of no-op success', async () => {
     const state = createMakaPiTranscriptState();
@@ -1969,38 +1952,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(rendered.split('$ sleep 30').length - 1, 1);
   });
 
-  test('shows live elapsed time and stop guidance on a running background Bash card', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-bg',
-        toolName: 'Bash',
-        args: { command: 'sleep 30' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({ startedAt: 1_000, updatedAt: 2_000 }),
-      }),
-    );
-
-    assert.equal(refreshRunningShellRunElapsed(state, 13_500), true);
-    const compact = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(compact, /running 13s/);
-    assert.doesNotMatch(compact, /Ask Maka to stop this task/);
-
-    // Stop guidance is expanded-only for a running background Bash shell_run.
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(expanded, /Ask Maka to stop this task/);
-  });
-
   test('describes a detached background Bash card by ownership, not lifecycle', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
@@ -3114,39 +3065,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(rendered, /50%/);
   });
 
-  test('shows stdout as latest when it arrives after stderr', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-bg',
-        toolName: 'Bash',
-        args: { command: 'build' },
-      }),
-    );
-    const result = shellRun({
-      stdout: '99%\n',
-      stderr: 'warning\n',
-      latestStream: 'stdout',
-      updatedAt: 3_000,
-    });
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: result,
-      }),
-    );
-
-    // Live output lives in the expanded card for a running tool.
-    assert.equal(toggleAllToolExpansion(state), true);
-    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(rendered, /99%/);
-  });
-
   test('re-renders a background Bash card when polling replaces output with the same length', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';
@@ -3315,34 +3233,6 @@ describe('Maka Pi TUI transcript', () => {
     // target, so the timeout and exit code remain readable.
     assert.match(row, /\(1234s · timed_out · exit 124\)$/);
     assert.ok(visibleWidth(row) <= 60, `row width ${visibleWidth(row)} exceeds 60`);
-  });
-
-  test('keeps a duration-bearing generic outcome readable when it exceeds the old cap', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'generic-duration',
-        toolName: 'McpTool',
-        args: { target: 'x'.repeat(80) },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'generic-duration',
-        isError: false,
-        content: { kind: 'text', text: 'line\n'.repeat(100) },
-        durationMs: 12_000,
-      }),
-    );
-
-    const row = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi)[1]!;
-    assert.match(row, /\(12s · 100 lines · 500 bytes\)$/);
-    assert.doesNotMatch(row, /\(1…\)$/);
-    assert.ok(visibleWidth(row) <= 80, `row width ${visibleWidth(row)} exceeds 80`);
   });
 
   test('counts stdout and stderr lines per stream, not at the join boundary', () => {

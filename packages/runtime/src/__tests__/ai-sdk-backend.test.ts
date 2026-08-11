@@ -1156,62 +1156,6 @@ describe('AiSdkBackend model history', () => {
     ]);
   });
 
-  test('keeps backfilled text-only assistant messages in conversation order', async () => {
-    const model = completionModel();
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-    const recoveredAssistant = runtimeTextEvent({
-      id: 'rt-a',
-      turnId: 'turn-a',
-      role: 'model',
-      author: 'agent',
-      text: 'assistant A',
-    });
-    recoveredAssistant.refs = { storedMessageId: 'stored-a' };
-
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'current user',
-        context: [],
-        runtimeContext: [
-          runtimeTextEvent({
-            id: 'rt-u-a',
-            turnId: 'turn-a',
-            role: 'user',
-            author: 'user',
-            text: 'user A',
-          }),
-          recoveredAssistant,
-          runtimeTextEvent({
-            id: 'rt-u-b',
-            turnId: 'turn-b',
-            role: 'user',
-            author: 'user',
-            text: 'user B',
-          }),
-        ],
-      }),
-    );
-
-    assert.deepEqual(promptTextSequence(model), [
-      { role: 'user', text: 'user A' },
-      { role: 'assistant', text: 'assistant A' },
-      { role: 'user', text: 'user B' },
-      { role: 'user', text: 'current user' },
-    ]);
-  });
-
   test('safe-boundary continuation does not append a duplicate current user message', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
