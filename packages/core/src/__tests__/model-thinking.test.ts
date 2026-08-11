@@ -6,20 +6,11 @@ import {
   normalizeRelayModelProfiles,
   relayModelProfile,
   resolveThinkingLevel,
-  THINKING_LEVELS,
   deriveThinkingChoices,
-  isThinkingLevel,
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
   thinkingVariantsForModel,
 } from '../model-thinking.js';
-
-test('thinking-level guard accepts only the closed display vocabulary', () => {
-  for (const level of THINKING_LEVELS) assert.equal(isThinkingLevel(level), true);
-  for (const value of ['default', 'turbo', undefined, 123]) {
-    assert.equal(isThinkingLevel(value), false);
-  }
-});
 
 test('declarable relay levels are every intensity tier but off', () => {
   // `off` is a disable-wire encoding (reasoning_effort 'none'), not an

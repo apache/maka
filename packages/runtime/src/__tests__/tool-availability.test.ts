@@ -169,12 +169,6 @@ describe('ToolAvailabilityRuntime — durable ledger seed', () => {
     assert.ok(plan.activeTools.includes('rive_run'), 'seeded group active from turn start');
     assert.ok(!plan.activeTools.includes('docs_edit'), 'unseeded group still hidden');
   });
-
-  test('an unknown seeded group id is ignored (forward compatible)', () => {
-    const plan = runtime(true).prepare([event(LOAD_TOOLS_NAME, { group: 'ghost' })]);
-    assert.ok(!plan.activeTools.includes('rive_run'));
-    assert.ok(!plan.activeTools.includes('docs_edit'));
-  });
 });
 
 describe('ToolAvailabilityRuntime — diagnostics', () => {

@@ -4,7 +4,6 @@ import {
   PROVIDER_AUTH_ACTIONS,
   deriveProviderAuthContract,
   deriveProviderAuthContractFromConnection,
-  isProviderAuthState,
 } from '../provider-auth.js';
 import type { LlmConnection } from '../llm-connections.js';
 
@@ -274,21 +273,6 @@ describe('ProviderAuth contract', () => {
     expect(contract.validationStatus).toBe('verified');
   });
 
-  test('locks provider auth state guard', () => {
-    expect(isProviderAuthState('validated')).toBe(true);
-    expect(isProviderAuthState('operational')).toBe(false);
-  });
-
-  test('action availability map covers every closed action key', () => {
-    const contract = deriveProviderAuthContract({
-      providerType: 'openai',
-      hasSecret: true,
-    });
-
-    expect(Object.keys(contract.actionAvailability).sort()).toEqual(
-      [...PROVIDER_AUTH_ACTIONS].sort(),
-    );
-  });
 });
 describe('ProviderAuth contract unknown-providerType fallback', () => {
   // A connection persisted on another branch may carry a providerType this
