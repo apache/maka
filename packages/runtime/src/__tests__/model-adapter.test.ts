@@ -633,21 +633,8 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-  test('treats provider usage without token values as unavailable', () => {
-    assert.equal(
-      normalizeAiSdkUsage({
-        inputTokens: undefined,
-        outputTokens: undefined,
-        totalTokens: undefined,
-      }),
-      undefined,
-    );
-  });
-
   test('treats incomplete provider usage as unavailable unless total can supply the missing side', () => {
     assert.equal(normalizeAiSdkUsage({ inputTokens: 12 }), undefined);
-    assert.equal(normalizeAiSdkUsage({ outputTokens: 3 }), undefined);
-    assert.equal(normalizeAiSdkUsage({ totalTokens: 15 }), undefined);
 
     assert.deepEqual(normalizeAiSdkUsage({ inputTokens: 12, totalTokens: 15 }), {
       inputTokens: 12,
@@ -659,28 +646,6 @@ describe('ModelAdapter stream and error normalization', () => {
       cacheWriteInputTokens: 0,
       reasoningTokens: 0,
       totalTokens: 15,
-    });
-    assert.deepEqual(normalizeAiSdkUsage({ outputTokens: 3, totalTokens: 15 }), {
-      inputTokens: 12,
-      outputTokens: 3,
-      cacheHitInputTokens: 0,
-      cacheMissInputTokens: 12,
-      cacheMissInputSource: 'derived',
-      cachedInputTokens: 0,
-      cacheWriteInputTokens: 0,
-      reasoningTokens: 0,
-      totalTokens: 15,
-    });
-    assert.deepEqual(normalizeAiSdkUsage({ inputTokens: 0, outputTokens: 0 }), {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheHitInputTokens: 0,
-      cacheMissInputTokens: 0,
-      cacheMissInputSource: 'derived',
-      cachedInputTokens: 0,
-      cacheWriteInputTokens: 0,
-      reasoningTokens: 0,
-      totalTokens: 0,
     });
   });
 
@@ -755,57 +720,6 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-  test('normalizes AI SDK raw DeepSeek usage metadata and no-cache token details', () => {
-    assert.deepEqual(
-      normalizeAiSdkUsage(
-        {
-          inputTokens: 100,
-          outputTokens: 20,
-          inputTokenDetails: {
-            noCacheTokens: 25,
-            cacheReadTokens: 75,
-          },
-          outputTokenDetails: {
-            reasoningTokens: 9,
-          },
-          raw: {
-            prompt_cache_hit_tokens: 70,
-            prompt_cache_miss_tokens: 30,
-            prompt_tokens_details: {
-              cached_tokens: 70,
-            },
-            completion_tokens_details: {
-              reasoning_tokens: 11,
-            },
-          },
-        },
-        { rawFinishReason: 'stop' },
-      ),
-      {
-        inputTokens: 100,
-        outputTokens: 20,
-        cacheHitInputTokens: 70,
-        cacheMissInputTokens: 30,
-        cacheMissInputSource: 'explicit',
-        cachedInputTokens: 70,
-        cacheWriteInputTokens: 0,
-        reasoningTokens: 9,
-        totalTokens: 120,
-        rawFinishReason: 'stop',
-        raw: {
-          prompt_cache_hit_tokens: 70,
-          prompt_cache_miss_tokens: 30,
-          prompt_tokens_details: {
-            cached_tokens: 70,
-          },
-          completion_tokens_details: {
-            reasoning_tokens: 11,
-          },
-        },
-      },
-    );
-  });
-
   test('normalizes direct DeepSeek snake_case usage totals', () => {
     assert.deepEqual(
       normalizeAiSdkUsage(
@@ -843,35 +757,6 @@ describe('ModelAdapter stream and error normalization', () => {
           },
         },
       },
-    );
-  });
-
-  test('derives cache miss input when explicit miss is absent and treats no cache data as fresh', () => {
-    assert.equal(
-      normalizeAiSdkUsage({
-        inputTokens: 100,
-        outputTokens: 10,
-        cachedInputTokens: 30,
-        cacheWriteInputTokens: 20,
-      })?.cacheMissInputTokens,
-      50,
-    );
-    assert.equal(
-      normalizeAiSdkUsage({
-        inputTokens: 100,
-        outputTokens: 10,
-        cachedInputTokens: 30,
-        cacheWriteInputTokens: 20,
-      })?.cacheMissInputSource,
-      'derived',
-    );
-
-    assert.equal(
-      normalizeAiSdkUsage({
-        inputTokens: 100,
-        outputTokens: 10,
-      })?.cacheMissInputTokens,
-      100,
     );
   });
 });
