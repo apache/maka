@@ -626,6 +626,33 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(event.message.includes('sk-live-secret-token-value'), false);
   });
 
+  test('projects the observed Kimi plan limit as a non-retryable provider explanation', () => {
+    const observedMessage =
+      "You've reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/code/#pricing";
+    const error = Object.assign(new Error(observedMessage), {
+      name: 'AI_APICallError',
+      statusCode: 403,
+      data: {
+        type: 'error',
+        error: { type: 'permission_error', message: observedMessage },
+      },
+    });
+    const adapter = newAdapter();
+
+    const failure = adapter.normalizeFailure(error);
+    assert.deepEqual(failure, {
+      type: 'model_failure',
+      kind: 'unknown',
+      retryable: false,
+      code: 'permission_error',
+      message: `${observedMessage} (code=permission_error, status=403)`,
+    });
+    const event = adapter.makeErrorEvent('turn-1', failure);
+    assert.equal(event.reason, undefined);
+    assert.equal(event.code, 'permission_error');
+    assert.equal(event.message, `${observedMessage} (code=permission_error, status=403)`);
+  });
+
   test('normalizes cache and reasoning usage variants in the adapter module', () => {
     assert.deepEqual(
       normalizeAiSdkUsage({

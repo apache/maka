@@ -7,6 +7,7 @@ import { z } from 'zod/v4';
 import {
   classifyError,
   providerFailureDiagnostic,
+  errorPresentationFromClass,
   providerFailureSummary,
   providerRetryMetadata,
 } from '../provider-error-classification.js';
@@ -384,6 +385,108 @@ describe('Provider error classification', () => {
       ),
       'AI_RetryError',
     );
+  });
+
+  test('separates structured account limits, permission, and transient throttling', () => {
+    const providerError = (
+      statusCode: number,
+      message: string,
+      structured: Record<string, unknown> = {},
+    ) =>
+      Object.assign(new Error(message), {
+        name: 'AI_APICallError',
+        statusCode,
+        data: { error: { message, ...structured } },
+      });
+
+    const insufficientQuota = providerError(429, 'You exceeded your current quota', {
+      type: 'insufficient_quota',
+      code: 'insufficient_quota',
+    });
+    assert.equal(classifyError(insufficientQuota), 'ProviderBilling');
+    assert.deepEqual(providerRetryMetadata(insufficientQuota), { retryable: false });
+
+    const planUsageLimit = providerError(429, 'Your subscription usage limit has been reached', {
+      type: 'usage_limit_reached',
+    });
+    assert.equal(classifyError(planUsageLimit), 'UsageLimit');
+    assert.deepEqual(providerRetryMetadata(planUsageLimit), { retryable: false });
+
+    const permission = providerError(403, 'This key cannot access the requested model', {
+      type: 'permission_denied',
+    });
+    assert.equal(classifyError(permission), 'ProviderPermission');
+    assert.deepEqual(providerRetryMetadata(permission), { retryable: false });
+
+    const throttle = providerError(429, 'Too many requests', {
+      code: 'rate_limit_exceeded',
+    });
+    assert.equal(classifyError(throttle), 'RateLimit');
+    assert.deepEqual(providerRetryMetadata(throttle), { retryable: true });
+    assert.deepEqual(providerRetryMetadata(Object.assign(throttle, { isRetryable: false })), {
+      retryable: false,
+    });
+
+    assert.equal(classifyError(providerError(401, 'Invalid API key')), 'Auth');
+    assert.equal(classifyError(providerError(403, 'Request forbidden')), 'AI_APICallError');
+    assert.equal(classifyError(providerError(400, 'Quota exceeded')), 'AI_APICallError');
+  });
+
+  test('keeps the observed Kimi plan-limit explanation without guessing its account state', async () => {
+    const handler = createJsonErrorResponseHandler({
+      errorSchema: z.object({
+        type: z.literal('error'),
+        error: z.object({
+          type: z.string(),
+          message: z.string(),
+        }),
+      }),
+      errorToMessage: (data) => data.error.message,
+    });
+    const observedMessage =
+      "You've reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/code/#pricing";
+    const planCycleLimit = (
+      await handler({
+        response: new Response(
+          JSON.stringify({
+            error: { type: 'permission_error', message: observedMessage },
+            type: 'error',
+          }),
+          {
+            status: 403,
+            headers: { 'content-type': 'application/json; charset=utf-8' },
+          },
+        ),
+        url: 'https://api.example.test/coding/v1/messages',
+        requestBodyValues: {},
+      })
+    ).value;
+
+    assert.equal(classifyError(planCycleLimit), 'AI_APICallError');
+    assert.deepEqual(providerRetryMetadata(planCycleLimit), { retryable: false });
+    assert.deepEqual(providerFailureSummary(planCycleLimit), {
+      message: `${observedMessage} (code=permission_error, status=403)`,
+      code: 'permission_error',
+    });
+  });
+
+  test('maps provider classes to stable user-safe presentations', () => {
+    assert.deepEqual(errorPresentationFromClass('ProviderBilling'), {
+      reason: 'provider_billing',
+      message: 'Provider billing required',
+    });
+    assert.deepEqual(errorPresentationFromClass('ProviderPermission'), {
+      reason: 'provider_permission',
+      message: 'Provider access denied',
+    });
+    assert.deepEqual(errorPresentationFromClass('RateLimit'), {
+      reason: 'rate_limit',
+      message: 'Rate limit exceeded',
+    });
+    assert.deepEqual(errorPresentationFromClass('UsageLimit'), {
+      reason: 'usage_limit',
+      message: 'Usage limit reached',
+    });
   });
 });
 

@@ -980,12 +980,16 @@ function modelFailureKind(errorClass: string): ModelFailureKind {
       return 'network';
     case 'ProviderBilling':
       return 'provider_billing';
+    case 'ProviderPermission':
+      return 'provider_permission';
     case 'ProviderUnavailable':
       return 'provider_unavailable';
     case 'RateLimit':
       return 'rate_limit';
     case 'Timeout':
       return 'timeout';
+    case 'UsageLimit':
+      return 'usage_limit';
     default:
       return 'unknown';
   }
@@ -1003,12 +1007,16 @@ function errorClassFromFailureKind(kind: ModelFailureKind): string {
       return 'Network';
     case 'provider_billing':
       return 'ProviderBilling';
+    case 'provider_permission':
+      return 'ProviderPermission';
     case 'provider_unavailable':
       return 'ProviderUnavailable';
     case 'rate_limit':
       return 'RateLimit';
     case 'timeout':
       return 'Timeout';
+    case 'usage_limit':
+      return 'UsageLimit';
     case 'unknown':
       return 'Other';
   }

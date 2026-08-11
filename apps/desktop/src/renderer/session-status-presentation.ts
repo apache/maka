@@ -119,7 +119,9 @@ export function describeTurnErrorClass(errorClass: string | undefined, locale: U
   // (#1612), and it must never fall through to the "permission"/"tool" catch-alls.
   if (lower === SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS) return copy.sandboxBoundaryClosed;
   if (lower === 'timeout' || lower.includes('timeout')) return copy.timeout;
-  if (lower === 'auth' || lower.includes('auth') || lower === '401' || lower === '403') return copy.auth;
+  if (lower === 'auth' || lower.includes('auth') || lower === '401') return copy.auth;
+  if (lower === 'provider_permission') return copy.providerPermission;
+  if (lower === 'usage_limit') return copy.usageLimit;
   if (lower === 'rate_limit' || lower.includes('rate')) return copy.rateLimit;
   if (lower === 'network' || lower.includes('network') || lower.includes('fetch') || lower.includes('econn')) {
     return copy.network;
@@ -132,7 +134,12 @@ export function describeTurnErrorClass(errorClass: string | undefined, locale: U
   return copy.unknown;
 }
 
-export type FailedTurnRecoveryAction = 'retry' | 'continue' | 'inspect_tool' | 'check_connection';
+export type FailedTurnRecoveryAction =
+  | 'retry'
+  | 'continue'
+  | 'inspect_tool'
+  | 'check_connection'
+  | 'check_account';
 
 export interface FailedTurnRecoveryPresentation {
   action: FailedTurnRecoveryAction;
@@ -171,8 +178,16 @@ export function deriveFailedTurnRecovery(input: FailedTurnRecoveryInput, locale:
   if (input.erroredToolCount > 0 || lower === 'tool_failed' || lower.includes('tool')) {
     return { action: 'inspect_tool', label: copy.toolError };
   }
-  if (lower === 'provider_billing' || lower === 'auth' || lower.includes('auth') || lower === '401' || lower === '403') {
+  if (
+    lower === 'provider_permission' ||
+    lower === 'auth' ||
+    lower.includes('auth') ||
+    lower === '401'
+  ) {
     return { action: 'check_connection', label: copy.connection };
+  }
+  if (lower === 'provider_billing' || lower === 'usage_limit') {
+    return { action: 'check_account', label: copy.account };
   }
   if (input.partialOutputRetained) {
     return { action: 'continue', label: copy.partial };
