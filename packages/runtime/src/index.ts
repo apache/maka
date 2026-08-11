@@ -436,14 +436,6 @@ export type {
   SynthesisCacheWriteResult,
   SemanticCompactBlockRecorder,
 } from './ai-sdk-compaction-contract.js';
-export { PiAgentBackend, normalizePiAgentFrame } from './pi-agent-backend.js';
-export type {
-  PiAgentBackendInput,
-  PiAgentFrame,
-  PiAgentSendInput,
-  PiAgentTransport,
-} from './pi-agent-backend.js';
-
 export { buildBuiltinTools, classifyRuntimeResourceRef } from './builtin-tools.js';
 export { createToolResultArchiveCapability } from './tool-result-archive-capability.js';
 export type {

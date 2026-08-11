@@ -604,5 +604,5 @@ function nullablePositiveCount(value: unknown, label: string): number | null {
 }
 
 function isBackendKind(value: unknown): value is BackendKind {
-  return value === 'ai-sdk' || value === 'fake' || value === 'pi-agent';
+  return value === 'ai-sdk' || value === 'fake';
 }

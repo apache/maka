@@ -1034,7 +1034,7 @@ function isValidSubagentSessionLineage(header: SessionHeader): boolean {
 }
 
 function isBackendKind(value: unknown): value is SessionHeader['backend'] {
-  return value === 'ai-sdk' || value === 'fake' || value === 'pi-agent';
+  return value === 'ai-sdk' || value === 'fake';
 }
 
 function isFiniteNumber(value: unknown): value is number {

@@ -259,7 +259,7 @@ export interface SessionHeader {
   schemaVersion: 1;
 }
 
-export type BackendKind = 'ai-sdk' | 'fake' | 'pi-agent';
+export type BackendKind = 'ai-sdk' | 'fake';
 
 export interface SessionSummary {
   id: string;

@@ -1,13 +1,8 @@
 import assert from 'node:assert/strict';
 import { setImmediate as delayImmediate } from 'node:timers/promises';
 import test from 'node:test';
-import type { SessionEvent, SessionHeader, ShellRunUpdate, StoredMessage } from '@maka/core';
-import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
-import { PiAgentBackend, type PiAgentTransport } from '@maka/runtime';
+import type { SessionEvent, ShellRunUpdate, StoredMessage } from '@maka/core';
 import {
-  decodeHostFrame,
-  encodeProtocolMessage,
-  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   type SessionTranscriptCursor,
   type SubscriptionFrame,
 } from '../protocol/index.js';
@@ -358,70 +353,6 @@ test('in-flight canonical refresh observes an invalidation after its first read'
     ),
     [2, 3],
   );
-  coordinator.close();
-});
-
-test('tool output preserves one domain event and one wire frame', async () => {
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async () => canonical(),
-    new SessionAdmissionGate(),
-  );
-  const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
-  const opened = await open(coordinator, 'connection-1');
-  connection.activate(opened.subscriptionId);
-  let nextId = 0;
-  let now = 1;
-  const source = '界'.repeat(TOOL_OUTPUT_DELTA_MAX_CHARS + 1);
-  const transport = {
-    async *send() {
-      yield {
-        type: 'tool_output_delta' as const,
-        toolUseId: 'tool-1',
-        stream: 'stdout' as const,
-        chunk: source,
-      };
-      yield { type: 'complete' as const };
-    },
-  } satisfies PiAgentTransport;
-  const backend = new PiAgentBackend({
-    sessionId: SESSION_ID,
-    header: piSessionHeader(),
-    appendMessage: async () => undefined,
-    transport,
-    newId: () => `event-${++nextId}`,
-    now: () => now++,
-  });
-  const produced: SessionEvent[] = [];
-  for await (const event of backend.send({ turnId: 'turn-1', text: 'inspect', context: [] })) {
-    produced.push(event);
-  }
-  const outputs = produced.filter(
-    (event): event is Extract<SessionEvent, { type: 'tool_output_delta' }> =>
-      event.type === 'tool_output_delta',
-  );
-  assert.equal(outputs.length, 1);
-  const output = outputs[0];
-  assert.ok(output);
-  assert.ok(output.chunk.length <= TOOL_OUTPUT_DELTA_MAX_CHARS);
-  assert.match(output.chunk, /\n\[内容已截断\]$/);
-
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', output);
-  await waitFor(() => sink.frames.length === 1);
-
-  const encoded = encodeProtocolMessage(sink.frames[0]!);
-  assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES);
-  const decoded = decodeHostFrame(JSON.parse(encoded.toString('utf8')));
-  assert.ok('kind' in decoded);
-  if (!('kind' in decoded)) return;
-  assert.equal(decoded.kind, 'subscription.session_event');
-  if (decoded.kind !== 'subscription.session_event') return;
-  assert.equal(decoded.event.type, 'tool_output_delta');
-  if (decoded.event.type !== 'tool_output_delta') return;
-  assert.equal(decoded.event.id, output.id);
-  assert.equal(decoded.event.seq, output.seq);
-  assert.equal(decoded.event.chunk, output.chunk);
   coordinator.close();
 });
 
@@ -1102,29 +1033,6 @@ function pendingInteraction() {
     },
     status: 'pending' as const,
     outcome: null,
-  };
-}
-
-function piSessionHeader(): SessionHeader {
-  return {
-    id: SESSION_ID,
-    workspaceRoot: '/tmp/maka',
-    cwd: '/tmp/maka',
-    createdAt: 1,
-    lastUsedAt: 1,
-    name: 'Pi continuity test',
-    titleIsManual: true,
-    isFlagged: false,
-    labels: [],
-    isArchived: false,
-    status: 'active',
-    hasUnread: false,
-    backend: 'pi-agent',
-    llmConnectionSlug: 'pi-agent',
-    connectionLocked: true,
-    model: 'pi-test',
-    permissionMode: 'execute',
-    schemaVersion: 1,
   };
 }
 

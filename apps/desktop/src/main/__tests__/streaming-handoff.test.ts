@@ -121,7 +121,7 @@ describe('single live-turn handoff', () => {
     const text = 'persisted before a slow tool finishes';
     const markup = renderWithLocale(createElement(ChatView, {
       activeSession: {
-        id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'running', backend: 'pi-agent',
+        id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
         llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
       },

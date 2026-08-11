@@ -591,7 +591,7 @@ export function decodeAgentRunEvent(value: unknown): AgentRunEvent {
 }
 
 function isBackendKind(value: unknown): value is BackendKind {
-  return value === 'ai-sdk' || value === 'fake' || value === 'pi-agent';
+  return value === 'ai-sdk' || value === 'fake';
 }
 
 export interface AgentRunStore {

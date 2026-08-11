@@ -478,7 +478,7 @@ function normalizeExecution(
   if (!isObject(value)) return fail('agent_run requires execution template');
   if (typeof value.cwd !== 'string' || !value.cwd.trim()) return fail('execution.cwd is required');
   if (typeof value.backend !== 'string') return fail('execution.backend is required');
-  if (value.backend !== 'ai-sdk' && value.backend !== 'fake' && value.backend !== 'pi-agent') {
+  if (value.backend !== 'ai-sdk' && value.backend !== 'fake') {
     return fail('execution.backend is invalid');
   }
   if (typeof value.llmConnectionSlug !== 'string' || !value.llmConnectionSlug.trim()) {

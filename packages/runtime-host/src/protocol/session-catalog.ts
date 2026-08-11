@@ -208,7 +208,7 @@ export interface SessionCatalogProjection {
   readonly revisionOfTurnId?: string;
   readonly revisionIndex?: number;
   readonly revisionState?: 'preparing' | 'committed';
-  readonly backend: 'ai-sdk' | 'fake' | 'pi-agent';
+  readonly backend: 'ai-sdk' | 'fake';
   readonly llmConnectionSlug: string;
   readonly connectionLocked: boolean;
   readonly model: string;
@@ -861,7 +861,7 @@ function sessionStatus(value: unknown): SessionStatus {
 }
 
 function backend(value: unknown): SessionCatalogProjection['backend'] {
-  if (value !== 'ai-sdk' && value !== 'fake' && value !== 'pi-agent') {
+  if (value !== 'ai-sdk' && value !== 'fake') {
     throw invalidProtocolFrame('Invalid Session backend');
   }
   return value;
