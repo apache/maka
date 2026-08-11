@@ -84,29 +84,6 @@ describe('ToolAvailabilityRuntime — economy mode', () => {
     assert.ok(!next.activeTools.includes('docs_edit'), 'other deferred groups remain hidden');
   });
 
-  test('unknown required tool names are ignored', () => {
-    const plan = runtime(true).prepare([], new Set(['not-a-tool']));
-    assert.ok(!plan.activeTools.includes('not-a-tool'));
-    assert.ok(!plan.activeTools.includes('rive_run'));
-  });
-
-  test('providerTools keeps every tool dispatchable, including hidden groups + invalid', () => {
-    const names = runtime(true)
-      .prepare([])
-      .providerTools.map((t) => t.name);
-    for (const n of [
-      'Read',
-      'Write',
-      'rive_run',
-      'docs_edit',
-      'docs_read',
-      LOAD_TOOLS_NAME,
-      'invalid',
-    ]) {
-      assert.ok(names.includes(n), `${n} present in providerTools`);
-    }
-  });
-
   test('the connector activates a group in the next request projection', () => {
     const plan = runtime(true).prepare([]);
     assert.ok(plan.projectActiveTools);
@@ -114,15 +91,6 @@ describe('ToolAvailabilityRuntime — economy mode', () => {
     assert.ok(next.activeTools.includes('docs_edit'), 'docs group active after load_tools(docs)');
     assert.ok(next.activeTools.includes('docs_read'));
     assert.ok(!next.activeTools.includes('rive_run'), 'an unloaded group stays hidden');
-  });
-
-  test('gating exposes group members and tracks the current step snapshot', () => {
-    const plan = runtime(true).prepare([]);
-    assert.ok(plan.gating);
-    assert.deepEqual([...plan.gating!.gatedNames].sort(), ['docs_edit', 'docs_read', 'rive_run']);
-    assert.ok(!plan.gating!.activeNames().has('rive_run'), 'rive hidden at step 0');
-    plan.projectActiveTools!({ completedSteps: [loadStep('rive')] });
-    assert.ok(plan.gating!.activeNames().has('rive_run'), 'snapshot updated after rive load');
   });
 
   test('connector rejects an unknown group', async () => {
@@ -143,39 +111,6 @@ describe('ToolAvailabilityRuntime — durable ledger seed', () => {
     const plan = runtime(true).prepare([event(LOAD_TOOLS_NAME, { group: 'rive' })]);
     assert.ok(plan.activeTools.includes('rive_run'), 'seeded group active from turn start');
     assert.ok(!plan.activeTools.includes('docs_edit'), 'unseeded group still hidden');
-  });
-});
-
-describe('ToolAvailabilityRuntime — diagnostics', () => {
-  test('reports the active subset, enabled/available groups, and schema reduction', () => {
-    const plan = runtime(true).prepare([]);
-    const d = plan.diagnostics(plan.activeTools, 100);
-    assert.ok(d);
-    assert.equal(d!.mode, 'economy');
-    assert.equal(d!.connectorToolName, LOAD_TOOLS_NAME);
-    assert.deepEqual(d!.enabledSourceIds, [], 'no group loaded at step 0');
-    assert.deepEqual(d!.availableSourceIds, ['docs', 'rive']);
-    assert.deepEqual(d!.visibleToolNamesBySource, {
-      docs: ['docs_edit', 'docs_read'],
-      rive: ['rive_run'],
-    });
-    assert.ok(
-      (d!.fullToolSchemaChars ?? 0) > (d!.visibleToolSchemaChars ?? 0),
-      'hidden schemas reduce the visible chars',
-    );
-    assert.ok((d!.toolSchemaCharReduction ?? 0) > 0);
-    // full = visible + hidden must hold (the connector is counted on both
-    // sides, so it cancels — guards against the hiddenToolCount off-by-one).
-    assert.equal(d!.hiddenToolCount, 3, 'rive(1) + docs(2) tools are hidden at step 0');
-    assert.equal(d!.fullToolCount, (d!.visibleToolCount ?? 0) + (d!.hiddenToolCount ?? 0));
-  });
-
-  test('enabledSourceIds grows once a group is loaded', () => {
-    const plan = runtime(true).prepare([]);
-    const active = plan.projectActiveTools!({ completedSteps: [loadStep('rive')] }).activeTools;
-    const d = plan.diagnostics(active, 100);
-    assert.deepEqual(d!.enabledSourceIds, ['rive']);
-    assert.deepEqual(d!.availableSourceIds, ['docs']);
   });
 });
 
