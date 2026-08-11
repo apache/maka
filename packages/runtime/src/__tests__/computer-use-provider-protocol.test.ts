@@ -1248,8 +1248,3 @@ function readBody(request: IncomingMessage): Promise<string> {
     request.on('error', reject);
   });
 }
-
-function respondJson(response: ServerResponse, status: number, body: unknown) {
-  response.writeHead(status, { 'content-type': 'application/json' });
-  response.end(JSON.stringify(body));
-}

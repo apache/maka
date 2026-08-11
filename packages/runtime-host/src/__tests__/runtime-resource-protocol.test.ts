@@ -149,16 +149,6 @@ describe('Runtime Resource protocol', () => {
   });
 });
 
-function ptySnapshot() {
-  return {
-    sessionId: 'session-1',
-    ref: runtimeRef,
-    sequence: 2,
-    buffer: '\u001b[2Jready',
-    size: { cols: 80, rows: 24 },
-  };
-}
-
 test('Runtime Resource invalidations batch lightweight unique identities', () => {
   const resources = Array.from({ length: SESSION_RUNTIME_RESOURCE_CHANGES_MAX }, (_, index) => ({
     sourceSessionId: 'source-session',
@@ -221,11 +211,6 @@ function resourceUpdate(overrides: Partial<ShellRunUpdate> = {}): ShellRunUpdate
     result: snapshot(),
     ...overrides,
   };
-}
-
-function compactState(): ShellRunUpdate['result'] {
-  const { output: _output, ...compact } = snapshot();
-  return compact;
 }
 
 function snapshot(overrides: Partial<PipeShellSnapshot> = {}): PipeShellSnapshot {

@@ -80,7 +80,6 @@ import type { MakaTool } from '../tool-runtime.js';
 import type { ShellRunProcessManager } from '../shell-run-manager.js';
 import type { InvocationResult } from '../invocation-context.js';
 import type { RuntimeCommitSink } from '../runtime-commit-sink.js';
-import type { ActiveFullCompactBlock } from '../active-full-compact.js';
 import {
   buildHistoryCompactCheckpoint,
   type HistoryCompactCheckpoint,
@@ -16005,46 +16004,6 @@ class HighVolumeDeltaBackend implements AgentBackend {
   async dispose(): Promise<void> {}
 }
 
-class TextCompleteBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
-  readonly sessionId: string;
-
-  constructor(ctx: BackendFactoryContext) {
-    this.sessionId = ctx.sessionId;
-  }
-
-  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-    const messageId = `${input.turnId}-m`;
-    yield {
-      type: 'text_delta',
-      id: `${input.turnId}-delta`,
-      turnId: input.turnId,
-      ts: 7_000,
-      messageId,
-      text: 'ok',
-    };
-    yield {
-      type: 'text_complete',
-      id: `${input.turnId}-text-complete`,
-      turnId: input.turnId,
-      ts: 7_001,
-      messageId,
-      text: 'ok',
-    };
-    yield {
-      type: 'complete',
-      id: `${input.turnId}-complete`,
-      turnId: input.turnId,
-      ts: 7_002,
-      stopReason: 'end_turn',
-    };
-  }
-
-  async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
-  async dispose(): Promise<void> {}
-}
-
 class LateErrorBackend implements AgentBackend {
   readonly kind = 'fake' as const;
   readonly sessionId: string;
@@ -16373,37 +16332,6 @@ class ThrowBeforeTerminalBackend implements AgentBackend {
   async dispose(): Promise<void> {}
 }
 
-class PartialAbortBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
-  readonly sessionId: string;
-
-  constructor(private readonly ctx: BackendFactoryContext) {
-    this.sessionId = ctx.sessionId;
-  }
-
-  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-    await this.ctx.store.appendMessage(this.sessionId, {
-      type: 'assistant',
-      id: `${input.turnId}-assistant`,
-      turnId: input.turnId,
-      ts: 12_001,
-      text: 'partial answer',
-      modelId: 'fake-model',
-    });
-    yield {
-      type: 'abort',
-      id: `${input.turnId}-abort`,
-      turnId: input.turnId,
-      ts: 12_002,
-      reason: 'user_stop',
-    };
-  }
-
-  async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
-  async dispose(): Promise<void> {}
-}
-
 class TraceBackend implements AgentBackend {
   readonly kind = 'fake' as const;
   readonly sessionId: string;
@@ -16635,32 +16563,6 @@ class ProviderCaptureAfterAttemptFailureBackend implements AgentBackend {
       id: `${input.turnId}-complete`,
       turnId: input.turnId,
       ts: 3,
-      stopReason: 'end_turn',
-    };
-  }
-
-  async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
-  async dispose(): Promise<void> {}
-}
-
-class ActiveCompactBlockBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
-  readonly sessionId: string;
-
-  constructor(private readonly ctx: BackendFactoryContext) {
-    this.sessionId = ctx.sessionId;
-  }
-
-  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-    this.ctx.recordActiveFullCompactBlock?.(
-      activeCompactBlockFixture(this.sessionId, input.turnId),
-    );
-    yield {
-      type: 'complete',
-      id: `${input.turnId}-complete`,
-      turnId: input.turnId,
-      ts: 4,
       stopReason: 'end_turn',
     };
   }
@@ -17118,53 +17020,6 @@ class InitialCheckpointLoadRaceProbeBackend implements AgentBackend {
   async stop(): Promise<void> {}
   async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
-}
-
-function activeCompactBlockFixture(sessionId: string, turnId: string): ActiveFullCompactBlock {
-  return {
-    kind: 'maka.active_full_compact_block',
-    version: 1,
-    blockId: 'afcompact-test',
-    sessionId,
-    turnId,
-    createdAt: 12_775,
-    highWaterName: 'test-high-water',
-    highWaterSeq: 2,
-    trigger: {
-      reason: 'high_water',
-      stepNumber: 2,
-      estimatedTokensBefore: 100,
-      thresholdTokens: 50,
-    },
-    coverage: {
-      turnIds: [turnId],
-      runtimeEventIds: ['runtime-1'],
-      providerMessageSourceIds: ['provider-message:0'],
-      toolCallIds: ['tool-1'],
-      contentKinds: ['text'],
-      bodySha256: ['a'.repeat(64)],
-    },
-    summary: {
-      schemaVersion: 1,
-      text: 'persist the full active compact block',
-      processState: ['qemu-system-x86_64 pid=4242'],
-    },
-    limitations: ['test fixture'],
-    sourceRefs: [
-      {
-        kind: 'runtime_event',
-        sourceId: 'provider-message:0',
-        messageIndex: 0,
-        sessionId,
-        turnId,
-        runtimeEventId: 'runtime-1',
-        toolCallId: 'tool-1',
-        contentKind: 'text',
-        bodySha256: 'a'.repeat(64),
-      },
-    ],
-    estimatedTokens: 42,
-  };
 }
 
 class MemorySessionStore implements SessionStore {
@@ -18256,17 +18111,6 @@ function hostedRootAuthority(): RuntimeHostedRootAuthority {
     stopRoot: async () => {},
     stopSession: async () => {},
   };
-}
-
-function noOpShellRunProcessManager(): ShellRunProcessManager {
-  return {
-    async terminateSession(sessionId: string) {
-      return { sessionId, token: Symbol('test') };
-    },
-    async commitSessionClose() {},
-    rollbackSessionClose() {},
-    resumeSession() {},
-  } as unknown as ShellRunProcessManager;
 }
 
 function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {

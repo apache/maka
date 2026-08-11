@@ -6,7 +6,6 @@ import {
   runtimeGateFromCallback,
   type RuntimeGate,
 } from '../runtime-runner.js';
-import type { AttachmentRef } from '@maka/core/events';
 import type {
   InvocationContext,
   InvocationProviders,
@@ -38,14 +37,6 @@ function makeRequest(overrides: Partial<InvocationRequest> = {}): InvocationRequ
     ...overrides,
   };
 }
-
-const attachment: AttachmentRef = {
-  kind: 'image',
-  name: 'chart.png',
-  mimeType: 'image/png',
-  bytes: 123,
-  ref: { kind: 'session_file', sessionId: 'sess-1', relativePath: 'attachments/chart.png' },
-};
 
 type AgentFlowContext = Parameters<AgentFlow['run']>[0];
 const _canonicalContextIsFlowContext: InvocationContext = {} as AgentFlowContext;

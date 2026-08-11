@@ -65,10 +65,6 @@ import type { SandboxDiagnosticsSnapshot } from '../sandbox/diagnostics.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { RunTrace } from '../run-trace.js';
-import {
-  bindRuntimeInteractionRun,
-  type RuntimeInteractionRunOwner,
-} from '../interaction-authority.js';
 import type {
   ProviderRequestAttemptRecord,
   ProviderRequestCaptureRecord,
@@ -13157,66 +13153,6 @@ function compactPrompt(model: MockLanguageModelV4): unknown {
   }));
 }
 
-function promptTextSequence(model: MockLanguageModelV4): Array<{
-  role: string;
-  text: string | undefined;
-}> {
-  return (model.doStreamCalls[0]?.prompt ?? []).map((message) => ({
-    role: message.role,
-    text: Array.isArray(message.content)
-      ? message.content.find((part) => part.type === 'text')?.text
-      : undefined,
-  }));
-}
-
-function activeFullCompactBlockFixture(): ActiveFullCompactBlock {
-  return {
-    kind: 'maka.active_full_compact_block',
-    version: 1,
-    blockId: 'afcompact-sync-test',
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    createdAt: 1_001,
-    highWaterName: 'sync-test',
-    highWaterSeq: 1,
-    trigger: {
-      reason: 'manual_test',
-      stepNumber: 2,
-      estimatedTokensBefore: 100,
-      thresholdTokens: 50,
-    },
-    coverage: {
-      turnIds: ['turn-1'],
-      runtimeEventIds: ['runtime-event-1'],
-      providerMessageSourceIds: ['provider-message:0'],
-      toolCallIds: [],
-      contentKinds: ['text'],
-      bodySha256: ['sha256-sync-test'],
-    },
-    summary: {
-      schemaVersion: 1,
-      text: 'persist synchronously before the next provider request',
-    },
-    limitations: [],
-    sourceRefs: [
-      {
-        kind: 'provider_message',
-        sourceId: 'provider-message:0',
-        messageIndex: 0,
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        runtimeEventId: 'runtime-event-1',
-        contentKind: 'text',
-        bodySha256: 'sha256-sync-test',
-      },
-    ],
-  };
-}
-
-function countActiveFullCompactMarkers(text: string): number {
-  return text.match(/<maka_active_full_compact_block/g)?.length ?? 0;
-}
-
 function modelCallSettings(model: MockLanguageModelV4): unknown {
   const call = model.doStreamCalls[0] as unknown as Record<string, unknown> | undefined;
   if (!call) return {};
@@ -13291,74 +13227,6 @@ function nativeApplyPatchTool(): MakaTool {
     providerTool: { kind: 'openai-apply-patch' },
     impl: async () => ({ status: 'completed' }),
   };
-}
-
-function permissionTool(onExecute?: () => void): MakaTool {
-  return {
-    name: 'Bash',
-    description: 'shell',
-    parameters: z.object({ command: z.string() }),
-    impl: async () => {
-      onExecute?.();
-      return { ok: true };
-    },
-  };
-}
-
-function singlePermissionToolModel(): MockLanguageModelV4 {
-  let calls = 0;
-  return new MockLanguageModelV4({
-    doStream: async () => {
-      calls += 1;
-      const chunks: LanguageModelV4StreamPart[] =
-        calls === 1
-          ? [
-              { type: 'stream-start', warnings: [] },
-              {
-                type: 'tool-call',
-                toolCallId: 'tool-1',
-                toolName: 'Bash',
-                input: JSON.stringify({ command: 'rm local-file' }),
-              },
-              {
-                type: 'finish',
-                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                usage: emptyUsage(),
-              },
-            ]
-          : [
-              { type: 'stream-start', warnings: [] },
-              {
-                type: 'finish',
-                finishReason: { unified: 'stop', raw: 'stop' },
-                usage: emptyUsage(),
-              },
-            ];
-      return {
-        stream: simulateReadableStream({
-          chunks,
-          initialDelayInMs: null,
-          chunkDelayInMs: null,
-        }),
-      };
-    },
-  });
-}
-
-async function hostedInteractionBinding(overrides: Partial<RuntimeInteractionRunOwner>) {
-  return await bindRuntimeInteractionRun(
-    {
-      bindRun: (identity) => ({
-        ...identity,
-        acceptSandboxBoundaryRequest: async () => {},
-        acceptUserQuestionRequest: async () => {},
-        close: async () => {},
-        release: () => {},
-        ...overrides,
-      }),
-    },
-    { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' },
-  );
 }
 
 async function collectEvents(

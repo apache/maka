@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 
 import { MODEL_CALL_ATTEMPT_SCHEMA_VERSION, type ModelCallAttempt } from '../model-call-attempt.js';
 import { mergeUsageBuckets, mergeUsageLogs, mergeUsageSummary } from '../usage-ledger-merge.js';
-import { usageBucketKey } from '../usage-stats/bucket-key.js';
 import type { UsageBucket, UsageLogRow, UsageSummaryV2 } from '../usage-stats/types.js';
 
 // A realistic epoch-ms clock: a small NOW would push relative ranges negative
@@ -94,10 +93,6 @@ function legacyBucket(overrides: Partial<UsageBucket> = {}): UsageBucket {
     errorRate: 0.5,
     ...overrides,
   };
-}
-
-function hourKey(ts: number): string {
-  return usageBucketKey({ providerId: 'anthropic', modelId: 'claude-opus-5', ts }, 'hour');
 }
 
 describe('usage ledger merge', () => {

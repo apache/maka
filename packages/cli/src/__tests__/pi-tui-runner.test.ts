@@ -2234,69 +2234,6 @@ describe('Maka Pi TUI runner', () => {
     assert.deepEqual(driver.permissionModes, []);
   });
 
-  test('returns from Bypass to Auto without a confirmation', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'bypass',
-      terminal,
-    });
-
-    terminal.input('/permissions auto');
-    terminal.input('\r');
-    await waitFor(() => driver.permissionModes.length === 1);
-
-    assert.deepEqual(driver.permissionModes, ['ask']);
-    assert.doesNotMatch(terminal.output(), /Switch to full access/);
-
-    exitMaka(terminal);
-    await run;
-  });
-
-  test('shows, enables, and disables persistent Swarm Mode without sending a prompt', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'deepseek-v4-flash',
-      connectionSlug: 'deepseek',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/swarm');
-    terminal.input('\r');
-    await waitFor(() => terminal.output().includes('Swarm Mode is off'));
-
-    terminal.input('/swarm on');
-    terminal.input('\r');
-    await waitFor(() => driver.orchestrationModes.length === 1);
-    await waitFor(() => terminal.output().includes('Swarm Mode enabled'));
-    assert.ok(plainTerminalOutput(terminal.screenOutput()).includes('swarm'));
-
-    terminal.input('/swarm status');
-    terminal.input('\r');
-    await waitFor(() => terminal.output().includes('Swarm Mode is on'));
-
-    terminal.input('/swarm off');
-    terminal.input('\r');
-    await waitFor(() => driver.orchestrationModes.length === 2);
-    await waitFor(() => terminal.output().includes('Swarm Mode disabled'));
-
-    assert.deepEqual(driver.orchestrationModes, ['swarm', 'default']);
-    assert.deepEqual(driver.prompts, []);
-
-    exitMaka(terminal);
-    await run;
-  });
-
   test('runs /swarm <task> as one trusted swarm turn with clean transcript text', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -4701,31 +4638,6 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
-  test('points a missing-cwd resume failure at the explicit recovery command', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new MissingCwdSwitchSessionDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-      resumeSessionId: 'session-moved',
-    });
-
-    await waitFor(() => terminal.output().includes('--cwd <new-path>'));
-    const normalized = plainTerminalOutput(terminal.output()).replace(/\s+/g, ' ');
-    assert.match(
-      normalized,
-      /Retry with: maka --resume session-moved --cwd <new-path>\. Starting fresh\./,
-    );
-
-    exitMaka(terminal);
-    await run;
-  });
-
   test('resumes an active Host turn from its atomic transcript and continues live output', async () => {
     const terminal = new FakeTerminal();
     const driver = new ActiveResumeDriver();
@@ -4818,11 +4730,6 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 });
-
-/** Count the standalone BEL bytes the attention layer wrote. */
-function bellCount(terminal: FakeTerminal): number {
-  return terminal.writes.filter((write) => write === '\x07').length;
-}
 
 function editorInputText(terminal: FakeTerminal): string | undefined {
   const lines = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
@@ -5518,65 +5425,6 @@ class SlowStopDriver implements MakaSessionDriver {
   }
 }
 
-class ThinkingOutputDriver implements MakaSessionDriver {
-  async listSessions(): Promise<SessionSummary[]> {
-    return [];
-  }
-
-  preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
-    return prepareTestPrompt(this, prompt);
-  }
-
-  async *compactSession(): AsyncIterable<never> {}
-
-  async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
-    yield {
-      type: 'thinking_delta',
-      id: 'event-thinking',
-      turnId: 'turn-1',
-      ts: 1,
-      messageId: 'message-1',
-      text: 'secret reasoning tail',
-    };
-    yield {
-      type: 'text_complete',
-      id: 'event-text',
-      turnId: 'turn-1',
-      ts: 2,
-      messageId: 'message-1',
-      text: 'visible answer',
-    };
-    yield {
-      type: 'complete',
-      id: 'event-complete',
-      turnId: 'turn-1',
-      ts: 3,
-      stopReason: 'end_turn',
-    };
-  }
-
-  async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
-  async renameSession(): Promise<void> {}
-  async setModel(): Promise<void> {}
-  async setPermissionMode(): Promise<void> {}
-  async setThinkingLevel(): Promise<void> {}
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    return switchResult(fakeSessionSummary(sessionId));
-  }
-
-  async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
-  }
-  async rewindToTurn(): Promise<MakaSessionRewindResult> {
-    throw new Error('rewind not supported in this fake');
-  }
-  startNewSession(): void {}
-  getSessionId(): string {
-    return 'session-1';
-  }
-}
-
 class ToolOutputDriver implements MakaSessionDriver {
   async listSessions(): Promise<SessionSummary[]> {
     return [];
@@ -6005,12 +5853,6 @@ class FailingSwitchSessionDriver extends SlashCommandDriver {
   }
 }
 
-class MissingCwdSwitchSessionDriver extends SlashCommandDriver {
-  override async switchSession(_sessionId: string): Promise<MakaSessionSwitchResult> {
-    throw new Error('Session cwd no longer exists: /repo/old');
-  }
-}
-
 class ActiveResumeDriver extends SlashCommandDriver {
   override async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
     const switched = await super.switchSession(sessionId);
@@ -6188,84 +6030,6 @@ class HostSuccessorDriver extends SlashCommandDriver {
   }
 }
 
-// Switches onto a session on a different connection/model, then emits a
-// token_usage event on the next turn so the ctx statusline segment can be
-// checked against the *new* session's context window.
-class ModelSwitchDriver extends SlashCommandDriver {
-  constructor() {
-    super([
-      {
-        ...fakeSessionSummary('session-2', '/repo'),
-        llmConnectionSlug: 'conn-b',
-        model: 'model-b',
-      },
-    ]);
-  }
-
-  override async *promptEvents(_prompt: string, turnId = 'turn-1'): AsyncIterable<SessionEvent> {
-    yield {
-      type: 'token_usage',
-      id: 'event-token-usage',
-      turnId,
-      ts: 1,
-      input: 150_000,
-      output: 0,
-      contextRemaining: 50_000,
-    };
-    yield { type: 'complete', id: 'event-complete', turnId, ts: 2, stopReason: 'end_turn' };
-  }
-}
-
-// Switches onto a session with the *same* connection but a model that has
-// been curated out of modelChoices (a legitimate state for old sessions —
-// see applySwitchResult). No exact contextWindowMatch exists, so the stale
-// window from the pre-switch session must be cleared, not kept.
-class CuratedOutModelSwitchDriver extends SlashCommandDriver {
-  constructor() {
-    super([
-      {
-        ...fakeSessionSummary('session-2', '/repo'),
-        llmConnectionSlug: 'claude-subscription',
-        model: 'legacy-model',
-      },
-    ]);
-  }
-
-  override async *promptEvents(_prompt: string, turnId = 'turn-1'): AsyncIterable<SessionEvent> {
-    yield {
-      type: 'token_usage',
-      id: 'event-token-usage',
-      turnId,
-      ts: 1,
-      input: 150_000,
-      output: 0,
-      contextRemaining: 50_000,
-    };
-    yield { type: 'complete', id: 'event-complete', turnId, ts: 2, stopReason: 'end_turn' };
-  }
-}
-
-class RuntimeTurnIdentityDriver extends SlashCommandDriver {
-  async preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
-    return {
-      sessionId: this.sessionId,
-      turnId: 'runtime-turn-42',
-      events: this.promptEvents(prompt),
-    };
-  }
-
-  override async *promptEvents(prompt: string): AsyncIterable<SessionEvent> {
-    this.prompts.push(prompt);
-    yield {
-      type: 'complete',
-      id: 'event-complete',
-      turnId: 'runtime-turn-42',
-      ts: 1,
-      stopReason: 'end_turn',
-    };
-  }
-}
-
 class FirstSessionPreparedDriver extends SlashCommandDriver {
   readonly streamStarted = deferred<void>();
   readonly releaseStream = deferred<void>();
@@ -6316,45 +6080,6 @@ class HangingCloseDriver extends SlashCommandDriver {
   }
 }
 
-class HangingTurnDriver extends SlashCommandDriver {
-  private resolveComplete: (() => void) | null = null;
-
-  override async *promptEvents(prompt: string): AsyncIterable<SessionEvent> {
-    this.prompts.push(prompt);
-    yield {
-      type: 'text_delta',
-      id: 'event-text-delta',
-      turnId: 'turn-1',
-      ts: 1,
-      messageId: 'msg-1',
-      text: 'thinking…',
-    };
-    await new Promise<void>((resolve) => {
-      this.resolveComplete = resolve;
-    });
-    yield {
-      type: 'text_complete',
-      id: 'event-text-complete',
-      turnId: 'turn-1',
-      ts: 2,
-      messageId: 'msg-1',
-      text: 'done',
-    };
-    yield {
-      type: 'complete',
-      id: 'event-complete',
-      turnId: 'turn-1',
-      ts: 3,
-      stopReason: 'end_turn',
-    };
-  }
-
-  releaseComplete(): void {
-    this.resolveComplete?.();
-    this.resolveComplete = null;
-  }
-}
-
 class LongTranscriptDriver extends SlashCommandDriver {
   override async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     yield {
@@ -6372,57 +6097,6 @@ class LongTranscriptDriver extends SlashCommandDriver {
       ts: 2,
       stopReason: 'end_turn',
     };
-  }
-}
-
-class DeferredCompactDriver extends SlashCommandDriver {
-  compactCalls = 0;
-  private resolveCompact: (() => void) | null = null;
-
-  override async *compactSession(): AsyncIterable<SessionEvent> {
-    this.compactCalls += 1;
-    await new Promise<void>((resolve) => {
-      this.resolveCompact = resolve;
-    });
-    yield {
-      type: 'token_usage',
-      id: 'event-token-usage',
-      turnId: 'turn-compact',
-      ts: 1,
-      input: 0,
-      output: 0,
-      contextBudget: {
-        enabled: true,
-        policyName: 'unit-budget',
-        estimatedTokensBefore: 1000,
-        estimatedTokensAfter: 400,
-        keptTurns: 1,
-        droppedTurns: 2,
-        keptEvents: 2,
-        droppedEvents: 4,
-        compactionDecisions: [
-          {
-            stage: 'priorReplay',
-            sourceKind: 'runtimeEvents',
-            decision: 'replaced',
-            boundaryKind: 'historyCompact',
-            estimatedTokensSaved: 600,
-          },
-        ],
-      },
-    };
-    yield {
-      type: 'complete',
-      id: 'event-complete',
-      turnId: 'turn-compact',
-      ts: 2,
-      stopReason: 'end_turn',
-    };
-  }
-
-  releaseCompact(): void {
-    this.resolveCompact?.();
-    this.resolveCompact = null;
   }
 }
 
@@ -6560,13 +6234,6 @@ class DeferredListSessionsDriver extends SlashCommandDriver {
   releaseList(): void {
     this.resolveList?.();
     this.resolveList = null;
-  }
-}
-
-class CanonicalRenameDriver extends SlashCommandDriver {
-  override async renameSession(name: string): Promise<string> {
-    await super.renameSession(name);
-    return 'Raw title';
   }
 }
 

@@ -1371,14 +1371,6 @@ async function expectRejects(promise: Promise<unknown>, pattern: RegExp): Promis
   throw new Error('Expected promise to reject');
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for condition');
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-}
-
 function childHeader(cwd: string): SessionHeader {
   return {
     id: 'session-1',
