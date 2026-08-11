@@ -2,7 +2,6 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   createTurnSizeIndex,
-  layoutKeyFor,
   layoutKeyOf,
   measureSettledGeometry,
   measureTurnGeometry,
@@ -34,7 +33,6 @@ function fakeRoot(options: {
 }
 
 describe('createTurnSizeIndex', () => {
-
   it('drops the oldest session past capacity', () => {
     const index = createTurnSizeIndex(2);
     index.record('s1', 'k', geometry({ a: 1 }));
@@ -44,14 +42,10 @@ describe('createTurnSizeIndex', () => {
     assert.ok(index.lookup('s2', 'k'));
     assert.ok(index.lookup('s3', 'k'));
   });
-
-
 });
 
 describe('prefixHeightFor', () => {
   const ids = ['a', 'b', 'c', 'd'];
-
-
 
   it('is undefined when any prefix turn lacks a height', () => {
     assert.equal(prefixHeightFor(ids, 2, geometry({ a: 100 })), undefined);
@@ -64,16 +58,11 @@ describe('prefixHeightFor', () => {
   });
 });
 
-describe('layoutKeyOf', () => {
-
-});
-
 describe('measureSettledGeometry', () => {
   const turns = [
     { id: 'a', top: 0, height: 100 },
     { id: 'b', top: 104, height: 200 },
   ];
-
 
   it('aborts when the layout moved since the key was captured', () => {
     const before = layoutKeyOf(fakeRoot({ width: 900 }));
@@ -94,11 +83,9 @@ describe('measureSettledGeometry', () => {
       assert.equal(attempt.geometry.gap, 4);
     }
   });
-
 });
 
 describe('measureTurnGeometry', () => {
-
   it('records heights and the median between-turn gap', () => {
     const record = measureTurnGeometry([
       { turnId: 'a', top: 0, height: 100 },
