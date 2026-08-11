@@ -244,7 +244,12 @@ async function importRuntimePolicy(
     memory: settings.localMemory,
     workspaceInstructions: settings.workspaceInstructions,
     privacy: settings.privacy,
-    chatDefaults: settings.chatDefaults,
+    chatDefaults: {
+      permissionMode: settings.chatDefaults.permissionMode,
+      ...(settings.chatDefaults.thinkingLevel === undefined
+        ? {}
+        : { thinkingLevel: settings.chatDefaults.thinkingLevel }),
+    },
     webSearch: {
       enabled: settings.webSearch.enabled,
       defaultProvider: settings.webSearch.defaultProvider,

@@ -1,5 +1,7 @@
 import {
   forwardRef,
+  lazy,
+  Suspense,
   useEffect,
   useImperativeHandle,
   useMemo,
@@ -16,15 +18,18 @@ import { useMountedRef } from './use-mounted-ref.js';
 import {
   ICON_SIZE,
   ArrowUp,
+  CornerDownRight,
   FileText,
   ListTodo,
+  ListEnd,
   Network,
   Pencil,
   Plus,
-  Square,
   Sparkles,
+  SquareStop,
   Upload,
   Workflow,
+  X,
 } from './icons.js';
 import {
   ChatModelSwitcher,
@@ -53,7 +58,16 @@ import {
   type ComposerTextPort,
 } from './chat-input-behavior.js';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
-import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
+import type {
+  AttachmentRef,
+  FollowUpMode,
+  MessageQueueEntryProjection,
+  MessageQueueMutation,
+  PermissionMode,
+  ProviderType,
+  QuoteRef,
+  SessionSummary,
+} from '@maka/core';
 import {
   Button as UiButton,
   ChatComposer as AstryxChatComposer,
@@ -61,6 +75,8 @@ import {
   ChatComposerInput,
   IconButton,
   Lightbox,
+  SegmentedControl,
+  SegmentedControlItem,
   Token,
   Tooltip,
   useChatPasteAsToken,
@@ -85,6 +101,13 @@ import {
   workspaceFileReferencePositions,
   type WorkspaceFileReferencePosition,
 } from './inline-reference.js';
+
+const loadComposerMessageQueue = () => import('./composer-message-queue.js');
+const ComposerMessageQueue = lazy(() =>
+  loadComposerMessageQueue().then((module) => ({
+    default: module.ComposerMessageQueue,
+  })),
+);
 
 /** A Skill as the composer offers it: what the `/` menu lists and what a
  * chosen entry writes into the draft. */
@@ -175,6 +198,7 @@ export interface ComposerHandle {
 
 export interface ComposerSendMetadata {
   workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
+  followUpMode?: FollowUpMode;
 }
 
 type ComposerImportActionId = 'pick' | 'attach';
@@ -209,6 +233,16 @@ export const Composer = forwardRef<
     continuing?: boolean;
     /** True while the current streaming session is processing a stop request. */
     stopPending?: boolean;
+    followUpMode?: FollowUpMode;
+    queuedMessages?: {
+      paused?: boolean;
+      steering: readonly MessageQueueEntryProjection[];
+      followup: readonly MessageQueueEntryProjection[];
+      pendingEntryIds?: ReadonlySet<string>;
+    };
+    onFollowUpModeChange?(mode: FollowUpMode): void;
+    onRetractQueued?(): void | Promise<void>;
+    onQueueMutation?(mutation: MessageQueueMutation): boolean | void | Promise<boolean | void>;
     /** Runtime-only key used to keep unsent drafts isolated per session. */
     draftKey?: string;
     /** Optional host persistence for reload-safe draft scopes. */
@@ -1019,7 +1053,7 @@ export const Composer = forwardRef<
     [],
   );
 
-  async function sendCurrent() {
+  async function sendCurrent(followUpMode?: FollowUpMode) {
     if (
       props.disabled
       || props.sendBlocked
@@ -1038,12 +1072,17 @@ export const Composer = forwardRef<
     setSendPending(true);
     let sent: boolean | void;
     try {
-      const submit = props.streaming && props.onStreamingSubmit
-        ? props.onStreamingSubmit
-        : props.onSend;
+      const metadata: ComposerSendMetadata = {
+        ...(workspaceFileReferences.length > 0 ? { workspaceFileReferences } : {}),
+        ...(followUpMode ? { followUpMode } : {}),
+      };
+      const submit =
+        props.streaming && props.followUpMode === undefined && props.onStreamingSubmit
+          ? props.onStreamingSubmit
+          : props.onSend;
       sent = await submit(
         text,
-        workspaceFileReferences.length > 0 ? { workspaceFileReferences } : undefined,
+        Object.keys(metadata).length > 0 ? metadata : undefined,
       );
     } finally {
       sendPendingRef.current = false;
@@ -1074,7 +1113,7 @@ export const Composer = forwardRef<
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    void sendCurrent();
+    void sendCurrent(props.streaming ? props.followUpMode : undefined);
   }
 
   async function runImportAction(actionId: ComposerImportActionId, action: (() => void | Promise<void>) | undefined) {
@@ -1131,18 +1170,26 @@ export const Composer = forwardRef<
       if (handleArrowKey(event)) return;
     }
     if (event.key !== 'Enter') return;
-    // Shift+Enter / Alt+Enter insert a line break instead of sending. We have
-    // to insert it ourselves rather than fall through: ChatComposerInput's own
-    // Enter branch only exempts Shift, so a bare `return` here would hand it
-    // Alt+Enter as a submit — and that path clears the editor even when it
-    // sends nothing, silently dropping the draft.
-    if (event.shiftKey || event.altKey) {
+    // Alt+Enter always inserts a line break. Shift+Enter does the same while
+    // idle, but during a run it inverts Queue/Steer for one submission.
+    // ChatComposerInput's own Enter branch only exempts Shift, so every branch
+    // is handled here before its unconditional editor clear.
+    if (event.altKey || (event.shiftKey && !props.streaming)) {
       event.preventDefault();
       document.execCommand('insertLineBreak');
       return;
     }
     event.preventDefault();
-    void sendCurrent();
+    const selectedMode = props.followUpMode ?? 'queue';
+    const submitMode =
+      props.streaming && event.shiftKey
+        ? selectedMode === 'queue'
+          ? 'steer'
+          : 'queue'
+        : props.streaming
+          ? selectedMode
+          : undefined;
+    void sendCurrent(submitMode);
   }
 
   function onInputChange(next: string) {
@@ -1338,6 +1385,15 @@ export const Composer = forwardRef<
     || props.onSwarmModeChange
     || props.onGraphModeChange,
   );
+  const queueCount =
+    (props.queuedMessages?.steering.length ?? 0) +
+    (props.queuedMessages?.followup.length ?? 0);
+  const selectedFollowUpMode = props.followUpMode ?? 'queue';
+
+  useEffect(() => {
+    if (!props.streaming || props.followUpMode === undefined) return;
+    void loadComposerMessageQueue();
+  }, [props.followUpMode, props.streaming]);
 
   return (
     <>
@@ -1371,6 +1427,25 @@ export const Composer = forwardRef<
             onClick={() => props.revisionNotice?.onCancel()}
           />
         </div>
+      )}
+      {!props.hidden && queueCount > 0 && (
+        <Suspense
+          fallback={(
+            <div
+              className="maka-composer-queue maka-composer-queue-loading"
+              role="region"
+              aria-label={copy.queuedMessagesAriaLabel(queueCount)}
+              aria-busy="true"
+            />
+          )}
+        >
+          <ComposerMessageQueue
+            queuedMessages={props.queuedMessages!}
+            copy={copy}
+            onRetractQueued={props.onRetractQueued}
+            onQueueMutation={props.onQueueMutation}
+          />
+        </Suspense>
       )}
       <form
         ref={formRef}
@@ -1764,56 +1839,116 @@ export const Composer = forwardRef<
             </div>
           )}
           sendActions={(
-            <div className="maka-composer-right-controls" />
+            <div className="maka-composer-right-controls">
+              {props.streaming && props.followUpMode !== undefined ? (
+                <>
+                  {props.onFollowUpModeChange ? (
+                    <SegmentedControl
+                      value={selectedFollowUpMode}
+                      onChange={(value) => props.onFollowUpModeChange?.(value as FollowUpMode)}
+                      label={copy.followUpModeLabel}
+                      size="sm"
+                      className="maka-composer-follow-up-mode"
+                    >
+                      <SegmentedControlItem
+                        value="queue"
+                        label={copy.queueLabel}
+                        icon={<ListEnd size={14} aria-hidden="true" />}
+                      />
+                      <SegmentedControlItem
+                        value="steer"
+                        label={copy.followUpSteerLabel}
+                        icon={<CornerDownRight size={14} aria-hidden="true" />}
+                      />
+                    </SegmentedControl>
+                  ) : null}
+                  <IconButton
+                    variant="ghost"
+                    type="button"
+                    size="sm"
+                    className="maka-composer-stop-button"
+                    isDisabled={props.stopPending}
+                    aria-busy={props.stopPending ? 'true' : undefined}
+                    label={props.stopPending ? copy.stopping : copy.stopLabel}
+                    tooltip={props.stopPending ? copy.stopping : copy.stopLabel}
+                    onClick={() => {
+                      if (props.stopPending) return;
+                      void props.onStop();
+                    }}
+                    icon={<SquareStop size={15} aria-hidden="true" />}
+                  />
+                </>
+              ) : null}
+            </div>
           )}
-          sendButton={props.streaming && props.onStreamingSubmit ? (
-            <div className="maka-composer-running-actions">
-              <IconButton
-                variant="ghost"
-                type="button"
+          sendButton={props.streaming && props.followUpMode === undefined ? (
+            props.onStreamingSubmit ? (
+              <div className="maka-composer-running-actions">
+                <IconButton
+                  variant="ghost"
+                  type="button"
+                  isDisabled={props.stopPending}
+                  label={props.stopPending ? copy.stopping : copy.stopLabel}
+                  aria-busy={props.stopPending ? 'true' : undefined}
+                  data-pending={props.stopPending ? 'true' : undefined}
+                  onClick={() => {
+                    if (props.stopPending) return;
+                    void props.onStop();
+                  }}
+                  icon={<SquareStop size={ICON_SIZE.control} aria-hidden="true" />}
+                />
+                <IconButton
+                  variant="primary"
+                  type="submit"
+                  isDisabled={sendDisabled}
+                  label={copy.steerLabel}
+                  aria-busy={sendPending ? 'true' : undefined}
+                  data-pending={sendPending ? 'true' : undefined}
+                  tooltip={copy.steerLabel}
+                  icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
+                />
+              </div>
+            ) : (
+              <UiButton
+                variant="primary"
                 isDisabled={props.stopPending}
-                label={props.stopPending ? copy.stopping : copy.stopLabel}
-                aria-busy={props.stopPending ? 'true' : undefined}
-                data-pending={props.stopPending ? 'true' : undefined}
                 onClick={() => {
                   if (props.stopPending) return;
                   void props.onStop();
                 }}
-                icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
+                aria-busy={props.stopPending ? 'true' : undefined}
+                data-pending={props.stopPending ? 'true' : undefined}
+                label={props.stopPending ? copy.stopping : copy.stopLabel}
               />
-              <IconButton
-                variant="primary"
-                type="submit"
-                isDisabled={sendDisabled}
-                label={copy.steerLabel}
-                aria-busy={sendPending ? 'true' : undefined}
-                data-pending={sendPending ? 'true' : undefined}
-                tooltip={copy.steerLabel}
-                icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
-              />
-            </div>
-          ) : props.streaming ? (
-            <UiButton
-              variant="primary"
-              isDisabled={props.stopPending}
-              onClick={() => {
-                if (props.stopPending) return;
-                void props.onStop();
-              }}
-              aria-busy={props.stopPending ? 'true' : undefined}
-              data-pending={props.stopPending ? 'true' : undefined}
-              label={props.stopPending ? copy.stopping : copy.stopLabel}
-            />
+            )
           ) : (
             <IconButton
               variant="primary"
               type="submit"
               isDisabled={sendDisabled}
-              label={copy.sendLabel}
+              label={
+                props.streaming
+                  ? selectedFollowUpMode === 'queue'
+                    ? copy.queueLabel
+                    : copy.followUpSteerLabel
+                  : copy.sendLabel
+              }
               aria-busy={sendPending ? 'true' : undefined}
               data-pending={sendPending ? 'true' : undefined}
-              tooltip={sendTitle}
-              icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
+              tooltip={
+                props.streaming && props.followUpMode !== undefined
+                  ? selectedFollowUpMode === 'queue'
+                    ? copy.queueTooltip
+                    : copy.steerTooltip
+                  : sendTitle
+              }
+              icon={
+                props.streaming && props.followUpMode !== undefined
+                  ? selectedFollowUpMode === 'queue'
+                    ? <ListEnd size={ICON_SIZE.chrome} aria-hidden="true" />
+                    : <CornerDownRight size={ICON_SIZE.chrome} aria-hidden="true" />
+                  : <ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />
+              }
             />
           )}
         />

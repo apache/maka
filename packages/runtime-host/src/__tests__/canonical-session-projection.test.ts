@@ -508,6 +508,9 @@ function createMessages(
     startFromMessage: async () => {
       throw new Error('unexpected root start');
     },
+    startPausedFollowup: async () => {
+      throw new Error('unexpected paused follow-up start');
+    },
     prepareMessage: async (input) => ({ kind: 'ready', content: input.content }),
     claimStop: async () => {
       throw new Error('unexpected root stop');

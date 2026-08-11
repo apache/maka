@@ -497,8 +497,24 @@ function projectQueueUpdate(
     id: `host-queue:${queue.hostEpoch}:${queue.queueRevision}`,
     turnId,
     ts: now,
+    queueRevision: queue.queueRevision,
+    ...(queue.paused === true ? { paused: true } : {}),
     steering: queue.steering.map((entry) => entry.content.text),
     followup: queue.followup.map((entry) => entry.content.text),
+    steeringEntries: queue.steering.map((entry) => ({
+      entryId: entry.entryId,
+      messageId: entry.messageId,
+      content: structuredClone(entry.content),
+      placement: 'current_turn',
+      state: entry.state,
+    })),
+    followupEntries: queue.followup.map((entry) => ({
+      entryId: entry.entryId,
+      messageId: entry.messageId,
+      content: structuredClone(entry.content),
+      placement: 'next_turn',
+      state: 'queued',
+    })),
   };
 }
 

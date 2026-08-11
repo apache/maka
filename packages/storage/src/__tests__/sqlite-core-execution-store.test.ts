@@ -136,6 +136,10 @@ describe('SQLite core execution stores', () => {
         payload: { text: 'hello' },
         result: { disposition: 'turn_started', turnId: 'turn-1' },
       });
+      await store.commit('epoch-1', 'mutate', 'session-1', 'mutation-1', {
+        payload: { kind: 'remove', entryId: 'entry-1' },
+        result: { queueRevision: 2, disposition: 'removed' },
+      });
       store.close();
 
       const reopened = createSqliteMessageReceiptStore(root);
@@ -143,6 +147,10 @@ describe('SQLite core execution stores', () => {
         assert.deepEqual(
           (await reopened.read('epoch-1', 'submit', 'session-1', 'operation-1'))?.payload,
           { text: 'hello' },
+        );
+        assert.deepEqual(
+          (await reopened.read('epoch-1', 'mutate', 'session-1', 'mutation-1'))?.result,
+          { queueRevision: 2, disposition: 'removed' },
         );
       } finally {
         reopened.close();

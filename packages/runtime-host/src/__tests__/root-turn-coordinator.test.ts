@@ -2087,6 +2087,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
         requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
       startFromMessage: (input, admission) =>
         requireCoordinator(coordinator).startFromMessage(input, admission),
+      startPausedFollowup: (batch, admission) =>
+        requireCoordinator(coordinator).startPausedFollowup(batch, admission),
       prepareMessage: (input) => requireCoordinator(coordinator).prepareMessage(input),
       claimStop: (input, commitQueueFence, admission) =>
         requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),
@@ -4704,6 +4706,8 @@ async function createFailureFixture(options: {
       requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
     startFromMessage: (input, admission) =>
       requireCoordinator(coordinator).startFromMessage(input, admission),
+    startPausedFollowup: (batch, admission) =>
+      requireCoordinator(coordinator).startPausedFollowup(batch, admission),
     prepareMessage: (input) => requireCoordinator(coordinator).prepareMessage(input),
     claimStop: (input, commitQueueFence, admission) =>
       requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),

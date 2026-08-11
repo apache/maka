@@ -9,7 +9,10 @@ import {
   SIDE_CONVERSATION_SESSION_LABEL,
   type AttachmentRef,
 } from "@maka/core";
-import type { SessionCatalogProjection } from "@maka/runtime-host/protocol";
+import type {
+  SessionCatalogProjection,
+  SessionMessageQueueProjection,
+} from "@maka/runtime-host/protocol";
 import { createAttachmentApprovalRegistry } from "../attachment-approval.js";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
 import {
@@ -482,6 +485,73 @@ test("uploads a selected workspace file as a Host-owned Session Artifact", async
   );
 });
 
+test("queues rich followup content through Host-owned attachment ingestion", async () => {
+  const submits: unknown[] = [];
+  const attachment: AttachmentRef = {
+    kind: "other",
+    name: "notes.txt",
+    mimeType: "text/plain",
+    bytes: 5,
+    ref: {
+      kind: "session_file",
+      sessionId: "session-1",
+      relativePath: "artifact-1",
+    },
+  };
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        ingestAttachment: async () => attachment,
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "followup", queueRevision: 2 };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "message-1",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:enqueue", "session-1", "next_turn", {
+    text: "Read the queued context",
+    attachmentItems: [
+      {
+        name: "notes.txt",
+        mimeType: "text/plain",
+        base64: Buffer.from("hello").toString("base64"),
+      },
+    ],
+    quotes: [{ text: "quoted context", sourceTurnId: "turn-source" }],
+  });
+
+  assert.deepEqual(result, {
+    kind: "queued",
+    attachments: [attachment],
+    inlineReferences: [],
+  });
+  assert.deepEqual(submits, [
+    {
+      sessionId: "session-1",
+      messageId: "message-1",
+      placement: "next_turn",
+      content: {
+        text: "Read the queued context",
+        attachments: [attachment],
+        quotes: [{ text: "quoted context", sourceTurnId: "turn-source" }],
+        inlineReferences: [],
+      },
+    },
+  ]);
+});
+
 test("forwards explicit Skill invocation to the Host-owned Turn admission", async () => {
   const starts: unknown[] = [];
   const ipc = ipcHarness();
@@ -548,13 +618,37 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
 
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
   const submits: unknown[] = [];
+  const mutations: unknown[] = [];
+  const retracts: unknown[] = [];
   const interrupts: unknown[] = [];
   const stopLifecycle: string[] = [];
   let sequence = 0;
   const client = executionClient({
     submitMessage: async (input) => {
       submits.push(input);
-      return { disposition: "steering", queueRevision: 2 };
+      return {
+        disposition: input.placement === "current_turn" ? "steering" : "followup",
+        queueRevision: submits.length + 1,
+      };
+    },
+    mutateQueue: async (input) => {
+      mutations.push(input);
+      return { queueRevision: 3, disposition: "updated" };
+    },
+    retractQueue: async (input) => {
+      retracts.push(input);
+      return {
+        queueRevision: 4,
+        retracted: [
+          {
+            entryId: "entry-1",
+            messageId: "message-1",
+            content: { text: "Continue later" },
+            placement: "next_turn",
+            state: "retracted",
+          },
+        ],
+      };
     },
     interruptTurn: async (input) => {
       stopLifecycle.push("interrupt");
@@ -597,7 +691,29 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       kind: "queued",
     },
   );
-  await ipc.invoke("sessions:stop", "session-1");
+  assert.deepEqual(
+    await ipc.invoke("sessions:queueMessage", "session-1", " Continue later "),
+    { kind: "queued" },
+  );
+  assert.deepEqual(
+    await ipc.invoke("sessions:mutateQueue", "session-1", {
+      expectedQueueRevision: 2,
+      mutation: {
+        kind: "update",
+        entryId: "entry-1",
+        text: "Continue later, edited",
+      },
+    }),
+    { ok: true, queueRevision: 3 },
+  );
+  assert.deepEqual(
+    await ipc.invoke("sessions:retractQueue", "session-1"),
+    { text: "Continue later" },
+  );
+  await ipc.invoke("sessions:stop", "session-1", {
+    source: "stop_button",
+    preserveQueuedMessages: true,
+  });
   assert.deepEqual(stopLifecycle, ["teardown", "interrupt"]);
 
   assert.deepEqual(submits, [
@@ -607,15 +723,103 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       content: { text: "Continue" },
       placement: "current_turn",
     },
+    {
+      sessionId: "session-1",
+      messageId: "id-2",
+      content: { text: "Continue later" },
+      placement: "next_turn",
+    },
+  ]);
+  assert.deepEqual(mutations, [
+    {
+      sessionId: "session-1",
+      mutationId: "id-3",
+      expectedQueueRevision: 2,
+      mutation: {
+        kind: "update",
+        entryId: "entry-1",
+        text: "Continue later, edited",
+      },
+    },
+  ]);
+  assert.deepEqual(retracts, [
+    {
+      sessionId: "session-1",
+      retractId: "id-4",
+    },
   ]);
   assert.deepEqual(interrupts, [
     {
       sessionId: "session-1",
-      interruptId: "id-2",
+      interruptId: "id-5",
       turnId: "turn-1",
       runId: "run-1",
+      preserveQueuedMessages: true,
     },
   ]);
+  await observer.close();
+});
+
+test("returns rich queued content intact for composer restoration", async () => {
+  let retractCalls = 0;
+  const observer = observerWithTranscript([], {
+    hostEpoch: "host-1",
+    queueRevision: 2,
+    steering: [],
+    followup: [
+      {
+        entryId: "entry-rich",
+        messageId: "message-rich",
+        content: {
+          text: "Continue with context",
+          quotes: [{ text: "Important context" }],
+        },
+        placement: "next_turn",
+        state: "queued",
+      },
+    ],
+  });
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        retractQueue: async () => {
+          retractCalls += 1;
+          return {
+            queueRevision: 3,
+            retracted: [
+              {
+                entryId: "entry-rich",
+                messageId: "message-rich",
+                content: {
+                  text: "Continue with context",
+                  quotes: [{ text: "Important context" }],
+                },
+                placement: "next_turn",
+                state: "retracted",
+              },
+            ],
+          };
+        },
+      }),
+      observer,
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke("sessions:retractQueue", "session-1"),
+    {
+      text: "Continue with context",
+      quotes: [{ text: "Important context" }],
+    },
+  );
+  assert.equal(retractCalls, 1);
   await observer.close();
 });
 
@@ -632,9 +836,11 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     getSession: unavailable,
     ingestAttachment: unavailable,
     interruptTurn: unavailable,
+    mutateQueue: unavailable,
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,
+    retractQueue: unavailable,
     setSessionReadMarker: unavailable,
     startTurn: unavailable,
     startTurnResume: unavailable,
@@ -662,6 +868,12 @@ function observerWithSnapshot(): RuntimeHostSessionObserver {
 
 function observerWithTranscript(
   transcript: readonly import("@maka/core").StoredMessage[],
+  queue: SessionMessageQueueProjection = {
+    hostEpoch: "host-1",
+    queueRevision: 0,
+    steering: [],
+    followup: [],
+  },
 ): RuntimeHostSessionObserver {
   let finishEvents!: () => void;
   const eventsFinished = new Promise<void>((resolve) => {
@@ -688,12 +900,7 @@ function observerWithTranscript(
             status: "running",
           },
           goal: null,
-          queue: {
-            hostEpoch: "host-1",
-            queueRevision: 0,
-            steering: [],
-            followup: [],
-          },
+          queue,
           interactions: { pending: [] },
         },
         activeAssistantStreams: [],

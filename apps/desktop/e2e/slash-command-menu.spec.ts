@@ -106,7 +106,7 @@ test('offers commands only for the first token and keeps explicit Skill queries 
   await expect(inlineMenu.getByRole('group', { name: '命令' })).toHaveCount(0);
 });
 
-test('dispatches a staged slash command instead of steering it into a running turn', async ({
+test('dispatches a staged slash command instead of queueing it during a running turn', async ({
   invocableSkillsWindow: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
@@ -117,8 +117,11 @@ test('dispatches a staged slash command instead of steering it into a running tu
   await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
 
   await composer.fill('/compact explain');
-  await expect(page.getByRole('button', { name: '插入消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '排队' })).toBeVisible();
   await composer.press('Enter');
+  await expect(
+    page.locator('.maka-composer-queue-row', { hasText: '/compact explain' }),
+  ).toBeVisible();
 
   await composer.fill('/');
   const menu = page.getByRole('listbox', { name: '命令和技能' });
@@ -133,6 +136,29 @@ test('dispatches a staged slash command instead of steering it into a running tu
   await composer.press('Enter');
 
   await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(1);
-  await expect(page.getByText(/Acknowledged steering: \/compact explain/)).toBeVisible();
+  await expect(
+    page.locator('.maka-composer-queue-row', { hasText: '/compact explain' }),
+  ).toBeVisible();
   await page.getByRole('button', { name: '停止' }).click();
+});
+
+test('preserves queued work across Stop and resumes the successor turn', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill(FAKE_HOLD_OPEN_PROMPT);
+  await composer.press('Enter');
+  await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
+
+  await composer.fill('continue after stop');
+  await composer.press('Enter');
+  await expect(
+    page.locator('.maka-composer-queue-row', { hasText: 'continue after stop' }),
+  ).toBeVisible();
+
+  await page.getByRole('button', { name: '停止' }).click();
+  await expect(page.getByText('由于你中断了当前响应，队列已暂停')).toBeVisible();
+  await page.locator('.maka-composer-queue-resume').click();
+
+  await expect(page.getByText('Fake backend received: continue after stop')).toBeVisible();
 });

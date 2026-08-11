@@ -1,5 +1,6 @@
 import type { InteractionQueues } from '@maka/ui';
 import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state.js';
+import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
 import {
   deriveLiveTurnSnapshot,
   liveTurnSnapshotsEqual,
@@ -13,6 +14,7 @@ const selectMessageLoadError = (state: AppShellSessionUiState) => state.messageL
 const selectMessageRetryPending = (state: AppShellSessionUiState) => state.messageRetryPendingBySession;
 const selectStopPending = (state: AppShellSessionUiState) => state.stopPendingBySession;
 const selectInteraction = (state: AppShellSessionUiState) => state.interactionBySession;
+const selectMessageQueue = (state: AppShellSessionUiState) => state.messageQueueBySession;
 const selectPendingPermissionMode = (state: AppShellSessionUiState) => state.pendingPermissionModeBySession;
 const selectPendingSessionModel = (state: AppShellSessionUiState) => state.pendingSessionModelBySession;
 const selectPulseSet = (state: AppShellSessionUiState) => selectStreamingSessionIds(state.liveTurnBySession);
@@ -52,6 +54,7 @@ export function useAppShellSessionUiReads(
   messageRetryPendingBySession: Record<string, boolean>;
   stopPendingBySession: Record<string, boolean>;
   interactionBySession: InteractionQueues;
+  messageQueueBySession: Record<string, MessageQueueUiState>;
   pendingPermissionModeBySession: Record<string, boolean>;
   pendingSessionModelBySession: Record<string, boolean>;
   streamingSessionIds: Set<string>;
@@ -62,6 +65,7 @@ export function useAppShellSessionUiReads(
     messageRetryPendingBySession: useAppShellSessionUiSelector(controller, selectMessageRetryPending),
     stopPendingBySession: useAppShellSessionUiSelector(controller, selectStopPending),
     interactionBySession: useAppShellSessionUiSelector(controller, selectInteraction),
+    messageQueueBySession: useAppShellSessionUiSelector(controller, selectMessageQueue),
     pendingPermissionModeBySession: useAppShellSessionUiSelector(controller, selectPendingPermissionMode),
     pendingSessionModelBySession: useAppShellSessionUiSelector(controller, selectPendingSessionModel),
     streamingSessionIds: useAppShellSessionUiSelector(controller, selectPulseSet, undefined, sessionIdSetsEqual),

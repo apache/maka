@@ -14,6 +14,7 @@ import {
   type MessageContent,
   type TurnSnapshot,
 } from './turn.js';
+import type { MessageQueueMutation } from '@maka/core/events';
 
 export const MESSAGE_QUEUE_MAX_ENTRIES = 64;
 export const MESSAGE_QUEUE_PROJECTION_MAX_BYTES = 52 * 1024;
@@ -53,6 +54,7 @@ export type SteeringMessageSnapshot =
 export interface SessionMessageQueueProjection {
   readonly hostEpoch: string;
   readonly queueRevision: number;
+  readonly paused?: boolean;
   readonly steering: readonly SteeringMessageSnapshot[];
   readonly followup: readonly QueuedMessageSnapshot[];
 }
@@ -81,12 +83,28 @@ export interface QueueRetractResult {
   readonly retracted: readonly RetractedMessageSnapshot[];
 }
 
+export type QueueMutation = MessageQueueMutation;
+
+export interface QueueMutateInput {
+  readonly originHostEpoch: string;
+  readonly sessionId: string;
+  readonly mutationId: string;
+  readonly expectedQueueRevision: number;
+  readonly mutation: QueueMutation;
+}
+
+export interface QueueMutateResult {
+  readonly queueRevision: number;
+  readonly disposition: 'updated' | 'removed' | 'reordered' | 'promoted' | 'resumed';
+}
+
 export interface TurnInterruptInput {
   readonly originHostEpoch: string;
   readonly sessionId: string;
   readonly interruptId: string;
   readonly turnId: string;
   readonly runId: string;
+  readonly preserveQueuedMessages?: boolean;
 }
 
 export interface TurnInterruptResult {
@@ -122,6 +140,13 @@ export const MESSAGE_OPERATION_SPECS = {
     decodeInput: decodeQueueRetractInput,
     decodeOutput: decodeQueueRetractResult,
   }),
+  'queue.mutate': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: MESSAGE_OPERATION_ERRORS,
+    decodeInput: decodeQueueMutateInput,
+    decodeOutput: decodeQueueMutateResult,
+  }),
   'turn.interrupt': defineOperation({
     mode: 'control',
     availability: 'ready',
@@ -132,12 +157,17 @@ export const MESSAGE_OPERATION_SPECS = {
 } as const;
 
 export function decodeSessionMessageQueueProjection(value: unknown): SessionMessageQueueProjection {
-  const record = requireExactRecord(value, 'Session message queue projection', [
-    'hostEpoch',
-    'queueRevision',
-    'steering',
-    'followup',
-  ]);
+  const record = requireRecord(value, 'Session message queue projection');
+  assertExactKeys(
+    record,
+    'Session message queue projection',
+    record.paused === undefined
+      ? ['hostEpoch', 'queueRevision', 'steering', 'followup']
+      : ['hostEpoch', 'queueRevision', 'paused', 'steering', 'followup'],
+  );
+  if (record.paused !== undefined && typeof record.paused !== 'boolean') {
+    throw invalidProtocolFrame('Invalid queue paused state');
+  }
   const steering = decodeSteeringMessages(record.steering);
   const followup = decodeFollowupMessages(record.followup);
   if (steering.length + followup.length > MESSAGE_QUEUE_MAX_ENTRIES) {
@@ -147,6 +177,7 @@ export function decodeSessionMessageQueueProjection(value: unknown): SessionMess
   const projection = {
     hostEpoch: requireId(record.hostEpoch, 'queue hostEpoch'),
     queueRevision: requireCount(record.queueRevision, 'queueRevision'),
+    ...(record.paused === true ? { paused: true } : {}),
     steering,
     followup,
   };
@@ -214,20 +245,110 @@ function decodeQueueRetractResult(value: unknown): QueueRetractResult {
   return result;
 }
 
-function decodeTurnInterruptInput(value: unknown): TurnInterruptInput {
-  const record = requireExactRecord(value, 'turn.interrupt input', [
+function decodeQueueMutateInput(value: unknown): QueueMutateInput {
+  const record = requireExactRecord(value, 'queue.mutate input', [
     'originHostEpoch',
     'sessionId',
-    'interruptId',
-    'turnId',
-    'runId',
+    'mutationId',
+    'expectedQueueRevision',
+    'mutation',
   ]);
+  return {
+    originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    mutationId: requireEntityId(record.mutationId, 'mutationId'),
+    expectedQueueRevision: requireCount(record.expectedQueueRevision, 'expectedQueueRevision'),
+    mutation: decodeQueueMutation(record.mutation),
+  };
+}
+
+function decodeQueueMutation(value: unknown): QueueMutation {
+  const record = requireRecord(value, 'queue mutation');
+  if (record.kind === 'update') {
+    assertExactKeys(record, 'queue update mutation', ['kind', 'entryId', 'text']);
+    if (typeof record.text !== 'string' || record.text.trim().length === 0) {
+      throw invalidProtocolFrame('Invalid queued message text');
+    }
+    return {
+      kind: record.kind,
+      entryId: requireEntityId(record.entryId, 'entryId'),
+      text: record.text,
+    };
+  }
+  if (record.kind === 'remove' || record.kind === 'promote') {
+    assertExactKeys(record, `queue ${record.kind} mutation`, ['kind', 'entryId']);
+    return {
+      kind: record.kind,
+      entryId: requireEntityId(record.entryId, 'entryId'),
+    };
+  }
+  if (record.kind === 'resume') {
+    assertExactKeys(record, 'queue resume mutation', ['kind']);
+    return { kind: record.kind };
+  }
+  if (record.kind === 'reorder') {
+    assertExactKeys(record, 'queue reorder mutation', ['kind', 'placement', 'entryIds']);
+    const entryIds = requireBoundedArray(record.entryIds, 'queue reorder entry ids').map(
+      (entryId) => requireEntityId(entryId, 'entryId'),
+    );
+    if (new Set(entryIds).size !== entryIds.length) {
+      throw invalidProtocolFrame('Queue reorder repeats an entry identity');
+    }
+    return {
+      kind: record.kind,
+      placement: requireMessagePlacement(record.placement),
+      entryIds,
+    };
+  }
+  throw invalidProtocolFrame('Invalid queue mutation');
+}
+
+function decodeQueueMutateResult(value: unknown): QueueMutateResult {
+  const record = requireExactRecord(value, 'queue.mutate result', ['queueRevision', 'disposition']);
+  if (
+    record.disposition !== 'updated' &&
+    record.disposition !== 'removed' &&
+    record.disposition !== 'reordered' &&
+    record.disposition !== 'promoted' &&
+    record.disposition !== 'resumed'
+  ) {
+    throw invalidProtocolFrame('Invalid queue mutation disposition');
+  }
+  return {
+    queueRevision: requireCount(record.queueRevision, 'queueRevision'),
+    disposition: record.disposition,
+  };
+}
+
+function decodeTurnInterruptInput(value: unknown): TurnInterruptInput {
+  const record = requireRecord(value, 'turn.interrupt input');
+  assertExactKeys(
+    record,
+    'turn.interrupt input',
+    record.preserveQueuedMessages === undefined
+      ? ['originHostEpoch', 'sessionId', 'interruptId', 'turnId', 'runId']
+      : [
+          'originHostEpoch',
+          'sessionId',
+          'interruptId',
+          'turnId',
+          'runId',
+          'preserveQueuedMessages',
+        ],
+  );
+  if (
+    record.preserveQueuedMessages !== undefined &&
+    typeof record.preserveQueuedMessages !== 'boolean'
+  ) {
+    throw invalidProtocolFrame('Invalid preserve queued messages flag');
+  }
   return {
     originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     interruptId: requireEntityId(record.interruptId, 'interruptId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
     runId: requireEntityId(record.runId, 'runId'),
+    ...(record.preserveQueuedMessages === true ? { preserveQueuedMessages: true } : {}),
   };
 }
 

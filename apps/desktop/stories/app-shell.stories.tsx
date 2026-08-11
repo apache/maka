@@ -1,7 +1,13 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
-import type { ProjectRecord, SessionSummary, StoredMessage } from '@maka/core';
+import type {
+  MessageQueueEntryProjection,
+  MessageQueueMutation,
+  ProjectRecord,
+  SessionSummary,
+  StoredMessage,
+} from '@maka/core';
 import {
   ChatSurfaceLayout,
   ChatView,
@@ -489,6 +495,138 @@ export const StreamingTurn: Story = {
       }}
     />
   ),
+};
+
+function InteractiveQueueShell({ paused = false }: { paused?: boolean }) {
+  const [queue, setQueue] = useState<{
+    paused: boolean;
+    steering: MessageQueueEntryProjection[];
+    followup: MessageQueueEntryProjection[];
+  }>({
+    paused,
+    steering: paused ? [] : [{
+      entryId: 'queue-steer-1',
+      messageId: 'queue-message-1',
+      content: { text: '先保持现有接口，不要改协议字段' },
+      placement: 'current_turn',
+      state: 'queued',
+    }],
+    followup: [{
+      entryId: 'queue-followup-1',
+      messageId: 'queue-message-2',
+      content: {
+        text: '当前实现完成后跑完整 Desktop 测试并整理逆向结论',
+        attachments: [{
+          kind: 'other',
+          name: 'queue-notes.md',
+          mimeType: 'text/markdown',
+          bytes: 128,
+          ref: {
+            kind: 'session_file',
+            sessionId: activeSession.id,
+            relativePath: 'queue-notes.md',
+          },
+        }],
+        quotes: [{ text: 'Codex queue behavior evidence' }],
+      },
+      placement: 'next_turn',
+      state: 'queued',
+    }, {
+      entryId: 'queue-followup-2',
+      messageId: 'queue-message-3',
+      content: { text: '最后更新逆向文档中的完成状态与剩余边界' },
+      placement: 'next_turn' as const,
+      state: 'queued' as const,
+    }],
+  });
+
+  function mutateQueue(mutation: MessageQueueMutation): boolean {
+    setQueue((current) => {
+      if (mutation.kind === 'resume') return { ...current, paused: false };
+      if (mutation.kind === 'update') {
+        const update = (entry: MessageQueueEntryProjection) =>
+          entry.entryId === mutation.entryId
+            ? { ...entry, content: { ...entry.content, text: mutation.text } }
+            : entry;
+        return {
+          ...current,
+          steering: current.steering.map(update),
+          followup: current.followup.map(update),
+        };
+      }
+      if (mutation.kind === 'remove') {
+        return {
+          ...current,
+          steering: current.steering.filter((entry) => entry.entryId !== mutation.entryId),
+          followup: current.followup.filter((entry) => entry.entryId !== mutation.entryId),
+        };
+      }
+      if (mutation.kind === 'promote') {
+        const entry = current.followup.find((candidate) => candidate.entryId === mutation.entryId);
+        if (!entry) return current;
+        return {
+          ...current,
+          steering: [...current.steering, { ...entry, placement: 'current_turn' }],
+          followup: current.followup.filter((candidate) => candidate.entryId !== mutation.entryId),
+        };
+      }
+      const lane = mutation.placement === 'current_turn' ? current.steering : current.followup;
+      const byId = new Map(lane.map((entry) => [entry.entryId, entry]));
+      const reordered = mutation.entryIds.flatMap((entryId) => {
+        const entry = byId.get(entryId);
+        return entry ? [entry] : [];
+      });
+      return mutation.placement === 'current_turn'
+        ? { ...current, steering: reordered }
+        : { ...current, followup: reordered };
+    });
+    return true;
+  }
+
+  return (
+    <ComposedShell
+      session={{ status: queue.paused ? 'done' : 'running', streaming: !queue.paused }}
+      composer={{
+        followUpMode: 'queue',
+        queuedMessages: queue,
+        onFollowUpModeChange: noop,
+        onRetractQueued: noop,
+        onQueueMutation: mutateQueue,
+      }}
+      chat={queue.paused ? undefined : {
+        runningStatus: true,
+        messages: [
+          user('msg-q-1', 'turn-q', 3, '对照 Codex 把消息队列接到 Desktop，并把交互打磨好。'),
+          { type: 'turn_state', id: 'state-q', turnId: 'turn-q', ts: NOW - 30_000, status: 'running', partialOutputRetained: false },
+        ],
+        liveTurn: {
+          turnId: 'turn-q',
+          phase: 'streamed',
+          steps: [{
+            stepId: 'msg-assistant-q',
+            text: {
+              text: '我正在核对 Runtime Host 的 current_turn 与 next_turn 投影。',
+              truncated: false,
+              complete: false,
+            },
+            tools: [],
+          }],
+        },
+      }}
+    />
+  );
+}
+
+// Real path: send a message, leave Queue selected, then submit follow-ups while
+// the current turn is still running.
+export const QueuedFollowUps: Story = {
+  render: () => <InteractiveQueueShell />,
+};
+
+// Real path: queue follow-ups during a running turn, then stop that turn before
+// the queued messages are delivered.
+export const PausedFollowUps: Story = {
+  render: () => <InteractiveQueueShell paused />,
 };
 
 // Real path: ask for something long-running → a tool has been going for

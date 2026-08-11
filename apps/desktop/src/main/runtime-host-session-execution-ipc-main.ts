@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { IpcMainInvokeEvent } from "electron";
 import {
+  MAX_ATTACHMENT_COUNT,
+  aggregateMessageContents,
   deriveTurnRecords,
   SIDE_CONVERSATION_SESSION_LABEL,
   type ActiveInteractionRequestEvent,
@@ -22,7 +24,9 @@ import {
   normalizeRuntimeHostReviseBeforeTurnInput,
   normalizeSandboxBoundaryResponse,
   normalizeSessionSendCommand,
+  normalizeStopSessionInput,
   normalizeUserQuestionResponse,
+  type NormalizedStopSessionInput,
 } from "./permission-response-guard.js";
 import {
   handleReconnectableRead,
@@ -37,6 +41,7 @@ import {
 } from "./runtime-host-session-observer.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
+import { normalizeQueueMutationInput } from "./queue-mutation-guard.js";
 
 type RuntimeHostSessionExecutionClient = Pick<
   DesktopRuntimeHostClient,
@@ -49,6 +54,8 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "queryTurnResume"
   | "readExecutionBoundary"
   | "regenerateTurn"
+  | "retractQueue"
+  | "mutateQueue"
   | "setSessionReadMarker"
   | "startTurn"
   | "startTurnResume"
@@ -169,7 +176,10 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (!session)
         throw new Error(`Runtime Host Session not found: ${sessionId}`);
       const turnId = command.turnId ?? newId();
-      let attachments: AttachmentRef[] = [];
+      let attachments = retainedAttachmentsForSession(
+        sessionId,
+        command.retainedAttachments ?? [],
+      );
       if (command.attachmentItems !== undefined) {
         const files = await resolveIngestItems({
           senderId: event.sender.id,
@@ -177,7 +187,9 @@ export function registerRuntimeHostSessionExecutionIpc(
           approvals: deps.attachmentApprovals,
           stat: deps.stat,
         });
-        attachments = await resolveAttachmentRefs({
+        attachments = [
+          ...attachments,
+          ...(await resolveAttachmentRefs({
           files,
           cwd: session.workspace.hostCwd,
           sessionId,
@@ -190,7 +202,11 @@ export function registerRuntimeHostSessionExecutionIpc(
               mimeType,
               content,
             }),
-        });
+          })),
+        ];
+      }
+      if (attachments.length > MAX_ATTACHMENT_COUNT) {
+        throw new Error("Too many attachments");
       }
       const displayText =
         command.displayText ??
@@ -253,8 +269,132 @@ export function registerRuntimeHostSessionExecutionIpc(
       return { kind: "queued" as const };
     },
   );
-  ipcMain.handle("sessions:stop", async (_event, sessionId: string) =>
-    stopSession(sessionId),
+  ipcMain.handle(
+    "sessions:queueMessage",
+    async (_event, sessionId: string, text: unknown) => {
+      const content = steeringContent(text);
+      await deps.client.submitMessage({
+        sessionId,
+        messageId: newId(),
+        content: { text: content },
+        placement: "next_turn",
+      });
+      return { kind: "queued" as const };
+    },
+  );
+  ipcMain.handle(
+    "sessions:enqueue",
+    async (event, sessionId: string, placement: unknown, value: unknown) => {
+      if (placement !== "current_turn" && placement !== "next_turn") {
+        throw new Error("Invalid message placement");
+      }
+      const command = normalizeSessionSendCommand({
+        ...(value && typeof value === "object" ? value : {}),
+        type: "send",
+        turnId: newId(),
+      });
+      if (!command) throw new Error("Invalid queued message");
+      if ((command.skillIds?.length ?? 0) > 0) {
+        throw new Error("Queued Skill input is not available");
+      }
+      const session = await deps.client.getSession(sessionId);
+      if (!session) {
+        throw new Error(`Runtime Host Session not found: ${sessionId}`);
+      }
+      let attachments = retainedAttachmentsForSession(
+        sessionId,
+        command.retainedAttachments ?? [],
+      );
+      if (command.attachmentItems !== undefined) {
+        const files = await resolveIngestItems({
+          senderId: event.sender.id,
+          items: command.attachmentItems,
+          approvals: deps.attachmentApprovals,
+          stat: deps.stat,
+        });
+        attachments = [
+          ...attachments,
+          ...(await resolveAttachmentRefs({
+          files,
+          cwd: session.workspace.hostCwd,
+          sessionId,
+          workspaceFiles: "snapshot",
+          resizeImage: deps.resizeImage,
+          snapshot: ({ name, mimeType, content }) =>
+            deps.client.ingestAttachment({
+              sessionId,
+              name,
+              mimeType,
+              content,
+            }),
+          })),
+        ];
+      }
+      if (attachments.length > MAX_ATTACHMENT_COUNT) {
+        throw new Error("Too many attachments");
+      }
+      const displayText = command.displayText ?? command.text;
+      const inlineReferences = mergeWorkspaceFileInlineReferences({
+        displayText,
+        workspaceFileReferences: command.workspaceFileReferences,
+      });
+      const result = await deps.client.submitMessage({
+        sessionId,
+        messageId: newId(),
+        placement,
+        content: {
+          text: command.text,
+          ...(command.displayText !== undefined
+            ? { displayText: command.displayText }
+            : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
+          ...(command.quotes ? { quotes: command.quotes } : {}),
+          inlineReferences,
+        },
+      });
+      if (result.disposition === "turn_started") {
+        deps.emitSessionsChanged("status-change", sessionId, {
+          turnId: result.turnId,
+        });
+        return {
+          kind: "started" as const,
+          turnId: result.turnId,
+          attachments,
+          inlineReferences,
+        };
+      }
+      return {
+        kind: "queued" as const,
+        attachments,
+        inlineReferences,
+      };
+    },
+  );
+  ipcMain.handle("sessions:retractQueue", async (_event, sessionId: string) => {
+    const result = await deps.client.retractQueue({
+      sessionId,
+      retractId: newId(),
+    });
+    return aggregateMessageContents(result.retracted.map((entry) => entry.content));
+  });
+  ipcMain.handle(
+    "sessions:mutateQueue",
+    async (_event, sessionId: string, value: unknown) => {
+      const input = normalizeQueueMutationInput(value);
+      const queueRevision =
+        input.expectedQueueRevision ??
+        (await deps.observer.snapshot(sessionId)).queue.queueRevision;
+      const result = await deps.client.mutateQueue({
+        sessionId,
+        mutationId: newId(),
+        expectedQueueRevision: queueRevision,
+        mutation: input.mutation,
+      });
+      return { ok: true, queueRevision: result.queueRevision };
+    },
+  );
+  ipcMain.handle("sessions:stop", async (_event, sessionId: string, input: unknown) =>
+    stopSession(sessionId, normalizeStopSessionInput(input)),
   );
 
   ipcMain.handle(
@@ -417,14 +557,32 @@ export function registerRuntimeHostSessionExecutionIpc(
   return stopSession;
 }
 
+function retainedAttachmentsForSession(
+  sessionId: string,
+  attachments: readonly AttachmentRef[],
+): AttachmentRef[] {
+  return attachments.map((attachment) => {
+    if (attachment.ref.kind === "external_file") {
+      throw new Error("External file attachments must be selected again");
+    }
+    if (
+      attachment.ref.kind === "session_file" &&
+      attachment.ref.sessionId !== sessionId
+    ) {
+      throw new Error("Retained attachment belongs to another Session");
+    }
+    return structuredClone(attachment);
+  });
+}
+
 function createRuntimeHostSessionStop(
   deps: Pick<
     RuntimeHostSessionExecutionIpcDeps,
     "beforeStop" | "client" | "observer" | "emitSessionsChanged"
   >,
   newId: () => string = randomUUID,
-): (sessionId: string) => Promise<void> {
-  return async (sessionId) => {
+): (sessionId: string, input?: NormalizedStopSessionInput) => Promise<void> {
+  return async (sessionId, input = {}) => {
     await deps.beforeStop(sessionId);
     const turn = (await deps.observer.snapshot(sessionId)).rootTurn;
     if (!turn || isTerminalStatus(turn.status)) return;
@@ -433,6 +591,9 @@ function createRuntimeHostSessionStop(
       interruptId: newId(),
       turnId: turn.turnId,
       runId: turn.runId,
+      ...(input.preserveQueuedMessages === true
+        ? { preserveQueuedMessages: true }
+        : {}),
     });
     deps.emitSessionsChanged("turn-status-change", sessionId, {
       turnId: turn.turnId,

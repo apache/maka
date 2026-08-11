@@ -118,7 +118,8 @@ describe('single live-turn handoff', () => {
   });
 
   it('keeps an incomplete live answer as the only owner after early persistence', () => {
-    const text = 'persisted before a slow tool finishes';
+    const persistedText = 'persisted owner must be filtered';
+    const liveText = 'live owner while a slow tool finishes';
     const markup = renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'running', backend: 'pi-agent',
@@ -127,14 +128,14 @@ describe('single live-turn handoff', () => {
       },
       messages: [
         { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'go' },
-        { type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 2, text, modelId: 'model' },
+        { type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 2, text: persistedText, modelId: 'model' },
       ],
       liveTurn: {
         turnId: 'turn-1',
         phase: 'streamed',
         steps: [{
           stepId: 'assistant-1',
-          text: { text, truncated: false, complete: false },
+          text: { text: liveText, truncated: false, complete: false },
           tools: [{ toolUseId: 'tool-1', toolName: 'Bash', stepId: 'assistant-1', status: 'running', args: {} }],
         }],
       },
@@ -142,7 +143,11 @@ describe('single live-turn handoff', () => {
     } satisfies Parameters<typeof ChatView>[0]));
 
     assert.equal((markup.match(/maka-bubble-streaming/g) ?? []).length, 1);
-    assert.equal(markup.split(text).length - 1, 0);
+    assert.doesNotMatch(markup, new RegExp(persistedText));
+    // The live Markdown body is absent while its lazy module is unresolved and
+    // present after another test has warmed that module. Either state has one
+    // owner; the persisted copy above must never render beside it.
+    assert.ok(markup.split(liveText).length - 1 <= 1);
   });
 
   it('reduces events into the projection and settles only after committed history refreshes', async () => {

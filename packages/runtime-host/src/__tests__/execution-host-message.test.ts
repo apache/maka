@@ -99,6 +99,8 @@ test('steering becomes durable and ordered followups automatically start the nex
     const host = await fixture.startHost();
     const first = await connectClient(fixture.root, 'desktop');
     const second = await connectClient(fixture.root, 'tui');
+    const subscription = await first.openSessionSubscription({ sessionId: fixture.sessionId });
+    const probe = new SubscriptionProbe(subscription);
     const firstTurnId = randomUUID();
     await first.startTurn({
       sessionId: fixture.sessionId,
@@ -172,9 +174,19 @@ test('steering becomes durable and ordered followups automatically start the nex
       content: { text: 'deliberately different durable identity probe' },
       placement: 'next_turn',
     });
+    await probe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.queue.followup.length === 0 &&
+        frame.snapshot.rootTurn !== null &&
+        frame.snapshot.rootTurn.turnId !== firstTurnId,
+      'ordered followups did not drain into separate successor roots',
+    );
     await first.close();
     await second.close();
     await fixture.stopHost(host);
+    const chain = await fixture.readAdmissionChain();
+    assert.equal(chain.length, 3);
 
     const firstLedger = await fixture.readTurn(firstTurnId);
     const steeringEvents = firstLedger.runtimeEvents.filter(
@@ -190,8 +202,6 @@ test('steering becomes durable and ordered followups automatically start the nex
       assert.deepEqual(durableContent, steeringContent);
     }
 
-    const chain = await fixture.readAdmissionChain();
-    assert.equal(chain.length, 2);
     assert.equal(chain[1]?.previousRootTurnId, firstTurnId);
     assert.deepEqual(
       chain[1]?.sourceMessages.map(({ messageId, content, placement, disposition }) => ({
@@ -200,25 +210,44 @@ test('steering becomes durable and ordered followups automatically start the nex
         placement,
         disposition,
       })),
-      followupSources.map((source) => ({
-        ...source,
-        placement: 'next_turn',
-        disposition: 'followup',
-      })),
+      [
+        {
+          ...followupSources[0],
+          placement: 'next_turn',
+          disposition: 'followup',
+        },
+      ],
     );
-    assert.deepEqual(chain[1]?.normalizedInput, {
-      text: `${followupSources[0].content.text}\n\n${followupSources[1].content.text}`,
-      displayText: `${followupSources[0].content.displayText}\n\n${followupSources[1].content.text}`,
-      attachments: followupSources[0].content.attachments,
-      quotes: followupSources.flatMap((source) => source.content.quotes ?? []),
-    });
-    const followupTurnId = chain[1]?.turnId;
-    assert.ok(followupTurnId);
-    const followupLedger = await fixture.readTurn(followupTurnId);
-    const expectedQuotes = followupSources.flatMap((source) => source.content.quotes ?? []);
-    assert.equal(followupLedger.userMessages.length, 1);
-    assert.deepEqual(followupLedger.userMessages[0]?.quotes, expectedQuotes);
-    assert.deepEqual(userRuntimeContent(followupLedger.runtimeEvents)?.quotes, expectedQuotes);
+    assert.deepEqual(chain[1]?.normalizedInput, followupSources[0]?.content);
+    assert.equal(chain[2]?.previousRootTurnId, chain[1]?.turnId);
+    assert.deepEqual(
+      chain[2]?.sourceMessages.map(({ messageId, content, placement, disposition }) => ({
+        messageId,
+        content,
+        placement,
+        disposition,
+      })),
+      [
+        {
+          ...followupSources[1],
+          placement: 'next_turn',
+          disposition: 'followup',
+        },
+      ],
+    );
+    assert.deepEqual(chain[2]?.normalizedInput, followupSources[1]?.content);
+    for (let index = 0; index < followupSources.length; index += 1) {
+      const followupTurnId = chain[index + 1]?.turnId;
+      assert.ok(followupTurnId);
+      const followupLedger = await fixture.readTurn(followupTurnId);
+      const expectedQuotes = followupSources[index]?.content.quotes ?? [];
+      assert.equal(followupLedger.userMessages.length, 1);
+      assert.deepEqual(followupLedger.userMessages[0]?.quotes ?? [], expectedQuotes);
+      assert.deepEqual(
+        userRuntimeContent(followupLedger.runtimeEvents)?.quotes ?? [],
+        expectedQuotes,
+      );
+    }
   });
 });
 

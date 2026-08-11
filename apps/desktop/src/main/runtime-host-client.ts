@@ -71,6 +71,8 @@ import {
   type ProjectCatalogProjectDetails,
   type QueueRetractInput,
   type QueueRetractResult,
+  type QueueMutateInput,
+  type QueueMutateResult,
   type SessionCatalogFilter,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
@@ -985,6 +987,13 @@ export class DesktopRuntimeHostClient {
     input: Omit<QueueRetractInput, "originHostEpoch">,
   ): Promise<QueueRetractResult> {
     return this.#request("queue.retract", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
+  mutateQueue(input: Omit<QueueMutateInput, 'originHostEpoch'>): Promise<QueueMutateResult> {
+    return this.#request('queue.mutate', {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
     });

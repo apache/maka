@@ -117,11 +117,14 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
   const activeConfirmRef = useRef<PendingConfirm | null>(null);
   const confirmQueueRef = useRef<PendingConfirm[]>([]);
   const dismissByIdRef = useRef(new Map<string, ToastDismissFn>());
+  const toastIdByContentRef = useRef(new Map<string, string>());
   const idSeed = useRef(0);
 
   const push = useCallback(
     (input: ToastInput): string => {
-      const id = `t${++idSeed.current}`;
+      const contentKey = toastContentKey(input);
+      const id = toastIdByContentRef.current.get(contentKey) ?? `t${++idSeed.current}`;
+      toastIdByContentRef.current.set(contentKey, id);
       let dismissCurrent: ToastDismissFn | undefined;
       const duration = input.duration ?? DEFAULT_DURATION;
       const errorAction = props.errorAction;
@@ -136,6 +139,7 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
       ].filter((action): action is ToastAction => action !== undefined);
       dismissCurrent = showToast({
         uniqueID: id,
+        collisionBehavior: 'overwrite',
         body: <ToastBody input={input} />,
         type: input.variant === 'error' ? 'error' : 'info',
         isAutoHide: duration > 0,
@@ -158,6 +162,9 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
         ) : undefined,
         onHide: () => {
           dismissByIdRef.current.delete(id);
+          if (toastIdByContentRef.current.get(contentKey) === id) {
+            toastIdByContentRef.current.delete(contentKey);
+          }
         },
       });
       dismissByIdRef.current.set(id, dismissCurrent);
@@ -237,6 +244,7 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
       }
       confirmQueueRef.current = [];
       dismissByIdRef.current.clear();
+      toastIdByContentRef.current.clear();
     };
   }, []);
 
@@ -274,6 +282,15 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
       )}
     </ToastContext.Provider>
   );
+}
+
+export function toastContentKey(input: ToastInput): string {
+  return JSON.stringify([
+    input.variant ?? 'info',
+    input.title,
+    input.description ?? '',
+    input.action?.label ?? '',
+  ]);
 }
 
 /**

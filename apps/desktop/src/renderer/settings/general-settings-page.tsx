@@ -10,11 +10,16 @@ import {
 import type {
   AppSettings,
   ChatDefaultPermissionMode,
+  FollowUpMode,
   ThinkingLevel,
   LlmConnection,
   NetworkProxySettings,
   UpdateAppSettingsResult,
 } from "@maka/core";
+import {
+  SegmentedControl,
+  SegmentedControlItem,
+} from "@astryxdesign/core/SegmentedControl";
 import type { TestProxyInput } from "@maka/core/settings/network-settings";
 import { buildChatModelChoices } from "@maka/core/chat-model-choice";
 import {
@@ -140,6 +145,7 @@ export function GeneralSettingsPage(props: {
         onRefresh={props.onRefreshConnections}
         permissionMode={props.settings.chatDefaults.permissionMode}
         thinkingLevel={props.settings.chatDefaults.thinkingLevel}
+        followUpMode={props.settings.chatDefaults.followUpMode}
         onUpdate={props.onUpdate}
       />
       <SettingsSection
@@ -183,6 +189,7 @@ function GeneralDefaultsCard(props: {
   defaultSlug: string | null;
   onRefresh(): Promise<void>;
   permissionMode: ChatDefaultPermissionMode;
+  followUpMode: FollowUpMode;
   thinkingLevel?: ThinkingLevel;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
@@ -198,11 +205,12 @@ function GeneralDefaultsCard(props: {
   const toast = useToast();
   const mountedRef = useMountedRef();
   const persistGuard = useKeyedActionGuard<
-    "default-model" | "permission-mode" | "thinking-level"
+    "default-model" | "permission-mode" | "thinking-level" | "follow-up-mode"
   >();
   const [saving, setSaving] = useState(false);
   const [savingPermissionMode, setSavingPermissionMode] = useState(false);
   const [savingThinkingLevel, setSavingThinkingLevel] = useState(false);
+  const [savingFollowUpMode, setSavingFollowUpMode] = useState(false);
 
   const modelChoices = useMemo(
     () => buildChatModelChoices(props.connections),
@@ -319,6 +327,24 @@ function GeneralDefaultsCard(props: {
     }
   }
 
+  async function persistFollowUpMode(nextMode: FollowUpMode) {
+    const releaseSave = persistGuard.begin("follow-up-mode");
+    if (!releaseSave) return;
+    setSavingFollowUpMode(true);
+    try {
+      await props.onUpdate({ chatDefaults: { followUpMode: nextMode } });
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(
+          copy.saveFollowUpModeFailed,
+          settingsActionErrorMessage(error, locale),
+        );
+      }
+    } finally {
+      releaseSave();
+      if (mountedRef.current) setSavingFollowUpMode(false);
+    }
+  }
   return (
     <SettingsSection
       title={sections.chatDefaults}
@@ -383,6 +409,23 @@ function GeneralDefaultsCard(props: {
             isDisabled={savingThinkingLevel}
           />
         }
+      />
+      <SettingsRow
+        label={copy.followUpMode}
+        description={copy.followUpModeHelp}
+        end={(
+          <SegmentedControl
+            value={props.followUpMode}
+            onChange={(value) => {
+              void persistFollowUpMode(value as FollowUpMode);
+            }}
+            label={copy.followUpMode}
+            isDisabled={savingFollowUpMode}
+          >
+            <SegmentedControlItem value="queue" label={copy.followUpQueue} />
+            <SegmentedControlItem value="steer" label={copy.followUpSteer} />
+          </SegmentedControl>
+        )}
       />
     </SettingsSection>
   );

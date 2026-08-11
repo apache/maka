@@ -10,6 +10,9 @@ import {
   type SetStateAction,
 } from 'react';
 import type {
+  FollowUpMode,
+  InlineReference,
+  MessageQueueMutation,
   ScheduledTask,
   QuoteRef,
   SessionSummary,
@@ -106,6 +109,15 @@ import {
 } from './app-update-install';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
+
+import {
+  addOptimisticQueuedMessage,
+  removeOptimisticQueuedMessage,
+} from './optimistic-message-queue';
+import {
+  hasActiveTurnAtSubmit,
+  resolveFollowUpModeAtSubmit,
+} from './follow-up-submit-routing';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import {
@@ -148,6 +160,8 @@ import { createAppShellSessionEventHandlers } from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import {
   createAppShellChatActions,
+  retainedAttachmentRefs,
+  toRendererIngestItems,
   type WorkspaceFileReferencePosition,
 } from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
@@ -211,6 +225,29 @@ import {
 } from './session-workspace-errors';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
 import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
+
+function mergeWorkspaceReferences(
+  text: string,
+  live: readonly WorkspaceFileReferencePosition[] | undefined,
+  restored: readonly InlineReference[] | undefined,
+): WorkspaceFileReferencePosition[] {
+  const merged = new Map<string, WorkspaceFileReferencePosition>();
+  for (const reference of live ?? []) {
+    merged.set(`${reference.start}:${reference.value}`, { ...reference });
+  }
+  let cursor = 0;
+  for (const reference of restored ?? []) {
+    if (reference.kind !== 'workspace_file') continue;
+    let start = reference.start;
+    if (text.slice(start, start + reference.value.length) !== reference.value) {
+      start = text.indexOf(reference.value, cursor);
+    }
+    if (start < 0) continue;
+    cursor = start + reference.value.length;
+    merged.set(`${start}:${reference.value}`, { value: reference.value, start });
+  }
+  return [...merged.values()].sort((left, right) => left.start - right.start);
+}
 
 type ComposerImportOwner = {
   sessionId: string | undefined;
@@ -354,6 +391,7 @@ function AppShellContent({
     confirmLiveTurn,
     setShellRunUpdatesBySession,
     setInteractionBySession,
+    setMessageQueueBySession,
     setSessionEventHealthBySession,
     setPendingPermissionModeBySession,
     setPendingSessionModelBySession,
@@ -370,10 +408,11 @@ function AppShellContent({
     pendingAttachments,
     pickAttachments,
     attachFilePaths,
+    restoreAttachments,
     removeAttachment,
     clearSubmittedAttachments,
   } = useAppShellComposerAttachments({ draftKey: attachmentDraftKey, toastApi });
-  const { pendingQuotes, addQuote, removeQuote, clearQuotes } = useAppShellComposerQuotes({
+  const { pendingQuotes, addQuote, removeQuote, clearQuotes, restoreQuotes } = useAppShellComposerQuotes({
     draftKey: attachmentDraftKey,
   });
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
@@ -402,6 +441,7 @@ function AppShellContent({
     messageRetryPendingBySession,
     stopPendingBySession,
     interactionBySession,
+    messageQueueBySession,
     pendingPermissionModeBySession,
     pendingSessionModelBySession,
     streamingSessionIds,
@@ -452,6 +492,8 @@ function AppShellContent({
     defaultPermissionMode,
     defaultThinkingLevel,
     setDefaultPermissionMode,
+    followUpMode,
+    setFollowUpMode,
     refreshShellSettings,
   } = useShellAppearance({
     toastApi,
@@ -463,6 +505,26 @@ function AppShellContent({
   const desktopConversationCopy = getDesktopConversationCopy(uiLocale);
   const terminalPanelCopy = desktopConversationCopy.terminalPanel;
   const workbarCopy = desktopConversationCopy.workbar;
+  const followUpModeSaveRevisionRef = useRef(0);
+  const changeFollowUpMode = useCallback((nextMode: FollowUpMode) => {
+    const previousMode = followUpMode;
+    const revision = ++followUpModeSaveRevisionRef.current;
+    setFollowUpMode(nextMode);
+    void window.maka.settings
+      .update({ chatDefaults: { followUpMode: nextMode } })
+      .then((result) => {
+        if (followUpModeSaveRevisionRef.current !== revision) return;
+        setFollowUpMode(result.settings.chatDefaults.followUpMode);
+      })
+      .catch((error) => {
+        if (followUpModeSaveRevisionRef.current !== revision) return;
+        setFollowUpMode(previousMode);
+        toastApi.error(
+          getConversationCopy(uiLocale).composer.followUpModeLabel,
+          localizedShellErrorMessage(error, shellCopy.tryAgainLater, uiLocale),
+        );
+      });
+  }, [followUpMode, setFollowUpMode, shellCopy.tryAgainLater, toastApi, uiLocale]);
   useEffect(() => {
     if (!isAppUpdateInstallFailure(appUpdateStatus)) {
       notifiedInstallErrorRef.current = null;
@@ -581,6 +643,7 @@ function AppShellContent({
   const [externalImportOpen, setExternalImportOpen] = useState(false);
   const [viewMode, setViewMode] = useState<SessionViewMode>('conversation');
   const composerRef = useRef<ComposerHandle>(null);
+  const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
   // The rail's toggle has to reach Astryx's resizable state, not just this
   // boolean — see the prop's note on SessionListPanel. The sidenav is mounted
   // for the whole shell, so the handle is always live by the time it is called.
@@ -702,6 +765,7 @@ function AppShellContent({
     toastApi,
   });
   const activeInteraction = activeInteractionFor(interactionBySession, activeId);
+  const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
   const activeSandboxBoundary =
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
@@ -1917,6 +1981,94 @@ function AppShellContent({
       revision && activeIdRef.current === revision.draftSessionId,
     );
     const slashCommand = parseDesktopSlashCommand(text);
+    const activeSessionId = activeIdRef.current;
+    const workspaceFileReferences = mergeWorkspaceReferences(
+      text,
+      metadata?.workspaceFileReferences,
+      activeSessionId
+        ? retractedWorkspaceReferencesRef.current[activeSessionId]
+        : undefined,
+    );
+    const activeProjection = activeSessionId
+      ? liveTurnBySessionRef.current[activeSessionId]
+      : undefined;
+    const effectiveFollowUpMode = resolveFollowUpModeAtSubmit({
+      requestedMode: metadata?.followUpMode,
+      defaultMode: followUpMode,
+      hasActiveTurn: hasActiveTurnAtSubmit({
+        liveTurn: activeProjection,
+        runningTurnIds: activeSessionForView?.runningTurnIds,
+      }),
+    });
+    if (effectiveFollowUpMode && activeSessionId && !slashCommand) {
+      const sessionId = activeSessionId;
+      const placement =
+        effectiveFollowUpMode === 'queue' ? 'next_turn' as const : 'current_turn' as const;
+      const optimisticEntryId = `optimistic-${crypto.randomUUID()}`;
+      try {
+        const attachments =
+          pendingAttachments.length > 0 ? [...pendingAttachments] : undefined;
+        const uploadAttachments = attachments
+          ? toRendererIngestItems(attachments)
+          : [];
+        const retainedAttachments = attachments
+          ? retainedAttachmentRefs(attachments)
+          : [];
+        const quotes = pendingQuotes.length > 0 ? [...pendingQuotes] : undefined;
+        setMessageQueueBySession((current) =>
+          addOptimisticQueuedMessage(current, sessionId, {
+            entryId: optimisticEntryId,
+            messageId: optimisticEntryId,
+            content: {
+              text,
+              ...(quotes ? { quotes } : {}),
+            },
+            placement,
+            state: 'queued',
+          }),
+        );
+        const outcome = await window.maka.sessions.enqueue(
+          sessionId,
+          placement,
+          {
+            text,
+            ...(uploadAttachments.length > 0
+              ? { attachmentItems: uploadAttachments }
+              : {}),
+            ...(retainedAttachments.length > 0 ? { retainedAttachments } : {}),
+            ...(quotes ? { quotes } : {}),
+            ...(workspaceFileReferences.length > 0
+              ? { workspaceFileReferences }
+              : {}),
+          },
+        );
+        if (attachments) clearSubmittedAttachments(attachments);
+        if (quotes) clearQuotes();
+        delete retractedWorkspaceReferencesRef.current[sessionId];
+        if (outcome.kind === 'started') {
+          setMessageQueueBySession((current) =>
+            removeOptimisticQueuedMessage(current, sessionId, optimisticEntryId),
+          );
+          await refreshMessages(sessionId);
+          await refreshSessions();
+        }
+        return true;
+      } catch (error) {
+        setMessageQueueBySession((current) =>
+          removeOptimisticQueuedMessage(current, sessionId, optimisticEntryId),
+        );
+        if (activeIdRef.current !== sessionId) return false;
+        toastApi.error(
+          getShellCopy(uiLocale).chatActions.sendFailedTitle,
+          localizedShellErrorMessage(
+            error,
+            getShellCopy(uiLocale).chatActions.sendFailedFallback,
+            uiLocale,
+          ),
+        );
+        return false;
+      }
+    }
     if (
       revisionSend &&
       revision &&
@@ -1969,7 +2121,7 @@ function AppShellContent({
       if (
         pendingAttachments.length > 0 ||
         pendingQuotes.length > 0 ||
-        (metadata?.workspaceFileReferences?.length ?? 0) > 0
+        workspaceFileReferences.length > 0
       ) {
         toastApi.info(
           shellCopy.sideChatContextPendingTitle,
@@ -2009,12 +2161,12 @@ function AppShellContent({
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
-        ...(metadata?.workspaceFileReferences?.length
+        ...(workspaceFileReferences.length > 0
           ? {
               workspaceFileReferences: rebaseWorkspaceFileReferences(
                 text,
                 swarmCommand.task,
-                metadata.workspaceFileReferences,
+                workspaceFileReferences,
               ),
             }
           : {}),
@@ -2052,12 +2204,12 @@ function AppShellContent({
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
-        ...(metadata?.workspaceFileReferences?.length
+        ...(workspaceFileReferences.length > 0
           ? {
               workspaceFileReferences: rebaseWorkspaceFileReferences(
                 text,
                 graphCommand.task,
-                metadata.workspaceFileReferences,
+                workspaceFileReferences,
               ),
             }
           : {}),
@@ -2073,12 +2225,15 @@ function AppShellContent({
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
       ...(quotes ? { quotes } : {}),
-      ...(metadata?.workspaceFileReferences?.length
-        ? { workspaceFileReferences: metadata.workspaceFileReferences }
+      ...(workspaceFileReferences.length > 0
+        ? { workspaceFileReferences }
         : {}),
     });
     if (ok !== false && pending) clearSubmittedAttachments(pending);
     if (ok !== false && quotes) clearQuotes();
+    if (ok !== false && activeSessionId) {
+      delete retractedWorkspaceReferencesRef.current[activeSessionId];
+    }
     if (ok !== false && revisionSend) {
       if (expectedRevisionDraft) {
         completeTurnRevisionCopyAttempt(expectedRevisionDraft);
@@ -2127,7 +2282,73 @@ function AppShellContent({
     setStopPendingBySession,
     stopPendingRef,
     toastApi,
+    shouldPreserveQueuedMessages: (sessionId) => {
+      const queue = messageQueueBySession[sessionId];
+      return (queue?.steering.length ?? 0) + (queue?.followup.length ?? 0) > 0;
+    },
   });
+
+  async function retractQueuedMessages(): Promise<void> {
+    const sessionId = activeIdRef.current;
+    if (!sessionId) return;
+    try {
+      const content = await window.maka.sessions.retractQueue(sessionId);
+      setMessageQueueBySession((current) => {
+        if (!(sessionId in current)) return current;
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      });
+      if (activeIdRef.current !== sessionId) return;
+      const displayText = content.displayText ?? content.text;
+      const before = composerRef.current?.getText() ?? '';
+      composerRef.current?.appendDraft?.(sessionId, displayText);
+      const after = composerRef.current?.getText() ?? displayText;
+      const insertionStart = Math.max(0, after.lastIndexOf(displayText, before.length + 2));
+      retractedWorkspaceReferencesRef.current[sessionId] = (
+        content.inlineReferences ?? []
+      ).flatMap((reference) =>
+        reference.kind === 'workspace_file'
+          ? [{ ...reference, start: insertionStart + reference.start }]
+          : [],
+      );
+      restoreAttachments(content.attachments ?? []);
+      restoreQuotes(content.quotes ?? []);
+    } catch (error) {
+      if (activeIdRef.current !== sessionId) return;
+      const copy = getConversationCopy(uiLocale).composer;
+      toastApi.error(
+        copy.retractQueued,
+        localizedShellErrorMessage(error, getShellCopy(uiLocale).chatActions.sendFailedFallback, uiLocale),
+      );
+    }
+  }
+
+  async function mutateQueuedMessage(mutation: MessageQueueMutation): Promise<boolean> {
+    const sessionId = activeIdRef.current;
+    if (!sessionId) return false;
+    const queue = messageQueueBySession[sessionId];
+    try {
+      const result = await window.maka.sessions.mutateQueue(sessionId, {
+        ...(queue?.queueRevision !== undefined
+          ? { expectedQueueRevision: queue.queueRevision }
+          : {}),
+        mutation,
+      });
+      return result.ok;
+    } catch (error) {
+      if (activeIdRef.current !== sessionId) return false;
+      toastApi.error(
+        getConversationCopy(uiLocale).composer.followUpModeLabel,
+        localizedShellErrorMessage(
+          error,
+          getShellCopy(uiLocale).chatActions.sendFailedFallback,
+          uiLocale,
+        ),
+      );
+      return false;
+    }
+  }
 
   const { handleEvent, reconcilePersistedMessages, settleAssistantStreaming } = useStableActions(createAppShellSessionEventHandlers, {
     uiLocale,
@@ -2137,6 +2358,7 @@ function AppShellContent({
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
+    setMessageQueueBySession,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
@@ -2341,6 +2563,7 @@ function AppShellContent({
   function openNewTaskSurface() {
     startNewSession();
     setNewChatPlanModeActive(false);
+    setWorkbarCollapsed(true);
     setNavSelection({ section: 'sessions', filter: 'chats' });
     setSearchScrollTarget(null);
     // New-task affordances reset to the empty-state composer; move focus
@@ -2746,6 +2969,11 @@ function AppShellContent({
                   onSend={sendWithAttachments}
                   onStreamingSubmit={submitWhileStreaming}
                   onStop={stop}
+                  followUpMode={followUpMode}
+                  queuedMessages={activeMessageQueue}
+                  onFollowUpModeChange={changeFollowUpMode}
+                  onRetractQueued={activeId ? retractQueuedMessages : undefined}
+                  onQueueMutation={activeId ? mutateQueuedMessage : undefined}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
                       ? {

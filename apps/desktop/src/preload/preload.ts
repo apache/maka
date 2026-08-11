@@ -85,6 +85,8 @@ import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
   QueueEnqueueOutcome,
+  MessageContent,
+  MessageQueueMutation,
   DailyReviewConfig,
   DailyReviewRange,
   DailyReviewSummary,
@@ -111,6 +113,7 @@ import type {
 import type { GoalState } from '@maka/runtime';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from '@maka/ui';
 import type { ConfigCategory } from '@maka/storage';
+
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core';
@@ -243,6 +246,7 @@ const makaBridge = {
             displayText?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
+            retainedAttachments?: AttachmentRef[];
             turnOrchestration?: TurnOrchestration;
             quotes?: QuoteRef[];
             workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
@@ -276,11 +280,53 @@ const makaBridge = {
     > {
       return ipcRenderer.invoke('sessions:resumeLatest', sessionId);
     },
-    stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void> {
+    stop(
+      sessionId: string,
+      input?: { source?: 'stop_button'; preserveQueuedMessages?: boolean },
+    ): Promise<void> {
       return ipcRenderer.invoke('sessions:stop', sessionId, input);
     },
-    steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome> {
-      return ipcRenderer.invoke('sessions:steer', sessionId, text);
+    steer(sessionId: string, content: string | MessageContent): Promise<QueueEnqueueOutcome> {
+      return ipcRenderer.invoke('sessions:steer', sessionId, content);
+    },
+    queueMessage(sessionId: string, content: string | MessageContent): Promise<QueueEnqueueOutcome> {
+      return ipcRenderer.invoke('sessions:queueMessage', sessionId, content);
+    },
+    async enqueue(
+      sessionId: string,
+      placement: 'current_turn' | 'next_turn',
+      command: {
+        text: string;
+        displayText?: string;
+        attachmentItems?: RendererIngestInput[];
+        retainedAttachments?: AttachmentRef[];
+        quotes?: import('@maka/core').QuoteRef[];
+        workspaceFileReferences?: Array<
+          Pick<import('@maka/core').InlineReference, 'value' | 'start'>
+        >;
+      },
+    ): Promise<{
+      kind: 'queued' | 'started';
+      turnId?: string;
+      attachments: AttachmentRef[];
+      inlineReferences: InlineReference[];
+    }> {
+      const attachmentItems = command.attachmentItems
+        ? await encodeIngestItems(command.attachmentItems)
+        : undefined;
+      return ipcRenderer.invoke('sessions:enqueue', sessionId, placement, {
+        ...command,
+        ...(attachmentItems ? { attachmentItems } : {}),
+      });
+    },
+    mutateQueue(
+      sessionId: string,
+      input: { expectedQueueRevision?: number; mutation: MessageQueueMutation },
+    ): Promise<{ ok: boolean; queueRevision?: number }> {
+      return ipcRenderer.invoke('sessions:mutateQueue', sessionId, input);
+    },
+    retractQueue(sessionId: string): Promise<MessageContent> {
+      return ipcRenderer.invoke('sessions:retractQueue', sessionId);
     },
     readMessages(sessionId: string): Promise<StoredMessage[]> {
       return ipcRenderer.invoke('sessions:readMessages', sessionId);

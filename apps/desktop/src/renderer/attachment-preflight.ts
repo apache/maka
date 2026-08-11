@@ -1,9 +1,17 @@
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT, type UiLocale } from '@maka/core';
+import {
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_COUNT,
+  type AttachmentRef,
+  type UiLocale,
+} from '@maka/core';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
 type PreflightItem = {
   size: number;
-  source: { type: 'approval'; approvalId: string } | { type: 'file'; file: { size: number } };
+  source:
+    | { type: 'approval'; approvalId: string }
+    | { type: 'file'; file: { size: number } }
+    | { type: 'retained'; attachment: AttachmentRef };
 };
 
 /**

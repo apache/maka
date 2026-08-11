@@ -1013,7 +1013,44 @@ export interface SteeringMessageEvent extends BaseEvent {
  * fresh turn with the text instead, so a message is never silently dropped.
  * Queue contents travel on ONE path only: the `queue_update` event.
  */
-export type QueueEnqueueOutcome = { kind: 'queued' } | { kind: 'fallback' };
+export type QueueEnqueueOutcome =
+  | { kind: 'queued' }
+  | { kind: 'fallback' }
+  | { kind: 'started'; turnId: string };
+
+export type MessageQueuePlacement = 'current_turn' | 'next_turn';
+export type MessageQueueEntryState = 'queued' | 'in_flight';
+
+export interface MessageQueueEntryProjection {
+  entryId: string;
+  messageId: string;
+  content: MessageContent;
+  placement: MessageQueuePlacement;
+  state: MessageQueueEntryState;
+}
+
+export type MessageQueueMutation =
+  | {
+      kind: 'update';
+      entryId: string;
+      text: string;
+    }
+  | {
+      kind: 'remove';
+      entryId: string;
+    }
+  | {
+      kind: 'reorder';
+      placement: MessageQueuePlacement;
+      entryIds: string[];
+    }
+  | {
+      kind: 'promote';
+      entryId: string;
+    }
+  | {
+      kind: 'resume';
+    };
 
 /**
  * Authoritative queue snapshot pushed into the active turn's event stream
@@ -1022,8 +1059,12 @@ export type QueueEnqueueOutcome = { kind: 'queued' } | { kind: 'fallback' };
  */
 export interface QueueUpdateEvent extends BaseEvent {
   type: 'queue_update';
+  queueRevision?: number;
+  paused?: boolean;
   steering: string[];
   followup: string[];
+  steeringEntries?: MessageQueueEntryProjection[];
+  followupEntries?: MessageQueueEntryProjection[];
 }
 
 export type ProviderRetryReason =

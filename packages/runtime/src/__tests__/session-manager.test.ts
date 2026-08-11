@@ -15771,6 +15771,72 @@ describe('SessionManager steering and followup queues', () => {
     ).toBe(true);
   });
 
+  test('queued entries keep stable identities across update, reorder, remove, and promote', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    let backend: GatedSteeringBackend | undefined;
+    backends.register('fake', (ctx) => {
+      backend = new GatedSteeringBackend(ctx);
+      return backend;
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(1_000),
+    });
+    const session = await manager.createSession(
+      makeInput({ backend: 'fake', permissionMode: 'bypass' }),
+    );
+    const events: SessionEvent[] = [];
+    const turn = (async () => {
+      for await (const event of manager.sendMessage(session.id, {
+        turnId: 'turn-queue-mutations',
+        text: 'start',
+      })) {
+        events.push(event);
+      }
+    })();
+    await waitUntil(() => backend?.gates.has('turn-queue-mutations') === true);
+
+    expect(
+      manager.queueMessage(session.id, {
+        text: 'first',
+        quotes: [{ text: 'keep this context' }],
+      }).kind,
+    ).toBe('queued');
+    expect(manager.queueMessage(session.id, 'second').kind).toBe('queued');
+    await waitUntil(() => latestQueueUpdate(events)?.followupEntries?.length === 2);
+    const initial = latestQueueUpdate(events)?.followupEntries ?? [];
+    const first = initial[0]!;
+    const second = initial[1]!;
+
+    expect(manager.updateQueuedMessage(session.id, first.entryId, 'first edited')).toBe(true);
+    expect(
+      manager.reorderQueuedMessages(session.id, 'next_turn', [second.entryId, first.entryId]),
+    ).toBe(true);
+    expect(manager.removeQueuedMessage(session.id, first.entryId)).toBe(true);
+    expect(manager.promoteQueuedFollowup(session.id, second.entryId)).toEqual({ kind: 'queued' });
+    await waitUntil(() => {
+      const update = latestQueueUpdate(events);
+      return update?.followupEntries?.length === 0 && update.steeringEntries?.length === 1;
+    });
+    const final = latestQueueUpdate(events)!;
+    expect(final.steeringEntries?.[0]).toMatchObject({
+      entryId: second.entryId,
+      messageId: second.messageId,
+      content: { text: 'second' },
+      placement: 'current_turn',
+      state: 'queued',
+    });
+
+    backend?.release('turn-queue-mutations');
+    await turn;
+  });
+
   test('an overlapping turn cannot drain steering queued for the current owner', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -16357,6 +16423,88 @@ describe('SessionManager steering and followup queues', () => {
     // And the followup queue is the authoritative owner of the text.
     expect(manager.drainFollowup(session.id)).toBe('late');
   });
+
+  test('an idle followup drain publishes its empty snapshot through the next turn', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    backends.register('fake', (ctx) => new FakeBackend(ctx));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(1_000),
+    });
+    const session = await manager.createSession(
+      makeInput({ backend: 'fake', permissionMode: 'bypass' }),
+    );
+
+    await runTurnWith(manager, session.id, 'turn-1', () => {
+      expect(manager.queueMessage(session.id, 'next').kind).toBe('queued');
+    });
+    expect(manager.drainFollowup(session.id)).toBe('next');
+
+    const events = await drainAll(
+      manager.sendMessage(session.id, { turnId: 'turn-2', text: 'next' }),
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'queue_update' &&
+          event.steering.length === 0 &&
+          event.followup.length === 0,
+      ),
+    ).toBe(true);
+  });
+
+  test('a preserving stop pauses queued followups until an explicit resume', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    let backend: GatedSteeringBackend | undefined;
+    backends.register('fake', (ctx) => {
+      backend = new GatedSteeringBackend(ctx);
+      return backend;
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(1_000),
+    });
+    const session = await manager.createSession(
+      makeInput({ backend: 'fake', permissionMode: 'bypass' }),
+    );
+    const events: SessionEvent[] = [];
+    const turn = (async () => {
+      try {
+        for await (const event of manager.sendMessage(session.id, {
+          turnId: 'turn-pause-queue',
+          text: 'start',
+        })) {
+          events.push(event);
+        }
+      } catch {
+        // Stop may end the stream abruptly.
+      }
+    })();
+    await waitUntil(() => backend?.gates.has('turn-pause-queue') === true);
+    expect(manager.queueMessage(session.id, 'continue after resume').kind).toBe('queued');
+
+    await manager.stopSession(session.id, {
+      source: 'stop_button',
+      preserveQueuedMessages: true,
+    });
+    await turn;
+    expect(latestQueueUpdate(events)?.paused).toBe(true);
+    expect(manager.takeNextFollowup(session.id)).toBe(null);
+    expect(manager.resumeQueuedMessages(session.id)).toBe(true);
+    expect(manager.takeNextFollowup(session.id)).toEqual({ text: 'continue after resume' });
+  });
 });
 
 async function drainAll(iterable: AsyncIterable<SessionEvent>): Promise<SessionEvent[]> {
@@ -16370,6 +16518,17 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<v
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
   expect(await predicate()).toBe(true);
+}
+
+function latestQueueUpdate(
+  events: readonly SessionEvent[],
+): Extract<SessionEvent, { type: 'queue_update' }> | undefined {
+  return [...events]
+    .reverse()
+    .find(
+      (event): event is Extract<SessionEvent, { type: 'queue_update' }> =>
+        event.type === 'queue_update',
+    );
 }
 
 /** Mock model: first request calls the Probe tool, second finishes with text. */
@@ -16642,6 +16801,30 @@ class DelegatingRuntimeKernel implements RuntimeKernelLike {
 
   drainFollowup(): string | null {
     return null;
+  }
+
+  takeNextFollowup(): ReturnType<RuntimeKernelLike['takeNextFollowup']> {
+    return null;
+  }
+
+  updateQueuedMessage(): boolean {
+    return false;
+  }
+
+  removeQueuedMessage(): boolean {
+    return false;
+  }
+
+  reorderQueuedMessages(): boolean {
+    return false;
+  }
+
+  promoteQueuedFollowup(): QueueEnqueueOutcome {
+    return { kind: 'fallback' };
+  }
+
+  resumeQueuedMessages(): boolean {
+    return false;
   }
 
   retractQueue(): string {

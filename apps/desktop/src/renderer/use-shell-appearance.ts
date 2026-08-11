@@ -1,6 +1,7 @@
 import { useState, type Dispatch, type SetStateAction } from 'react';
 import type {
   ChatDefaultPermissionMode,
+  FollowUpMode,
   ThinkingLevel,
   ThemePalette,
   ThemePreference,
@@ -16,9 +17,9 @@ type ToastApi = {
 };
 
 /**
- * Owns the appearance / personalization / default-permission-mode slice
- * (issue #1043): the theme + palette + UI-locale + user-label + default
- * permission mode state, plus the `refreshShellSettings` IPC pull that
+ * Owns the appearance / personalization / chat-defaults slice (issue #1043):
+ * theme + palette + UI locale + user label + default permission and follow-up
+ * modes, plus the `refreshShellSettings` IPC pull that
  * hydrates them from `window.maka.settings` / `e2eFixture` on mount and on
  * close-settings re-reads.
  *
@@ -48,6 +49,7 @@ export function useShellAppearance({
   // so a stale value here can briefly mislabel the chip but never changes
   // which mode a session is created with.
   const [defaultPermissionMode, setDefaultPermissionMode] = useState<ChatDefaultPermissionMode>('ask');
+  const [followUpMode, setFollowUpMode] = useState<FollowUpMode>('queue');
   // undefined = the user expressed no preference, so each model uses its own.
   const [defaultThinkingLevel, setDefaultThinkingLevel] = useState<ThinkingLevel | undefined>(undefined);
 
@@ -71,6 +73,7 @@ export function useShellAppearance({
       setUserLabel(name);
       setDefaultPermissionMode(next.chatDefaults?.permissionMode ?? 'ask');
       setDefaultThinkingLevel(next.chatDefaults?.thinkingLevel);
+      setFollowUpMode(next.chatDefaults?.followUpMode ?? 'queue');
       applyTheme(pref);
       applyThemePalette(palette);
     } catch (error) {
@@ -93,6 +96,8 @@ export function useShellAppearance({
     defaultPermissionMode,
     defaultThinkingLevel,
     setDefaultPermissionMode,
+    followUpMode,
+    setFollowUpMode,
     refreshShellSettings,
   };
 }

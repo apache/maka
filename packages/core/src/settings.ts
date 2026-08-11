@@ -236,6 +236,7 @@ export interface PrivacySettings {
  * place.
  */
 export type ChatDefaultPermissionMode = Extract<PermissionMode, 'ask' | 'bypass'>;
+export type FollowUpMode = 'queue' | 'steer';
 
 export const CHAT_DEFAULT_PERMISSION_MODES: readonly ChatDefaultPermissionMode[] = [
   'ask',
@@ -249,9 +250,14 @@ export function isChatDefaultPermissionMode(value: unknown): value is ChatDefaul
   );
 }
 
+export function isFollowUpMode(value: unknown): value is FollowUpMode {
+  return value === 'queue' || value === 'steer';
+}
+
 /** Seeds new sessions' starting permission mode (Settings → 通用 → 默认权限模式). */
 export interface ChatDefaultsSettings {
   permissionMode: ChatDefaultPermissionMode;
+  followUpMode: FollowUpMode;
   /**
    * Seeds new sessions' thinking level. `undefined` means "whatever the model
    * does on its own" — the absence of a preference, not a level.
@@ -692,7 +698,7 @@ function defaultProjectPreferencesSettings(): ProjectPreferencesSettings {
 }
 
 function defaultChatDefaultsSettings(): ChatDefaultsSettings {
-  return { permissionMode: 'ask' };
+  return { permissionMode: 'ask', followUpMode: 'queue' };
 }
 
 // Closed-enum fail-closed, same reasoning as appearance.palette /
@@ -712,6 +718,7 @@ function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefa
         : isChatDefaultPermissionMode(settings.permissionMode)
           ? settings.permissionMode
           : 'ask',
+    followUpMode: isFollowUpMode(settings.followUpMode) ? settings.followUpMode : 'queue',
   };
 }
 

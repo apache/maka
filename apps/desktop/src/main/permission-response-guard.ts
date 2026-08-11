@@ -1,4 +1,5 @@
 import type {
+  AttachmentRef,
   BranchFromTurnInput,
   QuoteRef,
   RegenerateTurnInput,
@@ -8,6 +9,8 @@ import type {
 } from '@maka/core';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import {
+  MAX_ATTACHMENT_COUNT,
+  isAttachmentRef,
   isCanonicalStorageRef,
   isOrchestrationMode,
   isTurnOrchestrationSource,
@@ -39,11 +42,15 @@ interface NormalizedSendSessionCommand {
   displayText?: string;
   skillIds?: string[];
   attachmentItems?: unknown;
+  retainedAttachments?: AttachmentRef[];
   turnOrchestration?: TurnOrchestration;
   quotes?: QuoteRef[];
   workspaceFileReferences?: WorkspaceFileReferencePosition[];
 }
-type NormalizedStopSessionInput = { source?: 'stop_button' };
+export type NormalizedStopSessionInput = {
+  source?: 'stop_button';
+  preserveQueuedMessages?: boolean;
+};
 
 export function normalizeSandboxBoundaryResponse(input: unknown): SandboxBoundaryResponse {
   if (!input || typeof input !== 'object') {
@@ -160,6 +167,7 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     ...(displayText !== undefined ? { displayText } : {}),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(value.attachmentItems !== undefined ? { attachmentItems: value.attachmentItems } : {}),
+    ...normalizeOptionalRetainedAttachments(value.retainedAttachments),
     ...(value.turnOrchestration !== undefined
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
@@ -169,6 +177,22 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
       displayText ?? text,
     ),
   };
+}
+
+function normalizeOptionalRetainedAttachments(
+  input: unknown,
+): { retainedAttachments?: AttachmentRef[] } {
+  if (input === undefined) return {};
+  if (
+    !Array.isArray(input) ||
+    input.length > MAX_ATTACHMENT_COUNT ||
+    !input.every(isAttachmentRef)
+  ) {
+    throw new Error('Invalid retained attachments');
+  }
+  return input.length > 0
+    ? { retainedAttachments: input.map((attachment) => structuredClone(attachment)) }
+    : {};
 }
 
 function normalizeOptionalWorkspaceFileReferences(
@@ -275,11 +299,19 @@ export function normalizeSessionSkillIds(input: unknown): string[] {
 export function normalizeStopSessionInput(input: unknown): NormalizedStopSessionInput {
   if (input === undefined) return {};
   const value = requireObject(input, 'Invalid stop session input');
-  if (value.source === undefined) return {};
-  if (value.source !== 'stop_button') {
+  if (value.source !== undefined && value.source !== 'stop_button') {
     throw new Error('Invalid stop session source');
   }
-  return { source: 'stop_button' };
+  if (
+    value.preserveQueuedMessages !== undefined &&
+    typeof value.preserveQueuedMessages !== 'boolean'
+  ) {
+    throw new Error('Invalid preserve queued messages flag');
+  }
+  return {
+    ...(value.source === 'stop_button' ? { source: 'stop_button' as const } : {}),
+    ...(value.preserveQueuedMessages === true ? { preserveQueuedMessages: true } : {}),
+  };
 }
 
 function requireObject(input: unknown, errorMessage: string): Record<string, unknown> {

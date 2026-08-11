@@ -1041,6 +1041,85 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     });
   }
 
+  startPausedFollowup(
+    batch: RootFollowupBatch,
+    admissionLease: SessionAdmissionLease,
+  ): Promise<{ readonly turnId: string } | { readonly error: string }> {
+    return this.runCommand(async () => {
+      const initiatingConnectionId = batch.initiatingConnectionId;
+      if (!initiatingConnectionId) {
+        throw new RuntimeMessageAuthorityInvariantError(
+          'Paused follow-up lost its initiating Client identity',
+        );
+      }
+      if (this.#executions.has(batch.sessionId)) {
+        return { error: 'A root Turn is already active' };
+      }
+      const reservation = this.reserveRootTurn(batch.sessionId);
+      if (!reservation) return { error: 'Another root Turn is being admitted' };
+      try {
+        const header = await this.stores.sessionStore.readHeaderSnapshot(batch.sessionId);
+        const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
+        if (unavailableReason) return { error: unavailableReason };
+        await this.clientCapabilities?.bindConfirmedFollowup(
+          batch.sessionId,
+          initiatingConnectionId,
+        );
+        if (!this.beginRootAdmission(reservation)) {
+          return { error: 'Root Turn reservation is no longer current' };
+        }
+
+        const turnId = randomUUID();
+        const admitted = await this.rootAdmissionOwner.admitRootTurn({
+          sessionId: batch.sessionId,
+          turnId,
+          proposedRunId: randomUUID(),
+          proposedUserMessageId: randomUUID(),
+          execution: {
+            kind: 'external_message',
+            inputDigest: messageContentDigest(batch.submittedContent),
+          },
+          normalizedInput: batch.content,
+          sourceMessages: batch.sources,
+          admittedAt: Date.now(),
+        });
+        if (admitted.kind !== 'admitted') {
+          throw new RuntimeMessageAuthorityInvariantError(
+            'Fresh resumed follow-up root Turn identity already existed',
+          );
+        }
+
+        const nextIdentity = {
+          sessionId: batch.sessionId,
+          turnId,
+          runId: admitted.admission.runId,
+        };
+        this.messages.commitNextRoot(batch, nextIdentity);
+        const disposition = await this.prepareAdmittedTurn(
+          {
+            sessionId: batch.sessionId,
+            turnId,
+            content: admitted.admission.normalizedInput,
+          },
+          admitted.admission,
+          this.acquireRecoveryResidency,
+          admissionLease,
+          undefined,
+          undefined,
+          reservation,
+        );
+        if (disposition.kind !== 'await_start') {
+          throw new RuntimeMessageAuthorityInvariantError(
+            'Resumed follow-up root Turn did not reserve execution',
+          );
+        }
+        return { turnId };
+      } finally {
+        this.releaseRootReservation(reservation);
+      }
+    });
+  }
+
   prepareMessage(
     input: HostMessagePreparationInput,
   ): Promise<
