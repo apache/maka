@@ -153,8 +153,9 @@ test('starts collecting before submitting the stable source message for the Host
         events.push(projectionFrame(1, runningTurn('session-1', 'host-turn-1')));
         events.push(deltaFrame(2, 'session-1', 'host-turn-1', 0, 'Hello'));
         events.push(deltaFrame(3, 'session-1', 'host-turn-1', 5, ' world'));
+        events.push(deltaFrame(4, 'session-1', 'host-turn-1', 0, 'Corrected reply', true));
         events.push(
-          projectionFrame(4, {
+          projectionFrame(5, {
             ...runningTurn('session-1', 'host-turn-1'),
             status: 'completed',
             terminalEventId: 'terminal-1',
@@ -175,7 +176,7 @@ test('starts collecting before submitting the stable source message for the Host
       text: 'hello',
       onReplySnapshot: (text) => replySnapshots.push(text),
     }),
-    { kind: 'completed', text: 'Hello world' },
+    { kind: 'completed', text: 'Corrected reply' },
   );
   assert.deepEqual(replySnapshots, ['Hello', 'Hello world']);
   assert.equal(closeCount, 1);
@@ -192,6 +193,7 @@ test('recovers an older completed Turn from the canonical query and transcript',
       status: 'completed',
       terminalEventId: 'terminal-newer',
     }),
+    activeAssistantStreams: [],
     transcript: Promise.resolve([
       {
         type: 'assistant',
