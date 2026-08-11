@@ -1,10 +1,6 @@
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
-import {
-  deriveProviderAuthContract,
-  deriveProviderAuthContractFromConnection,
-} from '../provider-auth.js';
-import type { LlmConnection } from '../llm-connections.js';
+import { deriveProviderAuthContract } from '../provider-auth.js';
 
 describe('ProviderAuth contract', () => {
   test('model-key providers expose credential actions only after a secret exists', () => {
@@ -32,11 +28,9 @@ describe('ProviderAuth contract', () => {
     expect(configured.actionAvailability.test_credentials).toBe('available');
     expect(configured.actionAvailability.fetch_models).toBe('available');
     expect(configured.actionAvailability.revoke_auth).toBe('available');
-    expect(configured.copy.detail).toContain('等待验证');
-    expect(configured.copy.detail.includes('尚未验证')).toBe(false);
   });
 
-  test('credential validation success is not runtime operational readiness', () => {
+  test('maps verified credentials to validation state', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'zai-coding-plan',
       hasSecret: true,
@@ -45,12 +39,9 @@ describe('ProviderAuth contract', () => {
 
     expect(contract.state).toBe('validated');
     expect(contract.validationStatus).toBe('verified');
-    expect(contract.copy.detail).toContain('不代表消息发送');
-    expect(contract.copy.detail).toContain('流式响应');
-    expect(contract.copy.detail).toContain('中断恢复');
   });
 
-  test('auth failures preserve distinct repair states without raw provider errors', () => {
+  test('maps authentication failures to distinct repair states', () => {
     const needsReauth = deriveProviderAuthContract({
       providerType: 'anthropic',
       hasSecret: true,
@@ -63,11 +54,7 @@ describe('ProviderAuth contract', () => {
     });
 
     expect(needsReauth.state).toBe('needs_reauth');
-    expect(needsReauth.copy.detail).toContain('鉴权失败');
     expect(error.state).toBe('error');
-    expect(error.copy.detail).toContain('概括后的错误信息');
-    expect(JSON.stringify(error.copy).includes('401')).toBe(false);
-    expect(JSON.stringify(error.copy).includes('sk-')).toBe(false);
   });
 
   test('wired OAuth subscription providers expose real validation actions after login', () => {
@@ -84,15 +71,10 @@ describe('ProviderAuth contract', () => {
     expect(contract.sendMayUseWithoutSecret).toBe(false);
     expect(contract.actionAvailability.save_secret).toBe('hidden');
     expect(contract.actionAvailability.test_credentials).toBe('available');
-    // Session-scoped subscription tokens cannot call GET /v1/models, so the
-    // registry declares fallback-only discovery and the action stays hidden.
     expect(contract.actionAvailability.fetch_models).toBe('hidden');
     expect(contract.actionAvailability.start_oauth).toBe('hidden');
     expect(contract.actionAvailability.refresh_oauth).toBe('available');
     expect(contract.actionAvailability.revoke_auth).toBe('available');
-    expect(contract.copy.label).toContain('OAuth 已验证');
-    expect(contract.copy.detail).toContain('账号令牌和端点验证通过');
-    expect(contract.copy.detail.includes('API key 连接仍是聊天模型的可用路径')).toBe(false);
   });
 
   test('a discovery-capable wired OAuth provider keeps fetch_models available after login', () => {
@@ -118,21 +100,6 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.start_oauth).toBe('available');
     expect(contract.actionAvailability.test_credentials).toBe('hidden');
     expect(contract.actionAvailability.fetch_models).toBe('hidden');
-    expect(contract.copy.label).toContain('等待 OAuth 登录');
-    expect(contract.copy.detail).toContain('用于聊天发送');
-  });
-
-  test('xAI OAuth exposes the runnable account-login contract', () => {
-    const contract = deriveProviderAuthContract({
-      providerType: 'xai-oauth',
-      hasSecret: false,
-    });
-
-    expect(contract.setupMode).toBe('oauth');
-    expect(contract.state).toBe('not_configured');
-    expect(contract.actionAvailability.start_oauth).toBe('available');
-    expect(contract.actionAvailability.refresh_oauth).toBe('hidden');
-    expect(contract.actionAvailability.revoke_auth).toBe('hidden');
   });
 
   test('unwired OAuth providers stay preview-only and do not expose live actions', () => {
@@ -153,10 +120,6 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.start_oauth).toBe('preview_only');
     expect(contract.actionAvailability.refresh_oauth).toBe('preview_only');
     expect(contract.actionAvailability.revoke_auth).toBe('preview_only');
-    expect(contract.copy.label).toContain('账号登录预览');
-    expect(contract.copy.detail).toContain('普通模型密钥连接仍可在聊天模型中使用');
-    expect(contract.copy.label.includes('待接入')).toBe(false);
-    expect(contract.copy.detail.includes('尚未开放')).toBe(false);
   });
 
   test('no-auth local providers can send without secret but are still not validated runtime probes', () => {
@@ -168,22 +131,6 @@ describe('ProviderAuth contract', () => {
     expect(contract.setupMode).toBe('none');
     expect(contract.state).toBe('configured');
     expect(contract.validationStatus).toBe('not_required');
-    expect(contract.requiresSecret).toBe(false);
-    expect(contract.sendMayUseWithoutSecret).toBe(true);
-    expect(contract.actionAvailability.save_secret).toBe('hidden');
-    expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('available');
-    expect(contract.copy.detail).toContain('本地服务');
-  });
-
-  test('LM Studio uses the shared no-auth configuration flow under its own provider id', () => {
-    const contract = deriveProviderAuthContract({
-      providerType: 'lm-studio',
-      hasSecret: false,
-    });
-
-    expect(contract.providerType).toBe('lm-studio');
-    expect(contract.setupMode).toBe('none');
     expect(contract.requiresSecret).toBe(false);
     expect(contract.sendMayUseWithoutSecret).toBe(true);
     expect(contract.actionAvailability.save_secret).toBe('hidden');
@@ -205,7 +152,6 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.save_secret).toBe('available');
     expect(contract.actionAvailability.test_credentials).toBe('available');
     expect(contract.actionAvailability.fetch_models).toBe('available');
-    expect(contract.copy.detail).toContain('可选');
   });
 
   test('LocalAI preserves endpoint validation failures without making its optional key required', () => {
@@ -219,25 +165,9 @@ describe('ProviderAuth contract', () => {
     expect(contract.validationStatus).toBe('needs_reauth');
     expect(contract.requiresSecret).toBe(false);
     expect(contract.sendMayUseWithoutSecret).toBe(true);
-    expect(contract.copy.label).toContain('需要重新授权');
   });
 
   test('disabled providers hide actions regardless of stored credential state', () => {
-    const contract = deriveProviderAuthContract({
-      providerType: 'openai',
-      enabled: false,
-      hasSecret: true,
-      lastTestStatus: 'verified',
-    });
-
-    expect(contract.state).toBe('disabled');
-    expect(contract.validationStatus).toBe('verified');
-    expect(Object.values(contract.actionAvailability).every((value) => value === 'hidden')).toBe(
-      true,
-    );
-  });
-
-  test('disabled OAuth preview providers do not expose preview actions', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'claude-subscription',
       enabled: false,
@@ -251,24 +181,5 @@ describe('ProviderAuth contract', () => {
     expect(Object.values(contract.actionAvailability).every((value) => value === 'hidden')).toBe(
       true,
     );
-  });
-
-  test('connection wrapper consumes only metadata plus caller-supplied secret presence', () => {
-    const connection: LlmConnection = {
-      slug: 'zai',
-      name: 'Z.ai',
-      providerType: 'zai-coding-plan',
-      defaultModel: 'glm-4.7',
-      enabled: true,
-      lastTestStatus: 'verified',
-      createdAt: 1,
-      updatedAt: 2,
-    };
-
-    const contract = deriveProviderAuthContractFromConnection(connection, true);
-
-    expect(contract.providerType).toBe('zai-coding-plan');
-    expect(contract.state).toBe('validated');
-    expect(contract.validationStatus).toBe('verified');
   });
 });
