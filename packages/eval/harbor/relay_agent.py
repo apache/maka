@@ -135,7 +135,7 @@ async def _prepare_command(
     subject = shlex.join([request["command"], *request["args"]])
     if not capture_stdout:
         subject = f"{subject} >/dev/null"
-    inner = f"echo $$ > {shlex.quote(scope_path)}; . {shlex.quote(container_path)}; rm -f {shlex.quote(container_path)}; exec {subject}"
+    inner = f"echo $$ > {shlex.quote(scope_path)}; . {shlex.quote(container_path)}; command -p rm -f {shlex.quote(container_path)}; exec {subject}"
     return f"setsid sh -c {shlex.quote(inner)}"
 
 

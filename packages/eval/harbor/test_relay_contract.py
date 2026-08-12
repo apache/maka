@@ -1,10 +1,13 @@
 import asyncio
 import importlib
 import os
+import shlex
+import subprocess
 import sys
 import tempfile
 import types
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,11 +18,16 @@ class BaseAgent:
 
 
 class Environment:
-    def __init__(self):
+    def __init__(self, stage_upload: bool = False):
         self.uploaded = b""
+        self.uploaded_target = None
+        self.stage_upload = stage_upload
 
-    async def upload_file(self, source: Path, _target: str) -> None:
+    async def upload_file(self, source: Path, target: str) -> None:
         self.uploaded = source.read_bytes()
+        if self.stage_upload:
+            self.uploaded_target = Path(target)
+            self.uploaded_target.write_bytes(self.uploaded)
 
 
 def load_relay():
@@ -90,6 +98,39 @@ class RelayContractTest(unittest.TestCase):
                         )
                     )
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_removes_credential_file_when_subject_overrides_path(self):
+        relay = load_relay()
+        environment = Environment(stage_upload=True)
+        token = f"contract-{uuid.uuid4().hex}"
+        with tempfile.TemporaryDirectory() as directory:
+            command = asyncio.run(
+                relay._prepare_command(
+                    environment,
+                    {
+                        "command": "/bin/sh",
+                        "args": ["-c", "exit 0"],
+                        "environment": {"PATH": "/definitely-missing"},
+                        "credentials": {"API_KEY": "canary-secret"},
+                        "captureStdout": True,
+                    },
+                    token,
+                    str(Path(directory) / "scope.pid"),
+                )
+            )
+            target = environment.uploaded_target
+            self.assertIsNotNone(target)
+            try:
+                completed = subprocess.run(
+                    ["/bin/sh", "-c", shlex.split(command)[-1]],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertFalse(target.exists())
+            finally:
+                target.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
