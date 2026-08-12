@@ -2,9 +2,11 @@ import asyncio
 import importlib
 import os
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class BaseAgent:
@@ -56,6 +58,38 @@ class RelayContractTest(unittest.TestCase):
         self.assertIn(b"export API_KEY=canary-secret", environment.uploaded)
         self.assertNotIn("canary-secret", command)
         self.assertIn(">/dev/null", command)
+
+    def test_leaves_no_credential_file_when_command_preparation_fails(self):
+        relay = load_relay()
+        environment = Environment()
+        named_temporary_file = tempfile.NamedTemporaryFile
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(
+                relay.tempfile,
+                "NamedTemporaryFile",
+                side_effect=lambda *args, **kwargs: named_temporary_file(
+                    *args, dir=directory, **kwargs
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "invalid Maka Eval credential name"):
+                    asyncio.run(
+                        relay._prepare_command(
+                            environment,
+                            {
+                                "command": "/opt/agent",
+                                "args": ["run"],
+                                "environment": {"MODE": "offline"},
+                                "credentials": {
+                                    "API_KEY": "canary-secret",
+                                    "BAD-NAME": "ignored",
+                                },
+                                "captureStdout": False,
+                            },
+                            "token",
+                            "/tmp/scope.pid",
+                        )
+                    )
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
 
 if __name__ == "__main__":

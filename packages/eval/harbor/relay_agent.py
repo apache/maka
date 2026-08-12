@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import shlex
 import tempfile
 from pathlib import Path
@@ -115,18 +116,22 @@ async def _prepare_command(
     capture_stdout = request.get("captureStdout")
     if not isinstance(capture_stdout, bool):
         raise RuntimeError("invalid Maka Eval stdout policy")
+    for label, values in (("environment", public_environment), ("credential", credentials)):
+        if any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None for key in values):
+            raise RuntimeError(f"invalid Maka Eval {label} name")
+
     container_path = f"/tmp/maka-eval-{token}.env"
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as secret:
-        secret_path = Path(secret.name)
-        os.chmod(secret_path, 0o600)
-        for key, value in {**public_environment, **credentials}.items():
-            if not key or not key.replace("_", "a").isalnum() or key[0].isdigit():
-                raise RuntimeError("invalid Maka Eval credential name")
-            secret.write(f"export {key}={shlex.quote(value)}\n")
+    secret_path = None
     try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as secret:
+            secret_path = Path(secret.name)
+            os.chmod(secret_path, 0o600)
+            for key, value in {**public_environment, **credentials}.items():
+                secret.write(f"export {key}={shlex.quote(value)}\n")
         await environment.upload_file(secret_path, container_path)
     finally:
-        secret_path.unlink(missing_ok=True)
+        if secret_path is not None:
+            secret_path.unlink(missing_ok=True)
     subject = shlex.join([request["command"], *request["args"]])
     if not capture_stdout:
         subject = f"{subject} >/dev/null"
