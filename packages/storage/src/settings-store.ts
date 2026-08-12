@@ -1,10 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type {
-  AppSettings,
-  SettingsTestResult,
-  UpdateAppSettingsInput,
-} from '@maka/core/settings';
+import type { AppSettings, SettingsTestResult, UpdateAppSettingsInput } from '@maka/core/settings';
 import type { OnboardingMilestone, OnboardingMilestoneId } from '@maka/core/onboarding';
 import { createDefaultSettings, mergeSettings, normalizeSettings } from '@maka/core/settings';
 import { sanitizeOnboardingMilestones } from '@maka/core/onboarding';
