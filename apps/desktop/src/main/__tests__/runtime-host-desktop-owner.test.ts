@@ -184,7 +184,7 @@ test('restores the previous Runtime Host when a target switch fails', async () =
     },
   );
 
-  await assert.rejects(owner.switchTarget(remoteTarget('offline')), /startup failed/);
+  await assert.rejects(owner.switchTarget(remoteTarget('offline')), /stopped responding/);
   await owner.handleBotIncomingMessage({ text: 'restored' } as BotIncomingMessage);
 
   assert.equal(first.closeCalls, 1);

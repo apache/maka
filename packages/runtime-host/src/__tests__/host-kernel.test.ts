@@ -86,6 +86,33 @@ const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 
 describe('non-serving Runtime Host kernel', () => {
+  test('reports a recovery failure instead of returning a draining Host', async () => {
+    await withHostPaths(async (paths) => {
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 5_000,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: (input) =>
+            launchTestRuntimeHostCandidate(paths, {
+              ...input,
+              env: {
+                MAKA_TEST_STARTUP_ERROR_CODE: 'stored_session_message_incompatible',
+              },
+            }),
+        },
+      );
+
+      assert.deepEqual(result, { kind: 'failed', reason: 'stored_data_incompatible' });
+    });
+  });
+
   test('rejects a bound composition mismatch without launching a Candidate', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
@@ -615,7 +642,7 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('startup failure uses the active shutdown deadline without releasing ownership', async () => {
+  test('startup failure preserves its cause when shutdown reaches the active deadline', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -661,7 +688,13 @@ describe('non-serving Runtime Host kernel', () => {
           1_000,
           'Runtime Host startup ignored its shutdown deadline',
         );
-        assert.ok(error instanceof RuntimeHostProcessTerminationRequiredError);
+        assert.ok(error instanceof AggregateError);
+        assert.match(String(error.cause), /forced startup recovery failure/);
+        assert.ok(
+          error.errors.some(
+            (candidate: unknown) => candidate instanceof RuntimeHostProcessTerminationRequiredError,
+          ),
+        );
         assert.deepEqual(lifecycle, ['begin-drain', 'recover', 'close']);
         assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
       } finally {

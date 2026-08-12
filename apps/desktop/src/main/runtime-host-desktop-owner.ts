@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   RuntimeHostPermanentReconnectError,
+  runtimeHostStartupError,
   LOCAL_RUNTIME_HOST_PROFILE,
   startRuntimeHostReconnectLifecycle,
   type ResolvedRuntimeHostProfile,
@@ -400,7 +401,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
         await this.waitForHostRetirement(result.registration, signal);
         continue;
       }
-      throw new Error(`Runtime Host startup failed: ${result.reason}`);
+      throw runtimeHostStartupError(result.reason);
     }
   }
 

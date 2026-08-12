@@ -228,7 +228,11 @@ export class RuntimeHostKernel {
           try {
             await host.closed;
           } catch (shutdownError) {
-            throw shutdownError;
+            throw new AggregateError(
+              [error, shutdownError],
+              'Runtime Host startup failed and shutdown did not complete cleanly',
+              { cause: error },
+            );
           }
         } else {
           await host.#abortStartup();

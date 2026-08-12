@@ -250,6 +250,19 @@ export class SessionMetadataConflictError extends Error {
   readonly name: string = 'SessionMetadataConflictError';
 }
 
+export class StoredSessionMessageIncompatibleError extends Error {
+  readonly name = 'StoredSessionMessageIncompatibleError';
+  readonly code = 'stored_session_message_incompatible';
+
+  constructor(
+    readonly sessionId: string,
+    readonly sequence: number,
+    options?: ErrorOptions,
+  ) {
+    super(`Stored Session message ${sequence} for ${sessionId} is incompatible`, options);
+  }
+}
+
 export class SessionMetadataVersionConflictError extends SessionMetadataConflictError {
   readonly name = 'SessionMetadataVersionConflictError';
 
@@ -1395,17 +1408,15 @@ export class SqliteSessionMetadataStore {
     const rows = this.db
       .prepare(
         `
-        SELECT record_json
+        SELECT sequence, record_json
         FROM session_messages
         WHERE session_id = ?
         ORDER BY sequence DESC
         LIMIT ?
       `,
       )
-      .all(sessionId, limit) as Array<{ record_json?: unknown }>;
-    return rows
-      .reverse()
-      .map((row, index) => decodeStoredMessageRow(row.record_json, sessionId, index));
+      .all(sessionId, limit) as Array<{ sequence?: unknown; record_json?: unknown }>;
+    return rows.reverse().map((row) => decodeStoredMessageRow(row, sessionId));
   }
 
   async beginCatalogProjectionWrite(): Promise<void> {
@@ -3253,21 +3264,22 @@ export class SqliteSessionMetadataStore {
     const rows = this.db
       .prepare(
         `
-        SELECT record_json
+        SELECT sequence, record_json
         FROM session_messages
         WHERE session_id = ?
         ORDER BY sequence
       `,
       )
-      .all(sessionId) as Array<{ record_json?: unknown }>;
-    return rows.map((row, index) => {
+      .all(sessionId) as Array<{ sequence?: unknown; record_json?: unknown }>;
+    return rows.map((row) => {
+      const sequence = requireStoredMessageSequence(row.sequence, sessionId);
       if (typeof row.record_json !== 'string') {
-        throw new Error(`Invalid Session message row ${index} for ${sessionId}`);
+        throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
       }
       try {
         return decode(JSON.parse(row.record_json) as unknown);
       } catch (error) {
-        throw new Error(`Invalid Session message row ${index} for ${sessionId}`, { cause: error });
+        throw new StoredSessionMessageIncompatibleError(sessionId, sequence, { cause: error });
       }
     });
   }
@@ -4569,16 +4581,27 @@ function assertGraphIntentId(value: string): void {
   }
 }
 
-function decodeStoredMessageRow(value: unknown, sessionId: string, index: number): StoredMessage {
-  if (typeof value !== 'string') {
-    throw new Error(`Invalid Session message row ${index} for ${sessionId}`);
+function decodeStoredMessageRow(
+  row: { sequence?: unknown; record_json?: unknown },
+  sessionId: string,
+): StoredMessage {
+  const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+  if (typeof row.record_json !== 'string') {
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
   }
   try {
-    const parsed = JSON.parse(value) as unknown;
+    const parsed = JSON.parse(row.record_json) as unknown;
     return decodeStoredMessage(parsed);
   } catch (error) {
-    throw new Error(`Invalid Session message row ${index} for ${sessionId}`, {
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence, {
       cause: error,
     });
   }
+}
+
+function requireStoredMessageSequence(value: unknown, sessionId: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new StoredSessionMessageIncompatibleError(sessionId, -1);
+  }
+  return value as number;
 }

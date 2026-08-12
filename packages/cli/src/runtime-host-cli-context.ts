@@ -11,7 +11,7 @@ import {
   LOCAL_RUNTIME_HOST_PROFILE,
   readRuntimeHostConnectionCatalog,
   RuntimeHostPermanentReconnectError,
-  waitForRuntimeHostReady,
+  runtimeHostStartupError,
   type RuntimeHostConnection,
   type RuntimeHostProfile,
   type ResolvedRuntimeHostProfile,
@@ -114,15 +114,9 @@ export async function connectRuntimeHostCli(
       );
     }
     if (connected.kind === 'failed') {
-      throw new Error(`Runtime Host startup failed: ${connected.reason}`);
+      throw runtimeHostStartupError(connected.reason);
     }
-    try {
-      await waitForRuntimeHostReady(connected.connection, 45_000, signal);
-      return connected.connection;
-    } catch (error) {
-      await connected.connection.close().catch(() => undefined);
-      throw error;
-    }
+    return connected.connection;
   };
   const initialConnection = await connect();
   const connection = await createRuntimeHostReconnectingConnection({

@@ -50,6 +50,11 @@ export {
 } from './session-subscription.js';
 export { waitForRuntimeHostReady } from './wait-for-ready.js';
 export {
+  RuntimeHostStartupError,
+  runtimeHostStartupError,
+  type RuntimeHostStartupFailureReason,
+} from './startup-error.js';
+export {
   RuntimeHostCatalogReadError,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,

@@ -22,6 +22,7 @@ import {
   SessionMetadataConflictError,
   SessionMetadataVersionConflictError,
   SQLITE_SESSION_METADATA_SCHEMA_VERSION,
+  StoredSessionMessageIncompatibleError,
   type SqliteSessionMetadataStoreFailpoint,
 } from '../sqlite-session-metadata-store.js';
 import {
@@ -31,6 +32,57 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  test('identifies an incompatible persisted message without exposing its content', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-message-incompatible-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const setup = createSqliteSessionMetadataStore(path);
+      await setup.create(fullHeader());
+      setup.close();
+
+      const database = new DatabaseSync(path);
+      database
+        .prepare(`
+          INSERT INTO session_messages(
+            session_id, sequence, message_id, message_type, message_ts, record_json
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          'session-1',
+          104,
+          'message-legacy',
+          'user',
+          5,
+          JSON.stringify({
+            type: 'user',
+            id: 'message-legacy',
+            turnId: 'turn-legacy',
+            ts: 5,
+            text: 'private message text',
+            origin: { kind: 'automation', automationId: 'legacy-automation' },
+          }),
+        );
+      database.close();
+
+      const store = createSqliteSessionMetadataStore(path);
+      try {
+        await assert.rejects(
+          () => store.readMessagesForRecovery('session-1'),
+          (error: unknown) =>
+            error instanceof StoredSessionMessageIncompatibleError &&
+            error.code === 'stored_session_message_incompatible' &&
+            error.sessionId === 'session-1' &&
+            error.sequence === 104 &&
+            !error.message.includes('private message text'),
+        );
+      } finally {
+        store.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('round-trips every SessionHeader field and reopens the same schema', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-'));
     const path = join(root, 'state.sqlite');

@@ -7,7 +7,6 @@ import type { BotRegistry } from '@maka/runtime/bots';
 import {
   connectOrSpawnRuntimeHost,
   connectRemoteRuntimeHostProfile,
-  waitForRuntimeHostReady,
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostConnection,
@@ -243,11 +242,6 @@ export async function startDesktopRuntimeHostCandidate(
   const connection = await connectOrSpawnRuntimeHost(connectInput(input));
   if (connection.kind !== "connected") return connection;
   try {
-    await waitForRuntimeHostReady(
-      connection.connection,
-      input.electionDeadlineMs ?? 45_000,
-      input.signal,
-    );
     return {
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(

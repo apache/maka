@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   connectRemoteRuntimeHostProfile,
+  RuntimeHostStartupError,
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
 import {
@@ -91,6 +92,26 @@ test('non-interactive CLI reports how to retire an incompatible Runtime Host', a
       assert.ok(error instanceof RuntimeHostCliConflictError);
       assert.equal(error.code, 'RUNTIME_HOST_RESTART_REQUIRED');
       assert.match(error.message, /Stop the previous Maka Desktop or CLI process/);
+      return true;
+    },
+  );
+});
+
+test('CLI reports an actionable stored-data startup failure', async () => {
+  await assert.rejects(
+    connectRuntimeHostCli(
+      { rootPath: '/runtime-host-root', surface: 'run' },
+      {
+        connectOrSpawn: async () => ({
+          kind: 'failed',
+          reason: 'stored_data_incompatible',
+        }),
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof RuntimeHostStartupError);
+      assert.equal(error.reason, 'stored_data_incompatible');
+      assert.match(error.message, /STORED_DATA_INCOMPATIBLE/);
       return true;
     },
   );
