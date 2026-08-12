@@ -451,6 +451,42 @@ test('accepts an identical retried page but rejects a durable sequence gap', asy
   );
 });
 
+test('rejects a transcript cursor that does not advance', async () => {
+  const message = Buffer.from(
+    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
+    'utf8',
+  );
+  const repeated = transcriptPage({
+    rawBytes: message.byteLength,
+    nextCursor: 'stuck-cursor',
+    fragments: [
+      {
+        kind: 'durable',
+        sequence: 0,
+        byteOffset: 0,
+        totalBytes: message.byteLength,
+        data: message.toString('base64'),
+      },
+    ],
+  });
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-stuck-cursor', {
+      throughSequence: 0,
+      overlayMessageCount: 0,
+      durable: repeated,
+      overlay: transcriptPage({ source: 'overlay' }),
+    }),
+    async () => undefined,
+    async () => repeated,
+  );
+
+  await assert.rejects(subscription.loadTranscript(decodeStoredMessage), {
+    name: 'RuntimeHostSubscriptionError',
+    reason: 'correlation_changed',
+    message: 'Session transcript cursor did not advance',
+  });
+});
+
 test('rejects an overlay that terminates before its declared high-water', async () => {
   const message = Buffer.from(
     JSON.stringify({ type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 1, text: '' }),

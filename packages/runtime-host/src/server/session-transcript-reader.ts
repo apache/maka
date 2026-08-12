@@ -20,6 +20,8 @@ import { SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES, type TurnSnapshot } from '../p
 const PERMISSION_OUTCOME_READ_CONCURRENCY = 8;
 export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES = SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES;
 export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES = 16 * 1024 * 1024;
+const ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS = ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES * 2;
+const ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES = 256 * 1024;
 
 export function createSessionTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
@@ -35,14 +37,8 @@ export function createSessionTranscriptReader(input: {
     readActiveOverlay: async (sessionId, rootTurn) => {
       if (!rootTurn || isTerminalTurn(rootTurn)) return [];
 
-      const runPromise = input.stores.agentRunStore.readRun(sessionId, rootTurn.runId);
-      const events: RuntimeEvent[] = [];
-      await input.stores.runtimeEventStore.scanRuntimeEvents(sessionId, rootTurn.runId, (batch) => {
-        for (const event of batch) {
-          if (affectsRuntimeEventStoredMessageProjection(event)) events.push(event);
-        }
-      });
-      const run = await runPromise;
+      const run = await input.stores.agentRunStore.readRun(sessionId, rootTurn.runId);
+      const events = await readActiveProjectionEvents(input.stores, sessionId, rootTurn.runId);
       const canonicalPermissionOutcomes = await readCanonicalPermissionOutcomes(
         events,
         input.canonicalPermissionOutcomes,
@@ -101,6 +97,7 @@ async function readCanonicalPermissionOutcomes(
   );
   const outcomes = new Map<string, CanonicalPermissionOutcomeRecord>();
   const ids = [...requestIds];
+  let encodedBytes = 0;
   for (let index = 0; index < ids.length; index += PERMISSION_OUTCOME_READ_CONCURRENCY) {
     const batch = await Promise.all(
       ids.slice(index, index + PERMISSION_OUTCOME_READ_CONCURRENCY).map(async (requestId) => ({
@@ -109,7 +106,12 @@ async function readCanonicalPermissionOutcomes(
       })),
     );
     for (const item of batch) {
-      if (item.outcome) outcomes.set(item.requestId, item.outcome);
+      if (!item.outcome) continue;
+      encodedBytes += Buffer.byteLength(JSON.stringify(item.outcome), 'utf8');
+      if (encodedBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
+        throw new Error('Active Session permission outcomes exceed the transcript byte limit');
+      }
+      outcomes.set(item.requestId, item.outcome);
     }
   }
   return outcomes;
@@ -144,6 +146,45 @@ function activePresentationEvents(events: readonly RuntimeEvent[]): RuntimeEvent
     if (synthetic) presented.push(...synthetic);
   }
   return presented;
+}
+
+async function readActiveProjectionEvents(
+  stores: ExecutionStoresWriter<'interactive'>,
+  sessionId: string,
+  runId: string,
+): Promise<RuntimeEvent[]> {
+  const events: RuntimeEvent[] = [];
+  let retainedEvents = 0;
+  let retainedBytes = 0;
+  const result = await stores.runtimeEventStore.scanRuntimeEvents(
+    sessionId,
+    runId,
+    {
+      maxBatchBytes: ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES,
+      maxRecordBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+      maxPartialRecords: ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS,
+      maxPartialSegments: ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS,
+      maxPartialBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+    },
+    (batch) => {
+      const relevant = batch.filter(affectsRuntimeEventStoredMessageProjection);
+      for (const event of relevant) {
+        retainedEvents += 1;
+        retainedBytes += Buffer.byteLength(JSON.stringify(event), 'utf8');
+        if (retainedEvents > ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS) {
+          throw new Error('Active RuntimeEvent transcript exceeds its event limit');
+        }
+        if (retainedBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
+          throw new Error('Active RuntimeEvent transcript exceeds its byte limit');
+        }
+      }
+      events.push(...relevant);
+    },
+  );
+  if (result.status === 'limit_exceeded') {
+    throw new Error('Active RuntimeEvent transcript exceeds its storage scan limit');
+  }
+  return events;
 }
 
 function activeMessageKey(event: RuntimeEvent): string {

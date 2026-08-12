@@ -238,7 +238,19 @@ export class ClientSessionSubscription
         anchorSequence: null,
         maxBytes: continuationPageByteLimit(initial.source, previousPage),
       });
-      assembler.accept(page.fragments);
+      if (page.nextCursor === cursor) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript cursor did not advance',
+        );
+      }
+      const duplicate = assembler.accept(page.fragments);
+      if (duplicate && page.nextCursor !== null) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript cursor did not advance',
+        );
+      }
       previousPage = page;
       cursor = page.nextCursor;
     }
@@ -433,11 +445,12 @@ class TranscriptFragmentAssembler {
     private readonly direction: 'older' | 'newer',
   ) {}
 
-  accept(fragments: readonly SessionTranscriptFragment[]): void {
+  accept(fragments: readonly SessionTranscriptFragment[]): boolean {
     const pageEncoding = JSON.stringify(fragments);
-    if (pageEncoding === this.#lastPageEncoding) return;
+    if (pageEncoding === this.#lastPageEncoding) return true;
     this.#lastPageEncoding = pageEncoding;
     for (const fragment of fragments) this.#accept(fragment);
+    return false;
   }
 
   finish(): Array<{ identity: number; value: unknown }> {

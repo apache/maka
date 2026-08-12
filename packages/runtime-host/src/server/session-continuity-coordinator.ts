@@ -113,6 +113,8 @@ interface ConnectionState {
   sink: SessionContinuityFrameSink;
   subscriptionIds: Set<string>;
   pendingOpenCount: number;
+  readonly closed: Promise<void>;
+  resolveClosed(): void;
 }
 
 interface QueuedSubscriptionFrame {
@@ -146,9 +148,19 @@ interface RetainedTranscriptOverlay {
 interface CachedTranscriptOverlay {
   readonly throughSequence: number | null;
   readonly prepared: Promise<RetainedTranscriptOverlay>;
+  pendingConsumers: number;
+  cancelPreparation(): void;
+}
+
+interface TranscriptOverlayPreparationWaiter {
+  cancelled: boolean;
+  granted: boolean;
+  resolve(release: () => void): void;
+  reject(error: Error): void;
 }
 
 const MAX_RETAINED_TRANSCRIPT_OVERLAY_BYTES = 64 * 1024 * 1024;
+const MAX_TRANSCRIPT_OVERLAY_PREPARATION_WAITERS = 64;
 // Preparation can retain the active projection, durable reconciliation, and
 // final encoded snapshot at the same time; charge all three to the Host budget.
 const MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES = ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES * 3;
@@ -205,6 +217,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   readonly #pendingAgentGraphChanges = new Map<string, PendingAgentGraphChange>();
   readonly #pendingSessionDomainChanges = new Map<string, PendingSessionDomainChanges>();
   readonly #retainedTranscriptOverlays = new Map<readonly Buffer[], RetainedTranscriptOverlay>();
+  readonly #transcriptOverlayPreparationWaiters: TranscriptOverlayPreparationWaiter[] = [];
   readonly #hostEpoch: string;
   readonly #readCanonical: ReadCanonicalSessionProjection;
   readonly #transcriptReader: SessionTranscriptReader | undefined;
@@ -233,10 +246,13 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     if (this.#connections.has(connectionId)) {
       throw new Error(`Duplicate Runtime Host connection: ${connectionId}`);
     }
+    const closed = signal();
     this.#connections.set(connectionId, {
       sink,
       subscriptionIds: new Set(),
       pendingOpenCount: 0,
+      closed: closed.promise,
+      resolveClosed: closed.resolve,
     });
     let attached = true;
     return {
@@ -705,6 +721,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#cancelTranscriptOverlayPreparationWaiters();
     for (const connectionId of [...this.#connections.keys()]) this.#closeConnection(connectionId);
     for (const state of this.#sessions.values()) this.#invalidateTranscriptOverlay(state);
     this.#sessions.clear();
@@ -790,7 +807,13 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
                 sessionId,
                 throughSequence,
               );
-              retainedTranscriptOverlay = await cachedTranscriptOverlay.prepared;
+              cachedTranscriptOverlay.pendingConsumers += 1;
+              retainedTranscriptOverlay = await Promise.race([
+                cachedTranscriptOverlay.prepared,
+                connection.closed.then(() => {
+                  throw new Error('Runtime Host connection closed during subscription open');
+                }),
+              ]);
               const created = await createSessionTranscriptBootstrap({
                 reader: this.#transcriptReader,
                 sessionId,
@@ -894,9 +917,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             value: { ...openValue, nextSequence: firstSequence },
           };
         } finally {
+          if (cachedTranscriptOverlay) cachedTranscriptOverlay.pendingConsumers -= 1;
           if (
             cachedTranscriptOverlay &&
             !transcriptSubscriberInstalled &&
+            cachedTranscriptOverlay.pendingConsumers === 0 &&
             !this.#hasTranscriptSubscriber(committed.state)
           ) {
             this.#invalidateTranscriptOverlay(committed.state, cachedTranscriptOverlay);
@@ -963,24 +988,31 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     const cached = state.transcriptOverlay;
     if (cached?.throughSequence === throughSequence) return cached;
     if (cached) this.#invalidateTranscriptOverlay(state, cached);
-    this.#reserveTranscriptOverlayPreparation();
-    const prepared = prepareSessionTranscriptOverlay({
-      reader: this.#transcriptReader,
-      sessionId,
-      throughSequence,
-      rootTurn: state.canonical.rootTurn,
-      activeAssistantStreams: state.assistantStreams.values(),
-    }).then(
-      (messages) => {
-        this.#releaseTranscriptOverlayPreparation();
+    const ticket = this.#queueTranscriptOverlayPreparation();
+    const prepared = (async () => {
+      const release = await ticket.ready;
+      try {
+        if (ticket.waiter.cancelled) {
+          throw new Error('Session transcript overlay preparation was cancelled');
+        }
+        const messages = await prepareSessionTranscriptOverlay({
+          reader: this.#transcriptReader!,
+          sessionId,
+          throughSequence,
+          rootTurn: state.canonical.rootTurn,
+          activeAssistantStreams: state.assistantStreams.values(),
+        });
         return this.#registerTranscriptOverlay(messages);
-      },
-      (error: unknown) => {
-        this.#releaseTranscriptOverlayPreparation();
-        throw error;
-      },
-    );
-    const entry = { throughSequence, prepared };
+      } finally {
+        release();
+      }
+    })();
+    const entry = {
+      throughSequence,
+      prepared,
+      pendingConsumers: 0,
+      cancelPreparation: () => this.#cancelTranscriptOverlayPreparation(ticket.waiter),
+    };
     state.transcriptOverlay = entry;
     void prepared.catch(() => {
       if (state.transcriptOverlay === entry) state.transcriptOverlay = undefined;
@@ -988,20 +1020,83 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     return entry;
   }
 
-  #reserveTranscriptOverlayPreparation(): void {
+  #queueTranscriptOverlayPreparation(): {
+    readonly waiter: TranscriptOverlayPreparationWaiter;
+    readonly ready: Promise<() => void>;
+  } {
     if (
-      this.#retainedTranscriptOverlayBytes +
-        this.#preparingTranscriptOverlayBytes +
-        MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES >
-      MAX_RETAINED_TRANSCRIPT_OVERLAY_BYTES
+      this.#transcriptOverlayPreparationWaiters.length >= MAX_TRANSCRIPT_OVERLAY_PREPARATION_WAITERS
     ) {
-      throw new TranscriptOverlayCapacityError('Runtime Host transcript overlay capacity reached');
+      throw new TranscriptOverlayCapacityError(
+        'Runtime Host transcript overlay preparation queue reached its limit',
+      );
     }
-    this.#preparingTranscriptOverlayBytes += MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES;
+    let resolve!: (release: () => void) => void;
+    let reject!: (error: Error) => void;
+    const ready = new Promise<() => void>((resolveReady, rejectReady) => {
+      resolve = resolveReady;
+      reject = rejectReady;
+    });
+    const waiter: TranscriptOverlayPreparationWaiter = {
+      cancelled: false,
+      granted: false,
+      resolve,
+      reject,
+    };
+    this.#transcriptOverlayPreparationWaiters.push(waiter);
+    this.#drainTranscriptOverlayPreparationWaiters();
+    return { waiter, ready };
   }
 
   #releaseTranscriptOverlayPreparation(): void {
     this.#preparingTranscriptOverlayBytes -= MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES;
+    this.#drainTranscriptOverlayPreparationWaiters();
+  }
+
+  #drainTranscriptOverlayPreparationWaiters(): void {
+    if (this.#closed) return;
+    while (this.#transcriptOverlayPreparationWaiters.length > 0) {
+      const waiter = this.#transcriptOverlayPreparationWaiters[0]!;
+      if (waiter.cancelled) {
+        this.#transcriptOverlayPreparationWaiters.shift();
+        continue;
+      }
+      if (
+        this.#retainedTranscriptOverlayBytes +
+          this.#preparingTranscriptOverlayBytes +
+          MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES >
+        MAX_RETAINED_TRANSCRIPT_OVERLAY_BYTES
+      ) {
+        return;
+      }
+      this.#transcriptOverlayPreparationWaiters.shift();
+      waiter.granted = true;
+      this.#preparingTranscriptOverlayBytes += MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES;
+      let released = false;
+      waiter.resolve(() => {
+        if (released) return;
+        released = true;
+        this.#releaseTranscriptOverlayPreparation();
+      });
+    }
+  }
+
+  #cancelTranscriptOverlayPreparation(waiter: TranscriptOverlayPreparationWaiter): void {
+    if (waiter.cancelled) return;
+    waiter.cancelled = true;
+    if (!waiter.granted) {
+      const index = this.#transcriptOverlayPreparationWaiters.indexOf(waiter);
+      if (index >= 0) this.#transcriptOverlayPreparationWaiters.splice(index, 1);
+      waiter.reject(new Error('Session transcript overlay preparation was cancelled'));
+      this.#drainTranscriptOverlayPreparationWaiters();
+    }
+  }
+
+  #cancelTranscriptOverlayPreparationWaiters(): void {
+    for (const waiter of this.#transcriptOverlayPreparationWaiters.splice(0)) {
+      waiter.cancelled = true;
+      waiter.reject(new Error('Session continuity coordinator is closed'));
+    }
   }
 
   #registerTranscriptOverlay(messages: readonly Buffer[]): RetainedTranscriptOverlay {
@@ -1031,6 +1126,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     if (retained.references > 0) return;
     this.#retainedTranscriptOverlays.delete(retained.messages);
     this.#retainedTranscriptOverlayBytes -= retained.bytes;
+    this.#drainTranscriptOverlayPreparationWaiters();
   }
 
   #invalidateTranscriptOverlay(
@@ -1040,6 +1136,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     const cached = state.transcriptOverlay;
     if (!cached || (expected && cached !== expected)) return;
     state.transcriptOverlay = undefined;
+    cached.cancelPreparation();
     void cached.prepared.then(
       (retained) => this.#releaseTranscriptOverlay(retained),
       () => undefined,
@@ -1109,6 +1206,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   #closeConnection(connectionId: string): void {
     const connection = this.#connections.get(connectionId);
     if (!connection) return;
+    connection.resolveClosed();
     for (const subscriptionId of [...connection.subscriptionIds]) {
       const subscriber = this.#ownedSubscriber(connectionId, subscriptionId);
       if (subscriber) this.#removeSubscriber(subscriber);
@@ -1607,4 +1705,12 @@ function boundedUtf8(value: string, maxBytes: number): string {
     bytes += characterBytes;
   }
   return bounded;
+}
+
+function signal(): { readonly promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }

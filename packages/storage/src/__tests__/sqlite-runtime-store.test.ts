@@ -598,12 +598,88 @@ describe('SqliteRuntimeStore', () => {
 
       const visible = await store.readRuntimeEvents('session-1', 'run-1');
       const scanned: RuntimeEvent[] = [];
-      await store.scanRuntimeEvents('session-1', 'run-1', (events) => scanned.push(...events));
+      const scan = await store.scanRuntimeEvents(
+        'session-1',
+        'run-1',
+        {
+          maxBatchBytes: 1024,
+          maxRecordBytes: 1024,
+          maxPartialRecords: 10,
+          maxPartialSegments: 10,
+          maxPartialBytes: 1024,
+        },
+        (events) => scanned.push(...events),
+      );
+      assert.equal(scan.status, 'complete');
       assert.equal(visible.length, 1);
       assert.deepEqual(scanned, visible);
       assert.deepEqual(visible[0]?.content, { kind: 'text', text: 'hello!' });
       assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), []);
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 0);
+    });
+  });
+
+  it('rejects an oversized scan record before visiting its decoded body', async () => {
+    await withStore(async (store) => {
+      await store.appendRuntimeEvent(
+        'session-1',
+        'run-1',
+        functionCallEvent({
+          id: 'large-event',
+          content: { kind: 'text', text: 'x'.repeat(4096) },
+        }),
+      );
+      let visits = 0;
+      const result = await store.scanRuntimeEvents(
+        'session-1',
+        'run-1',
+        {
+          maxBatchBytes: 128,
+          maxRecordBytes: 128,
+          maxPartialRecords: 10,
+          maxPartialSegments: 10,
+          maxPartialBytes: 1024,
+        },
+        () => {
+          visits += 1;
+        },
+      );
+      assert.equal(result.status, 'limit_exceeded');
+      assert.equal(visits, 0);
+    });
+  });
+
+  it('rejects too many partial segments before materializing them', async () => {
+    await withStore(async (store) => {
+      for (let index = 0; index < 11; index += 1) {
+        await store.appendRuntimeEvent(
+          'session-1',
+          'run-1',
+          functionCallEvent({
+            id: `partial-segment-${index}`,
+            partial: true,
+            content: { kind: 'text', text: 'x' },
+            refs: { providerEventId: 'message-1' },
+          }),
+        );
+      }
+      let visits = 0;
+      const result = await store.scanRuntimeEvents(
+        'session-1',
+        'run-1',
+        {
+          maxBatchBytes: 1024,
+          maxRecordBytes: 1024,
+          maxPartialRecords: 10,
+          maxPartialSegments: 10,
+          maxPartialBytes: 1024,
+        },
+        () => {
+          visits += 1;
+        },
+      );
+      assert.equal(result.status, 'limit_exceeded');
+      assert.equal(visits, 0);
     });
   });
 

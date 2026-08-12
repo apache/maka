@@ -83,6 +83,8 @@ export type {
   RootTurnSourceMessage,
   RootTurnSourceMessageReceipt,
   RootTurnStartRejection,
+  RuntimeEventScanBudget,
+  RuntimeEventScanResult,
 } from './agent-run-store.js';
 export type {
   MessageOperationReceipt,
@@ -456,8 +458,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.ensureTerminalRuntimeEventDurable(sessionId, runId, event)),
       readRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readRuntimeEvents(sessionId, runId)),
-      scanRuntimeEvents: (sessionId, runId, visit) =>
-        run(() => runtimeEventStore.scanRuntimeEvents(sessionId, runId, visit)),
+      scanRuntimeEvents: (sessionId, runId, budget, visit) =>
+        run(() => runtimeEventStore.scanRuntimeEvents(sessionId, runId, budget, visit)),
       readRuntimeEventsBounded: (sessionId, runId, budget) =>
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>

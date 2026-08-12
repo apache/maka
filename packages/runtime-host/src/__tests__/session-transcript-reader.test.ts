@@ -223,11 +223,13 @@ test('does not reject a representable overlay because its ledger has many contro
       scanRuntimeEvents: async (
         _sessionId: string,
         _runId: string,
+        _budget: unknown,
         visit: (batch: readonly RuntimeEvent[]) => void,
       ) => {
         for (let offset = 0; offset < events.length; offset += 128) {
           visit(events.slice(offset, offset + 128));
         }
+        return { status: 'complete' as const };
       },
     },
   } as unknown as ExecutionStoresWriter<'interactive'>;
@@ -245,6 +247,53 @@ test('does not reject a representable overlay because its ledger has many contro
     }),
     [],
   );
+});
+
+test('stops an oversized active projection before retaining the full RuntimeEvent ledger', async () => {
+  const sessionId = 'session-1';
+  const events = Array.from({ length: 8_193 }, (_, index) =>
+    runtimeEvent(sessionId, {
+      id: `user-${index}`,
+      ts: index + 1,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'x' },
+      refs: { storedMessageId: `message-${index}` },
+    }),
+  );
+  let visited = 0;
+  const stores = {
+    agentRunStore: { readRun: async () => runHeader(sessionId) },
+    runtimeEventStore: {
+      scanRuntimeEvents: async (
+        _sessionId: string,
+        _runId: string,
+        _budget: unknown,
+        visit: (batch: readonly RuntimeEvent[]) => void,
+      ) => {
+        for (let offset = 0; offset < events.length; offset += 128) {
+          visited += Math.min(128, events.length - offset);
+          visit(events.slice(offset, offset + 128));
+        }
+        return { status: 'complete' as const };
+      },
+    },
+  } as unknown as ExecutionStoresWriter<'interactive'>;
+  const read = createSessionTranscriptReader({
+    stores,
+    canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+  });
+
+  await assert.rejects(
+    read.readActiveOverlay(sessionId, {
+      sessionId,
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'running',
+    }),
+    /exceeds its event limit/,
+  );
+  assert.equal(visited, 8_193);
 });
 
 function runHeader(sessionId: string): AgentRunHeader {

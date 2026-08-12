@@ -755,6 +755,77 @@ test('shares one immutable active overlay preparation until the Session changes'
   coordinator.close();
 });
 
+test('queues concurrent overlay preparation instead of rejecting an empty overlay', async () => {
+  const firstRead = deferred<void>();
+  let reads = 0;
+  const reader = transcriptReader([]);
+  const boundedReader: SessionTranscriptReader = {
+    ...reader,
+    readActiveOverlay: async () => {
+      reads += 1;
+      if (reads === 1) await firstRead.promise;
+      return [];
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async (sessionId) => canonicalFor(sessionId),
+    new SessionAdmissionGate(),
+    undefined,
+    boundedReader,
+  );
+  coordinator.attachConnection('connection-queued-1', new RecordingSink());
+  coordinator.attachConnection('connection-queued-2', new RecordingSink());
+
+  const first = openForSession(coordinator, 'connection-queued-1', 'session-queued-1');
+  await waitFor(() => reads === 1);
+  const second = openForSession(coordinator, 'connection-queued-2', 'session-queued-2');
+  await delayImmediate();
+  assert.equal(reads, 1);
+
+  firstRead.resolve();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.ok(firstResult.transcript);
+  assert.ok(secondResult.transcript);
+  assert.equal(reads, 2);
+  coordinator.close();
+});
+
+test('cancels a queued overlay preparation when its connection closes', async () => {
+  const firstRead = deferred<void>();
+  let reads = 0;
+  const reader = transcriptReader([]);
+  const boundedReader: SessionTranscriptReader = {
+    ...reader,
+    readActiveOverlay: async () => {
+      reads += 1;
+      if (reads === 1) await firstRead.promise;
+      return [];
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async (sessionId) => canonicalFor(sessionId),
+    new SessionAdmissionGate(),
+    undefined,
+    boundedReader,
+  );
+  coordinator.attachConnection('connection-cancel-1', new RecordingSink());
+  const queuedConnection = coordinator.attachConnection('connection-cancel-2', new RecordingSink());
+
+  const first = openForSession(coordinator, 'connection-cancel-1', 'session-cancel-1');
+  await waitFor(() => reads === 1);
+  const queued = openForSession(coordinator, 'connection-cancel-2', 'session-cancel-2');
+  await delayImmediate();
+  queuedConnection.close();
+  await assert.rejects(queued, /Session transcript is unavailable/);
+  assert.equal(reads, 1);
+
+  firstRead.resolve();
+  assert.ok((await first).transcript);
+  coordinator.close();
+});
+
 test('bounds retained active overlay generations across Host connections', async () => {
   let generation = 0;
   const baseReader = transcriptReader([]);
@@ -786,27 +857,19 @@ test('bounds retained active overlay generations across Host connections', async
     await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(index + 1));
   }
 
-  coordinator.attachConnection('connection-overlay-budget-rejected', new RecordingSink());
-  const rejected = await coordinator.handlers['subscription.open'](
-    {
-      sessionId: SESSION_ID,
-      transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
-    },
-    connectionContext('connection-overlay-budget-rejected'),
-  );
-  assert.deepEqual(rejected, {
-    ok: false,
-    error: {
-      code: 'operation_unavailable',
-      message: 'Runtime Host transcript overlay capacity reached',
-    },
-  });
-
-  opened[0]!.abort(opened[0]!.subscriptionId);
-  const recovered = await open(coordinator, 'connection-overlay-budget-rejected', {
+  coordinator.attachConnection('connection-overlay-budget-waiting', new RecordingSink());
+  let settled = false;
+  const waiting = open(coordinator, 'connection-overlay-budget-waiting', {
     kind: 'tail',
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  }).finally(() => {
+    settled = true;
   });
+  await delayImmediate();
+  assert.equal(settled, false);
+
+  opened[0]!.abort(opened[0]!.subscriptionId);
+  const recovered = await waiting;
   assert.ok(recovered.transcript);
   coordinator.close();
 });
@@ -1342,6 +1405,22 @@ async function open(
   );
   if (!outcome.ok) throw new Error(outcome.error.message);
   assert.equal(outcome.ok, true);
+  return outcome.result;
+}
+
+async function openForSession(
+  coordinator: SessionContinuityCoordinator,
+  connectionId: string,
+  sessionId: string,
+) {
+  const outcome = await coordinator.handlers['subscription.open'](
+    {
+      sessionId,
+      transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+    },
+    connectionContext(connectionId),
+  );
+  if (!outcome.ok) throw new Error(outcome.error.message);
   return outcome.result;
 }
 
