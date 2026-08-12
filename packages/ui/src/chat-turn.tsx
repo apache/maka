@@ -449,6 +449,16 @@ export const TurnView = memo(function TurnView(props: {
           <span>{copy.scheduledTaskTriggered}</span>
         </Marker>
       )}
+      {turn.user?.hostOrigin?.kind === 'legacy_automation' && (
+        <Marker
+          variant="host-origin"
+          role="note"
+          title={copy.legacyAutomationTitle(turn.user.hostOrigin.automationId)}
+        >
+          <Timer size={ICON_SIZE.meta} aria-hidden="true" />
+          <span>{copy.legacyAutomationTriggered}</span>
+        </Marker>
+      )}
       {turn.user?.hostOrigin?.kind === 'goal' && (
         <Marker
           variant="host-origin"
