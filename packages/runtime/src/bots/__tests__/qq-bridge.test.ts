@@ -147,12 +147,7 @@ describe('QQ REST routing', () => {
   });
 
   it('rejects unknown or empty send targets and restricts typing to channels', () => {
-    for (const chatId of [
-      'unknown:foo',
-      'channel:   ',
-      'group:   ',
-      'c2c:   ',
-    ]) {
+    for (const chatId of ['unknown:foo', 'channel:   ', 'group:   ', 'c2c:   ']) {
       assert.equal(pickQQSendRoute(chatId, 'hi'), null, chatId);
     }
     for (const [chatId, expected] of [

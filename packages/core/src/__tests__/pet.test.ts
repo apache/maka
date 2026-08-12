@@ -124,5 +124,4 @@ describe('maka.pet/v1 manifest', () => {
 
     assert.equal(isPetPackManifestV1(manifest), false);
   });
-
 });

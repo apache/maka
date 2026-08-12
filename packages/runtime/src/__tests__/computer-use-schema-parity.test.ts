@@ -163,5 +163,4 @@ describe('the two argument schemas describe the same tool', () => {
       'the wire carries actions the approval catalog records as "unknown"',
     );
   });
-
 });

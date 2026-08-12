@@ -173,9 +173,7 @@ describe('subagent tools', () => {
         testCatalogTool('WebSearch', undefined),
       ],
     });
-    const webResearch = withWebSearch.find(
-      (definition) => definition.id === WEB_RESEARCH_AGENT_ID,
-    );
+    const webResearch = withWebSearch.find((definition) => definition.id === WEB_RESEARCH_AGENT_ID);
     expect(webResearch?.tools).toEqual(['WebSearch']);
     expect(webResearch?.availability).toEqual({ status: 'available' });
 

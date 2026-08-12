@@ -447,7 +447,6 @@ describe('getAIModel: models.dev registry providers', () => {
     }
   });
 
-
   test('routes each exact GitHub Copilot model through its account-advertised wire', () => {
     for (const [modelId, apiProtocol, expectedProvider] of [
       ['gpt-5.4', 'openai-responses', 'openai.responses'],

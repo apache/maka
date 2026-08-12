@@ -421,7 +421,6 @@ describe('McpClientManager remote transport E2E', () => {
 
     assert.equal(countProtocolMethod(fixture, 'tools/call'), callsBefore);
   });
-
 });
 
 describe('McpClientManager stdio E2E', () => {
@@ -922,34 +921,34 @@ function createProtocolServer(options: {
         mode === 'duplicate'
           ? [remoteToolDefinition('echo'), remoteToolDefinition('echo')]
           : mode === 'replacement'
-              ? [remoteToolDefinition('replacement')]
-              : mode === 'reordered'
-                ? [reorderedRemoteEchoDefinition(), remoteToolDefinition('invalid-output')]
-                : mode === 'output-schema-change'
+            ? [remoteToolDefinition('replacement')]
+            : mode === 'reordered'
+              ? [reorderedRemoteEchoDefinition(), remoteToolDefinition('invalid-output')]
+              : mode === 'output-schema-change'
+                ? [
+                    remoteToolDefinition('echo', {
+                      type: 'object',
+                      properties: { version: { type: 'number' } },
+                      required: ['version'],
+                    }),
+                    remoteToolDefinition('invalid-output'),
+                  ]
+                : mode === 'oversized'
                   ? [
-                      remoteToolDefinition('echo', {
-                        type: 'object',
-                        properties: { version: { type: 'number' } },
-                        required: ['version'],
-                      }),
-                      remoteToolDefinition('invalid-output'),
+                      {
+                        ...remoteToolDefinition('echo'),
+                        description: 'x'.repeat(1_048_577),
+                      },
                     ]
-                  : mode === 'oversized'
+                  : mode === 'invalid-output-schema'
                     ? [
                         {
-                          ...remoteToolDefinition('echo'),
-                          description: 'x'.repeat(1_048_577),
+                          name: 'invalid-schema',
+                          inputSchema: { type: 'object' as const },
+                          outputSchema: { type: 'string' as const, pattern: '[' },
                         },
                       ]
-                    : mode === 'invalid-output-schema'
-                      ? [
-                          {
-                            name: 'invalid-schema',
-                            inputSchema: { type: 'object' as const },
-                            outputSchema: { type: 'string' as const, pattern: '[' },
-                          },
-                        ]
-                      : [remoteToolDefinition('echo'), remoteToolDefinition('invalid-output')],
+                    : [remoteToolDefinition('echo'), remoteToolDefinition('invalid-output')],
     };
   });
   server.setRequestHandler('tools/call', async ({ params }) => {

@@ -16,12 +16,7 @@ describe('canonical Artifact entity identity', () => {
   });
 
   test('rejects values outside the canonical grammar', () => {
-    for (const value of [
-      '',
-      'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS + 1),
-      'artifact/id',
-      null,
-    ]) {
+    for (const value of ['', 'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS + 1), 'artifact/id', null]) {
       assert.equal(isCanonicalArtifactEntityId(value), false, JSON.stringify(value));
     }
   });
@@ -34,12 +29,7 @@ describe('Artifact turn key', () => {
   });
 
   test('rejects empty, unbounded, and control-bearing turn keys', () => {
-    for (const value of [
-      '',
-      'turn\n1',
-      'x'.repeat(ARTIFACT_TURN_KEY_MAX_CHARS + 1),
-      null,
-    ]) {
+    for (const value of ['', 'turn\n1', 'x'.repeat(ARTIFACT_TURN_KEY_MAX_CHARS + 1), null]) {
       assert.equal(isArtifactTurnKey(value), false, JSON.stringify(value));
     }
   });

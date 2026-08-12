@@ -99,9 +99,7 @@ function assertHealthyStream(parts: LanguageModelV4StreamPart[], failure: unknow
       .map((part) => (part as { delta: string }).delta)
       .join('');
     assert.equal(streamed, input);
-    const start = parts.find(
-      (part) => part.type === 'tool-input-start' && part.id === toolCallId,
-    );
+    const start = parts.find((part) => part.type === 'tool-input-start' && part.id === toolCallId);
     assert.equal(
       start === undefined ? undefined : (start as { toolName: string }).toolName,
       toolName,

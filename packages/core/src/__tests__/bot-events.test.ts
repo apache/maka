@@ -40,5 +40,4 @@ describe('bot event contract', () => {
       assert.equal(BOT_PLAINTEXT_RESET_COMMANDS.includes(phrase), false);
     }
   });
-
 });

@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import {
-  decodeClientFrame,
-  decodeHostFrame,
-} from '../protocol/index.js';
+import { decodeClientFrame, decodeHostFrame } from '../protocol/index.js';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 
 const EXPECTED = {

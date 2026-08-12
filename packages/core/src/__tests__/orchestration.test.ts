@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import {
-  resolveEffectiveOrchestration,
-} from '../orchestration.js';
+import { resolveEffectiveOrchestration } from '../orchestration.js';
 
 describe('orchestration contract', () => {
   test('a persisted swarm mode grants only the session-scoped swarm authorization', () => {
@@ -40,5 +38,4 @@ describe('orchestration contract', () => {
       },
     );
   });
-
 });

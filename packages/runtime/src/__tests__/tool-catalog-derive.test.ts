@@ -85,7 +85,6 @@ describe('projectEffectiveProductToolSurface', () => {
       /Unknown product-tool surface "agnet"/,
     );
   });
-
 });
 
 describe('buildDeferredToolGroupsFromCatalog', () => {
@@ -124,7 +123,6 @@ describe('buildDeferredToolGroupsFromCatalog', () => {
       false,
     );
   });
-
 });
 
 describe('assertProductBindingCatalogClean', () => {

@@ -5,10 +5,7 @@ import {
   validateConnectionBaseUrl,
   validateSlug,
 } from '../llm-connections.js';
-import {
-  CATALOG_PROVIDER_TYPES,
-  PROVIDER_REGISTRY,
-} from '../provider-registry.js';
+import { CATALOG_PROVIDER_TYPES, PROVIDER_REGISTRY } from '../provider-registry.js';
 
 describe('provider connection slug derivation contract', () => {
   it('continues through dense collisions until it finds an unused slug', () => {

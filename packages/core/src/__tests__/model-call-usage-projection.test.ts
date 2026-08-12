@@ -217,5 +217,4 @@ describe('model-call usage projection', () => {
     assert.equal(page.coverage.attempts, 3);
     assert.equal(page.coverage.unpricedAttempts, 1);
   });
-
 });

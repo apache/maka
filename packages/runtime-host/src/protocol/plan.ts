@@ -440,13 +440,7 @@ function decodeExecution(value: unknown): PlanExecution {
       'startedAt',
       'updatedAt',
     ],
-    [
-      'completedAt',
-      'cancelledAt',
-      'interruptedAt',
-      'cancelReason',
-      'interruptionReason',
-    ],
+    ['completedAt', 'cancelledAt', 'interruptedAt', 'cancelReason', 'interruptionReason'],
   );
   return {
     executionId: requireEntityId(record.executionId, 'executionId'),

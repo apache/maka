@@ -1036,7 +1036,6 @@ describe('FileConnectionStore', () => {
       assert.equal(await readFile(filePath, 'utf8'), invalid);
     });
   });
-
 });
 
 async function withConnectionStore<T>(

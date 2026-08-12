@@ -12,10 +12,7 @@ import type {
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionStore } from '@maka/storage';
 import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
-import {
-  inspectAgentRunDocument,
-  renderAgentRunInspectTree,
-} from '../execution-inspect.js';
+import { inspectAgentRunDocument, renderAgentRunInspectTree } from '../execution-inspect.js';
 
 describe('versioned execution inspect documents', () => {
   test('reports unknown tool outcomes without copying Runtime payloads', async () => {
@@ -85,7 +82,6 @@ describe('versioned execution inspect documents', () => {
       );
     });
   });
-
 });
 
 const RUN_ID = 'run-1';

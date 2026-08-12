@@ -326,5 +326,4 @@ describe('local MEMORY.md contract', () => {
     assert.equal(parsed.reason, 'oversize');
     assert.equal(parsed.entries.length, 0);
   });
-
 });

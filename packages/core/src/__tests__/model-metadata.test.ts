@@ -34,9 +34,7 @@ describe('model-metadata vision capability', () => {
   });
 
   it('lets a user declaration outrank every other signal, in both directions', () => {
-    const stored: ModelInfo[] = [
-      { id: 'my-reasoner', capabilities: { vision: true } },
-    ];
+    const stored: ModelInfo[] = [{ id: 'my-reasoner', capabilities: { vision: true } }];
     assert.equal(
       resolveModelVisionSupport('openai-compatible', stored, 'my-reasoner', false),
       false,

@@ -63,7 +63,6 @@ test('creates nested files exclusively', async (t) => {
     }),
   );
   assert.equal(await readFile(join(cwd, 'existing.txt'), 'utf8'), 'keep\n');
-
 });
 
 test('does not report an invalid backend result as completed', async (t) => {

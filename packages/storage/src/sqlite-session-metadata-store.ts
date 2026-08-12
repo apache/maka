@@ -4569,11 +4569,7 @@ function assertGraphIntentId(value: string): void {
   }
 }
 
-function decodeStoredMessageRow(
-  value: unknown,
-  sessionId: string,
-  index: number,
-): StoredMessage {
+function decodeStoredMessageRow(value: unknown, sessionId: string, index: number): StoredMessage {
   if (typeof value !== 'string') {
     throw new Error(`Invalid Session message row ${index} for ${sessionId}`);
   }

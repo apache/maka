@@ -105,7 +105,6 @@ describe('workspace instructions prompt fragment', () => {
       assert.doesNotMatch(prompt, /PROJECT_SHOULD_BE_SQUEEZED/);
     });
   });
-
 });
 
 async function withWorkspaceAndHome(

@@ -84,5 +84,4 @@ describe('goal tools', () => {
     assert.ok(resumeOut.includes('resumed'));
     assert.equal(mgr.get(SESSION)?.status, 'active');
   });
-
 });

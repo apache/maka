@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type {
-  SessionSummary,
-  SubagentSessionParent,
-  SubagentSessionSpawn,
-} from '../session.js';
+import type { SessionSummary, SubagentSessionParent, SubagentSessionSpawn } from '../session.js';
 import {
   childSessionsForParent,
   isLinkedSubagentSession,

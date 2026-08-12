@@ -181,7 +181,10 @@ describe('decodeCanonicalShellToolResultContent', () => {
       output: pipeOutput('ok'),
     };
     assert.equal(decodeCanonicalShellToolResultContent(current).state, 'valid');
-    assert.equal(decodeCanonicalShellToolResultContent({ ...current, exitCode: 1 }).state, 'invalid');
+    assert.equal(
+      decodeCanonicalShellToolResultContent({ ...current, exitCode: 1 }).state,
+      'invalid',
+    );
     assert.equal(
       decodeCanonicalShellToolResultContent({
         kind: 'terminal',
@@ -201,7 +204,10 @@ describe('decodeCanonicalShellToolResultContent', () => {
   it('rejects non-canonical nested output and contradictory current state', () => {
     const valid = shellRun();
     assert.equal(decodeCanonicalShellToolResultContent(valid).state, 'valid');
-    assert.equal(decodeCanonicalShellToolResultContent({ ...valid, status: 'starting' }).state, 'valid');
+    assert.equal(
+      decodeCanonicalShellToolResultContent({ ...valid, status: 'starting' }).state,
+      'valid',
+    );
 
     const invalid = [
       {

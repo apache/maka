@@ -16,10 +16,7 @@ describe('sandbox denial tool result metadata', () => {
     } as const;
 
     assert.deepEqual(decodeCanonicalToolResultContent(result), result);
-    assert.deepEqual(
-      toolResultContent(decodeStoredMessage(storedToolResult(result))),
-      result,
-    );
+    assert.deepEqual(toolResultContent(decodeStoredMessage(storedToolResult(result))), result);
   });
 
   test('rejects malformed or widened sandbox denial signals', () => {
@@ -54,10 +51,7 @@ describe('sandbox boundary failure tool result metadata', () => {
     } as const;
 
     assert.deepEqual(decodeCanonicalToolResultContent(result), result);
-    assert.deepEqual(
-      toolResultContent(decodeStoredMessage(storedToolResult(result))),
-      result,
-    );
+    assert.deepEqual(toolResultContent(decodeStoredMessage(storedToolResult(result))), result);
   });
 
   test('rejects malformed or widened boundary failure signals', () => {
@@ -91,10 +85,7 @@ describe('uncertain tool outcome metadata', () => {
     } as const;
 
     assert.deepEqual(decodeCanonicalToolResultContent(result), result);
-    assert.deepEqual(
-      toolResultContent(decodeStoredMessage(storedToolResult(result))),
-      result,
-    );
+    assert.deepEqual(toolResultContent(decodeStoredMessage(storedToolResult(result))), result);
   });
 
   test('rejects widened or retryable uncertain outcome signals', () => {
