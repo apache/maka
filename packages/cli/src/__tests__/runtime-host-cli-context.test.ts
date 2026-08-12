@@ -166,10 +166,16 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
           },
           credential: 'opaque-token',
         }),
+        create: async () => {
+          throw new Error('unexpected write');
+        },
         save: async () => {
           throw new Error('unexpected write');
         },
         remove: async () => {
+          throw new Error('unexpected write');
+        },
+        removeIfCurrent: async () => {
           throw new Error('unexpected write');
         },
       },

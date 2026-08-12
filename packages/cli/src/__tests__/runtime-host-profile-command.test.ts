@@ -102,6 +102,7 @@ function createProfileCatalogCapture(): {
   const catalog: RuntimeHostProfileCatalog = {
     read: async () => state.document,
     resolve: async () => assert.fail('unexpected profile resolution'),
+    create: async () => assert.fail('unexpected profile creation'),
     save: async (profile: RemoteRuntimeHostProfile, credential?: string) => {
       saved.push({ profile, credential });
       state.document = {
@@ -114,6 +115,7 @@ function createProfileCatalogCapture(): {
       return state.document;
     },
     remove: async () => assert.fail('unexpected profile removal'),
+    removeIfCurrent: async () => assert.fail('unexpected conditional profile removal'),
   };
   return {
     get document() {

@@ -59,8 +59,16 @@ export interface ResolvedRuntimeHostProfile {
 export interface RuntimeHostProfileCatalog {
   read(): Promise<RuntimeHostProfileDocument>;
   resolve(profileId?: string): Promise<ResolvedRuntimeHostProfile>;
+  create(
+    profile: RemoteRuntimeHostProfile,
+    credential: string,
+  ): Promise<RuntimeHostProfileDocument>;
   save(profile: RemoteRuntimeHostProfile, credential?: string): Promise<RuntimeHostProfileDocument>;
   remove(profileId: string): Promise<RuntimeHostProfileDocument>;
+  removeIfCurrent(target: ResolvedRuntimeHostProfile): Promise<{
+    readonly removed: boolean;
+    readonly document: RuntimeHostProfileDocument;
+  }>;
 }
 
 export interface RuntimeHostProfileCredentialStore {
@@ -284,10 +292,28 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     value: RemoteRuntimeHostProfile,
     suppliedCredential?: string,
   ): Promise<RuntimeHostProfileDocument> {
+    return this.#save(value, suppliedCredential, false);
+  }
+
+  create(
+    value: RemoteRuntimeHostProfile,
+    suppliedCredential: string,
+  ): Promise<RuntimeHostProfileDocument> {
+    return this.#save(value, suppliedCredential, true);
+  }
+
+  #save(
+    value: RemoteRuntimeHostProfile,
+    suppliedCredential: string | undefined,
+    requireNew: boolean,
+  ): Promise<RuntimeHostProfileDocument> {
     const profile = decodeRemoteRuntimeHostProfile(value);
     return this.#exclusive(async () => {
       const current = await this.read();
       const previousProfile = current.profiles.find((candidate) => candidate.id === profile.id);
+      if (requireNew && previousProfile) {
+        throw new Error('A new Runtime Host profile must use a new profile id');
+      }
       const targetChanged = previousProfile
         ? profileCredentialBinding(previousProfile) !== profileCredentialBinding(profile)
         : false;
@@ -341,26 +367,55 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
       const current = await this.read();
       const profile = current.profiles.find((candidate) => candidate.id === id);
       if (!profile) return current;
-      const next = decodeRuntimeHostProfileDocument({
-        schemaVersion: PROFILE_SCHEMA_VERSION,
-        profiles: current.profiles.filter((candidate) => candidate.id !== id),
-      });
-      await writeProfileDocument(this.path, next);
-      try {
-        await this.credentials.delete(profile);
-      } catch (error) {
-        try {
-          await writeProfileDocument(this.path, current);
-        } catch (rollbackError) {
-          throw new AggregateError(
-            [error, rollbackError],
-            'Runtime Host profile credential removal failed and the profile could not be restored',
-          );
-        }
-        throw error;
-      }
-      return next;
+      return this.#removeProfile(current, profile);
     });
+  }
+
+  removeIfCurrent(target: ResolvedRuntimeHostProfile): Promise<{
+    readonly removed: boolean;
+    readonly document: RuntimeHostProfileDocument;
+  }> {
+    if (target.profile.kind !== 'remote' || target.credential === undefined) {
+      return Promise.reject(new Error('Expected a resolved remote Runtime Host profile'));
+    }
+    const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
+    return this.#exclusive(async () => {
+      const current = await this.read();
+      const profile = current.profiles.find((candidate) => candidate.id === expectedProfile.id);
+      if (
+        !profile ||
+        !sameRemoteRuntimeHostProfile(profile, expectedProfile) ||
+        (await this.credentials.get(profile)) !== target.credential
+      ) {
+        return { removed: false, document: current };
+      }
+      return { removed: true, document: await this.#removeProfile(current, profile) };
+    });
+  }
+
+  async #removeProfile(
+    current: RuntimeHostProfileDocument,
+    profile: RemoteRuntimeHostProfile,
+  ): Promise<RuntimeHostProfileDocument> {
+    const next = decodeRuntimeHostProfileDocument({
+      schemaVersion: PROFILE_SCHEMA_VERSION,
+      profiles: current.profiles.filter((candidate) => candidate.id !== profile.id),
+    });
+    await writeProfileDocument(this.path, next);
+    try {
+      await this.credentials.delete(profile);
+    } catch (error) {
+      try {
+        await writeProfileDocument(this.path, current);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          'Runtime Host profile credential removal failed and the profile could not be restored',
+        );
+      }
+      throw error;
+    }
+    return next;
   }
 
   #exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -426,6 +481,17 @@ function profileCredentialBinding(profile: RemoteRuntimeHostProfile): string {
     .update('\0')
     .update(normalized.rootId)
     .digest('hex');
+}
+
+function sameRemoteRuntimeHostProfile(
+  left: RemoteRuntimeHostProfile,
+  right: RemoteRuntimeHostProfile,
+): boolean {
+  return (
+    left.id === right.id &&
+    left.name === right.name &&
+    profileCredentialBinding(left) === profileCredentialBinding(right)
+  );
 }
 
 function restoreCredential(

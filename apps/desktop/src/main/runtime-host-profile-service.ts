@@ -193,32 +193,35 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (value.profile.id === activeTarget?.profile.id) {
           throw new Error("Switch away from an active Runtime Host profile before changing it");
         }
-        const current = await catalog.read();
-        if (current.profiles.some((profile) => profile.id === value.profile.id)) {
-          throw new Error("A new Runtime Host profile must use a new profile id");
+        if (value.credential === undefined) {
+          throw new Error("A Runtime Host access credential is required");
         }
-        await catalog.save(value.profile, value.credential);
+        const document = await catalog.create(value.profile, value.credential);
+        const profile = document.profiles.find((candidate) => candidate.id === value.profile.id);
+        if (!profile) throw new Error("Runtime Host profile creation did not persist");
+        const target = { profile, credential: value.credential } as const;
         let activation: DesktopRuntimeHostActivationResult;
         try {
-          const target = await catalog.resolve(value.profile.id);
           activation = await input.activate(target);
         } catch (error) {
-          try {
-            await catalog.remove(value.profile.id);
-          } catch (rollbackError) {
-            throw new AggregateError(
-              [error, rollbackError],
-              "Runtime Host connection failed and the incomplete profile could not be removed",
-            );
-          }
+          await rollbackCreatedProfile(catalog, target, error);
           throw error;
         }
         if (!activation.ok) {
-          await catalog.remove(value.profile.id);
+          await rollbackCreatedProfile(catalog, target, activation.error);
           return {
             kind: "unavailable",
             snapshot: await snapshot(),
             message: asError(activation.error).message,
+          };
+        }
+        const currentTarget = await catalog.resolve(profile.id).catch(() => undefined);
+        if (!currentTarget || !sameRuntimeHostTarget(currentTarget, target)) {
+          return {
+            kind: "connected",
+            snapshot: await snapshot(),
+            warning:
+              "Runtime Host connected, but its profile changed while connecting and was not selected",
           };
         }
         selectedProfileId = value.profile.id;
@@ -252,6 +255,21 @@ export function createDesktopRuntimeHostProfileService(input: {
       return mutate(() => selectProfile(profileId));
     },
   };
+}
+
+async function rollbackCreatedProfile(
+  catalog: RuntimeHostProfileCatalog,
+  target: ResolvedRuntimeHostProfile,
+  connectionError: unknown,
+): Promise<void> {
+  try {
+    await catalog.removeIfCurrent(target);
+  } catch (rollbackError) {
+    throw new AggregateError(
+      [connectionError, rollbackError],
+      "Runtime Host connection failed and the incomplete profile could not be removed",
+    );
+  }
 }
 
 function sameRuntimeHostTarget(

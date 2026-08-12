@@ -161,6 +161,88 @@ test("rolls back a failed new remote profile without changing the active Host", 
   });
 });
 
+test("does not roll back a profile changed by another process while connecting", async () => {
+  const root = await clientRoot();
+  const gate = deferredGate();
+  const service = createProfileService(root, {
+    activate: async () => {
+      gate.enter();
+      await gate.released;
+      return { ok: false, error: new Error("remote unavailable") };
+    },
+  });
+  const adding = service.addAndSelect({
+    profile: {
+      id: "office",
+      name: "Office",
+      kind: "remote",
+      transport: { kind: "tls", url: "wss://runtime.example.com" },
+      rootId: ROOT_ID,
+    },
+    credential: "desktop-token",
+  });
+  await gate.entered;
+  const externalCatalog = profileCatalog(root);
+  await externalCatalog.save(
+    {
+      id: "office",
+      name: "Rotated externally",
+      kind: "remote",
+      transport: { kind: "tls", url: "wss://runtime.example.com" },
+      rootId: ROOT_ID,
+    },
+    "external-token",
+  );
+  gate.release();
+
+  const result = await adding;
+  assert.equal(result.kind, "unavailable");
+  assert.deepEqual(result.snapshot.profiles.map((profile) => profile.id), [
+    "local",
+    "office",
+  ]);
+  assert.equal((await externalCatalog.resolve("office")).credential, "external-token");
+});
+
+test("does not persist a selection removed by another process while connecting", async () => {
+  const root = await clientRoot();
+  const gate = deferredGate();
+  const service = createProfileService(root, {
+    activate: async (activeTarget) => {
+      gate.enter();
+      await gate.released;
+      return { ok: true, activeTarget };
+    },
+  });
+  const adding = service.addAndSelect({
+    profile: {
+      id: "office",
+      name: "Office",
+      kind: "remote",
+      transport: { kind: "tls", url: "wss://runtime.example.com" },
+      rootId: ROOT_ID,
+    },
+    credential: "desktop-token",
+  });
+  await gate.entered;
+  await profileCatalog(root).remove("office");
+  gate.release();
+
+  const result = await adding;
+  assert.equal(result.kind, "connected");
+  if (result.kind !== "connected") assert.fail("Expected a connected result");
+  assert.match(result.warning ?? "", /profile changed while connecting/u);
+  assert.equal(result.snapshot.selectedProfileId, "local");
+  assert.deepEqual(result.snapshot.profiles.map((profile) => profile.id), ["local"]);
+  assert.equal(result.snapshot.activeProfile?.id, "office");
+  assert.equal(result.snapshot.activeProfileId, undefined);
+  assert.deepEqual(await resolveSelectedDesktopRuntimeHostProfile(root), {
+    kind: "ready",
+    selectedProfileId: "local",
+    target: LOCAL_TARGET,
+  });
+});
+
 test("serializes removal behind an in-flight Host switch", async () => {
   const root = await clientRoot();
   await profileCatalog(root).save(
@@ -337,6 +419,18 @@ function profileCatalog(root: string) {
       createFileCredentialStore(join(root, "runtime-host-client")),
     ),
   );
+}
+
+function deferredGate() {
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { entered, released, enter, release };
 }
 
 const LOCAL_TARGET = {
