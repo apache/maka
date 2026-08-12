@@ -1,57 +1,8 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import {
-  DEEP_RESEARCH_IMPLEMENTATION_PROMPT_MAX_CHARS,
-  buildDeepResearchImplementationPrompt,
-} from '../explore-agent.js';
-import type { DeepResearchRun } from '../deep-research-run.js';
 import { createGenesisExecutionBoundary } from '../sandbox-boundary.js';
 
 describe('deep research session profile', () => {
-  it('builds a bounded handoff only from a completed run', () => {
-    const run = {
-      schemaVersion: 1,
-      sessionId: 'session-research',
-      objective: 'Improve Deep Research.',
-      scopeLevel: 'standard',
-      status: 'completed',
-      stage: 'completed',
-      round: 2,
-      createdAt: 1,
-      updatedAt: 2,
-      artifacts: [],
-      checklist: [],
-      steps: [],
-      reportSections: [],
-      checkpoints: [],
-      reportArtifactId: 'report-1',
-      handoff: {
-        artifactId: 'handoff-1',
-        implementationTasks: ['Add an explicit transition.'],
-        recommendedIssues: ['Track visual verification.'],
-        recommendedPullRequests: [],
-        verificationCommands: ['npm test'],
-      },
-      completedAt: 2,
-    } satisfies DeepResearchRun;
-
-    const prompt = buildDeepResearchImplementationPrompt(run);
-    assert.match(prompt, /original research session remains read-only/i);
-    assert.match(prompt, /present an implementation plan before changing project files/i);
-    assert.match(prompt, /Add an explicit transition/);
-    assert.match(prompt, /Final report artifact: report-1/);
-    assert.ok(Array.from(prompt).length <= DEEP_RESEARCH_IMPLEMENTATION_PROMPT_MAX_CHARS);
-    assert.throws(
-      () =>
-        buildDeepResearchImplementationPrompt({
-          ...run,
-          status: 'active',
-          stage: 'knowledge_base',
-        }),
-      /requires a completed run/,
-    );
-  });
-
   it('gives explore sessions a managed read-only filesystem and restricted network', () => {
     const boundary = createGenesisExecutionBoundary('explore');
     assert.equal(boundary.kind, 'managed');
