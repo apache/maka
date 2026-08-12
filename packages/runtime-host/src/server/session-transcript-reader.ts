@@ -1,6 +1,7 @@
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { StoredMessage } from '@maka/core/session';
 import {
+  affectsRuntimeEventStoredMessageProjection,
   isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventsToStoredMessages,
 } from '@maka/runtime/runtime-event-read-model';
@@ -10,14 +11,14 @@ import {
 } from '@maka/runtime/interaction-authority';
 import type {
   ExecutionStoresWriter,
+  SessionTranscriptMessageLookupRequest,
   SessionTranscriptPageRequest,
   SessionTranscriptStoragePage,
 } from '@maka/storage/execution-stores';
-import type { TurnSnapshot } from '../protocol/index.js';
+import { SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES, type TurnSnapshot } from '../protocol/index.js';
 
 const PERMISSION_OUTCOME_READ_CONCURRENCY = 8;
-export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_EVENTS = 8_192;
-export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES = 4_096;
+export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES = SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES;
 export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES = 16 * 1024 * 1024;
 
 export function createSessionTranscriptReader(input: {
@@ -29,26 +30,19 @@ export function createSessionTranscriptReader(input: {
       input.stores.sessionStore.readTranscriptHighWaterSnapshot(sessionId),
     readDurablePage: (sessionId, request) =>
       input.stores.sessionStore.readTranscriptPageSnapshot(sessionId, request),
-    readDurableMessagesById: (sessionId, messageIds, throughSequence) =>
-      input.stores.sessionStore.readTranscriptMessagesSnapshot(
-        sessionId,
-        messageIds,
-        throughSequence,
-      ),
+    readDurableMessagesById: (sessionId, request) =>
+      input.stores.sessionStore.readTranscriptMessagesSnapshot(sessionId, request),
     readActiveOverlay: async (sessionId, rootTurn) => {
       if (!rootTurn || isTerminalTurn(rootTurn)) return [];
 
-      const [run, boundedEvents] = await Promise.all([
-        input.stores.agentRunStore.readRun(sessionId, rootTurn.runId),
-        input.stores.runtimeEventStore.readRuntimeEventsBounded(sessionId, rootTurn.runId, {
-          maxRecords: ACTIVE_TRANSCRIPT_OVERLAY_MAX_EVENTS,
-          maxBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
-        }),
-      ]);
-      if (boundedEvents.status === 'limit_exceeded') {
-        throw new Error('Active RuntimeEvent transcript exceeds its projection limit');
-      }
-      const events = boundedEvents.records;
+      const runPromise = input.stores.agentRunStore.readRun(sessionId, rootTurn.runId);
+      const events: RuntimeEvent[] = [];
+      await input.stores.runtimeEventStore.scanRuntimeEvents(sessionId, rootTurn.runId, (batch) => {
+        for (const event of batch) {
+          if (affectsRuntimeEventStoredMessageProjection(event)) events.push(event);
+        }
+      });
+      const run = await runPromise;
       const canonicalPermissionOutcomes = await readCanonicalPermissionOutcomes(
         events,
         input.canonicalPermissionOutcomes,
@@ -74,8 +68,7 @@ export interface SessionTranscriptReader {
   ): Promise<SessionTranscriptStoragePage>;
   readDurableMessagesById(
     sessionId: string,
-    messageIds: readonly string[],
-    throughSequence: number | null,
+    request: SessionTranscriptMessageLookupRequest,
   ): Promise<readonly StoredMessage[]>;
   readActiveOverlay(
     sessionId: string,

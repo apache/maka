@@ -155,22 +155,40 @@ describe('SQLite SessionStore', () => {
         text: 'appended after the watermark',
       });
       assert.deepEqual(
-        await store.readTranscriptMessagesSnapshot(session.id, ['message-4'], 3),
+        await store.readTranscriptMessagesSnapshot(session.id, {
+          messageIds: ['message-4'],
+          throughSequence: 3,
+          maxBytes: 1024,
+          maxMessages: 1,
+        }),
         [],
       );
       assert.deepEqual(
-        await store.readTranscriptMessagesSnapshot(session.id, ['message-4'], null),
+        await store.readTranscriptMessagesSnapshot(session.id, {
+          messageIds: ['message-4'],
+          throughSequence: null,
+          maxBytes: 1024,
+          maxMessages: 1,
+        }),
         [],
       );
-      assert.deepEqual(await store.readTranscriptMessagesSnapshot(session.id, ['message-4'], 4), [
-        {
-          type: 'user',
-          id: 'message-4',
-          turnId: 'turn-4',
-          ts: 5,
-          text: 'appended after the watermark',
-        },
-      ]);
+      assert.deepEqual(
+        await store.readTranscriptMessagesSnapshot(session.id, {
+          messageIds: ['message-4'],
+          throughSequence: 4,
+          maxBytes: 1024,
+          maxMessages: 1,
+        }),
+        [
+          {
+            type: 'user',
+            id: 'message-4',
+            turnId: 'turn-4',
+            ts: 5,
+            text: 'appended after the watermark',
+          },
+        ],
+      );
       assert.deepEqual(
         await store.readTranscriptPageSnapshot(session.id, {
           direction: 'older',
@@ -245,6 +263,53 @@ describe('SQLite SessionStore', () => {
           .map((fragment) => fragment.data),
       );
       assert.deepEqual(JSON.parse(reconstructed.toString('utf8')), messages[3]);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('bounds transcript identity reconciliation before message materialization', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-transcript-reconciliation-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      const messages = Array.from({ length: 257 }, (_, index) => ({
+        type: 'user' as const,
+        id: `message-${index}`,
+        turnId: `turn-${index}`,
+        ts: index + 1,
+        text: `text-${index}`,
+      }));
+      await store.appendMessages(session.id, messages);
+
+      assert.deepEqual(
+        await store.readTranscriptMessagesSnapshot(session.id, {
+          messageIds: [...messages.map(({ id }) => id), messages[0]!.id],
+          throughSequence: 256,
+          maxBytes: 64 * 1024,
+          maxMessages: 257,
+        }),
+        messages,
+      );
+      await assert.rejects(
+        store.readTranscriptMessagesSnapshot(session.id, {
+          messageIds: messages.map(({ id }) => id),
+          throughSequence: 256,
+          maxBytes: 64 * 1024,
+          maxMessages: 256,
+        }),
+        /exceeds its message limit/,
+      );
+      await assert.rejects(
+        store.readTranscriptMessagesSnapshot(session.id, {
+          messageIds: [messages[0]!.id],
+          throughSequence: 256,
+          maxBytes: 1,
+          maxMessages: 1,
+        }),
+        /exceeds its byte limit/,
+      );
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });

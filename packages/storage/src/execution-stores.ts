@@ -59,7 +59,6 @@ const executionStoresWritersByLease = new WeakMap<object, object>();
 const executionStoresWritersOpeningByLease = new WeakMap<object, Promise<void>>();
 
 export { normalizeRootTurnAdmissionPayload } from './agent-run-store.js';
-export { SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS } from './session-store.js';
 export {
   isSessionNotFoundError,
   SessionReadMarkerMessageNotFoundError,
@@ -96,6 +95,7 @@ export type {
   SessionCatalogPageResult,
   SessionCatalogRecord,
   SessionHeaderSnapshot,
+  SessionTranscriptMessageLookupRequest,
   SessionTranscriptPageRequest,
   SessionTranscriptStoragePage,
   SessionTranscriptStorageFragment,
@@ -353,10 +353,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readMessagesSnapshot: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
       readTranscriptPageSnapshot: (sessionId, request) =>
         run(() => sessionStore.readTranscriptPageSnapshot(sessionId, request)),
-      readTranscriptMessagesSnapshot: (sessionId, messageIds, throughSequence) =>
-        run(() =>
-          sessionStore.readTranscriptMessagesSnapshot(sessionId, messageIds, throughSequence),
-        ),
+      readTranscriptMessagesSnapshot: (sessionId, request) =>
+        run(() => sessionStore.readTranscriptMessagesSnapshot(sessionId, request)),
       readTranscriptHighWaterSnapshot: (sessionId) =>
         run(() => sessionStore.readTranscriptHighWaterSnapshot(sessionId)),
       readMessagesForRecovery: (sessionId) =>
@@ -458,6 +456,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.ensureTerminalRuntimeEventDurable(sessionId, runId, event)),
       readRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readRuntimeEvents(sessionId, runId)),
+      scanRuntimeEvents: (sessionId, runId, visit) =>
+        run(() => runtimeEventStore.scanRuntimeEvents(sessionId, runId, visit)),
       readRuntimeEventsBounded: (sessionId, runId, budget) =>
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>

@@ -90,6 +90,8 @@ export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 
 export type { ToolRecoveryMode } from '@maka/core/runtime-event';
 
+const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
+
 const require = createRequire(import.meta.url);
 
 function loadDatabaseSync(): typeof import('node:sqlite').DatabaseSync {
@@ -465,6 +467,56 @@ export class SqliteRuntimeStore
     return this.readRuntimeEventsSync(sessionId, runId);
   }
 
+  async scanRuntimeEvents(
+    sessionId: string,
+    runId: string,
+    visit: (events: readonly RuntimeEvent[]) => void,
+  ): Promise<void> {
+    this.readTransaction(() => {
+      const snapshots = this.readRuntimePartialSnapshotsSync(sessionId, runId);
+      const { leading, afterEvent } = groupRuntimePartialSnapshots(snapshots);
+      if (leading.length > 0) {
+        visit(leading.sort(compareRuntimePartialSnapshots).map(({ event }) => event));
+      }
+
+      let afterSequence = 0;
+      for (;;) {
+        const rows = this.db
+          .prepare(
+            `
+              SELECT event_id, session_id, invocation_id, run_id, turn_id,
+                event_seq, payload_json
+              FROM runtime_events
+              WHERE session_id = ? AND run_id = ? AND event_seq > ?
+              ORDER BY event_seq ASC, event_id ASC
+              LIMIT ?
+            `,
+          )
+          .all(sessionId, runId, afterSequence, RUNTIME_EVENT_SCAN_BATCH_SIZE) as unknown as Array<
+          RuntimeEventStorageRow & { event_seq: number }
+        >;
+        if (rows.length === 0) break;
+        const batch: RuntimeEvent[] = [];
+        for (const row of rows) {
+          const event = decodeRuntimeEventStorageRow(row);
+          batch.push(event);
+          const anchored = afterEvent.get(event.id);
+          if (anchored) {
+            batch.push(
+              ...anchored.sort(compareRuntimePartialSnapshots).map((snapshot) => snapshot.event),
+            );
+            afterEvent.delete(event.id);
+          }
+        }
+        visit(batch);
+        afterSequence = rows.at(-1)!.event_seq;
+      }
+      for (const orphaned of afterEvent.values()) {
+        visit(orphaned.sort(compareRuntimePartialSnapshots).map((snapshot) => snapshot.event));
+      }
+    });
+  }
+
   async readRuntimeEventsBounded(
     sessionId: string,
     runId: string,
@@ -511,6 +563,16 @@ export class SqliteRuntimeStore
 
   private readRuntimeEventsSync(sessionId: string, runId: string): RuntimeEvent[] {
     const immutable = this.readImmutableRuntimeEventsSync(sessionId, runId);
+    return mergeRuntimePartialSnapshots(
+      immutable,
+      this.readRuntimePartialSnapshotsSync(sessionId, runId),
+    );
+  }
+
+  private readRuntimePartialSnapshotsSync(
+    sessionId: string,
+    runId: string,
+  ): RuntimePartialSnapshot[] {
     const partials = this.db
       .prepare(`
       SELECT stream_key, session_id, invocation_id, run_id, turn_id,
@@ -536,31 +598,28 @@ export class SqliteRuntimeStore
       text.push(segment.text_content);
       segmentText.set(segment.stream_key, text);
     }
-    return mergeRuntimePartialSnapshots(
-      immutable,
-      partials.flatMap((row) => {
-        try {
-          const event = decodeRuntimePartialStorageRow(row);
-          if (event.content?.kind === 'text' || event.content?.kind === 'thinking') {
-            event.content = {
-              ...event.content,
-              text: row.text_content + (segmentText.get(row.stream_key)?.join('') ?? ''),
-            };
-          }
-          return [
-            {
-              event,
-              ...(row.after_event_id ? { afterEventId: row.after_event_id } : {}),
-            },
-          ];
-        } catch {
-          // Mutable partial snapshots are presentation state, never ledger
-          // authority. A corrupt snapshot is skipped without hiding immutable
-          // RuntimeEvents from the same run.
-          return [];
+    return partials.flatMap((row) => {
+      try {
+        const event = decodeRuntimePartialStorageRow(row);
+        if (event.content?.kind === 'text' || event.content?.kind === 'thinking') {
+          event.content = {
+            ...event.content,
+            text: row.text_content + (segmentText.get(row.stream_key)?.join('') ?? ''),
+          };
         }
-      }),
-    );
+        return [
+          {
+            event,
+            ...(row.after_event_id ? { afterEventId: row.after_event_id } : {}),
+          },
+        ];
+      } catch {
+        // Mutable partial snapshots are presentation state, never ledger
+        // authority. A corrupt snapshot is skipped without hiding immutable
+        // RuntimeEvents from the same run.
+        return [];
+      }
+    });
   }
 
   async readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {
@@ -3364,6 +3423,25 @@ function mergeRuntimePartialSnapshots(
   immutableEvents: readonly RuntimeEvent[],
   snapshots: readonly RuntimePartialSnapshot[],
 ): RuntimeEvent[] {
+  const { leading, afterEvent } = groupRuntimePartialSnapshots(snapshots);
+  const merged = leading.sort(compareRuntimePartialSnapshots).map(({ event }) => event);
+  for (const event of immutableEvents) {
+    merged.push(event);
+    const anchored = afterEvent.get(event.id);
+    if (!anchored) continue;
+    merged.push(...anchored.sort(compareRuntimePartialSnapshots).map((snapshot) => snapshot.event));
+    afterEvent.delete(event.id);
+  }
+  for (const orphaned of afterEvent.values()) {
+    merged.push(...orphaned.sort(compareRuntimePartialSnapshots).map((snapshot) => snapshot.event));
+  }
+  return merged;
+}
+
+function groupRuntimePartialSnapshots(snapshots: readonly RuntimePartialSnapshot[]): {
+  leading: RuntimePartialSnapshot[];
+  afterEvent: Map<string, RuntimePartialSnapshot[]>;
+} {
   const leading: RuntimePartialSnapshot[] = [];
   const afterEvent = new Map<string, RuntimePartialSnapshot[]>();
   for (const snapshot of snapshots) {
@@ -3375,20 +3453,14 @@ function mergeRuntimePartialSnapshots(
     grouped.push(snapshot);
     afterEvent.set(snapshot.afterEventId, grouped);
   }
-  const order = (a: RuntimePartialSnapshot, b: RuntimePartialSnapshot) =>
-    a.event.ts - b.event.ts || a.event.id.localeCompare(b.event.id);
-  const merged = leading.sort(order).map(({ event }) => event);
-  for (const event of immutableEvents) {
-    merged.push(event);
-    const anchored = afterEvent.get(event.id);
-    if (!anchored) continue;
-    merged.push(...anchored.sort(order).map((snapshot) => snapshot.event));
-    afterEvent.delete(event.id);
-  }
-  for (const orphaned of afterEvent.values()) {
-    merged.push(...orphaned.sort(order).map((snapshot) => snapshot.event));
-  }
-  return merged;
+  return { leading, afterEvent };
+}
+
+function compareRuntimePartialSnapshots(
+  left: RuntimePartialSnapshot,
+  right: RuntimePartialSnapshot,
+): number {
+  return left.event.ts - right.event.ts || left.event.id.localeCompare(right.event.id);
 }
 
 function partialRuntimeStream(event: RuntimeEvent):

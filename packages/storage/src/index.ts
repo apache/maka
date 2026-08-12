@@ -8,7 +8,6 @@ export {
   isSessionNotFoundError,
   normalizeSessionHeader,
   projectSessionCatalogMessages,
-  SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS,
 } from './session-store.js';
 export type {
   CreateStableSessionRequest,
@@ -21,6 +20,7 @@ export type {
   SessionHeaderSnapshot,
   SessionStore,
   SessionTranscriptPageRequest,
+  SessionTranscriptMessageLookupRequest,
   SessionTranscriptStoragePage,
   SessionTranscriptStorageFragment,
   StableSessionCreateInput,

@@ -597,7 +597,10 @@ describe('SqliteRuntimeStore', () => {
       }
 
       const visible = await store.readRuntimeEvents('session-1', 'run-1');
+      const scanned: RuntimeEvent[] = [];
+      await store.scanRuntimeEvents('session-1', 'run-1', (events) => scanned.push(...events));
       assert.equal(visible.length, 1);
+      assert.deepEqual(scanned, visible);
       assert.deepEqual(visible[0]?.content, { kind: 'text', text: 'hello!' });
       assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), []);
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 0);

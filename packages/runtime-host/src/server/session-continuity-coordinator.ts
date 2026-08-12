@@ -149,6 +149,9 @@ interface CachedTranscriptOverlay {
 }
 
 const MAX_RETAINED_TRANSCRIPT_OVERLAY_BYTES = 64 * 1024 * 1024;
+// Preparation can retain the active projection, durable reconciliation, and
+// final encoded snapshot at the same time; charge all three to the Host budget.
+const MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES = ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES * 3;
 
 class TranscriptOverlayCapacityError extends Error {
   readonly name = 'TranscriptOverlayCapacityError';
@@ -989,16 +992,16 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     if (
       this.#retainedTranscriptOverlayBytes +
         this.#preparingTranscriptOverlayBytes +
-        ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES >
+        MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES >
       MAX_RETAINED_TRANSCRIPT_OVERLAY_BYTES
     ) {
       throw new TranscriptOverlayCapacityError('Runtime Host transcript overlay capacity reached');
     }
-    this.#preparingTranscriptOverlayBytes += ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES;
+    this.#preparingTranscriptOverlayBytes += MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES;
   }
 
   #releaseTranscriptOverlayPreparation(): void {
-    this.#preparingTranscriptOverlayBytes -= ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES;
+    this.#preparingTranscriptOverlayBytes -= MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES;
   }
 
   #registerTranscriptOverlay(messages: readonly Buffer[]): RetainedTranscriptOverlay {

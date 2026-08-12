@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
-import { SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS } from '@maka/storage/execution-stores';
 import {
   createSessionTranscriptBootstrap,
   prepareSessionTranscriptOverlay,
@@ -143,21 +142,15 @@ test('rejects an active overlay that exceeds its retained message bound', async 
   );
 });
 
-test('deduplicates and batches durable reconciliation at the fixed watermark', async () => {
-  const messages = Array.from(
-    { length: SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS + 1 },
-    (_, index) => assistantMessage(index),
-  );
-  const batches: string[][] = [];
-  const watermarks: Array<number | null> = [];
+test('delegates one deduplicated and bounded durable reconciliation request', async () => {
+  const messages = Array.from({ length: 257 }, (_, index) => assistantMessage(index));
+  const requests: Parameters<SessionTranscriptReader['readDurableMessagesById']>[1][] = [];
   const base = transcriptReader(messages, messages);
   const reader: SessionTranscriptReader = {
     ...base,
-    readDurableMessagesById: async (_sessionId, messageIds, throughSequence) => {
-      assert.ok(messageIds.length <= SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS);
-      batches.push([...messageIds]);
-      watermarks.push(throughSequence);
-      return messages.filter((message) => messageIds.includes(message.id));
+    readDurableMessagesById: async (_sessionId, request) => {
+      requests.push(request);
+      return messages.filter((message) => request.messageIds.includes(message.id));
     },
   };
   const activeAssistantStreams = messages.flatMap((message, index) => [
@@ -182,21 +175,18 @@ test('deduplicates and batches durable reconciliation at the fixed watermark', a
   const overlay = await prepareSessionTranscriptOverlay({
     reader,
     sessionId: 'session-1',
-    throughSequence: SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS,
+    throughSequence: 256,
     rootTurn: null,
     activeAssistantStreams,
   });
 
-  assert.equal(overlay.length, SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS + 1);
-  assert.deepEqual(
-    batches.map((batch) => batch.length),
-    [SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS, 1],
-  );
-  assert.equal(new Set(batches.flat()).size, SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS + 1);
-  assert.deepEqual(watermarks, [
-    SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS,
-    SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS,
-  ]);
+  assert.equal(overlay.length, 257);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.messageIds.length, 257);
+  assert.equal(new Set(requests[0]?.messageIds).size, 257);
+  assert.equal(requests[0]?.throughSequence, 256);
+  assert.equal(requests[0]?.maxMessages, 4_096);
+  assert.equal(requests[0]?.maxBytes, 16 * 1024 * 1024);
 });
 
 function userMessage(index: number, text = `message-${index}`): StoredMessage {
@@ -305,11 +295,12 @@ function transcriptReader(
         next,
       };
     },
-    readDurableMessagesById: async (_sessionId, messageIds, throughSequence) =>
-      throughSequence === null
+    readDurableMessagesById: async (_sessionId, request) =>
+      request.throughSequence === null
         ? []
         : durable.filter(
-            (message, sequence) => sequence <= throughSequence && messageIds.includes(message.id),
+            (message, sequence) =>
+              sequence <= request.throughSequence! && request.messageIds.includes(message.id),
           ),
     readActiveOverlay: async () => overlay,
   };

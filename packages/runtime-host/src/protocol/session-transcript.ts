@@ -14,6 +14,7 @@ export const SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES = 16 * 1024;
 export const SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES = 48 * 1024;
 export const SESSION_TRANSCRIPT_PAGE_MAX_BYTES = 64 * 1024;
 export const SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES = 256;
+export const SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES = 4_096;
 export const SESSION_TRANSCRIPT_PAGE_RESULT_MAX_BYTES = 90 * 1024;
 export const SESSION_TRANSCRIPT_CURSOR_MAX_BYTES = 1024;
 
@@ -49,6 +50,7 @@ export interface SessionTranscriptPage {
 
 export interface SessionTranscriptBootstrap {
   readonly throughSequence: number | null;
+  readonly overlayMessageCount: number;
   readonly durable: SessionTranscriptPage;
   readonly overlay: SessionTranscriptPage;
 }
@@ -127,6 +129,7 @@ export function decodeSessionTranscriptPageInput(value: unknown): SessionTranscr
 export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscriptBootstrap {
   const bootstrap = requireExactRecord(value, 'Session transcript bootstrap', [
     'throughSequence',
+    'overlayMessageCount',
     'durable',
     'overlay',
   ]);
@@ -134,6 +137,13 @@ export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscr
     bootstrap.throughSequence === null
       ? null
       : requireCount(bootstrap.throughSequence, 'Session transcript watermark');
+  const overlayMessageCount = requireCount(
+    bootstrap.overlayMessageCount,
+    'Session transcript overlay message count',
+  );
+  if (overlayMessageCount > SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES) {
+    throw invalidProtocolFrame('Session transcript overlay exceeds its message limit');
+  }
   const durable = decodeSessionTranscriptPage(bootstrap.durable);
   const overlay = decodeSessionTranscriptPage(bootstrap.overlay);
   if (
@@ -149,7 +159,7 @@ export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscr
   if (durable.rawBytes + overlay.rawBytes > SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES) {
     throw invalidProtocolFrame('Session transcript bootstrap exceeds byte limit');
   }
-  return { throughSequence, durable, overlay };
+  return { throughSequence, overlayMessageCount, durable, overlay };
 }
 
 export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPage {

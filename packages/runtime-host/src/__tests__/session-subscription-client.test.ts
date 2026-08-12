@@ -336,6 +336,7 @@ test('reassembles a large message from bounded backward pages', async () => {
       const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
       const opened = openResult(hostEpoch, 'subscription-fragmented', {
         throughSequence: 0,
+        overlayMessageCount: 0,
         durable: transcriptPage({
           rawBytes: encoded.byteLength - splitAt,
           fragments: [
@@ -399,7 +400,7 @@ test('reassembles a large message from bounded backward pages', async () => {
   );
 });
 
-test('rejects an identical retried page and a durable sequence gap', async () => {
+test('accepts an identical retried page but rejects a durable sequence gap', async () => {
   const message = Buffer.from(
     JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
     'utf8',
@@ -415,20 +416,21 @@ test('rejects an identical retried page and a durable sequence gap', async () =>
   const retried = new ClientSessionSubscription(
     openResult('host-1', 'subscription-retried', {
       throughSequence: 0,
+      overlayMessageCount: 0,
       durable: { ...duplicatePage, nextCursor: 'retry-cursor' },
       overlay: transcriptPage({ source: 'overlay' }),
     }),
     async () => undefined,
     async () => duplicatePage,
   );
-  await assert.rejects(
-    () => retried.loadTranscript(decodeStoredMessage),
-    hasSubscriptionReason('correlation_changed'),
-  );
+  assert.deepEqual(await retried.loadTranscript(decodeStoredMessage), [
+    { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' },
+  ]);
 
   const gap = new ClientSessionSubscription(
     openResult('host-1', 'subscription-gap', {
       throughSequence: 1,
+      overlayMessageCount: 0,
       durable: {
         ...transcriptPage({
           rawBytes: message.byteLength,
@@ -449,6 +451,45 @@ test('rejects an identical retried page and a durable sequence gap', async () =>
   );
 });
 
+test('rejects an overlay that terminates before its declared high-water', async () => {
+  const message = Buffer.from(
+    JSON.stringify({ type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 1, text: '' }),
+    'utf8',
+  );
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-truncated-overlay', {
+      throughSequence: null,
+      overlayMessageCount: 2,
+      durable: { ...transcriptPage(), throughSequence: null },
+      overlay: {
+        ...transcriptPage({
+          source: 'overlay',
+          rawBytes: message.byteLength,
+          fragments: [
+            {
+              kind: 'overlay',
+              messageIndex: 0,
+              byteOffset: 0,
+              totalBytes: message.byteLength,
+              data: message.toString('base64'),
+            },
+          ],
+        }),
+        throughSequence: null,
+      },
+    }),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected page request');
+    },
+  );
+
+  await assert.rejects(
+    () => subscription.loadTranscript((value) => value),
+    hasSubscriptionReason('correlation_changed'),
+  );
+});
+
 test('close stops transcript pagination after the in-flight page', async () => {
   const message = Buffer.from(
     JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
@@ -459,6 +500,7 @@ test('close stops transcript pagination after the in-flight page', async () => {
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-closing', {
       throughSequence: 0,
+      overlayMessageCount: 0,
       durable: transcriptPage({
         rawBytes: Math.floor(message.byteLength / 2),
         fragments: [
@@ -649,6 +691,7 @@ function openResult(
 function transcriptBootstrap(message: Buffer): SessionTranscriptBootstrap {
   return {
     throughSequence: 0,
+    overlayMessageCount: 0,
     durable: transcriptPage({
       rawBytes: message.byteLength,
       fragments: [

@@ -152,13 +152,18 @@ export type ProbeStableSessionCreateResult =
 
 export type UpdateSessionConfigurationRequest = SessionConfigurationMetadataUpdate;
 
-export const SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS = 256;
-
 export interface SessionTranscriptStorageFragment {
   readonly sequence: number;
   readonly byteOffset: number;
   readonly totalBytes: number;
   readonly data: Buffer;
+}
+
+export interface SessionTranscriptMessageLookupRequest {
+  readonly messageIds: readonly string[];
+  readonly throughSequence: number | null;
+  readonly maxBytes: number;
+  readonly maxMessages: number;
 }
 
 export interface SessionTranscriptPageRequest {
@@ -221,8 +226,7 @@ export interface SessionAuthorityStore extends SessionStore {
   /** Read a bounded set of durable messages at an inclusive transcript watermark. */
   readTranscriptMessagesSnapshot(
     sessionId: string,
-    messageIds: readonly string[],
-    throughSequence: number | null,
+    request: SessionTranscriptMessageLookupRequest,
   ): Promise<StoredMessage[]>;
   /** Observe successful durable ledger appends. Listeners must not throw. */
   subscribeTranscriptChanges(listener: (sessionId: string) => void): () => void;
@@ -647,11 +651,10 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async readTranscriptMessagesSnapshot(
     sessionId: string,
-    messageIds: readonly string[],
-    throughSequence: number | null,
+    request: SessionTranscriptMessageLookupRequest,
   ): Promise<StoredMessage[]> {
     await this.ensureReady();
-    return this.metadata.readTranscriptMessages(sessionId, messageIds, throughSequence);
+    return this.metadata.readTranscriptMessages(sessionId, request);
   }
 
   async readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null> {

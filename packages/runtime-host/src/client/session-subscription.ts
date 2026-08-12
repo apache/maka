@@ -193,7 +193,10 @@ export class ClientSessionSubscription
     const durable = await this.#loadTranscriptSource(bootstrap.durable);
     const overlay = await this.#loadTranscriptSource(bootstrap.overlay);
     assertCompleteIdentities(durable, bootstrap.throughSequence);
-    assertCompleteIdentities(overlay, overlay.at(-1)?.identity ?? null);
+    assertCompleteIdentities(
+      overlay,
+      bootstrap.overlayMessageCount === 0 ? null : bootstrap.overlayMessageCount - 1,
+    );
     const messages = durable.map((entry) => entry.value);
     const indexById = new Map<string, number>();
     for (const [index, message] of messages.entries()) {
@@ -423,6 +426,7 @@ class TranscriptFragmentAssembler {
       }
     | undefined;
   #lastStartedIdentity: number | undefined;
+  #lastPageEncoding: string | undefined;
 
   constructor(
     private readonly source: 'durable' | 'overlay',
@@ -430,6 +434,9 @@ class TranscriptFragmentAssembler {
   ) {}
 
   accept(fragments: readonly SessionTranscriptFragment[]): void {
+    const pageEncoding = JSON.stringify(fragments);
+    if (pageEncoding === this.#lastPageEncoding) return;
+    this.#lastPageEncoding = pageEncoding;
     for (const fragment of fragments) this.#accept(fragment);
   }
 

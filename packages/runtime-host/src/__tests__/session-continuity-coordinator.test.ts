@@ -772,7 +772,7 @@ test('bounds retained active overlay generations across Host connections', async
     reader,
   );
   const opened: Array<{ abort(subscriptionId: string): void; subscriptionId: string }> = [];
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < 2; index += 1) {
     const connection = coordinator.attachConnection(
       `connection-overlay-budget-${index}`,
       new RecordingSink(),
@@ -916,7 +916,7 @@ test('releases the active overlay budget when its connection closes during open'
   continuePage.resolve();
   await assert.rejects(opening, /connection closed during subscription open/);
 
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < 2; index += 1) {
     const connectionId = `connection-after-interruption-${index}`;
     coordinator.attachConnection(connectionId, new RecordingSink());
     const outcome = await coordinator.handlers['subscription.open'](
@@ -1591,11 +1591,12 @@ function transcriptReader(
         next,
       };
     },
-    readDurableMessagesById: async (_sessionId, messageIds, throughSequence) =>
-      throughSequence === null
+    readDurableMessagesById: async (_sessionId, request) =>
+      request.throughSequence === null
         ? []
         : durable.filter(
-            (message, sequence) => sequence <= throughSequence && messageIds.includes(message.id),
+            (message, sequence) =>
+              sequence <= request.throughSequence! && request.messageIds.includes(message.id),
           ),
     readActiveOverlay: async () => overlay,
   };

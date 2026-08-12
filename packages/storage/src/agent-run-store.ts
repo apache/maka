@@ -203,6 +203,12 @@ export interface ConversationCopyRuntimeEventBatch {
 }
 
 export interface DurableRuntimeEventStore extends RuntimeEventStore {
+  /** Visit one ordered SQLite snapshot without retaining the immutable ledger. */
+  scanRuntimeEvents(
+    sessionId: string,
+    runId: string,
+    visit: (events: readonly RuntimeEvent[]) => void,
+  ): Promise<void>;
   readRuntimeEventsBounded(
     sessionId: string,
     runId: string,

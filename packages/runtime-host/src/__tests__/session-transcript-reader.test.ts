@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import test from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import {
+  type ExecutionStoresWriter,
+  openInteractiveExecutionStoresForWrite,
+} from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { createSessionTranscriptReader } from '../server/session-transcript-reader.js';
 
@@ -200,6 +203,48 @@ test('keeps durable history separate from the canonical active overlay', async (
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
+});
+
+test('does not reject a representable overlay because its ledger has many control facts', async () => {
+  const sessionId = 'session-1';
+  const events = Array.from({ length: 8_193 }, (_, index) =>
+    runtimeEvent(sessionId, {
+      id: `artifact-${index}`,
+      ts: index + 1,
+      role: 'system',
+      author: 'system',
+      actions: { artifactDelta: { bytes: index } },
+    }),
+  );
+  const stores = {
+    agentRunStore: { readRun: async () => runHeader(sessionId) },
+    runtimeEventStore: {
+      readRuntimeEventsBounded: async () => ({ status: 'limit_exceeded' as const }),
+      scanRuntimeEvents: async (
+        _sessionId: string,
+        _runId: string,
+        visit: (batch: readonly RuntimeEvent[]) => void,
+      ) => {
+        for (let offset = 0; offset < events.length; offset += 128) {
+          visit(events.slice(offset, offset + 128));
+        }
+      },
+    },
+  } as unknown as ExecutionStoresWriter<'interactive'>;
+  const read = createSessionTranscriptReader({
+    stores,
+    canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+  });
+
+  assert.deepEqual(
+    await read.readActiveOverlay(sessionId, {
+      sessionId,
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'running',
+    }),
+    [],
+  );
 });
 
 function runHeader(sessionId: string): AgentRunHeader {

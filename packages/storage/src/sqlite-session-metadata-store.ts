@@ -80,8 +80,8 @@ import { type SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   assertSafeSessionId,
   normalizeSessionHeader,
-  SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS,
   SessionNotFoundError,
+  type SessionTranscriptMessageLookupRequest,
   type SessionTranscriptPageRequest,
   type SessionTranscriptStoragePage,
 } from './session-store.js';
@@ -102,6 +102,8 @@ import {
 } from './sqlite-session-catalog-query.js';
 
 export { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
+
+const SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE = 256;
 
 const require = createRequire(import.meta.url);
 const AGENT_GRAPH_CONTROL_DELETE_TABLES = [...SQLITE_AGENT_GRAPH_CONTROL_TABLES].reverse();
@@ -1508,46 +1510,118 @@ export class SqliteSessionMetadataStore {
 
   async readTranscriptMessages(
     sessionId: string,
-    messageIds: readonly string[],
-    throughSequence: number | null,
+    request: SessionTranscriptMessageLookupRequest,
   ): Promise<StoredMessage[]> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
-    if (messageIds.length === 0) return [];
-    if (
-      messageIds.length > SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS ||
-      messageIds.some((messageId) => typeof messageId !== 'string')
-    ) {
+    if (request.messageIds.some((messageId) => typeof messageId !== 'string')) {
       throw new Error('Invalid Session transcript message identity set');
     }
-    if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
     if (
-      throughSequence !== null &&
-      (!Number.isSafeInteger(throughSequence) || throughSequence < 0)
+      request.throughSequence !== null &&
+      (!Number.isSafeInteger(request.throughSequence) || request.throughSequence < 0)
     ) {
       throw new Error('Invalid Session transcript watermark');
     }
-    if (throughSequence === null) return [];
-    const placeholders = messageIds.map(() => '?').join(', ');
-    const rows = this.db
-      .prepare(
-        `
-          SELECT record_json
-          FROM session_messages
-          WHERE session_id = ? AND sequence <= ? AND message_id IN (${placeholders})
-          ORDER BY sequence ASC
-        `,
-      )
-      .all(sessionId, throughSequence, ...messageIds) as Array<{ record_json?: unknown }>;
-    return rows.map((row) => {
-      if (typeof row.record_json !== 'string') {
-        throw new StoredSessionMessageIncompatibleError(sessionId, -1);
+    if (!Number.isSafeInteger(request.maxBytes) || request.maxBytes < 1) {
+      throw new Error('Invalid Session transcript message byte limit');
+    }
+    if (!Number.isSafeInteger(request.maxMessages) || request.maxMessages < 1) {
+      throw new Error('Invalid Session transcript message count limit');
+    }
+    const messageIds = [...new Set(request.messageIds)];
+    return this.readTransaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      if (messageIds.length === 0 || request.throughSequence === null) return [];
+
+      const selected: number[] = [];
+      let selectedBytes = 0;
+      for (
+        let offset = 0;
+        offset < messageIds.length;
+        offset += SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE
+      ) {
+        const batch = messageIds.slice(
+          offset,
+          offset + SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE,
+        );
+        const placeholders = batch.map(() => '?').join(', ');
+        const remainingMessages = request.maxMessages - selected.length;
+        const rows = this.db
+          .prepare(
+            `
+              SELECT sequence, length(CAST(record_json AS BLOB)) AS stored_bytes
+              FROM session_messages
+              WHERE session_id = ? AND sequence <= ? AND message_id IN (${placeholders})
+              ORDER BY sequence ASC
+              LIMIT ?
+            `,
+          )
+          .all(sessionId, request.throughSequence, ...batch, remainingMessages + 1) as Array<{
+          sequence?: unknown;
+          stored_bytes?: unknown;
+        }>;
+        if (rows.length > remainingMessages) {
+          throw new Error('Session transcript message lookup exceeds its message limit');
+        }
+        for (const row of rows) {
+          if (
+            typeof row.sequence !== 'number' ||
+            !Number.isSafeInteger(row.sequence) ||
+            row.sequence < 0 ||
+            typeof row.stored_bytes !== 'number' ||
+            !Number.isSafeInteger(row.stored_bytes) ||
+            row.stored_bytes < 1
+          ) {
+            throw new StoredSessionMessageIncompatibleError(sessionId, -1);
+          }
+          selectedBytes += row.stored_bytes;
+          if (selectedBytes > request.maxBytes) {
+            throw new Error('Session transcript message lookup exceeds its byte limit');
+          }
+          selected.push(row.sequence);
+        }
       }
-      try {
-        return decodeStoredMessage(JSON.parse(row.record_json) as unknown);
-      } catch (error) {
-        throw new StoredSessionMessageIncompatibleError(sessionId, -1, { cause: error });
+
+      selected.sort((left, right) => left - right);
+      const messages: StoredMessage[] = [];
+      for (
+        let offset = 0;
+        offset < selected.length;
+        offset += SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE
+      ) {
+        const batch = selected.slice(offset, offset + SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE);
+        const placeholders = batch.map(() => '?').join(', ');
+        const rows = this.db
+          .prepare(
+            `
+              SELECT sequence, record_json
+              FROM session_messages
+              WHERE session_id = ? AND sequence IN (${placeholders})
+              ORDER BY sequence ASC
+            `,
+          )
+          .all(sessionId, ...batch) as Array<{
+          sequence?: unknown;
+          record_json?: unknown;
+        }>;
+        if (rows.length !== batch.length) {
+          throw new StoredSessionMessageIncompatibleError(sessionId, -1);
+        }
+        for (const row of rows) {
+          if (typeof row.record_json !== 'string' || typeof row.sequence !== 'number') {
+            throw new StoredSessionMessageIncompatibleError(sessionId, -1);
+          }
+          try {
+            messages.push(decodeStoredMessage(JSON.parse(row.record_json) as unknown));
+          } catch (error) {
+            throw new StoredSessionMessageIncompatibleError(sessionId, row.sequence, {
+              cause: error,
+            });
+          }
+        }
       }
+      return messages;
     });
   }
 

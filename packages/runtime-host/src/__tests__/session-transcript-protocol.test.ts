@@ -49,6 +49,7 @@ test('Session transcript protocol accepts bounded correlated pages and bootstrap
 
   const bootstrap = {
     throughSequence: 3,
+    overlayMessageCount: 0,
     durable: { ...page, direction: 'older' as const },
     overlay: {
       kind: 'page' as const,
@@ -62,6 +63,10 @@ test('Session transcript protocol accepts bounded correlated pages and bootstrap
     },
   };
   assert.deepEqual(decodeSessionTranscriptBootstrap(bootstrap), bootstrap);
+  assert.throws(
+    () => decodeSessionTranscriptBootstrap({ ...bootstrap, overlayMessageCount: 4_097 }),
+    isProtocolError,
+  );
 });
 
 test('a maximum single-fragment continuation remains transport safe', () => {
@@ -116,6 +121,7 @@ test('Session transcript protocol rejects malformed and uncorrelated values', ()
     () =>
       decodeSessionTranscriptBootstrap({
         throughSequence: 3,
+        overlayMessageCount: 0,
         durable: page,
         overlay: { ...page, source: 'overlay', throughSequence: 2 },
       }),
