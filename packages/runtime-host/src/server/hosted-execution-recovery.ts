@@ -201,6 +201,11 @@ export function hostedExecutionMessageOrigin(execution: RootExecutionDescriptor)
         kind: 'scheduled_task' as const,
         scheduledTaskId: execution.scheduledTaskId,
       };
+    case 'legacy_automation':
+      return {
+        kind: 'legacy_automation' as const,
+        automationId: execution.automationId,
+      };
     case 'goal':
       return { kind: 'goal' as const, goalId: execution.goalId };
     case 'agent_graph_supervisor_wake':
@@ -299,6 +304,8 @@ function recoveryExecutionContract(execution: RootExecutionDescriptor): Recovery
       return contract(false, false, 'root_replay');
     case 'scheduled_task':
       return contract(false, true, 'domain_replay');
+    case 'legacy_automation':
+      return contract(false, true, 'host_recovery_closure');
     case 'goal':
       return contract(false, true, 'host_recovery_closure');
     case 'safe_boundary_continuation':
@@ -328,6 +335,7 @@ function usesHostRecoveryClosure(execution: RootExecutionDescriptor): execution 
   {
     kind:
       | 'goal'
+      | 'legacy_automation'
       | 'agent_graph_supervisor_wake'
       | 'linked_child_initial'
       | 'linked_child_resume'
@@ -336,6 +344,7 @@ function usesHostRecoveryClosure(execution: RootExecutionDescriptor): execution 
   }
 > {
   return (
+    execution.kind === 'legacy_automation' ||
     execution.kind === 'goal' ||
     execution.kind === 'agent_graph_supervisor_wake' ||
     execution.kind === 'linked_child_initial' ||

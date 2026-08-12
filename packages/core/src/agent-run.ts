@@ -59,6 +59,7 @@ export type RootExecutionDescriptor =
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }
   | { kind: 'scheduled_task'; scheduledTaskId: string }
+  | { kind: 'legacy_automation'; automationId: string }
   | { kind: 'goal'; goalId: string }
   | {
       kind: 'agent_graph_supervisor_wake';
@@ -166,6 +167,8 @@ export interface AgentRunHeader {
   continuationSource?: AgentRunContinuationSource;
   /** ScheduledTask that triggered this host-authored Run. */
   scheduledTaskId?: string;
+  /** Removed Automation authority that triggered this historical Run. */
+  legacyAutomationId?: string;
   /** Host-owned Goal generation that triggered this continuation Run. */
   goalId?: string;
   /** Durable graph milestone that caused this host-authored supervisor turn. */
@@ -187,6 +190,7 @@ type HostedRootExecutionDescriptor = Extract<
       | 'regenerate'
       | 'context_compact'
       | 'scheduled_task'
+      | 'legacy_automation'
       | 'goal'
       | 'agent_graph_supervisor_wake'
       | 'safe_boundary_continuation';
@@ -212,6 +216,7 @@ export function agentRunMatchesHostedRootExecution(
       run.parentSessionId === undefined &&
       run.continuationSource === undefined &&
       run.scheduledTaskId === undefined &&
+      run.legacyAutomationId === undefined &&
       run.goalId === undefined &&
       run.agentGraphWakeId === undefined &&
       run.agentGraphWakeAttemptId === undefined
@@ -232,6 +237,7 @@ export function agentRunMatchesHostedRootExecution(
       run.parentSessionId === undefined &&
       run.continuationSource === undefined &&
       run.scheduledTaskId === undefined &&
+      run.legacyAutomationId === undefined &&
       run.goalId === undefined &&
       run.agentGraphWakeId === undefined &&
       run.agentGraphWakeAttemptId === undefined
@@ -262,6 +268,7 @@ export function agentRunMatchesHostedRootExecution(
       run.branchOfTurnId === undefined &&
       run.parentSessionId === undefined &&
       run.scheduledTaskId === undefined &&
+      run.legacyAutomationId === undefined &&
       run.goalId === undefined &&
       run.agentGraphWakeId === undefined &&
       run.agentGraphWakeAttemptId === undefined
@@ -295,6 +302,15 @@ function hostedRootAuthorityMatches(
     case 'scheduled_task':
       return (
         run.scheduledTaskId === execution.scheduledTaskId &&
+        run.legacyAutomationId === undefined &&
+        run.goalId === undefined &&
+        run.agentGraphWakeId === undefined &&
+        run.agentGraphWakeAttemptId === undefined
+      );
+    case 'legacy_automation':
+      return (
+        run.legacyAutomationId === execution.automationId &&
+        run.scheduledTaskId === undefined &&
         run.goalId === undefined &&
         run.agentGraphWakeId === undefined &&
         run.agentGraphWakeAttemptId === undefined
@@ -303,6 +319,7 @@ function hostedRootAuthorityMatches(
       return (
         run.goalId === execution.goalId &&
         run.scheduledTaskId === undefined &&
+        run.legacyAutomationId === undefined &&
         run.agentGraphWakeId === undefined &&
         run.agentGraphWakeAttemptId === undefined
       );
@@ -315,6 +332,7 @@ function hostedRootAuthorityMatches(
         run.orchestrationSource === 'turn_override' &&
         run.agentSwarmAuthorization === 'none' &&
         run.scheduledTaskId === undefined &&
+        run.legacyAutomationId === undefined &&
         run.goalId === undefined
       );
   }
@@ -534,6 +552,7 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'workspaceIdentity',
     'continuationSource',
     'scheduledTaskId',
+    'legacyAutomationId',
     'goalId',
     'agentGraphWakeId',
     'agentGraphWakeAttemptId',
@@ -557,6 +576,14 @@ const AGENT_RUN_EVENT_SHAPE = defineObjectShape<AgentRunEvent>()(
 );
 
 export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
+  if (
+    isRecord(value) &&
+    value.automationId !== undefined &&
+    value.legacyAutomationId === undefined
+  ) {
+    const { automationId, ...current } = value;
+    value = { ...current, legacyAutomationId: automationId };
+  }
   if (!isRecord(value) || !hasExactShape(value, AGENT_RUN_HEADER_SHAPE)) {
     throw new Error('Invalid AgentRun header schema');
   }
@@ -580,6 +607,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       isAgentSwarmAuthorizationSource(value.agentSwarmAuthorization)) &&
     (value.rootExecutionKind === undefined || value.rootExecutionKind === 'context_compact') &&
     Number(value.scheduledTaskId !== undefined) +
+      Number(value.legacyAutomationId !== undefined) +
       Number(value.goalId !== undefined) +
       Number(value.agentGraphWakeId !== undefined) <=
       1 &&
@@ -602,6 +630,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       value.parentSessionId,
       value.workspaceIdentity,
       value.scheduledTaskId,
+      value.legacyAutomationId,
       value.goalId,
       value.agentGraphWakeId,
       value.agentGraphWakeAttemptId,

@@ -85,6 +85,7 @@ function assertRunMatchesExecution(
     case 'regenerate':
     case 'context_compact':
     case 'scheduled_task':
+    case 'legacy_automation':
     case 'goal':
     case 'agent_graph_supervisor_wake':
     case 'safe_boundary_continuation':
@@ -126,6 +127,7 @@ function assertTrustedAgentIdentity(
         | 'regenerate'
         | 'context_compact'
         | 'scheduled_task'
+        | 'legacy_automation'
         | 'goal'
         | 'agent_graph_supervisor_wake'
         | 'safe_boundary_continuation';

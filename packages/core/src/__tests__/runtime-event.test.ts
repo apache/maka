@@ -63,6 +63,35 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
   assert.deepEqual(stored.thinking?.parts, parts);
 });
 
+test('decodes released Automation origins as read-only legacy provenance', () => {
+  const message = decodeStoredMessage({
+    type: 'user',
+    id: 'message-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'Run the Automation',
+    origin: { kind: 'automation', automationId: 'automation-1' },
+  });
+  assert.deepEqual(message.type === 'user' ? message.origin : undefined, {
+    kind: 'legacy_automation',
+    automationId: 'automation-1',
+  });
+
+  const event = decodeRuntimeEvent(
+    baseEvent({
+      content: {
+        kind: 'text',
+        text: 'Run the Automation',
+        origin: { kind: 'automation', automationId: 'automation-1' } as never,
+      },
+    }),
+  );
+  assert.deepEqual(event.content?.kind === 'text' ? event.content.origin : undefined, {
+    kind: 'legacy_automation',
+    automationId: 'automation-1',
+  });
+});
+
 describe('continuation-start protocol', () => {
   test('accepts only the replay projection version defined by v2', () => {
     const continuationStart = {

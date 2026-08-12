@@ -4738,6 +4738,13 @@ export class SessionManager {
         executionKind: input.execution.kind,
         goalId: input.execution.goalId,
       };
+    } else if (input.execution.kind === 'legacy_automation') {
+      headerExtras.legacyAutomationId = input.execution.automationId;
+      recoveryReason = 'legacy_automation_authority_removed';
+      diagnostic = {
+        executionKind: input.execution.kind,
+        automationId: input.execution.automationId,
+      };
     } else if (input.execution.kind === 'agent_graph_supervisor_wake') {
       headerExtras.agentGraphWakeId = input.execution.wakeId;
       headerExtras.agentGraphWakeAttemptId = input.execution.attemptId;

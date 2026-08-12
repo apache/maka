@@ -660,6 +660,7 @@ export interface UserMessage extends MessageContent {
    * hand-type. Mirrors TurnOrigin in runtime-inputs. */
   origin?:
     | { kind: 'scheduled_task'; scheduledTaskId: string }
+    | { kind: 'legacy_automation'; automationId: string }
     | { kind: 'goal'; goalId: string }
     | { kind: 'agent_graph'; graphId: string; wakeId: string; attemptId: string };
 }
@@ -936,10 +937,15 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
 );
 type MessageOrigin = NonNullable<UserMessage['origin']>;
 type ScheduledTaskOrigin = Extract<MessageOrigin, { kind: 'scheduled_task' }>;
+type LegacyAutomationOrigin = Extract<MessageOrigin, { kind: 'legacy_automation' }>;
 type GoalOrigin = Extract<MessageOrigin, { kind: 'goal' }>;
 type AgentGraphOrigin = Extract<MessageOrigin, { kind: 'agent_graph' }>;
 const SCHEDULED_TASK_ORIGIN_SHAPE = defineObjectShape<ScheduledTaskOrigin>()(
   ['kind', 'scheduledTaskId'],
+  [],
+);
+const LEGACY_AUTOMATION_ORIGIN_SHAPE = defineObjectShape<LegacyAutomationOrigin>()(
+  ['kind', 'automationId'],
   [],
 );
 const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], []);
@@ -968,9 +974,10 @@ export function decodeStoredMessage(value: unknown): StoredMessage {
       if (
         hasExactShape(message, USER_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, true) &&
-        (message.origin === undefined || isMessageOrigin(message.origin))
+        (message.origin === undefined || decodeMessageOrigin(message.origin) !== undefined)
       ) {
         const { displayText, attachments, quotes, inlineReferences, origin, ...envelope } = message;
+        const decodedOrigin = origin === undefined ? undefined : decodeMessageOrigin(origin);
         try {
           return {
             ...envelope,
@@ -981,7 +988,7 @@ export function decodeStoredMessage(value: unknown): StoredMessage {
               quotes,
               inlineReferences,
             }),
-            ...(origin !== undefined ? { origin } : {}),
+            ...(decodedOrigin !== undefined ? { origin: decodedOrigin } : {}),
           } as unknown as UserMessage;
         } catch {
           break;
@@ -1154,8 +1161,18 @@ function isScheduledTaskOrigin(value: unknown): value is ScheduledTaskOrigin {
   );
 }
 
-function isMessageOrigin(value: unknown): value is MessageOrigin {
-  return isScheduledTaskOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value);
+function decodeMessageOrigin(value: unknown): MessageOrigin | undefined {
+  if (isScheduledTaskOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value))
+    return value;
+  if (
+    isRecord(value) &&
+    hasExactShape(value, LEGACY_AUTOMATION_ORIGIN_SHAPE) &&
+    (value.kind === 'automation' || value.kind === 'legacy_automation') &&
+    typeof value.automationId === 'string'
+  ) {
+    return { kind: 'legacy_automation', automationId: value.automationId };
+  }
+  return undefined;
 }
 
 function isOptionalFiniteDuration(value: unknown): boolean {
