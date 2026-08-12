@@ -102,6 +102,7 @@ import {
   RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopOwner,
   type RuntimeHostDesktopOwner,
+  type RuntimeHostDesktopTargetState,
 } from "./runtime-host-desktop-owner.js";
 import { runtimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
@@ -187,6 +188,8 @@ if (runtimeHostStartupSelection.kind === "unavailable") {
 const startupRuntimeHostProfileId = runtimeHostStartupSelection.selectedProfileId;
 let startupRuntimeHost = runtimeHostStartupSelection.target;
 let lastRuntimeHostTarget = startupRuntimeHost;
+let runtimeHostReadiness: RuntimeHostDesktopTargetState["readiness"] =
+  "connecting";
 let lastPublishedRuntimeHostTargetEpoch: string | undefined;
 let owner: RuntimeHostDesktopOwner | undefined;
 const currentRuntimeHost = (): ResolvedRuntimeHostProfile | undefined =>
@@ -300,6 +303,7 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   clientDataRoot: userDataDir,
   selectedProfileId: startupRuntimeHostProfileId,
   getActiveTarget: currentRuntimeHost,
+  getRuntimeHostReadiness: () => runtimeHostReadiness,
   activate: async (target) => {
     try {
       if (target.profile.kind === "local" && !localStorageRootReady) {
@@ -593,6 +597,7 @@ owner = await startRuntimeHostDesktopOwner(
   {
     upgradePrompts: runtimeHostUpgradePrompts,
     onTargetStateChanged: ({ epoch, target, readiness }) => {
+      runtimeHostReadiness = readiness;
       const targetChanged = lastPublishedRuntimeHostTargetEpoch !== epoch;
       lastPublishedRuntimeHostTargetEpoch = epoch;
       lastRuntimeHostTarget = target;

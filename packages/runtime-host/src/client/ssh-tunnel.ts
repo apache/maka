@@ -92,6 +92,8 @@ export async function openRuntimeHostSshTunnel(
       '-o',
       'ControlPath=none',
       '-o',
+      'ClearAllForwardings=no',
+      '-o',
       'ForkAfterAuthentication=no',
       '-L',
       `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
@@ -279,6 +281,8 @@ function readSshConfiguration(input: {
     'ControlMaster=no',
     '-o',
     'ControlPath=none',
+    '-o',
+    'ClearAllForwardings=no',
     ...(input.sshPort === undefined ? [] : ['-p', String(input.sshPort)]),
     input.destination,
   ];

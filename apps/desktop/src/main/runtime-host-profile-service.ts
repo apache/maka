@@ -101,6 +101,11 @@ export function createDesktopRuntimeHostProfileService(input: {
     readonly error: Error;
   };
   readonly getActiveTarget: () => ResolvedRuntimeHostProfile | undefined;
+  readonly getRuntimeHostReadiness: () =>
+    | "connecting"
+    | "ready"
+    | "reconnecting"
+    | "unavailable";
   readonly activate: (
     target: ResolvedRuntimeHostProfile,
   ) => Promise<DesktopRuntimeHostActivationResult>;
@@ -137,6 +142,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     return {
       profiles: [LOCAL_RUNTIME_HOST_PROFILE, ...remoteProfiles],
       selectedProfileId,
+      runtimeHostReadiness: input.getRuntimeHostReadiness(),
       ...(activeTarget ? { activeProfile: activeTarget.profile } : {}),
       ...(activeProfileId ? { activeProfileId } : {}),
       ...(unavailable?.profileId === selectedProfileId

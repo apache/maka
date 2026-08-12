@@ -47,6 +47,7 @@ test('opens an exact loopback forward and owns the SSH process lifetime', async 
   assert.ok(launch?.args.includes('BatchMode=yes'));
   assert.ok(launch?.args.includes('ControlMaster=no'));
   assert.ok(launch?.args.includes('ControlPath=none'));
+  assert.ok(launch?.args.includes('ClearAllForwardings=no'));
   assert.deepEqual(launch?.args.slice(-3), ['-p', '2222', 'operator@example.com']);
   assert.match(
     launch?.args[launch.args.indexOf('-L') + 1] ?? '',

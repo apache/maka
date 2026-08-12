@@ -219,6 +219,7 @@ export type AppUpdateInstallResult =
 export interface DesktopRuntimeHostProfileSnapshot {
   readonly profiles: readonly RuntimeHostProfile[];
   readonly selectedProfileId: string;
+  readonly runtimeHostReadiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
   readonly activeProfile?: RuntimeHostProfile;
   readonly activeProfileId?: string;
   readonly unavailable?: {

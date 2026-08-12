@@ -1,16 +1,34 @@
-import { StrictMode, useEffect } from 'react';
+import { StrictMode, useEffect, useState } from 'react';
 import { Theme } from '@astryxdesign/core/theme';
 import { makaTheme } from './astryx-theme/maka';
 import { AppShell } from './app-shell';
 import { useAstryxThemeMode } from './astryx-theme-mode';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
+import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
 
 export function App({
   initialOnboardingSnapshot = null,
+  initialRuntimeHostReady = true,
 }: {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
+  initialRuntimeHostReady?: boolean;
 }) {
+  const [runtimeHostReady, setRuntimeHostReady] = useState(initialRuntimeHostReady);
+  useEffect(() => {
+    const profiles = window.maka?.runtimeHostProfiles;
+    if (!profiles) return;
+    const unsubscribe = profiles.subscribeChanges((event) => {
+      if (event.readiness === 'ready') setRuntimeHostReady(true);
+    });
+    void profiles
+      .getSnapshot()
+      .then((snapshot) => {
+        if (snapshot.runtimeHostReadiness === 'ready') setRuntimeHostReady(true);
+      })
+      .catch(() => undefined);
+    return unsubscribe;
+  }, []);
   // PR-SHOW-AFTER-FIRST-COMMIT: the BrowserWindow is created hidden
   // (main-window.ts show: false) so the OS never flashes the index.html
   // `.maka-preload` skeleton before React paints. A layout effect is too early
@@ -42,7 +60,11 @@ export function App({
   return (
     <StrictMode>
       <Theme theme={makaTheme} mode={astryxMode}>
-        <AppShell initialOnboardingSnapshot={initialOnboardingSnapshot} />
+        {runtimeHostReady ? (
+          <AppShell initialOnboardingSnapshot={initialOnboardingSnapshot} />
+        ) : (
+          <RuntimeHostSshTerminalDialog />
+        )}
       </Theme>
     </StrictMode>
   );
