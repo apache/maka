@@ -248,6 +248,34 @@ test('migrates released Reminder state after Automation is retired', async () =>
   }
 });
 
+test('finishes a released cleanup backfill interrupted after adding its column', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-interrupted-cleanup-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    await copyV016Database(databasePath);
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DELETE FROM automation_pending_fires;
+      DELETE FROM automation_definitions;
+      INSERT INTO workflow_quote_companion_cleanup(session_id, tracked_at)
+      VALUES ('session-interrupted', 42);
+      ALTER TABLE workflow_quote_companion_cleanup ADD COLUMN record_json TEXT;
+    `);
+    legacy.close();
+
+    const migrated = acquireOperationalStateDatabase(root);
+    const record = migrated.database
+      .prepare(
+        "SELECT record_json FROM workflow_quote_companion_cleanup WHERE session_id = 'session-interrupted'",
+      )
+      .get() as { record_json: string };
+    assert.equal(JSON.parse(record.record_json).sessionId, 'session-interrupted');
+    migrated.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('leaves released Automation unchanged when its configuration cannot be preserved', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-v016-automation-'));
   const databasePath = join(root, 'runtime.sqlite');
