@@ -21,14 +21,6 @@ const PERMISSION_OUTCOME_READ_CONCURRENCY = 8;
 export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES = SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES;
 export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES = 16 * 1024 * 1024;
 const ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS = ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES * 2;
-const ACTIVE_TRANSCRIPT_SOURCE_SEGMENT_TARGET_BYTES = 64 * 1024;
-// SQLite coalesces each stream's mutable tail up to the target. One undersized tail per
-// stream plus two segments per target-sized byte range covers every writer-produced layout.
-const ACTIVE_TRANSCRIPT_SOURCE_MAX_PARTIAL_SEGMENTS =
-  ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS +
-  Math.ceil(
-    (ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES * 2) / ACTIVE_TRANSCRIPT_SOURCE_SEGMENT_TARGET_BYTES,
-  );
 const ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES = 256 * 1024;
 
 export function createSessionTranscriptReader(input: {
@@ -171,7 +163,6 @@ async function readActiveProjectionEvents(
       maxBatchBytes: ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES,
       maxRecordBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
       maxPartialRecords: ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS,
-      maxPartialSegments: ACTIVE_TRANSCRIPT_SOURCE_MAX_PARTIAL_SEGMENTS,
       maxPartialBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
     },
     (batch) => {

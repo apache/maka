@@ -206,7 +206,6 @@ export interface RuntimeEventScanBudget {
   readonly maxBatchBytes: number;
   readonly maxRecordBytes: number;
   readonly maxPartialRecords: number;
-  readonly maxPartialSegments: number;
   readonly maxPartialBytes: number;
 }
 

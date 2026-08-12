@@ -605,7 +605,6 @@ describe('SqliteRuntimeStore', () => {
           maxBatchBytes: 1024,
           maxRecordBytes: 1024,
           maxPartialRecords: 10,
-          maxPartialSegments: 10,
           maxPartialBytes: 1024,
         },
         (events) => scanned.push(...events),
@@ -637,7 +636,6 @@ describe('SqliteRuntimeStore', () => {
           maxBatchBytes: 128,
           maxRecordBytes: 128,
           maxPartialRecords: 10,
-          maxPartialSegments: 10,
           maxPartialBytes: 1024,
         },
         () => {
@@ -649,37 +647,54 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
-  it('rejects too many partial segments before materializing them', async () => {
-    await withStore(async (store) => {
-      for (let index = 0; index < 11; index += 1) {
-        await store.appendRuntimeEvent(
-          'session-1',
-          'run-1',
-          functionCallEvent({
-            id: `partial-segment-${index}`,
-            partial: true,
-            content: { kind: 'text', text: 'x'.repeat(64 * 1024 + 1) },
-            refs: { providerEventId: 'message-1' },
-          }),
-        );
+  it('streams fragmented legacy partial segments without retaining their row set', async () => {
+    await withStore(async (store, dbPath) => {
+      await store.appendRuntimeEvent(
+        'session-1',
+        'run-1',
+        functionCallEvent({
+          id: 'partial-segment-seed',
+          partial: true,
+          content: { kind: 'text', text: '' },
+          refs: { providerEventId: 'message-1' },
+        }),
+      );
+      const inspect = new DatabaseSync(dbPath);
+      try {
+        const { stream_key: streamKey } = inspect
+          .prepare('SELECT stream_key FROM runtime_partial_snapshots')
+          .get() as { stream_key: string };
+        const insert = inspect.prepare(`
+          INSERT INTO runtime_partial_segments(stream_key, segment_seq, text_content, updated_at)
+          VALUES (?, ?, 'x', ?)
+        `);
+        inspect.exec('BEGIN IMMEDIATE');
+        for (let sequence = 1; sequence <= 9_000; sequence += 1) {
+          insert.run(streamKey, sequence, sequence);
+        }
+        inspect.exec('COMMIT');
+      } finally {
+        inspect.close();
       }
-      let visits = 0;
+      const scanned: RuntimeEvent[] = [];
       const result = await store.scanRuntimeEvents(
         'session-1',
         'run-1',
         {
           maxBatchBytes: 1024,
-          maxRecordBytes: 1024 * 1024,
+          maxRecordBytes: 16 * 1024,
           maxPartialRecords: 10,
-          maxPartialSegments: 10,
-          maxPartialBytes: 1024 * 1024,
+          maxPartialBytes: 16 * 1024,
         },
-        () => {
-          visits += 1;
-        },
+        (events) => scanned.push(...events),
       );
-      assert.equal(result.status, 'limit_exceeded');
-      assert.equal(visits, 0);
+      assert.equal(result.status, 'complete');
+      assert.equal(scanned.length, 1);
+      assert.equal(scanned[0]?.content?.kind, 'text');
+      assert.equal(
+        scanned[0]?.content?.kind === 'text' ? scanned[0].content.text : undefined,
+        'x'.repeat(9_000),
+      );
     });
   });
 

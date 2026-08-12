@@ -31,7 +31,8 @@ export interface SubscriberTranscriptState {
   readonly sessionId: string;
   readonly subscriptionId: string;
   readonly openedThroughSequence: number | null;
-  readonly overlayMessages: readonly Buffer[];
+  overlayMessages: readonly Buffer[] | undefined;
+  overlayContinuationCursor: string | null;
   readonly cursorSecret: Buffer;
   durableThroughSequence: number | null;
 }
@@ -89,6 +90,7 @@ export async function createSessionTranscriptBootstrap(input: {
       openedThroughSequence: input.throughSequence,
       durableThroughSequence: input.throughSequence,
       overlayMessages,
+      overlayContinuationCursor: null,
       cursorSecret,
     };
     const bootstrap: SessionTranscriptBootstrap = {
@@ -99,6 +101,8 @@ export async function createSessionTranscriptBootstrap(input: {
     };
     const encodedBytes = Buffer.byteLength(JSON.stringify(bootstrap), 'utf8');
     if (input.maxEncodedBytes === undefined || encodedBytes <= input.maxEncodedBytes) {
+      state.overlayContinuationCursor = bootstrap.overlay.nextCursor;
+      if (bootstrap.overlay.nextCursor === null) state.overlayMessages = undefined;
       return { state, bootstrap };
     }
     if (rawBudget <= 2) {
@@ -150,24 +154,33 @@ export async function readSessionTranscriptPage(input: {
   if (request.source === 'overlay' && request.throughSequence !== state.openedThroughSequence) {
     throw new TranscriptPageRequestError('Transcript overlay watermark changed');
   }
+  if (request.source === 'overlay' && state.overlayMessages === undefined) {
+    throw new TranscriptPageRequestError('Transcript overlay has already been consumed');
+  }
   const position = resolvePosition(state, request);
   if (position === null) return emptyPage(state, request);
   if (request.source === 'overlay') {
+    const overlayMessages = state.overlayMessages!;
     const selected = selectOverlay(
-      state.overlayMessages,
+      overlayMessages,
       request.direction,
       position.position,
       position.byteOffset,
       request.maxBytes,
       SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
     );
-    return pageFromSelection(
+    const page = pageFromSelection(
       state,
       'overlay',
       request.direction,
       selected,
       request.throughSequence,
     );
+    if (request.cursor !== null && request.cursor === state.overlayContinuationCursor) {
+      state.overlayContinuationCursor = page.nextCursor;
+      if (page.nextCursor === null) state.overlayMessages = undefined;
+    }
+    return page;
   }
   if (request.throughSequence === null) return emptyPage(state, request);
   const storage = await input.reader.readDurablePage(state.sessionId, {
@@ -221,12 +234,12 @@ function resolvePosition(
     return { position: cursor.position, byteOffset: cursor.byteOffset };
   }
   if (request.source === 'overlay') {
+    const overlayMessages = state.overlayMessages;
+    if (overlayMessages === undefined) return null;
     const anchor = request.anchorSequence;
     const position =
-      request.direction === 'older'
-        ? (anchor ?? state.overlayMessages.length) - 1
-        : (anchor ?? -1) + 1;
-    return position < 0 || position >= state.overlayMessages.length
+      request.direction === 'older' ? (anchor ?? overlayMessages.length) - 1 : (anchor ?? -1) + 1;
+    return position < 0 || position >= overlayMessages.length
       ? null
       : { position, byteOffset: null };
   }

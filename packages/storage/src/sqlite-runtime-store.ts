@@ -583,8 +583,7 @@ export class SqliteRuntimeStore
             length(CAST(snapshot.payload_json AS BLOB)) +
             length(CAST(snapshot.text_content AS BLOB)) +
             coalesce(sum(length(CAST(segment.text_content AS BLOB))), 0) +
-            coalesce(length(CAST(snapshot.after_event_id AS BLOB)), 0) AS stored_bytes,
-            count(segment.segment_seq) AS segment_count
+            coalesce(length(CAST(snapshot.after_event_id AS BLOB)), 0) AS stored_bytes
           FROM runtime_partial_snapshots AS snapshot
           LEFT JOIN runtime_partial_segments AS segment
             ON segment.stream_key = snapshot.stream_key
@@ -593,21 +592,14 @@ export class SqliteRuntimeStore
           LIMIT ?
         `,
       )
-      .all(sessionId, runId, budget.maxPartialRecords + 1) as Array<{
-      stored_bytes?: unknown;
-      segment_count?: unknown;
-    }>;
+      .all(sessionId, runId, budget.maxPartialRecords + 1) as Array<{ stored_bytes?: unknown }>;
     if (rows.length > budget.maxPartialRecords) return false;
     let bytes = 0;
-    let segments = 0;
     for (const row of rows) {
       const storedBytes = requireRuntimeEventScanCount(row.stored_bytes);
-      const segmentCount = requireRuntimeEventScanCount(row.segment_count);
       if (storedBytes < 1 || storedBytes > budget.maxRecordBytes) return false;
       bytes += storedBytes;
-      segments += segmentCount;
       if (bytes > budget.maxPartialBytes) return false;
-      if (segments > budget.maxPartialSegments) return false;
     }
     return true;
   }
@@ -687,12 +679,43 @@ export class SqliteRuntimeStore
       WHERE snapshot.session_id = ? AND snapshot.run_id = ?
       ORDER BY segment.stream_key ASC, segment.segment_seq ASC
     `)
-      .all(sessionId, runId) as Array<{ stream_key: string; text_content: string }>;
+      .iterate(sessionId, runId) as Iterable<{ stream_key: string; text_content: string }>;
+    let streamKey: string | undefined;
+    let chunks: string[] = [];
+    let tail: string[] = [];
+    let tailBytes = 0;
+    const flushTail = () => {
+      if (tail.length === 0) return;
+      chunks.push(tail.join(''));
+      tail = [];
+      tailBytes = 0;
+    };
+    const flushStream = () => {
+      if (streamKey === undefined) return;
+      flushTail();
+      segmentText.set(streamKey, chunks);
+      chunks = [];
+    };
     for (const segment of segments) {
-      const text = segmentText.get(segment.stream_key) ?? [];
-      text.push(segment.text_content);
-      segmentText.set(segment.stream_key, text);
+      if (typeof segment.stream_key !== 'string' || typeof segment.text_content !== 'string') {
+        throw new Error('Invalid RuntimeEvent partial segment');
+      }
+      if (segment.stream_key !== streamKey) {
+        flushStream();
+        streamKey = segment.stream_key;
+      }
+      const bytes = Buffer.byteLength(segment.text_content, 'utf8');
+      if (bytes === 0) continue;
+      if (bytes > RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES) {
+        flushTail();
+        chunks.push(segment.text_content);
+        continue;
+      }
+      if (tailBytes + bytes > RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES) flushTail();
+      tail.push(segment.text_content);
+      tailBytes += bytes;
     }
+    flushStream();
     return partials.flatMap((row) => {
       try {
         const event = decodeRuntimePartialStorageRow(row);

@@ -901,14 +901,16 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
                 pumping: false,
                 terminalQueued: false,
                 ...(transcript ? { transcript } : {}),
-                ...(retainedTranscriptOverlay ? { retainedTranscriptOverlay } : {}),
+                ...(retainedTranscriptOverlay && transcript?.overlayMessages !== undefined
+                  ? { retainedTranscriptOverlay }
+                  : {}),
               };
-              if (retainedTranscriptOverlay)
-                this.#retainTranscriptOverlay(retainedTranscriptOverlay);
+              if (subscriber.retainedTranscriptOverlay)
+                this.#retainTranscriptOverlay(subscriber.retainedTranscriptOverlay);
               committed.state.subscribers.set(subscriptionId, subscriber);
               this.#subscriptions.set(subscriptionId, subscriber);
               connection.subscriptionIds.add(subscriptionId);
-              transcriptSubscriberInstalled = retainedTranscriptOverlay !== undefined;
+              transcriptSubscriberInstalled = subscriber.retainedTranscriptOverlay !== undefined;
               // Client expects the first delivered frame at nextSequence from the open
               // result. Capture that before enqueueing retained previews — each
               // #enqueue advances nextSequence.
@@ -993,6 +995,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         error: { code: 'operation_unavailable', message: 'Session transcript is unavailable' },
       };
     }
+    const transcript = subscriber.transcript;
     return this.sessionAdmission.run(subscriber.sessionId, async () => {
       if (this.#ownedSubscriber(connectionId, input.subscriptionId) !== subscriber) {
         return transcriptSubscriptionNotFound();
@@ -1000,11 +1003,14 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       try {
         const page = await readSessionTranscriptPage({
           reader: this.#transcriptReader!,
-          state: subscriber.transcript!,
+          state: transcript,
           request: input,
         });
         if (this.#ownedSubscriber(connectionId, input.subscriptionId) !== subscriber) {
           return transcriptSubscriptionNotFound();
+        }
+        if (transcript.overlayMessages === undefined) {
+          this.#releaseSubscriberTranscriptOverlay(subscriber);
         }
         return { ok: true, result: page };
       } catch (error) {
@@ -1539,16 +1545,22 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     this.#connections
       .get(subscriber.connectionId)
       ?.subscriptionIds.delete(subscriber.subscriptionId);
-    if (subscriber.retainedTranscriptOverlay) {
-      this.#releaseTranscriptOverlay(subscriber.retainedTranscriptOverlay);
-      subscriber.retainedTranscriptOverlay = undefined;
-    }
+    this.#releaseSubscriberTranscriptOverlay(subscriber);
     if (!this.#closed && state && removed) {
       if (!this.#hasTranscriptSubscriber(state)) this.#invalidateTranscriptOverlay(state);
       if (state.subscribers.size === 0) {
         this.#scheduleInactiveStateCleanup(subscriber.sessionId, state);
       }
     }
+  }
+
+  #releaseSubscriberTranscriptOverlay(subscriber: Subscriber): void {
+    const retained = subscriber.retainedTranscriptOverlay;
+    if (!retained) return;
+    subscriber.retainedTranscriptOverlay = undefined;
+    this.#releaseTranscriptOverlay(retained);
+    const state = this.#sessions.get(subscriber.sessionId);
+    if (state && !this.#hasTranscriptSubscriber(state)) this.#invalidateTranscriptOverlay(state);
   }
 
   #ownedSubscriber(connectionId: string, subscriptionId: string): Subscriber | undefined {

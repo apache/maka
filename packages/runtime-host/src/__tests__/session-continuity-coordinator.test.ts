@@ -8,6 +8,7 @@ import {
   encodeProtocolMessage,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   type SubscriptionFrame,
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
@@ -717,7 +718,10 @@ test('open returns a bounded durable tail and an immutable active overlay', asyn
 });
 
 test('shares one immutable active overlay preparation until the Session changes', async () => {
-  const baseReader = transcriptReader([assistantMessage('durable')], [assistantMessage('overlay')]);
+  const baseReader = transcriptReader(
+    [assistantMessage('durable')],
+    [assistantMessage('overlay'.repeat(8 * 1024))],
+  );
   let overlayReads = 0;
   const reader: SessionTranscriptReader = {
     ...baseReader,
@@ -935,6 +939,37 @@ test('fails fast when retained active overlays leave no preparation capacity', a
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   });
   assert.ok(recovered.transcript);
+  coordinator.close();
+});
+
+test('releases retained overlays after their bootstrap continuation is consumed', async () => {
+  let generation = 0;
+  const baseReader = transcriptReader([]);
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    readActiveOverlay: async () => [
+      assistantMessage(`${generation}:${'x'.repeat(15 * 1024 * 1024)}`),
+    ],
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+
+  for (let index = 0; index < 3; index += 1) {
+    const connectionId = `connection-consumed-overlay-${index}`;
+    coordinator.attachConnection(connectionId, new RecordingSink());
+    const opened = await open(coordinator, connectionId, {
+      kind: 'tail',
+      maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+    });
+    await consumeBootstrapOverlay(coordinator, connectionId, opened);
+    generation += 1;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(index + 1));
+  }
   coordinator.close();
 });
 
@@ -1511,6 +1546,32 @@ async function openForSession(
   );
   if (!outcome.ok) throw new Error(outcome.error.message);
   return outcome.result;
+}
+
+async function consumeBootstrapOverlay(
+  coordinator: SessionContinuityCoordinator,
+  connectionId: string,
+  opened: Awaited<ReturnType<typeof open>>,
+): Promise<void> {
+  assert.ok(opened.transcript);
+  let cursor = opened.transcript.overlay.nextCursor;
+  while (cursor !== null) {
+    const outcome = await coordinator.handlers['session.transcript.page'](
+      {
+        subscriptionId: opened.subscriptionId,
+        source: 'overlay',
+        direction: 'older',
+        throughSequence: opened.transcript.throughSequence,
+        cursor,
+        anchorSequence: null,
+        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+      },
+      connectionContext(connectionId),
+    );
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) throw new Error('Transcript overlay page failed');
+    cursor = outcome.result.nextCursor;
+  }
 }
 
 function connectionContext(connectionId: string): ConnectionContext {
