@@ -111,6 +111,18 @@ class RelayContractTest(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertEqual(diagnostic["category"], "result-frame-oversize")
 
+    def test_subject_output_cannot_counterfeit_scope_setup_failure(self):
+        relay = load_relay()
+        token = "0" * 32
+        carrier = f"subject output\nMAKA-EVAL-SCOPE-ERROR-V1 {token}\n"
+
+        _, diagnostic = relay._project_result(
+            types.SimpleNamespace(stdout=carrier),
+            {"captureStdout": False, "resultToken": token},
+        )
+
+        self.assertEqual(diagnostic["category"], "none")
+
     def test_harbor_and_pier_decode_the_same_merged_result_contract(self):
         token = "frame-token"
         payload = b'{}'
@@ -151,6 +163,59 @@ class RelayContractTest(unittest.TestCase):
         self.assertNotIn("/app", command)
         self.assertIn("/logs/agent/.maka-eval-token.pid", command)
         self.assertIn("2>/dev/null", command)
+
+    def test_command_does_not_start_subject_when_scope_pid_cannot_be_published(self):
+        relay = load_relay()
+        environment = Environment(stage_upload=True)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_setsid = fake_bin / "setsid"
+            fake_setsid.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = --wait ]; then shift; fi\n"
+                "exec \"$@\"\n"
+            )
+            fake_setsid.chmod(0o755)
+            marker = root / "subject-started"
+            scope_path = root / "missing" / "scope.pid"
+            command = asyncio.run(
+                relay._prepare_command(
+                    environment,
+                    {
+                        "command": "/bin/sh",
+                        "args": ["-c", f"touch {shlex.quote(str(marker))}"],
+                        "environment": {},
+                        "credentials": {},
+                        "captureStdout": False,
+                        "resultToken": "0" * 32,
+                    },
+                    "token",
+                    str(scope_path),
+                )
+            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    shell=True,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+                )
+                self.assertFalse(marker.exists())
+            finally:
+                if environment.uploaded_target is not None:
+                    environment.uploaded_target.unlink(missing_ok=True)
+
+        self.assertNotEqual(completed.returncode, 0)
+        stdout, diagnostic = relay._project_result(
+            types.SimpleNamespace(stdout=completed.stdout.decode()),
+            {"captureStdout": False, "resultToken": "0" * 32},
+        )
+        self.assertEqual(stdout, "")
+        self.assertEqual(diagnostic["category"], "execution-scope-unavailable")
 
     def test_stages_environment_and_discards_unstructured_stdout(self):
         relay = load_relay()

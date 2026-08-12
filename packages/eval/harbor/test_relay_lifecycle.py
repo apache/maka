@@ -70,7 +70,7 @@ class SimultaneousEnvironment:
             self.finished.set()
             return SimpleNamespace(return_code=0, stdout=frame, stderr=None)
         if command.startswith("test -r") or command.startswith("pgid="):
-            return SimpleNamespace(return_code=1, stdout="", stderr="")
+            return SimpleNamespace(return_code=3, stdout="", stderr="")
         return SimpleNamespace(return_code=0, stdout="", stderr="")
 
 
@@ -88,6 +88,34 @@ class ClosedWriter:
 class HangingStopEnvironment:
     async def stop(self, delete=False):
         await asyncio.Future()
+
+
+class ScopeEvidenceEnvironment:
+    def __init__(self, return_code):
+        self.return_code = return_code
+
+    async def exec(self, command, cwd=None, timeout_sec=None):
+        return SimpleNamespace(return_code=self.return_code, stdout="", stderr="")
+
+
+class ScopeSetupFailureEnvironment:
+    async def upload_file(self, source, target):
+        return None
+
+    async def exec(self, command, cwd=None, timeout_sec=None):
+        if command.startswith("printf ") and "MAKA-EVAL-CWD-V1" in command:
+            prefix = command.split("'", 2)[1]
+            return SimpleNamespace(return_code=0, stdout=f"{prefix}/workspace\n", stderr=None)
+        if command.startswith("setsid"):
+            token = "0" * 32
+            return SimpleNamespace(
+                return_code=111,
+                stdout=f"MAKA-EVAL-SCOPE-ERROR-V1 {token}\n",
+                stderr=None,
+            )
+        if command.startswith("rm -f --"):
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command after scope setup failure: {command}")
 
 
 class FrameworkTimeoutEnvironment(SimultaneousEnvironment):
@@ -135,6 +163,60 @@ def load_relay():
 
 
 class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def test_scope_setup_failure_is_reported_without_quiescing_an_unknown_scope(self):
+        relay = load_relay()
+        environment = ScopeSetupFailureEnvironment()
+        token = f"scope-setup-{os.getpid()}"
+        connected = asyncio.get_running_loop().create_future()
+
+        async def accept(reader, writer):
+            connected.set_result((reader, writer))
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        agent = relay.RelayAgent(
+            logs_dir=Path(tempfile.gettempdir()),
+            relay_host="127.0.0.1",
+            relay_port=port,
+            relay_token=token,
+            teardown_timeout_ms=1_000,
+        )
+        running = asyncio.create_task(agent.run("solve", environment, None))
+        reader, writer = await connected
+        try:
+            await reader.readline()
+            writer.write(
+                (__import__("json").dumps({
+                    "token": token,
+                    "kind": "execute",
+                    "command": "/bin/true",
+                    "args": [],
+                    "credentials": {},
+                    "captureStdout": False,
+                    "resultToken": "0" * 32,
+                }) + "\n").encode()
+            )
+            await writer.drain()
+            executed = __import__("json").loads(await reader.readline())
+            self.assertEqual(executed["exitCode"], 111)
+            self.assertEqual(executed["diagnostic"]["category"], "execution-scope-unavailable")
+            writer.write(
+                (__import__("json").dumps({"token": token, "kind": "verify"}) + "\n").encode()
+            )
+            await writer.drain()
+            await running
+        finally:
+            writer.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_missing_scope_evidence_cannot_be_treated_as_quiescent(self):
+        relay = load_relay()
+
+        with self.assertRaisesRegex(RuntimeError, "scope evidence was unavailable"):
+            await relay._scope_active(ScopeEvidenceEnvironment(4), "/", "/missing")
+        self.assertFalse(await relay._scope_active(ScopeEvidenceEnvironment(3), "/", "/gone"))
+
     async def test_closed_peer_is_a_bounded_transport_outcome(self):
         relay = load_relay()
         delivered = await relay._send(ClosedWriter(), {"kind": "verify"})

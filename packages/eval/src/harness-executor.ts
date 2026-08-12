@@ -279,7 +279,8 @@ function validProcessDiagnostic(value: unknown): value is {
     | 'result-frame-missing'
     | 'result-frame-invalid'
     | 'result-frame-ambiguous'
-    | 'result-frame-oversize';
+    | 'result-frame-oversize'
+    | 'execution-scope-unavailable';
   bytes?: number;
   sha256?: string;
 } {
@@ -294,6 +295,7 @@ function validProcessDiagnostic(value: unknown): value is {
       'result-frame-invalid',
       'result-frame-ambiguous',
       'result-frame-oversize',
+      'execution-scope-unavailable',
     ].includes(String(diagnostic.category)) &&
       fields.length === 3 &&
       typeof diagnostic.bytes === 'number' &&

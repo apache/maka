@@ -44,7 +44,8 @@ export interface SubjectExecutionContext {
         | 'result-frame-missing'
         | 'result-frame-invalid'
         | 'result-frame-ambiguous'
-        | 'result-frame-oversize';
+        | 'result-frame-oversize'
+        | 'execution-scope-unavailable';
       readonly bytes?: number;
       readonly sha256?: string;
     };

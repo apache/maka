@@ -96,6 +96,18 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
             ],
           };
         }
+        if (execution.diagnostic?.category === 'execution-scope-unavailable') {
+          return {
+            usage: null,
+            costUsd: null,
+            durationMs: Date.now() - startedAt,
+            status: context.signal?.aborted
+              ? ('indeterminate' as const)
+              : ('infra_failed' as const),
+            failureReason: 'external subject execution scope was unavailable',
+            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
+          };
+        }
         if (config.result === 'exit-code') {
           return {
             usage: null,

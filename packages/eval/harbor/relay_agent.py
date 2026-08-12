@@ -28,6 +28,7 @@ class RelayTransportClosed(RuntimeError):
 
 
 RESULT_FRAME_PREFIX = "MAKA-EVAL-RESULT-V1"
+SCOPE_ERROR_PREFIX = "MAKA-EVAL-SCOPE-ERROR-V1"
 RESULT_PAYLOAD_LIMIT_BYTES = 2 * 1024
 RESULT_CARRIER_LIMIT_BYTES = 64 * 1024
 
@@ -108,8 +109,9 @@ class RelayAgent(BaseAgent):
                 decision.result()
                 raise RelayTransportClosed("Maka Eval relay received control before execution")
             result = execution.result()
-            await _quiesce_scope(environment, cwd, scope_path)
             stdout, diagnostic = _project_result(result, request)
+            if diagnostic["category"] != "execution-scope-unavailable":
+                await _quiesce_scope(environment, cwd, scope_path)
             if not await _send(
                 writer,
                 {
@@ -131,15 +133,25 @@ class RelayAgent(BaseAgent):
         except asyncio.CancelledError:
             if request is not None and execution is not None:
                 execution_terminal = execution.done() and not execution.cancelled()
-                result = await _settle_or_destroy(
-                    environment, cwd, scope_path, execution, self._teardown_timeout
-                )
+                terminal_projection = None
+                if execution_terminal:
+                    terminal_result = execution.result()
+                    terminal_projection = _project_result(terminal_result, request)
+                if (
+                    terminal_projection is not None
+                    and terminal_projection[1]["category"] == "execution-scope-unavailable"
+                ):
+                    result = terminal_result
+                else:
+                    result = await _settle_or_destroy(
+                        environment, cwd, scope_path, execution, self._teardown_timeout
+                    )
                 if (
                     result is not None
                     and not execution_reported
                     and (execution_terminal or not _host_teardown_requested)
                 ):
-                    stdout, diagnostic = _project_result(result, request)
+                    stdout, diagnostic = terminal_projection or _project_result(result, request)
                     with contextlib.suppress(Exception):
                         await _send(
                             writer,
@@ -246,9 +258,11 @@ async def _prepare_command(
             secret_path.unlink(missing_ok=True)
     subject = shlex.join([request["command"], *request["args"]])
     output_redirect = "" if capture_stdout else " >/dev/null"
+    scope_error = shlex.quote(f"{SCOPE_ERROR_PREFIX} {result_token}\\n")
     inner = (
         "umask 077; "
-        f"echo $$ > {shlex.quote(scope_path)}; "
+        f"{{ echo $$ > {shlex.quote(scope_path)}; }} 2>/dev/null || "
+        f"{{ printf {scope_error}; exit 111; }}; "
         f". {shlex.quote(container_path)}; command -p rm -f {shlex.quote(container_path)}; "
         f"exec {subject}{output_redirect} 2>/dev/null"
     )
@@ -298,11 +312,13 @@ def _decode_result_carrier(carrier: str, token: str) -> tuple[str, dict[str, Any
 
 
 def _project_result(result: Any, request: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    carrier = str(getattr(result, "stdout", "") or "")
+    scope_error = f"{SCOPE_ERROR_PREFIX} {request['resultToken']}"
+    if carrier == f"{scope_error}\n":
+        return "", _carrier_diagnostic("execution-scope-unavailable", carrier.encode())
     if not request.get("captureStdout", True):
         return "", {"category": "none"}
-    return _decode_result_carrier(
-        str(getattr(result, "stdout", "") or ""), request["resultToken"]
-    )
+    return _decode_result_carrier(carrier, request["resultToken"])
 
 
 def _carrier_diagnostic(category: str, value: bytes) -> dict[str, Any]:
@@ -320,18 +336,17 @@ async def _settle(environment: Any, cwd: str, scope_path: str, execution: Any) -
         result = execution.result()
     else:
         result = None
-        if result is None:
-            for signal, timeout in (("TERM", 20), ("KILL", 10)):
-                await _signal(environment, cwd, scope_path, signal)
-                try:
-                    result = await asyncio.wait_for(asyncio.shield(execution), timeout=timeout)
-                    break
-                except asyncio.CancelledError:
-                    if execution.cancelled():
-                        raise RuntimeError("Maka Eval subject execution was cancelled") from None
-                    raise
-                except TimeoutError:
-                    pass
+        for signal, timeout in (("TERM", 20), ("KILL", 10)):
+            await _signal(environment, cwd, scope_path, signal)
+            try:
+                result = await asyncio.wait_for(asyncio.shield(execution), timeout=timeout)
+                break
+            except asyncio.CancelledError:
+                if execution.cancelled():
+                    raise RuntimeError("Maka Eval subject execution was cancelled") from None
+                raise
+            except TimeoutError:
+                pass
         if result is None:
             raise RuntimeError("Maka Eval subject did not settle")
     await _quiesce_scope(environment, cwd, scope_path)
@@ -397,13 +412,18 @@ async def _quiesce_scope(environment: Any, cwd: str, scope_path: str) -> None:
 
 async def _scope_active(environment: Any, cwd: str, scope_path: str) -> bool:
     result = await environment.exec(
-        f"pgid=$(cat {shlex.quote(scope_path)} 2>/dev/null) || exit 1; "
-        "case $pgid in ''|0|*[!0-9]*) exit 1;; esac; "
-        "kill -0 -- \"-$pgid\" 2>/dev/null",
+        f"pgid=$(cat {shlex.quote(scope_path)} 2>/dev/null) || exit 4; "
+        "case $pgid in ''|0|*[!0-9]*) exit 4;; esac; "
+        "kill -0 -- \"-$pgid\" 2>/dev/null; status=$?; "
+        "if [ $status -eq 0 ]; then exit 0; fi; exit 3",
         cwd=cwd,
         timeout_sec=5,
     )
-    return result.return_code == 0
+    if result.return_code == 0:
+        return True
+    if result.return_code == 3:
+        return False
+    raise RuntimeError("Maka Eval execution scope evidence was unavailable")
 
 
 def _require_message(value: dict[str, Any], token: str, kind: str) -> None:

@@ -44,6 +44,37 @@ test('passes declared environment and credential bindings to one external comman
   assert.equal(result.costUsd, null);
 });
 
+test('classifies missing executor process scope as infrastructure failure', async () => {
+  const cell = externalCell({
+    command: '/opt/pi/bin/pi',
+    args: ['--print', '{{task.input}}'],
+    credentialEnvironment: { DEEPSEEK_API_KEY: 'PROVIDER_KEY' },
+    result: 'exit-code',
+  });
+
+  const result = await createExternalSubjectAdapter().execute({
+    cell,
+    context: {
+      cwd: '/workspace',
+      taskInput: 'solve',
+      metadata: {},
+      execute: async () => ({
+        termination: 'exited',
+        exitCode: 111,
+        stdout: '',
+        diagnostic: {
+          category: 'execution-scope-unavailable',
+          bytes: 0,
+          sha256: createHash('sha256').update('').digest('hex'),
+        },
+      }),
+    },
+  });
+
+  assert.equal(result.status, 'infra_failed');
+  assert.equal(result.failureReason, 'external subject execution scope was unavailable');
+});
+
 test('requires the bundled wrapper for the structured result contract', () => {
   for (const args of [[], ['/tmp/harbor-external-subject.js', 'codex']]) {
     const cell = externalCell({ command: '/opt/tool', args });
