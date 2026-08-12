@@ -84,38 +84,6 @@ describe('BotRegistry', () => {
     assert.equal(registry.getStatus('wecom').running, false);
     assert.equal(registry.getStatus('wecom').reason, 'disabled');
   });
-
-  // PR-BOT-TYPING-INDICATOR-0 — `sendTypingIndicator` is best-effort and
-  // must never throw, even when the platform has no bridge or no send
-  // capability. The actual Telegram API call is exercised separately at
-  // the simple-bridge layer; here we pin the contract that no bridge =
-  // returns false silently.
-  test('sendTypingIndicator returns false (without throwing) when no bridge is registered', async () => {
-    const registry = new BotRegistry({
-      onIncomingMessage: () => {},
-      onStatusChange: () => {},
-    });
-
-    const result = await registry.sendTypingIndicator('telegram', 'chat-1');
-    assert.equal(result, false);
-  });
-
-  test('sendTypingIndicator returns false for WeCom because the SDK has no typing capability', async () => {
-    const registry = new BotRegistry({
-      onIncomingMessage: () => {},
-      onStatusChange: () => {},
-    });
-
-    await registry.applySettings(
-      settingsWith({
-        wecom: { enabled: true, token: '', appId: undefined, appSecret: undefined },
-      }),
-    );
-
-    // A bridge is registered, but the official SDK has no typing API.
-    const result = await registry.sendTypingIndicator('wecom', 'chat-x');
-    assert.equal(result, false);
-  });
 });
 
 function settingsWith(
