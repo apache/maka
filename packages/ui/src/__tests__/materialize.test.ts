@@ -14,7 +14,7 @@ import {
   settleLiveTurnStep,
 } from "../live-turn-projection.js";
 
-describe("materializeChat attachments", () => {
+describe("steering timeline", () => {
   test("keeps a steering message at its conversational position", () => {
     const [turn] = materializeTurns([
       { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
@@ -194,8 +194,9 @@ describe("materializeChat attachments", () => {
       ["inserted instruction"],
     );
   });
+});
 
-
+describe("materializeChat message metadata", () => {
   test("preserves an explicit empty reference projection as the new-format marker", () => {
     const messages: StoredMessage[] = [
       {
@@ -210,8 +211,6 @@ describe("materializeChat attachments", () => {
     assert.deepEqual(materializeChat(messages)[0]?.inlineReferences, []);
     assert.deepEqual(materializeTurns(messages)[0]?.user?.inlineReferences, []);
   });
-
-
 
   test("preserves Host provenance on a Goal continuation", () => {
     const messages: StoredMessage[] = [
@@ -234,9 +233,6 @@ describe("materializeChat attachments", () => {
       goalId: "goal-1",
     });
   });
-
-
-
 });
 
 // ── #1307: the timeline model stays flat (fold is a render concern) ──────────

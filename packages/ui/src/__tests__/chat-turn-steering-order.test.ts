@@ -9,7 +9,7 @@ import type { TurnViewModel } from '../materialize.js';
 test('renders steering where it arrived in the assistant timeline', () => {
   const turn: TurnViewModel = {
     turnId: 'turn-1',
-    status: 'completed',
+    status: 'failed',
     partialOutputRetained: false,
     user: { id: 'original', role: 'user', text: 'original request', ts: 1 },
     tools: [],
@@ -39,7 +39,7 @@ test('renders steering where it arrived in the assistant timeline', () => {
   const markup = renderToStaticMarkup(
     createElement(LocaleProvider, {
       locale: 'en',
-      children: createElement(TurnView, { turn }),
+      children: createElement(TurnView, { turn, failedReasonLabel: 'failure detail' }),
     }),
   );
   const before = markup.indexOf('output visible before steering');
@@ -50,4 +50,12 @@ test('renders steering where it arrived in the assistant timeline', () => {
   assert.notEqual(steering, -1);
   assert.notEqual(after, -1);
   assert.equal(before < steering && steering < after, true);
+  for (const text of [
+    'output visible before steering',
+    'inserted instruction',
+    'output visible after steering',
+    'failure detail',
+  ]) {
+    assert.equal(markup.split(text).length - 1, 1, `${text} should render exactly once`);
+  }
 });
