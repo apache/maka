@@ -66,6 +66,13 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 
 首个公开版本不包含 Computer Use，暂不支持 Intel Mac、Windows 和 Linux 安装包。
 
+### Windows x64 预览版
+
+Windows 目前仍是未签名预览版，不属于正式支持的平台。当某个 release 包含 Windows 资产时，
+请先阅读 [Windows 预览版安装与校验指南](docs/windows-support.md#安装-windows-x64-预览版)，再运行
+`Maka-<version>-win-x64.exe`。SmartScreen 会将安装包显示为未知发布者；只有从同一 release 下载
+并确认 SHA-256 与发布的校验文件一致后，才应选择绕过该提示。
+
 ### 环境要求
 
 - Node.js 22（当前 CI 基线）；
