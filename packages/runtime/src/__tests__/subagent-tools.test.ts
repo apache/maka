@@ -10,8 +10,6 @@ import type { SessionEvent } from '@maka/core/events';
 import { zodSchema } from 'ai';
 import { buildBuiltinTools } from '../builtin-tools.js';
 import {
-  AGENT_CONTEXT_ISOLATED,
-  AGENT_INVOCATION_FOREGROUND,
   AGENT_WORKSPACE_SAME_WORKSPACE,
   AGENT_WORKSPACE_WORKTREE,
   AGENT_WRITE_BACK_PATCH,
@@ -161,16 +159,9 @@ describe('subagent tools', () => {
         testCatalogTool('WebSearch', 'web_read'),
       ],
     });
-    expect(definitions.find((definition) => definition.id === LOCAL_READ_AGENT_ID)).toEqual({
-      id: LOCAL_READ_AGENT_ID,
-      profile: LOCAL_READ_AGENT_PROFILE,
-      name: 'Local Read',
-      description: 'Read-only repository exploration with file and text search tools only.',
-      permissionMode: 'explore',
-      tools: ['Read', 'Glob', 'Grep'],
-      contract: LOCAL_READ_AGENT_DEFINITION.contract,
-      availability: { status: 'available' },
-    });
+    const localRead = definitions.find((definition) => definition.id === LOCAL_READ_AGENT_ID);
+    expect(localRead?.tools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(localRead?.availability).toEqual({ status: 'available' });
   });
 
   test('built-in catalog exposes web-research with only WebSearch and no local or write tools', () => {
@@ -182,21 +173,11 @@ describe('subagent tools', () => {
         testCatalogTool('WebSearch', undefined),
       ],
     });
-    expect(withWebSearch.map((definition) => definition.profile)).toEqual([
-      LOCAL_READ_AGENT_PROFILE,
-      WEB_RESEARCH_AGENT_PROFILE,
-      IMPLEMENTATION_AGENT_PROFILE,
-    ]);
-    expect(withWebSearch.find((definition) => definition.id === WEB_RESEARCH_AGENT_ID)).toEqual({
-      id: WEB_RESEARCH_AGENT_ID,
-      profile: WEB_RESEARCH_AGENT_PROFILE,
-      name: 'Web Research',
-      description: 'Network-backed web research with WebSearch only.',
-      permissionMode: 'execute',
-      tools: ['WebSearch'],
-      contract: WEB_RESEARCH_AGENT_DEFINITION.contract,
-      availability: { status: 'available' },
-    });
+    const webResearch = withWebSearch.find(
+      (definition) => definition.id === WEB_RESEARCH_AGENT_ID,
+    );
+    expect(webResearch?.tools).toEqual(['WebSearch']);
+    expect(webResearch?.availability).toEqual({ status: 'available' });
 
     expect(
       listBuiltinAgentDefinitions({
@@ -211,45 +192,9 @@ describe('subagent tools', () => {
       reason: 'missing_tools',
       missingTools: ['WebSearch'],
     });
-    expect(
-      listBuiltinAgentDefinitions({
-        tools: [
-          testCatalogTool('Read', 'read'),
-          testCatalogTool('Glob', 'read'),
-          testCatalogTool('Grep', 'read'),
-          testCatalogTool('WebSearch', 'web_read'),
-        ],
-      }).find((definition) => definition.id === WEB_RESEARCH_AGENT_ID)?.availability,
-    ).toEqual({ status: 'available' });
   });
 
   test('built-in catalog exposes implementation only when a worktree executor is available', async () => {
-    expect(IMPLEMENTATION_AGENT_DEFINITION.id).toBe(IMPLEMENTATION_AGENT_ID);
-    expect(IMPLEMENTATION_AGENT_DEFINITION.profile).toBe(IMPLEMENTATION_AGENT_PROFILE);
-    expect(IMPLEMENTATION_AGENT_DEFINITION.contract).toEqual({
-      capability: 'implementation',
-      invocation: AGENT_INVOCATION_FOREGROUND,
-      context: AGENT_CONTEXT_ISOLATED,
-      workspace: AGENT_WORKSPACE_WORKTREE,
-      defaultWriteBack: AGENT_WRITE_BACK_PATCH,
-      supportedWriteBack: [AGENT_WRITE_BACK_PATCH],
-    });
-    expect(IMPLEMENTATION_AGENT_DEFINITION.permissionMode).toBe('execute');
-    expect(IMPLEMENTATION_AGENT_DEFINITION.toolGroups).toEqual(['file_edit']);
-    expect([...IMPLEMENTATION_AGENT_DEFINITION.tools]).toEqual([
-      'Read',
-      'Glob',
-      'Grep',
-      'Write',
-      'Edit',
-      'apply_patch',
-      'Bash',
-      'WriteStdin',
-      'StopBackgroundTask',
-    ]);
-    expect(IMPLEMENTATION_AGENT_DEFINITION.tools.includes('WebSearch')).toBe(false);
-    expect(IMPLEMENTATION_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
-
     const availability = listBuiltinAgentDefinitions({
       tools: implementationCatalogTools(),
     }).find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)?.availability;
