@@ -156,7 +156,7 @@ index 084703a..672a29d 100644
      var displayName: string;
  }
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
-index 867ed5a..0699051 100644
+index 867ed5a..b65248d 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 @@ -1041,6 +1041,7 @@ export function Markdown({
@@ -168,7 +168,7 @@ index 867ed5a..0699051 100644
    sources,
    citationStyle = 'label',
 @@ -1065,7 +1066,9 @@ export function Markdown({
-
+ 
    // Smooth bursty streamed chunks into a steady character-by-character reveal.
    // When not streaming, the hook returns children unchanged (no-op).
 -  const smoothedText = useStreamingText(children, isStreaming);
@@ -178,24 +178,16 @@ index 867ed5a..0699051 100644
    const incrementalStateRef = useRef(createIncrementalState());
    // Reset incremental cache when the autolink option toggles — cached
    // settled blocks were parsed with the previous setting.
-@@ -1113,15 +1116,24 @@ export function Markdown({
+@@ -1113,15 +1116,16 @@ export function Markdown({
    }, [token]);
    const prevBlocksRef = useRef([]);
    const prevInlineNodesRef = useRef([]);
 -  const boundariesRef = useRef([]);
 -  const smoothedLen = smoothedText.length;
-+  const previousSmoothedTextRef = useRef(smoothedText);
 +  const boundariesRef = useRef(undefined);
 +  if (boundariesRef.current === undefined) {
 +    boundariesRef.current = initialDisplayedText === undefined ? [] : [display === 'inline' ? countInlineTextLength(inlineNodes) : countBlockTextLength(blocks)];
 +  }
-+  if (!smoothedText.startsWith(previousSmoothedTextRef.current)) {
-+    const visibleLength = display === 'inline' ? countInlineTextLength(inlineNodes) : countBlockTextLength(blocks);
-+    boundariesRef.current = [visibleLength];
-+    prevInlineNodesRef.current = inlineNodes;
-+    prevBlocksRef.current = blocks;
-+  }
-+  previousSmoothedTextRef.current = smoothedText;
    const boundaries = useMemo(() => {
 -    void smoothedLen; // dep trigger
      const prevLen = display === 'inline' ? countInlineTextLength(prevInlineNodesRef.current) : countBlockTextLength(prevBlocksRef.current);
@@ -237,10 +229,10 @@ index ae17b68..8fe4438 100644
  /**
   * Smooths bursty streamed text into a steady character-by-character reveal.
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js
-index d5e9ac9..aa41855 100644
+index d5e9ac9..3bf7a6f 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js
 +++ b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js
-@@ -103,14 +103,37 @@ export function useStreamingText(targetText, isStreaming, options) {
+@@ -103,15 +103,25 @@ export function useStreamingText(targetText, isStreaming, options) {
      const tick = speed === 'fast' ? base / 20 : base / 10;
      return Math.max(4, Math.round(tick));
    }, [token, speed]);
@@ -259,34 +251,16 @@ index d5e9ac9..aa41855 100644
 +  const [displayedLen, setDisplayedLen] = useState(initialDisplayedLen);
    const targetRef = useRef(targetText);
 -  const displayedLenRef = useRef(0);
-+  const previousTargetRef = useRef(targetText);
 +  const displayedLenRef = useRef(initialDisplayedLen);
    const lastTickRef = useRef(0);
    const rafRef = useRef(null);
-
+ 
    // Keep target ref in sync
    targetRef.current = targetText;
-+  let renderDisplayedLen = displayedLen;
-+  if (targetText !== previousTargetRef.current) {
-+    const displayedText = previousTargetRef.current.slice(0, displayedLenRef.current);
-+    const reconciledLen = commonPrefixLength(displayedText, targetText);
-+    previousTargetRef.current = targetText;
-+    if (reconciledLen !== displayedLenRef.current) {
-+      displayedLenRef.current = reconciledLen;
-+      renderDisplayedLen = reconciledLen;
-+      setDisplayedLen(reconciledLen);
-+    }
-+  }
-
+-
    // Reset when target clears (new message)
    const prevTargetLenRef = useRef(targetText.length);
-@@ -168,5 +191,5 @@ export function useStreamingText(targetText, isStreaming, options) {
-   if (!isStreaming || speed === 'instant' || prefersReducedMotion) {
-     return targetText;
-   }
--  return targetText.slice(0, displayedLen);
-+  return targetText.slice(0, renderDisplayedLen);
- }
+   if (targetText.length !== prevTargetLenRef.current) {
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 index 234a2e4..e3f1842 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
@@ -300,7 +274,7 @@ index 234a2e4..e3f1842 100644
        aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
        onClick={toggleDetail}
 diff --git a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
-index a6f850b..42796d2 100644
+index a6f850b..591f9d6 100644
 --- a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
 +++ b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
 @@ -134,6 +134,8 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
@@ -321,7 +295,7 @@ index a6f850b..42796d2 100644
    sources,
    citationStyle = 'label',
 @@ -1620,7 +1623,9 @@ export function Markdown({
-
+ 
    // Smooth bursty streamed chunks into a steady character-by-character reveal.
    // When not streaming, the hook returns children unchanged (no-op).
 -  const smoothedText = useStreamingText(children, isStreaming);
@@ -331,13 +305,12 @@ index a6f850b..42796d2 100644
  
    const incrementalStateRef = useRef<IncrementalState>(
      createIncrementalState(),
-@@ -1676,10 +1681,25 @@ export function Markdown({
+@@ -1676,10 +1681,15 @@ export function Markdown({
  
    const prevBlocksRef = useRef<BlockNode[]>([]);
    const prevInlineNodesRef = useRef<InlineNode[]>([]);
 -  const boundariesRef = useRef<number[]>([]);
 -  const smoothedLen = smoothedText.length;
-+  const previousSmoothedTextRef = useRef(smoothedText);
 +  const boundariesRef = useRef<number[] | undefined>(undefined);
 +  if (boundariesRef.current === undefined) {
 +    boundariesRef.current = initialDisplayedText === undefined
@@ -346,31 +319,22 @@ index a6f850b..42796d2 100644
 +          ? countInlineTextLength(inlineNodes)
 +          : countBlockTextLength(blocks)];
 +  }
-+  if (!smoothedText.startsWith(previousSmoothedTextRef.current)) {
-+    const visibleLength = display === 'inline'
-+      ? countInlineTextLength(inlineNodes)
-+      : countBlockTextLength(blocks);
-+    boundariesRef.current = [visibleLength];
-+    prevInlineNodesRef.current = inlineNodes;
-+    prevBlocksRef.current = blocks;
-+  }
-+  previousSmoothedTextRef.current = smoothedText;
    const boundaries = useMemo(() => {
 -    void smoothedLen; // dep trigger
      const prevLen =
        display === 'inline'
          ? countInlineTextLength(prevInlineNodesRef.current)
-@@ -1687,7 +1707,7 @@ export function Markdown({
+@@ -1687,7 +1697,7 @@ export function Markdown({
      const next = computeBoundaries(boundariesRef.current, prevLen, maxSpans);
      boundariesRef.current = next;
      return next;
 -  }, [display, smoothedLen, maxSpans]);
 +  }, [display, smoothedText, maxSpans]);
-
+ 
    const cursor: StreamingCursor = {
      offset: 0,
 diff --git a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
-index 02c069f..ee24c7c 100644
+index 02c069f..71f3a2a 100644
 --- a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
 +++ b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
 @@ -40,6 +40,20 @@ export interface UseStreamingTextOptions {
@@ -394,7 +358,7 @@ index 02c069f..ee24c7c 100644
  }
  
  // Fallback values when no Theme provider is present
-@@ -117,15 +131,32 @@ export function useStreamingText(
+@@ -117,9 +131,13 @@ export function useStreamingText(
      return Math.max(4, Math.round(tick));
    }, [token, speed]);
  
@@ -406,33 +370,7 @@ index 02c069f..ee24c7c 100644
 +  const [displayedLen, setDisplayedLen] = useState(initialDisplayedLen);
    const targetRef = useRef(targetText);
 -  const displayedLenRef = useRef(0);
-+  const previousTargetRef = useRef(targetText);
 +  const displayedLenRef = useRef(initialDisplayedLen);
    const lastTickRef = useRef(0);
    const rafRef = useRef<number | null>(null);
  
-   // Keep target ref in sync
-   targetRef.current = targetText;
-
-+  let renderDisplayedLen = displayedLen;
-+  if (targetText !== previousTargetRef.current) {
-+    const displayedText = previousTargetRef.current.slice(0, displayedLenRef.current);
-+    const reconciledLen = commonPrefixLength(displayedText, targetText);
-+    previousTargetRef.current = targetText;
-+    if (reconciledLen !== displayedLenRef.current) {
-+      displayedLenRef.current = reconciledLen;
-+      renderDisplayedLen = reconciledLen;
-+      setDisplayedLen(reconciledLen);
-+    }
-+  }
-+
-   // Reset when target clears (new message)
-   const prevTargetLenRef = useRef(targetText.length);
-   if (targetText.length !== prevTargetLenRef.current) {
-@@ -191,5 +222,5 @@ export function useStreamingText(
-     return targetText;
-   }
-
--  return targetText.slice(0, displayedLen);
-+  return targetText.slice(0, renderDisplayedLen);
- }

@@ -133,13 +133,10 @@ export function ChatMessageSurface({
     seedRevision: liveContentSeedRevision,
     initialLiveContent: captureLiveContent(liveTurn),
   }));
-  if (activation.sessionId !== activeSessionId) {
-    setActivation({
-      sessionId: activeSessionId,
-      seedRevision: liveContentSeedRevision,
-      initialLiveContent: captureLiveContent(liveTurn),
-    });
-  } else if (activation.seedRevision !== liveContentSeedRevision) {
+  if (
+    activation.sessionId !== activeSessionId
+    || activation.seedRevision !== liveContentSeedRevision
+  ) {
     setActivation({
       sessionId: activeSessionId,
       seedRevision: liveContentSeedRevision,
