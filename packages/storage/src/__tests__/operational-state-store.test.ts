@@ -430,6 +430,56 @@ for (const { name, mutation, message } of [
     message: /usage_pricing_authority column singleton has an incompatible definition/,
   },
   {
+    name: 'a current authority table with a missing foreign key',
+    mutation: (database: DatabaseSync) =>
+      database.exec(`
+        DROP TABLE core_agent_run_events;
+        CREATE TABLE core_agent_run_events (
+          session_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          sequence INTEGER NOT NULL CHECK (sequence >= 0),
+          event_id TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          event_ts INTEGER NOT NULL,
+          record_json TEXT NOT NULL,
+          PRIMARY KEY (session_id, run_id, sequence)
+        );
+      `),
+    message: /core_agent_run_events is missing required foreign key/,
+  },
+  {
+    name: 'a current authority check with a changed string literal',
+    mutation: (database: DatabaseSync) =>
+      database.exec(`
+        DROP TABLE artifact_records;
+        CREATE TABLE artifact_records (
+          storage_key TEXT PRIMARY KEY,
+          artifact_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL CHECK (created_at >= 0),
+          status TEXT NOT NULL CHECK (status IN ('LIVE', 'DELETED')),
+          relative_path TEXT NOT NULL,
+          record_json TEXT NOT NULL
+        );
+      `),
+    message: /artifact_records is missing required check/,
+  },
+  {
+    name: 'a current authority table with a quoted decoy check',
+    mutation: (database: DatabaseSync) =>
+      database.exec(`
+        DROP TABLE usage_llm_calls;
+        CREATE TABLE usage_llm_calls (
+          storage_key TEXT PRIMARY KEY,
+          id TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          record_json TEXT NOT NULL,
+          decoy TEXT DEFAULT 'CHECK (ts >= 0)'
+        );
+      `),
+    message: /usage_llm_calls is missing required check/,
+  },
+  {
     name: 'a current authority trigger with an incompatible definition',
     mutation: (database: DatabaseSync) =>
       database.exec(`
