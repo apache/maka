@@ -28,17 +28,22 @@ export interface MakaAutocompleteArrangementInput {
 export interface MakaAutocompleteArrangementResult {
   lines: string[];
   autocompleteSlotRows: number;
+  editorRows: number;
 }
 
 export function arrangeAutocompleteAboveEditor(
   input: MakaAutocompleteArrangementInput,
 ): MakaAutocompleteArrangementResult {
   if (!input.autocompleteShowing) {
-    return { lines: input.lines, autocompleteSlotRows: 0 };
+    return { lines: input.lines, autocompleteSlotRows: 0, editorRows: input.lines.length };
   }
   const sections = splitTrailingAutocomplete(input.lines);
   if (sections.autocompleteLines.length === 0) {
-    return { lines: sections.editorLines, autocompleteSlotRows: 0 };
+    return {
+      lines: sections.editorLines,
+      autocompleteSlotRows: 0,
+      editorRows: sections.editorLines.length,
+    };
   }
   const autocompleteRowsAvailable = Math.max(
     0,
@@ -60,12 +65,14 @@ export function arrangeAutocompleteAboveEditor(
       ...sections.editorLines,
     ],
     autocompleteSlotRows,
+    editorRows: sections.editorLines.length,
   };
 }
 
 export class MakaAutocompleteAboveEditorComponent implements Component {
   private autocompleteSlotRows = 0;
   private viewportRows = Number.POSITIVE_INFINITY;
+  private editorRows = 3;
 
   constructor(private readonly editor: Editor) {}
 
@@ -85,6 +92,14 @@ export class MakaAutocompleteAboveEditorComponent implements Component {
     this.viewportRows = Math.max(0, Math.floor(rows));
   }
 
+  isShowingAutocomplete(): boolean {
+    return this.editor.isShowingAutocomplete();
+  }
+
+  minimumViewportRows(): number {
+    return this.editorRows + (this.editor.isShowingAutocomplete() ? 1 : 0);
+  }
+
   handleInput(data: string): void {
     this.editor.handleInput(data);
   }
@@ -98,6 +113,7 @@ export class MakaAutocompleteAboveEditorComponent implements Component {
       viewportRows: this.viewportRows,
     });
     this.autocompleteSlotRows = result.autocompleteSlotRows;
+    this.editorRows = result.editorRows;
     return result.lines;
   }
 }

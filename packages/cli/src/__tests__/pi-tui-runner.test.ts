@@ -258,7 +258,9 @@ describe('Maka Pi TUI runner', () => {
       const currentInputRows = findInputSurfaceRows(current);
       if (!currentInputRows) return false;
       const [currentTopBorder] = currentInputRows;
-      return current[currentTopBorder - 1]?.includes(`(${totalCommands}/${totalCommands})`) === true;
+      return (
+        current[currentTopBorder - 1]?.includes(`(${totalCommands}/${totalCommands})`) === true
+      );
     });
     screen = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
     const selectedInputRows = findInputSurfaceRows(screen);

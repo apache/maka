@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { fitAutocompleteLines } from '../tui-autocomplete-layout.js';
+import { fitPendingQueueLines } from '../pi-tui-layout.js';
 
 describe('fitAutocompleteLines', () => {
   test('keeps the selected item visible and reports the full command count', () => {
@@ -41,5 +42,21 @@ describe('fitAutocompleteLines', () => {
 
   test('uses the selected row when only one autocomplete row fits', () => {
     assert.deepEqual(fitAutocompleteLines(['  /one', '→ /two', '  /three'], 1), ['→ /two']);
+  });
+});
+
+describe('fitPendingQueueLines', () => {
+  test('summarizes overflow after preserving the visible pending rows', () => {
+    const pending = Array.from({ length: 15 }, (_, index) => `Queued: message ${index + 1}`);
+
+    assert.deepEqual(fitPendingQueueLines(pending, 3), [
+      'Queued: message 1',
+      'Queued: message 2',
+      '… 13 more',
+    ]);
+  });
+
+  test('uses the only available row as an overflow summary', () => {
+    assert.deepEqual(fitPendingQueueLines(['Queued: one', 'Queued: two'], 1), ['… 2 more']);
   });
 });
