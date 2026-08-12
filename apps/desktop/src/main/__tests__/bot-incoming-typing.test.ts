@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
-import type { BotIncomingMessage, BotRegistry } from '@maka/runtime';
+import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
 import { createTestBotSessionAdapter } from './bot-session-adapter-fixture.js';
 

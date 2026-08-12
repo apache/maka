@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { BotIncomingMessage } from '@maka/runtime';
+import type { BotIncomingMessage } from '@maka/runtime/bots';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
 import { createTestBotSessionAdapter } from './bot-session-adapter-fixture.js';
 
