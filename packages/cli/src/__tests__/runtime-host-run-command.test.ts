@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
-import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import { LOCAL_RUNTIME_HOST_PROFILE, type RuntimeHostConnection } from '@maka/runtime-host/client';
 import type {
   InteractionPendingSnapshot,
   SessionCatalogProjection,
@@ -35,6 +35,7 @@ describe('Runtime Host maka run adapter', () => {
         connect: async () => ({
           connection: {} as RuntimeHostConnection,
           catalog: blockedCatalog,
+          profile: LOCAL_RUNTIME_HOST_PROFILE,
           close: async () => {},
         }),
         createContext: (_connection, _catalog, input) => {
@@ -48,6 +49,90 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(contextCreations, 0);
     assert.match(stderr.join(''), /model_connection_disabled/);
     assert.match(stderr.join(''), /repair connection "openai-main" in `maka`/);
+  });
+
+  test('routes a remote run through the selected Host profile and existing Project', async () => {
+    let selectedProfile: string | undefined;
+    let contextInput: MakaRunContextInput | undefined;
+    const connection = remoteReadinessConnection();
+    const exitCode = await runRuntimeHostTextCli(
+      ['answer once', '--host', 'office', '--project', 'project-1'],
+      {
+        workspaceRoot: () => '/runtime-host-data',
+        processCwd: () => process.cwd(),
+        stdinIsTTY: () => true,
+        readStdin: async () => '',
+        writeStdout: () => {},
+        writeStderr: () => {},
+        onSigint: () => () => {},
+        newId: () => 'turn-remote',
+      },
+      {
+        connect: async (_rootPath, profileId) => {
+          selectedProfile = profileId;
+          return {
+            connection,
+            catalog: connectionCatalog(),
+            profile: {
+              id: 'office',
+              name: 'Office',
+              kind: 'remote',
+              url: 'wss://runtime.example.com/runtime-host',
+              rootId: 'a'.repeat(64),
+            },
+            close: async () => {},
+          };
+        },
+        createContext: (_connection, _catalog, input) => {
+          contextInput = input;
+          return publicCommandContext(input);
+        },
+      },
+    );
+
+    assert.equal(exitCode, 0);
+    assert.equal(selectedProfile, 'office');
+    assert.equal(contextInput?.projectId, 'project-1');
+  });
+
+  test('resumes a remote Session without relocating its Host-owned cwd', async () => {
+    let contextInput: MakaRunContextInput | undefined;
+    const connection = remoteReadinessConnection();
+    const exitCode = await runRuntimeHostTextCli(
+      ['continue remotely', '--host', 'office', '--resume', 'session-existing'],
+      {
+        workspaceRoot: () => '/client/runtime-host-data',
+        processCwd: () => '/client/current-directory',
+        stdinIsTTY: () => true,
+        readStdin: async () => '',
+        writeStdout: () => {},
+        writeStderr: () => {},
+        onSigint: () => () => {},
+        newId: () => 'turn-remote-resume',
+      },
+      {
+        connect: async () => ({
+          connection,
+          catalog: connectionCatalog(),
+          profile: {
+            id: 'office',
+            name: 'Office',
+            kind: 'remote',
+            url: 'wss://runtime.example.com/runtime-host',
+            rootId: 'a'.repeat(64),
+          },
+          close: async () => {},
+        }),
+        createContext: (_connection, _catalog, input) => {
+          contextInput = input;
+          return publicCommandContext(input);
+        },
+      },
+    );
+
+    assert.equal(exitCode, 0);
+    assert.equal(contextInput?.resumeSessionId, 'session-existing');
+    assert.equal(contextInput?.sessionCwdOverride, undefined);
   });
 
   test('continues the Host-owned cwd Session without creating another identity', async () => {
@@ -93,6 +178,7 @@ describe('Runtime Host maka run adapter', () => {
         connect: async () => ({
           connection,
           catalog: connectionCatalog(),
+          profile: LOCAL_RUNTIME_HOST_PROFILE,
           close: async () => {},
         }),
         createContext: (_connection, _catalog, input) => {
@@ -132,6 +218,7 @@ describe('Runtime Host maka run adapter', () => {
         connect: async () => ({
           connection: {} as RuntimeHostConnection,
           catalog: connectionCatalog(),
+          profile: LOCAL_RUNTIME_HOST_PROFILE,
           close: async () => {},
         }),
         createContext: () => fixture.context,
@@ -770,6 +857,56 @@ function readinessConnection(): RuntimeHostConnection {
           updatedAt: 1,
         },
       };
+    },
+  } as unknown as RuntimeHostConnection;
+}
+
+function remoteReadinessConnection(): RuntimeHostConnection {
+  return {
+    request: async (operation: string) => {
+      if (operation === 'session.catalog.query') {
+        return {
+          kind: 'page',
+          revision: 1,
+          nextCursor: null,
+          sessions: [sessionProjection('session-existing')],
+        };
+      }
+      if (operation === 'project.catalog.query') {
+        return {
+          kind: 'page',
+          view: 'summary',
+          revision: `sha256:${'1'.repeat(64)}`,
+          projectCount: 1,
+          items: [
+            {
+              kind: 'project',
+              projectIndex: 0,
+              id: 'project-1',
+              name: 'Project',
+              aliasCount: 0,
+              locationCount: 1,
+              preferredLocationIndex: 0,
+              archivedAt: null,
+              available: true,
+            },
+          ],
+          nextCursor: null,
+        };
+      }
+      if (operation === 'credential.vault.query') {
+        return {
+          kind: 'status',
+          status: {
+            locator: { scope: 'connection', connectionId: 'connection-1', kind: 'api_key' },
+            configured: true,
+            credentialId: 'credential-1',
+            revision: 1,
+            updatedAt: 1,
+          },
+        };
+      }
+      throw new Error(`Unexpected readiness operation: ${operation}`);
     },
   } as unknown as RuntimeHostConnection;
 }

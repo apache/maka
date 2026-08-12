@@ -28,6 +28,17 @@ export interface DesktopRuntimeHostStartupSelection {
   readonly recoveryError?: Error;
 }
 
+export type DesktopRuntimeHostActivationResult =
+  | {
+      readonly ok: true;
+      readonly activeTarget: ResolvedRuntimeHostProfile;
+    }
+  | {
+      readonly ok: false;
+      readonly activeTarget: ResolvedRuntimeHostProfile;
+      readonly error: unknown;
+    };
+
 export async function resolveSelectedDesktopRuntimeHostProfile(
   clientDataRoot: string,
   overrides: {
@@ -63,7 +74,9 @@ export async function resolveSelectedDesktopRuntimeHostProfile(
 export function createDesktopRuntimeHostProfileService(input: {
   readonly clientDataRoot: string;
   readonly activeTarget: ResolvedRuntimeHostProfile;
-  readonly activate: (target: ResolvedRuntimeHostProfile) => Promise<void>;
+  readonly activate: (
+    target: ResolvedRuntimeHostProfile,
+  ) => Promise<DesktopRuntimeHostActivationResult>;
   readonly onTargetChanged?: (target: ResolvedRuntimeHostProfile) => void;
   readonly writeSelection?: (profileId: string) => Promise<void>;
   readonly catalog?: RuntimeHostProfileCatalog;
@@ -99,22 +112,26 @@ export function createDesktopRuntimeHostProfileService(input: {
       return snapshot();
     }
     const previous = activeTarget;
-    await input.activate(target);
+    const activation = await input.activate(target);
+    activeTarget = activation.activeTarget;
+    if (!activation.ok) throw activation.error;
     try {
       await persistSelection(profileId);
     } catch (selectionError) {
-      try {
-        await input.activate(previous);
-      } catch (rollbackError) {
+      const rollback = await input.activate(previous);
+      activeTarget = rollback.activeTarget;
+      if (!sameRuntimeHostTarget(activeTarget, previous)) {
+        input.onTargetChanged?.(activeTarget);
+      }
+      if (!rollback.ok) {
         throw new AggregateError(
-          [selectionError, rollbackError],
+          [selectionError, rollback.error],
           "Runtime Host switched, but its selection could not be saved or restored",
         );
       }
       throw selectionError;
     }
-    activeTarget = target;
-    input.onTargetChanged?.(target);
+    input.onTargetChanged?.(activeTarget);
     return snapshot();
   };
 

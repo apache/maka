@@ -333,6 +333,7 @@ function AppShellContent({
     setActiveId,
     startNewSession,
     clearOwnedSessionState,
+    clearRuntimeHostSessionState,
     messages,
     setMessages,
     messageLoadPending,
@@ -367,10 +368,15 @@ function AppShellContent({
     attachFilePaths,
     removeAttachment,
     clearSubmittedAttachments,
+    clearAllAttachments,
   } = useAppShellComposerAttachments({ draftKey: attachmentDraftKey, toastApi });
-  const { pendingQuotes, addQuote, removeQuote, clearQuotes } = useAppShellComposerQuotes({
-    draftKey: attachmentDraftKey,
-  });
+  const {
+    pendingQuotes,
+    addQuote,
+    removeQuote,
+    clearQuotes,
+    clearAllQuotes,
+  } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
   const [scheduledTaskCreateRequestNonce, setScheduledTaskCreateRequestNonce] = useState(0);
   const [pendingCollaborationModeBySession, setPendingCollaborationModeBySession] = useState<Record<string, boolean>>({});
@@ -406,7 +412,7 @@ function AppShellContent({
   // injected into the system prompt). State and the fire-and-forget refresh
   // live in `useShellMemoryPill`; recompute is triggered on mount (bootstrap
   // subscriptions) and when Settings closes (closeSettings).
-  const { memoryActive, refreshMemoryActive } = useShellMemoryPill({ toastApi, uiLocale });
+  const { memoryActive, clearMemoryActive, refreshMemoryActive } = useShellMemoryPill({ toastApi, uiLocale });
   const {
     connections,
     defaultConnection,
@@ -827,6 +833,26 @@ function AppShellContent({
     orchestrationModeChangeRegistry.keysRef.current.delete(sessionId);
     setPendingOrchestrationModeBySession((current) => omitSessionKey(current, sessionId));
     sessionModelChangeRegistry.keysRef.current.delete(sessionId);
+  }
+
+  function clearRuntimeHostRendererState(): void {
+    clearRuntimeHostSessionState();
+    interactionHydrationEpochRef.current.clear();
+    turnActionRegistry.clearAll();
+    sessionRowActionRegistry.clearAll();
+    permissionModeChangeRegistry.clearAll();
+    collaborationModeChangeRegistry.clearAll();
+    orchestrationModeChangeRegistry.clearAll();
+    sessionModelChangeRegistry.clearAll();
+    setPendingCollaborationModeBySession({});
+    setPendingOrchestrationModeBySession({});
+    clearRuntimeHostProjectState();
+    clearRuntimeHostModuleData();
+    clearMemoryActive();
+    setConnections([]);
+    setDefaultConnection(null);
+    clearAllAttachments();
+    clearAllQuotes();
   }
 
   const sessionRowActionHandlers = useStableActions(createAppShellSessionRowActions, {
@@ -1651,6 +1677,7 @@ function AppShellContent({
     managedSkillSources,
     bundledSkillCatalog,
     scheduledTasks,
+    clearRuntimeHostModuleData,
     refreshScheduledTasks,
     createScheduledTask,
     updateScheduledTask,
@@ -1692,6 +1719,7 @@ function AppShellContent({
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
+    clearRuntimeHostProjectState,
     refreshAppInfo,
     refreshProjects,
     addProject,
@@ -2222,6 +2250,7 @@ function AppShellContent({
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
     confirmLiveTurn,
     clearSessionRendererState,
+    clearRuntimeHostRendererState,
     createSession,
     handleConnectionEvent,
     openHelp,

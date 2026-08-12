@@ -158,19 +158,26 @@ if (e2eFixture) {
   );
   await seedE2eFixture({ workspaceRoot, fixture: e2eFixture });
 }
-const storageRoot = e2eFixture
-  ? await resolveStorageRoot({ path: workspaceRoot, kind: "interactive" })
-  : await startupStep(
-    "storage root",
-    resolveDesktopStorageRoot(workspaceRoot, {
-      confirmRepair: () => confirmDesktopStorageRootRepair(workspaceRoot),
-    }),
-  );
-if (!storageRoot) {
+const resolveLocalStorageRoot = () =>
+  e2eFixture
+    ? resolveStorageRoot({ path: workspaceRoot, kind: "interactive" })
+    : startupStep(
+        "storage root",
+        resolveDesktopStorageRoot(workspaceRoot, {
+          confirmRepair: () => confirmDesktopStorageRootRepair(workspaceRoot),
+        }),
+      );
+let localStorageRootReady = false;
+const startupLocalStorageRoot =
+  activeRuntimeHost.profile.kind === "local"
+    ? await resolveLocalStorageRoot()
+    : undefined;
+if (activeRuntimeHost.profile.kind === "local" && !startupLocalStorageRoot) {
   app.exit(0);
   await new Promise<never>(() => {});
   throw new Error("Desktop storage root resolution did not complete");
 }
+localStorageRootReady = Boolean(startupLocalStorageRoot);
 const settingsStore = createSettingsStore(workspaceRoot);
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const mcpManager = new McpClientManager({
@@ -259,22 +266,6 @@ onMainWindowClose = () => {
   native.computerUseOverlay.destroyAll();
   native.computerUsePip.destroyAll();
 };
-const createActiveProjectRoot = (): ProjectRootController =>
-  createProjectRootController({
-    rootId:
-      activeRuntimeHost.profile.kind === "remote"
-        ? activeRuntimeHost.profile.rootId
-        : storageRoot.rootId,
-    preferenceFile: join(workspaceRoot, "project-preferences.json"),
-    fallbackRoots: () => [process.cwd(), app.getAppPath()],
-  });
-let projectRoot = createActiveProjectRoot();
-const activeProjectRoot: ProjectRootController = {
-  current: () => projectRoot.current(),
-  currentSelection: () => projectRoot.currentSelection(),
-  resolveExplicit: (path) => projectRoot.resolveExplicit(path),
-  setSelection: (projectId, path) => projectRoot.setSelection(projectId, path),
-};
 const attachmentApprovals = createAttachmentApprovalRegistry();
 const oauthPresentation = new RuntimeHostOAuthPresentation((url) => shell.openExternal(url));
 let owner: RuntimeHostDesktopOwner | undefined;
@@ -282,13 +273,23 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   clientDataRoot: userDataDir,
   activeTarget: activeRuntimeHost,
   activate: async (target) => {
-    await owner?.switchTarget(
-      target.profile.kind === "remote"
-        ? { profile: target.profile, credential: target.credential! }
-        : undefined,
-    );
-    activeRuntimeHost = target;
-    projectRoot = createActiveProjectRoot();
+    try {
+      if (target.profile.kind === "local" && !localStorageRootReady) {
+        if (!(await resolveLocalStorageRoot())) {
+          throw new Error("Local Runtime Host selection was cancelled");
+        }
+        localStorageRootReady = true;
+      }
+      await owner?.switchTarget(
+        target.profile.kind === "remote"
+          ? { profile: target.profile, credential: target.credential! }
+          : undefined,
+      );
+      activeRuntimeHost = target;
+      return { ok: true, activeTarget: target };
+    } catch (error) {
+      return { ok: false, activeTarget: activeRuntimeHost, error };
+    }
   },
   onTargetChanged: () => {
     mainWindowController.send("runtime-host-profiles:changed", {
@@ -302,33 +303,15 @@ let runtimePolicyTarget:
   | {
       readonly client: DesktopRuntimeHostClient;
       readonly policy: DesktopRuntimeHostTargetPolicy;
+      readonly projectCatalog: ReturnType<typeof createRuntimeHostProjectCatalog>;
+      readonly projectManagement: ProjectManagementService;
     }
   | undefined;
-const projectCatalog = createRuntimeHostProjectCatalog(() => {
-  if (!runtimePolicyTarget) throw new Error("Runtime Host client is unavailable");
-  return {
-    client: runtimePolicyTarget.client,
-    includeHostPaths: runtimePolicyTarget.policy.kind === "local",
-  };
-});
-const projectManagement: ProjectManagementService = createProjectManagementService({
-  catalog: projectCatalog,
-  chooseDirectory: async () => {
-    const result = await mainWindowController.showOpenDialog({
-      title: "Add project",
-      properties: ["openDirectory"],
-    });
-    return result.canceled ? undefined : result.filePaths[0];
-  },
-  selection: activeProjectRoot,
-  allowLocalDirectoryActions: () => activeRuntimeHost.profile.kind === "local",
-});
 const currentDesktopWorkspaceTarget = async (
-  target: DesktopRuntimeHostTargetPolicy = {
-    kind: activeRuntimeHost.profile.kind,
-  },
+  target: DesktopRuntimeHostTargetPolicy,
 ): Promise<WorkspaceTarget> => {
-  const current = await projectManagement.current();
+  const currentTarget = requireRuntimePolicyTarget(target);
+  const current = await currentTarget.projectManagement.current();
   if (typeof current.projectId === "string") {
     return { kind: "project", projectId: current.projectId };
   }
@@ -526,14 +509,15 @@ owner = await startRuntimeHostDesktopOwner(
       workspace: await currentDesktopWorkspaceTarget(target),
     }),
     resolveSessionCreateProject: async (input, target) => {
+      const currentTarget = requireRuntimePolicyTarget(target);
       return resolveDesktopSessionWorkspace(
         input,
         {
-          ...projectManagement,
+          ...currentTarget.projectManagement,
           defaultProjectId: async () =>
             (await settingsStore.get()).projects.defaultProjectId,
         },
-        projectCatalog,
+        currentTarget.projectCatalog,
         { allowHostPath: target.kind === "local" },
       );
     },
@@ -644,6 +628,34 @@ function registerHostClientIpc(
   controls: DesktopRuntimeHostCandidateControls,
   target: DesktopRuntimeHostTargetPolicy,
 ): () => Promise<void> {
+  const targetProjectRoot = createProjectRootController({
+    rootId: target.rootId,
+    preferenceFile: join(workspaceRoot, "project-preferences.json"),
+    fallbackRoots: () => [process.cwd(), app.getAppPath()],
+  });
+  const targetProjectCatalog = createRuntimeHostProjectCatalog(() => ({
+    client,
+    includeHostPaths: target.kind === "local",
+  }));
+  const targetProjectManagement = createProjectManagementService({
+    catalog: targetProjectCatalog,
+    chooseDirectory: async () => {
+      const result = await mainWindowController.showOpenDialog({
+        title: "Add project",
+        properties: ["openDirectory"],
+      });
+      return result.canceled ? undefined : result.filePaths[0];
+    },
+    selection: targetProjectRoot,
+    allowLocalDirectoryActions: () => target.kind === "local",
+  });
+  const targetContext = {
+    client,
+    policy: target,
+    projectCatalog: targetProjectCatalog,
+    projectManagement: targetProjectManagement,
+  };
+  runtimePolicyTarget = targetContext;
   const unsubscribeConfigurationChanges = client.subscribeConfigurationChanges(() => {
     emitConnectionListChanged();
     mainWindowController.send("settings:externalChanged", { ts: Date.now() });
@@ -679,7 +691,6 @@ function registerHostClientIpc(
   void capabilityBinding.aligned.catch((error) =>
     console.error("[runtime-host] MCP capability alignment failed:", error),
   );
-  runtimePolicyTarget = { client, policy: target };
   registerMcpIpcMain({
     ipcMain: scopedIpc,
     store: mcpConfigStore,
@@ -722,6 +733,7 @@ function registerHostClientIpc(
     client,
     workspaceRoot,
     openPath: (path) => shell.openPath(path),
+    allowLocalPaths: target.kind === "local",
   });
   const settingsIpcDeps = {
     ipcMain: scopedIpc,
@@ -806,7 +818,7 @@ function registerHostClientIpc(
   });
   const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
     resolveProjectContextRoot(sessionId, {
-      currentProjectRoot: () => activeProjectRoot.current(),
+      currentProjectRoot: () => targetProjectRoot.current(),
       readSessionCwd: async (id) => {
         const session = await client.getSession(id);
         if (!session) throw new Error(`No such Session: ${id}`);
@@ -816,14 +828,14 @@ function registerHostClientIpc(
   registerAppIpc(
     {
       mainWindowController,
-      projectRoot: activeProjectRoot,
+      projectRoot: targetProjectRoot,
       getSessionProjectRoot: (sessionId) =>
         resolveProjectRootForContext(sessionId),
       getProjectRoot: resolveProjectRootForContext,
       workspaceRoot,
       buildInfo,
       e2eFixture,
-      projectManagement,
+      projectManagement: targetProjectManagement,
       updateService,
       allowLocalProjectPaths: target.kind === "local",
     },
@@ -873,6 +885,9 @@ function registerHostClientIpc(
   const taskSubmissionReadinessService = createDesktopTaskSubmissionReadinessService({
     workspaceRoot,
     runtimeState: () => ({ state: client.lifecycleState, checkedAt: Date.now() }),
+    ...(target.kind === "remote"
+      ? { inspectWorkspace: async () => "ready" as const }
+      : {}),
     resolveModelTarget: (requestedSlug) =>
       readWithFallback<DesktopModelTargetResolution>(async () => {
         const catalog = await client.loadConnectionCatalog();
@@ -949,7 +964,7 @@ function registerPersistentClientIpc(): void {
     },
     getRuntimeHostTurnTrace: async (sessionId, turnId) => {
       if (!runtimePolicyTarget) throw new Error("Runtime Host is unavailable");
-      const result = await runtimePolicyTarget.client.queryExecutionInspect({
+      const result = await runtimePolicyTarget.client.request('execution.inspect.query', {
         kind: "turn_trace",
         sessionId,
         turnId,
@@ -984,6 +999,14 @@ function registerPersistentClientIpc(): void {
     readFile: readFileCapped,
     renderPreview: renderAttachmentPreview,
   });
+}
+
+function requireRuntimePolicyTarget(target: DesktopRuntimeHostTargetPolicy) {
+  const current = runtimePolicyTarget;
+  if (!current || current.policy !== target) {
+    throw new Error("Runtime Host target generation is no longer active");
+  }
+  return current;
 }
 
 function emitConnectionListChanged(): void {

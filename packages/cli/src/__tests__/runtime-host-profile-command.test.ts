@@ -88,7 +88,6 @@ describe('Runtime Host profile CLI', () => {
       ['local', 'office'],
     );
   });
-
 });
 
 function createProfileState(): {

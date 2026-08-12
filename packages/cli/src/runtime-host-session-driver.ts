@@ -75,6 +75,7 @@ export interface RuntimeHostMakaSessionDriverInput {
   newId?: () => string;
   now?: () => number;
   inspectCwdChanges?: InspectCwdChanges;
+  allowHostPathRelocation?: boolean;
 }
 
 type RuntimeHostSessionDriverConnection = Pick<
@@ -84,7 +85,6 @@ type RuntimeHostSessionDriverConnection = Pick<
 
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   createSession(input: CreateSessionInput): Promise<SessionSummary>;
-  moveSession(cwd: string): Promise<MakaSessionMoveResult>;
   readMessages(): Promise<StoredMessage[]>;
   resumeLatest(): AsyncIterable<SessionEvent>;
   subscribePendingInteractions(listener: (pending: InteractionPendingSnapshot) => void): () => void;
@@ -115,6 +115,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   readonly #newId: () => string;
   readonly #now: () => number;
   readonly #inspectCwdChanges: InspectCwdChanges;
+  readonly moveSession: MakaSessionDriver['moveSession'];
   #sessionId: string | null = null;
   #workspace: WorkspaceProjection;
   #model: string;
@@ -149,6 +150,8 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#newId = input.newId ?? randomUUID;
     this.#now = input.now ?? Date.now;
     this.#inspectCwdChanges = input.inspectCwdChanges ?? inspectGitCwdChanges;
+    this.moveSession =
+      input.allowHostPathRelocation === false ? undefined : (cwd) => this.#moveSession(cwd);
     this.#workspace = {
       target: input.workspace ?? { kind: 'host_path', path: input.cwd },
       hostCwd: input.cwd,
@@ -394,7 +397,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return session.name;
   }
 
-  async moveSession(rawCwd: string): Promise<MakaSessionMoveResult> {
+  async #moveSession(rawCwd: string): Promise<MakaSessionMoveResult> {
     const sessionId = this.#requireSession('move');
     const nextCwd = await resolveMoveCwd(rawCwd, this.#workspace.hostCwd);
     const previousCwd = this.#workspace.hostCwd;

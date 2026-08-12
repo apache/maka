@@ -98,9 +98,12 @@ export interface DesktopRuntimeHostCandidateDeps {
   ) => void | (() => void | Promise<void>);
 }
 
-export interface DesktopRuntimeHostTargetPolicy {
-  readonly kind: "local" | "remote";
-}
+export type DesktopRuntimeHostTargetPolicy =
+  | { readonly kind: "local"; readonly rootId: string }
+  | {
+      readonly kind: "remote";
+      readonly rootId: string;
+    };
 
 export interface DesktopRuntimeHostCandidateControls {
   refreshClientCapabilities(): Promise<void>;
@@ -249,7 +252,7 @@ export async function startDesktopRuntimeHostCandidate(
         input,
         observationRegistry,
         connection.registration.lifecycleMode,
-        { kind: "local" },
+        { kind: "local", rootId: connection.connection.rootId },
       ),
     };
   } catch (error) {
@@ -285,7 +288,10 @@ async function startRemoteDesktopRuntimeHostCandidate(
         input,
         observationRegistry,
         "remote",
-        { kind: "remote" },
+        {
+          kind: "remote",
+          rootId: remote.profile.rootId,
+        },
       ),
     };
   } catch (error) {
@@ -299,7 +305,10 @@ export async function createDesktopRuntimeHostCandidate(
   deps: DesktopRuntimeHostCandidateDeps,
   observationRegistry?: RuntimeHostSessionObservationRegistry,
   hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote" = "ephemeral",
-  target: DesktopRuntimeHostTargetPolicy = { kind: "local" },
+  target: DesktopRuntimeHostTargetPolicy = {
+    kind: "local",
+    rootId: connection.rootId,
+  },
 ): Promise<DesktopRuntimeHostCandidate> {
   const client = new DesktopRuntimeHostClient(connection);
   const ipc = new ScopedIpcMain(deps.ipcMain);

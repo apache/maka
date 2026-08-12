@@ -73,6 +73,7 @@ export async function createRuntimeHostTuiContext(
       llmConnectionSlug: target.connection.slug,
       model: target.model,
       permissionMode: 'ask',
+      allowHostPathRelocation: connected.profile.kind === 'local',
       ...(workspace ? { workspace } : {}),
     };
     const driver = createRuntimeHostMakaSessionDriver(driverInput);

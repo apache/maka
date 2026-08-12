@@ -73,6 +73,7 @@ export interface MakaRunContextInput {
   requestedModel?: string;
   maxSteps?: number;
   enableAgentGraph?: boolean;
+  resumeSessionId?: string;
   sessionCwdOverride?: { sessionId: string; cwd: string };
   runOutcomeObserver?: (outcome: MakaRunOutcome) => void | Promise<void>;
   hostProfileId?: string;
@@ -281,9 +282,11 @@ export async function runMakaTextCliCore(
               selection.kind === 'existing' ? selection.session.model : parsed.options.model,
           }
         : {}),
-      ...(selection.kind === 'existing'
+      ...(selection.kind === 'existing' &&
+      (!parsed.options.hostProfileId || parsed.options.hostProfileId === 'local')
         ? { sessionCwdOverride: { sessionId: selection.session.id, cwd: selection.cwd } }
         : {}),
+      ...(selection.kind === 'existing' ? { resumeSessionId: selection.session.id } : {}),
       ...(parsed.options.maxSteps !== undefined ? { maxSteps: parsed.options.maxSteps } : {}),
       ...(parsed.options.graph ? { enableAgentGraph: true } : {}),
       ...(parsed.options.hostProfileId ? { hostProfileId: parsed.options.hostProfileId } : {}),

@@ -135,6 +135,7 @@ export function createRuntimeHostRunContext(
     llmConnectionSlug: target.connection.slug,
     model: target.model,
     permissionMode: 'ask',
+    allowHostPathRelocation: !input.hostProfileId || input.hostProfileId === 'local',
     ...(input.projectId ? { workspace: { kind: 'project', projectId: input.projectId } } : {}),
   });
   const runtime = new RuntimeHostRunRuntime(
@@ -166,7 +167,7 @@ async function assertRuntimeHostRunReady(
   profile: RuntimeHostProfile,
   input: Parameters<MakaRunDeps['createContext']>[0],
 ): Promise<void> {
-  if (profile.kind === 'remote' && !input.sessionCwdOverride) {
+  if (profile.kind === 'remote' && !input.resumeSessionId) {
     if (!input.projectId) {
       throw new Error(`Runtime Host profile ${profile.id} requires --project for a new Session`);
     }
@@ -366,7 +367,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       this.#sessionCwdOverride?.sessionId === sessionId &&
       switched.summary.cwd !== this.#sessionCwdOverride.cwd
     ) {
-      const moved = await this.#driver.moveSession(this.#sessionCwdOverride.cwd);
+      const moveSession = this.#driver.moveSession;
+      if (!moveSession) {
+        throw new Error('The selected Runtime Host does not allow Client path relocation');
+      }
+      const moved = await moveSession(this.#sessionCwdOverride.cwd);
       if (moved.cwd !== this.#sessionCwdOverride.cwd) {
         throw new Error(
           `Runtime Host cannot resume Session ${sessionId}: its working directory could not be canonicalized`,

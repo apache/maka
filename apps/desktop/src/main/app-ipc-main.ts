@@ -142,7 +142,7 @@ export function registerAppIpc(
     };
   });
   targetIpc.handle('app:openPath', async (_event, key: string, sessionId: unknown): Promise<OpenPathResult> => {
-    if (!allowLocalProjectPaths && key === 'project') {
+    if (!allowLocalProjectPaths && key !== 'workspace') {
       return { ok: false, reason: 'not-allowed' };
     }
     const projectPath = key === 'project'

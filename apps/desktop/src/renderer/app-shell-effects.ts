@@ -205,6 +205,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   /** Releases a send's pending claim once the authority names that turn. */
   confirmLiveTurn: (sessionId: string, turnId: string) => void;
   clearSessionRendererState: (sessionId: string) => void;
+  clearRuntimeHostRendererState: () => void;
   createSession: () => Promise<void> | void;
   handleConnectionEvent: (event: ConnectionEvent) => void;
   openHelp: () => void;
@@ -246,12 +247,15 @@ export function useAppShellBootstrapSubscriptions(options: {
     options.handleConnectionEvent(event);
   });
   const handleRuntimeHostChange = useEffectEvent(() => {
-    const previousSessionId = options.activeIdRef.current;
-    options.setActiveId(undefined);
-    options.setMessages([]);
-    if (previousSessionId) options.clearSessionRendererState(previousSessionId);
+    options.clearRuntimeHostRendererState();
     void options.refreshProjects();
     void options.refreshSessions();
+    void options.refreshConnections();
+    void options.refreshMemoryActive('load');
+    void options.refreshSkills();
+    void options.refreshManagedSkillSources();
+    void options.refreshBundledSkillCatalog();
+    void options.refreshScheduledTasks();
   });
   // PR-2088: the macOS application menu routes New Task / Settings / Keyboard
   // Shortcuts here through one channel. The renderer already owns these

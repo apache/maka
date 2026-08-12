@@ -6,6 +6,7 @@ import { afterEach, test } from "node:test";
 import {
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostProfileCredentialStore,
+  type ResolvedRuntimeHostProfile,
 } from "@maka/runtime-host/client";
 import { createFileCredentialStore } from "@maka/storage";
 import {
@@ -32,8 +33,9 @@ test("defaults Desktop to Local and keeps remote credentials outside profiles", 
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
     activeTarget: { profile: { id: "local", name: "Local", kind: "local" } },
-    activate: async ({ profile }) => {
-      activations.push(profile.id);
+    activate: async (target) => {
+      activations.push(target.profile.id);
+      return { ok: true, activeTarget: target };
     },
   });
   const saved = await service.save({
@@ -89,7 +91,7 @@ test("requires a credential before selection and protects the active profile", a
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
     activeTarget: { profile: { id: "local", name: "Local", kind: "local" } },
-    activate: async () => undefined,
+    activate: async (activeTarget) => ({ ok: true, activeTarget }),
   });
   await assert.rejects(
     () =>
@@ -112,9 +114,11 @@ test("keeps the active selection when a live Host switch fails", async () => {
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
     activeTarget: { profile: { id: "local", name: "Local", kind: "local" } },
-    activate: async () => {
-      throw new Error("remote unavailable");
-    },
+    activate: async () => ({
+      ok: false,
+      activeTarget: { profile: { id: "local", name: "Local", kind: "local" } },
+      error: new Error("remote unavailable"),
+    }),
   });
   await service.save({
     profile: {
@@ -148,9 +152,10 @@ test("serializes removal behind an in-flight Host switch", async () => {
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
     activeTarget: { profile: { id: "local", name: "Local", kind: "local" } },
-    activate: async () => {
+    activate: async (activeTarget) => {
       markActivationStarted();
       await activationStarted;
+      return { ok: true, activeTarget };
     },
   });
   await service.save({
@@ -181,7 +186,7 @@ test("recovers a dangling Desktop selection to Local", async () => {
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
     activeTarget: { profile: { id: "local", name: "Local", kind: "local" } },
-    activate: async () => undefined,
+    activate: async (activeTarget) => ({ ok: true, activeTarget }),
   });
   await service.save({
     profile: {
@@ -222,6 +227,7 @@ test("reconnects when another process retargets the active profile id", async ()
       activations.push(
         target.profile.kind === "remote" ? `${target.profile.url}|${target.credential}` : "local",
       );
+      return { ok: true, activeTarget: target };
     },
   });
   const profileA = {
@@ -264,8 +270,9 @@ test("publishes a profile change only after selection persistence commits", asyn
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
     activeTarget: { profile: { id: "local", name: "Local", kind: "local" } },
-    activate: async ({ profile }) => {
-      activations.push(profile.id);
+    activate: async (target) => {
+      activations.push(target.profile.id);
+      return { ok: true, activeTarget: target };
     },
     onTargetChanged: ({ profile }) => committed.push(profile.id),
     writeSelection: async () => {
@@ -287,6 +294,52 @@ test("publishes a profile change only after selection persistence commits", asyn
   assert.deepEqual(activations, ["office", "local"]);
   assert.deepEqual(committed, []);
   assert.equal((await service.getSnapshot()).activeProfileId, "local");
+});
+
+test("reports the actual Host when selection persistence and rollback both fail", async () => {
+  const root = await clientRoot();
+  const changed: string[] = [];
+  let remoteTarget: ResolvedRuntimeHostProfile | undefined;
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    activeTarget: { profile: { id: "local", name: "Local", kind: "local" } },
+    activate: async (target) => {
+      if (target.profile.kind === "remote") {
+        remoteTarget = target;
+        return { ok: true, activeTarget: target };
+      }
+      return {
+        ok: false,
+        activeTarget: remoteTarget!,
+        error: new Error("local Host unavailable"),
+      };
+    },
+    onTargetChanged: ({ profile }) => changed.push(profile.id),
+    writeSelection: async () => {
+      throw new Error("selection disk unavailable");
+    },
+  });
+  await service.save({
+    profile: {
+      id: "office",
+      name: "Office",
+      kind: "remote",
+      url: "wss://runtime.example.com",
+      rootId: ROOT_ID,
+    },
+    credential: "opaque-token",
+  });
+
+  await assert.rejects(
+    () => service.select("office"),
+    (error: unknown) =>
+      error instanceof AggregateError &&
+      error.errors.some(
+        (cause) => cause instanceof Error && cause.message === "local Host unavailable",
+      ),
+  );
+  assert.equal((await service.getSnapshot()).activeProfileId, "office");
+  assert.deepEqual(changed, ["office"]);
 });
 
 async function clientRoot(): Promise<string> {

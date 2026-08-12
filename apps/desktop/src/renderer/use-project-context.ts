@@ -44,6 +44,7 @@ export function useAppShellProjectContext(options: {
   projectPickerPending: boolean;
   projectPickerPendingRef: RefBox<boolean>;
   projectPickerRequestRef: RefBox<number>;
+  clearRuntimeHostProjectState(): void;
 } {
   const {
     uiLocale,
@@ -140,6 +141,16 @@ export function useAppShellProjectContext(options: {
     toastApi,
   });
 
+  function clearRuntimeHostProjectState(): void {
+    projectPickerRequestRef.current += 1;
+    projectPickerPendingRef.current = false;
+    setProjectPickerPending(false);
+    setProjects([]);
+    setAppInfo(null);
+    setSessionProjectInfo(null);
+    setSelectedProjectId(undefined);
+  }
+
   return {
     projectInfo,
     projects,
@@ -149,6 +160,7 @@ export function useAppShellProjectContext(options: {
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
+    clearRuntimeHostProjectState,
     ...actions,
   };
 }

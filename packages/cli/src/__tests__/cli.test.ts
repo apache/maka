@@ -13,7 +13,7 @@ describe('Maka CLI args', () => {
     });
     assert.deepEqual(parseMakaCliArgs(['--host'], '0.1.0'), {
       kind: 'error',
-      message: '--host requires a profile id',
+      message: '--host requires a value',
       exitCode: 2,
     });
   });

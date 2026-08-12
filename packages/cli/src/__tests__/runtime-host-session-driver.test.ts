@@ -26,6 +26,19 @@ import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../se
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
+  test('does not expose Client path relocation for a remote Host', () => {
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: new FakeConnection([]).value,
+      cwd: '/client/workspace',
+      workspace: { kind: 'project', projectId: 'project-1' },
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      allowHostPathRelocation: false,
+    });
+
+    assert.equal(driver.moveSession, undefined);
+  });
+
   test('honors explicit Project intent before inheriting the current workspace', async () => {
     const cases = [
       { cwd: '/repo', projectId: null, expected: { kind: 'host_path', path: '/repo' } },

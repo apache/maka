@@ -45,5 +45,9 @@ export function useAppShellComposerQuotes(options: { draftKey: string }) {
     setPendingByKey((map) => clearPending(map, ownerKey));
   }
 
-  return { pendingQuotes, addQuote, removeQuote, clearQuotes };
+  function clearAllQuotes(): void {
+    setPendingByKey({});
+  }
+
+  return { pendingQuotes, addQuote, removeQuote, clearQuotes, clearAllQuotes };
 }
