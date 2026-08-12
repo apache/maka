@@ -190,27 +190,6 @@ describe('Runtime Host profiles', () => {
     );
   });
 
-  test('keeps credential material behind the credential port', async () => {
-    const values = new Map<string, string>();
-    const credentials = createRuntimeHostProfileCredentialStore({
-      getSecret: async (slug, kind) => values.get(`${slug}:${kind}`) ?? null,
-      setSecret: async (slug, kind, value) => {
-        values.set(`${slug}:${kind}`, value);
-      },
-      deleteSecret: async (slug, kind) => {
-        values.delete(`${slug}:${kind}`);
-      },
-    });
-    const profile = remoteProfile('office', 'wss://runtime.example.com', ROOT_A);
-    await credentials.set(profile, 'opaque-token');
-    assert.equal(await credentials.get(profile), 'opaque-token');
-    assert.equal([...values.keys()][0]?.startsWith('runtime-host-profile:office:'), true);
-    assert.equal([...values.keys()][0]?.endsWith(':runtime_host_access'), true);
-    await credentials.delete(profile);
-    assert.equal(await credentials.get(profile), null);
-    await assert.rejects(() => credentials.set(profile, 'not a token'), /credential is invalid/);
-  });
-
   test('keeps a credential bound to its exact profile target', async () => {
     const path = await profilePath();
     const credentialRoot = join(dirname(path), 'credentials');
@@ -225,6 +204,7 @@ describe('Runtime Host profiles', () => {
     const targetA = remoteProfile('office', 'wss://a.example.com', ROOT_A);
     const targetB = remoteProfile('office', 'wss://b.example.com', ROOT_B);
 
+    await assert.rejects(() => first.save(targetA, 'not a token'), /credential is invalid/);
     await first.save(targetA, 'token-a');
     await assert.rejects(() => first.save(targetB), /new.*credential.*target changes/i);
     await Promise.all([first.save(targetA, 'token-a'), second.save(targetB, 'token-b')]);

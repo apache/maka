@@ -49,8 +49,8 @@ describe('Runtime Host profile CLI', () => {
     );
   });
 
-  test('stores credential separately and never writes it to command output', async () => {
-    const state = createProfileState();
+  test('passes the credential to the catalog without writing it to command output', async () => {
+    const state = createProfileCatalogCapture();
     const output: string[] = [];
     assert.equal(
       await runRuntimeHostProfileCommand(
@@ -70,9 +70,9 @@ describe('Runtime Host profile CLI', () => {
       ),
       0,
     );
-    assert.equal(state.secrets.get('office'), 'opaque-token');
+    assert.equal(state.saved[0]?.credential, 'opaque-token');
     assert.equal(output.join('').includes('opaque-token'), false);
-    assert.equal(JSON.stringify(state.document).includes('opaque-token'), false);
+    assert.equal(JSON.stringify(state.saved[0]?.profile).includes('opaque-token'), false);
 
     output.length = 0;
     await runRuntimeHostProfileCommand(
@@ -90,30 +90,20 @@ describe('Runtime Host profile CLI', () => {
   });
 });
 
-function createProfileState(): {
+function createProfileCatalogCapture(): {
   document: RuntimeHostProfileDocument;
   catalog: RuntimeHostProfileCatalog;
-  secrets: Map<string, string>;
+  saved: Array<{ profile: RemoteRuntimeHostProfile; credential?: string }>;
 } {
   const state = {
     document: { schemaVersion: 1, profiles: [] } as RuntimeHostProfileDocument,
   };
-  const secrets = new Map<string, string>();
+  const saved: Array<{ profile: RemoteRuntimeHostProfile; credential?: string }> = [];
   const catalog: RuntimeHostProfileCatalog = {
     read: async () => state.document,
-    resolve: async (profileId) => {
-      if (!profileId || profileId === 'local') {
-        return { profile: { id: 'local', name: 'Local', kind: 'local' } };
-      }
-      const profile = state.document.profiles.find((candidate) => candidate.id === profileId);
-      if (!profile) throw new Error(`Unknown Runtime Host profile: ${profileId}`);
-      const credential = secrets.get(profile.id);
-      if (!credential) throw new Error(`Runtime Host profile ${profile.id} has no credential`);
-      return { profile, credential };
-    },
+    resolve: async () => assert.fail('unexpected profile resolution'),
     save: async (profile: RemoteRuntimeHostProfile, credential?: string) => {
-      if (credential) secrets.set(profile.id, credential);
-      if (!secrets.has(profile.id)) throw new Error('credential required');
+      saved.push({ profile, credential });
       state.document = {
         schemaVersion: 1,
         profiles: [
@@ -123,20 +113,13 @@ function createProfileState(): {
       };
       return state.document;
     },
-    remove: async (profileId) => {
-      state.document = {
-        schemaVersion: 1,
-        profiles: state.document.profiles.filter((profile) => profile.id !== profileId),
-      };
-      secrets.delete(profileId);
-      return state.document;
-    },
+    remove: async () => assert.fail('unexpected profile removal'),
   };
   return {
     get document() {
       return state.document;
     },
     catalog,
-    secrets,
+    saved,
   };
 }
