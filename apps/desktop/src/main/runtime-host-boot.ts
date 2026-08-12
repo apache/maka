@@ -464,6 +464,9 @@ owner = await startRuntimeHostDesktopOwner(
           remote: {
             profile: runtimeHostAtOwnerStart.profile,
             credential: runtimeHostAtOwnerStart.credential!,
+            ...(runtimeHostAtOwnerStart.profile.transport.kind === "ssh"
+              ? { sshInteraction: "terminal" as const }
+              : {}),
           },
         }
       : {}),

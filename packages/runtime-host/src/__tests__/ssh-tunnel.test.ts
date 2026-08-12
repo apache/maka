@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
 import { test } from 'node:test';
 import {
@@ -17,8 +18,9 @@ test('opens an exact loopback forward and owns the SSH process lifetime', async 
     launch = input;
     const forwarding = input.args[input.args.indexOf('-L') + 1];
     const localPort = Number(forwarding?.split(':')[1]);
-    server = createServer();
-    server.listen(localPort, '127.0.0.1');
+    const logPath = input.args[input.args.indexOf('-E') + 1];
+    assert.ok(logPath);
+    void writeFile(logPath, `debug1: Local forwarding listening on 127.0.0.1 port ${localPort}.\n`);
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolve) => {
         resolveExit = resolve;
@@ -27,7 +29,7 @@ test('opens an exact loopback forward and owns the SSH process lifetime', async 
     return {
       exited,
       kill: (signal) => {
-        server?.close(() => resolveExit?.({ code: null, signal }));
+        resolveExit?.({ code: null, signal });
       },
     } satisfies RuntimeHostSshProcess;
   };
@@ -45,6 +47,8 @@ test('opens an exact loopback forward and owns the SSH process lifetime', async 
   assert.equal(launch?.executable, 'ssh');
   assert.equal(launch?.interaction, 'batch');
   assert.ok(launch?.args.includes('BatchMode=yes'));
+  assert.ok(launch?.args.includes('ControlMaster=no'));
+  assert.ok(launch?.args.includes('ControlPath=none'));
   assert.deepEqual(launch?.args.slice(-3), ['-p', '2222', 'operator@example.com']);
   assert.match(
     launch?.args[launch.args.indexOf('-L') + 1] ?? '',
@@ -54,6 +58,37 @@ test('opens an exact loopback forward and owns the SSH process lifetime', async 
 
   await tunnel.resource.close();
   await tunnel.resource.closed;
+});
+
+test('does not trust an unrelated process that occupies the selected port', async () => {
+  let server: Server | undefined;
+  await assert.rejects(
+    openRuntimeHostSshTunnel(
+      {
+        destination: 'operator@example.com',
+        remotePort: 7443,
+        websocketPath: '/runtime-host',
+        interaction: 'batch',
+      },
+      {
+        spawnProcess: (input) => {
+          const forwarding = input.args[input.args.indexOf('-L') + 1];
+          const localPort = Number(forwarding?.split(':')[1]);
+          server = createServer();
+          server.listen(localPort, '127.0.0.1');
+          return {
+            exited: new Promise((resolve) => {
+              setTimeout(() => {
+                server?.close(() => resolve({ code: 255, signal: null }));
+              }, 25);
+            }),
+            kill: () => undefined,
+          };
+        },
+      },
+    ),
+    /did not become ready/u,
+  );
   assert.equal(server?.listening, false);
 });
 

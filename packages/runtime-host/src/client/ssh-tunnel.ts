@@ -1,10 +1,15 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createServer, connect } from 'node:net';
+import { randomInt } from 'node:crypto';
+import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { RuntimeHostConnectionResource } from './connection.js';
 
 const SSH_BATCH_START_TIMEOUT_MS = 15_000;
 const SSH_INTERACTIVE_START_TIMEOUT_MS = 120_000;
 const SSH_STOP_TIMEOUT_MS = 2_000;
+const SSH_LOCAL_PORT_MIN = 49_152;
+const SSH_LOCAL_PORT_MAX_EXCLUSIVE = 65_536;
 
 export type RuntimeHostSshInteraction = 'batch' | 'inherit' | 'terminal';
 
@@ -50,9 +55,12 @@ export async function openRuntimeHostSshTunnel(
   const startTimeoutMs =
     input.startTimeoutMs ??
     (input.interaction === 'batch' ? SSH_BATCH_START_TIMEOUT_MS : SSH_INTERACTIVE_START_TIMEOUT_MS);
-  const localPort = await allocateLoopbackPort();
-  input.signal?.throwIfAborted();
+  const localPort = randomInt(SSH_LOCAL_PORT_MIN, SSH_LOCAL_PORT_MAX_EXCLUSIVE);
+  const readiness = await createSshForwardReadiness(localPort);
   const args = [
+    '-v',
+    '-E',
+    readiness.logPath,
     '-N',
     '-T',
     '-o',
@@ -61,19 +69,32 @@ export async function openRuntimeHostSshTunnel(
     `ConnectTimeout=${Math.max(1, Math.ceil(Math.min(startTimeoutMs, SSH_BATCH_START_TIMEOUT_MS) / 1_000))}`,
     '-o',
     input.interaction === 'batch' ? 'BatchMode=yes' : 'BatchMode=no',
+    '-o',
+    'ControlMaster=no',
+    '-o',
+    'ControlPath=none',
+    '-o',
+    'ForkAfterAuthentication=no',
     '-L',
     `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
     ...(sshPort === undefined ? [] : ['-p', String(sshPort)]),
     destination,
   ];
-  const child = (overrides.spawnProcess ?? spawnSshProcess)({
-    executable: 'ssh',
-    args,
-    interaction: input.interaction,
-  });
-  const resource = new SshTunnelResource(child, input.signal);
+  let child: RuntimeHostSshProcess;
   try {
-    await waitForForward(localPort, resource, startTimeoutMs, input.interaction);
+    input.signal?.throwIfAborted();
+    child = (overrides.spawnProcess ?? spawnSshProcess)({
+      executable: 'ssh',
+      args,
+      interaction: input.interaction,
+    });
+  } catch (error) {
+    await readiness.close();
+    throw error;
+  }
+  const resource = new SshTunnelResource(child, input.signal, readiness.close);
+  try {
+    await waitForForward(readiness, resource, startTimeoutMs, input.interaction);
     return {
       url: `ws://127.0.0.1:${localPort}${websocketPath}`,
       resource,
@@ -93,13 +114,25 @@ class SshTunnelResource implements RuntimeHostConnectionResource {
   readonly #child: RuntimeHostSshProcess;
   readonly #signal: AbortSignal | undefined;
   readonly #onAbort: () => void;
+  readonly #closeReadiness: () => Promise<void>;
   #closeTask: Promise<void> | undefined;
 
-  constructor(child: RuntimeHostSshProcess, signal?: AbortSignal) {
+  constructor(
+    child: RuntimeHostSshProcess,
+    signal: AbortSignal | undefined,
+    closeReadiness: () => Promise<void>,
+  ) {
     this.#child = child;
     this.#signal = signal;
     this.exited = child.exited;
-    this.closed = this.exited.then(() => undefined);
+    this.#closeReadiness = closeReadiness;
+    this.closed = this.exited.then(
+      () => this.#closeReadiness(),
+      async (error) => {
+        await this.#closeReadiness();
+        throw error;
+      },
+    );
     // `closed` is also an observation signal for the connection. Keep its
     // rejection observable to consumers without letting an SSH spawn failure
     // become an unhandled rejection before the connection attaches.
@@ -115,14 +148,17 @@ class SshTunnelResource implements RuntimeHostConnectionResource {
 
   async #close(): Promise<void> {
     this.#signal?.removeEventListener('abort', this.#onAbort);
-    if (await settlesWithin(this.exited, 0)) return;
+    if (await settlesWithin(this.exited, 0)) {
+      await this.closed.catch(() => undefined);
+      return;
+    }
     if (process.platform === 'win32' && this.#child.pid !== undefined) {
       await terminateWindowsProcessTree(this.#child.pid);
     } else {
       this.#child.kill('SIGTERM');
       if (!(await settlesWithin(this.exited, SSH_STOP_TIMEOUT_MS))) this.#child.kill('SIGKILL');
     }
-    await this.exited.catch(() => undefined);
+    await this.closed.catch(() => undefined);
   }
 }
 
@@ -165,25 +201,38 @@ function childExit(
   });
 }
 
-async function allocateLoopbackPort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') {
-    server.close();
-    throw new Error('Unable to allocate an SSH tunnel port');
+interface SshForwardReadiness {
+  readonly logPath: string;
+  ready(): Promise<boolean>;
+  close(): Promise<void>;
+}
+
+async function createSshForwardReadiness(port: number): Promise<SshForwardReadiness> {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-ssh-'));
+  try {
+    await chmod(directory, 0o700);
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
   }
-  await new Promise<void>((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
-  return address.port;
+  const logPath = join(directory, 'ssh.log');
+  const marker = `Local forwarding listening on 127.0.0.1 port ${port}.`;
+  return {
+    logPath,
+    ready: async () => {
+      try {
+        return (await readFile(logPath, 'utf8')).includes(marker);
+      } catch (error) {
+        if (isMissingFileError(error)) return false;
+        throw error;
+      }
+    },
+    close: () => rm(directory, { recursive: true, force: true }),
+  };
 }
 
 async function waitForForward(
-  port: number,
+  readiness: SshForwardReadiness,
   resource: SshTunnelResource,
   timeoutMs: number,
   interaction: RuntimeHostSshInteraction,
@@ -191,7 +240,7 @@ async function waitForForward(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const ready = await Promise.race([
-      canConnect(port),
+      readiness.ready(),
       resource.exited.then(({ code, signal }) => {
         throw sshStartupError(code ?? signal ?? 'unknown', interaction);
       }),
@@ -214,17 +263,6 @@ function sshStartupError(
   );
 }
 
-function canConnect(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = connect({ host: '127.0.0.1', port });
-    socket.once('connect', () => {
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once('error', () => resolve(false));
-  });
-}
-
 function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
   return Promise.race([
     promise.then(
@@ -233,6 +271,15 @@ function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<bo
     ),
     new Promise<false>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
   ]);
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'ENOENT'
+  );
 }
 
 async function terminateWindowsProcessTree(pid: number): Promise<void> {

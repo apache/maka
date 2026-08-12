@@ -101,6 +101,7 @@ import {
 } from './app-update-install';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
+import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import {
@@ -3182,6 +3183,8 @@ function AppShellContent({
           closeWorkbarTabsImmediately('bottom', byPlacement.bottom);
         }}
       />
+
+      <RuntimeHostSshTerminalDialog />
 
       <AppShellOverlays
         settingsOpen={settingsOpen}

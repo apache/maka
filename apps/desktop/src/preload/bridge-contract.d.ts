@@ -254,9 +254,21 @@ export interface DesktopRuntimeHostProfileChangedEvent {
 export type DesktopRuntimeHostSshTerminalEvent =
   | { readonly kind: 'opened'; readonly sessionId: string }
   | { readonly kind: 'data'; readonly sessionId: string; readonly data: string }
+  | { readonly kind: 'connected'; readonly sessionId: string }
   | {
       readonly kind: 'closed';
       readonly sessionId: string;
+      readonly code: number | null;
+      readonly signal: string | null;
+    };
+
+export type DesktopRuntimeHostSshTerminalSnapshot =
+  | { readonly kind: 'idle' }
+  | { readonly kind: 'connecting'; readonly sessionId: string; readonly output: string }
+  | {
+      readonly kind: 'closed';
+      readonly sessionId: string;
+      readonly output: string;
       readonly code: number | null;
       readonly signal: string | null;
     };
@@ -311,6 +323,7 @@ export interface MakaBridge {
   };
 
   runtimeHostSshTerminal: {
+    getSnapshot(): Promise<DesktopRuntimeHostSshTerminalSnapshot>;
     write(sessionId: string, data: string): Promise<void>;
     resize(sessionId: string, cols: number, rows: number): Promise<void>;
     cancel(sessionId: string): Promise<void>;

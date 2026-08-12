@@ -58,6 +58,8 @@ npm --workspace maka-agent exec -- maka runtime-host serve \
 
 Profile 保存 SSH destination、可选 SSH port、远程 WebSocket port 与 path。Maka 不经过 shell，直接运行系统 `ssh`，把 Client 的临时 loopback port 转发到 Host 的 `127.0.0.1:7443`。
 
+Maka 会读取正常的 OpenSSH 配置，但不会修改 SSH config、key、agent 或 `known_hosts`。用户确认 host key 后，OpenSSH 可能自行写入 `known_hosts`。删除 Maka Profile 只会删除该 Profile 和对应的 Runtime Host credential；共享的 OpenSSH 状态仍由用户管理。
+
 用户主动首次连接时，Desktop 会打开内嵌终端，让 OpenSSH 完成 host-key 确认、密码或 key passphrase 输入；TUI 会在当前终端显示相同提示。后台重连和非交互 CLI 使用 OpenSSH batch mode，因此需要预先配置 SSH key 或 agent。
 
 ### 明确启用明文连接

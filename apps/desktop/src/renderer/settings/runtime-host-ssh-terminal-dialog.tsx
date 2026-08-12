@@ -1,42 +1,48 @@
 import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
-import { Banner, Button } from '@maka/ui';
+import { Banner, Button, useUiLocale } from '@maka/ui';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import type { DesktopRuntimeHostSshTerminalEvent } from '../../preload/bridge-contract.js';
+import type {
+  DesktopRuntimeHostSshTerminalEvent,
+  DesktopRuntimeHostSshTerminalSnapshot,
+} from '../../preload/bridge-contract.js';
+import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 
 const PENDING_OUTPUT_MAX = 64 * 1024;
 
-export function RuntimeHostSshTerminalDialog(props: {
-  readonly isOpen: boolean;
-  readonly onOpenChange: (open: boolean) => void;
-  readonly title: string;
-  readonly description: string;
-  readonly closed: string;
-  readonly closeLabel: string;
-}) {
+export function RuntimeHostSshTerminalDialog() {
+  const locale = useUiLocale();
+  const copy = getSettingsProjectsCopy(locale).runtimeHost;
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | undefined>(undefined);
   const sessionIdRef = useRef<string | undefined>(undefined);
   const pendingOutputRef = useRef('');
+  const observationRevisionRef = useRef(0);
+  const [isOpen, setIsOpen] = useState(false);
   const [closed, setClosed] = useState(false);
 
-  useEffect(
-    () =>
-      window.maka.runtimeHostSshTerminal.subscribe((event) => {
-        acceptEvent(event);
-      }),
-    [],
-  );
+  useEffect(() => {
+    const unsubscribe = window.maka.runtimeHostSshTerminal.subscribe((event) => {
+      observationRevisionRef.current += 1;
+      acceptEvent(event);
+    });
+    const revision = observationRevisionRef.current;
+    void window.maka.runtimeHostSshTerminal.getSnapshot().then((snapshot) => {
+      if (observationRevisionRef.current !== revision) return;
+      acceptSnapshot(snapshot);
+    });
+    return unsubscribe;
+  }, []);
 
   function acceptEvent(event: DesktopRuntimeHostSshTerminalEvent) {
     if (event.kind === 'opened') {
       sessionIdRef.current = event.sessionId;
       pendingOutputRef.current = '';
       setClosed(false);
-      props.onOpenChange(true);
+      setIsOpen(true);
       return;
     }
     if (event.sessionId !== sessionIdRef.current) return;
@@ -51,13 +57,27 @@ export function RuntimeHostSshTerminalDialog(props: {
       }
       return;
     }
-    sessionIdRef.current = undefined;
+    if (event.kind === 'connected') {
+      sessionIdRef.current = undefined;
+      pendingOutputRef.current = '';
+      setClosed(false);
+      setIsOpen(false);
+      return;
+    }
     setClosed(true);
+  }
+
+  function acceptSnapshot(snapshot: DesktopRuntimeHostSshTerminalSnapshot) {
+    if (snapshot.kind === 'idle') return;
+    sessionIdRef.current = snapshot.sessionId;
+    pendingOutputRef.current = snapshot.output;
+    setClosed(snapshot.kind === 'closed');
+    setIsOpen(true);
   }
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!props.isOpen || !host) return;
+    if (!isOpen || !host) return;
     const terminal = new Terminal({
       cursorBlink: true,
       fontFamily: 'Geist Mono Variable, ui-monospace, SFMono-Regular, Menlo, monospace',
@@ -104,7 +124,7 @@ export function RuntimeHostSshTerminalDialog(props: {
       terminalRef.current = undefined;
       terminal.dispose();
     };
-  }, [props.isOpen]);
+  }, [isOpen]);
 
   function onOpenChange(open: boolean) {
     if (!open) {
@@ -113,12 +133,16 @@ export function RuntimeHostSshTerminalDialog(props: {
         void window.maka.runtimeHostSshTerminal.cancel(sessionId).catch(() => undefined);
       }
     }
-    props.onOpenChange(open);
+    if (!open) {
+      sessionIdRef.current = undefined;
+      pendingOutputRef.current = '';
+    }
+    setIsOpen(open);
   }
 
   return (
     <Dialog
-      isOpen={props.isOpen}
+      isOpen={isOpen}
       onOpenChange={onOpenChange}
       className="settingsRuntimeHostSshTerminalDialog"
       width={720}
@@ -126,16 +150,16 @@ export function RuntimeHostSshTerminalDialog(props: {
       purpose="form"
     >
       <Layout
-        header={<DialogHeader title={props.title} subtitle={props.description} onOpenChange={onOpenChange} />}
+        header={<DialogHeader title={copy.sshTerminalTitle} subtitle={copy.sshTerminalDescription} onOpenChange={onOpenChange} />}
         content={
           <LayoutContent padding={4}>
             <div className="settingsRuntimeHostSshTerminalBody">
-              {closed ? <Banner status="error" title={props.closed} /> : null}
+              {closed ? <Banner status="error" title={copy.sshTerminalClosed} /> : null}
               <div
                 ref={hostRef}
                 className="settingsRuntimeHostSshTerminal"
                 role="region"
-                aria-label={props.title}
+                aria-label={copy.sshTerminalTitle}
               />
             </div>
           </LayoutContent>
@@ -146,7 +170,7 @@ export function RuntimeHostSshTerminalDialog(props: {
               <div className="settingsRuntimeHostSshTerminalActions">
                 <Button
                   variant="primary"
-                  label={props.closeLabel}
+                  label={copy.sshTerminalClose}
                   onClick={() => onOpenChange(false)}
                 />
               </div>

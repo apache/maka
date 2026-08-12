@@ -114,6 +114,7 @@ function helpText(): string {
     '  --websocket-path <path>       Upgrade path (default: /runtime-host)',
     '  --tls-certificate <path>      TLS certificate for WSS',
     '  --tls-private-key <path>      TLS private key for WSS',
+    '  --allow-insecure-remote       Allow plaintext WebSocket access beyond loopback',
     '  --allow-origin <origin>       Allow one browser Origin (repeatable)',
     '  --json                        Emit one machine-readable ready event',
     '',

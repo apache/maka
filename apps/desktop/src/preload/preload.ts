@@ -18,6 +18,7 @@ import type {
   DesktopRuntimeHostProfileAddInput,
   DesktopRuntimeHostProfileChangedEvent,
   DesktopRuntimeHostSshTerminalEvent,
+  DesktopRuntimeHostSshTerminalSnapshot,
   DesktopProjectSnapshot,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
@@ -401,6 +402,9 @@ const makaBridge = {
     },
   },
   runtimeHostSshTerminal: {
+    getSnapshot(): Promise<DesktopRuntimeHostSshTerminalSnapshot> {
+      return ipcRenderer.invoke('runtime-host-ssh-terminal:getSnapshot');
+    },
     write(sessionId: string, data: string) {
       return ipcRenderer.invoke('runtime-host-ssh-terminal:write', { sessionId, data });
     },

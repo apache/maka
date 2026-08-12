@@ -24,7 +24,6 @@ import { getSettingsProjectsCopy } from "../locales/settings-projects-copy.js";
 import { PasswordInput } from "./password-input.js";
 import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsField, SettingsRow, SettingsSection } from "./settings-section.js";
-import { RuntimeHostSshTerminalDialog } from "./runtime-host-ssh-terminal-dialog.js";
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
 
@@ -54,7 +53,6 @@ export function RuntimeHostProfilesSection() {
   >();
   const [showAdd, setShowAdd] = useState(false);
   const [switching, setSwitching] = useState(false);
-  const [sshTerminalOpen, setSshTerminalOpen] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
   const reload = useCallback(async () => {
@@ -113,7 +111,6 @@ export function RuntimeHostProfilesSection() {
         return;
       }
       if (result.warning) toast.warning(copy.selectionNotSaved, result.warning);
-      setSshTerminalOpen(false);
       setShowAdd(false);
       setDraft(createRemoteHostDraft());
     } catch (error) {
@@ -315,14 +312,6 @@ export function RuntimeHostProfilesSection() {
           </List>
         )}
       </SettingsSection>
-      <RuntimeHostSshTerminalDialog
-        isOpen={sshTerminalOpen}
-        onOpenChange={setSshTerminalOpen}
-        title={copy.sshTerminalTitle}
-        description={copy.sshTerminalDescription}
-        closed={copy.sshTerminalClosed}
-        closeLabel={copy.sshTerminalClose}
-      />
     </>
   );
 }
