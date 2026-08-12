@@ -140,6 +140,30 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
   });
 });
 
+test('backend creation admits an enabled statically known model before discovery', async () => {
+  const modelId = 'deepseek-v4-flash';
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      modelId,
+      resolveExecutionConnection: async () => ({
+        kind: 'ready',
+        connection: {
+          slug: 'backend-creation-connection',
+          providerType: 'deepseek',
+          enabledModelIds: [modelId],
+          models: [],
+        },
+        networkProxy: { enabled: false },
+        secretMaterial: { connection: { secret: API_KEY } },
+      }),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+    }),
+  );
+
+  await backend.dispose();
+});
+
 test('provider dispatch fails closed when the Run Composition commit fails', async () => {
   const provider = await startProvider();
   let commits = 0;

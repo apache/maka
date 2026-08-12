@@ -83,6 +83,29 @@ test('bootstrap resumes after interruption and prefers the supported environment
   });
 });
 
+test('bootstrap preserves DeepSeek provider semantics for a DeepSeek environment key', async () => {
+  await withFixture(async ({ root, stores }) => {
+    await ensureBootstrapRuntimePolicy({
+      workspaceRoot: root,
+      stores,
+      environment: {
+        DEEPSEEK_API_KEY: 'deepseek-secret',
+        DEEPSEEK_BASE_URL: 'https://deepseek.example/v1',
+      },
+    });
+
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    const deepseek = catalog.connections.find(({ slug }) => slug === 'env-deepseek');
+    assert.equal(deepseek?.providerType, 'deepseek');
+    assert.equal(deepseek?.baseUrl, 'https://deepseek.example/v1');
+    assert.deepEqual(deepseek?.enabledModelIds, ['deepseek-v4-flash']);
+    assert.deepEqual(catalog.defaultTarget, {
+      connectionId: deepseek?.connectionId,
+      modelId: 'deepseek-v4-flash',
+    });
+  });
+});
+
 test('bootstrap does not alter an existing user catalog', async () => {
   await withFixture(async ({ root, stores }) => {
     const created = await stores.connectionCatalog.create({
