@@ -75,7 +75,13 @@ describe('Runtime Host operator commands', () => {
             ),
         )
         .sort(),
-      ['access.credential.issue', 'access.credential.revoke', 'host.upgrade.prepare'],
+      [
+        'access.credential.issue',
+        'access.credential.revoke',
+        'host.upgrade.prepare',
+        'hosted.execution.cancel',
+        'hosted.execution.start',
+      ],
     );
   });
 
