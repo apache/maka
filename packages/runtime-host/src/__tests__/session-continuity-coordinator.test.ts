@@ -782,6 +782,15 @@ test('queues concurrent overlay preparation instead of rejecting an empty overla
   const second = openForSession(coordinator, 'connection-queued-2', 'session-queued-2');
   await delayImmediate();
   assert.equal(reads, 1);
+  let runtimeEventAccepted = false;
+  const acceptRuntimeEvent = coordinator
+    .acceptRuntimeEvent('session-queued-2', 'run-1', previewEvent())
+    .finally(() => {
+      runtimeEventAccepted = true;
+    });
+  await delayImmediate();
+  assert.equal(runtimeEventAccepted, true);
+  await acceptRuntimeEvent;
 
   firstRead.resolve();
   const [firstResult, secondResult] = await Promise.all([first, second]);
