@@ -112,9 +112,6 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     { name: 'task_get' },
     { name: 'memory_remember' },
     { name: 'memory_extract' },
-    // Legacy task-ledger aliases still registered on some hosts
-    { name: 'TaskCreate' },
-    { name: 'TaskUpdate' },
     // browser surface
     { name: 'browser_navigate' },
     { name: 'browser_snapshot' },

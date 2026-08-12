@@ -13,14 +13,11 @@ import {
   type TaskOwner,
 } from '@maka/core/task-ledger';
 import {
-  LEGACY_TASK_CREATE_TOOL_NAME,
-  LEGACY_TASK_UPDATE_TOOL_NAME,
   TASK_CREATE_TOOL_NAME,
   TASK_GET_TOOL_NAME,
   TASK_LIST_TOOL_NAME,
   TASK_UPDATE_TOOL_NAME,
   buildTaskLedgerTools,
-  isTaskLedgerToolsEnabled,
 } from '../task-ledger-tools.js';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
 
@@ -167,14 +164,6 @@ function findTool(tools: MakaTool[], name: string): MakaTool {
 }
 
 describe('task ledger tools', () => {
-  test('task tool feature flag defaults on and can be disabled explicitly', () => {
-    assert.equal(isTaskLedgerToolsEnabled({}), true);
-    assert.equal(isTaskLedgerToolsEnabled({ MAKA_TASK_LEDGER_TOOLS: 'false' }), false);
-    assert.equal(isTaskLedgerToolsEnabled({ MAKA_TASK_LEDGER_TOOLS: '0' }), false);
-    assert.equal(isTaskLedgerToolsEnabled({ MAKA_TASK_LEDGER_TOOLS: 'off' }), false);
-    assert.equal(isTaskLedgerToolsEnabled({ MAKA_TASK_LEDGER_TOOLS: 'true' }), true);
-  });
-
   test('task_create schema rejects a batch larger than the ledger cap and accepts the cap boundary', () => {
     const create = findTool(
       buildTaskLedgerTools({ store: new FakeTaskLedgerStore() }),
