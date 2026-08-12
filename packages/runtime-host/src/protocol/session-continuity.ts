@@ -31,6 +31,8 @@ import {
 
 export const SESSION_CONTINUITY_SCHEMA_VERSION = 3 as const;
 export const SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES = 56 * 1024;
+// Leave transport headroom for the response envelope and request correlation.
+export const SUBSCRIPTION_OPEN_RESULT_MAX_BYTES = 92 * 1024;
 export const SESSION_LIVE_DELTA_MAX_BYTES = 16 * 1024;
 // Core emits at most 8,192 UTF-16 code units per tool output event. A code unit
 // needs at most three UTF-8 bytes (an astral pair needs four bytes total).
@@ -546,6 +548,7 @@ function decodeSubscriptionOpenInput(value: unknown): SubscriptionOpenInput {
 }
 
 function decodeSubscriptionOpenResult(value: unknown): SubscriptionOpenResult {
+  requireEncodedByteLimit(value, 'subscription.open result', SUBSCRIPTION_OPEN_RESULT_MAX_BYTES);
   const record = requireExactRecord(value, 'subscription.open result', [
     'hostEpoch',
     'subscriptionId',

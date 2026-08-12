@@ -1,8 +1,8 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
-import type { EncodedSessionTranscriptMessage } from '@maka/storage';
+import type { StoredMessage } from '@maka/core/session';
 import {
   SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
+  SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES,
   type SessionTranscriptBootstrap,
   type SessionTranscriptFragment,
   type SessionTranscriptPage,
@@ -11,7 +11,11 @@ import {
   type SessionTranscriptPageSource,
   type TurnSnapshot,
 } from '../protocol/index.js';
-import type { SessionTranscriptReader } from './session-transcript-reader.js';
+import {
+  ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+  ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES,
+  type SessionTranscriptReader,
+} from './session-transcript-reader.js';
 
 interface TranscriptCursorState {
   readonly version: 1;
@@ -53,52 +57,75 @@ export async function createSessionTranscriptBootstrap(input: {
   rootTurn: TurnSnapshot | null;
   activeAssistantStreams: Iterable<ActiveTranscriptAssistantStream>;
   maxBytes: number;
+  maxEncodedBytes?: number;
+  preparedOverlayMessages?: readonly Buffer[];
 }): Promise<{ bootstrap: SessionTranscriptBootstrap; state: SubscriberTranscriptState }> {
-  const activeOverlay = await input.reader.readActiveOverlay(input.sessionId, input.rootTurn);
-  const durableStorage = await input.reader.readDurablePage(input.sessionId, {
-    direction: 'older',
-    maxBytes: input.maxBytes,
-    maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
-  });
+  const overlayMessages =
+    input.preparedOverlayMessages ?? (await prepareSessionTranscriptOverlay(input));
+  const cursorSecret = randomBytes(32);
+  let rawBudget = input.maxBytes;
+  for (;;) {
+    const overlayBudget = Math.min(8 * 1024, Math.max(1, Math.floor(rawBudget / 2)));
+    const selectedOverlay = selectOverlay(
+      overlayMessages,
+      'older',
+      overlayMessages.length - 1,
+      null,
+      overlayBudget,
+    );
+    const durableBudget = rawBudget - selectedOverlay.rawBytes;
+    const durableStorage = await input.reader.readDurablePage(input.sessionId, {
+      direction: 'older',
+      maxBytes: durableBudget,
+      maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
+    });
+    const throughSequence = durableStorage.throughSequence;
+    const state: SubscriberTranscriptState = {
+      sessionId: input.sessionId,
+      subscriptionId: input.subscriptionId,
+      openedThroughSequence: throughSequence,
+      durableThroughSequence: throughSequence,
+      overlayMessages,
+      cursorSecret,
+    };
+    const bootstrap: SessionTranscriptBootstrap = {
+      throughSequence,
+      durable: pageFromSelection(state, 'durable', 'older', storageSelection(durableStorage)),
+      overlay: pageFromSelection(state, 'overlay', 'older', selectedOverlay),
+    };
+    const encodedBytes = Buffer.byteLength(JSON.stringify(bootstrap), 'utf8');
+    if (input.maxEncodedBytes === undefined || encodedBytes <= input.maxEncodedBytes) {
+      return { state, bootstrap };
+    }
+    if (rawBudget <= 2) {
+      throw new Error('Session transcript bootstrap cannot fit the subscription open result');
+    }
+    const excess = encodedBytes - input.maxEncodedBytes;
+    rawBudget = Math.max(2, rawBudget - Math.max(1, Math.ceil((excess * 3) / 4)));
+  }
+}
+
+export async function prepareSessionTranscriptOverlay(input: {
+  reader: SessionTranscriptReader;
+  sessionId: string;
+  rootTurn: TurnSnapshot | null;
+  activeAssistantStreams: Iterable<ActiveTranscriptAssistantStream>;
+}): Promise<readonly Buffer[]> {
+  const activeAssistantStreams = [...input.activeAssistantStreams];
+  const [activeOverlay, durableActiveMessages] = await Promise.all([
+    input.reader.readActiveOverlay(input.sessionId, input.rootTurn),
+    input.reader.readDurableMessagesById(
+      input.sessionId,
+      activeAssistantStreams.map((stream) => stream.messageId),
+    ),
+  ]);
   const overlayMessages = mergeActiveAssistantStreams(
     activeOverlay,
-    input.activeAssistantStreams,
-    durableStorage.messages,
+    activeAssistantStreams,
+    durableActiveMessages,
   ).map((message) => Buffer.from(JSON.stringify(message), 'utf8'));
-  const overlayBudget = Math.min(8 * 1024, Math.max(1, Math.floor(input.maxBytes / 2)));
-  const selectedOverlay = selectOverlay(
-    overlayMessages,
-    'older',
-    overlayMessages.length - 1,
-    null,
-    overlayBudget,
-  );
-  const durableBudget = input.maxBytes - selectedOverlay.rawBytes;
-  const throughSequence = durableStorage.throughSequence;
-  const selectedDurable = selectDurable(
-    durableStorage.messages,
-    durableStorage.hasMore,
-    'older',
-    throughSequence ?? -1,
-    null,
-    durableBudget,
-  );
-  const state: SubscriberTranscriptState = {
-    sessionId: input.sessionId,
-    subscriptionId: input.subscriptionId,
-    openedThroughSequence: throughSequence,
-    durableThroughSequence: throughSequence,
-    overlayMessages,
-    cursorSecret: randomBytes(32),
-  };
-  return {
-    state,
-    bootstrap: {
-      throughSequence,
-      durable: pageFromSelection(state, 'durable', 'older', selectedDurable),
-      overlay: pageFromSelection(state, 'overlay', 'older', selectedOverlay),
-    },
-  };
+  assertOverlayRetainedBound(overlayMessages);
+  return overlayMessages;
 }
 
 export async function readSessionTranscriptPage(input: {
@@ -126,6 +153,9 @@ export async function readSessionTranscriptPage(input: {
       position.position,
       position.byteOffset,
       request.maxBytes,
+      request.maxBytes > SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES
+        ? requireFragmentContinuation(position)
+        : SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
     );
     return pageFromSelection(
       state,
@@ -139,23 +169,30 @@ export async function readSessionTranscriptPage(input: {
   const storage = await input.reader.readDurablePage(state.sessionId, {
     direction: request.direction,
     throughSequence: request.throughSequence,
-    ...(request.direction === 'older'
-      ? { cursor: position.position + 1 }
-      : position.position === 0
-        ? {}
-        : { cursor: position.position - 1 }),
+    position: position.position,
+    ...(position.byteOffset === null ? {} : { byteOffset: position.byteOffset }),
     maxBytes: request.maxBytes,
-    maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
+    maxMessages:
+      request.maxBytes > SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES
+        ? requireFragmentContinuation(position)
+        : SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
   });
-  const selected = selectDurable(
-    storage.messages,
-    storage.hasMore,
+  return pageFromSelection(
+    state,
+    'durable',
     request.direction,
-    position.position,
-    position.byteOffset,
-    request.maxBytes,
+    storageSelection(storage),
+    request.throughSequence,
   );
-  return pageFromSelection(state, 'durable', request.direction, selected, request.throughSequence);
+}
+
+function requireFragmentContinuation(position: { position: number; byteOffset: number | null }): 1 {
+  if (position.byteOffset === null) {
+    throw new TranscriptPageRequestError(
+      'Large transcript pages require an in-message continuation cursor',
+    );
+  }
+  return 1;
 }
 
 export function updateSubscriberTranscriptHighWater(
@@ -209,48 +246,19 @@ function resolvePosition(
   return position < 0 || position > request.throughSequence ? null : { position, byteOffset: null };
 }
 
-function selectDurable(
-  messages: readonly EncodedSessionTranscriptMessage[],
-  storageHasMore: boolean,
-  direction: SessionTranscriptPageDirection,
-  position: number,
-  byteOffset: number | null,
-  maxBytes: number,
+function storageSelection(
+  storage: Awaited<ReturnType<SessionTranscriptReader['readDurablePage']>>,
 ): SelectedFragments {
-  const ordered = direction === 'older' ? [...messages].reverse() : [...messages];
-  const fragments: SessionTranscriptFragment[] = [];
-  let rawBytes = 0;
-  let next: { position: number; byteOffset: number | null } | null = null;
-  let partial = false;
-  for (const message of ordered) {
-    const bytes = Buffer.from(message.data, 'utf8');
-    const offset = message.sequence === position ? byteOffset : null;
-    const selected = selectBuffer(bytes, direction, offset, maxBytes - rawBytes);
-    if (!selected) break;
-    fragments.push({
-      kind: 'durable',
-      sequence: message.sequence,
-      byteOffset: selected.byteOffset,
-      totalBytes: bytes.byteLength,
-      data: selected.data.toString('base64'),
-    });
-    rawBytes += selected.data.byteLength;
-    if (!selected.complete) {
-      next = { position: message.sequence, byteOffset: selected.nextOffset };
-      partial = true;
-      break;
-    }
-    next = {
-      position: message.sequence + (direction === 'older' ? -1 : 1),
-      byteOffset: null,
-    };
-    if (rawBytes >= maxBytes) break;
-  }
-  const hasMore = partial || fragments.length < ordered.length || storageHasMore;
   return {
-    fragments,
-    rawBytes,
-    next: hasMore && next && next.position >= 0 ? next : null,
+    fragments: storage.fragments.map((fragment) => ({
+      kind: 'durable' as const,
+      sequence: fragment.sequence,
+      byteOffset: fragment.byteOffset,
+      totalBytes: fragment.totalBytes,
+      data: fragment.data.toString('base64'),
+    })),
+    rawBytes: storage.rawBytes,
+    next: storage.next,
   };
 }
 
@@ -260,12 +268,18 @@ function selectOverlay(
   position: number,
   byteOffset: number | null,
   maxBytes: number,
+  maxMessages = SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
 ): SelectedFragments {
   const fragments: SessionTranscriptFragment[] = [];
   let rawBytes = 0;
   let index = position;
   let offset = byteOffset;
-  while (index >= 0 && index < messages.length && rawBytes < maxBytes) {
+  while (
+    index >= 0 &&
+    index < messages.length &&
+    rawBytes < maxBytes &&
+    fragments.length < maxMessages
+  ) {
     const message = messages[index]!;
     const selected = selectBuffer(message, direction, offset, maxBytes - rawBytes);
     if (!selected) break;
@@ -447,15 +461,12 @@ function signCursor(payload: string, secret: Buffer): Buffer {
 function mergeActiveAssistantStreams(
   overlay: readonly StoredMessage[],
   prefixes: Iterable<ActiveTranscriptAssistantStream>,
-  durable: readonly EncodedSessionTranscriptMessage[],
+  durable: readonly StoredMessage[],
 ): StoredMessage[] {
   const merged = overlay.map((message) => structuredClone(message));
   const indices = new Map(merged.map((message, index) => [message.id, index]));
   const durableById = new Map<string, StoredMessage>();
-  for (const encoded of durable) {
-    const message = decodeStoredMessage(JSON.parse(encoded.data) as unknown);
-    durableById.set(message.id, message);
-  }
+  for (const message of durable) durableById.set(message.id, message);
   for (const prefix of prefixes) {
     let index = indices.get(prefix.messageId);
     const durableMessage = durableById.get(prefix.messageId);
@@ -493,6 +504,19 @@ function mergeActiveAssistantStreams(
     };
   }
   return merged;
+}
+
+function assertOverlayRetainedBound(messages: readonly Buffer[]): void {
+  if (messages.length > ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES) {
+    throw new Error('Active Session transcript overlay exceeds its message limit');
+  }
+  let retainedBytes = 0;
+  for (const message of messages) {
+    retainedBytes += message.byteLength;
+    if (retainedBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
+      throw new Error('Active Session transcript overlay exceeds its byte limit');
+    }
+  }
 }
 
 function reconcileAssistantMessage(

@@ -4,8 +4,11 @@ import {
   decodeSessionTranscriptBootstrap,
   decodeSessionTranscriptPage,
   decodeSessionTranscriptPageInput,
+  encodeProtocolMessage,
   HOST_OPERATION_SPECS,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RuntimeHostProtocolError,
+  SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
 } from '../protocol/index.js';
 
 const input = {
@@ -59,6 +62,33 @@ test('Session transcript protocol accepts bounded correlated pages and bootstrap
     },
   };
   assert.deepEqual(decodeSessionTranscriptBootstrap(bootstrap), bootstrap);
+});
+
+test('a maximum single-fragment continuation remains transport safe', () => {
+  const data = Buffer.alloc(SESSION_TRANSCRIPT_PAGE_MAX_BYTES, 0x61);
+  const result = {
+    ...page,
+    sessionId: 's'.repeat(128),
+    rawBytes: data.byteLength,
+    fragments: [
+      {
+        kind: 'durable' as const,
+        sequence: 2,
+        byteOffset: 1,
+        totalBytes: data.byteLength + 1,
+        data: data.toString('base64'),
+      },
+    ],
+    nextCursor: 'c'.repeat(1_024),
+  };
+  assert.deepEqual(decodeSessionTranscriptPage(result), result);
+  const encoded = encodeProtocolMessage({
+    requestId: 'r'.repeat(128),
+    operation: 'session.transcript.page',
+    ok: true,
+    result,
+  });
+  assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES);
 });
 
 test('Session transcript protocol rejects malformed and uncorrelated values', () => {

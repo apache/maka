@@ -126,7 +126,7 @@ describe('SQLite SessionStore', () => {
     const store = createSessionStore(root);
     try {
       const session = await store.create(makeInput());
-      const messages = ['zero', 'one', 'two', 'three'].map((text, index) => ({
+      const messages = ['zero', 'one', 'two', '三🙂'].map((text, index) => ({
         type: 'user' as const,
         id: `message-${index}`,
         turnId: `turn-${index}`,
@@ -142,10 +142,10 @@ describe('SQLite SessionStore', () => {
       });
       assert.equal(tail.throughSequence, 3);
       assert.deepEqual(
-        tail.messages.map(({ sequence }) => sequence),
-        [2, 3],
+        tail.fragments.map(({ sequence }) => sequence),
+        [3, 2],
       );
-      assert.equal(tail.hasMore, true);
+      assert.deepEqual(tail.next, { position: 1, byteOffset: null });
 
       await store.appendMessage(session.id, {
         type: 'user',
@@ -157,29 +157,29 @@ describe('SQLite SessionStore', () => {
       const older = await store.readTranscriptPageSnapshot(session.id, {
         direction: 'older',
         throughSequence: tail.throughSequence ?? undefined,
-        cursor: 2,
+        position: 1,
         maxBytes: 64 * 1024,
         maxMessages: 2,
       });
       assert.equal(older.throughSequence, 3);
       assert.deepEqual(
-        older.messages.map(({ sequence }) => sequence),
-        [0, 1],
+        older.fragments.map(({ sequence }) => sequence),
+        [1, 0],
       );
-      assert.equal(older.hasMore, false);
+      assert.equal(older.next, null);
 
       const newer = await store.readTranscriptPageSnapshot(session.id, {
         direction: 'newer',
         throughSequence: 3,
-        cursor: 1,
+        position: 2,
         maxBytes: 64 * 1024,
         maxMessages: 10,
       });
       assert.deepEqual(
-        newer.messages.map(({ sequence }) => sequence),
+        newer.fragments.map(({ sequence }) => sequence),
         [2, 3],
       );
-      assert.equal(newer.hasMore, false);
+      assert.equal(newer.next, null);
 
       const oversized = await store.readTranscriptPageSnapshot(session.id, {
         direction: 'older',
@@ -188,11 +188,37 @@ describe('SQLite SessionStore', () => {
         maxMessages: 10,
       });
       assert.deepEqual(
-        oversized.messages.map(({ sequence }) => sequence),
+        oversized.fragments.map(({ sequence }) => sequence),
         [3],
       );
-      assert.ok(oversized.messages[0]!.encodedBytes > 1);
-      assert.equal(oversized.hasMore, true);
+      assert.equal(oversized.fragments[0]!.data.byteLength, 1);
+      assert.ok(oversized.fragments[0]!.totalBytes > 1);
+      assert.deepEqual(oversized.next, {
+        position: 3,
+        byteOffset: oversized.fragments[0]!.byteOffset,
+      });
+      const fragments = [...oversized.fragments];
+      let continuation: { readonly position: number; readonly byteOffset: number | null } | null =
+        oversized.next;
+      while (continuation?.position === 3 && continuation.byteOffset !== null) {
+        const page = await store.readTranscriptPageSnapshot(session.id, {
+          direction: 'older',
+          throughSequence: 3,
+          position: continuation.position,
+          byteOffset: continuation.byteOffset,
+          maxBytes: 7,
+          maxMessages: 10,
+        });
+        fragments.push(...page.fragments);
+        continuation = page.next;
+      }
+      const reconstructed = Buffer.concat(
+        fragments
+          .filter((fragment) => fragment.sequence === 3)
+          .sort((left, right) => left.byteOffset - right.byteOffset)
+          .map((fragment) => fragment.data),
+      );
+      assert.deepEqual(JSON.parse(reconstructed.toString('utf8')), messages[3]);
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });
@@ -210,9 +236,46 @@ describe('SQLite SessionStore', () => {
           maxBytes: 1024,
           maxMessages: 10,
         }),
-        { throughSequence: null, messages: [], hasMore: false },
+        { throughSequence: null, fragments: [], rawBytes: 0, next: null },
       );
       assert.equal(await store.readTranscriptHighWaterSnapshot(session.id), null);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('notifies transcript observers only after successful durable appends', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-transcript-observer-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      const changed: string[] = [];
+      const unsubscribe = store.subscribeTranscriptChanges((sessionId) => changed.push(sessionId));
+      await store.appendMessages(session.id, [
+        { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'one' },
+        { type: 'user', id: 'message-2', turnId: 'turn-2', ts: 2, text: 'two' },
+      ]);
+      assert.deepEqual(changed, [session.id]);
+      await assert.rejects(
+        store.appendMessage('missing-session', {
+          type: 'user',
+          id: 'message-2',
+          turnId: 'turn-duplicate',
+          ts: 3,
+          text: 'duplicate',
+        }),
+      );
+      assert.deepEqual(changed, [session.id]);
+      unsubscribe();
+      await store.appendMessage(session.id, {
+        type: 'user',
+        id: 'message-3',
+        turnId: 'turn-3',
+        ts: 3,
+        text: 'three',
+      });
+      assert.deepEqual(changed, [session.id]);
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });

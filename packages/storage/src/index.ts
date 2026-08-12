@@ -21,7 +21,7 @@ export type {
   SessionStore,
   SessionTranscriptPageRequest,
   SessionTranscriptStoragePage,
-  EncodedSessionTranscriptMessage,
+  SessionTranscriptStorageFragment,
   StableSessionCreateInput,
   UpdateSessionConfigurationRequest,
 } from './session-store.js';

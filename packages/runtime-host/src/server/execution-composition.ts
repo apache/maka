@@ -225,6 +225,7 @@ export async function createExecutionRuntimeHostComposition(
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
   let unsubscribeTaskLedger: (() => void) | undefined;
+  let unsubscribeTranscriptChanges: (() => void) | undefined;
   let managedWorkspaceOwner: ManagedWorkspaceOwner | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
   let projectCatalog: InteractiveProjectCatalogWriter | undefined;
@@ -518,6 +519,9 @@ export async function createExecutionRuntimeHostComposition(
       (sessionId) => sessionCatalogChanges.publish(sessionId),
     );
     const continuityCoordinator = continuity;
+    unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) =>
+      continuityCoordinator.enqueueCanonicalRefresh(sessionId),
+    );
     unsubscribeTaskLedger = taskLedger.subscribe(({ sessionId }) =>
       continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'task'),
     );
@@ -1321,6 +1325,7 @@ export async function createExecutionRuntimeHostComposition(
           () => openedUsageStores.close(),
           () => openedArtifactStore.close(),
           () => {
+            unsubscribeTranscriptChanges?.();
             unsubscribeTaskLedger?.();
             taskLedgerStore?.close();
           },
@@ -1550,6 +1555,7 @@ export async function createExecutionRuntimeHostComposition(
       errors.push(closeError);
     }
     try {
+      unsubscribeTranscriptChanges?.();
       unsubscribeTaskLedger?.();
       taskLedgerStore?.close();
     } catch (closeError) {

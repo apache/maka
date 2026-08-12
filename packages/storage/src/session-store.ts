@@ -152,27 +152,31 @@ export type ProbeStableSessionCreateResult =
 
 export type UpdateSessionConfigurationRequest = SessionConfigurationMetadataUpdate;
 
-export interface EncodedSessionTranscriptMessage {
+export interface SessionTranscriptStorageFragment {
   readonly sequence: number;
-  readonly data: string;
-  readonly encodedBytes: number;
+  readonly byteOffset: number;
+  readonly totalBytes: number;
+  readonly data: Buffer;
 }
 
 export interface SessionTranscriptPageRequest {
   readonly direction: 'older' | 'newer';
   /** Inclusive durable high-water mark. Omit only for the first read. */
   readonly throughSequence?: number;
-  /** Exclusive sequence boundary in the requested direction. */
-  readonly cursor?: number;
+  /** Inclusive sequence position for this read. Defaults to the watermark edge. */
+  readonly position?: number;
+  /** Continuation byte offset within position. */
+  readonly byteOffset?: number;
   readonly maxBytes: number;
   readonly maxMessages: number;
 }
 
 export interface SessionTranscriptStoragePage {
   readonly throughSequence: number | null;
-  /** Always returned in ascending durable sequence order. */
-  readonly messages: readonly EncodedSessionTranscriptMessage[];
-  readonly hasMore: boolean;
+  /** Returned in traversal order for the requested direction. */
+  readonly fragments: readonly SessionTranscriptStorageFragment[];
+  readonly rawBytes: number;
+  readonly next: { readonly position: number; readonly byteOffset: number | null } | null;
 }
 
 export interface SessionStore {
@@ -212,6 +216,13 @@ export interface SessionStore {
 }
 
 export interface SessionAuthorityStore extends SessionStore {
+  /** Read a bounded set of durable messages used to reconcile active overlays. */
+  readTranscriptMessagesSnapshot(
+    sessionId: string,
+    messageIds: readonly string[],
+  ): Promise<StoredMessage[]>;
+  /** Observe successful durable ledger appends. Listeners must not throw. */
+  subscribeTranscriptChanges(listener: (sessionId: string) => void): () => void;
   /** Wait until the SQLite authority is ready for cross-domain transactions. */
   ready(): Promise<void>;
   /** Atomically create a Session from already-converted Maka raw messages. */
@@ -299,6 +310,7 @@ export function createSessionStore(workspaceRoot: string): SessionAuthorityStore
 class SqliteSessionStore implements SessionAuthorityStore {
   private readonly metadata: SqliteSessionMetadataStore;
   private readonly workspaceRoot: string;
+  private readonly transcriptChangeListeners = new Set<(sessionId: string) => void>();
   private closePromise: Promise<void> | null = null;
 
   constructor(workspaceRoot: string) {
@@ -630,6 +642,14 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.readTranscriptPage(sessionId, request);
   }
 
+  async readTranscriptMessagesSnapshot(
+    sessionId: string,
+    messageIds: readonly string[],
+  ): Promise<StoredMessage[]> {
+    await this.ensureReady();
+    return this.metadata.readTranscriptMessages(sessionId, messageIds);
+  }
+
   async readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null> {
     await this.ensureReady();
     return this.metadata.readTranscriptHighWater(sessionId);
@@ -668,6 +688,12 @@ class SqliteSessionStore implements SessionAuthorityStore {
       messages,
       projectSessionCatalogMessages(messages),
     );
+    for (const listener of this.transcriptChangeListeners) listener(sessionId);
+  }
+
+  subscribeTranscriptChanges(listener: (sessionId: string) => void): () => void {
+    this.transcriptChangeListeners.add(listener);
+    return () => this.transcriptChangeListeners.delete(listener);
   }
 
   async updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader> {

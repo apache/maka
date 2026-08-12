@@ -193,7 +193,7 @@ test('keeps durable history separate from the canonical active overlay', async (
     });
     assert.equal(durable.throughSequence, 0);
     assert.deepEqual(
-      durable.messages.map((message) => JSON.parse(message.data)),
+      durable.fragments.map((fragment) => JSON.parse(fragment.data.toString('utf8'))),
       [{ type: 'system_note', id: 'history-1', ts: 1, kind: 'session_start' }],
     );
   } finally {

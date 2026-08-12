@@ -26,6 +26,7 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
   SESSION_CONTINUITY_SCHEMA_VERSION,
+  SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   type SessionTranscriptBootstrap,
   type SessionTranscriptFragment,
   type SessionTranscriptPage,
@@ -366,7 +367,7 @@ test('reassembles a large message from bounded backward pages', async () => {
         throughSequence: 0,
         cursor: 'cursor-1',
         anchorSequence: null,
-        maxBytes: 48 * 1024,
+        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
       });
       await writeProtocolFrame(transport, {
         requestId: continuationRequest.requestId,

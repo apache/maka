@@ -21,6 +21,7 @@ import {
   SESSION_LIVE_DELTA_MAX_BYTES,
   SESSION_TOOL_OUTPUT_DELTA_MAX_BYTES,
   SESSION_TOOL_NAME_MAX_BYTES,
+  SUBSCRIPTION_OPEN_RESULT_MAX_BYTES,
   TURN_MESSAGE_CONTENT_MAX_BYTES,
   TURN_MESSAGE_TEXT_MAX_BYTES,
   RUNTIME_POLICY_OPERATION_SPECS,
@@ -108,6 +109,22 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
+    const oversized = {
+      ...opened,
+      result: {
+        ...opened.result,
+        activeAssistantStreams: Array.from({ length: 1_000 }, (_, index) => ({
+          kind: 'text' as const,
+          turnId: 'turn-1',
+          messageId: `message-${index}-${'x'.repeat(96)}`,
+        })),
+      },
+    };
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(oversized.result), 'utf8') >
+        SUBSCRIPTION_OPEN_RESULT_MAX_BYTES,
+    );
+    assert.throws(() => decodeHostFrame(oversized), isInvalidFrame);
   });
 
   test('decodes only privacy-normalized bounded subscription live frames', () => {

@@ -1410,20 +1410,19 @@ export class SqliteSessionMetadataStore {
         .get(sessionId) as { high_water?: unknown };
       const actualHighWater = nullableStoredMessageSequence(highWaterRow.high_water, sessionId);
       if (actualHighWater === null) {
-        return { throughSequence: null, messages: [], hasMore: false };
+        return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
       }
       const throughSequence = request.throughSequence ?? actualHighWater;
       if (throughSequence > actualHighWater) {
         throw new Error(`Session transcript watermark is ahead of durable storage: ${sessionId}`);
       }
-      const cursor = request.cursor;
-      const comparison = request.direction === 'older' ? '<' : '>';
+      const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
+      const comparison = request.direction === 'older' ? '<=' : '>=';
       const order = request.direction === 'older' ? 'DESC' : 'ASC';
-      const boundary = cursor ?? (request.direction === 'older' ? throughSequence + 1 : -1);
       const rows = this.db
         .prepare(
           `
-          SELECT sequence, record_json
+          SELECT sequence, length(CAST(record_json AS BLOB)) AS total_bytes
           FROM session_messages
           WHERE session_id = ?
             AND sequence <= ?
@@ -1432,32 +1431,110 @@ export class SqliteSessionMetadataStore {
           LIMIT ?
         `,
         )
-        .all(sessionId, throughSequence, boundary, request.maxMessages + 1) as Array<{
+        .all(sessionId, throughSequence, position, request.maxMessages + 1) as Array<{
         sequence?: unknown;
-        record_json?: unknown;
+        total_bytes?: unknown;
       }>;
-      const selected: Array<{ sequence: number; data: string; encodedBytes: number }> = [];
-      let selectedBytes = 0;
+      const slices: Array<{
+        sequence: number;
+        byteOffset: number;
+        totalBytes: number;
+        byteLength: number;
+      }> = [];
+      let rawBytes = 0;
+      let next: { position: number; byteOffset: number | null } | null = null;
       for (const row of rows) {
-        if (selected.length >= request.maxMessages) break;
+        if (slices.length >= request.maxMessages || rawBytes >= request.maxBytes) break;
         const sequence = requireStoredMessageSequence(row.sequence, sessionId);
-        if (typeof row.record_json !== 'string') {
+        const totalBytes = requireTranscriptRecordByteLength(row.total_bytes, sessionId, sequence);
+        const continued = sequence === position && request.byteOffset !== undefined;
+        const edge = continued
+          ? request.byteOffset!
+          : request.direction === 'older'
+            ? totalBytes
+            : 0;
+        if (
+          (request.direction === 'older' && (edge < 1 || edge > totalBytes)) ||
+          (request.direction === 'newer' && (edge < 0 || edge >= totalBytes))
+        ) {
           throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
         }
-        const encodedBytes = Buffer.byteLength(row.record_json, 'utf8');
-        if (selected.length > 0 && selectedBytes + encodedBytes > request.maxBytes) break;
-        // Validate storage at the boundary without re-serializing the canonical JSON.
-        try {
-          decodeStoredMessage(JSON.parse(row.record_json) as unknown);
-        } catch (error) {
-          throw new StoredSessionMessageIncompatibleError(sessionId, sequence, { cause: error });
+        const available = request.maxBytes - rawBytes;
+        const byteOffset = request.direction === 'older' ? Math.max(0, edge - available) : edge;
+        const byteLength =
+          request.direction === 'older'
+            ? edge - byteOffset
+            : Math.min(totalBytes - edge, available);
+        const complete =
+          request.direction === 'older' ? byteOffset === 0 : byteOffset + byteLength === totalBytes;
+        slices.push({
+          sequence,
+          byteOffset,
+          totalBytes,
+          byteLength,
+        });
+        rawBytes += byteLength;
+        if (!complete) {
+          next = {
+            position: sequence,
+            byteOffset: request.direction === 'older' ? byteOffset : byteOffset + byteLength,
+          };
+          break;
         }
-        selected.push({ sequence, data: row.record_json, encodedBytes });
-        selectedBytes += encodedBytes;
       }
-      const hasMore = selected.length < rows.length;
-      if (request.direction === 'older') selected.reverse();
-      return { throughSequence, messages: selected, hasMore };
+      if (next === null && slices.length > 0 && slices.length < rows.length) {
+        const sequence = slices.at(-1)!.sequence;
+        next = {
+          position: sequence + (request.direction === 'older' ? -1 : 1),
+          byteOffset: null,
+        };
+      }
+      const dataBySequence = readTranscriptSlices(this.db, sessionId, slices);
+      const fragments = slices.map(({ sequence, byteOffset, totalBytes, byteLength }) => {
+        const data = dataBySequence.get(sequence);
+        if (!data || data.byteLength !== byteLength) {
+          throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+        }
+        if (byteOffset === 0 && byteLength === totalBytes) {
+          validateTranscriptRecord(data, sessionId, sequence);
+        }
+        return { sequence, byteOffset, totalBytes, data };
+      });
+      return { throughSequence, fragments, rawBytes, next };
+    });
+  }
+
+  async readTranscriptMessages(
+    sessionId: string,
+    messageIds: readonly string[],
+  ): Promise<StoredMessage[]> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    if (messageIds.length === 0) return [];
+    if (messageIds.length > 256 || messageIds.some((messageId) => typeof messageId !== 'string')) {
+      throw new Error('Invalid Session transcript message identity set');
+    }
+    if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+    const placeholders = messageIds.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(
+        `
+          SELECT record_json
+          FROM session_messages
+          WHERE session_id = ? AND message_id IN (${placeholders})
+          ORDER BY sequence ASC
+        `,
+      )
+      .all(sessionId, ...messageIds) as Array<{ record_json?: unknown }>;
+    return rows.map((row) => {
+      if (typeof row.record_json !== 'string') {
+        throw new StoredSessionMessageIncompatibleError(sessionId, -1);
+      }
+      try {
+        return decodeStoredMessage(JSON.parse(row.record_json) as unknown);
+      } catch (error) {
+        throw new StoredSessionMessageIncompatibleError(sessionId, -1, { cause: error });
+      }
     });
   }
 
@@ -4688,6 +4765,73 @@ function nullableStoredMessageSequence(value: unknown, sessionId: string): numbe
   return requireStoredMessageSequence(value, sessionId);
 }
 
+interface TranscriptRecordSlice {
+  readonly sequence: number;
+  readonly byteOffset: number;
+  readonly totalBytes: number;
+  readonly byteLength: number;
+}
+
+function requireTranscriptRecordByteLength(
+  value: unknown,
+  sessionId: string,
+  sequence: number,
+): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+  }
+  return value as number;
+}
+
+function readTranscriptSlices(
+  db: DatabaseSync,
+  sessionId: string,
+  slices: readonly TranscriptRecordSlice[],
+): Map<number, Buffer> {
+  if (slices.length === 0) return new Map();
+  const values = slices.map(() => '(?, ?, ?)').join(', ');
+  const parameters = slices.flatMap((slice) => [
+    slice.sequence,
+    slice.byteOffset + 1,
+    slice.byteLength,
+  ]);
+  const rows = db
+    .prepare(
+      `
+        WITH requested(sequence, byte_start, byte_length) AS (VALUES ${values})
+        SELECT requested.sequence,
+          substr(CAST(message.record_json AS BLOB), requested.byte_start, requested.byte_length) AS data
+        FROM requested
+        INNER JOIN session_messages AS message
+          ON message.session_id = ? AND message.sequence = requested.sequence
+      `,
+    )
+    .all(...parameters, sessionId) as Array<{ sequence?: unknown; data?: unknown }>;
+  const result = new Map<number, Buffer>();
+  for (const row of rows) {
+    const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+    if (!(row.data instanceof Uint8Array)) {
+      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+    }
+    result.set(sequence, Buffer.from(row.data));
+  }
+  return result;
+}
+
+function validateTranscriptRecord(
+  data: string | Buffer,
+  sessionId: string,
+  sequence: number,
+): void {
+  try {
+    decodeStoredMessage(
+      JSON.parse(typeof data === 'string' ? data : data.toString('utf8')) as unknown,
+    );
+  } catch (error) {
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence, { cause: error });
+  }
+}
+
 function assertTranscriptPageRequest(request: SessionTranscriptPageRequest): void {
   if (request.direction !== 'older' && request.direction !== 'newer') {
     throw new Error('Invalid Session transcript page direction');
@@ -4699,10 +4843,18 @@ function assertTranscriptPageRequest(request: SessionTranscriptPageRequest): voi
     throw new Error('Invalid Session transcript watermark');
   }
   if (
-    request.cursor !== undefined &&
-    (!Number.isSafeInteger(request.cursor) || request.cursor < 0)
+    request.position !== undefined &&
+    (!Number.isSafeInteger(request.position) || request.position < 0)
   ) {
-    throw new Error('Invalid Session transcript cursor');
+    throw new Error('Invalid Session transcript position');
+  }
+  if (
+    request.byteOffset !== undefined &&
+    (request.position === undefined ||
+      !Number.isSafeInteger(request.byteOffset) ||
+      request.byteOffset < 0)
+  ) {
+    throw new Error('Invalid Session transcript byte offset');
   }
   if (
     !Number.isSafeInteger(request.maxBytes) ||

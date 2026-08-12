@@ -3,6 +3,7 @@ import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
 import {
   createSessionTranscriptBootstrap,
+  prepareSessionTranscriptOverlay,
   readSessionTranscriptPage,
   TranscriptPageRequestError,
   updateSubscriberTranscriptHighWater,
@@ -107,6 +108,34 @@ test('keeps a durable continuation when overlay bytes reduce the bootstrap budge
   assert.ok(bootstrap.durable.nextCursor);
 });
 
+test('shrinks the raw bootstrap until it fits its aggregate encoded budget', async () => {
+  const durable = Array.from({ length: 100 }, (_, index) => userMessage(index, `message-${index}`));
+  const { bootstrap } = await createSessionTranscriptBootstrap({
+    reader: transcriptReader(durable),
+    sessionId: 'session-1',
+    subscriptionId: 'subscription-1',
+    rootTurn: null,
+    activeAssistantStreams: [],
+    maxBytes: 16 * 1024,
+    maxEncodedBytes: 4 * 1024,
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(bootstrap), 'utf8') <= 4 * 1024);
+  assert.ok(bootstrap.durable.nextCursor);
+});
+
+test('rejects an active overlay that exceeds its retained message bound', async () => {
+  const overlay = Array.from({ length: 4_097 }, (_, index) => userMessage(index));
+  await assert.rejects(
+    prepareSessionTranscriptOverlay({
+      reader: transcriptReader([], overlay),
+      sessionId: 'session-1',
+      rootTurn: null,
+      activeAssistantStreams: [],
+    }),
+    /overlay exceeds its message limit/,
+  );
+});
+
 function userMessage(index: number, text = `message-${index}`): StoredMessage {
   return {
     type: 'user',
@@ -127,40 +156,78 @@ function transcriptReader(
       const throughSequence =
         request.throughSequence ?? (durable.length === 0 ? null : durable.length - 1);
       if (throughSequence === null) {
-        return { throughSequence: null, messages: [], hasMore: false };
+        return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
       }
+      const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
       const candidates = durable
         .map((message, sequence) => {
-          const data = JSON.stringify(message);
-          return { sequence, data, encodedBytes: Buffer.byteLength(data, 'utf8') };
+          const data = Buffer.from(JSON.stringify(message), 'utf8');
+          return { sequence, data };
         })
         .filter(
           ({ sequence }) =>
             sequence <= throughSequence &&
-            (request.direction === 'older'
-              ? sequence < (request.cursor ?? throughSequence + 1)
-              : sequence > (request.cursor ?? -1)),
+            (request.direction === 'older' ? sequence <= position : sequence >= position),
         )
         .sort((left, right) =>
           request.direction === 'older'
             ? right.sequence - left.sequence
             : left.sequence - right.sequence,
         );
-      const selected = [] as typeof candidates;
+      const fragments = [] as Array<{
+        sequence: number;
+        byteOffset: number;
+        totalBytes: number;
+        data: Buffer;
+      }>;
       let rawBytes = 0;
+      let next: { position: number; byteOffset: number | null } | null = null;
       for (const candidate of candidates) {
-        if (selected.length >= request.maxMessages) break;
-        if (selected.length > 0 && rawBytes + candidate.encodedBytes > request.maxBytes) break;
-        selected.push(candidate);
-        rawBytes += candidate.encodedBytes;
+        if (fragments.length >= request.maxMessages || rawBytes >= request.maxBytes) break;
+        const continued = candidate.sequence === position && request.byteOffset !== undefined;
+        const edge = continued
+          ? request.byteOffset!
+          : request.direction === 'older'
+            ? candidate.data.byteLength
+            : 0;
+        const available = request.maxBytes - rawBytes;
+        const byteOffset = request.direction === 'older' ? Math.max(0, edge - available) : edge;
+        const end =
+          request.direction === 'older'
+            ? edge
+            : Math.min(candidate.data.byteLength, edge + available);
+        fragments.push({
+          sequence: candidate.sequence,
+          byteOffset,
+          totalBytes: candidate.data.byteLength,
+          data: candidate.data.subarray(byteOffset, end),
+        });
+        rawBytes += end - byteOffset;
+        const complete =
+          request.direction === 'older' ? byteOffset === 0 : end === candidate.data.byteLength;
+        if (!complete) {
+          next = {
+            position: candidate.sequence,
+            byteOffset: request.direction === 'older' ? byteOffset : end,
+          };
+          break;
+        }
       }
-      if (request.direction === 'older') selected.reverse();
+      if (next === null && fragments.length > 0 && fragments.length < candidates.length) {
+        next = {
+          position: fragments.at(-1)!.sequence + (request.direction === 'older' ? -1 : 1),
+          byteOffset: null,
+        };
+      }
       return {
         throughSequence,
-        messages: selected,
-        hasMore: selected.length < candidates.length,
+        fragments,
+        rawBytes,
+        next,
       };
     },
+    readDurableMessagesById: async (_sessionId, messageIds) =>
+      durable.filter((message) => messageIds.includes(message.id)),
     readActiveOverlay: async () => overlay,
   };
 }

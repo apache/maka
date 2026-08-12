@@ -11,7 +11,8 @@ import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
 export const SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES = 16 * 1024;
-export const SESSION_TRANSCRIPT_PAGE_MAX_BYTES = 48 * 1024;
+export const SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES = 48 * 1024;
+export const SESSION_TRANSCRIPT_PAGE_MAX_BYTES = 64 * 1024;
 export const SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES = 256;
 export const SESSION_TRANSCRIPT_PAGE_RESULT_MAX_BYTES = 90 * 1024;
 export const SESSION_TRANSCRIPT_CURSOR_MAX_BYTES = 1024;

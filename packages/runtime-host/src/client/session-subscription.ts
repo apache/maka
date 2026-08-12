@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import {
   encodeProtocolMessage,
   type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+  SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES,
   type SubscriptionFrame,
   type SubscriptionOpenResult,
   type SessionTranscriptBootstrap,
@@ -189,16 +191,8 @@ export class ClientSessionSubscription
         'Session subscription was opened without transcript access',
       );
     }
-    const durablePages = await this.#collectPages(bootstrap.durable);
-    const overlayPages = await this.#collectPages(bootstrap.overlay);
-    const durable = decodeTranscriptFragments(
-      durablePages.flatMap((page) => page.fragments),
-      'durable',
-    );
-    const overlay = decodeTranscriptFragments(
-      overlayPages.flatMap((page) => page.fragments),
-      'overlay',
-    );
+    const durable = await this.#loadTranscriptSource(bootstrap.durable);
+    const overlay = await this.#loadTranscriptSource(bootstrap.overlay);
     assertCompleteIdentities(durable, bootstrap.throughSequence);
     assertCompleteIdentities(overlay, overlay.at(-1)?.identity ?? null);
     const messages = durable.map((entry) => entry.value);
@@ -220,15 +214,19 @@ export class ClientSessionSubscription
     return messages;
   }
 
-  async #collectPages(initial: SessionTranscriptPage): Promise<SessionTranscriptPage[]> {
+  async #loadTranscriptSource(
+    initial: SessionTranscriptPage,
+  ): Promise<Array<{ identity: number; value: unknown }>> {
     this.#assertTranscriptPage(initial, {
       source: initial.source,
       direction: initial.direction,
       throughSequence: initial.throughSequence,
       maxBytes: Math.max(1, initial.rawBytes),
     });
-    const pages = [initial];
+    const assembler = new TranscriptFragmentAssembler(initial.source, initial.direction);
+    assembler.accept(initial.fragments);
     let cursor = initial.nextCursor;
+    let previousPage = initial;
     const seenCursors = new Set<string>();
     while (cursor !== null) {
       if (seenCursors.has(cursor)) {
@@ -244,12 +242,13 @@ export class ClientSessionSubscription
         throughSequence: initial.throughSequence,
         cursor,
         anchorSequence: null,
-        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+        maxBytes: continuationPageByteLimit(initial.source, previousPage),
       });
-      pages.push(page);
+      assembler.accept(page.fragments);
+      previousPage = page;
       cursor = page.nextCursor;
     }
-    return pages;
+    return assembler.finish();
   }
 
   #assertTranscriptReadable(): void {
@@ -403,71 +402,157 @@ export class ClientSessionSubscription
   }
 }
 
-function decodeTranscriptFragments(
-  fragments: readonly SessionTranscriptFragment[],
+function continuationPageByteLimit(
   source: 'durable' | 'overlay',
-): Array<{ identity: number; value: unknown }> {
-  const messages = new Map<number, { totalBytes: number; fragments: Map<number, Buffer> }>();
-  for (const fragment of fragments) {
-    if (fragment.kind !== source) {
+  page: SessionTranscriptPage,
+): number {
+  if (page.fragments.length !== 1) return SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES;
+  const [fragment] = page.fragments;
+  if (!fragment || fragment.kind !== source) {
+    return SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES;
+  }
+  const fragmentBytes = Buffer.from(fragment.data, 'base64').byteLength;
+  const incomplete =
+    page.direction === 'older'
+      ? fragment.byteOffset > 0
+      : fragment.byteOffset + fragmentBytes < fragment.totalBytes;
+  return incomplete
+    ? SESSION_TRANSCRIPT_PAGE_MAX_BYTES
+    : SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES;
+}
+
+class TranscriptFragmentAssembler {
+  readonly #totals = new Map<number, number>();
+  readonly #fragmentDigests = new Map<number, Map<number, string>>();
+  readonly #completed = new Set<number>();
+  readonly #messages: Array<{ identity: number; value: unknown }> = [];
+  #current:
+    | {
+        identity: number;
+        totalBytes: number;
+        chunks: Map<number, Buffer>;
+        edge: number;
+      }
+    | undefined;
+  #lastStartedIdentity: number | undefined;
+
+  constructor(
+    private readonly source: 'durable' | 'overlay',
+    private readonly direction: 'older' | 'newer',
+  ) {}
+
+  accept(fragments: readonly SessionTranscriptFragment[]): void {
+    for (const fragment of fragments) this.#accept(fragment);
+  }
+
+  finish(): Array<{ identity: number; value: unknown }> {
+    if (this.#current) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session transcript message ended before every fragment arrived',
+      );
+    }
+    return this.#messages.sort((left, right) => left.identity - right.identity);
+  }
+
+  #accept(fragment: SessionTranscriptFragment): void {
+    if (fragment.kind !== this.source) {
       throw new RuntimeHostSubscriptionError(
         'correlation_changed',
         'Session transcript fragment source changed',
       );
     }
     const identity = fragment.kind === 'durable' ? fragment.sequence : fragment.messageIndex;
-    const existing = messages.get(identity) ?? {
-      totalBytes: fragment.totalBytes,
-      fragments: new Map<number, Buffer>(),
-    };
     const bytes = Buffer.from(fragment.data, 'base64');
-    const duplicate = existing.fragments.get(fragment.byteOffset);
+    const digest = createHash('sha256').update(bytes).digest('base64url');
+    const total = this.#totals.get(identity);
+    const digests = this.#fragmentDigests.get(identity) ?? new Map<number, string>();
+    const duplicateDigest = digests.get(fragment.byteOffset);
     if (
-      existing.totalBytes !== fragment.totalBytes ||
-      (duplicate !== undefined && !duplicate.equals(bytes))
+      (total !== undefined && total !== fragment.totalBytes) ||
+      (duplicateDigest !== undefined && duplicateDigest !== digest)
     ) {
       throw new RuntimeHostSubscriptionError(
         'correlation_changed',
         'Session transcript fragment identity changed',
       );
     }
-    if (duplicate === undefined) existing.fragments.set(fragment.byteOffset, bytes);
-    messages.set(identity, existing);
+    if (duplicateDigest !== undefined) return;
+    if (this.#completed.has(identity)) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session transcript fragment changed after message completion',
+      );
+    }
+    if (!this.#current) this.#start(identity, fragment.totalBytes);
+    if (this.#current?.identity !== identity) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session transcript message has a fragment gap',
+      );
+    }
+    const expectedOffset =
+      this.direction === 'older' ? this.#current.edge - bytes.byteLength : this.#current.edge;
+    if (fragment.byteOffset !== expectedOffset) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session transcript message has a fragment gap',
+      );
+    }
+    this.#totals.set(identity, fragment.totalBytes);
+    digests.set(fragment.byteOffset, digest);
+    this.#fragmentDigests.set(identity, digests);
+    this.#current.chunks.set(fragment.byteOffset, bytes);
+    this.#current.edge =
+      this.direction === 'older' ? fragment.byteOffset : fragment.byteOffset + bytes.byteLength;
+    if (
+      (this.direction === 'older' && this.#current.edge === 0) ||
+      (this.direction === 'newer' && this.#current.edge === fragment.totalBytes)
+    ) {
+      this.#completeCurrent();
+    }
   }
-  return [...messages.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([identity, message]) => {
-      const ordered = [...message.fragments.entries()].sort(([left], [right]) => left - right);
-      let expectedOffset = 0;
-      const chunks: Buffer[] = [];
-      for (const [offset, chunk] of ordered) {
-        if (offset !== expectedOffset) {
-          throw new RuntimeHostSubscriptionError(
-            'correlation_changed',
-            'Session transcript message has a fragment gap',
-          );
-        }
-        chunks.push(chunk);
-        expectedOffset += chunk.byteLength;
-      }
-      if (expectedOffset !== message.totalBytes) {
-        throw new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Session transcript message ended before every fragment arrived',
-        );
-      }
-      try {
-        return {
-          identity,
-          value: JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown,
-        };
-      } catch (cause) {
-        throw new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          `Session transcript message is invalid JSON: ${errorMessage(cause)}`,
-        );
-      }
-    });
+
+  #start(identity: number, totalBytes: number): void {
+    if (
+      this.#lastStartedIdentity !== undefined &&
+      (this.direction === 'older'
+        ? identity >= this.#lastStartedIdentity
+        : identity <= this.#lastStartedIdentity)
+    ) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session transcript message order changed between pages',
+      );
+    }
+    this.#lastStartedIdentity = identity;
+    this.#current = {
+      identity,
+      totalBytes,
+      chunks: new Map(),
+      edge: this.direction === 'older' ? totalBytes : 0,
+    };
+  }
+
+  #completeCurrent(): void {
+    const current = this.#current!;
+    const chunks = [...current.chunks.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, chunk]) => chunk);
+    try {
+      this.#messages.push({
+        identity: current.identity,
+        value: JSON.parse(Buffer.concat(chunks, current.totalBytes).toString('utf8')) as unknown,
+      });
+    } catch (cause) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        `Session transcript message is invalid JSON: ${errorMessage(cause)}`,
+      );
+    }
+    this.#completed.add(current.identity);
+    this.#current = undefined;
+  }
 }
 
 function assertCompleteIdentities(

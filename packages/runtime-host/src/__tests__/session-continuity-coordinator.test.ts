@@ -6,6 +6,7 @@ import type { StoredMessage } from '@maka/core/session';
 import {
   decodeHostFrame,
   encodeProtocolMessage,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SubscriptionFrame,
 } from '../protocol/index.js';
@@ -649,6 +650,150 @@ test('open returns a bounded durable tail and an immutable active overlay', asyn
   coordinator.close();
 });
 
+test('shares one immutable active overlay preparation until the Session changes', async () => {
+  const baseReader = transcriptReader([assistantMessage('durable')], [assistantMessage('overlay')]);
+  let overlayReads = 0;
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    readActiveOverlay: async (...args) => {
+      overlayReads += 1;
+      return baseReader.readActiveOverlay(...args);
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+  coordinator.attachConnection('connection-overlay-1', new RecordingSink());
+  coordinator.attachConnection('connection-overlay-2', new RecordingSink());
+  await open(coordinator, 'connection-overlay-1', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  await open(coordinator, 'connection-overlay-2', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  assert.equal(overlayReads, 1);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  coordinator.attachConnection('connection-overlay-3', new RecordingSink());
+  await open(coordinator, 'connection-overlay-3', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  assert.equal(overlayReads, 2);
+  coordinator.close();
+});
+
+test('bounds retained active overlay generations across Host connections', async () => {
+  let generation = 0;
+  const baseReader = transcriptReader([]);
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    readActiveOverlay: async () => [
+      assistantMessage(`${generation}:${'x'.repeat(15 * 1024 * 1024)}`),
+    ],
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+  const opened: Array<{ abort(subscriptionId: string): void; subscriptionId: string }> = [];
+  for (let index = 0; index < 4; index += 1) {
+    const connection = coordinator.attachConnection(
+      `connection-overlay-budget-${index}`,
+      new RecordingSink(),
+    );
+    const result = await open(coordinator, `connection-overlay-budget-${index}`, {
+      kind: 'tail',
+      maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+    });
+    opened.push({ abort: connection.abort, subscriptionId: result.subscriptionId });
+    generation += 1;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(index + 1));
+  }
+
+  coordinator.attachConnection('connection-overlay-budget-rejected', new RecordingSink());
+  const rejected = await coordinator.handlers['subscription.open'](
+    {
+      sessionId: SESSION_ID,
+      transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+    },
+    connectionContext('connection-overlay-budget-rejected'),
+  );
+  assert.deepEqual(rejected, {
+    ok: false,
+    error: {
+      code: 'operation_unavailable',
+      message: 'Runtime Host transcript overlay capacity reached',
+    },
+  });
+
+  opened[0]!.abort(opened[0]!.subscriptionId);
+  const recovered = await open(coordinator, 'connection-overlay-budget-rejected', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  assert.ok(recovered.transcript);
+  coordinator.close();
+});
+
+test('fits a transcript bootstrap inside a near-limit subscription open response', async () => {
+  const durable = Array.from({ length: 300 }, (_, index) => ({
+    type: 'system_note' as const,
+    id: `message-${index}`,
+    ts: index + 1,
+    kind: 'session_start' as const,
+  }));
+  const projection = canonical({
+    queue: {
+      hostEpoch: HOST_EPOCH,
+      queueRevision: 1,
+      steering: [],
+      followup: [
+        {
+          entryId: 'entry-1',
+          messageId: 'queued-message-1',
+          content: {
+            text: 'q'.repeat(48 * 1024),
+            quotes: [{ text: 'r'.repeat(2 * 1024), label: 'Assistant' }],
+          },
+          placement: 'next_turn',
+          state: 'queued',
+        },
+      ],
+    },
+  });
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => projection,
+    new SessionAdmissionGate(),
+    undefined,
+    transcriptReader(durable),
+  );
+  coordinator.attachConnection('connection-open-budget', new RecordingSink());
+  const opened = await open(coordinator, 'connection-open-budget', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  assert.ok(opened.transcript);
+  const encoded = encodeProtocolMessage({
+    requestId: 'request-1',
+    operation: 'subscription.open',
+    ok: true,
+    result: opened,
+  });
+  assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES);
+  coordinator.close();
+});
+
 test('open reconciles the active assistant prefix into its overlay seed', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
@@ -810,13 +955,12 @@ test('an in-flight transcript page cannot outlive its owning connection', async 
   coordinator.close();
 });
 
-test('transcript persistence advances before the next canonical projection', async () => {
+test('a durable append refresh advances transcript before its completion event', async () => {
   const durable = [assistantMessage('first')];
   const reader = transcriptReader(durable);
-  let lastUsedAt = 1;
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
-    async () => canonical({ lastUsedAt }),
+    async () => canonical(),
     new SessionAdmissionGate(),
     undefined,
     reader,
@@ -829,13 +973,15 @@ test('transcript persistence advances before the next canonical projection', asy
   });
   connection.activate(opened.subscriptionId);
   durable.push({ ...assistantMessage('second'), id: 'message-2' });
-  lastUsedAt = 2;
-  await coordinator.refreshCanonical(SESSION_ID);
-  await waitFor(() => sink.frames.length === 2);
-  assert.deepEqual(
-    sink.frames.map((frame) => frame.kind),
-    ['subscription.transcript_advanced', 'subscription.session_projection'],
+  coordinator.enqueueCanonicalRefresh(SESSION_ID);
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-2', 'second'),
   );
+  await waitFor(() => sink.frames.length >= 2);
+  assert.equal(sink.frames[0]?.kind, 'subscription.transcript_advanced');
+  assert.ok(sink.frames.slice(1).every((frame) => frame.kind === 'subscription.session_delta'));
   coordinator.close();
 });
 
@@ -987,6 +1133,7 @@ function canonical(
     lastUsedAt?: number;
     rootTurn?: CanonicalSessionProjection['rootTurn'];
     interactions?: CanonicalSessionProjection['interactions'];
+    queue?: CanonicalSessionProjection['queue'];
   } = {},
 ): CanonicalSessionProjection {
   return {
@@ -1003,7 +1150,7 @@ function canonical(
         ? { sessionId: SESSION_ID, turnId: 'turn-1', runId: 'run-1', status: 'running' }
         : overrides.rootTurn,
     goal: null,
-    queue: {
+    queue: overrides.queue ?? {
       hostEpoch: HOST_EPOCH,
       queueRevision: 0,
       steering: [],
@@ -1143,40 +1290,78 @@ function transcriptReader(
       const throughSequence =
         request.throughSequence ?? (durable.length === 0 ? null : durable.length - 1);
       if (throughSequence === null) {
-        return { throughSequence: null, messages: [], hasMore: false };
+        return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
       }
+      const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
       const candidates = durable
         .map((message, sequence) => {
-          const data = JSON.stringify(message);
-          return { sequence, data, encodedBytes: Buffer.byteLength(data, 'utf8') };
+          const data = Buffer.from(JSON.stringify(message), 'utf8');
+          return { sequence, data };
         })
         .filter(
           ({ sequence }) =>
             sequence <= throughSequence &&
-            (request.direction === 'older'
-              ? sequence < (request.cursor ?? throughSequence + 1)
-              : sequence > (request.cursor ?? -1)),
+            (request.direction === 'older' ? sequence <= position : sequence >= position),
         )
         .sort((left, right) =>
           request.direction === 'older'
             ? right.sequence - left.sequence
             : left.sequence - right.sequence,
         );
-      const selected = [] as typeof candidates;
-      let encodedBytes = 0;
+      const fragments = [] as Array<{
+        sequence: number;
+        byteOffset: number;
+        totalBytes: number;
+        data: Buffer;
+      }>;
+      let rawBytes = 0;
+      let next: { position: number; byteOffset: number | null } | null = null;
       for (const candidate of candidates) {
-        if (selected.length >= request.maxMessages) break;
-        if (selected.length > 0 && encodedBytes + candidate.encodedBytes > request.maxBytes) break;
-        selected.push(candidate);
-        encodedBytes += candidate.encodedBytes;
+        if (fragments.length >= request.maxMessages || rawBytes >= request.maxBytes) break;
+        const continued = candidate.sequence === position && request.byteOffset !== undefined;
+        const edge = continued
+          ? request.byteOffset!
+          : request.direction === 'older'
+            ? candidate.data.byteLength
+            : 0;
+        const available = request.maxBytes - rawBytes;
+        const byteOffset = request.direction === 'older' ? Math.max(0, edge - available) : edge;
+        const end =
+          request.direction === 'older'
+            ? edge
+            : Math.min(candidate.data.byteLength, edge + available);
+        fragments.push({
+          sequence: candidate.sequence,
+          byteOffset,
+          totalBytes: candidate.data.byteLength,
+          data: candidate.data.subarray(byteOffset, end),
+        });
+        rawBytes += end - byteOffset;
+        const complete =
+          request.direction === 'older' ? byteOffset === 0 : end === candidate.data.byteLength;
+        if (!complete) {
+          next = {
+            position: candidate.sequence,
+            byteOffset: request.direction === 'older' ? byteOffset : end,
+          };
+          break;
+        }
       }
-      if (request.direction === 'older') selected.reverse();
+      if (next === null && fragments.length > 0 && fragments.length < candidates.length) {
+        next = {
+          position: fragments.at(-1)!.sequence + (request.direction === 'older' ? -1 : 1),
+          byteOffset: null,
+        };
+      }
       return {
         throughSequence,
-        messages: selected,
-        hasMore: selected.length < candidates.length,
+        fragments,
+        rawBytes,
+        next,
       };
     },
+    readDurableMessagesById: async (_sessionId, messageIds) =>
+      durable.filter((message) => messageIds.includes(message.id)),
     readActiveOverlay: async () => overlay,
   };
 }

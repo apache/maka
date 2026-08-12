@@ -16,6 +16,9 @@ import type {
 import type { TurnSnapshot } from '../protocol/index.js';
 
 const PERMISSION_OUTCOME_READ_CONCURRENCY = 8;
+export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_EVENTS = 8_192;
+export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES = 4_096;
+export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES = 16 * 1024 * 1024;
 
 export function createSessionTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
@@ -26,13 +29,22 @@ export function createSessionTranscriptReader(input: {
       input.stores.sessionStore.readTranscriptHighWaterSnapshot(sessionId),
     readDurablePage: (sessionId, request) =>
       input.stores.sessionStore.readTranscriptPageSnapshot(sessionId, request),
+    readDurableMessagesById: (sessionId, messageIds) =>
+      input.stores.sessionStore.readTranscriptMessagesSnapshot(sessionId, messageIds),
     readActiveOverlay: async (sessionId, rootTurn) => {
       if (!rootTurn || isTerminalTurn(rootTurn)) return [];
 
-      const [run, events] = await Promise.all([
+      const [run, boundedEvents] = await Promise.all([
         input.stores.agentRunStore.readRun(sessionId, rootTurn.runId),
-        input.stores.runtimeEventStore.readRuntimeEvents(sessionId, rootTurn.runId),
+        input.stores.runtimeEventStore.readRuntimeEventsBounded(sessionId, rootTurn.runId, {
+          maxRecords: ACTIVE_TRANSCRIPT_OVERLAY_MAX_EVENTS,
+          maxBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+        }),
       ]);
+      if (boundedEvents.status === 'limit_exceeded') {
+        throw new Error('Active RuntimeEvent transcript exceeds its projection limit');
+      }
+      const events = boundedEvents.records;
       const canonicalPermissionOutcomes = await readCanonicalPermissionOutcomes(
         events,
         input.canonicalPermissionOutcomes,
@@ -44,6 +56,7 @@ export function createSessionTranscriptReader(input: {
       if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
         throw new Error('Active RuntimeEvent transcript projection is incomplete');
       }
+      assertActiveOverlayBounded(projected.messages);
       return projected.messages;
     },
   };
@@ -55,10 +68,27 @@ export interface SessionTranscriptReader {
     sessionId: string,
     request: SessionTranscriptPageRequest,
   ): Promise<SessionTranscriptStoragePage>;
+  readDurableMessagesById(
+    sessionId: string,
+    messageIds: readonly string[],
+  ): Promise<readonly StoredMessage[]>;
   readActiveOverlay(
     sessionId: string,
     rootTurn: TurnSnapshot | null,
   ): Promise<readonly StoredMessage[]>;
+}
+
+function assertActiveOverlayBounded(messages: readonly StoredMessage[]): void {
+  if (messages.length > ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES) {
+    throw new Error('Active Session transcript overlay exceeds its message limit');
+  }
+  let encodedBytes = 0;
+  for (const message of messages) {
+    encodedBytes += Buffer.byteLength(JSON.stringify(message), 'utf8');
+    if (encodedBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
+      throw new Error('Active Session transcript overlay exceeds its byte limit');
+    }
+  }
 }
 
 async function readCanonicalPermissionOutcomes(
