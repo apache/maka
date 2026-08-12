@@ -41,11 +41,19 @@ describe('SqliteSessionMetadataStore', () => {
       setup.close();
 
       const database = new DatabaseSync(path);
+      const incompatible = JSON.stringify({
+        type: 'user',
+        id: 'message-legacy',
+        turnId: 'turn-legacy',
+        ts: 5,
+        text: 'private message text',
+        origin: { kind: 'automation', automationId: 'legacy-automation' },
+      });
       database
         .prepare(`
           INSERT INTO session_messages(
-            session_id, sequence, message_id, message_type, message_ts, record_json
-          ) VALUES (?, ?, ?, ?, ?, ?)
+            session_id, sequence, message_id, message_type, message_ts, record_json, record_bytes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           'session-1',
@@ -53,14 +61,8 @@ describe('SqliteSessionMetadataStore', () => {
           'message-legacy',
           'user',
           5,
-          JSON.stringify({
-            type: 'user',
-            id: 'message-legacy',
-            turnId: 'turn-legacy',
-            ts: 5,
-            text: 'private message text',
-            origin: { kind: 'automation', automationId: 'legacy-automation' },
-          }),
+          incompatible,
+          Buffer.byteLength(incompatible, 'utf8'),
         );
       database.close();
 

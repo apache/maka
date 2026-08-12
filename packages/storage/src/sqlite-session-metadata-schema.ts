@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 22;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 23;
+export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 
 export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
   'agent_graph_intent_claims',
@@ -850,6 +851,53 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       );
   `,
   ],
+  [
+    23,
+    `
+    ALTER TABLE session_messages RENAME TO session_messages_v22;
+
+    CREATE TABLE session_messages (
+      session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      message_id TEXT NOT NULL,
+      message_type TEXT NOT NULL,
+      message_ts INTEGER NOT NULL CHECK (message_ts >= 0),
+      record_json TEXT NOT NULL,
+      record_bytes INTEGER NOT NULL
+        CHECK (record_bytes > 0 AND record_bytes = length(CAST(record_json AS BLOB))),
+      PRIMARY KEY(session_id, sequence),
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    );
+
+    INSERT INTO session_messages(
+      session_id, sequence, message_id, message_type, message_ts, record_json, record_bytes
+    )
+    SELECT
+      session_id, sequence, message_id, message_type, message_ts, record_json,
+      length(CAST(record_json AS BLOB))
+    FROM session_messages_v22;
+
+    DROP TABLE session_messages_v22;
+
+    CREATE INDEX session_messages_by_identity
+      ON session_messages(session_id, message_id);
+
+    CREATE INDEX session_messages_by_time
+      ON session_messages(session_id, message_ts, sequence);
+
+    CREATE TABLE session_message_chunks (
+      session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+      data BLOB NOT NULL CHECK (length(data) BETWEEN 1 AND ${SQLITE_SESSION_MESSAGE_CHUNK_BYTES}),
+      PRIMARY KEY(session_id, sequence, chunk_index),
+      FOREIGN KEY(session_id, sequence)
+        REFERENCES session_messages(session_id, sequence)
+        ON DELETE CASCADE
+    ) WITHOUT ROWID;
+
+  `,
+  ],
 ]);
 
 export function configureSqliteSessionMetadataDatabase(db: DatabaseSync): void {
@@ -882,6 +930,7 @@ export function migrateSqliteSessionMetadataDatabase(db: DatabaseSync): void {
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite session metadata migration ${version}`);
       db.exec(sql);
+      if (version === 23) backfillSessionMessageChunks(db);
       db.prepare(`
         INSERT INTO session_metadata_schema(scope, version)
         VALUES ('session_metadata', ?)
@@ -892,6 +941,46 @@ export function migrateSqliteSessionMetadataDatabase(db: DatabaseSync): void {
   } catch (error) {
     rollback(db);
     throw error;
+  }
+}
+
+function backfillSessionMessageChunks(db: DatabaseSync): void {
+  const insert = db.prepare(`
+    INSERT INTO session_message_chunks(session_id, sequence, chunk_index, data)
+    VALUES (?, ?, ?, ?)
+  `);
+  const rows = db
+    .prepare(`
+      SELECT session_id, sequence, record_json
+      FROM session_messages
+      ORDER BY session_id, sequence
+    `)
+    .iterate() as Iterable<{
+    session_id?: unknown;
+    sequence?: unknown;
+    record_json?: unknown;
+  }>;
+  for (const row of rows) {
+    if (
+      typeof row.session_id !== 'string' ||
+      !Number.isSafeInteger(row.sequence) ||
+      typeof row.record_json !== 'string'
+    ) {
+      throw new Error('Invalid Session message while migrating transcript chunks');
+    }
+    const encoded = Buffer.from(row.record_json, 'utf8');
+    for (
+      let offset = 0;
+      offset < encoded.byteLength;
+      offset += SQLITE_SESSION_MESSAGE_CHUNK_BYTES
+    ) {
+      insert.run(
+        row.session_id,
+        row.sequence as number,
+        offset / SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
+        encoded.subarray(offset, offset + SQLITE_SESSION_MESSAGE_CHUNK_BYTES),
+      );
+    }
   }
 }
 

@@ -25,7 +25,10 @@ import {
 import { SQLITE_ARTIFACT_SCHEMA_VERSION } from './sqlite-artifact-schema.js';
 import { SQLITE_CORE_EXECUTION_SCHEMA_VERSION } from './sqlite-core-execution-schema.js';
 import { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
-import { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
+import {
+  SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
+  SQLITE_SESSION_METADATA_SCHEMA_VERSION,
+} from './sqlite-session-metadata-schema.js';
 import { SQLITE_USAGE_SCHEMA_VERSION } from './sqlite-usage-schema.js';
 import { SQLITE_WORKFLOW_SCHEMA_VERSION } from './sqlite-workflow-schema.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
@@ -392,6 +395,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         'session_catalog_projection',
         'session_catalog_label_projection',
         'session_messages',
+        'session_message_chunks',
         'projects',
         'project_locations',
         'project_aliases',
@@ -469,7 +473,8 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
 
       const messageRows = database
         .prepare(`
-          SELECT session_id, sequence, message_id, message_type, message_ts, record_json
+          SELECT session_id, sequence, message_id, message_type, message_ts,
+            record_json, record_bytes
           FROM session_messages
           ORDER BY session_id, sequence
         `)
@@ -480,15 +485,48 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         message_type?: unknown;
         message_ts?: unknown;
         record_json?: unknown;
+        record_bytes?: unknown;
       }>;
+      const readMessageChunks = database.prepare(`
+        SELECT chunk_index, data
+        FROM session_message_chunks
+        WHERE session_id = ? AND sequence = ?
+        ORDER BY chunk_index
+      `);
       for (const row of messageRows) {
         if (
           typeof row.session_id !== 'string' ||
           !Number.isSafeInteger(row.sequence) ||
           (row.sequence as number) < 0 ||
-          typeof row.record_json !== 'string'
+          typeof row.record_json !== 'string' ||
+          !Number.isSafeInteger(row.record_bytes) ||
+          (row.record_bytes as number) < 1
         ) {
           throw new Error('session message index is invalid');
+        }
+        const encoded = Buffer.from(row.record_json, 'utf8');
+        const expectedBytes = encoded.byteLength;
+        const expectedChunks = Math.ceil(expectedBytes / SQLITE_SESSION_MESSAGE_CHUNK_BYTES);
+        const chunks = readMessageChunks.all(row.session_id, row.sequence as number) as Array<{
+          chunk_index?: unknown;
+          data?: unknown;
+        }>;
+        if (row.record_bytes !== expectedBytes || chunks.length !== expectedChunks) {
+          throw new Error('session message chunks do not match record');
+        }
+        for (let index = 0; index < chunks.length; index += 1) {
+          const chunk = chunks[index]!;
+          const expected = encoded.subarray(
+            index * SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
+            (index + 1) * SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
+          );
+          if (
+            chunk.chunk_index !== index ||
+            !(chunk.data instanceof Uint8Array) ||
+            !Buffer.from(chunk.data).equals(expected)
+          ) {
+            throw new Error('session message chunks do not match record');
+          }
         }
         const message = decodeStoredMessage(JSON.parse(row.record_json));
         if (

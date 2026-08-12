@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { createSessionStore, isSessionNotFoundError } from '../session-store.js';
@@ -265,6 +266,141 @@ describe('SQLite SessionStore', () => {
       assert.deepEqual(JSON.parse(reconstructed.toString('utf8')), messages[3]);
     } finally {
       await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('pages a multi-chunk message and linearly migrates its v22 record', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-transcript-chunks-'));
+    const message = {
+      type: 'user' as const,
+      id: 'message-large',
+      turnId: 'turn-large',
+      ts: 1,
+      text: '三🙂x'.repeat(40_000),
+    };
+    let sessionId = '';
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      sessionId = session.id;
+      await store.appendMessage(session.id, message);
+      const fragments = [];
+      let position = 0;
+      let byteOffset: number | undefined;
+      do {
+        const page = await store.readTranscriptPageSnapshot(session.id, {
+          direction: 'newer',
+          throughSequence: 0,
+          position,
+          ...(byteOffset === undefined ? {} : { byteOffset }),
+          maxBytes: 50_000,
+          maxMessages: 1,
+        });
+        fragments.push(...page.fragments);
+        position = page.next?.position ?? 1;
+        byteOffset = page.next?.byteOffset ?? undefined;
+      } while (position === 0);
+      assert.deepEqual(
+        JSON.parse(Buffer.concat(fragments.map(({ data }) => data)).toString('utf8')),
+        message,
+      );
+    } finally {
+      await store.close?.();
+    }
+
+    const path = join(root, OPERATIONAL_STATE_DATABASE_NAME);
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      DROP TABLE session_message_chunks;
+      ALTER TABLE session_messages RENAME TO session_messages_v23;
+      CREATE TABLE session_messages (
+        session_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL CHECK (sequence >= 0),
+        message_id TEXT NOT NULL,
+        message_type TEXT NOT NULL,
+        message_ts INTEGER NOT NULL CHECK (message_ts >= 0),
+        record_json TEXT NOT NULL,
+        PRIMARY KEY(session_id, sequence),
+        FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+      );
+      INSERT INTO session_messages
+      SELECT session_id, sequence, message_id, message_type, message_ts, record_json
+      FROM session_messages_v23;
+      DROP TABLE session_messages_v23;
+      CREATE INDEX session_messages_by_identity ON session_messages(session_id, message_id);
+      CREATE INDEX session_messages_by_time
+        ON session_messages(session_id, message_ts, sequence);
+      UPDATE session_metadata_schema SET version = 22 WHERE scope = 'session_metadata';
+    `);
+    legacy.close();
+
+    const migrated = createSessionStore(root);
+    try {
+      const page = await migrated.readTranscriptPageSnapshot(sessionId, {
+        direction: 'older',
+        throughSequence: 0,
+        maxBytes: 50_000,
+        maxMessages: 1,
+      });
+      assert.equal(page.fragments[0]?.data.byteLength, 50_000);
+      assert.equal(
+        page.fragments[0]?.totalBytes,
+        Buffer.byteLength(JSON.stringify(message), 'utf8'),
+      );
+    } finally {
+      await migrated.close?.();
+    }
+
+    const inspected = new DatabaseSync(path);
+    try {
+      const parent = inspected
+        .prepare('SELECT record_bytes FROM session_messages WHERE session_id = ? AND sequence = 0')
+        .get(sessionId) as { record_bytes?: unknown };
+      const chunks = inspected
+        .prepare(`
+          SELECT count(*) AS count, sum(length(data)) AS bytes,
+            min(chunk_index) AS first_chunk, max(chunk_index) AS last_chunk
+          FROM session_message_chunks
+          WHERE session_id = ? AND sequence = 0
+        `)
+        .get(sessionId) as {
+        count?: unknown;
+        bytes?: unknown;
+        first_chunk?: unknown;
+        last_chunk?: unknown;
+      };
+      const encodedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
+      assert.equal(parent.record_bytes, encodedBytes);
+      assert.equal(chunks.bytes, encodedBytes);
+      assert.equal(chunks.count, Math.ceil(encodedBytes / (64 * 1024)));
+      assert.equal(chunks.first_chunk, 0);
+      assert.equal(chunks.last_chunk, (chunks.count as number) - 1);
+      inspected
+        .prepare(`
+          DELETE FROM session_message_chunks
+          WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
+        `)
+        .run(sessionId);
+    } finally {
+      inspected.close();
+    }
+
+    const corrupted = createSessionStore(root);
+    try {
+      await assert.rejects(
+        corrupted.readTranscriptPageSnapshot(sessionId, {
+          direction: 'newer',
+          throughSequence: 0,
+          position: 0,
+          byteOffset: 64 * 1024,
+          maxBytes: 1_000,
+          maxMessages: 1,
+        }),
+        /incompatible/i,
+      );
+    } finally {
+      await corrupted.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });
