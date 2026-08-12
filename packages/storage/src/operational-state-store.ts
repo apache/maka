@@ -191,9 +191,8 @@ class OperationalStateDatabaseOwner {
 
 function inspectAndMigrateOperationalState(database: DatabaseSync, now: () => number): void {
   try {
-    if (inspectOperationalStateSchema(database).status === 'needs_migration') {
-      migrateOperationalStateDatabaseInternal(database, now);
-    }
+    inspectOperationalStateSchema(database);
+    migrateOperationalStateDatabaseInternal(database, now);
   } catch (error) {
     if (isSqliteEnvironmentError(error)) throw error;
     throw new OperationalStateMigrationBlockedError(error);
@@ -344,10 +343,6 @@ export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: (
   db.exec('BEGIN IMMEDIATE');
   try {
     const inspection = inspectOperationalStateSchema(db);
-    if (inspection.status === 'current') {
-      db.exec('COMMIT');
-      return;
-    }
     const legacyScheduledTasks = planLegacyScheduledTasks(db, inspection.versions);
     migrateSqliteRuntimeDatabase(db, { transaction: 'caller' });
     migrateSqliteSessionMetadataDatabase(db, { transaction: 'caller' });

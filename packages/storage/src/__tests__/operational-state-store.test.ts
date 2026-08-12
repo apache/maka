@@ -46,6 +46,42 @@ test('shares one operational database and produces an online backup', async () =
   }
 });
 
+test('atomically reapplies current owner schema without republishing its registry', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-current-convergence-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    const registry = lease.database
+      .prepare(
+        "SELECT version, applied_at FROM operational_schema_migrations WHERE scope = 'usage'",
+      )
+      .get();
+    lease.close();
+
+    const damaged = new DatabaseSync(databasePath);
+    damaged.exec('DROP TABLE usage_llm_calls');
+    damaged.close();
+
+    const reopened = acquireOperationalStateDatabase(root);
+    assert.ok(
+      reopened.database
+        .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'usage_llm_calls'")
+        .get(),
+    );
+    assert.deepEqual(
+      reopened.database
+        .prepare(
+          "SELECT version, applied_at FROM operational_schema_migrations WHERE scope = 'usage'",
+        )
+        .get(),
+      registry,
+    );
+    reopened.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('rolls back every scope when migration publication fails', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-rollback-'));
   const databasePath = join(root, 'runtime.sqlite');
