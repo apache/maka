@@ -6,6 +6,7 @@ export function parseInteractiveRuntimeHostCandidateArguments(
   const allowedKeys = new Set([
     'root',
     'expected-root-id',
+    'initial-connection-timeout-ms',
     'idle-grace-ms',
     'handshake-timeout-ms',
     'generation',
@@ -32,6 +33,7 @@ export function parseInteractiveRuntimeHostCandidateArguments(
   return {
     rootPath,
     expectedRootId,
+    initialConnectionTimeoutMs: readOptionalInteger(values, 'initial-connection-timeout-ms'),
     idleGraceMs: readOptionalInteger(values, 'idle-grace-ms'),
     handshakeTimeoutMs: readOptionalInteger(values, 'handshake-timeout-ms'),
     ...(values.has('generation') ? { generation: readGeneration(values) } : {}),

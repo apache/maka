@@ -6,6 +6,7 @@ export interface DetachedCandidateInput {
   rootPath: string;
   expectedRootId: string;
   generation?: string;
+  initialConnectionTimeoutMs?: number;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   executable?: string;
@@ -72,6 +73,7 @@ function spawnCandidate(input: DetachedCandidateInput, detached: boolean) {
     '--expected-root-id',
     input.expectedRootId,
   ];
+  appendArgument(args, '--initial-connection-timeout-ms', input.initialConnectionTimeoutMs);
   appendArgument(args, '--idle-grace-ms', input.idleGraceMs);
   appendArgument(args, '--handshake-timeout-ms', input.handshakeTimeoutMs);
   appendArgument(args, '--generation', input.generation);

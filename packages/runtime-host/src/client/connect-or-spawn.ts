@@ -82,8 +82,23 @@ export type ConnectOwnedRuntimeHostResult =
   | Exclude<ConnectOrSpawnRuntimeHostResult, { kind: 'connected' }>
   | { kind: 'failed'; reason: 'existing_host' };
 
+interface ConnectOwnedRuntimeHostDependencies {
+  launchCandidate: typeof launchOwnedRuntimeHostCandidate;
+}
+
+const defaultOwnedDependencies: ConnectOwnedRuntimeHostDependencies = {
+  launchCandidate: launchOwnedRuntimeHostCandidate,
+};
+
 export async function connectOwnedRuntimeHost(
   input: Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'>,
+): Promise<ConnectOwnedRuntimeHostResult> {
+  return connectOwnedRuntimeHostWithDependencies(input, defaultOwnedDependencies);
+}
+
+export async function connectOwnedRuntimeHostWithDependencies(
+  input: Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'>,
+  dependencies: ConnectOwnedRuntimeHostDependencies,
 ): Promise<ConnectOwnedRuntimeHostResult> {
   let launch: ReturnType<typeof launchOwnedRuntimeHostCandidate> | undefined;
   let connection: RuntimeHostConnection | undefined;
@@ -95,7 +110,10 @@ export async function connectOwnedRuntimeHost(
       },
       {
         launchCandidate(candidate) {
-          launch ??= launchOwnedRuntimeHostCandidate({ ...candidate, idleGraceMs: 0 });
+          launch ??= dependencies.launchCandidate({
+            ...candidate,
+            idleGraceMs: 0,
+          });
           return launch;
         },
         random: Math.random,
@@ -195,6 +213,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           rootPath: capability.canonicalPath,
           expectedRootId: capability.rootId,
           entrypoint: input.candidateEntrypoint,
+          initialConnectionTimeoutMs: Math.ceil(remaining),
           ...(input.generation === undefined ? {} : { generation: input.generation }),
         });
         await settleBeforeDeadline(launch.spawned, deadline, input.signal);

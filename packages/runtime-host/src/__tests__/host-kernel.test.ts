@@ -1832,6 +1832,14 @@ describe('non-serving Runtime Host kernel', () => {
         () =>
           startTestRuntimeHostCandidate(paths, {
             rootPath: paths.root,
+            initialConnectionTimeoutMs: -1,
+          }),
+        RangeError,
+      );
+      await assert.rejects(
+        () =>
+          startTestRuntimeHostCandidate(paths, {
+            rootPath: paths.root,
             idleGraceMs: -1,
           }),
         RangeError,
