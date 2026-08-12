@@ -469,7 +469,7 @@ function mergeActiveAssistantStreams(
   prefixes: Iterable<ActiveTranscriptAssistantStream>,
   durable: readonly StoredMessage[],
 ): StoredMessage[] {
-  const merged = overlay.map((message) => structuredClone(message));
+  const merged = [...overlay];
   const indices = new Map(merged.map((message, index) => [message.id, index]));
   const durableById = new Map<string, StoredMessage>();
   for (const message of durable) durableById.set(message.id, message);
@@ -482,7 +482,7 @@ function mergeActiveAssistantStreams(
       }
       index = merged.length;
       indices.set(prefix.messageId, index);
-      merged.push(structuredClone(durableMessage));
+      merged.push(durableMessage);
     } else if (durableMessage) {
       const projected = merged[index];
       if (projected?.type !== 'assistant' || durableMessage.type !== 'assistant') {

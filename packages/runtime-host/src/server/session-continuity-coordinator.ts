@@ -531,6 +531,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
         const nextRevision = state.revision + 1;
         const snapshot = createSessionContinuitySnapshot(canonical, nextRevision);
+        this.#invalidateTranscriptOverlay(state);
         state.canonical = canonical;
         state.revision = nextRevision;
         delete state.terminalPublicationFence;

@@ -291,6 +291,72 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
   coordinator.close();
 });
 
+test('does not reuse an active transcript overlay after terminal publication', async () => {
+  let projection = canonical();
+  const partial = assistantMessage('partial');
+  const baseReader = transcriptReader([], [partial]);
+  let overlayReads = 0;
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    readActiveOverlay: async (sessionId, rootTurn) => {
+      overlayReads += 1;
+      if (
+        !rootTurn ||
+        rootTurn.status === 'completed' ||
+        rootTurn.status === 'failed' ||
+        rootTurn.status === 'cancelled'
+      ) {
+        return [];
+      }
+      return baseReader.readActiveOverlay(sessionId, rootTurn);
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => projection,
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+  await coordinator.holdTerminalPublication(SESSION_ID, 'turn-1', 'run-1');
+  coordinator.attachConnection('connection-active-overlay', new RecordingSink());
+  const active = await open(coordinator, 'connection-active-overlay', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  assert.ok((active.transcript?.overlay.rawBytes ?? 0) > 0);
+  assert.equal(overlayReads, 1);
+
+  projection = canonical({
+    rootTurn: {
+      sessionId: SESSION_ID,
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'completed',
+      terminalEventId: 'event-terminal',
+    },
+  });
+  await coordinator.publishTerminalProjection(SESSION_ID, 'turn-1', 'run-1');
+
+  coordinator.attachConnection('connection-terminal-overlay', new RecordingSink());
+  const terminal = await open(coordinator, 'connection-terminal-overlay', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  assert.equal(terminal.snapshot.rootTurn?.status, 'completed');
+  assert.equal(terminal.transcript?.overlay.rawBytes, 0);
+  assert.equal(overlayReads, 2);
+  const client = new ClientSessionSubscription(
+    terminal,
+    async () => undefined,
+    async () => {
+      throw new Error('empty terminal transcript unexpectedly requested another page');
+    },
+  );
+  assert.deepEqual(await client.loadTranscript((value) => value), []);
+  coordinator.close();
+});
+
 test('detached canonical refreshes coalesce before Store I/O', async () => {
   let projection = canonical();
   let reads = 0;
