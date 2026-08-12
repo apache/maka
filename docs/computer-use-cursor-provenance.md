@@ -2,8 +2,9 @@
 
 This document records the exact source boundary for Maka's agent-cursor overlay
 and corrects the first revision of pull request #2676, which incorrectly
-reclassified binary-derived facts as compatibility observations or local
-implementation choices.
+reclassified the listed binary-recovered facts as compatibility observations or
+local implementation choices. It does not classify the Computer Use
+implementation as a whole as derived from the inspected binary.
 
 ## Inspected artifact
 
@@ -33,7 +34,7 @@ redistributing the executable.
 Maka used this specific signed Codex Desktop binary both as a compatibility
 reference and as a static-analysis input. The inspection read Mach-O data
 constants, Swift type and field metadata, and disassembled control flow. Maka
-then wrote TypeScript using the binary-derived facts listed in this document
+then wrote TypeScript using the binary-recovered facts listed in this document
 and added the separately listed Maka behavior.
 
 This is more specific than saying only that Maka "referenced Codex Desktop":
@@ -86,7 +87,7 @@ build-specific input facts, not values independently tuned by Maka.
 
 ## 3. Current source classification
 
-### Binary-derived facts still retained
+### Binary-recovered facts still retained
 
 | Component | Evidence from the inspected artifact | Current location |
 |---|---|---|
@@ -124,16 +125,16 @@ overlay design, but it is not the source of the exact values listed above.
 These changes mean the current renderer is neither a straight port of
 `trycua/cua` nor an instruction-for-instruction translation of
 `SkyComputerUseService`. It is a mixed implementation with the exact retained
-binary-derived facts identified above.
+binary-recovered facts identified above.
 
 ## Distribution and review boundary
 
 No OpenAI source code or executable is stored or redistributed in Maka. Static
 inspection and transcription of facts from a proprietary executable do not
 provide a license grant. This record identifies what happened; it does not make
-the licensing conclusion. An independent human reviewer must decide whether the
-retained binary-derived material is acceptable for an ASF release or must be
-replaced.
+the licensing conclusion. An independent human reviewer must decide whether
+retaining the listed facts is acceptable for an ASF release or whether they must
+be replaced.
 
 ### Applicable-terms gate before code transfer
 
@@ -144,9 +145,9 @@ agreements include OpenAI's individual Terms of Use and Services Agreement:
 - `https://openai.com/policies/row-terms-of-use/`
 - `https://openai.com/policies/services-agreement/`
 
-This provenance record must not be treated as an approval of the retained
-binary-derived components. Before code transfer, the project must either:
+This provenance record must not be treated as an approval of retaining the
+listed binary-recovered facts. Before code transfer, the project must either:
 
-1. independently replace those retained components; or
+1. independently replace those retained facts and the code that depends on them; or
 2. obtain an appropriate human legal or ASF determination based on the actual
    governing terms and applicable jurisdiction.
