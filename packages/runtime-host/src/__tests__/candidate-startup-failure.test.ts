@@ -36,12 +36,13 @@ test('does not classify cleanup errors as the primary startup failure', () => {
   });
 });
 
-test('classifies filesystem access and health failures as unavailable storage', () => {
-  for (const code of ['EACCES', 'EIO', 'ENOSPC', 'EPERM', 'EROFS']) {
-    assert.deepEqual(classifyCandidateStartupFailure(Object.assign(new Error(code), { code })), {
-      reason: 'storage_unavailable',
-    });
-  }
+test('does not infer workspace ownership from a generic filesystem error', () => {
+  const filesystemError = Object.assign(new Error('resource is unavailable'), { code: 'EACCES' });
+  const resourceError = new Error('Bundled resource is unavailable', { cause: filesystemError });
+
+  assert.deepEqual(classifyCandidateStartupFailure(resourceError), {
+    reason: 'internal_startup_failure',
+  });
 });
 
 test('classifies unknown startup failures without serializing their message', () => {

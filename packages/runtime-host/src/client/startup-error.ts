@@ -25,10 +25,6 @@ export function runtimeHostStartupError(reason: RuntimeHostStartupFailureReason)
         reason,
         'Maka cannot read part of this workspace’s stored data. The workspace was left in place. Update Maka or report diagnostic code STORED_DATA_INCOMPATIBLE.',
       );
-    case 'storage_unavailable':
-      return new Error(
-        'Maka cannot access this workspace storage. Check disk space, filesystem permissions, and storage health. Diagnostic code: STORAGE_UNAVAILABLE.',
-      );
     case 'internal_startup_failure':
       return new Error(
         'Runtime Host failed while recovering this workspace. Try again; if the problem persists, report diagnostic code INTERNAL_STARTUP_FAILURE.',

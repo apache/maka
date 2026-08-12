@@ -230,7 +230,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
     const now = performance.now();
     if (
       shouldLaunchCandidate(result) &&
-      (!startupFailure || startupFailure.reason === 'internal_startup_failure') &&
+      startupFailure?.reason !== 'stored_data_incompatible' &&
       now >= nextCandidateAt
     ) {
       try {
@@ -245,12 +245,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         });
         const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
         void attempt.startupFailure?.then((failure) => {
-          if (
-            failure &&
-            (!startupFailure ||
-              startupFailure.reason === 'internal_startup_failure' ||
-              failure.reason === 'stored_data_incompatible')
-          ) {
+          if (failure && (!startupFailure || failure.reason === 'stored_data_incompatible')) {
             startupFailure = failure;
           }
         });

@@ -131,9 +131,7 @@ describe('non-serving Runtime Host kernel', () => {
             launches += 1;
             return launchTestRuntimeHostCandidate(paths, {
               ...input,
-              ...(launches === 1
-                ? { env: { MAKA_TEST_STARTUP_ERROR_CODE: 'transient_startup_failure' } }
-                : {}),
+              ...(launches === 1 ? { env: { MAKA_TEST_STARTUP_ERROR_CODE: 'EACCES' } } : {}),
             });
           },
         },

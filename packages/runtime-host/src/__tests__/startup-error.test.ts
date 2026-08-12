@@ -16,9 +16,7 @@ test('keeps an unresponsive Host retryable', () => {
   assert.match(error.message, /stopped responding/u);
 });
 
-for (const reason of ['internal_startup_failure', 'storage_unavailable'] as const) {
-  test(`keeps ${reason} retryable`, () => {
-    const error = runtimeHostStartupError(reason);
-    assert.equal(error instanceof RuntimeHostPermanentReconnectError, false);
-  });
-}
+test('keeps internal startup failures retryable', () => {
+  const error = runtimeHostStartupError('internal_startup_failure');
+  assert.equal(error instanceof RuntimeHostPermanentReconnectError, false);
+});

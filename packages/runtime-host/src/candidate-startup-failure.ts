@@ -1,7 +1,4 @@
-export type CandidateStartupFailureReason =
-  | 'stored_data_incompatible'
-  | 'storage_unavailable'
-  | 'internal_startup_failure';
+export type CandidateStartupFailureReason = 'stored_data_incompatible' | 'internal_startup_failure';
 
 export interface CandidateStartupFailure {
   readonly reason: CandidateStartupFailureReason;
@@ -10,17 +7,13 @@ export interface CandidateStartupFailure {
 const EXIT_CODE_BY_REASON: Readonly<Record<CandidateStartupFailureReason, number>> = {
   stored_data_incompatible: 65,
   internal_startup_failure: 70,
-  storage_unavailable: 74,
 };
-
-const STORAGE_UNAVAILABLE_ERROR_CODES = new Set(['EACCES', 'EIO', 'ENOSPC', 'EPERM', 'EROFS']);
 
 export function classifyCandidateStartupFailure(error: unknown): CandidateStartupFailure {
   const errors = primaryErrorChain(error);
   if (errors.some((candidate) => errorCode(candidate) === 'stored_session_message_incompatible')) {
     return { reason: 'stored_data_incompatible' };
   }
-  if (errors.some(isStorageUnavailable)) return { reason: 'storage_unavailable' };
   return { reason: 'internal_startup_failure' };
 }
 
@@ -63,14 +56,4 @@ function errorCode(error: unknown): unknown {
   return typeof error === 'object' && error !== null && 'code' in error
     ? (error as { code?: unknown }).code
     : undefined;
-}
-
-function isStorageUnavailable(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const errcode = (error as { errcode?: unknown }).errcode;
-  const code = errorCode(error);
-  return (
-    (typeof errcode === 'number' && [7, 8, 10, 13, 14].includes(errcode & 0xff)) ||
-    (typeof code === 'string' && STORAGE_UNAVAILABLE_ERROR_CODES.has(code))
-  );
 }
