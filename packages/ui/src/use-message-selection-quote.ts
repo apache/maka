@@ -33,48 +33,57 @@ const INTERACTIVE_QUOTE_TARGET = [
   '[role="tab"]',
 ].join(',');
 
-export interface SelectionQuoteGestureBoundary {
-  beginPointerSelection(pointerId: number): void;
+export type SelectionQuoteGestureDisposition = 'commit' | 'cancel';
+
+export interface SelectionQuoteGestureBoundary<Owner> {
+  beginPointerSelection(pointerId: number, owner: Owner): boolean;
   selectionChanged(): void;
-  endPointerSelection(pointerId: number): void;
-  cancelPointerSelection(pointerId: number): void;
+  finishPointerSelection(pointerId: number, disposition: SelectionQuoteGestureDisposition): Owner | null;
+  discardActivePointerSelection(): Owner | null;
 }
 
 /**
  * Turns pointer release into the commit boundary for drag selection without
  * making unrelated pointer events another way to resurrect a dismissed quote.
  */
-export function createSelectionQuoteGestureBoundary(actions: {
+export function createSelectionQuoteGestureBoundary<Owner>(actions: {
   hideAndCancel(): void;
   scheduleSettle(): void;
-}): SelectionQuoteGestureBoundary {
-  let activePointerId: number | undefined;
-  let changedDuringPointer = false;
+}): SelectionQuoteGestureBoundary<Owner> {
+  let active: { pointerId: number; owner: Owner; changed: boolean } | null = null;
+
+  function finish(
+    pointerId: number,
+    disposition: SelectionQuoteGestureDisposition,
+  ): Owner | null {
+    if (!active || pointerId !== active.pointerId) return null;
+    const completed = active;
+    active = null;
+    if (disposition === 'commit' && completed.changed) actions.scheduleSettle();
+    if (disposition === 'cancel') actions.hideAndCancel();
+    return completed.owner;
+  }
 
   return {
-    beginPointerSelection(pointerId) {
-      if (activePointerId !== undefined) return;
-      activePointerId = pointerId;
-      changedDuringPointer = false;
+    beginPointerSelection(pointerId, owner) {
+      if (active) return false;
+      active = { pointerId, owner, changed: false };
       actions.hideAndCancel();
+      return true;
     },
     selectionChanged() {
       actions.hideAndCancel();
-      if (activePointerId === undefined) actions.scheduleSettle();
-      else changedDuringPointer = true;
+      if (!active) actions.scheduleSettle();
+      else active.changed = true;
     },
-    endPointerSelection(pointerId) {
-      if (pointerId !== activePointerId) return;
-      const shouldSettle = changedDuringPointer;
-      activePointerId = undefined;
-      changedDuringPointer = false;
-      if (shouldSettle) actions.scheduleSettle();
+    finishPointerSelection(pointerId, disposition) {
+      return finish(pointerId, disposition);
     },
-    cancelPointerSelection(pointerId) {
-      if (pointerId !== activePointerId) return;
-      activePointerId = undefined;
-      changedDuringPointer = false;
-      actions.hideAndCancel();
+    discardActivePointerSelection() {
+      if (!active) return null;
+      const discarded = active;
+      active = null;
+      return discarded.owner;
     },
   };
 }
@@ -182,14 +191,14 @@ export function useMessageSelectionQuote(
       settleTimer = window.setTimeout(settle, SELECTION_SETTLE_MS);
     }
 
-    const gesture = createSelectionQuoteGestureBoundary({ hideAndCancel, scheduleSettle });
-    let captureOwner: Element | null = null;
-    let capturedPointerId: number | undefined;
+    const gesture = createSelectionQuoteGestureBoundary<Element>({ hideAndCancel, scheduleSettle });
 
-    function clearCaptureOwner(): void {
-      captureOwner?.removeEventListener('lostpointercapture', onLostPointerCapture);
-      captureOwner = null;
-      capturedPointerId = undefined;
+    function finishGesture(
+      pointerId: number,
+      disposition: SelectionQuoteGestureDisposition,
+    ): void {
+      const owner = gesture.finishPointerSelection(pointerId, disposition);
+      owner?.removeEventListener('lostpointercapture', onLostPointerCapture);
     }
 
     function onPointerDown(event: PointerEvent): void {
@@ -214,22 +223,19 @@ export function useMessageSelectionQuote(
       ) {
         return;
       }
-      gesture.beginPointerSelection(event.pointerId);
+      if (!gesture.beginPointerSelection(event.pointerId, turnOwner)) return;
       try {
         // `lostpointercapture` belongs to the element that owns capture. Listen
         // there instead of relying on it crossing the document boundary: in
         // Electron, the owner receives this event even when a document-level
         // capture listener does not. Keeping the listener on the owner also
         // makes the capture lifetime and its cleanup one local responsibility.
-        captureOwner = turnOwner;
-        capturedPointerId = event.pointerId;
-        captureOwner.addEventListener('lostpointercapture', onLostPointerCapture);
+        turnOwner.addEventListener('lostpointercapture', onLostPointerCapture);
         turnOwner.setPointerCapture(event.pointerId);
       } catch {
         // Capture can fail if Chromium has already retired the physical
         // pointer. Do not retain a gesture that can no longer deliver its end.
-        clearCaptureOwner();
-        gesture.cancelPointerSelection(event.pointerId);
+        finishGesture(event.pointerId, 'cancel');
       }
     }
 
@@ -238,23 +244,18 @@ export function useMessageSelectionQuote(
     }
 
     function onPointerUp(event: PointerEvent): void {
-      if (event.pointerId === capturedPointerId) clearCaptureOwner();
-      gesture.endPointerSelection(event.pointerId);
+      finishGesture(event.pointerId, 'commit');
     }
 
     function onPointerCancel(event: PointerEvent): void {
-      if (event.pointerId === capturedPointerId) clearCaptureOwner();
-      gesture.cancelPointerSelection(event.pointerId);
+      finishGesture(event.pointerId, 'cancel');
     }
 
     function onLostPointerCapture(event: Event): void {
-      // Normal pointerup already settles first, making this a no-op. When the
-      // owner loses capture without pointerup, this is the only trustworthy
-      // end boundary left for the final selection.
+      // Capture loss can happen without a physical release (capture transfer,
+      // owner removal, or pointer lock), so it cancels rather than commits.
       const pointerId = (event as PointerEvent).pointerId;
-      if (pointerId !== capturedPointerId) return;
-      clearCaptureOwner();
-      gesture.endPointerSelection(pointerId);
+      finishGesture(pointerId, 'cancel');
     }
 
     /**
@@ -290,7 +291,8 @@ export function useMessageSelectionQuote(
       document.removeEventListener('pointerdown', onPointerDown, { capture: true });
       document.removeEventListener('pointerup', onPointerUp, { capture: true });
       document.removeEventListener('pointercancel', onPointerCancel, { capture: true });
-      clearCaptureOwner();
+      const owner = gesture.discardActivePointerSelection();
+      owner?.removeEventListener('lostpointercapture', onLostPointerCapture);
       document.removeEventListener('scroll', onScroll, { capture: true });
     };
   }, [scrollRef, enabled]);

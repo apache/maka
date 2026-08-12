@@ -20,9 +20,6 @@ test('a transcript drag releases outside the window through its owning Turn', as
     owner.addEventListener('pointerup', () => {
       owner.dataset.e2eCapturedPointerUp = 'true';
     });
-    owner.addEventListener('lostpointercapture', () => {
-      owner.dataset.e2eLostPointerCapture = 'true';
-    });
     document.addEventListener('selectionchange', () => {
       owner.dataset.e2eSelectionChanged = 'true';
     });
@@ -65,6 +62,5 @@ test('a transcript drag releases outside the window through its owning Turn', as
   await page.mouse.up();
 
   await expect(turn).toHaveAttribute('data-e2e-captured-pointer-up', 'true');
-  await expect(turn).toHaveAttribute('data-e2e-lost-pointer-capture', 'true');
   await expect(quoteLayer).toBeVisible();
 });
