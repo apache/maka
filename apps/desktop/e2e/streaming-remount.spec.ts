@@ -4,7 +4,7 @@ import {
 } from '@maka/runtime/fake-backend';
 import { expect, COMPOSER_INPUT, test } from './fixtures';
 
-test('returning to a live conversation leaves accumulated output settled', async ({
+test('remounting a live surface leaves accumulated output settled', async ({
   window: page,
 }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
@@ -69,7 +69,21 @@ test('returning to a live conversation leaves accumulated output settled', async
     text.includes('continue after') && !text.includes(steering)
   )).toBe(true);
   expect(observed?.maxActiveAnimations).toBeGreaterThan(0);
+});
 
+test('returning to a live conversation settles output accumulated while away', async ({
+  window: page,
+}) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill(FAKE_HOLD_OPEN_PROMPT);
+  await composer.press('Enter');
+
+  const accumulatedOutput = 'Fake backend waiting for the test to stop the Turn.';
+  const liveBubble = page.locator('.maka-bubble-streaming');
+  await expect(liveBubble).toContainText(accumulatedOutput);
+
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await expect(page.locator('[data-agents-page]')).toHaveAttribute(
     'data-sidebar-state',
