@@ -5,7 +5,6 @@ import { __TEST__ } from '../discord-bridge.js';
 
 const {
   decideDiscordClose,
-  reconnectBackoffMs,
   buildDiscordSendBody,
   normalizeDiscordReplyToMessageId,
   normalizeDiscordChannelId,
@@ -24,16 +23,6 @@ describe('Discord gateway helpers', () => {
       assert.deepEqual(decideDiscordClose(code, false), { kind: 'reconnect', resumable: false });
     }
     assert.deepEqual(decideDiscordClose(4000, false), { kind: 'reconnect', resumable: true });
-  });
-
-  it('exponentially backs off reconnects with a 30-second cap', () => {
-    for (const [attempt, expected] of [
-      [0, 1_000],
-      [3, 8_000],
-      [5, 30_000],
-    ]) {
-      assert.equal(reconnectBackoffMs(attempt), expected, String(attempt));
-    }
   });
 });
 

@@ -101,7 +101,7 @@ export function decideQQClose(code: number, explicitlyStopped: boolean): QQClose
   return { kind: 'reconnect', resumable };
 }
 
-export function qqReconnectBackoffMs(attempts: number): number {
+function qqReconnectBackoffMs(attempts: number): number {
   const exp = Math.min(2 ** attempts, RECONNECT_DELAY_MAX_MS / RECONNECT_DELAY_MIN_MS);
   return Math.min(RECONNECT_DELAY_MIN_MS * exp, RECONNECT_DELAY_MAX_MS);
 }
@@ -730,7 +730,6 @@ export class QQBotBridge extends BaseBotAdapter implements SendCapable {
 
 export const __TEST__ = {
   decideQQClose,
-  qqReconnectBackoffMs,
   classifyQQSendResponse,
   qqChannelMessageToEvent,
   qqGroupMessageToEvent,

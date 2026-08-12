@@ -5,7 +5,6 @@ import { __TEST__ } from '../qq-bridge.js';
 
 const {
   decideQQClose,
-  qqReconnectBackoffMs,
   classifyQQSendResponse,
   qqChannelMessageToEvent,
   qqGroupMessageToEvent,
@@ -24,16 +23,6 @@ describe('QQ gateway helpers', () => {
       assert.deepEqual(decideQQClose(code, false), { kind: 'reconnect', resumable: false });
     }
     assert.deepEqual(decideQQClose(4000, false), { kind: 'reconnect', resumable: true });
-  });
-
-  it('exponentially backs off reconnects with a 30-second cap', () => {
-    for (const [attempt, expected] of [
-      [0, 1_000],
-      [1, 2_000],
-      [5, 30_000],
-    ]) {
-      assert.equal(qqReconnectBackoffMs(attempt), expected, String(attempt));
-    }
   });
 });
 

@@ -93,7 +93,7 @@ export function decideDiscordClose(code: number, explicitlyStopped: boolean): Di
  * Pure helper: compute the next backoff delay given the attempt count.
  * Exponential up to RECONNECT_DELAY_MAX_MS.
  */
-export function reconnectBackoffMs(attempts: number): number {
+function reconnectBackoffMs(attempts: number): number {
   const exp = Math.min(2 ** attempts, RECONNECT_DELAY_MAX_MS / RECONNECT_DELAY_MIN_MS);
   return Math.min(RECONNECT_DELAY_MIN_MS * exp, RECONNECT_DELAY_MAX_MS);
 }
@@ -618,7 +618,6 @@ export function splitDiscordContent(text: string): string[] {
 
 export const __TEST__ = {
   decideDiscordClose,
-  reconnectBackoffMs,
   buildDiscordSendBody,
   normalizeDiscordReplyToMessageId,
   normalizeDiscordChannelId,
