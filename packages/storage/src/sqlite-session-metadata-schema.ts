@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 23;
@@ -913,7 +912,6 @@ export function migrateSqliteSessionMetadataDatabase(db: DatabaseSync): void {
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite session metadata migration ${version}`);
       db.exec(sql);
-      if (version === 23) backfillSessionMessageChunks(db);
       db.prepare(`
         INSERT INTO session_metadata_schema(scope, version)
         VALUES ('session_metadata', ?)
@@ -924,79 +922,6 @@ export function migrateSqliteSessionMetadataDatabase(db: DatabaseSync): void {
   } catch (error) {
     rollback(db);
     throw error;
-  }
-}
-
-function backfillSessionMessageChunks(db: DatabaseSync): void {
-  const selectBatch = db.prepare(`
-    SELECT session_id, sequence, record_json
-    FROM session_messages
-    WHERE ? IS NULL OR session_id > ? OR (session_id = ? AND sequence > ?)
-    ORDER BY session_id, sequence
-    LIMIT 128
-  `);
-  const markChunked = db.prepare(`
-    UPDATE session_messages
-    SET record_json = ?
-    WHERE session_id = ? AND sequence = ?
-  `);
-  const insertPayload = db.prepare(`
-    INSERT INTO session_message_payloads(session_id, sequence, record_bytes, sha256)
-    VALUES (?, ?, ?, ?)
-  `);
-  const insert = db.prepare(`
-    INSERT INTO session_message_chunks(session_id, sequence, chunk_index, data, sha256)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-  let afterSessionId: string | null = null;
-  let afterSequence = -1;
-  while (true) {
-    const rows = selectBatch.all(
-      afterSessionId,
-      afterSessionId,
-      afterSessionId,
-      afterSequence,
-    ) as Array<{
-      session_id?: unknown;
-      sequence?: unknown;
-      record_json?: unknown;
-    }>;
-    if (rows.length === 0) return;
-    for (const row of rows) {
-      if (
-        typeof row.session_id !== 'string' ||
-        !Number.isSafeInteger(row.sequence) ||
-        typeof row.record_json !== 'string'
-      ) {
-        throw new Error('Invalid Session message while migrating transcript chunks');
-      }
-      const sequence = row.sequence as number;
-      afterSessionId = row.session_id;
-      afterSequence = sequence;
-      const encoded = Buffer.from(row.record_json, 'utf8');
-      if (encoded.byteLength <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES) continue;
-      markChunked.run(SQLITE_SESSION_MESSAGE_CHUNK_MARKER, row.session_id, sequence);
-      insertPayload.run(
-        row.session_id,
-        sequence,
-        encoded.byteLength,
-        createHash('sha256').update(encoded).digest('hex'),
-      );
-      for (
-        let offset = 0;
-        offset < encoded.byteLength;
-        offset += SQLITE_SESSION_MESSAGE_CHUNK_BYTES
-      ) {
-        const chunk = encoded.subarray(offset, offset + SQLITE_SESSION_MESSAGE_CHUNK_BYTES);
-        insert.run(
-          row.session_id,
-          sequence,
-          offset / SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
-          chunk,
-          createHash('sha256').update(chunk).digest('hex'),
-        );
-      }
-    }
   }
 }
 

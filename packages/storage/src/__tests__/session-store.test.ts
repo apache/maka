@@ -270,7 +270,7 @@ describe('SQLite SessionStore', () => {
     }
   });
 
-  test('pages a multi-chunk message and linearly migrates its v22 record', async () => {
+  test('pages both new chunked messages and legacy inline v22 records', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-transcript-chunks-'));
     const message = {
       type: 'user' as const,
@@ -383,17 +383,47 @@ describe('SQLite SessionStore', () => {
         first_chunk?: unknown;
         last_chunk?: unknown;
       };
-      const encodedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
-      assert.equal(parent.record_json, '{"$maka":"session-message-chunks-v1"}');
-      assert.equal(payload.record_bytes, encodedBytes);
-      assert.equal(typeof payload.sha256, 'string');
+      assert.equal(parent.record_json, JSON.stringify(message));
+      assert.equal(payload, undefined);
       assert.equal(inline.record_json, JSON.stringify(smallMessage));
       assert.equal(inline.payload_sequence, null);
-      assert.equal(chunks.bytes, encodedBytes);
-      assert.equal(chunks.count, Math.ceil(encodedBytes / (64 * 1024)));
-      assert.equal(chunks.first_chunk, 0);
-      assert.equal(chunks.last_chunk, (chunks.count as number) - 1);
-      inspected
+      assert.deepEqual(
+        { ...chunks },
+        {
+          count: 0,
+          bytes: null,
+          first_chunk: null,
+          last_chunk: null,
+        },
+      );
+    } finally {
+      inspected.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects corrupt chunked messages on paged and ordinary reads', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-transcript-corruption-'));
+    const store = createSessionStore(root);
+    let sessionId = '';
+    try {
+      const session = await store.create(makeInput());
+      sessionId = session.id;
+      await store.appendMessage(sessionId, {
+        type: 'user',
+        id: 'message-large',
+        turnId: 'turn-large',
+        ts: 1,
+        text: 'x'.repeat(128 * 1024),
+      });
+    } finally {
+      await store.close?.();
+    }
+
+    const path = join(root, OPERATIONAL_STATE_DATABASE_NAME);
+    const inspect = new DatabaseSync(path);
+    try {
+      inspect
         .prepare(`
           UPDATE session_message_chunks
           SET data = zeroblob(length(data))
@@ -401,7 +431,7 @@ describe('SQLite SessionStore', () => {
         `)
         .run(sessionId);
     } finally {
-      inspected.close();
+      inspect.close();
     }
 
     const corrupted = createSessionStore(root);

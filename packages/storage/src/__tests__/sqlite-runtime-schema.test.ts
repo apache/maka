@@ -83,4 +83,47 @@ describe('SQLite runtime schema migration', () => {
       real.close();
     }
   });
+
+  it('folds legacy partial segments once when upgrading from version 12', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      migrateSqliteRuntimeDatabase(db);
+      db.prepare(`
+        INSERT INTO runtime_partial_snapshots(
+          stream_key, session_id, invocation_id, run_id, turn_id,
+          after_event_id, payload_json, text_content, updated_at
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
+      `).run('stream-1', 'session-1', 'invocation-1', 'run-1', 'turn-1', '{}', 'prefix-', 1);
+      db.prepare(`
+        INSERT INTO runtime_partial_segments(stream_key, segment_seq, text_content, updated_at)
+        VALUES (?, ?, ?, ?), (?, ?, ?, ?)
+      `).run('stream-1', 2, 'second', 2, 'stream-1', 1, 'first-', 1);
+      db.exec('PRAGMA user_version = 12');
+
+      migrateSqliteRuntimeDatabase(db);
+
+      assert.equal(
+        (
+          db.prepare('SELECT text_content FROM runtime_partial_snapshots').get() as {
+            text_content: string;
+          }
+        ).text_content,
+        'prefix-first-second',
+      );
+      assert.equal(
+        (
+          db.prepare('SELECT count(*) AS count FROM runtime_partial_segments').get() as {
+            count: number;
+          }
+        ).count,
+        0,
+      );
+      assert.equal(
+        (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        SQLITE_RUNTIME_SCHEMA_VERSION,
+      );
+    } finally {
+      db.close();
+    }
+  });
 });

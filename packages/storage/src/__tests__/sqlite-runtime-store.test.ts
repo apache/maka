@@ -658,7 +658,7 @@ describe('SqliteRuntimeStore', () => {
           functionCallEvent({
             id: `partial-segment-${index}`,
             partial: true,
-            content: { kind: 'text', text: 'x' },
+            content: { kind: 'text', text: 'x'.repeat(64 * 1024 + 1) },
             refs: { providerEventId: 'message-1' },
           }),
         );
@@ -669,10 +669,10 @@ describe('SqliteRuntimeStore', () => {
         'run-1',
         {
           maxBatchBytes: 1024,
-          maxRecordBytes: 1024,
+          maxRecordBytes: 1024 * 1024,
           maxPartialRecords: 10,
           maxPartialSegments: 10,
-          maxPartialBytes: 1024,
+          maxPartialBytes: 1024 * 1024,
         },
         () => {
           visits += 1;
@@ -1465,10 +1465,7 @@ describe('SqliteRuntimeStore', () => {
             `)
             .all()
             .map((row) => ({ ...row })),
-          [
-            { segment_seq: 1, text_content: 'a' },
-            { segment_seq: 2, text_content: 'bc' },
-          ],
+          [{ segment_seq: 1, text_content: 'abc' }],
         );
       } finally {
         inspect.close();
@@ -1476,9 +1473,10 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
-  it('compacts long-lived partial streams without changing their projected text', async () => {
+  it('coalesces partial text into fixed-size tail segments', async () => {
     await withStore(async (store, dbPath) => {
-      for (let index = 0; index < 33; index += 1) {
+      const chunks = ['x'.repeat(40 * 1024), 'y'.repeat(40 * 1024), 'z'];
+      for (const [index, text] of chunks.entries()) {
         await store.appendRuntimeEvent(
           'session-1',
           'run-1',
@@ -1488,7 +1486,7 @@ describe('SqliteRuntimeStore', () => {
             partial: true,
             role: 'model',
             author: 'agent',
-            content: { kind: 'text', text: 'x' },
+            content: { kind: 'text', text },
             refs: { providerEventId: 'message-1' },
           }),
         );
@@ -1498,7 +1496,7 @@ describe('SqliteRuntimeStore', () => {
       assert.equal(events[0]?.content?.kind, 'text');
       assert.equal(
         events[0]?.content?.kind === 'text' ? events[0].content.text : undefined,
-        'x'.repeat(33),
+        chunks.join(''),
       );
 
       const inspect = new DatabaseSync(dbPath);
@@ -1508,12 +1506,17 @@ describe('SqliteRuntimeStore', () => {
           .get() as { text_content?: unknown };
         const segments = inspect
           .prepare(`
-            SELECT count(*) AS count, min(segment_seq) AS first_sequence
+            SELECT segment_seq, length(CAST(text_content AS BLOB)) AS stored_bytes
             FROM runtime_partial_segments
+            ORDER BY segment_seq ASC
           `)
-          .get() as { count?: unknown; first_sequence?: unknown };
-        assert.equal(snapshot.text_content, 'x'.repeat(32));
-        assert.deepEqual({ ...segments }, { count: 1, first_sequence: 1 });
+          .all()
+          .map((row) => ({ ...row }));
+        assert.equal(snapshot.text_content, '');
+        assert.deepEqual(segments, [
+          { segment_seq: 1, stored_bytes: 40 * 1024 },
+          { segment_seq: 2, stored_bytes: 40 * 1024 + 1 },
+        ]);
       } finally {
         inspect.close();
       }

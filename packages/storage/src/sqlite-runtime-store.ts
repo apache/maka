@@ -93,7 +93,7 @@ export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 export type { ToolRecoveryMode } from '@maka/core/runtime-event';
 
 const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
-const RUNTIME_PARTIAL_SEGMENT_COMPACTION_THRESHOLD = 32;
+const RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES = 64 * 1024;
 
 function assertRuntimeEventScanBudget(budget: RuntimeEventScanBudget): void {
   for (const [name, value] of Object.entries(budget)) {
@@ -2788,55 +2788,46 @@ export class SqliteRuntimeStore
         .run(partial.updatedAt ?? event.ts, partial.key);
     }
     if (partial.text.length > 0) {
-      this.db
-        .prepare(`
-        INSERT INTO runtime_partial_segments(stream_key, segment_seq, text_content, updated_at)
-        SELECT ?, coalesce(max(segment_seq), 0) + 1, ?, ?
-        FROM runtime_partial_segments
-        WHERE stream_key = ?
-      `)
-        .run(partial.key, partial.text, partial.updatedAt ?? event.ts, partial.key);
-      this.compactRuntimePartialSegments(partial.key);
+      this.appendRuntimePartialSegment(partial.key, partial.text, partial.updatedAt ?? event.ts);
     }
     return !existing;
   }
 
-  private compactRuntimePartialSegments(streamKey: string): void {
-    const rows = this.db
+  private appendRuntimePartialSegment(streamKey: string, text: string, updatedAt: number): void {
+    const tail = this.db
       .prepare(`
-        SELECT segment_seq, text_content
+        SELECT segment_seq, length(CAST(text_content AS BLOB)) AS stored_bytes
         FROM runtime_partial_segments
         WHERE stream_key = ?
-        ORDER BY segment_seq
+        ORDER BY segment_seq DESC
+        LIMIT 1
       `)
-      .all(streamKey) as Array<{ segment_seq?: unknown; text_content?: unknown }>;
-    if (rows.length < RUNTIME_PARTIAL_SEGMENT_COMPACTION_THRESHOLD) return;
-    const text: string[] = [];
-    let lastSequence = 0;
-    for (const row of rows) {
-      if (
-        !Number.isSafeInteger(row.segment_seq) ||
-        (row.segment_seq as number) < 1 ||
-        typeof row.text_content !== 'string'
-      ) {
-        throw new Error('Invalid RuntimeEvent partial segment');
+      .get(streamKey) as { segment_seq?: unknown; stored_bytes?: unknown } | undefined;
+    if (tail) {
+      const segmentSequence = requireRuntimeEventScanCount(tail.segment_seq);
+      const storedBytes = requireRuntimeEventScanCount(tail.stored_bytes);
+      if (storedBytes + Buffer.byteLength(text, 'utf8') <= RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES) {
+        this.db
+          .prepare(`
+            UPDATE runtime_partial_segments
+            SET text_content = text_content || ?, updated_at = ?
+            WHERE stream_key = ? AND segment_seq = ?
+          `)
+          .run(text, updatedAt, streamKey, segmentSequence);
+        return;
       }
-      lastSequence = row.segment_seq as number;
-      text.push(row.text_content);
     }
     this.db
       .prepare(`
-        UPDATE runtime_partial_snapshots
-        SET text_content = text_content || ?
-        WHERE stream_key = ?
+        INSERT INTO runtime_partial_segments(stream_key, segment_seq, text_content, updated_at)
+        VALUES (?, ?, ?, ?)
       `)
-      .run(text.join(''), streamKey);
-    this.db
-      .prepare(`
-        DELETE FROM runtime_partial_segments
-        WHERE stream_key = ? AND segment_seq <= ?
-      `)
-      .run(streamKey, lastSequence);
+      .run(
+        streamKey,
+        tail ? requireRuntimeEventScanCount(tail.segment_seq) + 1 : 1,
+        text,
+        updatedAt,
+      );
   }
 
   private hasCompletedPartialStream(sessionId: string, runId: string, streamKey: string): boolean {

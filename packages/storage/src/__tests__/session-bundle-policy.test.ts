@@ -128,7 +128,7 @@ test('retains only the selected Session partial stream segments', async () => {
           .prepare('SELECT text_content FROM runtime_partial_segments ORDER BY segment_seq')
           .all()
           .map((row) => (row as { text_content: string }).text_content),
-        ['a', 'b'],
+        ['ab'],
       );
     } finally {
       bundledDatabase.close();

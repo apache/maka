@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 12;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 13;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
@@ -299,6 +299,23 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     12,
     `
     DROP TABLE IF EXISTS headless_task_run_events;
+  `,
+  ],
+  [
+    13,
+    `
+    UPDATE runtime_partial_snapshots
+    SET text_content = text_content || coalesce((
+      SELECT group_concat(ordered.text_content, '')
+      FROM (
+        SELECT segment.text_content
+        FROM runtime_partial_segments AS segment
+        WHERE segment.stream_key = runtime_partial_snapshots.stream_key
+        ORDER BY segment.segment_seq ASC
+      ) AS ordered
+    ), '');
+
+    DELETE FROM runtime_partial_segments;
   `,
   ],
 ]);
