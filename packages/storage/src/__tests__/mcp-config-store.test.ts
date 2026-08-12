@@ -172,6 +172,27 @@ test('allows SSE only with an omitted or explicit legacy protocol', () => {
   }
 });
 
+test('transform sees the latest committed config, not a caller snapshot', async () => {
+  // The restore-plus-mutation seam: a marker-bearing write that derived its
+  // restores from a stale snapshot could roll a rotated secret back. Inside
+  // transform, apply() must observe the concurrent writer's commit.
+  const root = await tempRoot();
+  const store = createMcpConfigStore(root);
+  await store.upsert('local', { command: 'npx', env: { TOKEN: 'v1' } });
+  const rotate = store.upsert('local', { command: 'npx', env: { TOKEN: 'v2-rotated' } });
+  const observed: string[] = [];
+  const restoreLike = store.transform((current) => {
+    const server = current.mcpServers.local;
+    if (server && 'command' in server && server.env) observed.push(server.env.TOKEN ?? '');
+    return current;
+  });
+  await Promise.all([rotate, restoreLike]);
+  assert.deepEqual(observed, ['v2-rotated']);
+  const final = (await store.get()).mcpServers.local;
+  assert.ok(final && 'command' in final);
+  assert.equal(final.env?.TOKEN, 'v2-rotated');
+});
+
 test('serializes concurrent updates without corrupting the file', async () => {
   const root = await tempRoot();
   const store = createMcpConfigStore(root);
@@ -290,6 +311,85 @@ test('full replacement can migrate an existing version 1 wrapper to version 2', 
       },
     },
   });
+});
+
+test('normalizes and bounds the remote oauth block', async () => {
+  const normalized = normalizeMcpConfig({
+    version: 1,
+    mcpServers: {
+      notion: {
+        url: 'https://mcp.notion.com/mcp',
+        oauth: { clientId: 'abc', scopes: ['read', 'write'], callbackPort: 33389 },
+      },
+    },
+  });
+  const notion = normalized.mcpServers.notion;
+  assert.ok(notion && 'url' in notion);
+  assert.deepEqual(notion.oauth, {
+    clientId: 'abc',
+    scopes: ['read', 'write'],
+    callbackPort: 33389,
+  });
+
+  assert.throws(
+    () =>
+      normalizeMcpConfig({
+        version: 1,
+        mcpServers: { bad: { url: 'https://example.com/mcp', oauth: { callbackPort: 0 } } },
+      }),
+    /callbackPort/u,
+  );
+  assert.throws(
+    () =>
+      normalizeMcpConfig({
+        version: 1,
+        mcpServers: { bad: { url: 'https://example.com/mcp', oauth: { clientId: '' } } },
+      }),
+    /clientId/u,
+  );
+  // A clientSecret alone cannot form static client credentials.
+  assert.throws(
+    () =>
+      normalizeMcpConfig({
+        version: 1,
+        mcpServers: { bad: { url: 'https://example.com/mcp', oauth: { clientSecret: 's3cr3t' } } },
+      }),
+    /clientId is required/u,
+  );
+  // stdio servers have no oauth block; unknown fields there stay rejected
+  // by the stdio branch simply dropping them.
+  const stdio = normalizeMcpConfig({
+    version: 1,
+    mcpServers: { local: { command: 'npx', oauth: { clientId: 'x' } } },
+  }).mcpServers.local;
+  assert.ok(stdio && !('oauth' in stdio));
+});
+
+test('rejects a config that declares both an Authorization header and oauth', () => {
+  assert.throws(
+    () =>
+      normalizeMcpConfig({
+        version: 1,
+        mcpServers: {
+          bad: {
+            url: 'https://example.com/mcp',
+            headers: { authorization: 'Bearer x' },
+            oauth: { clientId: 'abc' },
+          },
+        },
+      }),
+    /must not include Authorization when oauth is configured/u,
+  );
+  // Either alone is fine.
+  assert.doesNotThrow(() =>
+    normalizeMcpConfig({
+      version: 1,
+      mcpServers: {
+        headerOnly: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer x' } },
+        oauthOnly: { url: 'https://example.com/mcp', oauth: { clientId: 'abc' } },
+      },
+    }),
+  );
 });
 
 async function tempRoot(): Promise<string> {

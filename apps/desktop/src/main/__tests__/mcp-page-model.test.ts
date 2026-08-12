@@ -108,6 +108,47 @@ test('the MCP catalog opts every bundled remote entry into auto negotiation', ()
   }
 });
 
+test('an edit that does not touch OAuth preserves the block through save', () => {
+  const stored = {
+    enabled: true,
+    url: 'https://mcp.notion.com/mcp',
+    transport: 'auto' as const,
+    headers: { 'X-Workspace': 'w1' },
+    oauth: {
+      clientId: 'abc',
+      clientSecret: ' maka-mcp-secret ',
+      scopes: ['read'],
+      callbackPort: 33389,
+    },
+  };
+  const draft = mcpDraftFromConfig('notion', stored);
+  const saved = mcpConfigFromDraft(withMcpDraftTransport(draft, 'sse'), copy);
+  assert.ok('url' in saved);
+  assert.equal(saved.transport, 'sse');
+  assert.deepEqual(saved.oauth, stored.oauth);
+  assert.deepEqual(saved.headers, stored.headers);
+});
+
+test('editing does not invent an oauth block for servers that never had one', () => {
+  const saved = mcpConfigFromDraft(
+    mcpDraftFromConfig('plain', { url: 'https://example.com/mcp', enabled: true }),
+    copy,
+  );
+  assert.ok('url' in saved && !('oauth' in saved));
+});
+
+test('a stdio config round-trips through the command-line field', () => {
+  const stored = {
+    enabled: true,
+    command: 'npx',
+    args: ['-y', 'server', '--flag', 'a b'],
+    cwd: '/tmp/work',
+    env: { TOKEN: 'secret' },
+  };
+  const saved = mcpConfigFromDraft(mcpDraftFromConfig('local', stored), copy);
+  assert.deepEqual(saved, stored);
+});
+
 test('status copy presents only a live connected negotiated protocol', () => {
   const status: McpServerStatus = {
     serverId: 'remote',

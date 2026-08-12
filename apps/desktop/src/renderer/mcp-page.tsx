@@ -86,7 +86,7 @@ import {
 } from './mcp-page-model';
 import { settingsActionErrorMessage } from './settings/settings-error-copy';
 import { getMcpCopy, type McpCopy } from './locales/mcp-copy';
-import { formatCommandLine, parseCommandLine } from './mcp-command-line';
+import { formatCommandLine } from './mcp-command-line';
 import {
   validateMcpEditorDraft,
   type McpEditorErrors,

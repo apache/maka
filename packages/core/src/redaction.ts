@@ -156,7 +156,12 @@ function redactUrlQuerySecrets(value: string): string {
   });
 }
 
-function isSensitiveKey(key: string): boolean {
+/** Whether a key NAME marks its value as credential material (TOKEN,
+ * API_KEY, clientSecret, …). Exported for callers that must decide whether
+ * a keyed value is a secret — e.g. which MCP stdio env values are masked at
+ * the IPC boundary — so the heuristic cannot drift from the one redaction
+ * itself applies. */
+export function isSensitiveKey(key: string): boolean {
   const segments = sensitiveKeySegments(key);
   const suffix = segments.at(-1);
   if (!suffix) return false;

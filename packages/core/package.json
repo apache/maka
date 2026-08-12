@@ -98,6 +98,7 @@
     "./result": "./dist/result.js",
     "./settings": "./dist/settings.js",
     "./mcp": "./dist/mcp.js",
+    "./mcp-secrets": "./dist/mcp-secrets.js",
     "./settings/network-settings": "./dist/settings/network-settings.js",
     "./usage-stats/types": "./dist/usage-stats/types.js",
     "./usage-stats/pricing": "./dist/usage-stats/pricing.js",

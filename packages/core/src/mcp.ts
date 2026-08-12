@@ -18,6 +18,21 @@ export interface McpRemoteServerConfig {
   transport?: 'streamable-http' | 'sse' | 'auto';
   headers?: Record<string, string>;
   protocol?: McpProtocolPreference;
+  oauth?: McpOAuthConfig;
+}
+
+/**
+ * Static OAuth client settings for servers whose authorization server does
+ * not support dynamic registration (RFC 7591) or CIMD. All fields are
+ * optional: with none set, the client registers dynamically and listens on
+ * an ephemeral loopback port. A pre-registered client usually pins
+ * `callbackPort`, because its redirect URI was registered with a fixed port.
+ */
+export interface McpOAuthConfig {
+  clientId?: string;
+  clientSecret?: string;
+  scopes?: string[];
+  callbackPort?: number;
 }
 
 export type McpServerConfig = McpStdioServerConfig | McpRemoteServerConfig;

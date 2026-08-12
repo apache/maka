@@ -1,4 +1,5 @@
 import type {
+  McpOAuthConfig,
   McpProtocolPreference,
   McpServerConfig,
   McpServerStatus,
@@ -18,6 +19,10 @@ export type McpEditorDraft = {
   transport: 'auto' | 'streamable-http' | 'sse';
   protocol: McpProtocolPreference;
   headers: string;
+  /** Opaque round-trip state: the editor has no OAuth fields, but an
+   * edit → save of an OAuth-configured server must not delete the block
+   * (the masked clientSecret sentinel restores from disk in main). */
+  oauth?: McpOAuthConfig;
 };
 
 export function createEmptyMcpDraft(): McpEditorDraft {
@@ -57,6 +62,7 @@ export function mcpDraftFromConfig(id: string, config: McpServerConfig): McpEdit
     // not the default for a newly-authored remote entry.
     protocol: resolveMcpRemoteProtocolPreference(config),
     headers: formatMap(config.headers),
+    ...(config.oauth ? { oauth: config.oauth } : {}),
   };
 }
 
@@ -94,6 +100,7 @@ export function mcpConfigFromDraft(draft: McpEditorDraft, copy: McpCopy): McpSer
     transport: draft.transport,
     protocol: draft.transport === 'sse' ? 'legacy' : draft.protocol,
     headers: parseMap(draft.headers, copy),
+    ...(draft.oauth ? { oauth: draft.oauth } : {}),
   };
 }
 
