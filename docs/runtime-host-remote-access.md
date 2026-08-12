@@ -41,7 +41,7 @@ npm --workspace maka-agent exec -- maka runtime-host access issue \
   --preset desktop-client
 ```
 
-Use `terminal-client` for a TUI or CLI-only principal. The command prints the credential once. Presets expand to exact operation grants when the credential is issued; they do not grant access administration or Host-path authority, and an existing credential does not gain operations when Maka later changes a preset.
+Use `terminal-client` for a TUI or CLI-only principal. The command prints the credential once. Presets expand to exact operation grants when the credential is issued; they do not grant access administration or permission to submit arbitrary Host paths, and an existing credential does not gain operations when Maka later changes a preset.
 
 ## Connect Desktop
 
@@ -83,5 +83,6 @@ Each TUI or CLI process connects to one Profile. It reports unreachable endpoint
 
 - Do not put credentials on the command line or in Profile JSON.
 - Direct remote connections require `wss:` and normal platform certificate validation; there is no verification bypass or plaintext fallback.
+- Session responses may include a resolved `hostCwd`. Treat it as Host metadata; never interpret it through the Client filesystem.
 - The service process is owned by its deployment operator. A remote Client neither upgrades nor terminates it.
 - Revoke a credential on the Host with `maka runtime-host access revoke --root /srv/maka --credential <credentialId>`.

@@ -199,7 +199,7 @@ Desktop applies a new profile without restarting the application. Each target ge
 
 The persisted Desktop selection is a desired target, not proof of the active connection. If the selected profile or credential is unavailable during startup, Desktop asks the user to retry, explicitly use `local`, or quit. It does not silently rewrite the selection. TUI and CLI resolve one profile when they start and report an unavailable selection as an error.
 
-A remote Desktop generation does not inherit Local Host-path authority. It reads Project summaries, submits Project IDs, and keeps Client-local capabilities from receiving remote Host paths. Local filesystem actions such as directory picking, Git review, workspace search, and opening Skill files remain available only for `local`.
+A remote Desktop generation cannot submit arbitrary Host paths. It reads Project summaries, submits Project IDs, and keeps Client-local capabilities from receiving remote Host paths. Local filesystem actions such as directory picking, Git review, workspace search, and opening Skill files remain available only for `local`.
 
 The operator and Client setup flow is documented in [Connect to a remote Runtime Host](../runtime-host-remote-access.md).
 
@@ -215,7 +215,7 @@ type WorkspaceTarget =
 
 `project` is the portable form. Runtime Host resolves it through its Project Catalog and returns the canonical target plus `hostCwd`, the absolute directory on the Host. `host_path` is for a Client explicitly permitted to name Host paths, such as a local CLI started in a checkout.
 
-Project summaries do not expose paths. Only a connection allowed to read Host paths may read or change project locations, reveal a path on the Host, or submit `host_path`.
+Project summaries do not expose their registered locations. `canUseHostPaths` controls whether a Client may name a Host path in an operation; it is not a path-confidentiality boundary. Canonical Session projections may include the resolved `hostCwd`, which remote Clients treat as Host metadata rather than a path on the Client filesystem. Reading or changing Project locations and asking the Host to reveal a path remain separate operations, while submitting `host_path` requires Host-path authority.
 
 Clients do not combine a path with a Project ID or resolve a Host path themselves. Desktop remembers the selected Project locally for each State Root; selecting it does not mutate global Host state. A remote Client must select an existing Project from the selected Host. Desktop never opens a Client-local directory picker as though it named a Host directory, and CLI/TUI do not reinterpret, validate, relocate, or autocomplete Host paths through the Client filesystem.
 

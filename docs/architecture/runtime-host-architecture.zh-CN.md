@@ -199,7 +199,7 @@ Desktop 会在当前进程内应用新 profile，不需要重启应用。每个 
 
 持久化的 Desktop selection 表示期望连接的 target，不是当前 connection 已生效的证明。启动时若所选 profile 或 credential 不可用，Desktop 会让用户选择重试、明确使用 `local` 或退出，不会静默改写 selection。TUI 与 CLI 在启动时解析一个 profile，并把 selection 不可用作为错误报告。
 
-Remote Desktop generation 不会继承 Local Host-path authority。它读取 Project summary、提交 Project ID，并阻止 Client-local capability 收到远端 Host path。目录选择、Git review、workspace search 和打开 Skill 文件等本地文件系统操作只在 `local` 下可用。
+Remote Desktop generation 不能提交任意 Host path。它读取 Project summary、提交 Project ID，并阻止 Client-local capability 收到远端 Host path。目录选择、Git review、workspace search 和打开 Skill 文件等本地文件系统操作只在 `local` 下可用。
 
 Operator 与 Client 的配置流程见[连接远程 Runtime Host](../runtime-host-remote-access.zh-CN.md)。
 
@@ -215,7 +215,7 @@ type WorkspaceTarget =
 
 `project` 是可跨机器传递的形式。Runtime Host 通过自己的 Project Catalog 解析它，并返回 canonical target 与 `hostCwd`；`hostCwd` 是 Host 上的绝对目录。`host_path` 只供被明确允许指定 Host path 的 Client 使用，例如从本地 checkout 启动的 CLI。
 
-Project summary 不暴露 path。只有被允许读取 Host path 的 connection 才能读取或修改 project location、在 Host 上 reveal path，或提交 `host_path`。
+Project summary 不暴露已注册的 location。`canUseHostPaths` 控制 Client 能否在 operation 中指定 Host path，不是 path confidentiality boundary。Canonical Session projection 可以包含解析后的 `hostCwd`；remote Client 只能把它当作 Host metadata，不能当作 Client filesystem path。读取或修改 Project location、让 Host reveal path 仍是各自独立的 operation，而提交 `host_path` 必须具有 Host-path authority。
 
 Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 会按 State Root 在本地记住所选 Project；选择它不会修改 Host 全局状态。Remote Client 必须从所选 Host 中选择已有 Project。Desktop 不能打开 Client-local directory picker 并假装它选择了 Host directory；CLI/TUI 也不能通过 Client filesystem 重新解释、验证、迁移或补全 Host path。
 

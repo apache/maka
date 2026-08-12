@@ -41,7 +41,7 @@ npm --workspace maka-agent exec -- maka runtime-host access issue \
   --preset desktop-client
 ```
 
-仅供 TUI 或 CLI 使用的 principal 可选择 `terminal-client`。命令只显示 credential 一次。Preset 在签发时展开为明确的 operation grants，不授予 access administration 或 Host-path authority；Maka 日后修改 preset 也不会扩大已有 credential 的权限。
+仅供 TUI 或 CLI 使用的 principal 可选择 `terminal-client`。命令只显示 credential 一次。Preset 在签发时展开为明确的 operation grants，不授予 access administration 或提交任意 Host path 的权限；Maka 日后修改 preset 也不会扩大已有 credential 的权限。
 
 ## 连接 Desktop
 
@@ -83,5 +83,6 @@ npm --workspace maka-agent exec -- maka run --host office --project '<projectId>
 
 - 不要把 credential 放在命令行或 Profile JSON 中。
 - Direct remote connection 必须使用 `wss:` 和平台证书校验；不存在验证绕过或明文 fallback。
+- Session response 可能包含解析后的 `hostCwd`。它只是 Host metadata，不能通过 Client filesystem 解释。
 - Service process 由 deployment operator 管理，remote Client 不会升级或终止它。
 - 在 Host 上使用 `maka runtime-host access revoke --root /srv/maka --credential <credentialId>` 撤销 credential。
