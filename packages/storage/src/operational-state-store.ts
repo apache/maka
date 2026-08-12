@@ -32,6 +32,11 @@ import {
   insertMigratedScheduledTasks,
   planLegacyScheduledTasks,
 } from './sqlite-legacy-scheduling.js';
+import {
+  assertCurrentOperationalTargetSchema,
+  ensureOperationalSchemaRegistry,
+  isCurrentOperationalTargetSchema,
+} from './operational-target-schema.js';
 
 export const OPERATIONAL_STATE_DATABASE_NAME = 'runtime.sqlite';
 export const OPERATIONAL_STATE_SCHEMA_VERSION = 2;
@@ -191,7 +196,8 @@ class OperationalStateDatabaseOwner {
 
 function inspectAndMigrateOperationalState(database: DatabaseSync, now: () => number): void {
   try {
-    inspectOperationalStateSchema(database);
+    const inspection = inspectOperationalStateSchema(database);
+    if (inspection.status === 'current' && isCurrentOperationalTargetSchema(database)) return;
     migrateOperationalStateDatabaseInternal(database, now);
   } catch (error) {
     if (isSqliteEnvironmentError(error)) throw error;
@@ -351,13 +357,7 @@ export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: (
     insertMigratedScheduledTasks(db, legacyScheduledTasks);
     migrateSqliteUsageDatabase(db);
     migrateSqliteArtifactDatabase(db);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS operational_schema_migrations (
-        scope TEXT PRIMARY KEY,
-        version INTEGER NOT NULL CHECK (version >= 0),
-        applied_at INTEGER NOT NULL CHECK (applied_at >= 0)
-      );
-    `);
+    ensureOperationalSchemaRegistry(db);
     const appliedAt = now();
     db.exec(`
       DROP TABLE IF EXISTS automation_pending_fires;
@@ -365,6 +365,7 @@ export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: (
       DROP TABLE IF EXISTS automation_authority_state;
       DELETE FROM operational_schema_migrations WHERE scope = 'automation';
     `);
+    assertCurrentOperationalTargetSchema(db);
     for (const [scope, version] of OPERATIONAL_SCHEMA_VERSIONS) {
       registerSchema(db, scope, version, appliedAt);
     }

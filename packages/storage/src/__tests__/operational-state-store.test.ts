@@ -135,6 +135,54 @@ test('rolls back every scope when migration publication fails', async () => {
   }
 });
 
+test('rolls back a released upgrade when the final target schema is incompatible', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-target-rollback-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    await copyV016Database(databasePath);
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DELETE FROM automation_pending_fires;
+      DELETE FROM automation_definitions;
+      DROP TABLE usage_pricing_overrides;
+      CREATE TABLE usage_pricing_overrides (model_key TEXT PRIMARY KEY);
+    `);
+    const versions = legacy
+      .prepare(
+        'SELECT scope, version, applied_at FROM operational_schema_migrations ORDER BY scope',
+      )
+      .all();
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      /usage_pricing_overrides is missing required column record_json/,
+    );
+
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.deepEqual(
+      preserved
+        .prepare(
+          'SELECT scope, version, applied_at FROM operational_schema_migrations ORDER BY scope',
+        )
+        .all(),
+      versions,
+    );
+    assert.ok(
+      preserved.prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_plan_reminders'").get(),
+    );
+    assert.equal(
+      preserved
+        .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_scheduled_tasks'")
+        .get(),
+      undefined,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('migrates released Reminder state after Automation is retired', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-v016-'));
   try {
@@ -315,6 +363,70 @@ test('reapplies current Workflow authority tables without republishing its regis
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('rejects a current Runtime schema whose versioned authority table is missing', async () => {
+  await assertCurrentDatabaseRejected(
+    'missing-runtime-authority',
+    (database) => database.exec('DROP TABLE runtime_session_event_ordinals'),
+    /missing required table runtime_session_event_ordinals/,
+    (database) => {
+      assert.equal(
+        database
+          .prepare(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'runtime_session_event_ordinals'",
+          )
+          .get(),
+        undefined,
+      );
+      assert.equal(
+        (database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        SQLITE_RUNTIME_SCHEMA_VERSION,
+      );
+    },
+  );
+});
+
+for (const { name, mutation, message } of [
+  {
+    name: 'a current authority table with a missing required column',
+    mutation: (database: DatabaseSync) =>
+      database.exec(`
+        DROP TABLE usage_llm_calls;
+        CREATE TABLE usage_llm_calls (
+          storage_key TEXT PRIMARY KEY,
+          id TEXT NOT NULL,
+          ts INTEGER NOT NULL CHECK (ts >= 0)
+        );
+      `),
+    message: /usage_llm_calls is missing required column record_json/,
+  },
+  {
+    name: 'a current authority index with incompatible key columns',
+    mutation: (database: DatabaseSync) =>
+      database.exec(`
+        DROP INDEX usage_llm_calls_ts;
+        CREATE INDEX usage_llm_calls_ts ON usage_llm_calls(id);
+      `),
+    message: /required index usage_llm_calls_ts has an incompatible definition/,
+  },
+  {
+    name: 'a current authority trigger with an incompatible definition',
+    mutation: (database: DatabaseSync) =>
+      database.exec(`
+        DROP TRIGGER session_catalog_after_insert;
+        CREATE TRIGGER session_catalog_after_insert
+        AFTER INSERT ON session_metadata
+        BEGIN
+          SELECT 1;
+        END;
+      `),
+    message: /required trigger session_catalog_after_insert has an incompatible definition/,
+  },
+] as const) {
+  test(`rejects ${name}`, async () => {
+    await assertCurrentDatabaseRejected(name.replaceAll(' ', '-'), mutation, message);
+  });
+}
 
 test('rejects a null operational scope without migrating', async () => {
   await assertCurrentDatabaseRejected(
@@ -728,7 +840,7 @@ async function assertCurrentDatabaseRejected(
   name: string,
   mutate: (database: DatabaseSync) => void,
   message: RegExp,
-  verify: (database: DatabaseSync) => void,
+  verify: (database: DatabaseSync) => void = () => {},
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), `maka-operational-${name}-`));
   const databasePath = join(root, 'runtime.sqlite');
