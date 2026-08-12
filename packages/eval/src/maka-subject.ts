@@ -46,23 +46,21 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
       } catch {
         return subjectFailure('relay-execute', startedAt, context.signal);
       }
-      if (process.termination === 'cancelled') {
+      if (process.termination !== 'exited') {
+        const projection = tryDecodeMatchingProjection(process.stdout, executionId);
+        const settled = projection?.kind === 'settled' ? projection : undefined;
         return {
-          usage: null,
-          costUsd: null,
+          usage: settled?.usage ?? null,
+          costUsd: settled?.costUsd ?? null,
           durationMs: Date.now() - startedAt,
-          status: 'indeterminate' as const,
-          failureReason: 'Maka subject cancelled',
-          artifacts: [],
-        };
-      }
-      if (process.termination === 'framework_timeout') {
-        return {
-          usage: null,
-          costUsd: null,
-          durationMs: Date.now() - startedAt,
-          status: 'failed' as const,
-          failureReason: 'Maka subject exceeded the framework timeout',
+          status:
+            process.termination === 'framework_timeout'
+              ? ('failed' as const)
+              : ('indeterminate' as const),
+          failureReason:
+            process.termination === 'framework_timeout'
+              ? 'Maka subject exceeded the framework timeout'
+              : 'Maka subject cancelled',
           artifacts: [],
         };
       }
@@ -122,6 +120,19 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
       );
     },
   };
+}
+
+function tryDecodeMatchingProjection(
+  stdout: string,
+  executionId: string,
+): ReturnType<typeof decodeHostedExecutionProjection> | undefined {
+  if (stdout.length === 0) return undefined;
+  try {
+    const projection = decodeHostedExecutionProjection(JSON.parse(stdout) as unknown);
+    return projection.executionId === executionId ? projection : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function safeFailureReason(value: string, fallback: string): string {

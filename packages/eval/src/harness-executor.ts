@@ -295,15 +295,7 @@ async function startTrial(
     const lines = createInterface({ input: socket, crlfDelay: Number.POSITIVE_INFINITY })[
       Symbol.asyncIterator
     ]();
-    const cancelReady = () => socket.destroy();
-    signal?.addEventListener('abort', cancelReady, { once: true });
-    if (signal?.aborted) cancelReady();
-    let ready: Record<string, unknown>;
-    try {
-      ready = await Promise.race([readLine(lines), exitedBeforeReady]);
-    } finally {
-      signal?.removeEventListener('abort', cancelReady);
-    }
+    const ready = await abortable(Promise.race([readLine(lines), exitedBeforeReady]), signal);
     if (ready.token !== token || ready.kind !== 'ready' || typeof ready.instruction !== 'string') {
       throw new Error('relay returned an invalid ready message');
     }
@@ -569,6 +561,26 @@ async function readLine(lines: AsyncIterator<string>): Promise<Record<string, un
   const line = await lines.next();
   if (line.done) throw new Error('relay closed before settlement');
   return JSON.parse(line.value) as Record<string, unknown>;
+}
+
+async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  signal.throwIfAborted();
+  return new Promise<T>((resolveOperation, rejectOperation) => {
+    let settled = false;
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = () => settle(() => rejectOperation(signal.reason));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void operation.then(
+      (value) => settle(() => resolveOperation(value)),
+      (error: unknown) => settle(() => rejectOperation(error)),
+    );
+  });
 }
 
 async function waitForTrial(
