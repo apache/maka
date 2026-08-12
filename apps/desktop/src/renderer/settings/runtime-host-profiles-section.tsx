@@ -16,6 +16,16 @@ import { PasswordInput } from "./password-input.js";
 import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsRow, SettingsSection } from "./settings-section.js";
 
+function createRemoteHostDraft() {
+  return {
+    id: `remote-${crypto.randomUUID()}`,
+    name: "",
+    url: "",
+    rootId: "",
+    credential: "",
+  };
+}
+
 export function RuntimeHostProfilesSection() {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
@@ -26,13 +36,7 @@ export function RuntimeHostProfilesSection() {
   >();
   const [showAdd, setShowAdd] = useState(false);
   const [switching, setSwitching] = useState(false);
-  const [draft, setDraft] = useState({
-    id: "",
-    name: "",
-    url: "",
-    rootId: "",
-    credential: "",
-  });
+  const [draft, setDraft] = useState(createRemoteHostDraft);
 
   const reload = useCallback(async () => {
     const next = await window.maka.runtimeHostProfiles.getSnapshot();
@@ -64,9 +68,16 @@ export function RuntimeHostProfilesSection() {
     }
   }
 
-  async function save() {
+  function toggleAdd() {
+    if (!showAdd) setDraft(createRemoteHostDraft());
+    setShowAdd((value) => !value);
+  }
+
+  async function saveAndConnect() {
+    setSwitching(true);
+    let saved = false;
     try {
-      const next = await window.maka.runtimeHostProfiles.save({
+      const savedSnapshot = await window.maka.runtimeHostProfiles.save({
         profile: {
           id: draft.id,
           name: draft.name,
@@ -77,13 +88,27 @@ export function RuntimeHostProfilesSection() {
         credential: draft.credential,
       });
       if (!mountedRef.current) return;
-      setSnapshot(next);
+      saved = true;
+      setSnapshot(savedSnapshot);
+      setDraft((value) => ({ ...value, credential: "" }));
+      const connected = await window.maka.runtimeHostProfiles.select(draft.id);
+      if (!mountedRef.current) return;
+      setSnapshot(connected);
+      if (connected.unavailable?.profileId === draft.id) {
+        toast.error(copy.selectFailed, connected.unavailable.message);
+        return;
+      }
       setShowAdd(false);
-      setDraft({ id: "", name: "", url: "", rootId: "", credential: "" });
+      setDraft(createRemoteHostDraft());
     } catch (error) {
       if (mountedRef.current) {
-        toast.error(copy.saveFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          saved ? copy.selectFailed : copy.saveFailed,
+          settingsActionErrorMessage(error, locale),
+        );
       }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
     }
   }
 
@@ -150,20 +175,35 @@ export function RuntimeHostProfilesSection() {
             size="sm"
             label={showAdd ? copy.cancel : copy.add}
             isDisabled={switching}
-            onClick={() => setShowAdd((value) => !value)}
+            onClick={toggleAdd}
           />
         }
       >
         {showAdd ? (
           <>
-            <SettingsRow label={copy.id} end={<TextInput label={copy.id} isLabelHidden value={draft.id} onChange={(id) => setDraft((value) => ({ ...value, id }))} />} />
-            <SettingsRow label={copy.name} end={<TextInput label={copy.name} isLabelHidden value={draft.name} onChange={(name) => setDraft((value) => ({ ...value, name }))} />} />
-            <SettingsRow label={copy.url} end={<TextInput label={copy.url} isLabelHidden value={draft.url} placeholder="wss://host.example" onChange={(url) => setDraft((value) => ({ ...value, url }))} />} />
-            <SettingsRow label={copy.rootId} end={<TextInput label={copy.rootId} isLabelHidden value={draft.rootId} onChange={(rootId) => setDraft((value) => ({ ...value, rootId }))} />} />
-            <SettingsRow label={copy.credential} end={<PasswordInput label={copy.credential} isLabelHidden value={draft.credential} onChange={(credential) => setDraft((value) => ({ ...value, credential }))} />} />
+            <SettingsRow
+              label={copy.name}
+              description={copy.nameHelp}
+              end={<TextInput label={copy.name} isLabelHidden value={draft.name} onChange={(name) => setDraft((value) => ({ ...value, name }))} />}
+            />
+            <SettingsRow
+              label={copy.url}
+              description={copy.urlHelp}
+              end={<TextInput label={copy.url} isLabelHidden value={draft.url} placeholder="wss://host.example" onChange={(url) => setDraft((value) => ({ ...value, url }))} />}
+            />
+            <SettingsRow
+              label={copy.rootId}
+              description={copy.rootIdHelp}
+              end={<TextInput label={copy.rootId} isLabelHidden value={draft.rootId} onChange={(rootId) => setDraft((value) => ({ ...value, rootId }))} />}
+            />
+            <SettingsRow
+              label={copy.credential}
+              description={copy.credentialHelp}
+              end={<PasswordInput label={copy.credential} isLabelHidden value={draft.credential} onChange={(credential) => setDraft((value) => ({ ...value, credential }))} />}
+            />
             <SettingsRow
               label={copy.add}
-              end={<Button variant="primary" size="sm" label={copy.save} isDisabled={Object.values(draft).some((value) => !value.trim())} clickAction={save} />}
+              end={<Button variant="primary" size="sm" label={copy.saveAndConnect} isDisabled={switching || [draft.name, draft.url, draft.rootId, draft.credential].some((value) => !value.trim())} clickAction={saveAndConnect} />}
             />
           </>
         ) : null}

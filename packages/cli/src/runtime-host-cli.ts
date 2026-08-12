@@ -4,6 +4,7 @@ export type RuntimeHostCliCommand =
   | {
       kind: 'runtime-host-serve';
       rootPath?: string;
+      json: boolean;
       websocket?: {
         host: string;
         port: number;
@@ -21,8 +22,11 @@ export type RuntimeHostCliCommand =
       operationGrants: string[];
       canPublishClientCapabilities: boolean;
       canUseHostPaths: boolean;
+      preset?: 'desktop-client' | 'terminal-client';
     }
   | { kind: 'runtime-host-access-revoke'; rootPath?: string; credentialId: string }
+  | { kind: 'runtime-host-project-list'; rootPath?: string }
+  | { kind: 'runtime-host-project-add'; rootPath?: string; path: string }
   | {
       kind: 'runtime-host-capability-provider-serve';
       url: string;
@@ -46,6 +50,7 @@ export type RuntimeHostCliCommand =
 export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
   if (argv[0] === 'serve') return parseServeCommand(argv.slice(1));
   if (argv[0] === 'access') return parseAccessCommand(argv.slice(1));
+  if (argv[0] === 'project') return parseProjectCommand(argv.slice(1));
   if (argv[0] === 'capability-provider') {
     return parseCapabilityProviderCommand(argv.slice(1));
   }
@@ -53,8 +58,41 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
   return error(
     argv[0]
       ? `Unexpected runtime-host command: ${argv[0]}`
-      : 'runtime-host requires the serve, access, profile, or capability-provider command',
+      : 'runtime-host requires the serve, access, project, profile, or capability-provider command',
   );
+}
+
+function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {
+  const action = argv[0];
+  if (action !== 'list' && action !== 'add') {
+    return error(
+      action
+        ? `Unexpected runtime-host project command: ${action}`
+        : 'runtime-host project requires the list or add command',
+    );
+  }
+  let rootPath: string | undefined;
+  let path: string | undefined;
+  for (let index = 1; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--root') {
+      const parsed = optionValue(argv, index, argument);
+      if (typeof parsed !== 'string') return parsed;
+      rootPath = parsed;
+      index += 1;
+      continue;
+    }
+    if (action === 'add' && path === undefined) {
+      path = argument;
+      continue;
+    }
+    return error(`Unexpected argument: ${argument ?? ''}`);
+  }
+  if (action === 'list') {
+    return { kind: 'runtime-host-project-list', ...(rootPath ? { rootPath } : {}) };
+  }
+  if (!path) return error('runtime-host project add requires a path');
+  return { kind: 'runtime-host-project-add', path, ...(rootPath ? { rootPath } : {}) };
 }
 
 function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
@@ -167,6 +205,7 @@ function parseCapabilityProviderCommand(argv: string[]): RuntimeHostCliCommand {
 
 function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   let rootPath: string | undefined;
+  let json = false;
   let websocketHost = '127.0.0.1';
   let websocketConfigured = false;
   let websocketPort: number | undefined;
@@ -176,6 +215,10 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   const allowedOrigins: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
+    if (argument === '--json') {
+      json = true;
+      continue;
+    }
     if (argument === '--root') {
       const parsed = optionValue(argv, index, argument);
       if (typeof parsed !== 'string') return parsed;
@@ -237,6 +280,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   }
   return {
     kind: 'runtime-host-serve',
+    json,
     ...(rootPath ? { rootPath } : {}),
     ...(websocketPort === undefined
       ? {}
@@ -270,6 +314,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   const operationGrants: string[] = [];
   let canPublishClientCapabilities = false;
   let canUseHostPaths = false;
+  let preset: 'desktop-client' | 'terminal-client' | undefined;
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--publish-client-capabilities') {
@@ -283,6 +328,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     if (
       argument === '--root' ||
       argument === '--kind' ||
+      argument === '--preset' ||
       argument === '--principal' ||
       argument === '--grant' ||
       argument === '--credential'
@@ -297,6 +343,12 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
         principalKind = parsed === 'remote-owner' ? 'remote_owner' : 'capability_provider';
         principalKindSpecified = true;
       }
+      if (argument === '--preset') {
+        if (parsed !== 'desktop-client' && parsed !== 'terminal-client') {
+          return error('--preset must be desktop-client or terminal-client');
+        }
+        preset = parsed;
+      }
       if (argument === '--principal') principalId = parsed;
       if (argument === '--grant') operationGrants.push(parsed);
       if (argument === '--credential') credentialId = parsed;
@@ -308,6 +360,27 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   if (action === 'issue') {
     if (!principalId) return error('--principal is required');
     if (credentialId) return error('--credential is only valid for access revoke');
+    if (
+      preset &&
+      (principalKindSpecified ||
+        operationGrants.length > 0 ||
+        canPublishClientCapabilities ||
+        canUseHostPaths)
+    ) {
+      return error('--preset cannot be combined with --kind, --grant, or authority flags');
+    }
+    if (preset) {
+      return {
+        kind: 'runtime-host-access-issue',
+        ...(rootPath ? { rootPath } : {}),
+        principalKind: 'remote_owner',
+        principalId,
+        operationGrants,
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+        preset,
+      };
+    }
     if (principalKind === 'capability_provider') {
       const requiredGrants = ['client.capability.replace', 'client.capability.unregister'];
       if (canUseHostPaths) return error('A capability provider cannot use Host paths');
@@ -338,7 +411,8 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     principalKindSpecified ||
     operationGrants.length > 0 ||
     canPublishClientCapabilities ||
-    canUseHostPaths
+    canUseHostPaths ||
+    preset
   ) {
     return error('Issue-only access options are not valid for revoke');
   }

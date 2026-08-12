@@ -201,6 +201,8 @@ The persisted Desktop selection is a desired target, not proof of the active con
 
 A remote Desktop generation does not inherit Local Host-path authority. It reads Project summaries, submits Project IDs, and keeps Client-local capabilities from receiving remote Host paths. Local filesystem actions such as directory picking, Git review, workspace search, and opening Skill files remain available only for `local`.
 
+The operator and Client setup flow is documented in [Connect to a remote Runtime Host](../runtime-host-remote-access.md).
+
 ### Runtime Host resolves workspaces
 
 Clients identify a workspace with exactly one of two target forms:

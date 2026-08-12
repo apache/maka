@@ -27,6 +27,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Session task ledger lifecycle](./session-task-ledger-lifecycle.md)
 - [Runtime resume architecture](./architecture/runtime-resume-architecture.md) ([中文](./architecture/runtime-resume-architecture.zh-CN.md))
 - [Runtime Host architecture](./architecture/runtime-host-architecture.md) ([中文](./architecture/runtime-host-architecture.zh-CN.md))
+- [Remote Runtime Host setup](./runtime-host-remote-access.md) ([中文](./runtime-host-remote-access.zh-CN.md))
 - [Runtime resume extraction ledger](./architecture/runtime-resume-extraction-ledger.zh-CN.md)
 - [Runtime resume Phase 3–4 implementation route](./architecture/runtime-resume-phase3-phase4-workspace-checkpoint-design.zh-CN.md)
 - [Skill catalog policy](./skill-catalog-policy.md)

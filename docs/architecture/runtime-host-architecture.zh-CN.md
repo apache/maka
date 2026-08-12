@@ -201,6 +201,8 @@ Desktop 会在当前进程内应用新 profile，不需要重启应用。每个 
 
 Remote Desktop generation 不会继承 Local Host-path authority。它读取 Project summary、提交 Project ID，并阻止 Client-local capability 收到远端 Host path。目录选择、Git review、workspace search 和打开 Skill 文件等本地文件系统操作只在 `local` 下可用。
 
+Operator 与 Client 的配置流程见[连接远程 Runtime Host](../runtime-host-remote-access.zh-CN.md)。
+
 ### Runtime Host 解析 workspace
 
 Client 必须使用下面两种 target form 中的一个来表达 workspace：

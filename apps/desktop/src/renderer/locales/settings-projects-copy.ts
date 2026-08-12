@@ -10,12 +10,15 @@ export type SettingsProjectsCopy = {
     remoteDescription: string;
     add: string;
     cancel: string;
-    id: string;
     name: string;
+    nameHelp: string;
     url: string;
+    urlHelp: string;
     rootId: string;
+    rootIdHelp: string;
     credential: string;
-    save: string;
+    credentialHelp: string;
+    saveAndConnect: string;
     active: string;
     connect: string;
     unavailable: string;
@@ -71,15 +74,18 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       selected: 'Host',
       selectedHelp: '切换会立即生效；连接失败时继续使用当前 Host',
       remoteTitle: '远程 Host',
-      remoteDescription: '凭据单独保存，不会写入 profile 文件',
+      remoteDescription: '先在远程机器准备 TLS service、Project 和访问凭据，再从这里连接。凭据不会写入 profile 文件。',
       add: '添加远程 Host',
       cancel: '取消',
-      id: 'Profile ID',
       name: '显示名称',
+      nameHelp: '仅用于在这台设备上识别该 Host',
       url: 'WSS 地址',
+      urlHelp: '远程 Runtime Host 的 wss:// 地址',
       rootId: 'State Root ID',
+      rootIdHelp: '来自远程 service 的 ready 输出，用于确认连接的是预期 Host',
       credential: '访问凭据',
-      save: '保存',
+      credentialHelp: '在远程机器使用 desktop-client preset 签发',
+      saveAndConnect: '保存并连接',
       active: '当前',
       connect: '连接',
       unavailable: '无法连接',
@@ -132,15 +138,19 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       selected: 'Host',
       selectedHelp: 'Switches immediately; if connection fails, Desktop keeps using the current Host',
       remoteTitle: 'Remote Hosts',
-      remoteDescription: 'Credentials are stored separately and never written to the profile file',
+      remoteDescription:
+        'Prepare the TLS service, Project, and access credential on the remote machine, then connect here. Credentials are never written to the profile file.',
       add: 'Add remote Host',
       cancel: 'Cancel',
-      id: 'Profile ID',
       name: 'Display name',
+      nameHelp: 'Used only to identify this Host on this device',
       url: 'WSS URL',
+      urlHelp: 'The wss:// address of the remote Runtime Host',
       rootId: 'State Root ID',
+      rootIdHelp: 'Copied from the remote service ready output to verify the expected Host',
       credential: 'Access credential',
-      save: 'Save',
+      credentialHelp: 'Issue it on the remote machine with the desktop-client preset',
+      saveAndConnect: 'Save and connect',
       active: 'Active',
       connect: 'Connect',
       unavailable: 'Unavailable',

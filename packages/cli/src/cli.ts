@@ -86,8 +86,11 @@ function helpText(): string {
     '  maka eval ...     Run one declarative multi-arm experiment',
     '  maka runtime-host serve [options]  Run a Runtime Host service',
     '  maka runtime-host access issue --principal <id> --grant <operation>',
+    '  maka runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>',
     '  maka runtime-host access issue --kind capability-provider --principal <id>',
     '  maka runtime-host access revoke --credential <id>',
+    '  maka runtime-host project list [--root <path>]',
+    '  maka runtime-host project add <path> [--root <path>]',
     '  maka runtime-host profile list',
     '  maka runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]',
     '  maka runtime-host profile remove --id <id>',
@@ -110,12 +113,14 @@ function helpText(): string {
     '  --tls-certificate <path>      TLS certificate for WSS',
     '  --tls-private-key <path>      TLS private key for WSS',
     '  --allow-origin <origin>       Allow one browser Origin (repeatable)',
+    '  --json                        Emit one machine-readable ready event',
     '',
     'Runtime Host access issue options:',
     '  --root <path>                 Select the canonical data root',
     '  --kind <kind>                 remote-owner or capability-provider',
     '  --principal <id>              Name the authenticated Client principal',
     '  --grant <operation>           Grant one exact operation (repeatable)',
+    '  --preset <name>               Grant the desktop-client or terminal-client operation set',
     '  --publish-client-capabilities Allow Client Capability publication',
     '  --allow-host-paths            Allow operations that submit Host paths',
     '',
@@ -153,6 +158,7 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
       return runRuntimeHostServiceCli({
         rootPath: command.rootPath ?? resolveMakaWorkspaceRoot(),
+        json: command.json,
         ...(command.websocket ? { websocket: command.websocket } : {}),
       });
     }
@@ -165,6 +171,7 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
         operationGrants: command.operationGrants,
         canPublishClientCapabilities: command.canPublishClientCapabilities,
         canUseHostPaths: command.canUseHostPaths,
+        ...(command.preset ? { preset: command.preset } : {}),
       });
     }
     case 'runtime-host-access-revoke': {
@@ -173,6 +180,14 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
         rootPath: command.rootPath ?? resolveMakaWorkspaceRoot(),
         credentialId: command.credentialId,
       });
+    }
+    case 'runtime-host-project-list':
+    case 'runtime-host-project-add': {
+      const { runRuntimeHostProjectCli } = await import('./runtime-host-project-command.js');
+      const rootPath = command.rootPath ?? resolveMakaWorkspaceRoot();
+      return command.kind === 'runtime-host-project-list'
+        ? runRuntimeHostProjectCli({ kind: 'list', rootPath })
+        : runRuntimeHostProjectCli({ kind: 'add', rootPath, path: command.path });
     }
     case 'runtime-host-capability-provider-serve': {
       const { runRuntimeHostCapabilityProviderCli } = await import(

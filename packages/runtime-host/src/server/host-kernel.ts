@@ -253,6 +253,10 @@ export class RuntimeHostKernel {
     return this.#listeners.localEndpoint;
   }
 
+  get rootId(): string {
+    return this.#options.owner.capability.rootId;
+  }
+
   get connectionCount(): number {
     return this.#acceptedTransports.size;
   }
