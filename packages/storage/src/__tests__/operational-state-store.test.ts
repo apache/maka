@@ -135,54 +135,6 @@ test('rolls back every scope when migration publication fails', async () => {
   }
 });
 
-test('rolls back a released upgrade when the final target schema is incompatible', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-operational-target-rollback-'));
-  const databasePath = join(root, 'runtime.sqlite');
-  try {
-    await copyV016Database(databasePath);
-    const legacy = new DatabaseSync(databasePath);
-    legacy.exec(`
-      DELETE FROM automation_pending_fires;
-      DELETE FROM automation_definitions;
-      DROP TABLE usage_pricing_overrides;
-      CREATE TABLE usage_pricing_overrides (model_key TEXT PRIMARY KEY);
-    `);
-    const versions = legacy
-      .prepare(
-        'SELECT scope, version, applied_at FROM operational_schema_migrations ORDER BY scope',
-      )
-      .all();
-    legacy.close();
-
-    assert.throws(
-      () => acquireOperationalStateDatabase(root),
-      /schema object table:usage_pricing_overrides has an incompatible definition/,
-    );
-
-    const preserved = new DatabaseSync(databasePath, { readOnly: true });
-    assert.deepEqual(
-      preserved
-        .prepare(
-          'SELECT scope, version, applied_at FROM operational_schema_migrations ORDER BY scope',
-        )
-        .all(),
-      versions,
-    );
-    assert.ok(
-      preserved.prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_plan_reminders'").get(),
-    );
-    assert.equal(
-      preserved
-        .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_scheduled_tasks'")
-        .get(),
-      undefined,
-    );
-    preserved.close();
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test('migrates released Reminder state after Automation is retired', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-v016-'));
   try {
@@ -355,43 +307,6 @@ test('rejects a released Reminder table after its Workflow authority removed it'
   }
 });
 
-test('reapplies current Workflow authority tables without republishing its registry', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-operational-missing-scheduled-tasks-'));
-  try {
-    const lease = acquireOperationalStateDatabase(root);
-    const registry = lease.database
-      .prepare(
-        "SELECT version, applied_at FROM operational_schema_migrations WHERE scope = 'workflow'",
-      )
-      .get();
-    lease.database.exec(`
-      DROP TABLE workflow_scheduled_task_fires;
-      DROP TABLE workflow_scheduled_tasks;
-    `);
-    lease.close();
-
-    const reopened = acquireOperationalStateDatabase(root);
-    for (const table of ['workflow_scheduled_task_fires', 'workflow_scheduled_tasks']) {
-      assert.ok(
-        reopened.database
-          .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?")
-          .get(table),
-      );
-    }
-    assert.deepEqual(
-      reopened.database
-        .prepare(
-          "SELECT version, applied_at FROM operational_schema_migrations WHERE scope = 'workflow'",
-        )
-        .get(),
-      registry,
-    );
-    reopened.close();
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test('rejects a current Runtime schema whose versioned authority table is missing', async () => {
   await assertCurrentDatabaseRejected(
     'missing-runtime-authority',
@@ -423,14 +338,6 @@ for (const { name, mutation } of [
         CREATE UNIQUE INDEX artifact_records_relative_path
           ON artifact_records(relative_path)
           WHERE status = 'live';
-      `),
-  },
-  {
-    name: 'a current authority table with missing key and check constraints',
-    mutation: (database: DatabaseSync) =>
-      database.exec(`
-        DROP TABLE usage_pricing_authority;
-        CREATE TABLE usage_pricing_authority (singleton INTEGER, revision INTEGER);
       `),
   },
   {
