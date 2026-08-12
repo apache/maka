@@ -52,6 +52,7 @@ function subscription(
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
     activeAssistantStreams: [],
+    transcriptBootstrap: null,
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: {
@@ -71,6 +72,9 @@ function subscription(
     loadTranscript: async <T>(_decodeMessage: (value: unknown) => T) => {
       lifecycle.push(`${sessionId}:transcript`);
       return [] as T[];
+    },
+    loadTranscriptPage: async () => {
+      throw new Error('Fake subscription does not expose transcript pages');
     },
     close: async () => {
       lifecycle.push(`${sessionId}:close`);

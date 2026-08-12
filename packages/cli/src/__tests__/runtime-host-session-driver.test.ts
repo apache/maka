@@ -1253,6 +1253,7 @@ class FakeConnection {
 class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<SubscriptionFrame> {
   readonly hostEpoch = 'host-1';
   readonly activeAssistantStreams = [];
+  readonly transcriptBootstrap = null;
   readonly subscriptionId: string;
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<{
@@ -1297,6 +1298,10 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
 
   async loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]> {
     return (await this.transcript).map(decodeMessage);
+  }
+
+  async loadTranscriptPage(): Promise<never> {
+    throw new Error('Fake subscription does not expose transcript pages');
   }
 
   async close(): Promise<void> {

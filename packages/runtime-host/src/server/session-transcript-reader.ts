@@ -8,37 +8,57 @@ import {
   type CanonicalPermissionOutcomeReader,
   type CanonicalPermissionOutcomeRecord,
 } from '@maka/runtime/interaction-authority';
-import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
+import type {
+  ExecutionStoresWriter,
+  SessionTranscriptPageRequest,
+  SessionTranscriptStoragePage,
+} from '@maka/storage/execution-stores';
 import type { TurnSnapshot } from '../protocol/index.js';
-import type { ReadSessionTranscript } from './session-continuity-coordinator.js';
 
 const PERMISSION_OUTCOME_READ_CONCURRENCY = 8;
 
 export function createSessionTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
   canonicalPermissionOutcomes: CanonicalPermissionOutcomeReader;
-}): ReadSessionTranscript {
-  return async (sessionId, rootTurn) => {
-    const stored = await input.stores.sessionStore.readMessagesSnapshot(sessionId);
-    if (!rootTurn || isTerminalTurn(rootTurn)) return stored;
+}): SessionTranscriptReader {
+  return {
+    readDurableHighWater: (sessionId) =>
+      input.stores.sessionStore.readTranscriptHighWaterSnapshot(sessionId),
+    readDurablePage: (sessionId, request) =>
+      input.stores.sessionStore.readTranscriptPageSnapshot(sessionId, request),
+    readActiveOverlay: async (sessionId, rootTurn) => {
+      if (!rootTurn || isTerminalTurn(rootTurn)) return [];
 
-    const [run, events] = await Promise.all([
-      input.stores.agentRunStore.readRun(sessionId, rootTurn.runId),
-      input.stores.runtimeEventStore.readRuntimeEvents(sessionId, rootTurn.runId),
-    ]);
-    const canonicalPermissionOutcomes = await readCanonicalPermissionOutcomes(
-      events,
-      input.canonicalPermissionOutcomes,
-    );
-    const projected = projectRuntimeEventsToStoredMessages(activePresentationEvents(events), {
-      runHeaders: [run],
-      canonicalPermissionOutcomes,
-    });
-    if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
-      throw new Error('Active RuntimeEvent transcript projection is incomplete');
-    }
-    return mergeMessageUpserts(stored, projected.messages);
+      const [run, events] = await Promise.all([
+        input.stores.agentRunStore.readRun(sessionId, rootTurn.runId),
+        input.stores.runtimeEventStore.readRuntimeEvents(sessionId, rootTurn.runId),
+      ]);
+      const canonicalPermissionOutcomes = await readCanonicalPermissionOutcomes(
+        events,
+        input.canonicalPermissionOutcomes,
+      );
+      const projected = projectRuntimeEventsToStoredMessages(activePresentationEvents(events), {
+        runHeaders: [run],
+        canonicalPermissionOutcomes,
+      });
+      if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
+        throw new Error('Active RuntimeEvent transcript projection is incomplete');
+      }
+      return projected.messages;
+    },
   };
+}
+
+export interface SessionTranscriptReader {
+  readDurableHighWater(sessionId: string): Promise<number | null>;
+  readDurablePage(
+    sessionId: string,
+    request: SessionTranscriptPageRequest,
+  ): Promise<SessionTranscriptStoragePage>;
+  readActiveOverlay(
+    sessionId: string,
+    rootTurn: TurnSnapshot | null,
+  ): Promise<readonly StoredMessage[]>;
 }
 
 async function readCanonicalPermissionOutcomes(
@@ -119,24 +139,6 @@ function emptyAssistantText(thinking: RuntimeEvent): RuntimeEvent {
     partial: false,
     content: { kind: 'text', text: '' },
   };
-}
-
-function mergeMessageUpserts(
-  stored: readonly StoredMessage[],
-  active: readonly StoredMessage[],
-): StoredMessage[] {
-  const merged = stored.map((message) => structuredClone(message));
-  const indices = new Map(merged.map((message, index) => [message.id, index]));
-  for (const message of active) {
-    const index = indices.get(message.id);
-    if (index === undefined) {
-      indices.set(message.id, merged.length);
-      merged.push(structuredClone(message));
-    } else {
-      merged[index] = structuredClone(message);
-    }
-  }
-  return merged;
 }
 
 function isTerminalTurn(turn: TurnSnapshot): boolean {

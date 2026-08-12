@@ -16,6 +16,7 @@
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
     "build": "tsc -p tsconfig.json",
+    "benchmark:transcript": "node scripts/transcript-data-plane-benchmark.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run clean && npm run build && npm run test:dist",
     "test:dist": "node --test \"dist/**/*.test.js\""

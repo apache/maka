@@ -6,7 +6,7 @@ import type { StoredMessage } from '@maka/core/session';
 import {
   decodeHostFrame,
   encodeProtocolMessage,
-  type SessionTranscriptCursor,
+  SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SubscriptionFrame,
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
@@ -16,6 +16,7 @@ import {
 } from '../server/session-continuity-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import type { SessionContinuityFrameSink } from '../server/session-continuity-service.js';
+import type { SessionTranscriptReader } from '../server/session-transcript-reader.js';
 import { ClientSessionSubscription } from '../client/session-subscription.js';
 
 const HOST_EPOCH = 'host-epoch';
@@ -32,7 +33,7 @@ test('open is an inactive publication barrier and live sequence starts at nextSe
   const connection = coordinator.attachConnection('connection-1', sink);
 
   const opening = coordinator.handlers['subscription.open'](
-    { sessionId: SESSION_ID },
+    { sessionId: SESSION_ID, transcript: { kind: 'none' } },
     connectionContext('connection-1'),
   );
   await delayImmediate();
@@ -478,7 +479,7 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
   const sink = new RecordingSink();
   const connection = coordinator.attachConnection('connection-1', sink);
   const outcome = await coordinator.handlers['subscription.open'](
-    { sessionId: childSessionId },
+    { sessionId: childSessionId, transcript: { kind: 'none' } },
     connectionContext('connection-1'),
   );
   assert.equal(outcome.ok, true);
@@ -615,161 +616,139 @@ test('removal closes every Session subscriber at the admitted sequence boundary'
   coordinator.close();
 });
 
-test('a joining Client receives an immutable transcript and absolute overlapping live offsets', async () => {
-  const transcript: StoredMessage[] = [assistantMessage('chunk-1')];
+test('open returns a bounded durable tail and an immutable active overlay', async () => {
+  const durable: StoredMessage[] = [assistantMessage('durable')];
+  const overlay = [assistantMessage('live overlay')];
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
     new SessionAdmissionGate(),
     undefined,
-    async () => transcript,
+    transcriptReader(durable, overlay),
   );
-
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
-  const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
-  const opened = await open(coordinator, 'connection-1');
-  connection.activate(opened.subscriptionId);
-
-  const snapshot = await coordinator.handlers['session.transcript.query'](
-    { kind: 'start', subscriptionId: opened.subscriptionId },
-    connectionContext('connection-1'),
-  );
-  assert.equal(snapshot.ok, true);
-  if (!snapshot.ok) assert.fail('expected the transcript snapshot');
-  assert.equal(snapshot.result.kind, 'chunk');
-  if (snapshot.result.kind !== 'chunk') assert.fail('expected a transcript chunk');
-  assert.deepEqual(
-    JSON.parse(Buffer.from(snapshot.result.data, 'base64').toString('utf8')),
-    transcript[0],
-  );
-
-  transcript[0] = assistantMessage('mutated after snapshot');
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(2));
-  await waitFor(() => sink.frames.length === 1);
-  const live = sink.frames[0];
-  assert.equal(live?.kind, 'subscription.session_delta');
-  if (live?.kind === 'subscription.session_delta') {
-    assert.equal(live.delta.startOffset, 'chunk-1'.length);
-    assert.equal(live.delta.text, 'chunk-2');
-  }
-  coordinator.close();
-});
-
-test('a joining Client receives live assistant text that has not reached durable storage', async () => {
-  const durable = assistantMessage('chunk-1');
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async () => canonical(),
-    new SessionAdmissionGate(),
-    undefined,
-    async () => [durable],
-  );
-
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(2));
   const connection = coordinator.attachConnection('connection-1', new RecordingSink());
-  const opened = await open(coordinator, 'connection-1');
+  const opened = await open(coordinator, 'connection-1', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
   connection.activate(opened.subscriptionId);
-
-  const snapshot = await coordinator.handlers['session.transcript.query'](
-    { kind: 'start', subscriptionId: opened.subscriptionId },
-    connectionContext('connection-1'),
+  assert.ok(opened.transcript);
+  if (!opened.transcript) return;
+  const client = new ClientSessionSubscription(
+    opened,
+    async () => undefined,
+    async () => {
+      throw new Error('bounded bootstrap unexpectedly required continuation');
+    },
   );
-  assert.equal(snapshot.ok, true);
-  if (!snapshot.ok) assert.fail('expected the transcript snapshot');
-  assert.equal(snapshot.result.kind, 'chunk');
-  if (snapshot.result.kind !== 'chunk') assert.fail('expected a transcript chunk');
-  assert.deepEqual(
-    JSON.parse(Buffer.from(snapshot.result.data, 'base64').toString('utf8')),
-    assistantMessage('chunk-1chunk-2'),
-  );
+  durable[0] = assistantMessage('mutated after open');
+  overlay[0] = assistantMessage('mutated after open');
+  assert.deepEqual(await client.loadTranscript((value) => value), [
+    assistantMessage('live overlay'),
+  ]);
   coordinator.close();
 });
 
-test('a durable final replaces a non-prefix live draft during transcript catch-up', async () => {
-  const transcript = deferred<readonly StoredMessage[]>();
+test('open reconciles the active assistant prefix into its overlay seed', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
     new SessionAdmissionGate(),
     undefined,
-    () => transcript.promise,
+    transcriptReader([assistantMessage('chunk-1')], [assistantMessage('chunk-1')]),
   );
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(2));
+  coordinator.attachConnection('connection-live-prefix', new RecordingSink());
+  const opened = await open(coordinator, 'connection-live-prefix', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  const client = new ClientSessionSubscription(
+    opened,
+    async () => undefined,
+    async () => {
+      throw new Error('bounded bootstrap unexpectedly required continuation');
+    },
+  );
+  assert.deepEqual(await client.loadTranscript((value) => value), [
+    assistantMessage('chunk-1chunk-2'),
+  ]);
+  coordinator.close();
+});
 
+test('a non-prefix durable final replaces a stale active assistant draft', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    transcriptReader([assistantMessage('authoritative final')], [assistantMessage('draft')]),
+  );
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
     ...textEvent(1),
     text: 'draft',
   });
-  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
-  const opened = await open(coordinator, 'connection-1');
-  connection.activate(opened.subscriptionId);
-
-  const catchUp = coordinator.handlers['session.transcript.query'](
-    { kind: 'start', subscriptionId: opened.subscriptionId },
-    connectionContext('connection-1'),
+  coordinator.attachConnection('connection-final-handoff', new RecordingSink());
+  const opened = await open(coordinator, 'connection-final-handoff', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  const client = new ClientSessionSubscription(
+    opened,
+    async () => undefined,
+    async () => {
+      throw new Error('bounded bootstrap unexpectedly required continuation');
+    },
   );
-  transcript.resolve([assistantMessage('authoritative final')]);
-
-  const snapshot = await catchUp;
-  assert.equal(snapshot.ok, true);
-  if (!snapshot.ok) assert.fail('expected the transcript snapshot');
-  assert.equal(snapshot.result.kind, 'chunk');
-  if (snapshot.result.kind !== 'chunk') assert.fail('expected a transcript chunk');
-  assert.deepEqual(
-    JSON.parse(Buffer.from(snapshot.result.data, 'base64').toString('utf8')),
+  assert.deepEqual(await client.loadTranscript((value) => value), [
     assistantMessage('authoritative final'),
-  );
+  ]);
   coordinator.close();
 });
 
-test('transcript snapshots chunk one large message and remain subscription-owned', async () => {
+test('large transcript messages are paged and cursors remain subscription-owned', async () => {
   const message = assistantMessage('界'.repeat(20_000));
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
     new SessionAdmissionGate(),
     undefined,
-    async () => [message],
+    transcriptReader([message]),
   );
   const owner = coordinator.attachConnection('connection-owner', new RecordingSink());
   const sibling = coordinator.attachConnection('connection-sibling', new RecordingSink());
-  const opened = await open(coordinator, 'connection-owner');
-
-  const first = await coordinator.handlers['session.transcript.query'](
-    { kind: 'start', subscriptionId: opened.subscriptionId },
-    connectionContext('connection-owner'),
+  const opened = await open(coordinator, 'connection-owner', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  assert.ok(opened.transcript?.durable.nextCursor);
+  if (!opened.transcript?.durable.nextCursor) return;
+  const firstCursor = opened.transcript.durable.nextCursor;
+  const client = new ClientSessionSubscription(
+    opened,
+    async () => undefined,
+    async (input) => {
+      const next = await coordinator.handlers['session.transcript.page'](
+        input,
+        connectionContext('connection-owner'),
+      );
+      if (!next.ok) throw new Error(next.error.message);
+      return next.result;
+    },
   );
-  assert.equal(first.ok, true);
-  if (!first.ok) assert.fail('expected the first transcript chunk');
-  assert.equal(first.result.kind, 'chunk');
-  if (first.result.kind !== 'chunk') assert.fail('expected a transcript chunk');
-  assert.ok(first.result.next, 'expected the large message to require continuation');
-  if (!first.result.next) assert.fail('expected a continuation cursor');
-  const chunks = [Buffer.from(first.result.data, 'base64')];
-  let cursor: SessionTranscriptCursor | null = first.result.next;
-  while (cursor) {
-    const next = await coordinator.handlers['session.transcript.query'](
-      {
-        kind: 'continue',
-        subscriptionId: opened.subscriptionId,
-        snapshotId: first.result.snapshotId,
-        ...cursor,
-      },
-      connectionContext('connection-owner'),
-    );
-    assert.equal(next.ok, true);
-    if (!next.ok) assert.fail('expected a continuation transcript chunk');
-    assert.equal(next.result.kind, 'chunk');
-    if (next.result.kind !== 'chunk') assert.fail('expected a transcript chunk');
-    chunks.push(Buffer.from(next.result.data, 'base64'));
-    cursor = next.result.next;
-  }
-  assert.ok(chunks.length > 1);
-  assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString('utf8')), message);
+  assert.deepEqual(await client.loadTranscript((value) => value), [message]);
 
-  const foreign = await coordinator.handlers['session.transcript.query'](
-    { kind: 'start', subscriptionId: opened.subscriptionId },
+  const foreign = await coordinator.handlers['session.transcript.page'](
+    {
+      subscriptionId: opened.subscriptionId,
+      source: 'durable',
+      direction: 'older',
+      throughSequence: opened.transcript.throughSequence,
+      cursor: firstCursor,
+      anchorSequence: null,
+      maxBytes: 1024,
+    },
     connectionContext('connection-sibling'),
   );
   assert.deepEqual(foreign, {
@@ -778,6 +757,85 @@ test('transcript snapshots chunk one large message and remain subscription-owned
   });
   owner.close();
   sibling.close();
+  coordinator.close();
+});
+
+test('an in-flight transcript page cannot outlive its owning connection', async () => {
+  const message = assistantMessage('界'.repeat(20_000));
+  const continued = deferred<void>();
+  const baseReader = transcriptReader([message]);
+  let reads = 0;
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    readDurablePage: async (sessionId, request) => {
+      reads += 1;
+      if (reads > 1) await continued.promise;
+      return baseReader.readDurablePage(sessionId, request);
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const opened = await open(coordinator, 'connection-1', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  const cursor = opened.transcript?.durable.nextCursor;
+  assert.ok(cursor);
+  if (!opened.transcript || !cursor) return;
+  const reading = coordinator.handlers['session.transcript.page'](
+    {
+      subscriptionId: opened.subscriptionId,
+      source: 'durable',
+      direction: 'older',
+      throughSequence: opened.transcript.throughSequence,
+      cursor,
+      anchorSequence: null,
+      maxBytes: 1024,
+    },
+    connectionContext('connection-1'),
+  );
+  await delayImmediate();
+  connection.close();
+  continued.resolve();
+  assert.deepEqual(await reading, {
+    ok: false,
+    error: { code: 'not_found', message: 'Session subscription was not found' },
+  });
+  coordinator.close();
+});
+
+test('transcript persistence advances before the next canonical projection', async () => {
+  const durable = [assistantMessage('first')];
+  const reader = transcriptReader(durable);
+  let lastUsedAt = 1;
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical({ lastUsedAt }),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  connection.activate(opened.subscriptionId);
+  durable.push({ ...assistantMessage('second'), id: 'message-2' });
+  lastUsedAt = 2;
+  await coordinator.refreshCanonical(SESSION_ID);
+  await waitFor(() => sink.frames.length === 2);
+  assert.deepEqual(
+    sink.frames.map((frame) => frame.kind),
+    ['subscription.transcript_advanced', 'subscription.session_projection'],
+  );
   coordinator.close();
 });
 
@@ -807,32 +865,6 @@ test('absolute live offsets survive a gap with no connected subscribers', async 
   if (frame?.kind === 'subscription.session_delta') {
     assert.equal(frame.delta.startOffset, 'chunk-1'.length + 'chunk-2'.length);
   }
-  coordinator.close();
-});
-
-test('an in-flight transcript read cannot outlive its owning connection', async () => {
-  const transcript = deferred<readonly StoredMessage[]>();
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async () => canonical(),
-    new SessionAdmissionGate(),
-    undefined,
-    () => transcript.promise,
-  );
-  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
-  const opened = await open(coordinator, 'connection-1');
-  const reading = coordinator.handlers['session.transcript.query'](
-    { kind: 'start', subscriptionId: opened.subscriptionId },
-    connectionContext('connection-1'),
-  );
-  await delayImmediate();
-  connection.close();
-  transcript.resolve([assistantMessage('late snapshot')]);
-
-  assert.deepEqual(await reading, {
-    ok: false,
-    error: { code: 'not_found', message: 'Session subscription was not found' },
-  });
   coordinator.close();
 });
 
@@ -924,9 +956,15 @@ function textCompleteEvent(messageId: string, text: string) {
   };
 }
 
-async function open(coordinator: SessionContinuityCoordinator, connectionId: string) {
+async function open(
+  coordinator: SessionContinuityCoordinator,
+  connectionId: string,
+  transcript: { readonly kind: 'none' } | { readonly kind: 'tail'; readonly maxBytes: number } = {
+    kind: 'none',
+  },
+) {
   const outcome = await coordinator.handlers['subscription.open'](
-    { sessionId: SESSION_ID },
+    { sessionId: SESSION_ID, transcript },
     connectionContext(connectionId),
   );
   if (!outcome.ok) throw new Error(outcome.error.message);
@@ -1092,6 +1130,54 @@ function assistantMessage(text: string): Extract<StoredMessage, { type: 'assista
     ts: 1,
     text,
     modelId: 'test-model',
+  };
+}
+
+function transcriptReader(
+  durable: readonly StoredMessage[],
+  overlay: readonly StoredMessage[] = [],
+): SessionTranscriptReader {
+  return {
+    readDurableHighWater: async () => (durable.length === 0 ? null : durable.length - 1),
+    readDurablePage: async (_sessionId, request) => {
+      const throughSequence =
+        request.throughSequence ?? (durable.length === 0 ? null : durable.length - 1);
+      if (throughSequence === null) {
+        return { throughSequence: null, messages: [], hasMore: false };
+      }
+      const candidates = durable
+        .map((message, sequence) => {
+          const data = JSON.stringify(message);
+          return { sequence, data, encodedBytes: Buffer.byteLength(data, 'utf8') };
+        })
+        .filter(
+          ({ sequence }) =>
+            sequence <= throughSequence &&
+            (request.direction === 'older'
+              ? sequence < (request.cursor ?? throughSequence + 1)
+              : sequence > (request.cursor ?? -1)),
+        )
+        .sort((left, right) =>
+          request.direction === 'older'
+            ? right.sequence - left.sequence
+            : left.sequence - right.sequence,
+        );
+      const selected = [] as typeof candidates;
+      let encodedBytes = 0;
+      for (const candidate of candidates) {
+        if (selected.length >= request.maxMessages) break;
+        if (selected.length > 0 && encodedBytes + candidate.encodedBytes > request.maxBytes) break;
+        selected.push(candidate);
+        encodedBytes += candidate.encodedBytes;
+      }
+      if (request.direction === 'older') selected.reverse();
+      return {
+        throughSequence,
+        messages: selected,
+        hasMore: selected.length < candidates.length,
+      };
+    },
+    readActiveOverlay: async () => overlay,
   };
 }
 

@@ -2,10 +2,13 @@ import {
   encodeProtocolMessage,
   type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
+  SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   type SubscriptionFrame,
   type SubscriptionOpenResult,
-  type SessionTranscriptQueryInput,
-  type SessionTranscriptQueryResult,
+  type SessionTranscriptBootstrap,
+  type SessionTranscriptFragment,
+  type SessionTranscriptPage,
+  type SessionTranscriptPageInput,
 } from '../protocol/index.js';
 
 const MAX_CLIENT_QUEUED_FRAMES = 32;
@@ -17,8 +20,7 @@ export type RuntimeHostSubscriptionFailureReason =
   | 'correlation_changed'
   | 'projection_revision_invalid'
   | 'slow_consumer'
-  | 'connection_closed'
-  | 'transcript_expired';
+  | 'connection_closed';
 
 export class RuntimeHostSubscriptionError extends Error {
   constructor(
@@ -30,10 +32,6 @@ export class RuntimeHostSubscriptionError extends Error {
   }
 }
 
-function bufferLength(chunks: readonly Buffer[]): number {
-  return chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -43,7 +41,11 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
+  readonly transcriptBootstrap: SessionTranscriptBootstrap | null;
   loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
+  loadTranscriptPage(
+    input: Omit<SessionTranscriptPageInput, 'subscriptionId'>,
+  ): Promise<SessionTranscriptPage>;
   close(): Promise<void>;
 }
 
@@ -59,10 +61,11 @@ export class ClientSessionSubscription
   readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
+  readonly transcriptBootstrap: SessionTranscriptBootstrap | null;
   readonly #requestClose: () => Promise<void>;
-  readonly #queryTranscript: (
-    input: SessionTranscriptQueryInput,
-  ) => Promise<SessionTranscriptQueryResult>;
+  readonly #readTranscriptPage: (
+    input: SessionTranscriptPageInput,
+  ) => Promise<SessionTranscriptPage>;
   readonly #expectedSessionId: string;
   readonly #queue: QueuedFrame[] = [];
   #queuedBytes = 0;
@@ -77,23 +80,27 @@ export class ClientSessionSubscription
   #terminalError: Error | undefined;
   #done = false;
   #doneAfterQueue = false;
+  #closing = false;
   #closeTask: Promise<void> | undefined;
   #transcriptTask: Promise<unknown[]> | undefined;
+  #latestTranscriptThroughSequence: number | null;
 
   constructor(
     result: SubscriptionOpenResult,
     requestClose: () => Promise<void>,
-    queryTranscript: (input: SessionTranscriptQueryInput) => Promise<SessionTranscriptQueryResult>,
+    readTranscriptPage: (input: SessionTranscriptPageInput) => Promise<SessionTranscriptPage>,
   ) {
     this.hostEpoch = result.hostEpoch;
     this.subscriptionId = result.subscriptionId;
     this.snapshot = result.snapshot;
     this.activeAssistantStreams = result.activeAssistantStreams;
+    this.transcriptBootstrap = result.transcript;
     this.#expectedSessionId = result.snapshot.session.sessionId;
     this.#expectedSequence = result.nextSequence;
     this.#latestProjectionRevision = result.snapshot.projectionRevision;
+    this.#latestTranscriptThroughSequence = result.transcript?.throughSequence ?? null;
     this.#requestClose = requestClose;
-    this.#queryTranscript = queryTranscript;
+    this.#readTranscriptPage = readTranscriptPage;
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
@@ -127,6 +134,7 @@ export class ClientSessionSubscription
 
   close(): Promise<void> {
     if (this.#done || this.#terminalError) return Promise.resolve();
+    this.#closing = true;
     if (!this.#closeTask) this.#closeTask = this.#requestClose();
     return this.#closeTask;
   }
@@ -139,73 +147,138 @@ export class ClientSessionSubscription
     return this.#transcriptTask.then((messages) => messages.map(decodeMessage));
   }
 
+  loadTranscriptPage(
+    input: Omit<SessionTranscriptPageInput, 'subscriptionId'>,
+  ): Promise<SessionTranscriptPage> {
+    this.#assertTranscriptReadable();
+    if (!this.transcriptBootstrap) {
+      return Promise.reject(
+        new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session subscription was opened without transcript access',
+        ),
+      );
+    }
+    if (
+      input.throughSequence !== null &&
+      (this.#latestTranscriptThroughSequence === null ||
+        input.throughSequence > this.#latestTranscriptThroughSequence)
+    ) {
+      return Promise.reject(
+        new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript watermark has not been announced',
+        ),
+      );
+    }
+    return this.#readTranscriptPage({ subscriptionId: this.subscriptionId, ...input }).then(
+      (page) => {
+        this.#assertTranscriptReadable();
+        this.#assertTranscriptPage(page, input);
+        return page;
+      },
+    );
+  }
+
   async #loadTranscript(): Promise<unknown[]> {
-    let result = await this.#queryTranscript({
-      kind: 'start',
-      subscriptionId: this.subscriptionId,
+    this.#assertTranscriptReadable();
+    const bootstrap = this.transcriptBootstrap;
+    if (!bootstrap) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session subscription was opened without transcript access',
+      );
+    }
+    const durablePages = await this.#collectPages(bootstrap.durable);
+    const overlayPages = await this.#collectPages(bootstrap.overlay);
+    const durable = decodeTranscriptFragments(
+      durablePages.flatMap((page) => page.fragments),
+      'durable',
+    );
+    const overlay = decodeTranscriptFragments(
+      overlayPages.flatMap((page) => page.fragments),
+      'overlay',
+    );
+    assertCompleteIdentities(durable, bootstrap.throughSequence);
+    assertCompleteIdentities(overlay, overlay.at(-1)?.identity ?? null);
+    const messages = durable.map((entry) => entry.value);
+    const indexById = new Map<string, number>();
+    for (const [index, message] of messages.entries()) {
+      const id = messageIdentity(message);
+      if (id) indexById.set(id, index);
+    }
+    for (const entry of overlay) {
+      const id = messageIdentity(entry.value);
+      const index = id ? indexById.get(id) : undefined;
+      if (index === undefined) {
+        if (id) indexById.set(id, messages.length);
+        messages.push(entry.value);
+      } else {
+        messages[index] = entry.value;
+      }
+    }
+    return messages;
+  }
+
+  async #collectPages(initial: SessionTranscriptPage): Promise<SessionTranscriptPage[]> {
+    this.#assertTranscriptPage(initial, {
+      source: initial.source,
+      direction: initial.direction,
+      throughSequence: initial.throughSequence,
+      maxBytes: Math.max(1, initial.rawBytes),
     });
-    let snapshotId: string | undefined;
-    let messageCount: number | undefined;
-    let chunks: Buffer[] = [];
-    const messages: unknown[] = [];
-    while (true) {
-      if (result.kind === 'snapshot_expired') {
-        throw new RuntimeHostSubscriptionError(
-          'transcript_expired',
-          'Session transcript snapshot expired before it was consumed',
-        );
-      }
-      if (result.sessionId !== this.#expectedSessionId) {
+    const pages = [initial];
+    let cursor = initial.nextCursor;
+    const seenCursors = new Set<string>();
+    while (cursor !== null) {
+      if (seenCursors.has(cursor)) {
         throw new RuntimeHostSubscriptionError(
           'correlation_changed',
-          'Session transcript belongs to a different Session',
+          'Session transcript cursor cycle detected',
         );
       }
-      snapshotId ??= result.snapshotId;
-      messageCount ??= result.messageCount;
-      if (result.snapshotId !== snapshotId || result.messageCount !== messageCount) {
-        throw new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Session transcript snapshot identity changed',
-        );
-      }
-      if (result.messageCount === 0) return [];
-      if (result.messageIndex !== messages.length || result.byteOffset !== bufferLength(chunks)) {
-        throw new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Session transcript chunk position changed',
-        );
-      }
-      chunks.push(Buffer.from(result.data, 'base64'));
-      if (result.next?.messageIndex !== result.messageIndex) {
-        const bytes = Buffer.concat(chunks);
-        let decoded: unknown;
-        try {
-          decoded = JSON.parse(bytes.toString('utf8')) as unknown;
-        } catch (cause) {
-          throw new RuntimeHostSubscriptionError(
-            'correlation_changed',
-            `Session transcript message is invalid JSON: ${errorMessage(cause)}`,
-          );
-        }
-        messages.push(decoded);
-        chunks = [];
-      }
-      if (!result.next) {
-        if (messages.length !== messageCount) {
-          throw new RuntimeHostSubscriptionError(
-            'correlation_changed',
-            'Session transcript ended before every message was received',
-          );
-        }
-        return messages;
-      }
-      result = await this.#queryTranscript({
-        kind: 'continue',
-        subscriptionId: this.subscriptionId,
-        snapshotId,
-        ...result.next,
+      seenCursors.add(cursor);
+      const page = await this.loadTranscriptPage({
+        source: initial.source,
+        direction: initial.direction,
+        throughSequence: initial.throughSequence,
+        cursor,
+        anchorSequence: null,
+        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
       });
+      pages.push(page);
+      cursor = page.nextCursor;
+    }
+    return pages;
+  }
+
+  #assertTranscriptReadable(): void {
+    if (this.#closing || this.#done || this.#terminalError) {
+      throw new RuntimeHostSubscriptionError(
+        'connection_closed',
+        'Session subscription closed during transcript loading',
+      );
+    }
+  }
+
+  #assertTranscriptPage(
+    page: SessionTranscriptPage,
+    expected: Pick<
+      SessionTranscriptPageInput,
+      'source' | 'direction' | 'throughSequence' | 'maxBytes'
+    >,
+  ): void {
+    if (
+      page.sessionId !== this.#expectedSessionId ||
+      page.source !== expected.source ||
+      page.direction !== expected.direction ||
+      page.throughSequence !== expected.throughSequence ||
+      page.rawBytes > expected.maxBytes
+    ) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session transcript page correlation changed',
+      );
     }
   }
 
@@ -254,6 +327,7 @@ export class ClientSessionSubscription
     } else if (
       (frame.kind === 'subscription.session_delta' ||
         frame.kind === 'subscription.session_event' ||
+        frame.kind === 'subscription.transcript_advanced' ||
         frame.kind === 'subscription.session_domain_changed' ||
         frame.kind === 'subscription.runtime_resource_pty_data') &&
       frame.sessionId !== this.#expectedSessionId
@@ -270,6 +344,18 @@ export class ClientSessionSubscription
         'correlation_changed',
         'Session subscription Agent graph identity changed',
       );
+    }
+    if (frame.kind === 'subscription.transcript_advanced') {
+      if (
+        this.#latestTranscriptThroughSequence !== null &&
+        frame.throughSequence <= this.#latestTranscriptThroughSequence
+      ) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript watermark did not advance',
+        );
+      }
+      this.#latestTranscriptThroughSequence = frame.throughSequence;
     }
 
     this.#offer(frame);
@@ -315,4 +401,101 @@ export class ClientSessionSubscription
     this.#queue.push({ frame, encodedBytes });
     this.#queuedBytes += encodedBytes;
   }
+}
+
+function decodeTranscriptFragments(
+  fragments: readonly SessionTranscriptFragment[],
+  source: 'durable' | 'overlay',
+): Array<{ identity: number; value: unknown }> {
+  const messages = new Map<number, { totalBytes: number; fragments: Map<number, Buffer> }>();
+  for (const fragment of fragments) {
+    if (fragment.kind !== source) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session transcript fragment source changed',
+      );
+    }
+    const identity = fragment.kind === 'durable' ? fragment.sequence : fragment.messageIndex;
+    const existing = messages.get(identity) ?? {
+      totalBytes: fragment.totalBytes,
+      fragments: new Map<number, Buffer>(),
+    };
+    const bytes = Buffer.from(fragment.data, 'base64');
+    const duplicate = existing.fragments.get(fragment.byteOffset);
+    if (
+      existing.totalBytes !== fragment.totalBytes ||
+      (duplicate !== undefined && !duplicate.equals(bytes))
+    ) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session transcript fragment identity changed',
+      );
+    }
+    if (duplicate === undefined) existing.fragments.set(fragment.byteOffset, bytes);
+    messages.set(identity, existing);
+  }
+  return [...messages.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([identity, message]) => {
+      const ordered = [...message.fragments.entries()].sort(([left], [right]) => left - right);
+      let expectedOffset = 0;
+      const chunks: Buffer[] = [];
+      for (const [offset, chunk] of ordered) {
+        if (offset !== expectedOffset) {
+          throw new RuntimeHostSubscriptionError(
+            'correlation_changed',
+            'Session transcript message has a fragment gap',
+          );
+        }
+        chunks.push(chunk);
+        expectedOffset += chunk.byteLength;
+      }
+      if (expectedOffset !== message.totalBytes) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript message ended before every fragment arrived',
+        );
+      }
+      try {
+        return {
+          identity,
+          value: JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown,
+        };
+      } catch (cause) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          `Session transcript message is invalid JSON: ${errorMessage(cause)}`,
+        );
+      }
+    });
+}
+
+function assertCompleteIdentities(
+  messages: readonly { identity: number }[],
+  throughIdentity: number | null,
+): void {
+  if (throughIdentity === null) {
+    if (messages.length !== 0) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session transcript contains messages without a watermark',
+      );
+    }
+    return;
+  }
+  if (
+    messages.length !== throughIdentity + 1 ||
+    messages.some((message, index) => message.identity !== index)
+  ) {
+    throw new RuntimeHostSubscriptionError(
+      'correlation_changed',
+      'Session transcript has a message sequence gap',
+    );
+  }
+}
+
+function messageIdentity(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const id = (value as Record<string, unknown>).id;
+  return typeof id === 'string' ? id : undefined;
 }

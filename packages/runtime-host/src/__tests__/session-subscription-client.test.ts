@@ -5,6 +5,7 @@ import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setImmediate as delayImmediate } from 'node:timers/promises';
 import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
@@ -15,6 +16,7 @@ import {
   RuntimeHostSubscriptionError,
   type RuntimeHostConnection,
 } from '../client/index.js';
+import { ClientSessionSubscription } from '../client/session-subscription.js';
 import { prepareRuntimeHostEndpoint } from '../control/endpoint.js';
 import { removeHostRegistration, writeHostRegistration } from '../control/registration.js';
 import {
@@ -24,6 +26,9 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
   SESSION_CONTINUITY_SCHEMA_VERSION,
+  type SessionTranscriptBootstrap,
+  type SessionTranscriptFragment,
+  type SessionTranscriptPage,
   type HostFrame,
   type RequestFrame,
   type SubscriptionFrame,
@@ -58,6 +63,7 @@ test('registers a subscription before receiving a coalesced first frame', async 
     async (connection) => {
       const subscription = await connection.openSessionSubscription({
         sessionId: 'session-1',
+        transcript: { kind: 'none' },
       });
       assert.deepEqual(await subscription[Symbol.asyncIterator]().next(), {
         done: false,
@@ -98,7 +104,10 @@ test('delivers Runtime Resource PTY frames without closing the connection', asyn
       await answerClose(transport, opened.subscriptionId);
     },
     async (connection) => {
-      const subscription = await connection.openSessionSubscription({ sessionId: 'session-1' });
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'none' },
+      });
       assert.deepEqual(await subscription[Symbol.asyncIterator]().next(), {
         done: false,
         value: {
@@ -140,6 +149,7 @@ test('isolates a sequence gap and continues requests on the same connection', as
     async (connection) => {
       const subscription = await connection.openSessionSubscription({
         sessionId: 'session-1',
+        transcript: { kind: 'none' },
       });
       await assert.rejects(
         () => subscription[Symbol.asyncIterator]().next(),
@@ -189,6 +199,7 @@ test('rejects epoch and Session correlation changes per subscription', async () 
       async (connection) => {
         const subscription = await connection.openSessionSubscription({
           sessionId: 'session-1',
+          transcript: { kind: 'none' },
         });
         await assert.rejects(
           () => subscription[Symbol.asyncIterator]().next(),
@@ -226,6 +237,7 @@ test('evicts a locally slow iterator and keeps the connection usable', async () 
     async (connection) => {
       const subscription = await connection.openSessionSubscription({
         sessionId: 'session-1',
+        transcript: { kind: 'none' },
       });
       await closeObserved.promise;
       await assert.rejects(
@@ -252,6 +264,7 @@ test('ends every active subscription with connection_closed on EOF', async () =>
     async (connection) => {
       const subscription = await connection.openSessionSubscription({
         sessionId: 'session-1',
+        transcript: { kind: 'none' },
       });
       await assert.rejects(
         () => subscription[Symbol.asyncIterator]().next(),
@@ -273,45 +286,30 @@ test('loads a canonical transcript while live frames continue on the same connec
   await withProtocolPeer(
     async (transport, hostEpoch, rootId) => {
       const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
-      const opened = openResult(hostEpoch, 'subscription-transcript');
-      await writeProtocolFrame(transport, {
-        requestId: openRequest.requestId,
-        operation: 'subscription.open',
-        ok: true,
-        result: opened,
-      });
-      const transcriptRequest = decodeClientFrame(await transport.read(1_000));
-      assert.ok(!('kind' in transcriptRequest));
-      assert.equal(transcriptRequest.operation, 'session.transcript.query');
-      assert.deepEqual(transcriptRequest.input, {
-        kind: 'start',
-        subscriptionId: opened.subscriptionId,
-      });
+      const opened = openResult(
+        hostEpoch,
+        'subscription-transcript',
+        transcriptBootstrap(Buffer.from(JSON.stringify(message), 'utf8')),
+      );
       await writeRawLocalIpc(
         transport,
         Buffer.concat([
-          encodeLocalIpcTestFrame(deltaFrame(hostEpoch, opened.subscriptionId, 1)),
           encodeLocalIpcTestFrame({
-            requestId: transcriptRequest.requestId,
-            operation: 'session.transcript.query',
+            requestId: openRequest.requestId,
+            operation: 'subscription.open',
             ok: true,
-            result: {
-              kind: 'chunk',
-              snapshotId: 'snapshot-1',
-              sessionId: 'session-1',
-              messageCount: 1,
-              messageIndex: 0,
-              byteOffset: 0,
-              data: Buffer.from(JSON.stringify(message), 'utf8').toString('base64'),
-              next: null,
-            },
+            result: opened,
           }),
+          encodeLocalIpcTestFrame(deltaFrame(hostEpoch, opened.subscriptionId, 1)),
         ]),
       );
       await answerClose(transport, opened.subscriptionId);
     },
     async (connection) => {
-      const subscription = await connection.openSessionSubscription({ sessionId: 'session-1' });
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'tail', maxBytes: 16 * 1024 },
+      });
       assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [message]);
       assert.deepEqual(await subscription[Symbol.asyncIterator]().next(), {
         done: false,
@@ -322,7 +320,7 @@ test('loads a canonical transcript while live frames continue on the same connec
   );
 });
 
-test('restarts transcript loading after an expired snapshot', async () => {
+test('reassembles a large message from bounded backward pages', async () => {
   const message = {
     type: 'user' as const,
     id: 'user-1',
@@ -335,82 +333,157 @@ test('restarts transcript loading after an expired snapshot', async () => {
   await withProtocolPeer(
     async (transport, hostEpoch, rootId) => {
       const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
-      const opened = openResult(hostEpoch, 'subscription-retry');
+      const opened = openResult(hostEpoch, 'subscription-fragmented', {
+        throughSequence: 0,
+        durable: transcriptPage({
+          rawBytes: encoded.byteLength - splitAt,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 0,
+              byteOffset: splitAt,
+              totalBytes: encoded.byteLength,
+              data: encoded.subarray(splitAt).toString('base64'),
+            },
+          ],
+          nextCursor: 'cursor-1',
+        }),
+        overlay: transcriptPage({ source: 'overlay' }),
+      });
       await writeProtocolFrame(transport, {
         requestId: openRequest.requestId,
         operation: 'subscription.open',
         ok: true,
         result: opened,
       });
-      const startRequest = decodeClientFrame(await transport.read(1_000));
-      assert.ok(!('kind' in startRequest));
-      assert.deepEqual(startRequest.input, {
-        kind: 'start',
-        subscriptionId: opened.subscriptionId,
-      });
-      await writeProtocolFrame(transport, {
-        requestId: startRequest.requestId,
-        operation: 'session.transcript.query',
-        ok: true,
-        result: {
-          kind: 'chunk',
-          snapshotId: 'expired-snapshot',
-          sessionId: 'session-1',
-          messageCount: 1,
-          messageIndex: 0,
-          byteOffset: 0,
-          data: encoded.subarray(0, splitAt).toString('base64'),
-          next: { messageIndex: 0, byteOffset: splitAt },
-        },
-      });
       const continuationRequest = decodeClientFrame(await transport.read(1_000));
       assert.ok(!('kind' in continuationRequest));
+      assert.equal(continuationRequest.operation, 'session.transcript.page');
       assert.deepEqual(continuationRequest.input, {
-        kind: 'continue',
         subscriptionId: opened.subscriptionId,
-        snapshotId: 'expired-snapshot',
-        messageIndex: 0,
-        byteOffset: splitAt,
+        source: 'durable',
+        direction: 'older',
+        throughSequence: 0,
+        cursor: 'cursor-1',
+        anchorSequence: null,
+        maxBytes: 48 * 1024,
       });
       await writeProtocolFrame(transport, {
         requestId: continuationRequest.requestId,
-        operation: 'session.transcript.query',
+        operation: 'session.transcript.page',
         ok: true,
-        result: { kind: 'snapshot_expired', snapshotId: 'expired-snapshot' },
-      });
-      const retryStartRequest = decodeClientFrame(await transport.read(1_000));
-      assert.ok(!('kind' in retryStartRequest));
-      assert.deepEqual(retryStartRequest.input, {
-        kind: 'start',
-        subscriptionId: opened.subscriptionId,
-      });
-      await writeProtocolFrame(transport, {
-        requestId: retryStartRequest.requestId,
-        operation: 'session.transcript.query',
-        ok: true,
-        result: {
-          kind: 'chunk',
-          snapshotId: 'snapshot-retry',
-          sessionId: 'session-1',
-          messageCount: 1,
-          messageIndex: 0,
-          byteOffset: 0,
-          data: encoded.toString('base64'),
-          next: null,
-        },
+        result: transcriptPage({
+          rawBytes: splitAt,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 0,
+              byteOffset: 0,
+              totalBytes: encoded.byteLength,
+              data: encoded.subarray(0, splitAt).toString('base64'),
+            },
+          ],
+        }),
       });
       await answerClose(transport, opened.subscriptionId);
     },
     async (connection) => {
-      const subscription = await connection.openSessionSubscription({ sessionId: 'session-1' });
-      await assert.rejects(
-        () => subscription.loadTranscript(decodeStoredMessage),
-        hasSubscriptionReason('transcript_expired'),
-      );
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'tail', maxBytes: 16 * 1024 },
+      });
       assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [message]);
       await subscription.close();
     },
   );
+});
+
+test('accepts an identical retried page but rejects a durable sequence gap', async () => {
+  const message = Buffer.from(
+    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
+    'utf8',
+  );
+  const fragment = {
+    kind: 'durable' as const,
+    sequence: 0,
+    byteOffset: 0,
+    totalBytes: message.byteLength,
+    data: message.toString('base64'),
+  };
+  const duplicatePage = transcriptPage({ rawBytes: message.byteLength, fragments: [fragment] });
+  const retried = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-retried', {
+      throughSequence: 0,
+      durable: { ...duplicatePage, nextCursor: 'retry-cursor' },
+      overlay: transcriptPage({ source: 'overlay' }),
+    }),
+    async () => undefined,
+    async () => duplicatePage,
+  );
+  assert.deepEqual(await retried.loadTranscript(decodeStoredMessage), [
+    { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' },
+  ]);
+
+  const gap = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-gap', {
+      throughSequence: 1,
+      durable: {
+        ...transcriptPage({
+          rawBytes: message.byteLength,
+          fragments: [{ ...fragment, sequence: 1 }],
+        }),
+        throughSequence: 1,
+      },
+      overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 1 },
+    }),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected page request');
+    },
+  );
+  await assert.rejects(
+    () => gap.loadTranscript(decodeStoredMessage),
+    hasSubscriptionReason('correlation_changed'),
+  );
+});
+
+test('close stops transcript pagination after the in-flight page', async () => {
+  const message = Buffer.from(
+    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
+    'utf8',
+  );
+  const page = deferred<ReturnType<typeof transcriptPage>>();
+  let pageRequests = 0;
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-closing', {
+      throughSequence: 0,
+      durable: transcriptPage({
+        rawBytes: Math.floor(message.byteLength / 2),
+        fragments: [
+          {
+            kind: 'durable',
+            sequence: 0,
+            byteOffset: Math.ceil(message.byteLength / 2),
+            totalBytes: message.byteLength,
+            data: message.subarray(Math.ceil(message.byteLength / 2)).toString('base64'),
+          },
+        ],
+        nextCursor: 'cursor-1',
+      }),
+      overlay: transcriptPage({ source: 'overlay' }),
+    }),
+    async () => undefined,
+    async () => {
+      pageRequests += 1;
+      return page.promise;
+    },
+  );
+  const loading = subscription.loadTranscript(decodeStoredMessage);
+  await delayImmediate();
+  await subscription.close();
+  page.resolve(transcriptPage());
+  await assert.rejects(() => loading, hasSubscriptionReason('connection_closed'));
+  assert.equal(pageRequests, 1);
 });
 
 async function withProtocolPeer(
@@ -536,12 +609,17 @@ async function answerStatus(transport: FramedTransport, hostEpoch: string): Prom
   });
 }
 
-function openResult(hostEpoch: string, subscriptionId: string) {
+function openResult(
+  hostEpoch: string,
+  subscriptionId: string,
+  transcript: SessionTranscriptBootstrap | null = null,
+) {
   return {
     hostEpoch,
     subscriptionId,
     nextSequence: 1,
     activeAssistantStreams: [],
+    transcript,
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: {
@@ -563,6 +641,45 @@ function openResult(hostEpoch: string, subscriptionId: string) {
       queue: { hostEpoch, queueRevision: 1, steering: [], followup: [] },
       interactions: { pending: [] },
     },
+  };
+}
+
+function transcriptBootstrap(message: Buffer): SessionTranscriptBootstrap {
+  return {
+    throughSequence: 0,
+    durable: transcriptPage({
+      rawBytes: message.byteLength,
+      fragments: [
+        {
+          kind: 'durable',
+          sequence: 0,
+          byteOffset: 0,
+          totalBytes: message.byteLength,
+          data: message.toString('base64'),
+        },
+      ],
+    }),
+    overlay: transcriptPage({ source: 'overlay' }),
+  };
+}
+
+function transcriptPage(
+  options: {
+    source?: 'durable' | 'overlay';
+    rawBytes?: number;
+    fragments?: readonly SessionTranscriptFragment[];
+    nextCursor?: string | null;
+  } = {},
+): SessionTranscriptPage {
+  return {
+    kind: 'page',
+    sessionId: 'session-1',
+    source: options.source ?? 'durable',
+    direction: 'older',
+    throughSequence: 0,
+    rawBytes: options.rawBytes ?? 0,
+    fragments: options.fragments ?? [],
+    nextCursor: options.nextCursor ?? null,
   };
 }
 

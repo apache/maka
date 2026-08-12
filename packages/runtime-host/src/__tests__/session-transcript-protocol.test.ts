@@ -1,81 +1,94 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  decodeSessionTranscriptQueryInput,
-  decodeSessionTranscriptQueryResult,
+  decodeSessionTranscriptBootstrap,
+  decodeSessionTranscriptPage,
+  decodeSessionTranscriptPageInput,
   HOST_OPERATION_SPECS,
   RuntimeHostProtocolError,
-  SESSION_TRANSCRIPT_CHUNK_MAX_BYTES,
 } from '../protocol/index.js';
 
-test('Session transcript protocol keeps exact bounded chunk cursors', () => {
-  assert.deepEqual(
-    decodeSessionTranscriptQueryInput({ kind: 'start', subscriptionId: 'subscription-1' }),
-    { kind: 'start', subscriptionId: 'subscription-1' },
-  );
-  const input = {
-    kind: 'continue' as const,
-    subscriptionId: 'subscription-1',
-    snapshotId: 'snapshot-1',
-    messageIndex: 2,
-    byteOffset: 3,
-  };
-  assert.deepEqual(decodeSessionTranscriptQueryInput(input), input);
-  const output = {
-    kind: 'chunk' as const,
-    snapshotId: 'snapshot-1',
-    sessionId: 'session-1',
-    messageCount: 4,
-    messageIndex: 2,
-    byteOffset: 3,
-    data: Buffer.alloc(SESSION_TRANSCRIPT_CHUNK_MAX_BYTES).toString('base64'),
-    next: { messageIndex: 3, byteOffset: 0 },
-  };
-  assert.deepEqual(decodeSessionTranscriptQueryResult(output), output);
+const input = {
+  subscriptionId: 'subscription-1',
+  source: 'durable' as const,
+  direction: 'older' as const,
+  throughSequence: 3,
+  cursor: null,
+  anchorSequence: 2,
+  maxBytes: 1024,
+};
+
+const page = {
+  kind: 'page' as const,
+  sessionId: 'session-1',
+  source: 'durable' as const,
+  direction: 'older' as const,
+  throughSequence: 3,
+  rawBytes: 4,
+  fragments: [
+    {
+      kind: 'durable' as const,
+      sequence: 2,
+      byteOffset: 0,
+      totalBytes: 4,
+      data: Buffer.from('test').toString('base64'),
+    },
+  ],
+  nextCursor: 'opaque-cursor',
+};
+
+test('Session transcript protocol accepts bounded correlated pages and bootstraps', () => {
+  assert.deepEqual(decodeSessionTranscriptPageInput(input), input);
+  assert.deepEqual(decodeSessionTranscriptPage(page), page);
   assert.doesNotThrow(() =>
-    HOST_OPERATION_SPECS['session.transcript.query'].assertOutputForInput?.(input, output),
+    HOST_OPERATION_SPECS['session.transcript.page'].assertOutputForInput?.(input, page),
   );
+
+  const bootstrap = {
+    throughSequence: 3,
+    durable: { ...page, direction: 'older' as const },
+    overlay: {
+      kind: 'page' as const,
+      sessionId: 'session-1',
+      source: 'overlay' as const,
+      direction: 'older' as const,
+      throughSequence: 3,
+      rawBytes: 0,
+      fragments: [],
+      nextCursor: null,
+    },
+  };
+  assert.deepEqual(decodeSessionTranscriptBootstrap(bootstrap), bootstrap);
 });
 
-test('Session transcript protocol rejects open, malformed, and uncorrelated values', () => {
+test('Session transcript protocol rejects malformed and uncorrelated values', () => {
+  assert.throws(
+    () => decodeSessionTranscriptPageInput({ ...input, cursor: 'cursor', anchorSequence: 2 }),
+    isProtocolError,
+  );
   assert.throws(
     () =>
-      decodeSessionTranscriptQueryInput({
-        kind: 'start',
-        subscriptionId: 'subscription-1',
-        sessionId: 'session-1',
+      decodeSessionTranscriptPage({
+        ...page,
+        fragments: [{ ...page.fragments[0], data: 'not base64' }],
       }),
     isProtocolError,
   );
   assert.throws(
     () =>
-      decodeSessionTranscriptQueryResult({
-        kind: 'chunk',
-        snapshotId: 'snapshot-1',
-        sessionId: 'session-1',
-        messageCount: 1,
-        messageIndex: 0,
-        byteOffset: 0,
-        data: 'not base64',
-        next: null,
+      HOST_OPERATION_SPECS['session.transcript.page'].assertOutputForInput?.(input, {
+        ...page,
+        throughSequence: 4,
       }),
     isProtocolError,
   );
   assert.throws(
     () =>
-      HOST_OPERATION_SPECS['session.transcript.query'].assertOutputForInput?.(
-        {
-          kind: 'continue',
-          subscriptionId: 'subscription-1',
-          snapshotId: 'snapshot-1',
-          messageIndex: 0,
-          byteOffset: 4,
-        },
-        {
-          kind: 'snapshot_expired',
-          snapshotId: 'different-snapshot',
-        },
-      ),
+      decodeSessionTranscriptBootstrap({
+        throughSequence: 3,
+        durable: page,
+        overlay: { ...page, source: 'overlay', throughSequence: 2 },
+      }),
     isProtocolError,
   );
 });

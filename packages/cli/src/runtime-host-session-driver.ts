@@ -27,13 +27,14 @@ import {
 } from '@maka/runtime-host/adapter';
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
 import { readRuntimeHostResources, readRuntimeHostSessions } from '@maka/runtime-host/client';
-import type {
+import {
   InteractionPendingSnapshot,
   OperationInput,
   OperationOutput,
   SessionCatalogItem,
   SessionCatalogProjection,
   SessionUpdateResult,
+  SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   WorkspaceTarget,
 } from '@maka/runtime-host/protocol';
 import {
@@ -1044,7 +1045,10 @@ async function loadCurrentMessages(
   connection: RuntimeHostSessionDriverConnection,
   sessionId: string,
 ): Promise<StoredMessage[]> {
-  const subscription = await connection.openSessionSubscription({ sessionId });
+  const subscription = await connection.openSessionSubscription({
+    sessionId,
+    transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+  });
   const draining = (async () => {
     for await (const _frame of subscription) {
       // The transcript is pinned to the subscription snapshot. Drain newer

@@ -9,7 +9,7 @@ import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { createSessionTranscriptReader } from '../server/session-transcript-reader.js';
 
-test('projects canonical active text and thinking snapshots over Session history', async () => {
+test('keeps durable history separate from the canonical active overlay', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-session-transcript-'));
   const capability = await resolveStorageRoot({
     path: join(base, 'root'),
@@ -154,7 +154,7 @@ test('projects canonical active text and thinking snapshots over Session history
       stores,
       canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
     });
-    const messages = await read(session.id, {
+    const messages = await read.readActiveOverlay(session.id, {
       sessionId: session.id,
       turnId: 'turn-1',
       runId: 'run-1',
@@ -164,7 +164,6 @@ test('projects canonical active text and thinking snapshots over Session history
     assert.deepEqual(
       messages.map((message) => ({ type: message.type, id: message.id })),
       [
-        { type: 'system_note', id: 'history-1' },
         { type: 'user', id: 'user-1' },
         { type: 'assistant', id: 'assistant-1' },
         { type: 'assistant', id: 'assistant-2' },
@@ -186,6 +185,17 @@ test('projects canonical active text and thinking snapshots over Session history
     const completed = messages.at(-1);
     assert.equal(completed?.type, 'assistant');
     if (completed?.type === 'assistant') assert.equal(completed.text, 'final text');
+
+    const durable = await read.readDurablePage(session.id, {
+      direction: 'older',
+      maxBytes: 1024,
+      maxMessages: 10,
+    });
+    assert.equal(durable.throughSequence, 0);
+    assert.deepEqual(
+      durable.messages.map((message) => JSON.parse(message.data)),
+      [{ type: 'system_note', id: 'history-1', ts: 1, kind: 'session_start' }],
+    );
   } finally {
     await owner.close();
     await rm(base, { recursive: true, force: true });

@@ -121,6 +121,104 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('pages the durable transcript by sequence, bytes, and a fixed watermark', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-transcript-pages-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      const messages = ['zero', 'one', 'two', 'three'].map((text, index) => ({
+        type: 'user' as const,
+        id: `message-${index}`,
+        turnId: `turn-${index}`,
+        ts: index + 1,
+        text,
+      }));
+      await store.appendMessages(session.id, messages);
+
+      const tail = await store.readTranscriptPageSnapshot(session.id, {
+        direction: 'older',
+        maxBytes: 64 * 1024,
+        maxMessages: 2,
+      });
+      assert.equal(tail.throughSequence, 3);
+      assert.deepEqual(
+        tail.messages.map(({ sequence }) => sequence),
+        [2, 3],
+      );
+      assert.equal(tail.hasMore, true);
+
+      await store.appendMessage(session.id, {
+        type: 'user',
+        id: 'message-4',
+        turnId: 'turn-4',
+        ts: 5,
+        text: 'appended after the watermark',
+      });
+      const older = await store.readTranscriptPageSnapshot(session.id, {
+        direction: 'older',
+        throughSequence: tail.throughSequence ?? undefined,
+        cursor: 2,
+        maxBytes: 64 * 1024,
+        maxMessages: 2,
+      });
+      assert.equal(older.throughSequence, 3);
+      assert.deepEqual(
+        older.messages.map(({ sequence }) => sequence),
+        [0, 1],
+      );
+      assert.equal(older.hasMore, false);
+
+      const newer = await store.readTranscriptPageSnapshot(session.id, {
+        direction: 'newer',
+        throughSequence: 3,
+        cursor: 1,
+        maxBytes: 64 * 1024,
+        maxMessages: 10,
+      });
+      assert.deepEqual(
+        newer.messages.map(({ sequence }) => sequence),
+        [2, 3],
+      );
+      assert.equal(newer.hasMore, false);
+
+      const oversized = await store.readTranscriptPageSnapshot(session.id, {
+        direction: 'older',
+        throughSequence: 3,
+        maxBytes: 1,
+        maxMessages: 10,
+      });
+      assert.deepEqual(
+        oversized.messages.map(({ sequence }) => sequence),
+        [3],
+      );
+      assert.ok(oversized.messages[0]!.encodedBytes > 1);
+      assert.equal(oversized.hasMore, true);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('returns an empty transcript page with no watermark', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-empty-transcript-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      assert.deepEqual(
+        await store.readTranscriptPageSnapshot(session.id, {
+          direction: 'older',
+          maxBytes: 1024,
+          maxMessages: 10,
+        }),
+        { throughSequence: null, messages: [], hasMore: false },
+      );
+      assert.equal(await store.readTranscriptHighWaterSnapshot(session.id), null);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('clears unread when the current read marker is already the latest visible message', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-read-marker-'));
     const store = createSessionStore(root);

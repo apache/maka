@@ -1276,7 +1276,7 @@ async function openSubscription(transport: FramedTransport, sessionId: string, r
   await writeProtocolFrame(transport, {
     requestId,
     operation: 'subscription.open',
-    input: { sessionId },
+    input: { sessionId, transcript: { kind: 'none' } },
   });
   const response = decodeHostFrame(await transport.read(1_000));
   if ('kind' in response || response.operation !== 'subscription.open' || !response.ok) {

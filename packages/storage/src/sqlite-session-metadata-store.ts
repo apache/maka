@@ -81,6 +81,8 @@ import {
   assertSafeSessionId,
   normalizeSessionHeader,
   SessionNotFoundError,
+  type SessionTranscriptPageRequest,
+  type SessionTranscriptStoragePage,
 } from './session-store.js';
 import {
   isDiscardableConversationCopy,
@@ -1392,6 +1394,81 @@ export class SqliteSessionMetadataStore {
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
     return this.readMessagesWith(sessionId, decodeStoredMessage);
+  }
+
+  async readTranscriptPage(
+    sessionId: string,
+    request: SessionTranscriptPageRequest,
+  ): Promise<SessionTranscriptStoragePage> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertTranscriptPageRequest(request);
+    return this.readTransaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      const highWaterRow = this.db
+        .prepare('SELECT MAX(sequence) AS high_water FROM session_messages WHERE session_id = ?')
+        .get(sessionId) as { high_water?: unknown };
+      const actualHighWater = nullableStoredMessageSequence(highWaterRow.high_water, sessionId);
+      if (actualHighWater === null) {
+        return { throughSequence: null, messages: [], hasMore: false };
+      }
+      const throughSequence = request.throughSequence ?? actualHighWater;
+      if (throughSequence > actualHighWater) {
+        throw new Error(`Session transcript watermark is ahead of durable storage: ${sessionId}`);
+      }
+      const cursor = request.cursor;
+      const comparison = request.direction === 'older' ? '<' : '>';
+      const order = request.direction === 'older' ? 'DESC' : 'ASC';
+      const boundary = cursor ?? (request.direction === 'older' ? throughSequence + 1 : -1);
+      const rows = this.db
+        .prepare(
+          `
+          SELECT sequence, record_json
+          FROM session_messages
+          WHERE session_id = ?
+            AND sequence <= ?
+            AND sequence ${comparison} ?
+          ORDER BY sequence ${order}
+          LIMIT ?
+        `,
+        )
+        .all(sessionId, throughSequence, boundary, request.maxMessages + 1) as Array<{
+        sequence?: unknown;
+        record_json?: unknown;
+      }>;
+      const selected: Array<{ sequence: number; data: string; encodedBytes: number }> = [];
+      let selectedBytes = 0;
+      for (const row of rows) {
+        if (selected.length >= request.maxMessages) break;
+        const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+        if (typeof row.record_json !== 'string') {
+          throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+        }
+        const encodedBytes = Buffer.byteLength(row.record_json, 'utf8');
+        if (selected.length > 0 && selectedBytes + encodedBytes > request.maxBytes) break;
+        // Validate storage at the boundary without re-serializing the canonical JSON.
+        try {
+          decodeStoredMessage(JSON.parse(row.record_json) as unknown);
+        } catch (error) {
+          throw new StoredSessionMessageIncompatibleError(sessionId, sequence, { cause: error });
+        }
+        selected.push({ sequence, data: row.record_json, encodedBytes });
+        selectedBytes += encodedBytes;
+      }
+      const hasMore = selected.length < rows.length;
+      if (request.direction === 'older') selected.reverse();
+      return { throughSequence, messages: selected, hasMore };
+    });
+  }
+
+  async readTranscriptHighWater(sessionId: string): Promise<number | null> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+    const row = this.db
+      .prepare('SELECT MAX(sequence) AS high_water FROM session_messages WHERE session_id = ?')
+      .get(sessionId) as { high_water?: unknown };
+    return nullableStoredMessageSequence(row.high_water, sessionId);
   }
 
   async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
@@ -4604,4 +4681,41 @@ function requireStoredMessageSequence(value: unknown, sessionId: string): number
     throw new StoredSessionMessageIncompatibleError(sessionId, -1);
   }
   return value as number;
+}
+
+function nullableStoredMessageSequence(value: unknown, sessionId: string): number | null {
+  if (value === null || value === undefined) return null;
+  return requireStoredMessageSequence(value, sessionId);
+}
+
+function assertTranscriptPageRequest(request: SessionTranscriptPageRequest): void {
+  if (request.direction !== 'older' && request.direction !== 'newer') {
+    throw new Error('Invalid Session transcript page direction');
+  }
+  if (
+    request.throughSequence !== undefined &&
+    (!Number.isSafeInteger(request.throughSequence) || request.throughSequence < 0)
+  ) {
+    throw new Error('Invalid Session transcript watermark');
+  }
+  if (
+    request.cursor !== undefined &&
+    (!Number.isSafeInteger(request.cursor) || request.cursor < 0)
+  ) {
+    throw new Error('Invalid Session transcript cursor');
+  }
+  if (
+    !Number.isSafeInteger(request.maxBytes) ||
+    request.maxBytes < 1 ||
+    request.maxBytes > 1024 * 1024
+  ) {
+    throw new Error('Session transcript page byte limit must be between 1 and 1048576');
+  }
+  if (
+    !Number.isSafeInteger(request.maxMessages) ||
+    request.maxMessages < 1 ||
+    request.maxMessages > 256
+  ) {
+    throw new Error('Session transcript page message limit must be between 1 and 256');
+  }
 }

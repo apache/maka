@@ -212,7 +212,7 @@ export class RuntimeHostConnectionSession {
       const continuity =
         frame.operation === 'subscription.open' ||
         frame.operation === 'subscription.close' ||
-        frame.operation === 'session.transcript.query'
+        frame.operation === 'session.transcript.page'
           ? this.#ensureContinuity()
           : undefined;
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {

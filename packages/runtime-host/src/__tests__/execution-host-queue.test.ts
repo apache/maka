@@ -102,8 +102,12 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
     const tui = await connectClient(fixture.root, 'tui');
     const desktopSubscription = await desktop.openSessionSubscription({
       sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
     });
-    const tuiSubscription = await tui.openSessionSubscription({ sessionId: fixture.sessionId });
+    const tuiSubscription = await tui.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
     const desktopProbe = new SubscriptionProbe(desktopSubscription);
     const tuiProbe = new SubscriptionProbe(tuiSubscription);
     for (const subscription of [desktopSubscription, tuiSubscription]) {
@@ -276,6 +280,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
     const first = await connectClient(fixture.root, 'desktop');
     const firstSubscription = await first.openSessionSubscription({
       sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
     });
     const firstProbe = new SubscriptionProbe(firstSubscription);
     const turnId = randomUUID();
@@ -307,6 +312,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
     const second = await connectClient(fixture.root, 'tui');
     const recoveredSubscription = await second.openSessionSubscription({
       sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
     });
     const recovered = await second.queryTurn({
       sessionId: fixture.sessionId,

@@ -95,6 +95,8 @@ export type {
   SessionCatalogPageResult,
   SessionCatalogRecord,
   SessionHeaderSnapshot,
+  SessionTranscriptPageRequest,
+  SessionTranscriptStoragePage,
 } from './session-store.js';
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
@@ -347,6 +349,10 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readCatalogRecord: (sessionId) => run(() => sessionStore.readCatalogRecord(sessionId)),
       probeSessionRemoval: (sessionId) => run(() => sessionStore.probeSessionRemoval(sessionId)),
       readMessagesSnapshot: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
+      readTranscriptPageSnapshot: (sessionId, request) =>
+        run(() => sessionStore.readTranscriptPageSnapshot(sessionId, request)),
+      readTranscriptHighWaterSnapshot: (sessionId) =>
+        run(() => sessionStore.readTranscriptHighWaterSnapshot(sessionId)),
       readMessagesForRecovery: (sessionId) =>
         run(() => sessionStore.readMessagesForRecovery(sessionId)),
       listTurnsSnapshot: (sessionId) => run(() => sessionStore.listTurnsSnapshot(sessionId)),

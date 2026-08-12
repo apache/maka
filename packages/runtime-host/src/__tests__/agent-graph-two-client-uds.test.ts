@@ -98,7 +98,10 @@ test('two Clients query and control one Agent graph through Session invalidation
   try {
     desktop = await connect(root, 'desktop');
     tui = await connect(root, 'tui');
-    subscription = await desktop.openSessionSubscription({ sessionId: ROOT_SESSION_ID });
+    subscription = await desktop.openSessionSubscription({
+      sessionId: ROOT_SESSION_ID,
+      transcript: { kind: 'none' },
+    });
 
     const [desktopSnapshot, tuiSnapshot] = await Promise.all([
       desktop.request('agent.graph.query', { rootSessionId: ROOT_SESSION_ID }),

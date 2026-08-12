@@ -57,6 +57,7 @@ describe('Runtime Host bootstrap protocol', () => {
         subscriptionId: 'subscription-1',
         nextSequence: 1,
         activeAssistantStreams: [{ kind: 'thinking', turnId: 'turn-1', messageId: 'message-1' }],
+        transcript: null,
         snapshot: continuitySnapshot('epoch-1'),
       },
     };

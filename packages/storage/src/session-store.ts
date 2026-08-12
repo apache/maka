@@ -152,6 +152,29 @@ export type ProbeStableSessionCreateResult =
 
 export type UpdateSessionConfigurationRequest = SessionConfigurationMetadataUpdate;
 
+export interface EncodedSessionTranscriptMessage {
+  readonly sequence: number;
+  readonly data: string;
+  readonly encodedBytes: number;
+}
+
+export interface SessionTranscriptPageRequest {
+  readonly direction: 'older' | 'newer';
+  /** Inclusive durable high-water mark. Omit only for the first read. */
+  readonly throughSequence?: number;
+  /** Exclusive sequence boundary in the requested direction. */
+  readonly cursor?: number;
+  readonly maxBytes: number;
+  readonly maxMessages: number;
+}
+
+export interface SessionTranscriptStoragePage {
+  readonly throughSequence: number | null;
+  /** Always returned in ascending durable sequence order. */
+  readonly messages: readonly EncodedSessionTranscriptMessage[];
+  readonly hasMore: boolean;
+}
+
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
@@ -162,6 +185,12 @@ export interface SessionStore {
   readHeaderSnapshot(sessionId: string): Promise<SessionHeader>;
   /** Read durable messages without triggering connection-lock self-healing. */
   readMessagesSnapshot(sessionId: string): Promise<StoredMessage[]>;
+  /** Read one byte-bounded page directly from the durable append-only ledger. */
+  readTranscriptPageSnapshot(
+    sessionId: string,
+    request: SessionTranscriptPageRequest,
+  ): Promise<SessionTranscriptStoragePage>;
+  readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null>;
   /** Read durable messages for startup recovery. */
   readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]>;
   /** Derive durable turns without triggering connection-lock self-healing. */
@@ -591,6 +620,19 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async readMessagesSnapshot(sessionId: string): Promise<StoredMessage[]> {
     await this.ensureReady();
     return this.metadata.readMessages(sessionId);
+  }
+
+  async readTranscriptPageSnapshot(
+    sessionId: string,
+    request: SessionTranscriptPageRequest,
+  ): Promise<SessionTranscriptStoragePage> {
+    await this.ensureReady();
+    return this.metadata.readTranscriptPage(sessionId, request);
+  }
+
+  async readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null> {
+    await this.ensureReady();
+    return this.metadata.readTranscriptHighWater(sessionId);
   }
 
   async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {

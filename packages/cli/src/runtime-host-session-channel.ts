@@ -12,9 +12,10 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
-import type {
+import {
   InteractionAnsweredSnapshot,
   InteractionPendingSnapshot,
+  SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   SessionContinuitySnapshot,
   SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
@@ -98,6 +99,7 @@ export class RuntimeHostSessionChannel {
   ): Promise<RuntimeHostSessionChannelOpenResult> {
     const subscription = await options.connection.openSessionSubscription({
       sessionId: options.sessionId,
+      transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
     });
     const initialRoot = structuredClone(subscription.snapshot.rootTurn);
     const channel = new RuntimeHostSessionChannel(subscription, [], options, options.connection);
@@ -299,7 +301,10 @@ export class RuntimeHostSessionChannel {
       await previous.close().catch(() => undefined);
       let replacement: RuntimeHostSessionSubscription;
       try {
-        replacement = await this.#connection.openSessionSubscription({ sessionId: this.sessionId });
+        replacement = await this.#connection.openSessionSubscription({
+          sessionId: this.sessionId,
+          transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+        });
       } catch (error) {
         if (this.#canRecover(error)) continue;
         throw error;
@@ -429,8 +434,7 @@ export class RuntimeHostSessionChannel {
       (error.reason === 'connection_closed' ||
         error.reason === 'sequence_gap' ||
         error.reason === 'projection_revision_invalid' ||
-        error.reason === 'slow_consumer' ||
-        error.reason === 'transcript_expired')
+        error.reason === 'slow_consumer')
     );
   }
 

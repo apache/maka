@@ -19,6 +19,9 @@ export type {
   SessionCatalogRecord,
   SessionHeaderSnapshot,
   SessionStore,
+  SessionTranscriptPageRequest,
+  SessionTranscriptStoragePage,
+  EncodedSessionTranscriptMessage,
   StableSessionCreateInput,
   UpdateSessionConfigurationRequest,
 } from './session-store.js';
