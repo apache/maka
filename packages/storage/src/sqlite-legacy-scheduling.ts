@@ -47,13 +47,6 @@ export function assertLegacySchedulingSchema(
   ) {
     throw new Error('The current Workflow schema still contains released Plan Reminder state');
   }
-  if (
-    workflowVersion === 8 &&
-    (!hasTable(database, 'workflow_scheduled_tasks') ||
-      !hasTable(database, 'workflow_scheduled_task_fires'))
-  ) {
-    throw new Error('The current Workflow schema is missing ScheduledTask authority tables');
-  }
 }
 
 export function planLegacyScheduledTasks(

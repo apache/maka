@@ -279,14 +279,38 @@ test('rejects a released Reminder table after its Workflow authority removed it'
   }
 });
 
-test('rejects a current Workflow registry with missing ScheduledTask authority', async () => {
+test('reapplies current Workflow authority tables without republishing its registry', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-missing-scheduled-tasks-'));
   try {
     const lease = acquireOperationalStateDatabase(root);
-    lease.database.exec('DROP TABLE workflow_scheduled_tasks');
+    const registry = lease.database
+      .prepare(
+        "SELECT version, applied_at FROM operational_schema_migrations WHERE scope = 'workflow'",
+      )
+      .get();
+    lease.database.exec(`
+      DROP TABLE workflow_scheduled_task_fires;
+      DROP TABLE workflow_scheduled_tasks;
+    `);
     lease.close();
 
-    assert.throws(() => acquireOperationalStateDatabase(root), /missing ScheduledTask authority/);
+    const reopened = acquireOperationalStateDatabase(root);
+    for (const table of ['workflow_scheduled_task_fires', 'workflow_scheduled_tasks']) {
+      assert.ok(
+        reopened.database
+          .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?")
+          .get(table),
+      );
+    }
+    assert.deepEqual(
+      reopened.database
+        .prepare(
+          "SELECT version, applied_at FROM operational_schema_migrations WHERE scope = 'workflow'",
+        )
+        .get(),
+      registry,
+    );
+    reopened.close();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
