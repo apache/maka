@@ -59,6 +59,7 @@ const executionStoresWritersByLease = new WeakMap<object, object>();
 const executionStoresWritersOpeningByLease = new WeakMap<object, Promise<void>>();
 
 export { normalizeRootTurnAdmissionPayload } from './agent-run-store.js';
+export { SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS } from './session-store.js';
 export {
   isSessionNotFoundError,
   SessionReadMarkerMessageNotFoundError,

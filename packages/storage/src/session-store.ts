@@ -152,6 +152,8 @@ export type ProbeStableSessionCreateResult =
 
 export type UpdateSessionConfigurationRequest = SessionConfigurationMetadataUpdate;
 
+export const SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS = 256;
+
 export interface SessionTranscriptStorageFragment {
   readonly sequence: number;
   readonly byteOffset: number;

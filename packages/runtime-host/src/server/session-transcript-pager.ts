@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { StoredMessage } from '@maka/core/session';
+import { SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS } from '@maka/storage/execution-stores';
 import {
   SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
   SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES,
@@ -117,13 +118,10 @@ export async function prepareSessionTranscriptOverlay(input: {
   activeAssistantStreams: Iterable<ActiveTranscriptAssistantStream>;
 }): Promise<readonly Buffer[]> {
   const activeAssistantStreams = [...input.activeAssistantStreams];
+  const activeMessageIds = [...new Set(activeAssistantStreams.map((stream) => stream.messageId))];
   const [activeOverlay, durableActiveMessages] = await Promise.all([
     input.reader.readActiveOverlay(input.sessionId, input.rootTurn),
-    input.reader.readDurableMessagesById(
-      input.sessionId,
-      activeAssistantStreams.map((stream) => stream.messageId),
-      input.throughSequence,
-    ),
+    readDurableMessagesById(input.reader, input.sessionId, activeMessageIds, input.throughSequence),
   ]);
   const overlayMessages = mergeActiveAssistantStreams(
     activeOverlay,
@@ -132,6 +130,29 @@ export async function prepareSessionTranscriptOverlay(input: {
   ).map((message) => Buffer.from(JSON.stringify(message), 'utf8'));
   assertOverlayRetainedBound(overlayMessages);
   return overlayMessages;
+}
+
+async function readDurableMessagesById(
+  reader: SessionTranscriptReader,
+  sessionId: string,
+  messageIds: readonly string[],
+  throughSequence: number | null,
+): Promise<readonly StoredMessage[]> {
+  const messages: StoredMessage[] = [];
+  for (
+    let offset = 0;
+    offset < messageIds.length;
+    offset += SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS
+  ) {
+    messages.push(
+      ...(await reader.readDurableMessagesById(
+        sessionId,
+        messageIds.slice(offset, offset + SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS),
+        throughSequence,
+      )),
+    );
+  }
+  return messages;
 }
 
 export async function readSessionTranscriptPage(input: {

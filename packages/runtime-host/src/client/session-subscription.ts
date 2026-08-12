@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   encodeProtocolMessage,
   type SessionAssistantStreamIdentity,
@@ -227,15 +226,7 @@ export class ClientSessionSubscription
     assembler.accept(initial.fragments);
     let cursor = initial.nextCursor;
     let previousPage = initial;
-    const seenCursors = new Set<string>();
     while (cursor !== null) {
-      if (seenCursors.has(cursor)) {
-        throw new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Session transcript cursor cycle detected',
-        );
-      }
-      seenCursors.add(cursor);
       const page = await this.loadTranscriptPage({
         source: initial.source,
         direction: initial.direction,
@@ -422,15 +413,12 @@ function continuationPageByteLimit(
 }
 
 class TranscriptFragmentAssembler {
-  readonly #totals = new Map<number, number>();
-  readonly #fragmentDigests = new Map<number, Map<number, string>>();
-  readonly #completed = new Set<number>();
   readonly #messages: Array<{ identity: number; value: unknown }> = [];
   #current:
     | {
         identity: number;
         totalBytes: number;
-        chunks: Map<number, Buffer>;
+        chunks: Buffer[];
         edge: number;
       }
     | undefined;
@@ -452,7 +440,8 @@ class TranscriptFragmentAssembler {
         'Session transcript message ended before every fragment arrived',
       );
     }
-    return this.#messages.sort((left, right) => left.identity - right.identity);
+    if (this.direction === 'older') this.#messages.reverse();
+    return this.#messages;
   }
 
   #accept(fragment: SessionTranscriptFragment): void {
@@ -464,31 +453,11 @@ class TranscriptFragmentAssembler {
     }
     const identity = fragment.kind === 'durable' ? fragment.sequence : fragment.messageIndex;
     const bytes = Buffer.from(fragment.data, 'base64');
-    const digest = createHash('sha256').update(bytes).digest('base64url');
-    const total = this.#totals.get(identity);
-    const digests = this.#fragmentDigests.get(identity) ?? new Map<number, string>();
-    const duplicateDigest = digests.get(fragment.byteOffset);
-    if (
-      (total !== undefined && total !== fragment.totalBytes) ||
-      (duplicateDigest !== undefined && duplicateDigest !== digest)
-    ) {
-      throw new RuntimeHostSubscriptionError(
-        'correlation_changed',
-        'Session transcript fragment identity changed',
-      );
-    }
-    if (duplicateDigest !== undefined) return;
-    if (this.#completed.has(identity)) {
-      throw new RuntimeHostSubscriptionError(
-        'correlation_changed',
-        'Session transcript fragment changed after message completion',
-      );
-    }
     if (!this.#current) this.#start(identity, fragment.totalBytes);
-    if (this.#current?.identity !== identity) {
+    if (this.#current?.identity !== identity || this.#current.totalBytes !== fragment.totalBytes) {
       throw new RuntimeHostSubscriptionError(
         'correlation_changed',
-        'Session transcript message has a fragment gap',
+        'Session transcript message identity changed between fragments',
       );
     }
     const expectedOffset =
@@ -499,10 +468,7 @@ class TranscriptFragmentAssembler {
         'Session transcript message has a fragment gap',
       );
     }
-    this.#totals.set(identity, fragment.totalBytes);
-    digests.set(fragment.byteOffset, digest);
-    this.#fragmentDigests.set(identity, digests);
-    this.#current.chunks.set(fragment.byteOffset, bytes);
+    this.#current.chunks.push(bytes);
     this.#current.edge =
       this.direction === 'older' ? fragment.byteOffset : fragment.byteOffset + bytes.byteLength;
     if (
@@ -529,16 +495,14 @@ class TranscriptFragmentAssembler {
     this.#current = {
       identity,
       totalBytes,
-      chunks: new Map(),
+      chunks: [],
       edge: this.direction === 'older' ? totalBytes : 0,
     };
   }
 
   #completeCurrent(): void {
     const current = this.#current!;
-    const chunks = [...current.chunks.entries()]
-      .sort(([left], [right]) => left - right)
-      .map(([, chunk]) => chunk);
+    const chunks = this.direction === 'older' ? current.chunks.reverse() : current.chunks;
     try {
       this.#messages.push({
         identity: current.identity,
@@ -550,7 +514,6 @@ class TranscriptFragmentAssembler {
         `Session transcript message is invalid JSON: ${errorMessage(cause)}`,
       );
     }
-    this.#completed.add(current.identity);
     this.#current = undefined;
   }
 }

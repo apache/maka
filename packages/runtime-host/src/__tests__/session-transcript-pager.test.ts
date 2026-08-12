@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
+import { SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS } from '@maka/storage/execution-stores';
 import {
   createSessionTranscriptBootstrap,
   prepareSessionTranscriptOverlay,
@@ -142,6 +143,62 @@ test('rejects an active overlay that exceeds its retained message bound', async 
   );
 });
 
+test('deduplicates and batches durable reconciliation at the fixed watermark', async () => {
+  const messages = Array.from(
+    { length: SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS + 1 },
+    (_, index) => assistantMessage(index),
+  );
+  const batches: string[][] = [];
+  const watermarks: Array<number | null> = [];
+  const base = transcriptReader(messages, messages);
+  const reader: SessionTranscriptReader = {
+    ...base,
+    readDurableMessagesById: async (_sessionId, messageIds, throughSequence) => {
+      assert.ok(messageIds.length <= SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS);
+      batches.push([...messageIds]);
+      watermarks.push(throughSequence);
+      return messages.filter((message) => messageIds.includes(message.id));
+    },
+  };
+  const activeAssistantStreams = messages.flatMap((message, index) => [
+    {
+      turnId: message.turnId,
+      messageId: message.id,
+      kind: 'text' as const,
+      text: message.text,
+    },
+    ...(index === 0
+      ? [
+          {
+            turnId: message.turnId,
+            messageId: message.id,
+            kind: 'thinking' as const,
+            text: message.thinking!.text,
+          },
+        ]
+      : []),
+  ]);
+
+  const overlay = await prepareSessionTranscriptOverlay({
+    reader,
+    sessionId: 'session-1',
+    throughSequence: SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS,
+    rootTurn: null,
+    activeAssistantStreams,
+  });
+
+  assert.equal(overlay.length, SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS + 1);
+  assert.deepEqual(
+    batches.map((batch) => batch.length),
+    [SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS, 1],
+  );
+  assert.equal(new Set(batches.flat()).size, SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS + 1);
+  assert.deepEqual(watermarks, [
+    SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS,
+    SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS,
+  ]);
+});
+
 function userMessage(index: number, text = `message-${index}`): StoredMessage {
   return {
     type: 'user',
@@ -149,6 +206,18 @@ function userMessage(index: number, text = `message-${index}`): StoredMessage {
     turnId: `turn-${index}`,
     ts: index + 1,
     text,
+  };
+}
+
+function assistantMessage(index: number): Extract<StoredMessage, { type: 'assistant' }> {
+  return {
+    type: 'assistant',
+    id: `message-${index}`,
+    turnId: `turn-${index}`,
+    ts: index + 1,
+    modelId: 'model-1',
+    text: `message-${index}`,
+    thinking: { text: `thinking-${index}`, signature: '' },
   };
 }
 

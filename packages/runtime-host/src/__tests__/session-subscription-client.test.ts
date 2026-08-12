@@ -399,7 +399,7 @@ test('reassembles a large message from bounded backward pages', async () => {
   );
 });
 
-test('accepts an identical retried page but rejects a durable sequence gap', async () => {
+test('rejects an identical retried page and a durable sequence gap', async () => {
   const message = Buffer.from(
     JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
     'utf8',
@@ -421,9 +421,10 @@ test('accepts an identical retried page but rejects a durable sequence gap', asy
     async () => undefined,
     async () => duplicatePage,
   );
-  assert.deepEqual(await retried.loadTranscript(decodeStoredMessage), [
-    { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' },
-  ]);
+  await assert.rejects(
+    () => retried.loadTranscript(decodeStoredMessage),
+    hasSubscriptionReason('correlation_changed'),
+  );
 
   const gap = new ClientSessionSubscription(
     openResult('host-1', 'subscription-gap', {

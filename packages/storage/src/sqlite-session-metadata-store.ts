@@ -80,6 +80,7 @@ import { type SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   assertSafeSessionId,
   normalizeSessionHeader,
+  SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS,
   SessionNotFoundError,
   type SessionTranscriptPageRequest,
   type SessionTranscriptStoragePage,
@@ -1513,7 +1514,10 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     if (messageIds.length === 0) return [];
-    if (messageIds.length > 256 || messageIds.some((messageId) => typeof messageId !== 'string')) {
+    if (
+      messageIds.length > SESSION_TRANSCRIPT_MESSAGE_LOOKUP_MAX_IDS ||
+      messageIds.some((messageId) => typeof messageId !== 'string')
+    ) {
       throw new Error('Invalid Session transcript message identity set');
     }
     if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
