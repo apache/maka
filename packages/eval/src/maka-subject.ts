@@ -46,6 +46,26 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
       } catch {
         return subjectFailure('relay-execute', startedAt, context.signal);
       }
+      if (process.termination === 'cancelled') {
+        return {
+          usage: null,
+          costUsd: null,
+          durationMs: Date.now() - startedAt,
+          status: 'indeterminate' as const,
+          failureReason: 'Maka subject cancelled',
+          artifacts: [],
+        };
+      }
+      if (process.termination === 'framework_timeout') {
+        return {
+          usage: null,
+          costUsd: null,
+          durationMs: Date.now() - startedAt,
+          status: 'failed' as const,
+          failureReason: 'Maka subject exceeded the framework timeout',
+          artifacts: [],
+        };
+      }
       if (process.stdout.length === 0) {
         return subjectFailure('empty-output', startedAt, context.signal, process);
       }
@@ -88,12 +108,6 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
         failureReason,
         artifacts: [],
       });
-      if (process.termination === 'cancelled') {
-        return result('indeterminate', 'Maka subject cancelled');
-      }
-      if (process.termination === 'framework_timeout') {
-        return result('failed', 'Maka subject exceeded the framework timeout');
-      }
       if (process.exitCode !== 0) {
         return result('indeterminate', 'Maka execution shim did not settle cleanly');
       }
