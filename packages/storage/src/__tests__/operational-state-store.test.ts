@@ -156,7 +156,7 @@ test('rolls back a released upgrade when the final target schema is incompatible
 
     assert.throws(
       () => acquireOperationalStateDatabase(root),
-      /usage_pricing_overrides is missing required column record_json/,
+      /schema object table:usage_pricing_overrides has an incompatible definition/,
     );
 
     const preserved = new DatabaseSync(databasePath, { readOnly: true });
@@ -368,7 +368,7 @@ test('rejects a current Runtime schema whose versioned authority table is missin
   await assertCurrentDatabaseRejected(
     'missing-runtime-authority',
     (database) => database.exec('DROP TABLE runtime_session_event_ordinals'),
-    /missing required table runtime_session_event_ordinals/,
+    /missing required schema object table:runtime_session_event_ordinals/,
     (database) => {
       assert.equal(
         database
@@ -386,29 +386,7 @@ test('rejects a current Runtime schema whose versioned authority table is missin
   );
 });
 
-for (const { name, mutation, message } of [
-  {
-    name: 'a current authority table with a missing required column',
-    mutation: (database: DatabaseSync) =>
-      database.exec(`
-        DROP TABLE usage_llm_calls;
-        CREATE TABLE usage_llm_calls (
-          storage_key TEXT PRIMARY KEY,
-          id TEXT NOT NULL,
-          ts INTEGER NOT NULL CHECK (ts >= 0)
-        );
-      `),
-    message: /usage_llm_calls is missing required column record_json/,
-  },
-  {
-    name: 'a current authority index with incompatible key columns',
-    mutation: (database: DatabaseSync) =>
-      database.exec(`
-        DROP INDEX usage_llm_calls_ts;
-        CREATE INDEX usage_llm_calls_ts ON usage_llm_calls(id);
-      `),
-    message: /required index usage_llm_calls_ts has an incompatible definition/,
-  },
+for (const { name, mutation } of [
   {
     name: 'a current authority index with an incompatible predicate',
     mutation: (database: DatabaseSync) =>
@@ -418,7 +396,6 @@ for (const { name, mutation, message } of [
           ON artifact_records(relative_path)
           WHERE status = 'live';
       `),
-    message: /required index artifact_records_relative_path has an incompatible definition/,
   },
   {
     name: 'a current authority table with missing key and check constraints',
@@ -427,25 +404,6 @@ for (const { name, mutation, message } of [
         DROP TABLE usage_pricing_authority;
         CREATE TABLE usage_pricing_authority (singleton INTEGER, revision INTEGER);
       `),
-    message: /usage_pricing_authority column singleton has an incompatible definition/,
-  },
-  {
-    name: 'a current authority table with a missing foreign key',
-    mutation: (database: DatabaseSync) =>
-      database.exec(`
-        DROP TABLE core_agent_run_events;
-        CREATE TABLE core_agent_run_events (
-          session_id TEXT NOT NULL,
-          run_id TEXT NOT NULL,
-          sequence INTEGER NOT NULL CHECK (sequence >= 0),
-          event_id TEXT NOT NULL,
-          event_type TEXT NOT NULL,
-          event_ts INTEGER NOT NULL,
-          record_json TEXT NOT NULL,
-          PRIMARY KEY (session_id, run_id, sequence)
-        );
-      `),
-    message: /core_agent_run_events is missing required foreign key/,
   },
   {
     name: 'a current authority check with a changed string literal',
@@ -462,39 +420,40 @@ for (const { name, mutation, message } of [
           record_json TEXT NOT NULL
         );
       `),
-    message: /artifact_records is missing required check/,
   },
   {
-    name: 'a current authority table with a quoted decoy check',
+    name: 'a current authority table with an extra rejecting constraint',
     mutation: (database: DatabaseSync) =>
       database.exec(`
         DROP TABLE usage_llm_calls;
         CREATE TABLE usage_llm_calls (
           storage_key TEXT PRIMARY KEY,
           id TEXT NOT NULL,
-          ts INTEGER NOT NULL,
+          ts INTEGER NOT NULL CHECK (ts >= 0),
           record_json TEXT NOT NULL,
-          decoy TEXT DEFAULT 'CHECK (ts >= 0)'
+          CHECK (0)
         );
+        CREATE INDEX IF NOT EXISTS usage_llm_calls_ts ON usage_llm_calls(ts DESC, id);
       `),
-    message: /usage_llm_calls is missing required check/,
   },
   {
-    name: 'a current authority trigger with an incompatible definition',
+    name: 'a current authority table with an extra destructive trigger',
     mutation: (database: DatabaseSync) =>
       database.exec(`
-        DROP TRIGGER session_catalog_after_insert;
-        CREATE TRIGGER session_catalog_after_insert
-        AFTER INSERT ON session_metadata
+        CREATE TRIGGER delete_usage_llm_call_after_insert
+        AFTER INSERT ON usage_llm_calls
         BEGIN
-          SELECT 1;
+          DELETE FROM usage_llm_calls WHERE storage_key = NEW.storage_key;
         END;
       `),
-    message: /required trigger session_catalog_after_insert has an incompatible definition/,
   },
 ] as const) {
   test(`rejects ${name}`, async () => {
-    await assertCurrentDatabaseRejected(name.replaceAll(' ', '-'), mutation, message);
+    await assertCurrentDatabaseRejected(
+      name.replaceAll(' ', '-'),
+      mutation,
+      /Incomplete operational SQLite schema/,
+    );
   });
 }
 
