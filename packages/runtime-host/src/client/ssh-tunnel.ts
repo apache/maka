@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomInt } from 'node:crypto';
 import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RuntimeHostConnectionResource } from './connection.js';
@@ -8,8 +8,7 @@ import type { RuntimeHostConnectionResource } from './connection.js';
 const SSH_BATCH_START_TIMEOUT_MS = 15_000;
 const SSH_INTERACTIVE_START_TIMEOUT_MS = 120_000;
 const SSH_STOP_TIMEOUT_MS = 2_000;
-const SSH_LOCAL_PORT_MIN = 49_152;
-const SSH_LOCAL_PORT_MAX_EXCLUSIVE = 65_536;
+const SSH_LOCAL_BIND_ATTEMPTS = 3;
 
 export type RuntimeHostSshInteraction = 'batch' | 'inherit' | 'terminal';
 
@@ -55,54 +54,59 @@ export async function openRuntimeHostSshTunnel(
   const startTimeoutMs =
     input.startTimeoutMs ??
     (input.interaction === 'batch' ? SSH_BATCH_START_TIMEOUT_MS : SSH_INTERACTIVE_START_TIMEOUT_MS);
-  const localPort = randomInt(SSH_LOCAL_PORT_MIN, SSH_LOCAL_PORT_MAX_EXCLUSIVE);
-  const readiness = await createSshForwardReadiness(localPort);
-  const args = [
-    '-v',
-    '-E',
-    readiness.logPath,
-    '-N',
-    '-T',
-    '-o',
-    'ExitOnForwardFailure=yes',
-    '-o',
-    `ConnectTimeout=${Math.max(1, Math.ceil(Math.min(startTimeoutMs, SSH_BATCH_START_TIMEOUT_MS) / 1_000))}`,
-    '-o',
-    input.interaction === 'batch' ? 'BatchMode=yes' : 'BatchMode=no',
-    '-o',
-    'ControlMaster=no',
-    '-o',
-    'ControlPath=none',
-    '-o',
-    'ForkAfterAuthentication=no',
-    '-L',
-    `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
-    ...(sshPort === undefined ? [] : ['-p', String(sshPort)]),
-    destination,
-  ];
-  let child: RuntimeHostSshProcess;
-  try {
+  for (let attempt = 1; attempt <= SSH_LOCAL_BIND_ATTEMPTS; attempt += 1) {
     input.signal?.throwIfAborted();
-    child = (overrides.spawnProcess ?? spawnSshProcess)({
-      executable: 'ssh',
-      args,
-      interaction: input.interaction,
-    });
-  } catch (error) {
-    await readiness.close();
-    throw error;
+    const localPort = await allocateLoopbackPort();
+    const readiness = await createSshForwardReadiness(localPort);
+    const args = [
+      '-v',
+      '-E',
+      readiness.logPath,
+      '-N',
+      '-T',
+      '-o',
+      'ExitOnForwardFailure=yes',
+      '-o',
+      `ConnectTimeout=${Math.max(1, Math.ceil(Math.min(startTimeoutMs, SSH_BATCH_START_TIMEOUT_MS) / 1_000))}`,
+      '-o',
+      input.interaction === 'batch' ? 'BatchMode=yes' : 'BatchMode=no',
+      '-o',
+      'ControlMaster=no',
+      '-o',
+      'ControlPath=none',
+      '-o',
+      'ForkAfterAuthentication=no',
+      '-L',
+      `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
+      ...(sshPort === undefined ? [] : ['-p', String(sshPort)]),
+      destination,
+    ];
+    let child: RuntimeHostSshProcess;
+    try {
+      input.signal?.throwIfAborted();
+      child = (overrides.spawnProcess ?? spawnSshProcess)({
+        executable: 'ssh',
+        args,
+        interaction: input.interaction,
+      });
+    } catch (error) {
+      await readiness.close();
+      throw error;
+    }
+    const resource = new SshTunnelResource(child, input.signal, readiness.close);
+    try {
+      await waitForForward(readiness, resource, startTimeoutMs, input.interaction);
+      return {
+        url: `ws://127.0.0.1:${localPort}${websocketPath}`,
+        resource,
+      };
+    } catch (error) {
+      await resource.close().catch(() => undefined);
+      if (error instanceof SshLocalBindConflictError && attempt < SSH_LOCAL_BIND_ATTEMPTS) continue;
+      throw error;
+    }
   }
-  const resource = new SshTunnelResource(child, input.signal, readiness.close);
-  try {
-    await waitForForward(readiness, resource, startTimeoutMs, input.interaction);
-    return {
-      url: `ws://127.0.0.1:${localPort}${websocketPath}`,
-      resource,
-    };
-  } catch (error) {
-    await resource.close().catch(() => undefined);
-    throw error;
-  }
+  throw new Error('SSH tunnel did not become ready');
 }
 
 class SshTunnelResource implements RuntimeHostConnectionResource {
@@ -203,8 +207,14 @@ function childExit(
 
 interface SshForwardReadiness {
   readonly logPath: string;
-  ready(): Promise<boolean>;
+  status(): Promise<'pending' | 'ready' | 'local_bind_conflict'>;
   close(): Promise<void>;
+}
+
+class SshLocalBindConflictError extends Error {
+  constructor() {
+    super('SSH could not bind the local forwarding port');
+  }
 }
 
 async function createSshForwardReadiness(port: number): Promise<SshForwardReadiness> {
@@ -219,11 +229,20 @@ async function createSshForwardReadiness(port: number): Promise<SshForwardReadin
   const marker = `Local forwarding listening on 127.0.0.1 port ${port}.`;
   return {
     logPath,
-    ready: async () => {
+    status: async () => {
       try {
-        return (await readFile(logPath, 'utf8')).includes(marker);
+        const log = await readFile(logPath, 'utf8');
+        if (log.includes(marker)) return 'ready';
+        if (
+          log.includes('Address already in use') ||
+          log.includes('Only one usage of each socket address') ||
+          log.includes('WSAEADDRINUSE')
+        ) {
+          return 'local_bind_conflict';
+        }
+        return 'pending';
       } catch (error) {
-        if (isMissingFileError(error)) return false;
+        if (isMissingFileError(error)) return 'pending';
         throw error;
       }
     },
@@ -239,16 +258,42 @@ async function waitForForward(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const ready = await Promise.race([
-      readiness.ready(),
-      resource.exited.then(({ code, signal }) => {
-        throw sshStartupError(code ?? signal ?? 'unknown', interaction);
-      }),
+    const outcome = await Promise.race([
+      readiness.status().then((status) => ({ kind: 'status' as const, status })),
+      resource.exited.then((exit) => ({ kind: 'exit' as const, exit })),
     ]);
-    if (ready) return;
+    if (outcome.kind === 'status') {
+      if (outcome.status === 'ready') return;
+      if (outcome.status === 'local_bind_conflict') throw new SshLocalBindConflictError();
+    } else {
+      if ((await readiness.status()) === 'local_bind_conflict') {
+        throw new SshLocalBindConflictError();
+      }
+      throw sshStartupError(outcome.exit.code ?? outcome.exit.signal ?? 'unknown', interaction);
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw sshStartupError('timed out', interaction);
+}
+
+function allocateLoopbackPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    const onError = (error: Error) => reject(error);
+    server.once('error', onError);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', onError);
+      const address = server.address();
+      if (address === null || typeof address === 'string') {
+        server.close(() => reject(new Error('Unable to allocate an SSH loopback port')));
+        return;
+      }
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve(address.port);
+      });
+    });
+  });
 }
 
 function sshStartupError(

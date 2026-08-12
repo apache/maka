@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:net';
 import { test } from 'node:test';
 import {
   openRuntimeHostSshTunnel,
@@ -9,7 +8,6 @@ import {
 } from '../client/ssh-tunnel.js';
 
 test('opens an exact loopback forward and owns the SSH process lifetime', async () => {
-  let server: Server | undefined;
   let resolveExit:
     | ((value: { code: number | null; signal: NodeJS.Signals | null }) => void)
     | undefined;
@@ -60,8 +58,53 @@ test('opens an exact loopback forward and owns the SSH process lifetime', async 
   await tunnel.resource.closed;
 });
 
-test('does not trust an unrelated process that occupies the selected port', async () => {
-  let server: Server | undefined;
+test('retries a confirmed local forwarding bind conflict', async () => {
+  let attempts = 0;
+  let resolveExit:
+    | ((value: { code: number | null; signal: NodeJS.Signals | null }) => void)
+    | undefined;
+  const tunnel = await openRuntimeHostSshTunnel(
+    {
+      destination: 'operator@example.com',
+      remotePort: 7443,
+      websocketPath: '/runtime-host',
+      interaction: 'batch',
+    },
+    {
+      spawnProcess: (input) => {
+        attempts += 1;
+        const forwarding = input.args[input.args.indexOf('-L') + 1];
+        const localPort = Number(forwarding?.split(':')[1]);
+        const logPath = input.args[input.args.indexOf('-E') + 1];
+        assert.ok(logPath);
+        if (attempts === 1) {
+          return {
+            exited: writeFile(
+              logPath,
+              `bind [127.0.0.1]:${localPort}: Address already in use\n`,
+            ).then(() => ({ code: 255, signal: null })),
+            kill: () => undefined,
+          };
+        }
+        void writeFile(
+          logPath,
+          `debug1: Local forwarding listening on 127.0.0.1 port ${localPort}.\n`,
+        );
+        return {
+          exited: new Promise((resolve) => {
+            resolveExit = resolve;
+          }),
+          kill: (signal) => resolveExit?.({ code: null, signal }),
+        };
+      },
+    },
+  );
+  assert.equal(attempts, 2);
+  await tunnel.resource.close();
+});
+
+test('explains how a non-interactive SSH connection can be prepared', async () => {
+  let attempts = 0;
   await assert.rejects(
     openRuntimeHostSshTunnel(
       {
@@ -71,43 +114,16 @@ test('does not trust an unrelated process that occupies the selected port', asyn
         interaction: 'batch',
       },
       {
-        spawnProcess: (input) => {
-          const forwarding = input.args[input.args.indexOf('-L') + 1];
-          const localPort = Number(forwarding?.split(':')[1]);
-          server = createServer();
-          server.listen(localPort, '127.0.0.1');
+        spawnProcess: () => {
+          attempts += 1;
           return {
-            exited: new Promise((resolve) => {
-              setTimeout(() => {
-                server?.close(() => resolve({ code: 255, signal: null }));
-              }, 25);
-            }),
+            exited: Promise.resolve({ code: 255, signal: null }),
             kill: () => undefined,
           };
         },
       },
     ),
-    /did not become ready/u,
-  );
-  assert.equal(server?.listening, false);
-});
-
-test('explains how a non-interactive SSH connection can be prepared', async () => {
-  await assert.rejects(
-    openRuntimeHostSshTunnel(
-      {
-        destination: 'operator@example.com',
-        remotePort: 7443,
-        websocketPath: '/runtime-host',
-        interaction: 'batch',
-      },
-      {
-        spawnProcess: () => ({
-          exited: Promise.resolve({ code: 255, signal: null }),
-          kill: () => undefined,
-        }),
-      },
-    ),
     /Configure OpenSSH host verification and key or agent authentication/u,
   );
+  assert.equal(attempts, 1);
 });
