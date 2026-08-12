@@ -2097,6 +2097,9 @@ export class SessionManager {
     input: UserMessageInput,
     options: TurnStartOptions = {},
   ): AsyncIterable<SessionEvent> {
+    if (input.origin?.kind === 'legacy_automation') {
+      throw new Error('Live Turn cannot use removed Automation authority');
+    }
     const repair = input.agentId ? undefined : this.runtimeLedgerRepair;
     const admitTurn = repair
       ? async () => {
