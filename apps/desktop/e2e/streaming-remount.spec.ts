@@ -34,6 +34,7 @@ test('returning to a live conversation leaves accumulated output settled', async
     ),
   ).toBe(0);
 
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
   const originalSessionId = await sidebar.locator('[data-session-id]').first()
     .getAttribute('data-session-id');
   expect(originalSessionId).toBeTruthy();
