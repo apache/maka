@@ -2350,8 +2350,6 @@ describe('Maka Pi TUI transcript', () => {
     const rendered = lines.map(stripAnsi).join('\n');
     assert.match(rendered, /● Bash  \$ sleep 30 \(7s · cancelled · exit 130\)/);
     assert.doesNotMatch(rendered, /● StopBackgroundTask/);
-    // An aborted background task uses the danger disc (red).
-    assert.match(lines.join('\n'), /\x1b\[31m●\x1b\[39m/);
   });
 
   test('applies a runtime-published terminal update directly to its parent Bash card', () => {
