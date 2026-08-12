@@ -40,6 +40,10 @@ import {
 } from '../protocol/turn.js';
 
 describe('Runtime Host bootstrap protocol', () => {
+  test('publishes a new compatibility epoch for legacy Automation provenance', () => {
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 20);
+  });
+
   test('selects the highest mutually supported protocol and rejects a gap', () => {
     assert.equal(negotiateProtocol({ min: 0, max: 0 }, { min: 0, max: 0 }), 0);
     assert.equal(negotiateProtocol({ min: 1, max: 3 }, { min: 2, max: 4 }), 3);
