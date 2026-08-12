@@ -72,7 +72,10 @@ export function ProjectsSettingsPage(props: {
   // Archived projects are removed-from-Maka, not deleted; they belong to the
   // restore path, not to a list whose whole purpose is "what can I open".
   const listed = projects.filter((project) => project.archivedAt === undefined);
-  const defaultProjectId = props.settings.projects.defaultProjectId;
+  const defaultProjectId =
+    activeHostKind === 'local'
+      ? props.settings.projects.defaultProjectId
+      : undefined;
   // The stored id is a preference, not a guarantee: the project it names can be
   // archived or lose its folder afterwards. Saying so out loud beats silently
   // behaving like no default was ever set — a silent fallback is the same kind

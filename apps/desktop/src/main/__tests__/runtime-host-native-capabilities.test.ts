@@ -79,6 +79,10 @@ test('remote providers do not request Host paths and use a Client-owned cwd', as
   assert.equal(provider.offers()[0]?.hostPathAccess, 'none');
   await call(provider, capabilityFrame({ cwd: undefined }));
   assert.equal(invokedCwd, '/client/runtime-host');
+  await assert.rejects(
+    () => call(provider, capabilityFrame({ cwd: '/srv/host-project' })),
+    /does not accept a Host path/,
+  );
 });
 
 test('publishes the real Computer Use schema through the Client Capability protocol', () => {

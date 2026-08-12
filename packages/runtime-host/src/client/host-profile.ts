@@ -89,19 +89,21 @@ export function createRuntimeHostProfileCredentialStore(
   credentials: Pick<CredentialStore, 'getSecret' | 'setSecret' | 'deleteSecret'>,
 ): RuntimeHostProfileCredentialStore {
   return {
-    get: (profile) => credentials.getSecret(profileCredentialSlug(profile), 'runtime_host_access'),
+    get: async (profile) => {
+      return credentials.getSecret(profileCredentialSlot(profile), 'runtime_host_access');
+    },
     set: (profile, credential) => {
       if (!credential || /\s/u.test(credential)) {
         return Promise.reject(new Error('Runtime Host access credential is invalid'));
       }
       return credentials.setSecret(
-        profileCredentialSlug(profile),
+        profileCredentialSlot(profile),
         'runtime_host_access',
         credential,
       );
     },
     delete: (profile) =>
-      credentials.deleteSecret(profileCredentialSlug(profile), 'runtime_host_access'),
+      credentials.deleteSecret(profileCredentialSlot(profile), 'runtime_host_access'),
   };
 }
 
@@ -261,18 +263,16 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
       const current = await this.read();
       const previousProfile = current.profiles.find((candidate) => candidate.id === profile.id);
       const targetChanged = previousProfile
-        ? profileCredentialSlug(previousProfile) !== profileCredentialSlug(profile)
+        ? profileCredentialBinding(previousProfile) !== profileCredentialBinding(profile)
         : false;
-      const previousCredential = await this.credentials.get(profile);
-      if (
-        suppliedCredential === undefined &&
-        (!previousProfile || targetChanged || !previousCredential)
-      ) {
-        throw new Error(
-          targetChanged
-            ? 'A new Runtime Host access credential is required when the target changes'
-            : 'A Runtime Host access credential is required',
-        );
+      if (targetChanged) {
+        throw new Error('A Runtime Host profile target cannot be changed; create a new profile id');
+      }
+      const previousCredential = previousProfile
+        ? await this.credentials.get(previousProfile)
+        : null;
+      if (suppliedCredential === undefined && (!previousProfile || !previousCredential)) {
+        throw new Error('A Runtime Host access credential is required');
       }
       const next = decodeRuntimeHostProfileDocument({
         schemaVersion: PROFILE_SCHEMA_VERSION,
@@ -280,26 +280,26 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
           ? current.profiles.map((candidate) => (candidate.id === profile.id ? profile : candidate))
           : [...current.profiles, profile],
       });
+      await writeProfileDocument(this.path, next);
       if (suppliedCredential !== undefined) {
-        await this.credentials.set(profile, suppliedCredential);
-      }
-      try {
-        await writeProfileDocument(this.path, next);
-      } catch (error) {
-        if (suppliedCredential !== undefined) {
+        try {
+          await this.credentials.set(profile, suppliedCredential);
+        } catch (error) {
           try {
-            await restoreCredential(this.credentials, profile, previousCredential);
+            await writeProfileDocument(this.path, current);
+            await restoreCredential(
+              this.credentials,
+              previousProfile ?? profile,
+              previousCredential,
+            );
           } catch (rollbackError) {
             throw new AggregateError(
               [error, rollbackError],
-              'Runtime Host profile update failed and its credential could not be restored',
+              'Runtime Host profile credential update failed and the profile could not be restored',
             );
           }
+          throw error;
         }
-        throw error;
-      }
-      if (targetChanged && previousProfile) {
-        await this.credentials.delete(previousProfile).catch(() => undefined);
       }
       return next;
     });
@@ -318,8 +318,21 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
         schemaVersion: PROFILE_SCHEMA_VERSION,
         profiles: current.profiles.filter((candidate) => candidate.id !== id),
       });
-      await writeProfileDocument(this.path, next);
-      await this.credentials.delete(profile).catch(() => undefined);
+      const previousCredential = await this.credentials.get(profile);
+      await this.credentials.delete(profile);
+      try {
+        await writeProfileDocument(this.path, next);
+      } catch (error) {
+        try {
+          await restoreCredential(this.credentials, profile, previousCredential);
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            'Runtime Host profile removal failed and its credential could not be restored',
+          );
+        }
+        throw error;
+      }
       return next;
     });
   }
@@ -374,18 +387,19 @@ function requireProfileId(value: unknown): string {
   return id;
 }
 
-function profileCredentialSlug(profile: RemoteRuntimeHostProfile): string {
+function profileCredentialSlot(profile: RemoteRuntimeHostProfile): string {
+  return `runtime-host-profile:${requireProfileId(profile.id)}:${profileCredentialBinding(profile)}`;
+}
+
+function profileCredentialBinding(profile: RemoteRuntimeHostProfile): string {
   const normalized = decodeRemoteRuntimeHostProfile(profile);
-  const binding = createHash('sha256')
-    .update(normalized.id)
-    .update('\0')
+  return createHash('sha256')
     .update(normalized.transport.kind)
     .update('\0')
     .update(normalized.transport.url)
     .update('\0')
     .update(normalized.rootId)
     .digest('hex');
-  return `runtime-host-profile:${normalized.id}:${binding}`;
 }
 
 function restoreCredential(

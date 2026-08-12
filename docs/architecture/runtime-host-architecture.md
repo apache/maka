@@ -7,7 +7,7 @@ counterpart: ./runtime-host-architecture.zh-CN.md
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-08-11
+last_verified: 2026-08-12
 owners:
   - maka-backend
 ---
@@ -191,11 +191,13 @@ Publishing or invoking a capability does not transfer Session, Run, or execution
 
 ### Host profiles select a connection target
 
-A Host profile is Client-owned connection configuration, not Host state. The built-in `local` profile keeps the existing zero-configuration Local IPC and candidate-spawn path. A remote profile contains a display name, an explicit connection method, and a required State Root identity; its access credential is stored separately and bound to that exact profile target. The current connection method is direct TLS (`wss`). Changing the connection method, endpoint, or root therefore requires a new credential.
+A Host profile is Client-owned connection configuration, not Host state. The built-in `local` profile keeps the existing zero-configuration Local IPC and candidate-spawn path. A remote profile contains a display name, an explicit connection method, and a required State Root identity; its access credential is stored separately and bound to that exact profile target. The current connection method is direct TLS (`wss`). A profile ID names an immutable target: changing its connection method, endpoint, or root requires a new profile ID. Its display name and credential may be updated in place.
 
 Selecting a profile chooses which Host a Client connects to. It does not move a Project or Session, change the Host Epoch, or mutate the selected Host. A remote profile uses only the authenticated WebSocket connector and never falls back to local discovery or candidate spawning. Every remote connection pins the profile's State Root identity and fails if the endpoint presents a different root.
 
-Desktop applies a new profile without restarting the application. It replaces the current Host connection through the existing reconnect owner; each target owns its own Session observations, and a failed switch restores the previous target. The persisted Desktop selection is only a preference: if its profile or credential disappears, Desktop starts safely on `local`. TUI and CLI select a profile when they start.
+Desktop applies a new profile without restarting the application. Each target generation owns its connection and Session observations, so a request or live event captured for one generation cannot cross into another. A failed switch attempts to restore the previous target; if neither target can connect, Desktop reports that no Host is active.
+
+The persisted Desktop selection is a desired target, not proof of the active connection. If the selected profile or credential is unavailable during startup, Desktop asks the user to retry, explicitly use `local`, or quit. It does not silently rewrite the selection. TUI and CLI resolve one profile when they start and report an unavailable selection as an error.
 
 A remote Desktop generation does not inherit Local Host-path authority. It reads Project summaries, submits Project IDs, and keeps Client-local capabilities from receiving remote Host paths. Local filesystem actions such as directory picking, Git review, workspace search, and opening Skill files remain available only for `local`.
 
@@ -213,7 +215,7 @@ type WorkspaceTarget =
 
 Project summaries do not expose paths. Only a connection allowed to read Host paths may read or change project locations, reveal a path on the Host, or submit `host_path`.
 
-Clients do not combine a path with a Project ID or resolve a Host path themselves. Desktop remembers the selected Project locally for each State Root; selecting it does not mutate global Host state. A remote Client selects an existing Project from the selected Host and never opens a Client-local directory picker as though it named a Host directory.
+Clients do not combine a path with a Project ID or resolve a Host path themselves. Desktop remembers the selected Project locally for each State Root; selecting it does not mutate global Host state. A remote Client must select an existing Project from the selected Host. Desktop never opens a Client-local directory picker as though it named a Host directory, and CLI/TUI do not reinterpret, validate, relocate, or autocomplete Host paths through the Client filesystem.
 
 ## Lifecycle
 

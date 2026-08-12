@@ -70,6 +70,7 @@ interface DesktopNativeCapabilityProviderOptions {
   readonly releaseResourcesOnClose?: boolean;
   readonly hostPathAccess?: ClientCapabilityHostPathAccess;
   readonly clientCwd?: string;
+  readonly isTargetValid?: () => boolean;
   readonly onSessionUsed?: (sessionId: string) => void;
   readonly onComputerUseTurnUsed?: (sessionId: string, turnId: string) => void;
   readonly onClosed?: () => void;
@@ -120,6 +121,9 @@ export function createDesktopNativeCapabilityProvider(
     call: (frame, options) => {
       if (closed)
         throw new Error("Desktop native capability provider is closed");
+      if (providerOptions.isTargetValid?.() === false) {
+        throw new Error("Desktop native capability target is no longer valid");
+      }
       const binding = bindings.get(bindingKey(frame));
       if (!binding) throw new Error("Desktop native capability is not offered");
 
@@ -146,6 +150,9 @@ export function createDesktopNativeCapabilityProvider(
     callService: (frame, options) => {
       if (closed)
         throw new Error("Desktop native capability provider is closed");
+      if (providerOptions.isTargetValid?.() === false) {
+        throw new Error("Desktop native capability target is no longer valid");
+      }
       const service = services.get(serviceKey(frame));
       if (service?.kind === "additional") {
         return invokeAdditionalService(service.value, frame, options);
@@ -277,7 +284,13 @@ async function invokeNativeTool(
   invocation: AbortController,
   usedSessionIds: Set<string>,
 ): Promise<ClientCapabilityCallResult> {
-  const cwd = frame.cwd ?? providerOptions.clientCwd;
+  const hostPathAccess = providerOptions.hostPathAccess ?? "cwd";
+  if (hostPathAccess === "none" && frame.cwd !== undefined) {
+    throw new Error("Desktop native capability does not accept a Host path");
+  }
+  const cwd = hostPathAccess === "cwd"
+    ? frame.cwd ?? providerOptions.clientCwd
+    : providerOptions.clientCwd;
   if (cwd === undefined) {
     throw new Error("Desktop native capability requires an execution cwd");
   }

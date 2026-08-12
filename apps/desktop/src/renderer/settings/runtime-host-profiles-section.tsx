@@ -17,7 +17,7 @@ import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsRow, SettingsSection } from "./settings-section.js";
 
 export function RuntimeHostProfilesSection(props: {
-  onActiveProfileKind?(kind: "local" | "remote"): void;
+  onActiveProfileKind?(kind: "local" | "remote" | undefined): void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
@@ -48,10 +48,7 @@ export function RuntimeHostProfilesSection(props: {
   }, [copy.loadFailed, locale, reload, toast]);
 
   useEffect(() => {
-    const active = snapshot?.profiles.find(
-      (profile) => profile.id === snapshot.activeProfileId,
-    );
-    if (active) props.onActiveProfileKind?.(active.kind);
+    props.onActiveProfileKind?.(snapshot?.activeProfile?.kind);
   }, [props.onActiveProfileKind, snapshot]);
 
   async function select(profileId: string) {
@@ -60,9 +57,13 @@ export function RuntimeHostProfilesSection(props: {
       const next = await window.maka.runtimeHostProfiles.select(profileId);
       if (!mountedRef.current) return;
       setSnapshot(next);
+      if (next.unavailable?.profileId === profileId) {
+        toast.error(copy.selectFailed, next.unavailable.message);
+      }
     } catch (error) {
       if (mountedRef.current) {
-        toast.error(copy.selectFailed, copy.selectFailedDetail);
+        await reload().catch(() => undefined);
+        toast.error(copy.selectFailed, settingsActionErrorMessage(error, locale));
       }
     } finally {
       if (mountedRef.current) setSwitching(false);
@@ -104,6 +105,19 @@ export function RuntimeHostProfilesSection(props: {
   }
 
   const remoteProfiles = snapshot?.profiles.filter((profile) => profile.kind === "remote") ?? [];
+  const profileOptions = (snapshot?.profiles ?? []).map((profile) => ({
+    value: profile.id,
+    label: profile.name,
+  }));
+  if (
+    snapshot &&
+    !profileOptions.some((option) => option.value === snapshot.selectedProfileId)
+  ) {
+    profileOptions.push({
+      value: snapshot.selectedProfileId,
+      label: `${snapshot.selectedProfileId} (${copy.unavailable})`,
+    });
+  }
 
   return (
     <>
@@ -111,19 +125,25 @@ export function RuntimeHostProfilesSection(props: {
         <SettingsRow
           label={copy.selected}
           description={copy.selectedHelp}
-          end={
+          end={<HStack gap={2} align="center">
             <Selector
               label={copy.selected}
               isLabelHidden
-              value={snapshot?.activeProfileId ?? "local"}
+              value={snapshot?.selectedProfileId ?? "local"}
               isDisabled={!snapshot || switching}
-              options={(snapshot?.profiles ?? []).map((profile) => ({
-                value: profile.id,
-                label: profile.name,
-              }))}
+              options={profileOptions}
               onChange={(value) => void select(value)}
             />
-          }
+            {snapshot && snapshot.activeProfileId !== snapshot.selectedProfileId ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                label={copy.connect}
+                isDisabled={switching}
+                onClick={() => void select(snapshot.selectedProfileId)}
+              />
+            ) : null}
+          </HStack>}
         />
       </SettingsSection>
 
@@ -166,12 +186,16 @@ export function RuntimeHostProfilesSection(props: {
                 endContent={
                   <HStack gap={2} align="center">
                     {snapshot?.activeProfileId === profile.id ? <Badge variant="neutral" label={copy.active} /> : null}
+                    {snapshot?.unavailable?.profileId === profile.id ? <Badge variant="neutral" label={copy.unavailable} /> : null}
                     <MoreMenu
                       label={copy.moreActions(profile.name)}
                       size="sm"
                       items={[{
                         label: copy.remove,
-                        isDisabled: switching || snapshot?.activeProfileId === profile.id,
+                        isDisabled:
+                          switching ||
+                          snapshot?.activeProfileId === profile.id ||
+                          snapshot?.selectedProfileId === profile.id,
                         onClick: () => void remove(profile.id),
                       }]}
                     />

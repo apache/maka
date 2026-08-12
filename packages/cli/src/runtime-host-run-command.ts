@@ -135,7 +135,10 @@ export function createRuntimeHostRunContext(
     llmConnectionSlug: target.connection.slug,
     model: target.model,
     permissionMode: 'ask',
-    allowHostPathRelocation: !input.hostProfileId || input.hostProfileId === 'local',
+    executionLocation:
+      !input.hostProfileId || input.hostProfileId === 'local'
+        ? { kind: 'client_path' }
+        : { kind: 'host' },
     ...(input.projectId ? { workspace: { kind: 'project', projectId: input.projectId } } : {}),
   });
   const runtime = new RuntimeHostRunRuntime(

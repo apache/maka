@@ -4645,6 +4645,29 @@ describe('Maka Pi TUI runner', () => {
       }),
     ]);
   });
+
+  test('exits when the selected execution location cannot safely start fresh', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new FailingSwitchSessionDriver();
+    const exits: Array<{ code: number; error?: Error }> = [];
+
+    await runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/client-only',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      resumeSessionId: 'remote-session',
+      resumeFailure: 'exit',
+      onProcessExit: (code, error) => exits.push({ code, ...(error ? { error } : {}) }),
+    });
+    process.exitCode = undefined;
+
+    assert.equal(exits[0]?.code, 1);
+    assert.match(exits[0]?.error?.message ?? '', /Could not resume session remote-session/);
+  });
 });
 
 function editorInputText(terminal: FakeTerminal): string | undefined {

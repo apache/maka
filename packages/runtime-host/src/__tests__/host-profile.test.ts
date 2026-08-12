@@ -5,7 +5,6 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 import { createFileCredentialStore } from '@maka/storage';
 import {
-  LOCAL_RUNTIME_HOST_PROFILE,
   connectRemoteRuntimeHostProfile,
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostProfileCredentialStore,
@@ -25,12 +24,6 @@ afterEach(async () => {
 
 describe('Runtime Host profiles', () => {
   test('keeps the local profile built in and profile documents remote-only', async () => {
-    assert.deepEqual(LOCAL_RUNTIME_HOST_PROFILE, {
-      id: 'local',
-      name: 'Local',
-      kind: 'local',
-    });
-
     const catalog = createFileRuntimeHostProfileCatalog(await profilePath(), memoryCredentials());
     assert.deepEqual(await catalog.read(), { schemaVersion: 1, profiles: [] });
     await assert.rejects(() => catalog.remove('local'), /cannot be removed/);
@@ -66,7 +59,7 @@ describe('Runtime Host profiles', () => {
         id: 'office',
         name: 'Office',
         kind: 'remote',
-        transport: { kind: 'tls', url: 'wss://new.example.com/runtime-host' },
+        transport: { kind: 'tls', url: 'wss://runtime.example.com' },
         rootId: ROOT_A,
       },
       'new-office-token',
@@ -79,7 +72,7 @@ describe('Runtime Host profiles', () => {
           id: 'office',
           name: 'Office',
           kind: 'remote',
-          transport: { kind: 'tls', url: 'wss://new.example.com/runtime-host' },
+          transport: { kind: 'tls', url: 'wss://runtime.example.com/' },
           rootId: ROOT_A,
         },
         {
@@ -198,33 +191,30 @@ describe('Runtime Host profiles', () => {
   test('keeps a credential bound to its exact profile target', async () => {
     const path = await profilePath();
     const credentialRoot = join(dirname(path), 'credentials');
-    const first = createFileRuntimeHostProfileCatalog(
-      path,
-      createRuntimeHostProfileCredentialStore(createFileCredentialStore(credentialRoot)),
+    const credentials = createRuntimeHostProfileCredentialStore(
+      createFileCredentialStore(credentialRoot),
     );
-    const second = createFileRuntimeHostProfileCatalog(
-      path,
-      createRuntimeHostProfileCredentialStore(createFileCredentialStore(credentialRoot)),
-    );
+    const first = createFileRuntimeHostProfileCatalog(path, credentials);
+    const second = createFileRuntimeHostProfileCatalog(path, credentials);
     const targetA = remoteProfile('office', 'wss://a.example.com', ROOT_A);
     const targetB = remoteProfile('office', 'wss://b.example.com', ROOT_B);
 
     await assert.rejects(() => first.save(targetA, 'not a token'), /credential is invalid/);
     await first.save(targetA, 'token-a');
-    await assert.rejects(() => first.save(targetB), /new.*credential.*target changes/i);
-    await Promise.all([first.save(targetA, 'token-a'), second.save(targetB, 'token-b')]);
+    await assert.rejects(() => first.save(targetB, 'token-b'), /target cannot be changed/);
+    await assert.rejects(() => second.save(targetB, 'token-b'), /target cannot be changed/);
 
     const resolved = await first.resolve('office');
-    assert.equal(resolved.profile.kind, 'remote');
-    assert.equal(
-      [`wss://a.example.com/|token-a`, `wss://b.example.com/|token-b`].includes(
-        `${resolved.profile.kind === 'remote' ? resolved.profile.transport.url : ''}|${resolved.credential}`,
-      ),
-      true,
-    );
+    assert.equal(resolved.credential, 'token-a');
+
+    await credentials.set(targetB, 'token-b');
+    assert.equal(await credentials.get(targetA), 'token-a');
+    assert.equal(await credentials.get(targetB), 'token-b');
+    await credentials.delete(targetB);
+    assert.equal(await credentials.get(targetA), 'token-a');
   });
 
-  test('commits profile removal before best-effort credential cleanup', async () => {
+  test('keeps profile metadata when credential removal fails', async () => {
     const path = await profilePath();
     const values = new Map<string, string>();
     const credentials: RuntimeHostProfileCredentialStore = {
@@ -239,8 +229,42 @@ describe('Runtime Host profiles', () => {
     const catalog = createFileRuntimeHostProfileCatalog(path, credentials);
     await catalog.save(remoteProfile('office', 'wss://a.example.com', ROOT_A), 'token-a');
 
-    assert.deepEqual(await catalog.remove('office'), { schemaVersion: 1, profiles: [] });
-    assert.deepEqual(await catalog.read(), { schemaVersion: 1, profiles: [] });
+    await assert.rejects(() => catalog.remove('office'), /credential store unavailable/);
+    assert.deepEqual(
+      (await catalog.read()).profiles.map(({ id }) => id),
+      ['office'],
+    );
+  });
+
+  test('restores the prior target when a credential update fails', async () => {
+    const path = await profilePath();
+    const stored = memoryCredentials();
+    let rejectNextSet = false;
+    const credentials: RuntimeHostProfileCredentialStore = {
+      get: (profile) => stored.get(profile),
+      set: async (profile, credential) => {
+        if (rejectNextSet) {
+          rejectNextSet = false;
+          throw new Error('credential store unavailable');
+        }
+        await stored.set(profile, credential);
+      },
+      delete: (profile) => stored.delete(profile),
+    };
+    const catalog = createFileRuntimeHostProfileCatalog(path, credentials);
+    const targetA = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    const targetB = { ...targetA, name: 'updated' };
+    await catalog.save(targetA, 'token-a');
+
+    rejectNextSet = true;
+    await assert.rejects(() => catalog.save(targetB, 'token-b'), /credential store unavailable/);
+    assert.deepEqual(await catalog.resolve('office'), {
+      profile: {
+        ...targetA,
+        transport: { kind: 'tls', url: 'wss://a.example.com/' },
+      },
+      credential: 'token-a',
+    });
   });
 
   test('rejects profile overflow before writing its credential', async () => {

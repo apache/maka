@@ -16,7 +16,11 @@ import {
   SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_VERSION,
 } from '@maka/runtime/scheduled-task-tools';
 import { buildMcpTools } from '@maka/runtime/mcp-tools';
-import { loadOrCreateRuntimeHostClientInstanceId } from "@maka/runtime-host/client";
+import {
+  LOCAL_RUNTIME_HOST_PROFILE,
+  loadOrCreateRuntimeHostClientInstanceId,
+  type ResolvedRuntimeHostProfile,
+} from "@maka/runtime-host/client";
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { McpClientManager } from "@maka/mcp";
 import {
@@ -105,6 +109,7 @@ import {
   createDesktopRuntimeHostProfileService,
   registerDesktopRuntimeHostProfileIpc,
   resolveSelectedDesktopRuntimeHostProfile,
+  selectDesktopRuntimeHostProfile,
 } from "./runtime-host-profile-service.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
@@ -143,7 +148,47 @@ const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceI
   join(userDataDir, "runtime-host-client.json"),
 );
 const runtimeHostStartupSelection = await resolveSelectedDesktopRuntimeHostProfile(userDataDir);
-let activeRuntimeHost = runtimeHostStartupSelection.target;
+let startupRuntimeHost = runtimeHostStartupSelection.target;
+let startupRuntimeHostProfileId = runtimeHostStartupSelection.selectedProfileId;
+let startupRuntimeHostUnavailable = runtimeHostStartupSelection.unavailable;
+if (
+  startupRuntimeHostUnavailable &&
+  startupRuntimeHostUnavailable.profileId !== LOCAL_RUNTIME_HOST_PROFILE.id
+) {
+  if (isIsolatedE2e) throw startupRuntimeHostUnavailable.error;
+  const isChinese = resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
+  const result = await whileAwaitingPerson(
+    dialog.showMessageBox({
+      type: "warning",
+      title: isChinese ? "Runtime Host 暂时不可用" : "Runtime Host is unavailable",
+      message: isChinese
+        ? "之前选择的 Runtime Host profile 当前无法使用"
+        : "The selected Runtime Host profile is currently unavailable",
+      detail: startupRuntimeHostUnavailable.error.message,
+      buttons: isChinese
+        ? ["重试", "明确改用 Local", "退出"]
+        : ["Retry", "Explicitly use Local", "Quit"],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    }),
+  );
+  if (result.response === 0) {
+    app.relaunch();
+    app.exit(0);
+    await new Promise<never>(() => {});
+  }
+  if (result.response === 2) {
+    app.exit(1);
+    await new Promise<never>(() => {});
+  }
+  await selectDesktopRuntimeHostProfile(userDataDir, LOCAL_RUNTIME_HOST_PROFILE.id);
+  startupRuntimeHostProfileId = LOCAL_RUNTIME_HOST_PROFILE.id;
+  startupRuntimeHostUnavailable = undefined;
+}
+let owner: RuntimeHostDesktopOwner | undefined;
+const currentRuntimeHost = (): ResolvedRuntimeHostProfile | undefined =>
+  owner ? owner.current()?.target : startupRuntimeHost;
 const runtimeHostGeneration = app.isPackaged ? app.getVersion() : randomUUID();
 const e2eFixture = resolveDesktopE2eFixture();
 const useBotOnboardingFixture = e2eFixture?.scenario === "settings-bots-onboarding";
@@ -169,10 +214,10 @@ const resolveLocalStorageRoot = () =>
       );
 let localStorageRootReady = false;
 const startupLocalStorageRoot =
-  activeRuntimeHost.profile.kind === "local"
+  startupRuntimeHost.profile.kind === "local"
     ? await resolveLocalStorageRoot()
     : undefined;
-if (activeRuntimeHost.profile.kind === "local" && !startupLocalStorageRoot) {
+if (startupRuntimeHost.profile.kind === "local" && !startupLocalStorageRoot) {
   app.exit(0);
   await new Promise<never>(() => {});
   throw new Error("Desktop storage root resolution did not complete");
@@ -209,28 +254,11 @@ const mainWindowController = createMainWindowController({
   startHidden,
   onClose: () => onMainWindowClose(),
 });
-if (runtimeHostStartupSelection.recoveryError) {
+if (startupRuntimeHostUnavailable) {
   console.warn(
-    "[runtime-host] saved profile selection was unavailable; using Local:",
-    runtimeHostStartupSelection.recoveryError,
+    "[runtime-host] saved profile selection is invalid; using Local:",
+    startupRuntimeHostUnavailable.error,
   );
-  if (!isIsolatedE2e) {
-    const isChinese =
-      resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
-    void dialog.showMessageBox({
-      type: "warning",
-      title: isChinese ? "已改用 Local Runtime Host" : "Using Local Runtime Host",
-      message: isChinese
-        ? "之前选择的 Runtime Host profile 已不可用"
-        : "The previously selected Runtime Host profile is unavailable",
-      detail: isChinese
-        ? "Maka 已安全地改用 Local。你可以在设置的“工作区”页面检查或重新添加远程 Host。"
-        : "Maka safely switched to Local. Review or add the remote Host again in Workspace settings.",
-      buttons: [isChinese ? "好" : "OK"],
-      defaultId: 0,
-      noLink: true,
-    });
-  }
 }
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
@@ -268,10 +296,13 @@ onMainWindowClose = () => {
 };
 const attachmentApprovals = createAttachmentApprovalRegistry();
 const oauthPresentation = new RuntimeHostOAuthPresentation((url) => shell.openExternal(url));
-let owner: RuntimeHostDesktopOwner | undefined;
 const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   clientDataRoot: userDataDir,
-  activeTarget: activeRuntimeHost,
+  selectedProfileId: startupRuntimeHostProfileId,
+  ...(startupRuntimeHostUnavailable
+    ? { unavailable: startupRuntimeHostUnavailable }
+    : {}),
+  getActiveTarget: currentRuntimeHost,
   activate: async (target) => {
     try {
       if (target.profile.kind === "local" && !localStorageRootReady) {
@@ -280,23 +311,19 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
         }
         localStorageRootReady = true;
       }
-      await owner?.switchTarget(
-        target.profile.kind === "remote"
-          ? { profile: target.profile, credential: target.credential! }
-          : undefined,
-      );
-      activeRuntimeHost = target;
-      return { ok: true, activeTarget: target };
+      if (owner) {
+        await owner.switchTarget(
+          target.profile.kind === "remote"
+            ? { profile: target.profile, credential: target.credential! }
+            : undefined,
+        );
+      } else {
+        startupRuntimeHost = target;
+      }
+      return { ok: true };
     } catch (error) {
-      return { ok: false, activeTarget: activeRuntimeHost, error };
+      return { ok: false, error };
     }
-  },
-  onTargetChanged: () => {
-    mainWindowController.send("runtime-host-profiles:changed", {
-      activeProfileId: activeRuntimeHost.profile.id,
-    });
-    mainWindowController.send("projects:changed");
-    emitConnectionListChanged();
   },
 });
 let runtimePolicyTarget:
@@ -305,6 +332,7 @@ let runtimePolicyTarget:
       readonly policy: DesktopRuntimeHostTargetPolicy;
       readonly projectCatalog: ReturnType<typeof createRuntimeHostProjectCatalog>;
       readonly projectManagement: ProjectManagementService;
+      readonly isActive: () => boolean;
     }
   | undefined;
 const currentDesktopWorkspaceTarget = async (
@@ -414,16 +442,18 @@ registerNotificationsIpc({
 
 const sessionCopyOwnerProcessId = randomUUID();
 let remoteHostFailurePromptOpen = false;
+const runtimeHostAtOwnerStart = currentRuntimeHost();
+if (!runtimeHostAtOwnerStart) throw new Error("No Runtime Host target is selected");
 owner = await startRuntimeHostDesktopOwner(
   {
     rootPath: workspaceRoot,
     clientInstanceId: runtimeHostClientInstanceId,
     generation: runtimeHostGeneration,
-    ...(activeRuntimeHost.profile.kind === "remote"
+    ...(runtimeHostAtOwnerStart.profile.kind === "remote"
       ? {
           remote: {
-            profile: activeRuntimeHost.profile,
-            credential: activeRuntimeHost.credential!,
+            profile: runtimeHostAtOwnerStart.profile,
+            credential: runtimeHostAtOwnerStart.credential!,
           },
         }
       : {}),
@@ -514,8 +544,12 @@ owner = await startRuntimeHostDesktopOwner(
         input,
         {
           ...currentTarget.projectManagement,
-          defaultProjectId: async () =>
-            (await settingsStore.get()).projects.defaultProjectId,
+          ...(target.kind === "local"
+            ? {
+                defaultProjectId: async () =>
+                  (await settingsStore.get()).projects.defaultProjectId,
+              }
+            : {}),
         },
         currentTarget.projectCatalog,
         { allowHostPath: target.kind === "local" },
@@ -540,13 +574,21 @@ owner = await startRuntimeHostDesktopOwner(
   },
   {
     upgradePrompts: runtimeHostUpgradePrompts,
+    onTargetActivated: ({ epoch, target }) => {
+      mainWindowController.send("runtime-host-profiles:changed", {
+        epoch,
+        activeProfileId: target.profile.id,
+      });
+      mainWindowController.send("projects:changed");
+      emitConnectionListChanged();
+    },
     onFatalError: (error) => {
       if (error instanceof RuntimeHostUpgradeCancelledError) {
         app.quit();
         return;
       }
       console.error("[runtime-host] fatal:", error);
-      if (activeRuntimeHost.profile.kind === "remote") {
+      if (currentRuntimeHost()?.profile.kind === "remote") {
         void handleRemoteRuntimeHostFailure(error);
         return;
       }
@@ -558,7 +600,7 @@ owner = await startRuntimeHostDesktopOwner(
     app.exit(0);
     return new Promise<never>(() => undefined);
   }
-  if (activeRuntimeHost.profile.kind === "remote") {
+  if (currentRuntimeHost()?.profile.kind === "remote") {
     return handleRemoteRuntimeHostFailure(error);
   }
   throw error;
@@ -569,13 +611,14 @@ async function handleRemoteRuntimeHostFailure(error: unknown): Promise<never> {
   remoteHostFailurePromptOpen = true;
   const isChinese =
     resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
+  const failedTarget = currentRuntimeHost() ?? startupRuntimeHost;
   const result = await whileAwaitingPerson(
     dialog.showMessageBox({
       type: "warning",
       title: isChinese ? "无法连接 Runtime Host" : "Cannot connect to Runtime Host",
       message: isChinese
-        ? `无法连接 ${activeRuntimeHost.profile.name}`
-        : `Could not connect to ${activeRuntimeHost.profile.name}`,
+        ? `无法连接 ${failedTarget.profile.name}`
+        : `Could not connect to ${failedTarget.profile.name}`,
       detail: error instanceof Error ? error.message : String(error),
       buttons: isChinese
         ? ["重试", "改用 Local", "退出"]
@@ -627,7 +670,21 @@ function registerHostClientIpc(
   scopedIpc: ReconnectableReadIpcMain,
   controls: DesktopRuntimeHostCandidateControls,
   target: DesktopRuntimeHostTargetPolicy,
+  isTargetActive: () => boolean,
 ): () => Promise<void> {
+  const sendToRenderer = (channel: string, ...args: unknown[]): void => {
+    if (isTargetActive()) mainWindowController.send(channel, ...args);
+  };
+  const emitTargetConnectionListChanged = (): void => {
+    if (isTargetActive()) emitConnectionListChanged();
+  };
+  const emitTargetSessionsChanged = (
+    reason: SessionChangedReason,
+    sessionId?: string,
+    extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
+  ): void => {
+    if (isTargetActive()) emitSessionsChanged(reason, sessionId, extra);
+  };
   const targetProjectRoot = createProjectRootController({
     rootId: target.rootId,
     preferenceFile: join(workspaceRoot, "project-preferences.json"),
@@ -654,20 +711,22 @@ function registerHostClientIpc(
     policy: target,
     projectCatalog: targetProjectCatalog,
     projectManagement: targetProjectManagement,
+    isActive: isTargetActive,
   };
   runtimePolicyTarget = targetContext;
   const unsubscribeConfigurationChanges = client.subscribeConfigurationChanges(() => {
-    emitConnectionListChanged();
-    mainWindowController.send("settings:externalChanged", { ts: Date.now() });
+    emitTargetConnectionListChanged();
+    sendToRenderer("settings:externalChanged", { ts: Date.now() });
   });
   const unsubscribeSessionCatalogChanges = client.subscribeSessionCatalogChanges(
-    ({ sessionId }) => emitSessionsChanged("updated", sessionId),
+    ({ sessionId }) => emitTargetSessionsChanged("updated", sessionId),
   );
   const unsubscribeProjectCatalogChanges = client.subscribeProjectCatalogChanges(() => {
-    mainWindowController.send("projects:changed");
+    sendToRenderer("projects:changed");
   });
   const unsubscribeScheduledTaskChanges = client.subscribeScheduledTaskChanges((frame) => {
-    mainWindowController.send("scheduled-tasks:changed", {
+    if (!isTargetActive()) return;
+    sendToRenderer("scheduled-tasks:changed", {
       type: "scheduled_tasks_changed",
       reason: frame.reason,
       taskId: frame.taskId,
@@ -680,7 +739,7 @@ function registerHostClientIpc(
         const task = result.kind === 'task' ? result.task : null;
         if (!task) return;
         if (task.effect.kind !== "notify" || task.effect.channel === "bot") {
-          mainWindowController.send("scheduled-tasks:fired", task);
+          sendToRenderer("scheduled-tasks:fired", task);
         }
       })
       .catch(() => undefined);
@@ -700,20 +759,19 @@ function registerHostClientIpc(
     onPublicationError: (error) =>
       console.error("[runtime-host] MCP capability publication failed:", error),
     emitChanged: (statuses) =>
-      mainWindowController.send("mcp:changed", statuses),
+      sendToRenderer("mcp:changed", statuses),
   });
   registerRuntimeHostConnectionsIpc({
     ipcMain: scopedIpc,
     client,
-    emitConnectionListChanged,
+    emitConnectionListChanged: emitTargetConnectionListChanged,
   });
   registerRuntimeHostRendererIpc({ ipcMain: scopedIpc, client });
   registerRuntimeHostArtifactsIpc({
     ipcMain: scopedIpc,
     client,
     mainWindowController,
-    sendToRenderer: (channel, ...args) =>
-      mainWindowController.send(channel, ...args),
+    sendToRenderer,
     showItemInFolder: (path) => shell.showItemInFolder(path),
   });
   registerMarkdownSaveIpc({ ipcMain: scopedIpc, mainWindowController });
@@ -721,12 +779,12 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     client,
     presentation: oauthPresentation,
-    emitConnectionListChanged,
+    emitConnectionListChanged: emitTargetConnectionListChanged,
   });
   registerRuntimeHostGitHubCopilotIpc({
     ipcMain: scopedIpc,
     client,
-    emitConnectionListChanged,
+    emitConnectionListChanged: emitTargetConnectionListChanged,
   });
   registerRuntimeHostMemoryIpc({
     ipcMain: scopedIpc,
@@ -752,7 +810,7 @@ function registerHostClientIpc(
     getSettings: () => loadRuntimeHostSettings(settingsIpcDeps),
     updateSettings: (patch) =>
       updateRuntimeHostSettings(settingsIpcDeps, patch),
-    emitConnectionsChanged: emitConnectionListChanged,
+    emitConnectionsChanged: emitTargetConnectionListChanged,
   });
   const candidateSettingsBotsIpc = registerSettingsBotsIpc({
     ipcMain: scopedIpc,
@@ -808,8 +866,7 @@ function registerHostClientIpc(
   registerRuntimeHostUsageIpc({
     ipcMain: scopedIpc,
     client,
-    sendToRenderer: (channel, ...args) =>
-      mainWindowController.send(channel, ...args),
+    sendToRenderer,
   });
   registerRuntimeHostWorkspaceIpc({
     ipcMain: scopedIpc,
@@ -959,12 +1016,10 @@ function registerPersistentClientIpc(): void {
     }),
     mainLogs: () => mainProcessLogBuffer.snapshot(),
     getRuntimeHostDiagnostics: async () => {
-      if (!runtimePolicyTarget) throw new Error("Runtime Host is unavailable");
-      return runtimePolicyTarget.client.queryHostDiagnostics();
+      return requireActiveRuntimePolicyTarget().client.queryHostDiagnostics();
     },
     getRuntimeHostTurnTrace: async (sessionId, turnId) => {
-      if (!runtimePolicyTarget) throw new Error("Runtime Host is unavailable");
-      const result = await runtimePolicyTarget.client.request('execution.inspect.query', {
+      const result = await requireActiveRuntimePolicyTarget().client.request('execution.inspect.query', {
         kind: "turn_trace",
         sessionId,
         turnId,
@@ -1003,9 +1058,15 @@ function registerPersistentClientIpc(): void {
 
 function requireRuntimePolicyTarget(target: DesktopRuntimeHostTargetPolicy) {
   const current = runtimePolicyTarget;
-  if (!current || current.policy !== target) {
+  if (!current || current.policy !== target || !current.isActive()) {
     throw new Error("Runtime Host target generation is no longer active");
   }
+  return current;
+}
+
+function requireActiveRuntimePolicyTarget() {
+  const current = runtimePolicyTarget;
+  if (!current?.isActive()) throw new Error("Runtime Host is unavailable");
   return current;
 }
 

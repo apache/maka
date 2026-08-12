@@ -61,12 +61,20 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       listSkills: context.listSkills,
       onboarding: context.onboarding,
       recap: context.recap,
-      foreignSessions,
+      ...(context.profile.kind === 'local'
+        ? { foreignSessions }
+        : {
+            sessionListScope: 'all' as const,
+            clientPathAuthority: 'none' as const,
+          }),
       subscribeShellRunUpdates: (listener) => context.driver.subscribeShellRunUpdates(listener),
       listShellRunUpdates: (sessionId) => context.driver.listShellRunUpdates(sessionId),
       onProcessExit: input.onProcessExit,
       resumeSessionId: input.resumeSessionId,
       resumeCwd: input.resumeCwd,
+      ...(context.profile.kind === 'remote' && input.resumeSessionId
+        ? { resumeFailure: 'exit' as const }
+        : {}),
     });
     const sessionId = context.driver.getSessionId();
     if (sessionId)

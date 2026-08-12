@@ -14,10 +14,12 @@ import { RuntimeHostReconnectingIpcMain } from "../runtime-host-reconnecting-ipc
 test("holds an invocation across a Runtime Host candidate replacement", async () => {
   const ipc = ipcHarness();
   const router = new RuntimeHostReconnectingIpcMain(ipc);
-  router.handleReconnectableRead("sessions:list", async () => "first");
+  const firstTarget = router.createTarget("target-a");
+  firstTarget.handleReconnectableRead?.("sessions:list", async () => "first");
+  router.activate("target-a");
   assert.equal(await ipc.invoke("sessions:list"), "first");
 
-  router.removeHandler("sessions:list");
+  firstTarget.removeHandler("sessions:list");
   const waiting = ipc.invoke("sessions:list");
   let settled = false;
   void waiting.finally(() => {
@@ -26,12 +28,14 @@ test("holds an invocation across a Runtime Host candidate replacement", async ()
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(settled, false);
 
-  router.handleReconnectableRead("sessions:list", async () => "replacement");
+  const replacementTarget = router.createTarget("target-a");
+  replacementTarget.handleReconnectableRead?.("sessions:list", async () => "replacement");
   assert.equal(await waiting, "replacement");
 
-  router.removeHandler("sessions:list");
+  replacementTarget.removeHandler("sessions:list");
   const failed = deferred();
-  router.handleReconnectableRead("sessions:list", async () => {
+  const drainingTarget = router.createTarget("target-a");
+  drainingTarget.handleReconnectableRead?.("sessions:list", async () => {
     await failed.promise;
     throw new RuntimeHostOperationError(
       "session.catalog.query",
@@ -40,13 +44,15 @@ test("holds an invocation across a Runtime Host candidate replacement", async ()
     );
   });
   const draining = ipc.invoke("sessions:list");
-  router.removeHandler("sessions:list");
-  router.handleReconnectableRead("sessions:list", async () => "after-drain");
+  drainingTarget.removeHandler("sessions:list");
+  const afterDrainTarget = router.createTarget("target-a");
+  afterDrainTarget.handleReconnectableRead?.("sessions:list", async () => "after-drain");
   failed.resolve();
   assert.equal(await draining, "after-drain");
 
-  router.removeHandler("sessions:list");
-  router.handleReconnectableRead("sessions:list", async () => {
+  afterDrainTarget.removeHandler("sessions:list");
+  const timedOutTarget = router.createTarget("target-a");
+  timedOutTarget.handleReconnectableRead?.("sessions:list", async () => {
     throw new RuntimeHostRequestInterruptedError(
       "session.catalog.query",
       "query",
@@ -63,8 +69,10 @@ test("holds an invocation across a Runtime Host candidate replacement", async ()
 test("does not replay a command IPC handler after a draining rejection", async () => {
   const ipc = ipcHarness();
   const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const target = router.createTarget("target-a");
+  router.activate("target-a");
   let calls = 0;
-  router.handle("sessions:send", async () => {
+  target.handle("sessions:send", async () => {
     calls += 1;
     throw new RuntimeHostOperationError(
       "turn.start",
@@ -81,6 +89,8 @@ test("does not replay a command IPC handler after a draining rejection", async (
 test("does not replay Host commands through a read-marked IPC boundary", async () => {
   const ipc = ipcHarness();
   const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const target = router.createTarget("target-a");
+  router.activate("target-a");
   const failures = [
     new RuntimeHostRequestInterruptedError(
       "turn.start",
@@ -96,11 +106,37 @@ test("does not replay Host commands through a read-marked IPC boundary", async (
   ];
   for (const [index, failure] of failures.entries()) {
     const channel = `mixed:handler:${index}`;
-    router.handleReconnectableRead(channel, async () => {
+    target.handleReconnectableRead?.(channel, async () => {
       throw failure;
     });
     await assert.rejects(() => ipc.invoke(channel), failure);
   }
+  router.close();
+});
+
+test("never dispatches or completes an invocation across target epochs", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const targetA = router.createTarget("target-a");
+  const oldRead = deferred<string>();
+  targetA.handleReconnectableRead?.("skills:list", async () => oldRead.promise);
+  targetA.handle("sessions:send", async () => "sent-a");
+  router.activate("target-a");
+
+  const readingA = ipc.invoke("skills:list");
+  router.deactivate("target-a");
+  targetA.removeHandler("skills:list");
+  targetA.removeHandler("sessions:send");
+  const targetB = router.createTarget("target-b");
+  targetB.handleReconnectableRead?.("skills:list", async () => "skills-b");
+  targetB.handle("sessions:send", async () => "sent-b");
+
+  await assert.rejects(() => ipc.invoke("sessions:send"), /target changed/);
+  router.activate("target-b");
+  oldRead.resolve("skills-a");
+  await assert.rejects(() => readingA, /target changed/);
+  assert.equal(await ipc.invoke("skills:list"), "skills-b");
+  assert.equal(await ipc.invoke("sessions:send"), "sent-b");
   router.close();
 });
 
@@ -165,9 +201,9 @@ function ipcHarness() {
   };
 }
 
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
     resolve = settle;
   });
   return { promise, resolve };

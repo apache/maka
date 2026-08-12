@@ -95,46 +95,6 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(contextInput?.projectId, 'project-1');
   });
 
-  test('resumes a remote Session without relocating its Host-owned cwd', async () => {
-    let contextInput: MakaRunContextInput | undefined;
-    const connection = remoteReadinessConnection();
-    const exitCode = await runRuntimeHostTextCli(
-      ['continue remotely', '--host', 'office', '--resume', 'session-existing'],
-      {
-        workspaceRoot: () => '/client/runtime-host-data',
-        processCwd: () => '/client/current-directory',
-        stdinIsTTY: () => true,
-        readStdin: async () => '',
-        writeStdout: () => {},
-        writeStderr: () => {},
-        onSigint: () => () => {},
-        newId: () => 'turn-remote-resume',
-      },
-      {
-        connect: async () => ({
-          connection,
-          catalog: connectionCatalog(),
-          profile: {
-            id: 'office',
-            name: 'Office',
-            kind: 'remote',
-            transport: { kind: 'tls', url: 'wss://runtime.example.com/runtime-host' },
-            rootId: 'a'.repeat(64),
-          },
-          close: async () => {},
-        }),
-        createContext: (_connection, _catalog, input) => {
-          contextInput = input;
-          return publicCommandContext(input);
-        },
-      },
-    );
-
-    assert.equal(exitCode, 0);
-    assert.equal(contextInput?.resumeSessionId, 'session-existing');
-    assert.equal(contextInput?.sessionCwdOverride, undefined);
-  });
-
   test('continues the Host-owned cwd Session without creating another identity', async () => {
     const cwd = process.cwd();
     let creates = 0;

@@ -1,7 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   RuntimeHostPermanentReconnectError,
+  LOCAL_RUNTIME_HOST_PROFILE,
   startRuntimeHostReconnectLifecycle,
+  type ResolvedRuntimeHostProfile,
   type RuntimeHostReconnectBackoff,
   type RuntimeHostReconnectLifecycle,
 } from '@maka/runtime-host/client';
@@ -16,6 +19,7 @@ import { RuntimeHostReconnectingIpcMain } from './runtime-host-reconnecting-ipc-
 import { RuntimeHostSessionObservationRegistry } from './runtime-host-session-observation-registry.js';
 
 export interface RuntimeHostDesktopOwner {
+  current(): RuntimeHostDesktopTargetSnapshot | undefined;
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
   stopSession(sessionId: string): Promise<void>;
   switchTarget(
@@ -25,6 +29,13 @@ export interface RuntimeHostDesktopOwner {
     allowInterruptActiveTasks: boolean,
   ): Promise<RuntimeHostUpdatePreparation>;
   close(): Promise<void>;
+}
+
+export interface RuntimeHostDesktopTargetSnapshot {
+  readonly epoch: string;
+  readonly target: ResolvedRuntimeHostProfile;
+  readonly readiness: 'ready' | 'reconnecting';
+  readonly candidate?: DesktopRuntimeHostCandidate;
 }
 
 export type RuntimeHostUpdatePreparation =
@@ -61,9 +72,12 @@ export interface RuntimeHostUpgradePrompts {
 }
 
 interface DesktopRuntimeHostTargetGeneration {
+  readonly epoch: string;
   readonly input: DesktopRuntimeHostCandidateStartInput;
+  readonly target: ResolvedRuntimeHostProfile;
   readonly observations: RuntimeHostSessionObservationRegistry;
   lifecycle?: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>;
+  valid: boolean;
 }
 
 export async function startRuntimeHostDesktopOwner(
@@ -81,6 +95,7 @@ export async function startRuntimeHostDesktopOwner(
       signal: AbortSignal,
     ) => Promise<void>;
     reconnectBackoff?: RuntimeHostReconnectBackoff;
+    onTargetActivated?: (snapshot: RuntimeHostDesktopTargetSnapshot) => void;
   } = {},
 ): Promise<RuntimeHostDesktopOwner> {
   const owner = new RuntimeHostDesktopOwnerImpl(
@@ -91,6 +106,7 @@ export async function startRuntimeHostDesktopOwner(
     options.waitForHostExit ?? waitForProcessExit,
     options.waitForHostRetirement ?? waitForProcessRetirement,
     options.reconnectBackoff,
+    options.onTargetActivated,
   );
   await owner.start();
   return owner;
@@ -99,6 +115,7 @@ export async function startRuntimeHostDesktopOwner(
 class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
   readonly #ipcMain: RuntimeHostReconnectingIpcMain;
   #target: DesktopRuntimeHostTargetGeneration;
+  #activeTarget: DesktopRuntimeHostTargetGeneration | undefined;
   #switchTail: Promise<void> = Promise.resolve();
   #closed = false;
 
@@ -116,6 +133,9 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       signal: AbortSignal,
     ) => Promise<void>,
     private readonly reconnectBackoff: RuntimeHostReconnectBackoff | undefined,
+    private readonly onTargetActivated:
+      | ((snapshot: RuntimeHostDesktopTargetSnapshot) => void)
+      | undefined,
   ) {
     this.#ipcMain = new RuntimeHostReconnectingIpcMain(input.ipcMain);
     this.#target = this.#createTarget(input);
@@ -124,7 +144,10 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
   async start(): Promise<void> {
     try {
       this.#target.lifecycle = await this.#startLifecycle(this.#target, true);
+      this.#activate(this.#target);
     } catch (error) {
+      this.#target.valid = false;
+      this.#activeTarget = undefined;
       await this.#target.observations.close();
       this.#ipcMain.close();
       throw error;
@@ -135,6 +158,18 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     await this.#switchTail;
     const candidate = await this.#waitForReadyCandidate();
     await candidate.botIncoming.handleBotIncomingMessage(message);
+  }
+
+  current(): RuntimeHostDesktopTargetSnapshot | undefined {
+    const target = this.#activeTarget;
+    if (!target) return undefined;
+    const candidate = target.lifecycle?.current;
+    return {
+      epoch: target.epoch,
+      target: target.target,
+      readiness: candidate ? 'ready' : 'reconnecting',
+      ...(candidate ? { candidate } : {}),
+    };
   }
 
   async stopSession(sessionId: string): Promise<void> {
@@ -182,6 +217,9 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
   async close(): Promise<void> {
     this.#closed = true;
     await this.#switchTail;
+    this.#target.valid = false;
+    this.#activeTarget = undefined;
+    this.#ipcMain.deactivate(this.#target.epoch);
     try {
       await this.#target.lifecycle?.close();
     } finally {
@@ -201,6 +239,9 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
 
     const previousTarget = this.#target;
     const previousLifecycle = this.#requireLifecycle();
+    previousTarget.valid = false;
+    this.#ipcMain.deactivate(previousTarget.epoch);
+    this.#activeTarget = undefined;
     await previousLifecycle.close();
     if (this.#closed) throw new Error('Desktop Runtime Host owner is closed');
 
@@ -208,10 +249,17 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     try {
       nextTarget.lifecycle = await this.#startLifecycle(nextTarget, false);
     } catch (switchError) {
+      nextTarget.valid = false;
       await nextTarget.observations.close();
+      const rollbackTarget = this.#createTarget(
+        previousTarget.input,
+        previousTarget.observations,
+      );
       try {
-        previousTarget.lifecycle = await this.#startLifecycle(previousTarget, false);
+        rollbackTarget.lifecycle = await this.#startLifecycle(rollbackTarget, false);
       } catch (rollbackError) {
+        rollbackTarget.valid = false;
+        await rollbackTarget.observations.close();
         const failure = new AggregateError(
           [switchError, rollbackError],
           'Runtime Host switch failed and the previous Host could not be restored',
@@ -219,9 +267,10 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
         this.onFatalError(failure);
         throw failure;
       }
+      this.#activate(rollbackTarget);
       throw switchError;
     }
-    this.#target = nextTarget;
+    this.#activate(nextTarget);
     await previousTarget.observations.close();
   }
 
@@ -252,7 +301,9 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       const result = await this.startCandidate(
         {
           ...target.input,
-          ipcMain: this.#ipcMain,
+          ipcMain: this.#ipcMain.createTarget(target.epoch),
+          isTargetActive: () => this.#ipcMain.isActive(target.epoch),
+          isTargetValid: () => target.valid,
           signal,
           ...(takeoverHostEpoch === undefined ? {} : { takeoverHostEpoch }),
         },
@@ -320,11 +371,31 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
 
   #createTarget(
     input: DesktopRuntimeHostCandidateStartInput,
+    observations = new RuntimeHostSessionObservationRegistry((error) => input.onError?.(error)),
   ): DesktopRuntimeHostTargetGeneration {
     return {
+      epoch: randomUUID(),
       input,
-      observations: new RuntimeHostSessionObservationRegistry((error) => input.onError?.(error)),
+      target: input.remote
+        ? {
+            profile: input.remote.profile,
+            credential: input.remote.credential,
+          }
+        : { profile: LOCAL_RUNTIME_HOST_PROFILE },
+      observations,
+      valid: true,
     };
+  }
+
+  #activate(target: DesktopRuntimeHostTargetGeneration): void {
+    this.#target = target;
+    this.#activeTarget = target;
+    this.#ipcMain.activate(target.epoch);
+    try {
+      this.onTargetActivated?.(this.current()!);
+    } catch (error) {
+      this.onFatalError(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 }
 

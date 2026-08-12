@@ -26,17 +26,43 @@ import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../se
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
-  test('does not expose Client path relocation for a remote Host', () => {
+  test('keeps remote Session paths out of Client filesystem policy', async () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: new FakeConnection([]).value,
       cwd: '/client/workspace',
       workspace: { kind: 'project', projectId: 'project-1' },
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      allowHostPathRelocation: false,
+      executionLocation: { kind: 'host' },
     });
 
     assert.equal(driver.moveSession, undefined);
+    assert.deepEqual(
+      await driver.getSessionResumeAvailability!({ cwd: '/srv/remote-only' } as never),
+      { available: true },
+    );
+    await assert.rejects(
+      driver.switchSession('session-1', { relocateCwd: '/client/workspace' }),
+      /cannot be relocated by this Client/,
+    );
+
+    const driverWithoutProject = createRuntimeHostMakaSessionDriver({
+      connection: new FakeConnection([]).value,
+      cwd: '/client/workspace',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      executionLocation: { kind: 'host' },
+    });
+    await assert.rejects(
+      driverWithoutProject.createSession({
+        cwd: '/client/workspace',
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        backend: 'ai-sdk',
+        permissionMode: 'ask',
+      }),
+      /requires an explicit Project/,
+    );
   });
 
   test('honors explicit Project intent before inheriting the current workspace', async () => {

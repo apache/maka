@@ -218,7 +218,13 @@ export type AppUpdateInstallResult =
 
 export interface DesktopRuntimeHostProfileSnapshot {
   readonly profiles: readonly RuntimeHostProfile[];
-  readonly activeProfileId: string;
+  readonly selectedProfileId: string;
+  readonly activeProfile?: RuntimeHostProfile;
+  readonly activeProfileId?: string;
+  readonly unavailable?: {
+    readonly profileId: string;
+    readonly message: string;
+  };
 }
 
 export interface DesktopRuntimeHostProfileSaveInput {
@@ -227,6 +233,7 @@ export interface DesktopRuntimeHostProfileSaveInput {
 }
 
 export interface DesktopRuntimeHostProfileChangedEvent {
+  readonly epoch: string;
   readonly activeProfileId: string;
 }
 

@@ -179,6 +179,8 @@ export interface MakaPiTuiInput {
    * The Session driver owns validation and durable relocation.
    */
   resumeCwd?: string;
+  /** Whether a failed startup resume may continue with a fresh Session. */
+  resumeFailure?: 'start_fresh' | 'exit';
   /**
    * Read-only store of sessions from other coding agents (Claude Code,
    * Codex). When present, the session picker lists foreign sessions for the
@@ -186,6 +188,10 @@ export interface MakaPiTuiInput {
    * fresh Maka session seeded with it. Omitting it hides the feature.
    */
   foreignSessions?: MakaForeignSessionReader;
+  /** Initial Session picker scope when Session paths are not Client-local. */
+  sessionListScope?: 'current' | 'all';
+  /** Whether editor path completion may inspect the Client filesystem. */
+  clientPathAuthority?: 'local' | 'none';
 }
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
@@ -210,7 +216,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     input.modelChoices?.find(
       (choice) => choice.connectionSlug === connectionSlug && choice.model === model,
     )?.thinkingLevels ?? (providerType ? thinkingVariantsForModel(providerType, model) : []);
-  let sessionListScope: 'current' | 'all' = 'current';
+  let sessionListScope: 'current' | 'all' = input.sessionListScope ?? 'current';
   let busy = false;
   let closed = false;
   let currentActivityCompletion: Promise<void> | undefined;
@@ -2601,7 +2607,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   refreshEditorCwd = (nextCwd) => {
     editor.setAutocompleteProvider(
-      new MakaAutocompleteProvider(nextCwd, slashCommands, () => listSkillsCached()),
+      new MakaAutocompleteProvider(
+        input.clientPathAuthority === 'none' ? undefined : nextCwd,
+        slashCommands,
+        () => listSkillsCached(),
+      ),
     );
   };
   refreshEditorCwd(cwd);
@@ -2795,6 +2805,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         await switchSession(input.resumeSessionId!, input.resumeCwd);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (input.resumeFailure === 'exit') {
+          handleProcessExit(
+            1,
+            new Error(`Could not resume session ${input.resumeSessionId}: ${message}`),
+          );
+          return;
+        }
         const recoveryHint =
           input.resumeCwd === undefined && message.startsWith('Session cwd no longer exists:')
             ? ` Retry with: maka --resume ${input.resumeSessionId} --cwd <new-path>.`

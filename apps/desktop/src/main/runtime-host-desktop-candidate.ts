@@ -79,6 +79,8 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly sendToRenderer?: RuntimeHostSessionDomainsIpcDeps["sendToRenderer"];
   readonly onError?: RuntimeHostSessionDomainsIpcDeps["onError"];
+  readonly isTargetActive?: () => boolean;
+  readonly isTargetValid?: () => boolean;
   readonly newId?: () => string;
   readonly now?: () => number;
   readonly createSessionCopyCleanup: (input: {
@@ -95,6 +97,7 @@ export interface DesktopRuntimeHostCandidateDeps {
     ipcMain: ReconnectableReadIpcMain,
     controls: DesktopRuntimeHostCandidateControls,
     target: DesktopRuntimeHostTargetPolicy,
+    isTargetActive: () => boolean,
   ) => void | (() => void | Promise<void>);
 }
 
@@ -312,6 +315,27 @@ export async function createDesktopRuntimeHostCandidate(
 ): Promise<DesktopRuntimeHostCandidate> {
   const client = new DesktopRuntimeHostClient(connection);
   const ipc = new ScopedIpcMain(deps.ipcMain);
+  const isTargetActive = deps.isTargetActive ?? (() => true);
+  const emitSessionsChanged: DesktopRuntimeHostCandidateDeps["emitSessionsChanged"] = (
+    reason,
+    sessionId,
+    extra,
+  ) => {
+    if (isTargetActive()) deps.emitSessionsChanged(reason, sessionId, extra);
+  };
+  const emitModeChanged: DesktopRuntimeHostCandidateDeps["emitModeChanged"] = (
+    ...args
+  ) => {
+    if (isTargetActive()) deps.emitModeChanged(...args);
+  };
+  const sendToRenderer: DesktopRuntimeHostCandidateDeps["sendToRenderer"] = (
+    ...args
+  ) => {
+    if (isTargetActive()) deps.sendToRenderer?.(...args);
+  };
+  const reportError = (error: unknown): void => {
+    if (isTargetActive()) deps.onError?.(error);
+  };
   const sessionObservations =
     observationRegistry ??
     new RuntimeHostSessionObservationRegistry((error) => deps.onError?.(error));
@@ -378,7 +402,7 @@ export async function createDesktopRuntimeHostCandidate(
       sessionId: string,
       interactions: readonly ActiveInteractionRequestEvent[],
     ): void => {
-      deps.sendToRenderer?.('sessions:active-interactions-changed', {
+      sendToRenderer?.('sessions:active-interactions-changed', {
         sessionId,
         interactions,
       });
@@ -386,7 +410,7 @@ export async function createDesktopRuntimeHostCandidate(
     const sessionObserver = new RuntimeHostSessionObserver({
       client,
       emitSessionsChanged: (reason, sessionId, extra) =>
-        deps.emitSessionsChanged(reason, sessionId, extra),
+        emitSessionsChanged(reason, sessionId, extra),
       emitSessionDomainChanged: (change) => domains?.sessionDomainChanged(change),
       emitRuntimeResourcePtyData: (event) => domains?.runtimeResourcePtyData(event),
       emitAgentGraphChanged: (event) => domains?.agentGraphChanged(event),
@@ -405,9 +429,9 @@ export async function createDesktopRuntimeHostCandidate(
       {
         client,
         sessionObserver,
-        emitModeChanged: deps.emitModeChanged,
-        ...(deps.sendToRenderer ? { sendToRenderer: deps.sendToRenderer } : {}),
-        ...(deps.onError ? { onError: deps.onError } : {}),
+        emitModeChanged,
+        ...(deps.sendToRenderer ? { sendToRenderer } : {}),
+        ...(deps.onError ? { onError: reportError } : {}),
         ...(deps.newId ? { newId: deps.newId } : {}),
         ...(deps.now ? { now: deps.now } : {}),
       },
@@ -417,8 +441,8 @@ export async function createDesktopRuntimeHostCandidate(
     const restoredSessionIds = await sessionObservations.attach(sessionObserver);
     observationsAttached = true;
     for (const sessionId of restoredSessionIds) {
-      deps.emitSessionsChanged("message-appended", sessionId);
-      deps.emitSessionsChanged("goal-change", sessionId);
+      emitSessionsChanged("message-appended", sessionId);
+      emitSessionsChanged("goal-change", sessionId);
       domains.sessionSubscriptionRecovered(sessionId);
       emitActiveInteractionsChanged(
         sessionId,
@@ -428,7 +452,7 @@ export async function createDesktopRuntimeHostCandidate(
     const watchComputerUseTurn = (sessionId: string, turnId: string): void => {
       void sessionObserver
         .watchTurn(sessionId, turnId)
-        .catch((error) => deps.onError?.(error));
+        .catch(reportError);
     };
     const createNativeProvider = (): DesktopNativeCapabilityProvider => {
       let provider: DesktopNativeCapabilityProvider;
@@ -440,6 +464,7 @@ export async function createDesktopRuntimeHostCandidate(
           releaseResourcesOnClose: false,
           onSessionUsed: (sessionId) => nativeSessionIds.add(sessionId),
           onComputerUseTurnUsed: watchComputerUseTurn,
+          isTargetValid: deps.isTargetValid,
           onClosed: () => providers.delete(provider),
         },
       );
@@ -474,8 +499,8 @@ export async function createDesktopRuntimeHostCandidate(
       removeSession: async (sessionId) => {
         const disposition = await client.removeSessionCopy(sessionId);
         if (disposition === "retained") return disposition;
-        await releaseNativeSession(sessionId).catch((error) => deps.onError?.(error));
-        deps.emitSessionsChanged("deleted", sessionId);
+        await releaseNativeSession(sessionId).catch(reportError);
+        emitSessionsChanged("deleted", sessionId);
         return disposition;
       },
       resumeSessionCopy: async ({ sessionId, kind, sourceSessionId, sourceTurnId }) => {
@@ -491,6 +516,7 @@ export async function createDesktopRuntimeHostCandidate(
       ipc,
       { refreshClientCapabilities },
       target,
+      isTargetActive,
     );
     disposeClientIpc =
       typeof registeredClientIpc === "function"
@@ -500,7 +526,7 @@ export async function createDesktopRuntimeHostCandidate(
       {
         client,
         resolveCreateProject: (input) => deps.resolveSessionCreateProject(input, target),
-        emitSessionsChanged: deps.emitSessionsChanged,
+        emitSessionsChanged,
         releaseSessionResources: releaseNativeSession,
         sessionCopyCleanup,
         ...(deps.newId ? { newId: deps.newId } : {}),
@@ -510,7 +536,7 @@ export async function createDesktopRuntimeHostCandidate(
     registerRuntimeHostExternalSessionsIpc(
       {
         client,
-        emitSessionsChanged: deps.emitSessionsChanged,
+        emitSessionsChanged,
       },
       ipc,
     );
@@ -520,12 +546,12 @@ export async function createDesktopRuntimeHostCandidate(
         observer: sessionObserver,
         observations: sessionObservations,
         attachmentApprovals: deps.attachmentApprovals,
-        emitSessionsChanged: deps.emitSessionsChanged,
+        emitSessionsChanged,
         stat: deps.stat,
         resizeImage: deps.resizeImage,
         beforeStop: deps.nativeCapabilities.releaseComputerUseSession,
         sessionCopyCleanup,
-        onBackgroundError: (error) => deps.onError?.(error),
+        onBackgroundError: reportError,
         ...(deps.e2eInteractions
           ? { e2eInteractions: deps.e2eInteractions }
           : {}),
@@ -538,7 +564,7 @@ export async function createDesktopRuntimeHostCandidate(
       sessions: createRuntimeHostBotSessionAdapter({
         client,
         resolveCreateTarget: () => deps.resolveBotCreateTarget(target),
-        emitSessionsChanged: deps.emitSessionsChanged,
+        emitSessionsChanged,
         ...(deps.newId ? { newId: deps.newId } : {}),
       }),
     });

@@ -17,11 +17,12 @@ export type SettingsProjectsCopy = {
     credential: string;
     save: string;
     active: string;
+    connect: string;
+    unavailable: string;
     remove: string;
     empty: string;
     loadFailed: string;
     selectFailed: string;
-    selectFailedDetail: string;
     saveFailed: string;
     removeFailed: string;
     moreActions(name: string): string;
@@ -80,11 +81,12 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       credential: '访问凭据',
       save: '保存',
       active: '当前',
+      connect: '连接',
+      unavailable: '无法连接',
       remove: '移除',
       empty: '还没有远程 Host',
       loadFailed: '无法读取 Runtime Host profiles',
       selectFailed: '无法选择 Runtime Host',
-      selectFailedDetail: '无法连接所选 Host，Desktop 仍在使用之前的 Host',
       saveFailed: '无法保存 Runtime Host profile',
       removeFailed: '无法移除 Runtime Host profile',
       moreActions: (name: string) => `更多操作：${name}`,
@@ -140,11 +142,12 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       credential: 'Access credential',
       save: 'Save',
       active: 'Active',
+      connect: 'Connect',
+      unavailable: 'Unavailable',
       remove: 'Remove',
       empty: 'No remote Hosts yet',
       loadFailed: 'Could not load Runtime Host profiles',
       selectFailed: 'Could not select the Runtime Host',
-      selectFailedDetail: 'Could not connect to the selected Host. Desktop is still using the previous Host.',
       saveFailed: 'Could not save the Runtime Host profile',
       removeFailed: 'Could not remove the Runtime Host profile',
       moreActions: (name: string) => `More actions for ${name}`,
