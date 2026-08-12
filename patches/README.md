@@ -29,9 +29,9 @@ Blank UA-CH `navigator.userAgentData.platform` must also not mean "not Apple".
 Electron builds with a rewritten identity ship `platform: ''`, which made every
 `mod` hotkey listen for Ctrl and every `Kbd` draw Ctrl on macOS.
 
-Streaming text and Markdown expose an explicit `initialDisplayedLength` seam
-so the host can restore the exact prefix already presented without replaying
-it. The default remains progressive for a genuinely new stream, and later
-deltas still reveal and fade from a parsed-visible-text boundary.
+Streaming text and Markdown expose an explicit `initialDisplayedText` seam so
+the renderer can verify and restore the exact prefix already presented without
+replaying it. The default remains progressive for a genuinely new stream, and
+rewritten or later text still reveals and fades from a parsed-visible boundary.
 
 Delete each hunk when the corresponding behavior ships in Astryx.

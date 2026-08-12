@@ -1094,11 +1094,10 @@ function ProcessingBlock(props: {
 function DeepThinking(props: { text: string; live: boolean; initialText?: string; truncated?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const safeText = redactSecrets(props.text);
-  const initialDisplayedLength = props.initialText === undefined
-    ? undefined
-    : redactSecrets(props.initialText).length;
   const displayed = useStreamingText(safeText, isProgressiveStreamingEnabled(props.live), {
-    initialDisplayedLength,
+    initialDisplayedText: props.initialText === undefined
+      ? undefined
+      : redactSecrets(props.initialText),
   });
   const label = props.truncated ? `${copy.thinking} · ${copy.truncated}` : copy.thinking;
   return (

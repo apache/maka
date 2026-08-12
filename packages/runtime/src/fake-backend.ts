@@ -24,6 +24,7 @@ export const FAKE_ASK_USER_QUESTION_PROMPT = '__e2e_ask_user_question__';
 export const FAKE_ASK_SANDBOX_BOUNDARY_PROMPT = '__e2e_ask_sandbox_boundary__';
 export const FAKE_WAIT_FOR_STEERING_PROMPT = '__e2e_wait_for_steering__';
 export const FAKE_HOLD_OPEN_PROMPT = '__e2e_hold_open__';
+export const FAKE_REWRITE_HOLD_OPEN_PROMPT = '__e2e_rewrite_hold_open__';
 export const FAKE_MERMAID_PROMPT = '__e2e_mermaid__';
 export const FAKE_MERMAID_HOSTILE_PROMPT = '__e2e_mermaid_hostile__';
 export const FAKE_ERROR_PROMPT_PREFIX = '__e2e_error__:';
@@ -171,8 +172,12 @@ export class FakeBackend implements AgentBackend {
     };
 
     try {
-      if (input.text === FAKE_HOLD_OPEN_PROMPT) {
-        let waitingText = 'Fake backend waiting for the test to stop the Turn.';
+      if (input.text === FAKE_HOLD_OPEN_PROMPT || input.text === FAKE_REWRITE_HOLD_OPEN_PROMPT) {
+        const rewritesDisplayedText = input.text === FAKE_REWRITE_HOLD_OPEN_PROMPT;
+        let waitingText = rewritesDisplayedText
+          ? 'prefix sk-123456789012345'
+          : 'Fake backend waiting for the test to stop the Turn.';
+        let rewritePending = rewritesDisplayedText;
         yield {
           type: 'text_delta',
           id: randomUUID(),
@@ -188,7 +193,10 @@ export class FakeBackend implements AgentBackend {
             settleOutstanding(leaseId);
           }
           if (pending.length > 0) {
-            const nextText = `Fake backend waiting for the test to stop the Turn.\n\nAcknowledged steering: ${steered.join(' | ')}`;
+            const nextText = rewritePending
+              ? `${waitingText}6 NEW`
+              : `${waitingText}\n\nAcknowledged steering: ${steered.join(' | ')}`;
+            rewritePending = false;
             const delta = nextText.slice(waitingText.length);
             waitingText = nextText;
             yield {

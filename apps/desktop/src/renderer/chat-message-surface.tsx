@@ -4,7 +4,14 @@ import { type LlmConnection, type ProviderType } from '@maka/core/llm-connection
 import { type OnboardingState } from '@maka/core/onboarding';
 import { type SettingsSection } from '@maka/core/settings';
 import { Skeleton } from '@astryxdesign/core';
-import { Banner, Button, ChatView, useUiLocale } from '@maka/ui';
+import {
+  Banner,
+  Button,
+  ChatView,
+  useUiLocale,
+  type LiveContentActivationSnapshot,
+  type LiveTurnProjection,
+} from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';
 import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state';
 import type { SessionHealthNoticeView } from './use-shell-chat-model';
@@ -30,7 +37,11 @@ const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string |
  */
 interface ChatMessageSurfaceProps extends Omit<
   ComponentProps<typeof ChatView>,
-  'deepResearchRun' | 'emptyOverride' | 'liveTurn' | 'shellRunUpdates'
+  | 'deepResearchRun'
+  | 'emptyOverride'
+  | 'initialLiveContentSnapshot'
+  | 'liveTurn'
+  | 'shellRunUpdates'
 > {
   /**
    * #1985: the live projection and the shell-run records are the only session
@@ -55,6 +66,19 @@ interface ChatMessageSurfaceProps extends Omit<
   connections: LlmConnection[];
   onRefreshConnections: () => Promise<void> | void;
   onSkip: () => Promise<void> | void;
+}
+
+function captureLiveContent(
+  liveTurn: LiveTurnProjection | undefined,
+): LiveContentActivationSnapshot | undefined {
+  if (!liveTurn) return undefined;
+  return {
+    turnId: liveTurn.turnId,
+    entries: new Map(liveTurn.steps.flatMap((step) => [
+      ...(step.thinking?.text ? [[`thinking:${step.stepId}`, step.thinking.text] as const] : []),
+      ...(step.text?.text ? [[`text:${step.stepId}`, step.text.text] as const] : []),
+    ])),
+  };
 }
 
 export function ChatMessageSurface({
@@ -103,13 +127,22 @@ export function ChatMessageSurface({
   const liveTurn = useAppShellSessionUiSelector(sessionUiController, selectLiveTurn, activeSessionId);
   const [activation, setActivation] = useState({
     sessionId: activeSessionId,
-    initialLiveTurn: liveTurn,
+    initialLiveContent: captureLiveContent(liveTurn),
   });
   if (activation.sessionId !== activeSessionId) {
     setActivation({
       sessionId: activeSessionId,
-      initialLiveTurn: liveTurn,
+      initialLiveContent: captureLiveContent(liveTurn),
     });
+  } else if (
+    activation.initialLiveContent
+    && (
+      !liveTurn
+      || liveTurn.terminal
+      || liveTurn.turnId !== activation.initialLiveContent.turnId
+    )
+  ) {
+    setActivation({ sessionId: activeSessionId, initialLiveContent: undefined });
   }
   // Select the raw per-session record: its identity is the store's own, so a
   // change to any OTHER map cannot rebuild the array. Deriving it in the
@@ -159,9 +192,9 @@ export function ChatMessageSurface({
       <ChatView
         {...chatViewRest}
         liveTurn={liveTurn}
-        initialLiveTurn={activation.sessionId === activeSessionId
-          ? activation.initialLiveTurn
-          : liveTurn}
+        initialLiveContentSnapshot={activation.sessionId === activeSessionId
+          ? activation.initialLiveContent
+          : captureLiveContent(liveTurn)}
         shellRunUpdates={shellRunUpdates}
         deepResearchRun={deepResearchRun}
         emptyOverride={emptyOverride}

@@ -145,7 +145,7 @@ export function MarkdownBody(props: {
         density={density}
         components={components}
         isStreaming={props.streaming}
-        initialDisplayedLength={initialText?.length}
+        initialDisplayedText={initialText}
       >
         {budgetedText}
       </AstryxMarkdown>

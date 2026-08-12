@@ -26,6 +26,15 @@ it('keeps raw HTML inert instead of expanding the Markdown trust surface', () =>
   assert.doesNotMatch(markup, /<details/);
 });
 
+it('keeps a lazy live stream behind the display cursor', () => {
+  const markup = renderToStaticMarkup(createElement(Markdown, {
+    text: 'live output that has not reached the display cursor',
+    streaming: true,
+  }));
+
+  assert.doesNotMatch(markup, /live output/);
+});
+
 it('redacts secrets before even the lazy Markdown fallback reaches the rendered tree', () => {
   const markup = renderToStaticMarkup(createElement(Markdown, {
     text: 'Authorization: Bearer sk-live-1234567890abcdef',
@@ -207,4 +216,37 @@ it('shows only the restored prefix on its first streaming render', () => {
 
   assert.match(markup, /<strong[^>]*>output restored<\/strong>/);
   assert.doesNotMatch(markup, /new delta/);
+});
+
+it('settles only the verified prefix when restored content was rewritten', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: 'prefix <redacted> NEW',
+    streaming: true,
+    initialText: 'prefix sk-123456789012345',
+  }));
+
+  assert.match(markup, />prefix </);
+  assert.doesNotMatch(markup, /redacted|NEW/);
+});
+
+it('does not settle an equal-length shifted tail', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: 'thinking bcdefg',
+    streaming: true,
+    initialText: 'thinking abcdef',
+  }));
+
+  assert.match(markup, />thinking /);
+  assert.doesNotMatch(markup, /bcdefg/);
+});
+
+it('never settles half of a rewritten Unicode code point', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: 'same 😃 NEW',
+    streaming: true,
+    initialText: 'same 😀 old',
+  }));
+
+  assert.match(markup, />same </);
+  assert.doesNotMatch(markup, /😃|NEW|�/u);
 });
