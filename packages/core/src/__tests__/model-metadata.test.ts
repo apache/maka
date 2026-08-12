@@ -71,8 +71,9 @@ describe('openAiAdapterApiProtocol', () => {
     assert.equal(openAiAdapterApiProtocol('grok-4.5', 'openai'), 'openai-chat');
   });
 
-  it('routes only DeepSeek V4 Flash through the provider Responses wire', () => {
+  it('routes official DeepSeek V4 models through the provider Responses wire', () => {
     assert.equal(openAiAdapterApiProtocol('deepseek-v4-flash', 'deepseek'), 'openai-responses');
-    assert.equal(openAiAdapterApiProtocol('deepseek-v4-pro', 'deepseek'), 'openai-chat');
+    assert.equal(openAiAdapterApiProtocol('deepseek-v4-pro', 'deepseek'), 'openai-responses');
+    assert.equal(openAiAdapterApiProtocol('deepseek-chat', 'deepseek'), 'openai-chat');
   });
 });

@@ -102,11 +102,17 @@ export function openAiAdapterApiProtocol(
   providerType?: ProviderType,
 ): 'openai-responses' | 'openai-chat' {
   const id = modelId.trim();
-  return (providerType === 'deepseek' && id === 'deepseek-v4-flash') ||
+  return (providerType === 'deepseek' && deepSeekModelSupportsResponses(id)) ||
     /^gpt-5/i.test(id) ||
     ((providerType === 'xai' || providerType === 'xai-oauth') && id === 'grok-4.5')
     ? 'openai-responses'
     : 'openai-chat';
+}
+
+/** DeepSeek models whose first-party API contract includes the Responses wire. */
+export function deepSeekModelSupportsResponses(modelId: string): boolean {
+  const id = modelId.trim().toLowerCase();
+  return id === 'deepseek-v4-flash' || id === 'deepseek-v4-pro';
 }
 
 /** Vision-capable Claude families, including models newer than the generated snapshot. */
@@ -380,6 +386,11 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
     'deepseek-v4-flash': {
       capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
       thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+    },
+    'deepseek-v4-pro': {
+      capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
+      lastUpdated: '2026-08-13',
+      thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
     },
   },
   'zai-coding-plan': {

@@ -1,4 +1,5 @@
 import type { ApplyPatchProtocol } from '@maka/core/llm-connections';
+import { deepSeekModelSupportsResponses } from '@maka/core/model-metadata';
 import { z } from 'zod';
 import { parseCodexV4aPatch, serializeCodexV4aOperation } from './codex-v4a-patch.js';
 import type { ApplyPatchOperation } from './filesystem-executor.js';
@@ -25,7 +26,7 @@ export function resolveApplyPatchProfile(
   if (runtime.applyPatchProtocol === 'openai-structured' && openAiModelSupportsApplyPatch(id)) {
     return { kind: 'openai-structured' };
   }
-  if (runtime.applyPatchProtocol === 'codex-v4a-freeform' && id === 'deepseek-v4-flash') {
+  if (runtime.applyPatchProtocol === 'codex-v4a-freeform' && deepSeekModelSupportsResponses(id)) {
     return { kind: 'codex-v4a-freeform' };
   }
   return null;

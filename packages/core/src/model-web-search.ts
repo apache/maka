@@ -1,4 +1,5 @@
 import type { ModelInfo, ProviderType } from './llm-connections.js';
+import { deepSeekModelSupportsResponses } from './model-metadata.js';
 
 export type HostedWebSearchAdapter =
   | 'openai-responses'
@@ -95,7 +96,7 @@ function providerDefaultHostedWebSearchCapability(
 ): HostedWebSearchCapability | null {
   switch (providerType) {
     case 'deepseek':
-      return modelId === 'deepseek-v4-flash' ? capability : null;
+      return deepSeekModelSupportsResponses(modelId) ? capability : null;
     case 'openai':
       return /^gpt-5(?:[.-]|$)/i.test(modelId) ? capability : null;
     case 'xai':
