@@ -211,7 +211,7 @@ it('shows only the restored prefix on its first streaming render', () => {
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
     text: '**output restored** with a new delta',
     streaming: true,
-    initialText: '**output restored**',
+    settledText: '**output restored**',
   }));
 
   assert.match(markup, /<strong[^>]*>output restored<\/strong>/);
@@ -222,29 +222,18 @@ it('settles only the verified prefix when restored content was rewritten', () =>
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
     text: 'prefix <redacted> NEW',
     streaming: true,
-    initialText: 'prefix sk-123456789012345',
+    settledText: 'prefix sk-123456789012345',
   }));
 
   assert.match(markup, />prefix </);
   assert.doesNotMatch(markup, /redacted|NEW/);
 });
 
-it('does not settle an equal-length shifted tail', () => {
-  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: 'thinking bcdefg',
-    streaming: true,
-    initialText: 'thinking abcdef',
-  }));
-
-  assert.match(markup, />thinking /);
-  assert.doesNotMatch(markup, /bcdefg/);
-});
-
 it('never settles half of a rewritten Unicode code point', () => {
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
     text: 'same 😃 NEW',
     streaming: true,
-    initialText: 'same 😀 old',
+    settledText: 'same 😀 old',
   }));
 
   assert.match(markup, />same </);

@@ -37,14 +37,14 @@ const MarkdownBody = lazy(() => import('./markdown-body.js').then((m) => ({ defa
 export function Markdown(props: {
   text: string;
   streaming?: boolean;
-  initialText?: string;
+  settledText?: string;
   /** Block rhythm. Transcript turns pass `compact`; documents leave it. */
   density?: 'default' | 'compact';
 }) {
   const safeText = redactSecrets(props.text);
-  const safeInitialText = props.initialText === undefined
+  const safeSettledText = props.settledText === undefined
     ? undefined
-    : redactSecrets(props.initialText);
+    : redactSecrets(props.settledText);
   const streaming = isProgressiveStreamingEnabled(props.streaming);
   return (
     <Suspense
@@ -60,7 +60,7 @@ export function Markdown(props: {
       <MarkdownBody
         text={safeText}
         streaming={streaming}
-        initialText={safeInitialText}
+        settledText={safeSettledText}
         density={props.density}
       />
     </Suspense>

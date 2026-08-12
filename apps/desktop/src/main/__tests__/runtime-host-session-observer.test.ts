@@ -195,6 +195,71 @@ test("restores renderer observation after the Host connection is replaced", asyn
   await secondObserver.close();
 });
 
+test("does not report an observation ready before its source has seeded", async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const staleSeeded = deferred<void>();
+  const staleSource = {
+    async observe() {
+      await staleSeeded.promise;
+    },
+    async unobserve() {},
+  };
+  let ready = false;
+
+  const observing = observations.observe(
+    "session-1",
+    "observer-1",
+    eventTarget(12),
+  ).then(() => {
+    ready = true;
+  });
+  await Promise.resolve();
+  assert.equal(ready, false);
+
+  const staleAttach = observations.attach(staleSource);
+  await Promise.resolve();
+  assert.equal(ready, false);
+
+  observations.detach(staleSource);
+  staleSeeded.resolve();
+  await staleAttach;
+  assert.equal(ready, false);
+
+  const seeded = deferred<void>();
+  const source = {
+    async observe() {
+      await seeded.promise;
+    },
+    async unobserve() {},
+  };
+  const attaching = observations.attach(source);
+  await Promise.resolve();
+  assert.equal(ready, false);
+
+  seeded.resolve();
+  await Promise.all([observing, attaching]);
+  assert.equal(ready, true);
+  await observations.close();
+});
+
+test("rejects a pending observation when its first seed fails", async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const observing = observations.observe(
+    "session-1",
+    "observer-1",
+    eventTarget(12),
+  );
+
+  assert.deepEqual(await observations.attach({
+    async observe() {
+      throw new Error("seed failed");
+    },
+    async unobserve() {},
+  }), []);
+  await assert.rejects(observing, /ended before it became ready/);
+  await observations.close();
+});
+
 test("does not publish a terminal error while an owner-managed connection is replaced", async () => {
   let rejectFrame!: (error: Error) => void;
   let closeCount = 0;

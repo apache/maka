@@ -984,7 +984,7 @@ export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }
   );
 }
 
-function StreamingAssistantBubble(props: { text: string; live: boolean; initialText?: string; truncated?: boolean; onSettled?: () => void }) {
+function StreamingAssistantBubble(props: { text: string; live: boolean; settledText?: string; truncated?: boolean; onSettled?: () => void }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const settledRef = useRef(false);
 
@@ -1003,7 +1003,7 @@ function StreamingAssistantBubble(props: { text: string; live: boolean; initialT
       <Markdown
         text={props.text}
         streaming={props.live}
-        initialText={props.initialText}
+        settledText={props.settledText}
         density="compact"
       />
       {props.truncated && (
@@ -1049,7 +1049,7 @@ function TurnTimelineEntry(props: {
       <DeepThinking
         text={item.text}
         live={item.live === true}
-        initialText={props.initialLiveContent?.get(`thinking:${item.messageId}`)}
+        settledText={props.initialLiveContent?.get(`thinking:${item.messageId}`)}
         truncated={item.truncated === true}
       />
     );
@@ -1062,7 +1062,7 @@ function TurnTimelineEntry(props: {
       <StreamingAssistantBubble
         text={item.text}
         live={item.complete !== true}
-        initialText={props.initialLiveContent?.get(`text:${item.messageId}`)}
+        settledText={props.initialLiveContent?.get(`text:${item.messageId}`)}
         truncated={item.truncated === true}
         onSettled={() => props.onStreamingSettled?.(item.messageId)}
       />
@@ -1091,13 +1091,13 @@ function ProcessingBlock(props: {
   );
 }
 
-function DeepThinking(props: { text: string; live: boolean; initialText?: string; truncated?: boolean }) {
+function DeepThinking(props: { text: string; live: boolean; settledText?: string; truncated?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const safeText = redactSecrets(props.text);
   const displayed = useStreamingText(safeText, isProgressiveStreamingEnabled(props.live), {
-    initialDisplayedText: props.initialText === undefined
+    settledText: props.settledText === undefined
       ? undefined
-      : redactSecrets(props.initialText),
+      : redactSecrets(props.settledText),
   });
   const label = props.truncated ? `${copy.thinking} · ${copy.truncated}` : copy.thinking;
   return (
