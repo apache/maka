@@ -91,13 +91,17 @@ export async function connectRuntimeHostCli(
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
     candidateEntrypoint: deps.executionCandidateEntrypoint,
   } as const;
-  const connect = async (signal?: AbortSignal): Promise<RuntimeHostConnection> => {
+  const connect = async (
+    signal?: AbortSignal,
+    sshInteraction: 'batch' | 'inherit' = 'batch',
+  ): Promise<RuntimeHostConnection> => {
     if (profile.kind === 'remote') {
       return deps.connectRemoteProfile({
         profile,
         credential: resolvedProfile.credential!,
         surface: input.surface,
         clientInstanceId,
+        sshInteraction,
         ...(signal ? { signal } : {}),
       });
     }
@@ -118,10 +122,13 @@ export async function connectRuntimeHostCli(
     }
     return connected.connection;
   };
-  const initialConnection = await connect();
+  const initialConnection = await connect(
+    undefined,
+    input.surface === 'tui' && process.stdin.isTTY && process.stdout.isTTY ? 'inherit' : 'batch',
+  );
   const connection = await createRuntimeHostReconnectingConnection({
     initialConnection,
-    connect,
+    connect: (signal) => connect(signal, 'batch'),
   });
   try {
     return {

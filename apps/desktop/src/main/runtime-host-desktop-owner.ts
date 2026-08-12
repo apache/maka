@@ -4,10 +4,12 @@ import {
   RuntimeHostPermanentReconnectError,
   runtimeHostStartupError,
   LOCAL_RUNTIME_HOST_PROFILE,
+  sameResolvedRuntimeHostProfileTarget,
   startRuntimeHostReconnectLifecycle,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostReconnectBackoff,
   type RuntimeHostReconnectLifecycle,
+  type RuntimeHostSshInteraction,
 } from '@maka/runtime-host/client';
 import type { HostRegistration } from '@maka/runtime-host/protocol';
 import {
@@ -337,7 +339,12 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     let starting = true;
     try {
       return await startRuntimeHostReconnectLifecycle({
-        connect: (signal) => this.connect(target, signal),
+        connect: (signal) =>
+          this.connect(
+            target,
+            signal,
+            starting ? target.input.remote?.sshInteraction : 'batch',
+          ),
         onFatalError: (error) => {
           if (!starting && this.#activeTarget === target) {
             target.valid = false;
@@ -363,12 +370,21 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
   private async connect(
     target: DesktopRuntimeHostTargetGeneration,
     signal: AbortSignal,
+    sshInteraction: RuntimeHostSshInteraction | undefined,
   ): Promise<DesktopRuntimeHostCandidate> {
     let takeoverHostEpoch: string | undefined;
     while (true) {
       const result = await this.startCandidate(
         {
           ...target.input,
+          ...(target.input.remote
+            ? {
+                remote: {
+                  ...target.input.remote,
+                  ...(sshInteraction === undefined ? {} : { sshInteraction }),
+                },
+              }
+            : {}),
           ipcMain: this.#ipcMain.createTarget(target.epoch),
           isTargetActive: () => this.#ipcMain.isActive(target.epoch),
           isTargetValid: () => target.valid,
@@ -507,13 +523,7 @@ function sameRuntimeHostTarget(
   right: DesktopRuntimeHostCandidateStartInput['remote'],
 ): boolean {
   if (!left || !right) return left === right;
-  return (
-    left.profile.id === right.profile.id &&
-    left.profile.transport.kind === right.profile.transport.kind &&
-    left.profile.transport.url === right.profile.transport.url &&
-    left.profile.rootId === right.profile.rootId &&
-    left.credential === right.credential
-  );
+  return sameResolvedRuntimeHostProfileTarget(left, right);
 }
 
 function withRuntimeHostTarget(

@@ -111,6 +111,7 @@ import {
   resolveSelectedDesktopRuntimeHostProfile,
   selectDesktopRuntimeHostProfile,
 } from "./runtime-host-profile-service.js";
+import { createDesktopRuntimeHostSshTerminal } from "./runtime-host-ssh-terminal.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
@@ -255,6 +256,10 @@ const mainWindowController = createMainWindowController({
   startHidden,
   onClose: () => onMainWindowClose(),
 });
+const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
+  ipcMain,
+  send: (channel, event) => mainWindowController.send(channel, event),
+});
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
   settings: settingsStore,
@@ -306,7 +311,13 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
       if (owner) {
         await owner.switchTarget(
           target.profile.kind === "remote"
-            ? { profile: target.profile, credential: target.credential! }
+            ? {
+                profile: target.profile,
+                credential: target.credential!,
+                ...(target.profile.transport.kind === "ssh"
+                  ? { sshInteraction: "terminal" as const }
+                  : {}),
+              }
             : undefined,
         );
       } else {
@@ -327,18 +338,25 @@ let runtimePolicyTarget:
       readonly isActive: () => boolean;
     }
   | undefined;
-const currentDesktopWorkspaceTarget = async (
+const selectedDesktopWorkspaceTarget = async (
   target: DesktopRuntimeHostTargetPolicy,
-): Promise<WorkspaceTarget> => {
+): Promise<WorkspaceTarget | undefined> => {
   const currentTarget = requireRuntimePolicyTarget(target);
   const current = await currentTarget.projectManagement.current();
   if (typeof current.projectId === "string") {
     return { kind: "project", projectId: current.projectId };
   }
-  if (target.kind === "remote") {
+  if (target.kind === "remote") return undefined;
+  return { kind: "host_path", path: current.path };
+};
+const currentDesktopWorkspaceTarget = async (
+  target: DesktopRuntimeHostTargetPolicy,
+): Promise<WorkspaceTarget> => {
+  const workspace = await selectedDesktopWorkspaceTarget(target);
+  if (!workspace) {
     throw new Error("Select a project from the remote Runtime Host first");
   }
-  return { kind: "host_path", path: current.path };
+  return workspace;
 };
 const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
   mcpManager.toolSnapshot().revision,
@@ -563,6 +581,7 @@ owner = await startRuntimeHostDesktopOwner(
     onError: (error) =>
       console.error("[runtime-host] projection refresh failed:", error),
     registerClientIpc: registerHostClientIpc,
+    openSshTunnel: runtimeHostSshTerminal.openSshTunnel,
   },
   {
     upgradePrompts: runtimeHostUpgradePrompts,
@@ -867,7 +886,7 @@ function registerHostClientIpc(
     client,
     workspaceRoot,
     mainWindowController,
-    getCurrentWorkspaceTarget: () => currentDesktopWorkspaceTarget(target),
+    getSelectedWorkspaceTarget: () => selectedDesktopWorkspaceTarget(target),
     getDefaultPermissionMode: () =>
       resolveDefaultPermissionMode(() => loadRuntimeHostSettings(settingsIpcDeps)),
     openPath: (path) => shell.openPath(path),
@@ -1147,6 +1166,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   permissionOverlay.dismiss();
   const results = await Promise.allSettled([
     owner?.close(),
+    runtimeHostSshTerminal.close(),
     botRegistry.stopAll(),
     mcpManager.close(),
     mainWindowController.disposeBrowserViews(),

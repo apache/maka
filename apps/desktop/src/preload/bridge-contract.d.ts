@@ -251,6 +251,16 @@ export interface DesktopRuntimeHostProfileChangedEvent {
   readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
 }
 
+export type DesktopRuntimeHostSshTerminalEvent =
+  | { readonly kind: 'opened'; readonly sessionId: string }
+  | { readonly kind: 'data'; readonly sessionId: string; readonly data: string }
+  | {
+      readonly kind: 'closed';
+      readonly sessionId: string;
+      readonly code: number | null;
+      readonly signal: string | null;
+    };
+
 export interface DesktopProjectCapabilities {
   readonly chooseClientDirectory: boolean;
   readonly selectNoProject: boolean;
@@ -298,6 +308,13 @@ export interface MakaBridge {
     subscribeChanges(
       handler: (event: DesktopRuntimeHostProfileChangedEvent) => void,
     ): () => void;
+  };
+
+  runtimeHostSshTerminal: {
+    write(sessionId: string, data: string): Promise<void>;
+    resize(sessionId: string, cols: number, rows: number): Promise<void>;
+    cancel(sessionId: string): Promise<void>;
+    subscribe(handler: (event: DesktopRuntimeHostSshTerminalEvent) => void): () => void;
   };
 
   pets: {

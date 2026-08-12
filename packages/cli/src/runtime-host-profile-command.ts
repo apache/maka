@@ -1,6 +1,7 @@
 import {
   LOCAL_RUNTIME_HOST_PROFILE,
   createClientRuntimeHostProfileCatalog,
+  type RuntimeHostRemoteTransport,
   type RuntimeHostProfileCatalog,
 } from '@maka/runtime-host/client';
 import { resolveMakaClientDataRoot } from '@maka/storage';
@@ -13,7 +14,7 @@ export type RuntimeHostProfileCommand =
       readonly kind: 'set';
       readonly id: string;
       readonly name: string;
-      readonly tlsUrl: string;
+      readonly transport: RuntimeHostRemoteTransport;
       readonly expectedRootId: string;
       readonly credentialEnv?: string;
     }
@@ -47,7 +48,7 @@ export async function runRuntimeHostProfileCommand(
       id: command.id,
       name: command.name,
       kind: 'remote',
-      transport: { kind: 'tls', url: command.tlsUrl },
+      transport: command.transport,
       rootId: command.expectedRootId,
     },
     suppliedCredential,

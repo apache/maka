@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { HStack, List, ListItem } from "@astryxdesign/core";
+import {
+  Banner,
+  HStack,
+  List,
+  ListItem,
+  SegmentedControl,
+  SegmentedControlItem,
+  Switch,
+} from "@astryxdesign/core";
+import type { RuntimeHostRemoteTransport } from "@maka/runtime-host/client";
 import {
   Badge,
   Button,
@@ -14,13 +23,22 @@ import { Cpu, ICON_SIZE } from "@maka/ui/icons";
 import { getSettingsProjectsCopy } from "../locales/settings-projects-copy.js";
 import { PasswordInput } from "./password-input.js";
 import { settingsActionErrorMessage } from "./settings-error-copy.js";
-import { SettingsRow, SettingsSection } from "./settings-section.js";
+import { SettingsField, SettingsRow, SettingsSection } from "./settings-section.js";
+import { RuntimeHostSshTerminalDialog } from "./runtime-host-ssh-terminal-dialog.js";
+
+type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
 
 function createRemoteHostDraft() {
   return {
     id: `remote-${crypto.randomUUID()}`,
     name: "",
+    transportKind: "tls" as RemoteTransportKind,
     url: "",
+    destination: "",
+    sshPort: "",
+    remotePort: "",
+    websocketPath: "/runtime-host",
+    plaintextAcknowledged: false,
     rootId: "",
     credential: "",
   };
@@ -36,6 +54,7 @@ export function RuntimeHostProfilesSection() {
   >();
   const [showAdd, setShowAdd] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const [sshTerminalOpen, setSshTerminalOpen] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
   const reload = useCallback(async () => {
@@ -76,12 +95,13 @@ export function RuntimeHostProfilesSection() {
   async function saveAndConnect() {
     setSwitching(true);
     try {
+      const transport = createTransport(draft);
       const result = await window.maka.runtimeHostProfiles.addAndSelect({
         profile: {
           id: draft.id,
           name: draft.name,
           kind: "remote",
-          transport: { kind: "tls", url: draft.url },
+          transport,
           rootId: draft.rootId,
         },
         credential: draft.credential,
@@ -93,6 +113,7 @@ export function RuntimeHostProfilesSection() {
         return;
       }
       if (result.warning) toast.warning(copy.selectionNotSaved, result.warning);
+      setSshTerminalOpen(false);
       setShowAdd(false);
       setDraft(createRemoteHostDraft());
     } catch (error) {
@@ -179,11 +200,68 @@ export function RuntimeHostProfilesSection() {
               description={copy.nameHelp}
               end={<TextInput label={copy.name} isLabelHidden value={draft.name} onChange={(name) => setDraft((value) => ({ ...value, name }))} />}
             />
-            <SettingsRow
-              label={copy.url}
-              description={copy.urlHelp}
-              end={<TextInput label={copy.url} isLabelHidden value={draft.url} placeholder="wss://host.example" onChange={(url) => setDraft((value) => ({ ...value, url }))} />}
-            />
+            <SettingsField className="settingsRuntimeHostTransportField">
+              <fieldset className="settingsRuntimeHostTransport">
+                <legend>{copy.transport}</legend>
+                <p>{copy.transportHelp}</p>
+                <SegmentedControl
+                  label={copy.transport}
+                  value={draft.transportKind}
+                  layout="fill"
+                  size="sm"
+                  onChange={(transportKind) =>
+                    setDraft((value) => ({
+                      ...value,
+                      transportKind: transportKind as RemoteTransportKind,
+                    }))
+                  }
+                >
+                  <SegmentedControlItem value="tls" label={copy.tls} />
+                  <SegmentedControlItem value="ssh" label={copy.ssh} />
+                  <SegmentedControlItem value="plaintext" label={copy.plaintext} />
+                </SegmentedControl>
+              </fieldset>
+            </SettingsField>
+            {draft.transportKind === "ssh" ? (
+              <>
+                <SettingsRow
+                  label={copy.sshDestination}
+                  description={copy.sshDestinationHelp}
+                  end={<TextInput label={copy.sshDestination} isLabelHidden value={draft.destination} placeholder="user@host.example" onChange={(destination) => setDraft((value) => ({ ...value, destination }))} />}
+                />
+                <SettingsRow
+                  label={copy.sshPort}
+                  description={copy.sshPortHelp}
+                  end={<TextInput label={copy.sshPort} isLabelHidden value={draft.sshPort} placeholder="22" onChange={(sshPort) => setDraft((value) => ({ ...value, sshPort }))} />}
+                />
+                <SettingsRow
+                  label={copy.remotePort}
+                  description={copy.remotePortHelp}
+                  end={<TextInput label={copy.remotePort} isLabelHidden value={draft.remotePort} placeholder="8765" onChange={(remotePort) => setDraft((value) => ({ ...value, remotePort }))} />}
+                />
+                <SettingsRow
+                  label={copy.websocketPath}
+                  description={copy.websocketPathHelp}
+                  end={<TextInput label={copy.websocketPath} isLabelHidden value={draft.websocketPath} placeholder="/runtime-host" onChange={(websocketPath) => setDraft((value) => ({ ...value, websocketPath }))} />}
+                />
+              </>
+            ) : (
+              <SettingsRow
+                label={draft.transportKind === "tls" ? copy.url : copy.plaintextUrl}
+                description={draft.transportKind === "tls" ? copy.urlHelp : copy.plaintextUrlHelp}
+                end={<TextInput label={draft.transportKind === "tls" ? copy.url : copy.plaintextUrl} isLabelHidden value={draft.url} placeholder={draft.transportKind === "tls" ? "wss://host.example" : "ws://host.example"} onChange={(url) => setDraft((value) => ({ ...value, url }))} />}
+              />
+            )}
+            {draft.transportKind === "plaintext" ? (
+              <>
+                <SettingsRow
+                  label={copy.plaintextAcknowledgement}
+                  description={copy.plaintextAcknowledgementHelp}
+                  end={<Switch label={copy.plaintextAcknowledgement} isLabelHidden value={draft.plaintextAcknowledged} onChange={(plaintextAcknowledged) => setDraft((value) => ({ ...value, plaintextAcknowledged }))} />}
+                />
+                <Banner status="warning" title={copy.plaintextWarning} />
+              </>
+            ) : null}
             <SettingsRow
               label={copy.rootId}
               description={copy.rootIdHelp}
@@ -196,7 +274,7 @@ export function RuntimeHostProfilesSection() {
             />
             <SettingsRow
               label={copy.add}
-              end={<Button variant="primary" size="sm" label={copy.saveAndConnect} isDisabled={switching || [draft.name, draft.url, draft.rootId, draft.credential].some((value) => !value.trim())} clickAction={saveAndConnect} />}
+              end={<Button variant="primary" size="sm" label={copy.saveAndConnect} isDisabled={switching || !draftComplete(draft)} clickAction={saveAndConnect} />}
             />
           </>
         ) : null}
@@ -208,7 +286,11 @@ export function RuntimeHostProfilesSection() {
               <ListItem
                 key={profile.id}
                 label={profile.name}
-                description={profile.transport.url}
+                description={
+                  profile.transport.kind === "ssh"
+                    ? profile.transport.destination
+                    : profile.transport.url
+                }
                 startContent={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
                 endContent={
                   <HStack gap={2} align="center">
@@ -233,6 +315,57 @@ export function RuntimeHostProfilesSection() {
           </List>
         )}
       </SettingsSection>
+      <RuntimeHostSshTerminalDialog
+        isOpen={sshTerminalOpen}
+        onOpenChange={setSshTerminalOpen}
+        title={copy.sshTerminalTitle}
+        description={copy.sshTerminalDescription}
+        closed={copy.sshTerminalClosed}
+        closeLabel={copy.sshTerminalClose}
+      />
     </>
   );
+}
+
+function createTransport(draft: ReturnType<typeof createRemoteHostDraft>): RuntimeHostRemoteTransport {
+  if (draft.transportKind === "tls") return { kind: "tls", url: draft.url };
+  if (draft.transportKind === "plaintext") {
+    return {
+      kind: "plaintext",
+      url: draft.url,
+      acknowledgement: "plaintext-bearer-v1",
+    };
+  }
+  return {
+    kind: "ssh",
+    destination: draft.destination,
+    ...(draft.sshPort.trim() ? { sshPort: Number(draft.sshPort) } : {}),
+    remotePort: Number(draft.remotePort),
+    websocketPath: draft.websocketPath,
+  };
+}
+
+function draftComplete(draft: ReturnType<typeof createRemoteHostDraft>): boolean {
+  if ([draft.name, draft.rootId, draft.credential].some((value) => !value.trim())) return false;
+  if (draft.transportKind === "ssh") {
+    return Boolean(
+      draft.destination.trim() &&
+      validPort(draft.remotePort) &&
+      validWebSocketPath(draft.websocketPath) &&
+      (!draft.sshPort.trim() || validPort(draft.sshPort)),
+    );
+  }
+  return Boolean(
+    draft.url.trim() &&
+    (draft.transportKind !== "plaintext" || draft.plaintextAcknowledged),
+  );
+}
+
+function validPort(value: string): boolean {
+  const port = Number(value);
+  return value.trim() !== "" && Number.isInteger(port) && port >= 1 && port <= 65_535;
+}
+
+function validWebSocketPath(value: string): boolean {
+  return value.startsWith("/") && !value.includes("?") && !value.includes("#");
 }

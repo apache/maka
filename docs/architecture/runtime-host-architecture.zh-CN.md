@@ -191,9 +191,9 @@ Authenticated Client 可以发布带大小限制、带版本的 tool 或 service
 
 ### Host profile 选择连接目标
 
-Host profile 是 Client-owned connection configuration，不是 Host state。内置 `local` profile 保留现有的零配置 Local IPC 与 candidate spawn 路径。Remote profile 包含显示名称、明确的连接方式和必填的 State Root identity；access credential 会单独保存，并绑定到这个 profile 的确切 target。当前连接方式是 direct TLS（`wss`）。一个 profile ID 对应不可变的 target：改变连接方式、endpoint 或 root 时必须创建新的 profile ID；显示名称与 credential 可以原地更新。
+Host profile 是 Client-owned connection configuration，不是 Host state。内置 `local` profile 保留现有的零配置 Local IPC 与 candidate spawn 路径。Remote profile 包含显示名称、一种明确的 transport（Direct TLS、SSH tunnel 或已确认风险的明文连接）和必填的 State Root identity；access credential 会单独保存，并绑定到这个 profile 的确切 target。一个 profile ID 对应不可变的 target：改变连接方式、endpoint 或 root 时必须创建新的 profile ID；显示名称与 credential 可以原地更新。
 
-选择 profile 只决定 Client 连接哪个 Host，不会移动 Project 或 Session、改变 Host Epoch，也不会修改所选 Host。Remote profile 只使用 authenticated WebSocket connector，绝不 fallback 到本地 discovery 或 candidate spawn。每次远程连接都固定 profile 中的 State Root identity；endpoint 给出不同 root 时必须失败。
+选择 profile 只决定 Client 连接哪个 Host，不会移动 Project 或 Session、改变 Host Epoch，也不会修改所选 Host。所有 remote transport 最终都进入同一 authenticated WebSocket connector，绝不 fallback 到本地 discovery 或 candidate spawn。Tunnel 是 connection-scoped resource：reconnect 会创建新 tunnel，tunnel 关闭或丢失也会关闭对应 connection。每次远程连接都固定 profile 中的 State Root identity；endpoint 给出不同 root 时必须失败。
 
 Desktop 会在当前进程内应用新 profile，不需要重启应用。每个 target generation 独占自己的 connection 与 Session observations，因此为某一 generation 捕获的 request 或 live event 不能跨到另一 generation。切换失败时会尝试恢复之前的 target；如果新旧 target 都无法连接，Desktop 会明确报告当前没有 active Host。
 

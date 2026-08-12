@@ -7,6 +7,9 @@ import type { BotRegistry } from '@maka/runtime/bots';
 import {
   connectOrSpawnRuntimeHost,
   connectRemoteRuntimeHostProfile,
+  type RuntimeHostSshInteraction,
+  type RuntimeHostSshTunnel,
+  type RuntimeHostSshTunnelInput,
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostConnection,
@@ -82,6 +85,9 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly isTargetValid?: () => boolean;
   readonly newId?: () => string;
   readonly now?: () => number;
+  readonly openSshTunnel?: (
+    input: RuntimeHostSshTunnelInput,
+  ) => Promise<RuntimeHostSshTunnel>;
   readonly createSessionCopyCleanup: (input: {
     removeSession: (sessionId: string) => Promise<SessionCopyCleanupDisposition>;
     resumeSessionCopy: (input: {
@@ -124,6 +130,7 @@ export interface DesktopRuntimeHostCandidateStartInput extends DesktopRuntimeHos
   readonly remote?: {
     readonly profile: RemoteRuntimeHostProfile;
     readonly credential: string;
+    readonly sshInteraction?: RuntimeHostSshInteraction;
   };
 }
 
@@ -276,6 +283,12 @@ async function startRemoteDesktopRuntimeHostCandidate(
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     readyTimeoutMs: input.electionDeadlineMs ?? 45_000,
+    ...(remote.sshInteraction === undefined
+      ? {}
+      : { sshInteraction: remote.sshInteraction }),
+  },
+  {
+    ...(input.openSshTunnel ? { openSshTunnel: input.openSshTunnel } : {}),
   });
   try {
     return {

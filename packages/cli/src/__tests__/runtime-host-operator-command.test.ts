@@ -34,6 +34,34 @@ describe('Runtime Host operator commands', () => {
       kind: 'runtime-host-serve',
       json: true,
     });
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'serve',
+        '--websocket-host',
+        '0.0.0.0',
+        '--websocket-port',
+        '7443',
+        '--allow-insecure-remote',
+      ]),
+      {
+        kind: 'runtime-host-serve',
+        json: false,
+        websocket: { host: '0.0.0.0', port: 7443, allowInsecureRemote: true },
+      },
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'serve',
+        '--websocket-port',
+        '7443',
+        '--allow-insecure-remote',
+        '--tls-certificate',
+        'cert.pem',
+        '--tls-private-key',
+        'key.pem',
+      ]).kind,
+      'error',
+    );
   });
 
   test('expands access presets without access administration or Host paths', () => {

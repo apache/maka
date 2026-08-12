@@ -10,11 +10,21 @@ export function resolveTaskReadinessModelTarget(
   newTaskTarget: { llmConnectionSlug: string; model: string } | undefined,
 ): { connectionSlug?: string; model?: string } {
   if (session && sendOutcome?.kind === 'rebind') {
-    return { connectionSlug: sendOutcome.connectionSlug, model: sendOutcome.model };
+    return optionalModelTarget(sendOutcome.connectionSlug, sendOutcome.model);
   }
+  return optionalModelTarget(
+    session?.llmConnectionSlug ?? newTaskTarget?.llmConnectionSlug,
+    session?.model ?? newTaskTarget?.model,
+  );
+}
+
+function optionalModelTarget(
+  connectionSlug: string | undefined,
+  model: string | undefined,
+): { connectionSlug?: string; model?: string } {
   return {
-    connectionSlug: session?.llmConnectionSlug ?? newTaskTarget?.llmConnectionSlug,
-    model: session?.model ?? newTaskTarget?.model,
+    ...(connectionSlug?.trim() ? { connectionSlug: connectionSlug.trim() } : {}),
+    ...(model?.trim() ? { model: model.trim() } : {}),
   };
 }
 

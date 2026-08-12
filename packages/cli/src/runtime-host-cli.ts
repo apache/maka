@@ -12,6 +12,7 @@ export type RuntimeHostCliCommand =
         tlsCertificatePath?: string;
         tlsPrivateKeyPath?: string;
         allowedOrigins?: string[];
+        allowInsecureRemote?: boolean;
       };
     }
   | {
@@ -40,7 +41,20 @@ export type RuntimeHostCliCommand =
       kind: 'runtime-host-profile-set';
       id: string;
       name: string;
-      tlsUrl: string;
+      transport:
+        | { kind: 'tls'; url: string }
+        | {
+            kind: 'plaintext';
+            url: string;
+            acknowledgement: 'plaintext-bearer-v1';
+          }
+        | {
+            kind: 'ssh';
+            destination: string;
+            sshPort?: number;
+            remotePort: number;
+            websocketPath: string;
+          };
       expectedRootId: string;
       credentialEnv?: string;
     }
@@ -120,6 +134,13 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
   let id: string | undefined;
   let name: string | undefined;
   let tlsUrl: string | undefined;
+  let plaintextUrl: string | undefined;
+  let acknowledgePlaintext = false;
+  let sshDestination: string | undefined;
+  let sshPort: number | undefined;
+  let sshRemotePort: number | undefined;
+  let sshWebSocketPath = '/runtime-host';
+  let sshWebSocketPathConfigured = false;
   let expectedRootId: string | undefined;
   let credentialEnv: string | undefined;
   for (let index = 1; index < argv.length; index += 1) {
@@ -128,29 +149,87 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
       argument !== '--id' &&
       argument !== '--name' &&
       argument !== '--tls-url' &&
+      argument !== '--plaintext-url' &&
+      argument !== '--ssh-destination' &&
+      argument !== '--ssh-port' &&
+      argument !== '--ssh-remote-port' &&
+      argument !== '--ssh-websocket-path' &&
       argument !== '--expected-root' &&
-      argument !== '--credential-env'
+      argument !== '--credential-env' &&
+      argument !== '--acknowledge-plaintext'
     ) {
       return error(`Unexpected argument: ${argument ?? ''}`);
+    }
+    if (argument === '--acknowledge-plaintext') {
+      acknowledgePlaintext = true;
+      continue;
     }
     const parsed = optionValue(argv, index, argument);
     if (typeof parsed !== 'string') return parsed;
     if (argument === '--id') id = parsed;
     if (argument === '--name') name = parsed;
     if (argument === '--tls-url') tlsUrl = parsed;
+    if (argument === '--plaintext-url') plaintextUrl = parsed;
+    if (argument === '--ssh-destination') sshDestination = parsed;
+    if (argument === '--ssh-port') sshPort = Number(parsed);
+    if (argument === '--ssh-remote-port') sshRemotePort = Number(parsed);
+    if (argument === '--ssh-websocket-path') {
+      sshWebSocketPath = parsed;
+      sshWebSocketPathConfigured = true;
+    }
     if (argument === '--expected-root') expectedRootId = parsed;
     if (argument === '--credential-env') credentialEnv = parsed;
     index += 1;
   }
   if (!id) return error('--id is required');
   if (!name) return error('--name is required');
-  if (!tlsUrl) return error('--tls-url is required');
+  if ((tlsUrl ? 1 : 0) + (plaintextUrl ? 1 : 0) + (sshDestination ? 1 : 0) !== 1) {
+    return error('exactly one of --tls-url, --plaintext-url, or --ssh-destination is required');
+  }
+  if (plaintextUrl && !acknowledgePlaintext) {
+    return error('--plaintext-url requires --acknowledge-plaintext');
+  }
+  if (!plaintextUrl && acknowledgePlaintext) {
+    return error('--acknowledge-plaintext requires --plaintext-url');
+  }
+  if (
+    !sshDestination &&
+    (sshPort !== undefined || sshRemotePort !== undefined || sshWebSocketPathConfigured)
+  ) {
+    return error('SSH options require --ssh-destination');
+  }
+  if (sshDestination && !sshRemotePort) {
+    return error('--ssh-destination requires --ssh-remote-port');
+  }
+  if (sshPort !== undefined && (!Number.isInteger(sshPort) || sshPort < 1 || sshPort > 65_535)) {
+    return error('--ssh-port must be an integer between 1 and 65535');
+  }
+  if (
+    sshRemotePort !== undefined &&
+    (!Number.isInteger(sshRemotePort) || sshRemotePort < 1 || sshRemotePort > 65_535)
+  ) {
+    return error('--ssh-remote-port must be an integer between 1 and 65535');
+  }
   if (!expectedRootId) return error('--expected-root is required');
   return {
     kind: 'runtime-host-profile-set',
     id,
     name,
-    tlsUrl,
+    transport: tlsUrl
+      ? { kind: 'tls', url: tlsUrl }
+      : plaintextUrl
+        ? {
+            kind: 'plaintext',
+            url: plaintextUrl,
+            acknowledgement: 'plaintext-bearer-v1',
+          }
+        : {
+            kind: 'ssh',
+            destination: sshDestination!,
+            ...(sshPort === undefined ? {} : { sshPort }),
+            remotePort: sshRemotePort!,
+            websocketPath: sshWebSocketPath,
+          },
     expectedRootId,
     ...(credentialEnv ? { credentialEnv } : {}),
   };
@@ -212,11 +291,17 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   let websocketPath: string | undefined;
   let tlsCertificatePath: string | undefined;
   let tlsPrivateKeyPath: string | undefined;
+  let allowInsecureRemote = false;
   const allowedOrigins: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--json') {
       json = true;
+      continue;
+    }
+    if (argument === '--allow-insecure-remote') {
+      allowInsecureRemote = true;
+      websocketConfigured = true;
       continue;
     }
     if (argument === '--root') {
@@ -275,6 +360,9 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   if ((tlsCertificatePath === undefined) !== (tlsPrivateKeyPath === undefined)) {
     return error('--tls-certificate and --tls-private-key must be provided together');
   }
+  if (allowInsecureRemote && tlsCertificatePath !== undefined) {
+    return error('--allow-insecure-remote cannot be combined with TLS');
+  }
   if (websocketConfigured && websocketPort === undefined) {
     return error('--websocket-port is required for WebSocket options');
   }
@@ -292,6 +380,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
             ...(tlsCertificatePath ? { tlsCertificatePath } : {}),
             ...(tlsPrivateKeyPath ? { tlsPrivateKeyPath } : {}),
             ...(allowedOrigins.length > 0 ? { allowedOrigins } : {}),
+            ...(allowInsecureRemote ? { allowInsecureRemote: true } : {}),
           },
         }),
   };

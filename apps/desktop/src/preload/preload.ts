@@ -17,6 +17,7 @@ import type {
   PetPackChangedEvent,
   DesktopRuntimeHostProfileAddInput,
   DesktopRuntimeHostProfileChangedEvent,
+  DesktopRuntimeHostSshTerminalEvent,
   DesktopProjectSnapshot,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
@@ -397,6 +398,29 @@ const makaBridge = {
       ) => handler(payload);
       ipcRenderer.on('runtime-host-profiles:changed', listener);
       return () => ipcRenderer.off('runtime-host-profiles:changed', listener);
+    },
+  },
+  runtimeHostSshTerminal: {
+    write(sessionId: string, data: string) {
+      return ipcRenderer.invoke('runtime-host-ssh-terminal:write', { sessionId, data });
+    },
+    resize(sessionId: string, cols: number, rows: number) {
+      return ipcRenderer.invoke('runtime-host-ssh-terminal:resize', {
+        sessionId,
+        cols,
+        rows,
+      });
+    },
+    cancel(sessionId: string) {
+      return ipcRenderer.invoke('runtime-host-ssh-terminal:cancel', sessionId);
+    },
+    subscribe(handler: (event: DesktopRuntimeHostSshTerminalEvent) => void) {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: DesktopRuntimeHostSshTerminalEvent,
+      ) => handler(payload);
+      ipcRenderer.on('runtime-host-ssh-terminal:event', listener);
+      return () => ipcRenderer.off('runtime-host-ssh-terminal:event', listener);
     },
   },
   pets: {

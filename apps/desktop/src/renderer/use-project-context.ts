@@ -105,7 +105,7 @@ export function useAppShellProjectContext(options: {
   }, []);
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || !projectCapabilities.viewClientPath) return;
     let cancelled = false;
     void window.maka.app.sessionProjectInfo(sessionId).then(
       (info) => {
@@ -119,7 +119,7 @@ export function useAppShellProjectContext(options: {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, sessionCwd]);
+  }, [sessionId, sessionCwd, projectCapabilities.viewClientPath]);
 
   const resolvedSessionProjectInfo =
     sessionId &&

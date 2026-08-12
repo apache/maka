@@ -18,6 +18,7 @@ export interface RuntimeHostServiceCliOptions {
     readonly path?: string;
     readonly tlsCertificatePath?: string;
     readonly tlsPrivateKeyPath?: string;
+    readonly allowInsecureRemote?: boolean;
     readonly allowedOrigins?: readonly string[];
   };
 }
@@ -34,6 +35,7 @@ export async function runRuntimeHostServiceCli(
         ...(options.websocket.allowedOrigins
           ? { allowedOrigins: options.websocket.allowedOrigins }
           : {}),
+        ...(options.websocket.allowInsecureRemote ? { allowInsecureRemote: true } : {}),
         ...(options.websocket.tlsCertificatePath && options.websocket.tlsPrivateKeyPath
           ? {
               tls: {

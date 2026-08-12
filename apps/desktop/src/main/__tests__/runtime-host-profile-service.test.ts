@@ -388,7 +388,7 @@ test("reconnects when another process rotates the active profile credential", as
     activate: async (target) => {
       activations.push(
         target.profile.kind === "remote"
-          ? `${target.profile.transport.url}|${target.credential}`
+          ? `${target.profile.transport.kind === "ssh" ? target.profile.transport.destination : target.profile.transport.url}|${target.credential}`
           : "local",
       );
       return { ok: true, activeTarget: target };

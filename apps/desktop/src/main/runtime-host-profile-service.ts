@@ -6,6 +6,7 @@ import {
   LOCAL_RUNTIME_HOST_PROFILE,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   RuntimeHostPermanentReconnectError,
+  sameResolvedRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfileCatalog,
@@ -128,7 +129,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     const activeProfileId = knownActiveProfileId ?? (activeTarget && await catalog
       .resolve(activeTarget.profile.id)
       .then((resolved) =>
-        sameRuntimeHostTarget(resolved, activeTarget)
+        sameResolvedRuntimeHostProfileTarget(resolved, activeTarget)
           ? activeTarget.profile.id
           : undefined,
       )
@@ -162,7 +163,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       return snapshot();
     }
     const activeTarget = input.getActiveTarget();
-    if (activeTarget && sameRuntimeHostTarget(target, activeTarget)) {
+    if (activeTarget && sameResolvedRuntimeHostProfileTarget(target, activeTarget)) {
       const document = await persistCurrentSelection(target);
       selectedProfileId = profileId;
       unavailable = undefined;
@@ -307,7 +308,7 @@ function createDesktopRuntimeHostProfileSelectionAuthority(input: {
           } catch (error) {
             if (!(error instanceof RuntimeHostPermanentReconnectError)) throw error;
           }
-          if (!current || !sameRuntimeHostTarget(current, target)) {
+          if (!current || !sameResolvedRuntimeHostProfileTarget(current, target)) {
             return { selected: false, document };
           }
         }
@@ -330,21 +331,6 @@ async function rollbackCreatedProfile(
       "Runtime Host connection failed and the incomplete profile could not be removed",
     );
   }
-}
-
-function sameRuntimeHostTarget(
-  left: ResolvedRuntimeHostProfile,
-  right: ResolvedRuntimeHostProfile,
-): boolean {
-  if (left.profile.kind !== right.profile.kind) return false;
-  if (left.profile.kind === "local" || right.profile.kind === "local") return true;
-  return (
-    left.profile.id === right.profile.id &&
-    left.profile.transport.kind === right.profile.transport.kind &&
-    left.profile.transport.url === right.profile.transport.url &&
-    left.profile.rootId === right.profile.rootId &&
-    left.credential === right.credential
-  );
 }
 
 function asError(value: unknown): Error {

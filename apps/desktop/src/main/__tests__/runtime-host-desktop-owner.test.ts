@@ -21,6 +21,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   const second = candidateHarness();
   const queue = [ready(first.candidate), ready(second.candidate)];
   let starts = 0;
+  const interactions: Array<string | undefined> = [];
   let resolveSecondStart!: () => void;
   let releaseSecond!: () => void;
   const secondStarted = new Promise<void>((resolve) => {
@@ -30,9 +31,12 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
     releaseSecond = resolve;
   });
   const readiness: string[] = [];
-  const owner = await startRuntimeHostDesktopOwner({} as DesktopRuntimeHostCandidateStartInput, {
-    startCandidate: async () => {
+  const owner = await startRuntimeHostDesktopOwner({
+    remote: { ...remoteTarget('office'), sshInteraction: 'terminal' },
+  } as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) => {
       starts += 1;
+      interactions.push(input.remote?.sshInteraction);
       if (starts === 2) {
         resolveSecondStart();
         await secondReleased;
@@ -62,6 +66,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   assert.equal(second.botMessages, 1);
   assert.deepEqual(second.stoppedSessions, ['session-1']);
   assert.deepEqual(readiness, ['connecting', 'ready', 'reconnecting', 'ready']);
+  assert.deepEqual(interactions, ['terminal', 'batch']);
   await owner.close();
   assert.equal(second.closeCalls, 1);
 });

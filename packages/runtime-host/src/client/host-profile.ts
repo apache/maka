@@ -16,6 +16,7 @@ import {
   type RuntimeHostConnection,
 } from './connection.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
+import { openRuntimeHostSshTunnel, type RuntimeHostSshInteraction } from './ssh-tunnel.js';
 import { waitForRuntimeHostReady } from './wait-for-ready.js';
 
 const PROFILE_SCHEMA_VERSION = 1;
@@ -24,6 +25,7 @@ const PROFILE_COUNT_MAX = 32;
 const PROFILE_NAME_MAX_BYTES = 128;
 const PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES = 8 * 1024;
+export const RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT = 'plaintext-bearer-v1' as const;
 
 export const LOCAL_RUNTIME_HOST_PROFILE = Object.freeze({
   id: 'local',
@@ -41,10 +43,23 @@ export interface RemoteRuntimeHostProfile {
   readonly rootId: string;
 }
 
-export type RuntimeHostRemoteTransport = {
-  readonly kind: 'tls';
-  readonly url: string;
-};
+export type RuntimeHostRemoteTransport =
+  | {
+      readonly kind: 'tls';
+      readonly url: string;
+    }
+  | {
+      readonly kind: 'plaintext';
+      readonly url: string;
+      readonly acknowledgement: typeof RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT;
+    }
+  | {
+      readonly kind: 'ssh';
+      readonly destination: string;
+      readonly sshPort?: number;
+      readonly remotePort: number;
+      readonly websocketPath: string;
+    };
 
 export interface RuntimeHostProfileDocument {
   readonly schemaVersion: typeof PROFILE_SCHEMA_VERSION;
@@ -54,6 +69,19 @@ export interface RuntimeHostProfileDocument {
 export interface ResolvedRuntimeHostProfile {
   readonly profile: RuntimeHostProfile;
   readonly credential?: string;
+}
+
+export function sameResolvedRuntimeHostProfileTarget(
+  left: ResolvedRuntimeHostProfile,
+  right: ResolvedRuntimeHostProfile,
+): boolean {
+  if (left.profile.kind !== right.profile.kind) return false;
+  if (left.profile.kind === 'local' || right.profile.kind === 'local') return true;
+  return (
+    left.profile.id === right.profile.id &&
+    profileCredentialBinding(left.profile) === profileCredentialBinding(right.profile) &&
+    left.credential === right.credential
+  );
 }
 
 export interface RuntimeHostProfileCatalog {
@@ -131,15 +159,31 @@ export async function connectRemoteRuntimeHostProfile(
     readonly connectTimeoutMs?: number;
     readonly handshakeTimeoutMs?: number;
     readonly readyTimeoutMs?: number;
+    readonly sshInteraction?: RuntimeHostSshInteraction;
   },
   overrides: {
     connect?: typeof connectRemoteRuntimeHost;
     waitForReady?: typeof waitForRuntimeHostReady;
+    openSshTunnel?: typeof openRuntimeHostSshTunnel;
   } = {},
 ): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
+  const transport = input.profile.transport;
+  const tunnel =
+    transport.kind === 'ssh'
+      ? await (overrides.openSshTunnel ?? openRuntimeHostSshTunnel)({
+          destination: transport.destination,
+          ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+          remotePort: transport.remotePort,
+          websocketPath: transport.websocketPath,
+          interaction: input.sshInteraction ?? 'batch',
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        })
+      : undefined;
   const connected = await (overrides.connect ?? connectRemoteRuntimeHost)({
-    url: input.profile.transport.url,
+    url: transport.kind === 'ssh' ? tunnel!.url : transport.url,
+    ...(transport.kind === 'plaintext' ? { allowInsecureRemote: true } : {}),
+    ...(tunnel ? { connectionResource: tunnel.resource } : {}),
     credential: input.credential,
     expectedRootId: input.profile.rootId,
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -444,20 +488,62 @@ function decodeRemoteRuntimeHostProfile(value: unknown): RemoteRuntimeHostProfil
     id: requireProfileId(record.id),
     name: requireProfileName(record.name),
     kind: 'remote',
-    transport: decodeRuntimeHostTlsTransport(record.transport),
+    transport: decodeRuntimeHostRemoteTransport(record.transport),
     rootId: requireHostRootId(record.rootId),
   });
 }
 
-function decodeRuntimeHostTlsTransport(value: unknown): RuntimeHostRemoteTransport {
-  const record = requireExactRecord(value, 'Runtime Host TLS transport', ['kind', 'url']);
-  if (record.kind !== 'tls') throw new Error('Runtime Host transport kind must be tls');
-  const rawUrl = requireString(record.url, 'Runtime Host TLS URL');
-  if (new URL(rawUrl).protocol !== 'wss:') {
-    throw new Error('Runtime Host TLS URL must use wss');
+function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRemoteTransport {
+  const kind = requireRecord(value, 'Runtime Host transport').kind;
+  if (kind === 'tls') {
+    const record = requireExactRecord(value, 'Runtime Host TLS transport', ['kind', 'url']);
+    const rawUrl = requireString(record.url, 'Runtime Host TLS URL');
+    if (new URL(rawUrl).protocol !== 'wss:') {
+      throw new Error('Runtime Host TLS URL must use wss');
+    }
+    const url = normalizeRemoteRuntimeHostUrl(rawUrl);
+    return Object.freeze({ kind: 'tls', url: url.toString() });
   }
-  const url = normalizeRemoteRuntimeHostUrl(rawUrl);
-  return Object.freeze({ kind: 'tls', url: url.toString() });
+  if (kind === 'plaintext') {
+    const record = requireExactRecord(value, 'Runtime Host plaintext transport', [
+      'kind',
+      'url',
+      'acknowledgement',
+    ]);
+    if (record.acknowledgement !== RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT) {
+      throw new Error('Runtime Host plaintext transport requires explicit acknowledgement');
+    }
+    const rawUrl = requireString(record.url, 'Runtime Host plaintext URL');
+    if (new URL(rawUrl).protocol !== 'ws:') {
+      throw new Error('Runtime Host plaintext URL must use ws');
+    }
+    const url = normalizeRemoteRuntimeHostUrl(rawUrl, { allowInsecureRemote: true });
+    return Object.freeze({
+      kind: 'plaintext',
+      url: url.toString(),
+      acknowledgement: RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT,
+    });
+  }
+  if (kind === 'ssh') {
+    const record = requireExactRecord(
+      value,
+      'Runtime Host SSH transport',
+      ['kind', 'destination', 'remotePort', 'websocketPath'],
+      ['sshPort'],
+    );
+    const destination = requireSshDestination(record.destination);
+    const sshPort = optionalPort(record.sshPort, 'Runtime Host SSH port');
+    const remotePort = requirePort(record.remotePort, 'Runtime Host SSH remote port');
+    const websocketPath = requireWebSocketPath(record.websocketPath);
+    return Object.freeze({
+      kind: 'ssh',
+      destination,
+      ...(sshPort === undefined ? {} : { sshPort }),
+      remotePort,
+      websocketPath,
+    });
+  }
+  throw new Error('Runtime Host transport kind is invalid');
 }
 
 function requireProfileId(value: unknown): string {
@@ -477,10 +563,21 @@ function profileCredentialBinding(profile: RemoteRuntimeHostProfile): string {
   return createHash('sha256')
     .update(normalized.transport.kind)
     .update('\0')
-    .update(normalized.transport.url)
+    .update(transportCredentialBinding(normalized.transport))
     .update('\0')
     .update(normalized.rootId)
     .digest('hex');
+}
+
+function transportCredentialBinding(transport: RuntimeHostRemoteTransport): string {
+  switch (transport.kind) {
+    case 'tls':
+      return transport.url;
+    case 'plaintext':
+      return `${transport.url}\0${transport.acknowledgement}`;
+    case 'ssh':
+      return `${transport.destination}\0${transport.sshPort ?? ''}\0${transport.remotePort}\0${transport.websocketPath}`;
+  }
 }
 
 function sameRemoteRuntimeHostProfile(
@@ -521,20 +618,60 @@ function requireString(value: unknown, label: string): string {
   return value;
 }
 
+function requireSshDestination(value: unknown): string {
+  const destination = requireString(value, 'Runtime Host SSH destination').trim();
+  if (
+    destination.length === 0 ||
+    destination.length > 512 ||
+    destination.startsWith('-') ||
+    /\s|[\u0000-\u001f\u007f]/u.test(destination)
+  ) {
+    throw new Error('Runtime Host SSH destination is invalid');
+  }
+  return destination;
+}
+
+function optionalPort(value: unknown, label: string): number | undefined {
+  return value === undefined ? undefined : requirePort(value, label);
+}
+
+function requirePort(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65_535) {
+    throw new Error(`${label} must be an integer between 1 and 65535`);
+  }
+  return value;
+}
+
+function requireWebSocketPath(value: unknown): string {
+  const path = requireString(value, 'Runtime Host SSH WebSocket path');
+  if (!path.startsWith('/') || path.includes('?') || path.includes('#')) {
+    throw new Error('Runtime Host SSH WebSocket path must be an absolute URL path');
+  }
+  return path;
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
 function requireExactRecord(
   value: unknown,
   label: string,
-  keys: readonly string[],
+  requiredKeys: readonly string[],
+  optionalKeys: readonly string[] = [],
 ): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
   }
   const record = value as Record<string, unknown>;
-  const expected = new Set(keys);
+  const expected = new Set([...requiredKeys, ...optionalKeys]);
   if (Object.keys(record).some((key) => !expected.has(key))) {
     throw new Error(`${label} contains unknown fields`);
   }
-  if (keys.some((key) => !Object.hasOwn(record, key))) {
+  if (requiredKeys.some((key) => !Object.hasOwn(record, key))) {
     throw new Error(`${label} is missing required fields`);
   }
   return record;

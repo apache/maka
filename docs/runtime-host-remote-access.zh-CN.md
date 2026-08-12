@@ -2,30 +2,14 @@
 
 [English](./runtime-host-remote-access.md)
 
-Maka Desktop、TUI 和 CLI 可以通过 authenticated TLS 直接连接远程 Runtime Host。Host 继续独占自己的 Project、模型连接、Session 和执行状态。
-
-当前只支持 Direct TLS。SSH tunnel 和显式不安全的明文连接尚未成为产品能力。
+Maka Desktop、TUI 和 CLI 可以通过 Direct TLS、SSH tunnel 或明确确认风险的明文 WebSocket 连接 Runtime Host。Host 继续独占自己的 Project、模型连接、Session 和执行状态。
 
 ## 准备 Host
 
-在远程机器构建 Maka，选择持久的 State Root，并使用 TLS 证书和私钥启动 service：
+在远程机器构建 Maka，选择持久的 State Root，并注册允许 remote Client 使用的目录：
 
 ```sh
 npm run build
-npm --workspace maka-agent exec -- maka runtime-host serve \
-  --root /srv/maka \
-  --websocket-host 0.0.0.0 \
-  --websocket-port 7443 \
-  --tls-certificate /etc/maka/tls.crt \
-  --tls-private-key /etc/maka/tls.key \
-  --json
-```
-
-Service 会输出一条 JSON ready event，请复制其中的 `rootId`。通配 listener address 只是 bind fact；Client 应使用自己真正能够访问的域名或地址。
-
-保持 service 运行，并在 Host 的另一个终端注册允许远程 Client 使用的目录：
-
-```sh
 npm --workspace maka-agent exec -- maka runtime-host project add /srv/projects/example --root /srv/maka
 npm --workspace maka-agent exec -- maka runtime-host project list --root /srv/maka
 ```
@@ -41,48 +25,108 @@ npm --workspace maka-agent exec -- maka runtime-host access issue \
   --preset desktop-client
 ```
 
-仅供 TUI 或 CLI 使用的 principal 可选择 `terminal-client`。命令只显示 credential 一次。Preset 在签发时展开为明确的 operation grants，不授予 access administration 或提交任意 Host path 的权限；Maka 日后修改 preset 也不会扩大已有 credential 的权限。
+仅供 TUI 或 CLI 使用的 principal 可选择 `terminal-client`。命令只显示 credential 一次。Credential 不授予 access administration 或任意 Host-path 权限。
+
+## 选择连接方式
+
+### Direct TLS
+
+具有稳定网络入口的 Host 应使用 TLS：
+
+```sh
+npm --workspace maka-agent exec -- maka runtime-host serve \
+  --root /srv/maka \
+  --websocket-host 0.0.0.0 \
+  --websocket-port 7443 \
+  --tls-certificate /etc/maka/tls.crt \
+  --tls-private-key /etc/maka/tls.key \
+  --json
+```
+
+Client 使用可达的 `wss://` URL，并执行正常的平台证书校验。
+
+### SSH tunnel
+
+当远程机器已经能通过 OpenSSH 访问时，可以让 Runtime Host 只监听 loopback：
+
+```sh
+npm --workspace maka-agent exec -- maka runtime-host serve \
+  --root /srv/maka \
+  --websocket-port 7443 \
+  --json
+```
+
+Profile 保存 SSH destination、可选 SSH port、远程 WebSocket port 与 path。Maka 不经过 shell，直接运行系统 `ssh`，把 Client 的临时 loopback port 转发到 Host 的 `127.0.0.1:7443`。
+
+用户主动首次连接时，Desktop 会打开内嵌终端，让 OpenSSH 完成 host-key 确认、密码或 key passphrase 输入；TUI 会在当前终端显示相同提示。后台重连和非交互 CLI 使用 OpenSSH batch mode，因此需要预先配置 SSH key 或 agent。
+
+### 明确启用明文连接
+
+明文连接不会加密 access credential 或 Session traffic。它只适合可信且隔离的网络，并要求 Host 与 Client 分别明确同意：
+
+```sh
+npm --workspace maka-agent exec -- maka runtime-host serve \
+  --root /srv/maka \
+  --websocket-host 0.0.0.0 \
+  --websocket-port 7443 \
+  --allow-insecure-remote \
+  --json
+```
+
+Client Profile 还必须单独持久化明文风险确认。Maka 不会把 TLS 或 SSH 自动降级为明文。
+
+每种 service 命令都会输出一条 JSON ready event。复制其中的 `rootId`，Client 会用它确认连接的是预期 State Root。
 
 ## 连接 Desktop
 
-打开`设置 → 工作区 → Runtime Host`，选择**添加远程 Host**，然后填写：
+打开`设置 → 工作区 → Runtime Host`，选择**添加远程 Host**，选定连接方式，再填写对应 endpoint、ready event 中的 `rootId` 和刚签发的 credential，然后选择**保存并连接**。
 
-- 仅在本机使用的显示名称；
-- Client 能访问的 `wss://` endpoint；
-- ready event 中的 `rootId`；
-- 刚刚签发的 access credential。
-
-选择**保存并连接**。Credential 与 Profile 分开存储。Maka 会验证 TLS 证书和确切的 State Root，绝不 fallback 到 Local discovery。连接失败时，当前 Host 会继续工作，未完成的 Profile 会被删除，配置表单则保留原值以便修正。连接成功后，Profile 才会作为可复用配置保留下来。
-
-连接成功后，从 Host 已注册的 Project 中选择一个。Remote Host 下不会提供本地目录选择器或其他 Client-path 操作。
+Credential 与 Profile 分开存储。连接失败时，当前 Host 会继续工作，未完成的 Profile 会被删除；连接成功后 Profile 才会保留。随后从 Host 已注册的 Project 中选择一个。Remote Host 下不会提供本地目录选择器或其他 Client-path 操作。
 
 ## 连接 TUI 或 CLI
 
-把同一 target 保存为共享 Profile。只在创建或更新 Profile 时通过环境变量提供 credential：
+把 target 保存为共享 Profile。只在创建或更新 Profile 时通过环境变量提供 credential：
 
 ```sh
 export MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL='<credential>'
-npm --workspace maka-agent exec -- maka runtime-host profile set \
-  --id office \
-  --name Office \
+
+# Direct TLS
+maka runtime-host profile set \
+  --id office --name Office \
   --tls-url wss://runtime.example.com:7443/runtime-host \
   --expected-root '<rootId>'
+
+# 或 SSH
+maka runtime-host profile set \
+  --id office-ssh --name 'Office SSH' \
+  --ssh-destination user@runtime.example.com \
+  --ssh-remote-port 7443 \
+  --expected-root '<rootId>'
+
+# 或明确启用明文连接
+maka runtime-host profile set \
+  --id lab --name Lab \
+  --plaintext-url ws://192.0.2.10:7443/runtime-host \
+  --acknowledge-plaintext \
+  --expected-root '<rootId>'
+
 unset MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL
 ```
 
 然后明确选择 Host 上的 Project：
 
 ```sh
-npm --workspace maka-agent exec -- maka --host office --project '<projectId>'
-npm --workspace maka-agent exec -- maka run --host office --project '<projectId>' "总结这个项目"
+maka --host office --project '<projectId>'
+maka run --host office --project '<projectId>' "总结这个项目"
 ```
 
-每个 TUI 或 CLI 进程只连接一个 Profile。Endpoint 不可达、证书错误、认证失败、Host 不兼容、State Root 不符或 Project 不可用都会作为终端错误报告。
+每个 TUI 或 CLI 进程只连接一个 Profile。TUI 的首次 SSH 连接可以交互；非交互命令会报告 SSH 失败，并要求提前配置认证。
 
 ## 安全边界
 
 - 不要把 credential 放在命令行或 Profile JSON 中。
-- Direct remote connection 必须使用 `wss:` 和平台证书校验；不存在验证绕过或明文 fallback。
-- Session response 可能包含解析后的 `hostCwd`。它只是 Host metadata，不能通过 Client filesystem 解释。
-- Service process 由 deployment operator 管理，remote Client 不会升级或终止它。
+- 优先使用 TLS 或 SSH。明文连接需要持久的 Client 确认和独立的 Host 启动参数。
+- SSH 只在两端 loopback 之间转发；Host verification 与 authentication 仍由系统 OpenSSH 负责。
+- Session response 中的 `hostCwd` 只是 Host metadata，不能通过 Client filesystem 解释。
+- Remote Client 不会升级或终止 service process。
 - 在 Host 上使用 `maka runtime-host access revoke --root /srv/maka --credential <credentialId>` 撤销 credential。

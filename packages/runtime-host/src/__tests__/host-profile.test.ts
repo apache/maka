@@ -9,6 +9,7 @@ import {
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostProfileCredentialStore,
   decodeRuntimeHostProfileDocument,
+  RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT,
   type RemoteRuntimeHostProfile,
   type RuntimeHostProfileCredentialStore,
 } from '../client/host-profile.js';
@@ -213,6 +214,45 @@ describe('Runtime Host profiles', () => {
       () =>
         decodeRuntimeHostProfileDocument({
           ...valid,
+          profiles: [
+            {
+              ...valid.profiles[0],
+              transport: {
+                kind: 'plaintext',
+                url: 'ws://runtime.example.com/runtime-host',
+                acknowledgement: 'missing',
+              },
+            },
+          ],
+        }),
+      /requires explicit acknowledgement/,
+    );
+    assert.deepEqual(
+      decodeRuntimeHostProfileDocument({
+        schemaVersion: 1,
+        profiles: [
+          {
+            ...valid.profiles[0],
+            transport: {
+              kind: 'ssh',
+              destination: 'operator@example.com',
+              remotePort: 7443,
+              websocketPath: '/runtime-host',
+            },
+          },
+        ],
+      }).profiles[0]?.transport,
+      {
+        kind: 'ssh',
+        destination: 'operator@example.com',
+        remotePort: 7443,
+        websocketPath: '/runtime-host',
+      },
+    );
+    assert.throws(
+      () =>
+        decodeRuntimeHostProfileDocument({
+          ...valid,
           profiles: [{ ...valid.profiles[0], rootId: 'unknown' }],
         }),
       /Invalid rootId/,
@@ -358,6 +398,82 @@ describe('Runtime Host profiles', () => {
     assert.equal(waited, true);
   });
 
+  test('connects plaintext only from a persistently acknowledged profile', async () => {
+    const connection = { close: async () => undefined } as never;
+    await connectRemoteRuntimeHostProfile(
+      {
+        profile: {
+          id: 'lab',
+          name: 'Lab',
+          kind: 'remote',
+          transport: {
+            kind: 'plaintext',
+            url: 'ws://192.0.2.10:7443/runtime-host',
+            acknowledgement: RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT,
+          },
+          rootId: ROOT_A,
+        },
+        credential: 'opaque-token',
+        surface: 'run',
+        clientInstanceId: 'client-1',
+      },
+      {
+        connect: async (input) => {
+          assert.equal(input.url, 'ws://192.0.2.10:7443/runtime-host');
+          assert.equal(input.allowInsecureRemote, true);
+          return { kind: 'connected', connection };
+        },
+        waitForReady: async () => undefined,
+      },
+    );
+  });
+
+  test('binds one SSH tunnel resource to the remote connection attempt', async () => {
+    let tunnelClosed = false;
+    const resource = {
+      closed: new Promise<void>(() => undefined),
+      close: async () => {
+        tunnelClosed = true;
+      },
+    };
+    const connection = { close: async () => undefined } as never;
+    await connectRemoteRuntimeHostProfile(
+      {
+        profile: {
+          id: 'ssh-lab',
+          name: 'SSH Lab',
+          kind: 'remote',
+          transport: {
+            kind: 'ssh',
+            destination: 'operator@example.com',
+            sshPort: 2222,
+            remotePort: 7443,
+            websocketPath: '/runtime-host',
+          },
+          rootId: ROOT_A,
+        },
+        credential: 'opaque-token',
+        surface: 'tui',
+        clientInstanceId: 'client-1',
+        sshInteraction: 'inherit',
+      },
+      {
+        openSshTunnel: async (input) => {
+          assert.equal(input.destination, 'operator@example.com');
+          assert.equal(input.interaction, 'inherit');
+          return { url: 'ws://127.0.0.1:43210/runtime-host', resource };
+        },
+        connect: async (input) => {
+          assert.equal(input.url, 'ws://127.0.0.1:43210/runtime-host');
+          assert.equal(input.connectionResource, resource);
+          return { kind: 'connected', connection };
+        },
+        waitForReady: async () => undefined,
+      },
+    );
+    assert.equal(tunnelClosed, false);
+  });
+
   test('fails permanently when a remote profile reaches the wrong root', async () => {
     await assert.rejects(
       () =>
@@ -443,7 +559,7 @@ function remoteProfile(id: string, url: string, rootId: string): RemoteRuntimeHo
 function memoryCredentials(): RuntimeHostProfileCredentialStore {
   const values = new Map<string, string>();
   const key = (profile: RemoteRuntimeHostProfile) =>
-    `${profile.id}\0${profile.transport.kind}\0${profile.transport.url}\0${profile.rootId}`;
+    `${profile.id}\0${JSON.stringify(profile.transport)}\0${profile.rootId}`;
   return {
     get: async (profile) => values.get(key(profile)) ?? null,
     set: async (profile, credential) => {

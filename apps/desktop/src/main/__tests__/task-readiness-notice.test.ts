@@ -18,6 +18,17 @@ test('an unlocked stale session checks the send projection rebind target', () =>
   );
 });
 
+test('omits transient empty model target fields', () => {
+  assert.deepEqual(
+    resolveTaskReadinessModelTarget(
+      undefined,
+      undefined,
+      { llmConnectionSlug: ' ', model: '' },
+    ),
+    {},
+  );
+});
+
 test('confirmed repair and unavailable states block, while loading uncertainty does not', () => {
   assert.equal(isTaskSubmissionHardBlocked(snapshot('repair_required', 'model_target')), true);
   assert.equal(isTaskSubmissionHardBlocked(snapshot('unavailable', 'runtime')), true);

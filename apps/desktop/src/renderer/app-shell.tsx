@@ -1742,6 +1742,9 @@ function AppShellContent({
     sessionCwd: activeSession?.cwd,
     sessionProjectId: activeSession?.projectId,
     onProjectSelected: (ownerSessionId) => {
+      void refreshSkills();
+      void refreshManagedSkillSources();
+      void refreshBundledSkillCatalog();
       if (ownerSessionId && activeIdRef.current === ownerSessionId) openNewTaskSurface();
     },
     toastApi,
@@ -1772,9 +1775,10 @@ function AppShellContent({
       ? { onSelectNoProject: selectNoProject }
       : {}),
   };
+  const taskReadinessWorkspace = activeSession?.cwd ?? projectInfo?.projectPath;
   const taskReadinessRequest = {
     ...resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
-    cwd: activeSession?.cwd ?? projectInfo?.projectPath,
+    ...(taskReadinessWorkspace ? { cwd: taskReadinessWorkspace } : {}),
   };
   const taskReadiness = useTaskSubmissionReadiness(
     taskReadinessRequest,

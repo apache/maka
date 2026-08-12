@@ -93,6 +93,8 @@ function helpText(): string {
     '  maka runtime-host project add <path> [--root <path>]',
     '  maka runtime-host profile list',
     '  maka runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]',
+    '  maka runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]',
+    '  maka runtime-host profile set --id <id> --name <name> --plaintext-url <ws-url> --acknowledge-plaintext --expected-root <root-id> [--credential-env <name>]',
     '  maka runtime-host profile remove --id <id>',
     '  maka runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>',
     '',
@@ -215,7 +217,7 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
         kind: 'set',
         id: command.id,
         name: command.name,
-        tlsUrl: command.tlsUrl,
+        transport: command.transport,
         expectedRootId: command.expectedRootId,
         ...(command.credentialEnv ? { credentialEnv: command.credentialEnv } : {}),
       });

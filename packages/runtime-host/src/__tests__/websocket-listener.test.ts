@@ -20,6 +20,34 @@ import { createRuntimeHostConnectionAuthority } from '../server/connection-autho
 import { startRuntimeHostWebSocketListener } from '../server/websocket-listener.js';
 import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
 
+test('non-loopback plaintext listener requires explicit Host opt-in', async () => {
+  const accessAuthority = {} as RuntimeHostAccessAuthority;
+  await assert.rejects(
+    startRuntimeHostWebSocketListener({
+      host: '0.0.0.0',
+      port: 0,
+      accessAuthority,
+      isReady: () => true,
+      accept: () => undefined,
+    }),
+    /must bind to loopback/,
+  );
+  const listener = await startRuntimeHostWebSocketListener({
+    host: '0.0.0.0',
+    port: 0,
+    allowInsecureRemote: true,
+    accessAuthority,
+    isReady: () => true,
+    accept: () => undefined,
+  });
+  try {
+    assert.match(listener.endpoint, /^ws:\/\/0\.0\.0\.0:/u);
+  } finally {
+    await listener.closeAdmission();
+    await listener.cleanup();
+  }
+});
+
 test('WebSocket admission, health, Origin, and message policy fail closed', {
   timeout: 5_000,
 }, async () => {

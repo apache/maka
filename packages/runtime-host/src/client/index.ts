@@ -24,6 +24,7 @@ export {
   connectRemoteRuntimeHostProfile,
   decodeRuntimeHostProfileDocument,
   remoteRuntimeHostUnavailableError,
+  sameResolvedRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
   type RuntimeHostRemoteTransport,
   type ResolvedRuntimeHostProfile,
@@ -37,6 +38,14 @@ export {
   isRuntimeHostReconnectingConnection,
   type RuntimeHostReconnectingConnection,
 } from './reconnecting-connection.js';
+export {
+  openRuntimeHostSshTunnel,
+  type RuntimeHostSshInteraction,
+  type RuntimeHostSshProcess,
+  type RuntimeHostSshProcessFactory,
+  type RuntimeHostSshTunnel,
+  type RuntimeHostSshTunnelInput,
+} from './ssh-tunnel.js';
 export {
   RuntimeHostPermanentReconnectError,
   startRuntimeHostReconnectLifecycle,
