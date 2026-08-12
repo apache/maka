@@ -3,10 +3,17 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { createExternalExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { PreToolUseHookInput } from '@maka/core/hooks';
+import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
-import { createHookConfigStore, createHookTrustStore } from '@maka/storage';
+import {
+  createHookConfigStore,
+  createHookTrustStore,
+  createSqliteRuntimeStore,
+} from '@maka/storage';
+import { ToolRuntime, type MakaTool } from '@maka/runtime/tool-runtime';
 import { createHostHookComposition, hashHookDefinition } from '../server/host-hook-composition.js';
 
 describe('Host Hook composition', () => {
@@ -96,6 +103,119 @@ describe('Host Hook composition', () => {
       assert.equal(second.audits[0]?.status, 'skipped_untrusted');
       assert.notEqual(second.audits[0]?.definitionHash, hash);
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('denies a real configured and trusted command before ToolRuntime T1 and side effects', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-host-hook-e2e-'));
+    const runtimeStore = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+    try {
+      const args = [
+        '-e',
+        `let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const x=JSON.parse(s);if(x.schema_version===1&&x.tool_name==='Bash'&&x.tool_input.command==='git push'){process.stderr.write('push blocked by fixture');process.exit(2)}process.exit(9)})`,
+      ];
+      const config = createHookConfigStore(root);
+      await config.set({
+        version: 1,
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'Bash',
+              hooks: [
+                {
+                  id: 'push-policy',
+                  type: 'command',
+                  command: process.execPath,
+                  args,
+                  timeoutMs: 1_000,
+                },
+              ],
+            },
+          ],
+        },
+      });
+      const definitionHash = hashHookDefinition({
+        source: 'user',
+        projectIdentity: 'user',
+        matcher: 'Bash',
+        command: process.execPath,
+        args,
+        timeoutMs: 1_000,
+      });
+      await createHookTrustStore(root).trust({
+        definitionHash,
+        source: 'user',
+        projectIdentity: 'user',
+        trustedAt: Date.now(),
+      });
+
+      const sessionHeader = header(root);
+      const dispatcher = createHostHookComposition({
+        stateRoot: root,
+        runtimeEvents: runtimeStore,
+      }).dispatcherFor(sessionHeader);
+      let implementationCalls = 0;
+      let id = 0;
+      let now = 0;
+      const runtime = new ToolRuntime({
+        sessionId: 'session-1',
+        header: sessionHeader,
+        connection: {
+          slug: 'connection-1',
+          providerType: 'openai',
+          defaultModel: 'model-1',
+        },
+        modelId: 'model-1',
+        appendMessage: async () => {},
+        readExecutionBoundary: async () => createExternalExecutionBoundary(),
+        newId: () => `id-${++id}`,
+        now: () => ++now,
+        getPermissionPauseTarget: () => null,
+        turnId: 'turn-1',
+        runId: 'run-1',
+        invocationId: 'invocation-1',
+        runtimeCommitSink: runtimeStore,
+        preToolUseHooks: dispatcher,
+      });
+      const tool: MakaTool<{ command: string }, string> = {
+        name: 'Bash',
+        description: 'fixture',
+        parameters: { type: 'object' },
+        impl: async () => {
+          implementationCalls += 1;
+          return 'should not run';
+        },
+      };
+      const sessionEvents: SessionEvent[] = [];
+      const settlement = await runtime.settleToolCall({
+        tool,
+        turnId: 'turn-1',
+        toolCallId: 'provider-call-1',
+        input: { command: 'git push' },
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: (event) => sessionEvents.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            sessionEvents.push(event);
+          },
+        },
+      });
+
+      assert.equal(implementationCalls, 0);
+      assert.match(JSON.stringify(settlement.result), /push blocked by fixture/u);
+      const toolStart = sessionEvents.find((event) => event.type === 'tool_start');
+      assert.ok(toolStart && toolStart.type === 'tool_start');
+      assert.equal(toolStart.operationId, undefined);
+      assert.equal(sessionEvents.filter((event) => event.type === 'tool_result').length, 1);
+
+      const runtimeEvents = await runtimeStore.readImmutableRuntimeEvents('session-1', 'run-1');
+      assert.equal(runtimeEvents.length, 1);
+      assert.equal(runtimeEvents[0]?.actions?.hookCompleted?.status, 'denied');
+      assert.equal(runtimeEvents[0]?.actions?.hookCompleted?.definitionHash, definitionHash);
+      assert.equal(runtimeEvents[0]?.content, undefined);
+    } finally {
+      runtimeStore.close();
       await rm(root, { recursive: true, force: true });
     }
   });
