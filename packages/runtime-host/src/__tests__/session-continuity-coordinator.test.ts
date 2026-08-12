@@ -345,7 +345,7 @@ test('does not reuse an active transcript overlay after terminal publication', a
   });
   assert.equal(terminal.snapshot.rootTurn?.status, 'completed');
   assert.equal(terminal.transcript?.overlay.rawBytes, 0);
-  assert.equal(overlayReads, 2);
+  assert.equal(overlayReads, 1);
   const client = new ClientSessionSubscription(
     terminal,
     async () => undefined,
@@ -800,6 +800,53 @@ test('queues concurrent overlay preparation instead of rejecting an empty overla
   coordinator.close();
 });
 
+test('rechecks a reusable overlay cache after queued preparation reaches capacity', async () => {
+  const firstCanonicalRead = deferred<void>();
+  let canonicalReads = 0;
+  let overlayReads = 0;
+  const baseReader = transcriptReader([]);
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    readActiveOverlay: async (sessionId) => {
+      overlayReads += 1;
+      return [
+        assistantMessage(
+          sessionId === 'session-retained'
+            ? 'x'.repeat(2 * 1024 * 1024)
+            : 'x'.repeat(15 * 1024 * 1024),
+        ),
+      ];
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async (sessionId) => {
+      if (sessionId === 'session-shared' && canonicalReads++ === 0) {
+        await firstCanonicalRead.promise;
+      }
+      return canonicalFor(sessionId);
+    },
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+  coordinator.attachConnection('connection-retained', new RecordingSink());
+  coordinator.attachConnection('connection-shared-1', new RecordingSink());
+  coordinator.attachConnection('connection-shared-2', new RecordingSink());
+  await openForSession(coordinator, 'connection-retained', 'session-retained');
+
+  const first = openForSession(coordinator, 'connection-shared-1', 'session-shared');
+  await delayImmediate();
+  const second = openForSession(coordinator, 'connection-shared-2', 'session-shared');
+  firstCanonicalRead.resolve();
+
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.ok(firstResult.transcript);
+  assert.ok(secondResult.transcript);
+  assert.equal(overlayReads, 2);
+  coordinator.close();
+});
+
 test('cancels a queued overlay preparation when its connection closes', async () => {
   const firstRead = deferred<void>();
   let reads = 0;
@@ -888,6 +935,31 @@ test('fails fast when retained active overlays leave no preparation capacity', a
     maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   });
   assert.ok(recovered.transcript);
+  coordinator.close();
+});
+
+test('opens a terminal Session without reserving active overlay preparation capacity', async () => {
+  const overlay = assistantMessage('x'.repeat(9 * 1024 * 1024));
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async (sessionId) =>
+      sessionId === 'session-terminal'
+        ? canonicalFor(sessionId, { rootTurn: null })
+        : canonicalFor(sessionId),
+    new SessionAdmissionGate(),
+    undefined,
+    transcriptReader([], [overlay]),
+  );
+  for (const index of [1, 2]) {
+    const connectionId = `connection-retained-${index}`;
+    coordinator.attachConnection(connectionId, new RecordingSink());
+    await openForSession(coordinator, connectionId, `session-retained-${index}`);
+  }
+  coordinator.attachConnection('connection-terminal', new RecordingSink());
+
+  const opened = await openForSession(coordinator, 'connection-terminal', 'session-terminal');
+
+  assert.equal(opened.transcript?.overlayMessageCount, 0);
   coordinator.close();
 });
 
@@ -1483,8 +1555,11 @@ function canonical(
   };
 }
 
-function canonicalFor(sessionId: string): CanonicalSessionProjection {
-  const projection = canonical();
+function canonicalFor(
+  sessionId: string,
+  overrides: Parameters<typeof canonical>[0] = {},
+): CanonicalSessionProjection {
+  const projection = canonical(overrides);
   return {
     ...projection,
     session: { ...projection.session, sessionId },

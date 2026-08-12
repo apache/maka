@@ -767,6 +767,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     }
     connection.pendingOpenCount += 1;
     let preparationPermit: TranscriptOverlayPreparationPermit | undefined;
+    let retryAfterCapacity = false;
     try {
       for (;;) {
         try {
@@ -947,19 +948,24 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           });
         } catch (error) {
           if (!(error instanceof TranscriptOverlayPreparationRequired)) throw error;
+          if (retryAfterCapacity) {
+            return {
+              ok: false as const,
+              code: 'operation_unavailable' as const,
+              message: 'Runtime Host transcript overlay capacity reached',
+            };
+          }
           try {
             preparationPermit = await this.#acquireTranscriptOverlayPreparation(connection);
           } catch (acquireError) {
+            if (acquireError instanceof TranscriptOverlayCapacityError) {
+              retryAfterCapacity = true;
+              continue;
+            }
             return {
               ok: false as const,
-              code:
-                acquireError instanceof TranscriptOverlayCapacityError
-                  ? ('operation_unavailable' as const)
-                  : ('persistence_failed' as const),
-              message:
-                acquireError instanceof TranscriptOverlayCapacityError
-                  ? 'Runtime Host transcript overlay capacity reached'
-                  : 'Session transcript is unavailable',
+              code: 'persistence_failed' as const,
+              message: 'Session transcript is unavailable',
             };
           }
         }
@@ -1026,6 +1032,17 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     const cached = state.transcriptOverlay;
     if (cached?.throughSequence === throughSequence) return cached;
     if (cached) this.#invalidateTranscriptOverlay(state, cached);
+    if (!state.canonical.rootTurn || isTerminalTurn(state.canonical.rootTurn)) {
+      const prepared = Promise.resolve(this.#registerTranscriptOverlay([]));
+      const entry = {
+        throughSequence,
+        prepared,
+        pendingConsumers: 0,
+        cancelPreparation: () => {},
+      };
+      state.transcriptOverlay = entry;
+      return entry;
+    }
     if (!permit) throw new TranscriptOverlayPreparationRequired();
     const release = permit.take();
     const prepared = (async () => {
@@ -1137,6 +1154,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         this.#retainedTranscriptOverlayBytes + MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES >
         MAX_RETAINED_TRANSCRIPT_OVERLAY_BYTES
       ) {
+        if (this.#preparingTranscriptOverlayBytes > 0) return;
         this.#transcriptOverlayPreparationWaiters.shift();
         waiter.cancelled = true;
         waiter.reject(

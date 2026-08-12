@@ -129,4 +129,62 @@ describe('SQLite runtime schema migration', () => {
       db.close();
     }
   });
+
+  it('batches fragmented legacy partials into bounded target segments', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      migrateSqliteRuntimeDatabase(db);
+      db.prepare(`
+        INSERT INTO runtime_partial_snapshots(
+          stream_key, session_id, invocation_id, run_id, turn_id,
+          after_event_id, payload_json, text_content, updated_at
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?, '', ?)
+      `).run('stream-1', 'session-1', 'invocation-1', 'run-1', 'turn-1', '{}', 1);
+      const insert = db.prepare(`
+        INSERT INTO runtime_partial_segments(stream_key, segment_seq, text_content, updated_at)
+        VALUES ('stream-1', ?, ?, ?)
+      `);
+      for (let sequence = 1; sequence <= 300; sequence += 1) {
+        insert.run(sequence, String(sequence % 10).repeat(1024), sequence);
+      }
+      db.exec('PRAGMA user_version = 12');
+
+      migrateSqliteRuntimeDatabase(db);
+
+      const segments = db
+        .prepare(`
+          SELECT segment_seq, length(CAST(text_content AS BLOB)) AS stored_bytes
+          FROM runtime_partial_segments
+          ORDER BY segment_seq
+        `)
+        .all()
+        .map((row) => ({ ...row }));
+      assert.deepEqual(segments, [
+        { segment_seq: 1, stored_bytes: 64 * 1024 },
+        { segment_seq: 2, stored_bytes: 64 * 1024 },
+        { segment_seq: 3, stored_bytes: 64 * 1024 },
+        { segment_seq: 4, stored_bytes: 64 * 1024 },
+        { segment_seq: 5, stored_bytes: 44 * 1024 },
+      ]);
+      const text = (
+        db
+          .prepare(`
+            SELECT group_concat(text_content, '') AS text
+            FROM (
+              SELECT text_content FROM runtime_partial_segments ORDER BY segment_seq
+            )
+          `)
+          .get() as { text: string }
+      ).text;
+      assert.equal(text.length, 300 * 1024);
+      for (let index = 0; index < 300; index += 1) {
+        assert.equal(
+          text.slice(index * 1024, (index + 1) * 1024),
+          String((index + 1) % 10).repeat(1024),
+        );
+      }
+    } finally {
+      db.close();
+    }
+  });
 });

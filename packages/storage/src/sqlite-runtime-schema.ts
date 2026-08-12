@@ -9,6 +9,9 @@ export const RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY = 'runtime_workspace
 export const RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION = 1;
 const SQLITE_INITIALIZATION_BUSY_TIMEOUT_MS = 5_000;
 const SQLITE_INITIALIZATION_RETRY_DELAY_MS = 10;
+const RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES = 64 * 1024;
+const RUNTIME_PARTIAL_MIGRATION_BATCH_BYTES = 256 * 1024;
+const RUNTIME_PARTIAL_MIGRATION_BATCH_RECORDS = 256;
 const initializationRetryGate = new Int32Array(new SharedArrayBuffer(4));
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
@@ -376,12 +379,18 @@ function compactLegacyRuntimePartialSegments(db: DatabaseSync): void {
     ORDER BY stream_key ASC
     LIMIT 1
   `);
-  const nextSegment = db.prepare(`
-    SELECT segment_seq, text_content, updated_at
+  const measureSegments = db.prepare(`
+    SELECT segment_seq, length(CAST(text_content AS BLOB)) AS stored_bytes
     FROM runtime_partial_segments
     WHERE stream_key = ? AND segment_seq > ?
     ORDER BY segment_seq ASC
-    LIMIT 1
+    LIMIT ${RUNTIME_PARTIAL_MIGRATION_BATCH_RECORDS}
+  `);
+  const readSegments = db.prepare(`
+    SELECT segment_seq, text_content, updated_at
+    FROM runtime_partial_segments
+    WHERE stream_key = ? AND segment_seq > ? AND segment_seq <= ?
+    ORDER BY segment_seq ASC
   `);
   const insertSegment = db.prepare(`
     INSERT INTO runtime_partial_segments_v13(
@@ -409,34 +418,65 @@ function compactLegacyRuntimePartialSegments(db: DatabaseSync): void {
       tailBytes = 0;
     };
     while (true) {
-      const segment = nextSegment.get(afterStreamKey, afterSegmentSequence) as
-        | { segment_seq?: unknown; text_content?: unknown; updated_at?: unknown }
-        | undefined;
-      if (!segment) break;
-      if (
-        !Number.isSafeInteger(segment.segment_seq) ||
-        (segment.segment_seq as number) <= afterSegmentSequence ||
-        typeof segment.text_content !== 'string' ||
-        !Number.isSafeInteger(segment.updated_at)
-      ) {
-        throw new Error('Invalid legacy RuntimeEvent partial segment');
+      const measured = measureSegments.all(afterStreamKey, afterSegmentSequence) as Array<{
+        segment_seq?: unknown;
+        stored_bytes?: unknown;
+      }>;
+      if (measured.length === 0) break;
+      let batchBytes = 0;
+      let throughSegmentSequence = afterSegmentSequence;
+      for (const row of measured) {
+        if (
+          !Number.isSafeInteger(row.segment_seq) ||
+          (row.segment_seq as number) <= throughSegmentSequence ||
+          !Number.isSafeInteger(row.stored_bytes) ||
+          (row.stored_bytes as number) < 0
+        ) {
+          throw new Error('Invalid legacy RuntimeEvent partial segment');
+        }
+        const storedBytes = row.stored_bytes as number;
+        if (
+          throughSegmentSequence > afterSegmentSequence &&
+          batchBytes + storedBytes > RUNTIME_PARTIAL_MIGRATION_BATCH_BYTES
+        ) {
+          break;
+        }
+        throughSegmentSequence = row.segment_seq as number;
+        batchBytes += storedBytes;
       }
-      afterSegmentSequence = segment.segment_seq as number;
-      const segmentBytes = Buffer.byteLength(segment.text_content, 'utf8');
-      if (tailBytes > 0 && tailBytes + segmentBytes > 64 * 1024) flushTail();
-      if (segmentBytes > 64 * 1024) {
-        outputSequence += 1;
-        insertSegment.run(
-          afterStreamKey,
-          outputSequence,
-          segment.text_content,
-          segment.updated_at as number,
-        );
-        continue;
+      const segments = readSegments.all(
+        afterStreamKey,
+        afterSegmentSequence,
+        throughSegmentSequence,
+      ) as Array<{ segment_seq?: unknown; text_content?: unknown; updated_at?: unknown }>;
+      for (const segment of segments) {
+        if (
+          !Number.isSafeInteger(segment.segment_seq) ||
+          (segment.segment_seq as number) <= afterSegmentSequence ||
+          typeof segment.text_content !== 'string' ||
+          !Number.isSafeInteger(segment.updated_at)
+        ) {
+          throw new Error('Invalid legacy RuntimeEvent partial segment');
+        }
+        afterSegmentSequence = segment.segment_seq as number;
+        const segmentBytes = Buffer.byteLength(segment.text_content, 'utf8');
+        if (tailBytes > 0 && tailBytes + segmentBytes > RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES) {
+          flushTail();
+        }
+        if (segmentBytes > RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES) {
+          outputSequence += 1;
+          insertSegment.run(
+            afterStreamKey,
+            outputSequence,
+            segment.text_content,
+            segment.updated_at as number,
+          );
+          continue;
+        }
+        tail += segment.text_content;
+        tailBytes += segmentBytes;
+        tailUpdatedAt = segment.updated_at as number;
       }
-      tail += segment.text_content;
-      tailBytes += segmentBytes;
-      tailUpdatedAt = segment.updated_at as number;
     }
     flushTail();
   }
