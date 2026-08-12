@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createDefaultSettings, mergeSettings } from '@maka/core';
+import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
 import { createDesktopLocaleAuthority } from '../desktop-locale-authority.js';
 
 test('resolves explicit preferences and observes a mid-session settings change', async () => {

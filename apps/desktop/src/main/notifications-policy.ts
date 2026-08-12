@@ -1,3 +1,5 @@
+import type { UiLocale } from '@maka/core/ui-locale';
+
 /**
  * Pure decision + copy helpers for desktop run-completion notifications.
  *

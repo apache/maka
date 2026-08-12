@@ -1,4 +1,4 @@
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { ClientSettingsChange } from './client-settings-tools.js';
 
 export function clientSettingsConfirmation(

@@ -6,6 +6,7 @@ import { type ConnectionEvent } from '@maka/core/connections';
 import type { UsageRange } from '@maka/core/settings';
 import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/session';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
+import { resolveSystemUiLocale } from '@maka/core/ui-locale';
 import {
   PROVIDER_DEFAULTS,
   providerAuthRequiresSecret,
@@ -41,6 +42,8 @@ import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
 import { registerDesktopDiagnosticsIpc } from "./desktop-diagnostics-ipc-main.js";
 import { assembleDesktopNativeCapabilities } from "./desktop-native-capability-assembly.js";
+import { clientSettingsConfirmation } from "./client-settings-confirmation-copy.js";
+import { createDesktopLocaleAuthority } from "./desktop-locale-authority.js";
 import { buildRiveWorkflowTool } from "./rive-workflow-tool.js";
 import { installDesktopShellPresentation } from "./desktop-shell-presentation.js";
 import {
@@ -75,6 +78,7 @@ import {
 import { resolveProjectContextRoot } from "./project-context-root.js";
 import { resolveDefaultPermissionMode } from "./permission-mode-default.js";
 import { createProjectManagementService } from "./project-management-service.js";
+import { projectPickerTitle } from "./project-picker-copy.js";
 import type { ProjectManagementService } from "./project-management-service.js";
 import {
   createProjectRootController,
@@ -196,6 +200,10 @@ if (!startupLocalStorageRoot) {
 }
 const localRuntimeHostId = startupLocalStorageRoot.rootId;
 const settingsStore = createSettingsStore(workspaceRoot);
+const desktopLocale = createDesktopLocaleAuthority({
+  readSettings: () => settingsStore.get(),
+  preferredSystemLanguages: () => app.getPreferredSystemLanguages(),
+});
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
@@ -749,7 +757,7 @@ function registerHostClientIpc(
     catalog: targetProjectCatalog,
     chooseDirectory: async () => {
       const result = await mainWindowController.showOpenDialog({
-        title: "Add project",
+        title: projectPickerTitle(await desktopLocale.resolve()),
         properties: ["openDirectory"],
       });
       return result.canceled ? undefined : result.filePaths[0];

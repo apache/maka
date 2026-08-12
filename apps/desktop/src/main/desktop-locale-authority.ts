@@ -1,10 +1,10 @@
 import {
   resolveSystemUiLocale,
   resolveUiLocale,
-  type AppSettings,
   type UiLocale,
   type UiLocalePreference,
-} from '@maka/core';
+} from '@maka/core/ui-locale';
+import type { AppSettings } from '@maka/core/settings';
 
 type LocaleSettings = Pick<AppSettings, 'personalization'>;
 
