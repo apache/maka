@@ -73,6 +73,7 @@
     "./network/scoped-fetch-transport": "./dist/network/scoped-fetch-transport.js",
     "./oauth-login": "./dist/oauth-login.js",
     "./oauth-provider-contracts": "./dist/oauth-provider-contracts.js",
+    "./openai-codex-usage": "./dist/openai-codex-usage.js",
     "./path-containment": "./dist/path-containment.js",
     "./plan-mode": "./dist/plan-mode.js",
     "./plan-tools": "./dist/plan-tools.js",

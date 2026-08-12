@@ -337,6 +337,7 @@ export class HostRuntimePolicyCoordinator {
             connectionId: result.connectionId,
             connectionRevision: result.connectionRevision,
             routingMode: result.routingMode,
+            routingStrategy: result.routingStrategy,
             readyCandidateCount: result.readyCandidateCount,
             profiles: result.profiles,
           }

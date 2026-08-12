@@ -75,10 +75,7 @@ export interface HostAiSdkBackendInput {
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
 
-type HostExecutionRuntimePolicyAuthority = {
-  readonly operations: Pick<RuntimePolicyStoresWriter['operations'], 'resolveExecutionConnection'>;
-  readonly runtimePolicy: Pick<RuntimePolicyStoresWriter['runtimePolicy'], 'getSnapshot'>;
-};
+type HostExecutionRuntimePolicyAuthority = RuntimePolicyStoresWriter;
 
 type HostExecutionArtifactAuthority = Pick<
   InteractiveArtifactStoreWriter,
@@ -141,7 +138,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     throw error;
   }
   let transport: ProxiedFetchTransport | undefined;
-  let modelComposition: HostRunComposer | undefined;
+  let modelComposition!: HostRunComposer;
   try {
     transport = createFetchTransport(toRuntimePolicyProxy(target.networkProxy, target.proxySecret));
   let apiKey = target.apiKey;
@@ -189,7 +186,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
   ): ReturnType<typeof getAIModel> =>
     getAIModel({
       ...modelInput,
-      fetch: modelFetch,
+      fetch: modelInput.fetch ?? modelFetch,
       requestHeaders: target.requestHeaders,
     });
   let telemetryDrainRequested = false;
@@ -393,11 +390,12 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           : {}),
         loadHistoryCompactCheckpoint: input.context.loadHistoryCompactCheckpoint,
         summarizeHistoryCompact: buildLlmHistorySummarizer({
-          resolveModel: (leasedApiKey) =>
+          resolveModel: (leasedApiKey, leasedFetch) =>
             modelFactory({
               connection: target.connection,
               apiKey: leasedApiKey ?? apiKey,
               modelId: target.model,
+              ...(leasedFetch ? { fetch: leasedFetch } : {}),
             }),
           providerOptions,
           ...(credentialResolver
@@ -511,7 +509,11 @@ async function buildCredentialResolver(
   const routing = target.credentialRouting;
   if (!routing || routing.mode !== 'balanced' || !target.connectionId) return undefined;
   const provider = PROVIDER_DEFAULTS[target.connection.providerType];
-  if (provider.authKind !== 'api_key' && provider.authKind !== 'optional_api_key') {
+  if (
+    provider.authKind !== 'api_key' &&
+    provider.authKind !== 'optional_api_key' &&
+    provider.authKind !== 'oauth_token'
+  ) {
     return undefined;
   }
   const model = target.connection.models?.find((candidate) => candidate.id === target.model);
@@ -539,6 +541,16 @@ async function buildCredentialResolver(
       : null,
     authKind: provider.authKind,
     routing,
+    ...(provider.authKind === 'oauth_token'
+      ? {
+          oauthCredentials: input.oauthCredentials,
+          connection: target.connection,
+          sessionId: input.context.sessionId,
+          modelId: target.model,
+          createFetchTransport: input.createFetchTransport ?? createProxiedFetchTransport,
+          proxy: toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
+        }
+      : {}),
   });
 }
 

@@ -11,7 +11,7 @@ import type {
   ConnectionCredentialRouting,
 } from '@maka/core/runtime-policy';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
-import { serializeOAuthSubscriptionTokens } from '@maka/runtime';
+import { serializeOAuthSubscriptionTokens } from '@maka/runtime/subscription-credentials';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { createHostCredentialResolver } from '../server/provider-credential-resolver-composition.js';

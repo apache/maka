@@ -11,7 +11,10 @@ import {
   type ProviderCredentialRoutingStore,
 } from '@maka/storage/provider-credential-routing-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
-import type { ProxiedFetchProxy, ProxiedFetchTransport } from '@maka/runtime';
+import type {
+  ProxiedFetchProxy,
+  ProxiedFetchTransport,
+} from '@maka/runtime/network/scoped-fetch-transport';
 import {
   ProviderCredentialRouter,
   type RouterCredentialMaterial,

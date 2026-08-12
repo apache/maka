@@ -353,43 +353,43 @@ export class DesktopRuntimeHostClient {
   createCredentialProfile(
     input: OperationInput<"credential.profile.create">,
   ): Promise<OperationOutput<"credential.profile.create">> {
-    return this.#request("credential.profile.create", input);
+    return this.request("credential.profile.create", input);
   }
 
   updateCredentialProfile(
     input: OperationInput<"credential.profile.update">,
   ): Promise<OperationOutput<"credential.profile.update">> {
-    return this.#request("credential.profile.update", input);
+    return this.request("credential.profile.update", input);
   }
 
   setCredentialProfileEnabled(
     input: OperationInput<"credential.profile.set-enabled">,
   ): Promise<OperationOutput<"credential.profile.set-enabled">> {
-    return this.#request("credential.profile.set-enabled", input);
+    return this.request("credential.profile.set-enabled", input);
   }
 
   removeCredentialProfile(
     input: OperationInput<"credential.profile.remove">,
   ): Promise<OperationOutput<"credential.profile.remove">> {
-    return this.#request("credential.profile.remove", input);
+    return this.request("credential.profile.remove", input);
   }
 
   setCredentialRoutingMode(
     input: OperationInput<"credential.profile.set-routing-mode">,
   ): Promise<OperationOutput<"credential.profile.set-routing-mode">> {
-    return this.#request("credential.profile.set-routing-mode", input);
+    return this.request("credential.profile.set-routing-mode", input);
   }
 
   queryCredentialProfileReadiness(
     connectionId: string,
   ): Promise<OperationOutput<"credential.profile.query">> {
-    return this.#request("credential.profile.query", { connectionId });
+    return this.request("credential.profile.query", { connectionId });
   }
 
   materializeCredentialProfilePrimary(
     connectionId: string,
   ): Promise<OperationOutput<"credential.profile.materialize-primary">> {
-    return this.#request("credential.profile.materialize-primary", { connectionId });
+    return this.request("credential.profile.materialize-primary", { connectionId });
   }
 
   testConnectionProfile(
@@ -397,7 +397,7 @@ export class DesktopRuntimeHostClient {
     profileId: string,
     modelId?: string,
   ): Promise<OperationOutput<"connection.profile.test.run">> {
-    return this.#request("connection.profile.test.run", {
+    return this.request("connection.profile.test.run", {
       connectionId,
       profileId,
       modelId: modelId ?? null,
@@ -408,7 +408,7 @@ export class DesktopRuntimeHostClient {
     connectionId: string,
     profileId: string,
   ): Promise<OperationOutput<"connection.profile.models.fetch">> {
-    return this.#request("connection.profile.models.fetch", { connectionId, profileId });
+    return this.request("connection.profile.models.fetch", { connectionId, profileId });
   }
 
   startOAuthLogin(
@@ -416,7 +416,7 @@ export class DesktopRuntimeHostClient {
     connectionId: string,
     profileId?: string,
   ): Promise<OperationOutput<"oauth.login.start">> {
-    return this.#request("oauth.login.start", {
+    return this.request("oauth.login.start", {
       attemptId,
       connectionId,
       ...(profileId ? { profileId } : {}),
@@ -439,7 +439,7 @@ export class DesktopRuntimeHostClient {
     connectionId: string,
     profileId?: string,
   ): Promise<OperationOutput<"oauth.account.usage.fetch">> {
-    return this.#request("oauth.account.usage.fetch", {
+    return this.request("oauth.account.usage.fetch", {
       connectionId,
       ...(profileId ? { profileId } : {}),
     });

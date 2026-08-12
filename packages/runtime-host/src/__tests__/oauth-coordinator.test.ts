@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provider-contracts';
 import { OAuthTokenEndpointError } from '@maka/runtime/oauth-login';
+import { type fetchOpenAiCodexUsage } from '@maka/runtime/openai-codex-usage';
 import {
   parseOAuthSubscriptionTokens,
   serializeOAuthSubscriptionTokens,
@@ -810,7 +811,7 @@ test('Codex account usage resolves the requested Profile credential', async () =
         throw error;
       },
       createFetchTransport: () => ({ fetch, close: async () => undefined }),
-      fetchCodexAccountUsage: async (input) => {
+      fetchCodexAccountUsage: async (input: Parameters<typeof fetchOpenAiCodexUsage>[0]) => {
         assert.equal(input.accessToken, secondaryTokens.access_token);
         if (rejectUsage) throw new OAuthTokenEndpointError('provider_rejected', 401);
         return {

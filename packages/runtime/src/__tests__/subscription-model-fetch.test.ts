@@ -226,7 +226,7 @@ describe('subscription model fetch', () => {
         method: 'POST',
         body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
       }),
-      /Codex OAuth request failed: HTTP 403/,
+      /Codex request failed: HTTP 403/,
     );
     assert.equal(attempts, 1);
   });
@@ -376,7 +376,7 @@ describe('subscription model fetch', () => {
         method: 'POST',
         body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
       }),
-      /Codex OAuth request failed: HTTP 403/,
+      /Codex request failed: HTTP 403/,
     );
 
     await eventLoopTurn();

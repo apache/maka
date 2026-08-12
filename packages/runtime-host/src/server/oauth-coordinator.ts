@@ -12,7 +12,13 @@ import {
   startCodexDeviceAuthorization,
 } from '@maka/runtime/codex-oauth-enrollment';
 import { fetchClaudeSubscriptionUsage } from '@maka/runtime/claude-subscription-usage';
+import { fetchOpenAiCodexUsage } from '@maka/runtime/openai-codex-usage';
 import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provider-contracts';
+import { extractCodexAccountClaims } from '@maka/runtime/subscription-auth';
+import {
+  parseOAuthSubscriptionTokens,
+  type OAuthSubscriptionTokens,
+} from '@maka/runtime/subscription-credentials';
 import {
   pollXaiDeviceAuthorization,
   startXaiDeviceAuthorization,
@@ -79,6 +85,7 @@ export interface HostOAuthCoordinatorInput {
   readonly pollCodexAuthorization?: typeof pollCodexDeviceAuthorization;
   readonly exchangeCodexCode?: typeof exchangeCodexDeviceAuthorizationCode;
   readonly fetchAccountUsage?: typeof fetchClaudeSubscriptionUsage;
+  readonly fetchCodexAccountUsage?: typeof fetchOpenAiCodexUsage;
   readonly createFetchTransport?: typeof createProxiedFetchTransport;
   readonly authorizationTimeoutMs?: number;
 }
@@ -92,6 +99,7 @@ interface ActiveLoginAttempt {
   readonly kind: 'active';
   readonly attemptId: string;
   readonly connectionId: string;
+  readonly profileId?: string;
   readonly initiatingConnectionId: string;
   readonly provider: OAuthLoginProvider;
   readonly ticket: OAuthLoginAdmission;
@@ -117,7 +125,8 @@ export class HostOAuthCoordinator {
     'oauth.login.start': (input, context) => this.#start(input, context.connectionId),
     'oauth.login.query': (input) => this.#query(input.attemptId),
     'oauth.login.cancel': (input) => this.#cancel(input.attemptId),
-    'oauth.account.usage.fetch': (input) => this.#fetchAccountUsage(input.connectionId),
+    'oauth.account.usage.fetch': (input) =>
+      this.#fetchAccountUsage(input.connectionId, input.profileId),
   };
 
   readonly #runtimePolicy: RuntimePolicyStoresWriter;
@@ -136,6 +145,7 @@ export class HostOAuthCoordinator {
   readonly #pollCodexAuthorization: typeof pollCodexDeviceAuthorization;
   readonly #exchangeCodexCode: typeof exchangeCodexDeviceAuthorizationCode;
   readonly #fetchUsageSnapshot: typeof fetchClaudeSubscriptionUsage;
+  readonly #fetchCodexUsageSnapshot: typeof fetchOpenAiCodexUsage;
   readonly #createFetchTransport: typeof createProxiedFetchTransport;
   readonly #authorizationTimeoutMs: number;
   readonly #attempts = new Map<string, LoginAttemptRecord>();
@@ -166,6 +176,7 @@ export class HostOAuthCoordinator {
     this.#pollCodexAuthorization = input.pollCodexAuthorization ?? pollCodexDeviceAuthorization;
     this.#exchangeCodexCode = input.exchangeCodexCode ?? exchangeCodexDeviceAuthorizationCode;
     this.#fetchUsageSnapshot = input.fetchAccountUsage ?? fetchClaudeSubscriptionUsage;
+    this.#fetchCodexUsageSnapshot = input.fetchCodexAccountUsage ?? fetchOpenAiCodexUsage;
     this.#createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
     this.#authorizationTimeoutMs = authorizationTimeout(input.authorizationTimeoutMs);
   }
@@ -188,6 +199,7 @@ export class HostOAuthCoordinator {
 
   async #fetchAccountUsage(
     connectionId: string,
+    profileId?: string,
   ): Promise<OperationOutcome<'oauth.account.usage.fetch'>> {
     const residency = this.#acquireResidency();
     let transport: ReturnType<typeof createProxiedFetchTransport> | undefined;
@@ -197,7 +209,10 @@ export class HostOAuthCoordinator {
         (candidate) => candidate.connectionId === connectionId,
       );
       if (!connection) return notFound('OAuth account Connection was not found');
-      if (connection.providerType !== 'claude-subscription') {
+      if (
+        connection.providerType !== 'claude-subscription' &&
+        connection.providerType !== 'openai-codex'
+      ) {
         return {
           ok: true,
           result: { kind: 'unavailable', reason: 'unsupported_provider' },
@@ -212,7 +227,30 @@ export class HostOAuthCoordinator {
           result: { kind: 'unavailable', reason: 'credential_unavailable' },
         };
       }
-      const material = resolved.secretMaterial.connection;
+      const targetProfileId = profileId ?? connection.connectionId;
+      if (
+        connection.providerType === 'claude-subscription' &&
+        targetProfileId !== connection.connectionId
+      ) {
+        return { ok: true, result: { kind: 'unavailable', reason: 'unsupported_provider' } };
+      }
+      const locator =
+        targetProfileId === connection.connectionId
+          ? ({ scope: 'connection', connectionId, kind: 'oauth_token' } as const)
+          : ({
+              scope: 'connection_profile',
+              connectionId,
+              profileId: targetProfileId,
+              kind: 'oauth_token',
+            } as const);
+      const knownProfile =
+        targetProfileId === connection.connectionId ||
+        connection.credentialRouting?.profiles.some(
+          (candidate) => candidate.profileId === targetProfileId,
+        );
+      const material = knownProfile
+        ? await this.#runtimePolicy.operations.exportCredentialMaterial(locator)
+        : null;
       if (!material) {
         return {
           ok: true,
@@ -231,7 +269,11 @@ export class HostOAuthCoordinator {
       });
       const tokens = await binding.resolve();
       transport = this.#createFetchTransport(proxy);
-      const quota = await this.#fetchUsageSnapshot({
+      const fetchUsage =
+        connection.providerType === 'openai-codex'
+          ? this.#fetchCodexUsageSnapshot
+          : this.#fetchUsageSnapshot;
+      const quota = await fetchUsage({
         accessToken: tokens.access_token,
         fetchFn: transport.fetch,
         now: this.#now,
@@ -254,7 +296,9 @@ export class HostOAuthCoordinator {
         const reason =
           error.category === 'invalid_response' || error.category === 'response_too_large'
             ? 'invalid_response'
-            : 'provider_unavailable';
+            : error.category === 'provider_rejected' || error.category === 'invalid_token'
+              ? 'provider_rejected'
+              : 'provider_unavailable';
         return { ok: true, result: { kind: 'unavailable', reason } };
       }
       return {
@@ -268,12 +312,15 @@ export class HostOAuthCoordinator {
   }
 
   async #start(
-    input: { readonly attemptId: string; readonly connectionId: string },
+    input: { readonly attemptId: string; readonly connectionId: string; readonly profileId?: string },
     initiatingConnectionId: string,
   ): Promise<OperationOutcome<'oauth.login.start'>> {
     const existing = this.#attempts.get(input.attemptId);
     if (existing) {
-      if (projection(existing).connectionId !== input.connectionId) {
+      if (
+        projection(existing).connectionId !== input.connectionId ||
+        projection(existing).profileId !== input.profileId
+      ) {
         return invalidRequest('OAuth attemptId is already bound to another connection');
       }
       return { ok: true, result: projection(existing) };
@@ -289,7 +336,10 @@ export class HostOAuthCoordinator {
     try {
       const again = this.#attempts.get(input.attemptId);
       if (again) {
-        if (projection(again).connectionId !== input.connectionId) {
+        if (
+          projection(again).connectionId !== input.connectionId ||
+          projection(again).profileId !== input.profileId
+        ) {
           return invalidRequest('OAuth attemptId is already bound to another connection');
         }
         return { ok: true, result: projection(again) };
@@ -327,7 +377,7 @@ export class HostOAuthCoordinator {
   }
 
   async #prepareStart(
-    input: { readonly attemptId: string; readonly connectionId: string },
+    input: { readonly attemptId: string; readonly connectionId: string; readonly profileId?: string },
     initiatingConnectionId: string,
   ): Promise<OperationOutcome<'oauth.login.start'>> {
     let admitted: Awaited<
@@ -336,6 +386,7 @@ export class HostOAuthCoordinator {
     try {
       admitted = await this.#runtimePolicy.operations.beginInteractiveOAuthLogin(
         input.connectionId,
+        input.profileId,
       );
     } catch (error) {
       if (error instanceof RuntimePolicyStoreError) {
@@ -372,6 +423,7 @@ export class HostOAuthCoordinator {
       kind: 'active',
       attemptId: input.attemptId,
       connectionId: input.connectionId,
+      ...(input.profileId ? { profileId: input.profileId } : {}),
       initiatingConnectionId,
       provider: admitted.connection.providerType,
       ticket: admitted,
@@ -431,6 +483,7 @@ export class HostOAuthCoordinator {
       attempt.cancellationDeferred = true;
       attempt.phase = 'committing';
       await this.#activation.runMutation(async () => {
+        await this.#assertUniqueCodexAccount(attempt, tokens);
         const completion = await this.#runtimePolicy.operations.completeInteractiveOAuthLogin(
           attempt.ticket.ticket,
           serializeOAuthSubscriptionTokens(tokens),
@@ -456,6 +509,46 @@ export class HostOAuthCoordinator {
       if (this.#attempts.get(attempt.attemptId) === attempt) {
         this.#attempts.set(attempt.attemptId, terminalAttempt(attempt));
         this.#pruneTerminalAttempts();
+      }
+    }
+  }
+
+  async #assertUniqueCodexAccount(
+    attempt: ActiveLoginAttempt,
+    tokens: OAuthSubscriptionTokens,
+  ): Promise<void> {
+    if (attempt.provider !== 'openai-codex') return;
+    const claims = extractCodexAccountClaims(tokens.access_token, tokens.id_token);
+    if (!claims) return;
+    const catalog = await this.#runtimePolicy.connectionCatalog.getSnapshot();
+    const connection = catalog.connections.find(
+      (candidate) => candidate.connectionId === attempt.connectionId,
+    );
+    if (!connection) return;
+    const targetProfileId = attempt.profileId ?? connection.connectionId;
+    const profileIds = [
+      connection.connectionId,
+      ...(connection.credentialRouting?.profiles.map((profile) => profile.profileId) ?? []),
+    ];
+    for (const profileId of profileIds) {
+      if (profileId === targetProfileId) continue;
+      const locator =
+        profileId === connection.connectionId
+          ? ({ scope: 'connection', connectionId: connection.connectionId, kind: 'oauth_token' } as const)
+          : ({
+              scope: 'connection_profile',
+              connectionId: connection.connectionId,
+              profileId,
+              kind: 'oauth_token',
+            } as const);
+      const material = await this.#runtimePolicy.operations.exportCredentialMaterial(locator);
+      if (!material) continue;
+      const existing = parseOAuthSubscriptionTokens(material.secret);
+      const existingClaims = existing
+        ? extractCodexAccountClaims(existing.access_token, existing.id_token)
+        : null;
+      if (existingClaims?.accountId === claims.accountId) {
+        throw new LoginFailure('account_already_connected');
       }
     }
   }
@@ -644,6 +737,7 @@ function projection(attempt: LoginAttemptRecord): OAuthLoginProjection {
   return {
     attemptId: attempt.attemptId,
     connectionId: attempt.connectionId,
+    ...(attempt.profileId ? { profileId: attempt.profileId } : {}),
     provider: attempt.provider,
     phase: attempt.phase,
     ...(attempt.phase === 'failed' ? { failure: attempt.failure ?? 'internal_failure' } : {}),
