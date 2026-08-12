@@ -1,5 +1,5 @@
 import { tryResult } from "@maka/core/result";
-import type { UsageRange, UsageStats } from "@maka/core";
+import type { UsageRange, UsageStats } from "@maka/core/settings";
 import {
   normalizePricingConfig,
   normalizePricingModelKey,
@@ -41,7 +41,9 @@ export function registerRuntimeHostUsageIpc(
   deps: RuntimeHostUsageIpcDeps,
 ): void {
   let pricingMutationQueue: Promise<void> = Promise.resolve();
-  const enqueuePricingMutation = <T>(operation: () => Promise<T>): Promise<T> => {
+  const enqueuePricingMutation = <T>(
+    operation: () => Promise<T>,
+  ): Promise<T> => {
     const result = pricingMutationQueue.then(operation);
     pricingMutationQueue = result.then(
       () => undefined,
@@ -75,17 +77,15 @@ export function registerRuntimeHostUsageIpc(
     "usage:buckets",
     (_event, query: UsageQuery & { groupBy: UsageGroupBy }) =>
       tryReconnectableReadResult(
-        () => loadAllBuckets(deps.client, query).then((result) => result.buckets),
+        () =>
+          loadAllBuckets(deps.client, query).then((result) => result.buckets),
         "USAGE_BUCKETS_FAILED",
       ),
   );
   handleReconnectableRead(
     deps.ipcMain,
     "usage:logs",
-    (
-      _event,
-      query: UsageQuery & { offset?: number; limit?: number },
-    ) =>
+    (_event, query: UsageQuery & { offset?: number; limit?: number }) =>
       tryReconnectableReadResult(async () => {
         const result = await deps.client.queryUsage({
           kind: "logs",
@@ -182,7 +182,8 @@ async function loadAllBuckets(
     provenance = result.provenance;
     buckets.push(...result.buckets);
     if (result.nextOffset === null) {
-      if (buckets.length !== result.total) throw new UsageSnapshotChangedError();
+      if (buckets.length !== result.total)
+        throw new UsageSnapshotChangedError();
       return { buckets, provenance: result.provenance };
     }
     if (result.nextOffset <= offset) throw invalidUsageProjection();
@@ -190,7 +191,7 @@ async function loadAllBuckets(
   }
 }
 
-async function loadUsageStatsSnapshot(
+export async function loadUsageStatsSnapshot(
   client: DesktopRuntimeHostClient,
   range: UsageRange,
   now: number,
@@ -210,7 +211,8 @@ async function loadUsageStatsSnapshot(
       if (error instanceof UsageSnapshotChangedError) continue;
       throw error;
     }
-    const [summaryResult, providerResult, modelResult, llmResult, toolResult] = results;
+    const [summaryResult, providerResult, modelResult, llmResult, toolResult] =
+      results;
     if (summaryResult.kind !== "summary") throw invalidUsageProjection();
     if (
       sameUsageSnapshot(
@@ -255,7 +257,11 @@ async function loadAllLlmLogs(
       offset,
       limit: PAGE_LIMIT,
     });
-    if (result.kind !== "logs" || result.source !== "llm" || result.offset !== offset)
+    if (
+      result.kind !== "logs" ||
+      result.source !== "llm" ||
+      result.offset !== offset
+    )
       throw invalidUsageProjection();
     if (
       (total !== undefined && total !== result.total) ||
@@ -290,7 +296,11 @@ async function loadAllToolLogs(
       offset,
       limit: PAGE_LIMIT,
     });
-    if (result.kind !== "logs" || result.source !== "tool" || result.offset !== offset)
+    if (
+      result.kind !== "logs" ||
+      result.source !== "tool" ||
+      result.offset !== offset
+    )
       throw invalidUsageProjection();
     if (total !== undefined && total !== result.total)
       throw new UsageSnapshotChangedError();
@@ -307,10 +317,19 @@ async function loadAllToolLogs(
 
 function sameUsageSnapshot(
   expectedRange: UsageTimeWindow,
-  summary: { readonly range: { readonly from: number; readonly to: number }; readonly totalRequests: number },
+  summary: {
+    readonly range: { readonly from: number; readonly to: number };
+    readonly totalRequests: number;
+  },
   provenance: UsageProvenance,
-  providers: { readonly buckets: readonly UsageBucket[]; readonly provenance: UsageProvenance },
-  models: { readonly buckets: readonly UsageBucket[]; readonly provenance: UsageProvenance },
+  providers: {
+    readonly buckets: readonly UsageBucket[];
+    readonly provenance: UsageProvenance;
+  },
+  models: {
+    readonly buckets: readonly UsageBucket[];
+    readonly provenance: UsageProvenance;
+  },
   logs: { readonly total: number; readonly provenance: UsageProvenance },
 ): boolean {
   return (
@@ -325,7 +344,10 @@ function sameUsageSnapshot(
   );
 }
 
-function sameProvenance(left: UsageProvenance, right: UsageProvenance): boolean {
+function sameProvenance(
+  left: UsageProvenance,
+  right: UsageProvenance,
+): boolean {
   return (
     left.legacyRecords === right.legacyRecords &&
     left.unreadableRecords === right.unreadableRecords &&
@@ -333,8 +355,10 @@ function sameProvenance(left: UsageProvenance, right: UsageProvenance): boolean 
     left.coverage.attempts === right.coverage.attempts &&
     left.coverage.pricedAttempts === right.coverage.pricedAttempts &&
     left.coverage.unpricedAttempts === right.coverage.unpricedAttempts &&
-    left.coverage.usageReportedAttempts === right.coverage.usageReportedAttempts &&
-    left.coverage.usagePartialAttempts === right.coverage.usagePartialAttempts &&
+    left.coverage.usageReportedAttempts ===
+      right.coverage.usageReportedAttempts &&
+    left.coverage.usagePartialAttempts ===
+      right.coverage.usagePartialAttempts &&
     left.coverage.usageMissingAttempts === right.coverage.usageMissingAttempts
   );
 }
@@ -359,7 +383,8 @@ function projectUsageStats(
       totalTokens: summary.totalTokens.total,
       inputTokens: summary.totalTokens.input,
       outputTokens: summary.totalTokens.output,
-      cacheTokens: summary.totalTokens.cacheRead + summary.totalTokens.cacheWrite,
+      cacheTokens:
+        summary.totalTokens.cacheRead + summary.totalTokens.cacheWrite,
       cacheMiss: summary.totalTokens.cacheMiss,
       cacheRead: summary.totalTokens.cacheRead,
       cacheCreation: summary.totalTokens.cacheWrite,
@@ -422,10 +447,18 @@ function projectLlmBucketValues(bucket: UsageBucket) {
   };
 }
 
-function projectToolBuckets(rows: readonly ToolUsageLogProjection[]): UsageStats["byTool"] {
+function projectToolBuckets(
+  rows: readonly ToolUsageLogProjection[],
+): UsageStats["byTool"] {
   const buckets = new Map<
     string,
-    { calls: number; success: number; errors: number; aborted: number; durationMs: number }
+    {
+      calls: number;
+      success: number;
+      errors: number;
+      aborted: number;
+      durationMs: number;
+    }
   >();
   for (const row of rows) {
     const bucket = buckets.get(row.toolName) ?? {
@@ -447,9 +480,13 @@ function projectToolBuckets(rows: readonly ToolUsageLogProjection[]): UsageStats
       success: bucket.success,
       errors: bucket.errors,
       aborted: bucket.aborted,
-      avgDurationMs: bucket.calls === 0 ? 0 : Math.round(bucket.durationMs / bucket.calls),
+      avgDurationMs:
+        bucket.calls === 0 ? 0 : Math.round(bucket.durationMs / bucket.calls),
     }))
-    .sort((left, right) => right.calls - left.calls || left.tool.localeCompare(right.tool));
+    .sort(
+      (left, right) =>
+        right.calls - left.calls || left.tool.localeCompare(right.tool),
+    );
 }
 
 function usageRangeWindow(range: UsageRange, now: number): UsageTimeWindow {
