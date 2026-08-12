@@ -410,6 +410,26 @@ for (const { name, mutation, message } of [
     message: /required index usage_llm_calls_ts has an incompatible definition/,
   },
   {
+    name: 'a current authority index with an incompatible predicate',
+    mutation: (database: DatabaseSync) =>
+      database.exec(`
+        DROP INDEX artifact_records_relative_path;
+        CREATE UNIQUE INDEX artifact_records_relative_path
+          ON artifact_records(relative_path)
+          WHERE status = 'live';
+      `),
+    message: /required index artifact_records_relative_path has an incompatible definition/,
+  },
+  {
+    name: 'a current authority table with missing key and check constraints',
+    mutation: (database: DatabaseSync) =>
+      database.exec(`
+        DROP TABLE usage_pricing_authority;
+        CREATE TABLE usage_pricing_authority (singleton INTEGER, revision INTEGER);
+      `),
+    message: /usage_pricing_authority column singleton has an incompatible definition/,
+  },
+  {
     name: 'a current authority trigger with an incompatible definition',
     mutation: (database: DatabaseSync) =>
       database.exec(`

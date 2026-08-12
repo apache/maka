@@ -7,8 +7,14 @@ import { migrateSqliteUsageDatabase } from './sqlite-usage-schema.js';
 import { migrateSqliteWorkflowDatabase } from './sqlite-workflow-schema.js';
 
 interface OperationalTargetSchema {
-  readonly tables: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly tables: ReadonlyMap<string, TableSignature>;
   readonly objects: ReadonlyMap<string, string>;
+}
+
+interface TableSignature {
+  readonly columns: ReadonlyMap<string, string>;
+  readonly checks: ReadonlySet<string>;
+  readonly uniqueKeys: ReadonlySet<string>;
 }
 
 class IncompleteOperationalSchemaError extends Error {}
@@ -38,12 +44,28 @@ export function isCurrentOperationalTargetSchema(database: DatabaseSync): boolea
 export function assertCurrentOperationalTargetSchema(database: DatabaseSync): void {
   const target = (cachedTargetSchema ??= buildOperationalTargetSchema());
   const actual = readSchema(database);
-  for (const [table, requiredColumns] of target.tables) {
-    const actualColumns = actual.tables.get(table);
-    if (!actualColumns) throw incomplete(`missing required table ${table}`);
-    for (const column of requiredColumns) {
-      if (!actualColumns.has(column)) {
+  for (const [table, required] of target.tables) {
+    const observed = actual.tables.get(table);
+    if (!observed) throw incomplete(`missing required table ${table}`);
+    for (const [column, signature] of required.columns) {
+      if (!observed.columns.has(column)) {
         throw incomplete(`table ${table} is missing required column ${column}`);
+      }
+      if (
+        observed.columns.get(column) !== signature &&
+        !isReleasedNullableColumn(table, column, observed.columns.get(column), signature)
+      ) {
+        throw incomplete(`table ${table} column ${column} has an incompatible definition`);
+      }
+    }
+    for (const check of required.checks) {
+      if (!observed.checks.has(check)) {
+        throw incomplete(`table ${table} is missing required check ${check}`);
+      }
+    }
+    for (const key of required.uniqueKeys) {
+      if (!observed.uniqueKeys.has(key)) {
+        throw incomplete(`table ${table} is missing required unique key ${key}`);
       }
     }
   }
@@ -80,16 +102,20 @@ function readSchema(database: DatabaseSync): OperationalTargetSchema {
       WHERE name NOT LIKE 'sqlite_%' AND type IN ('table', 'index', 'trigger')
     `)
     .all() as Array<{ type: string; name: string; tbl_name: string; sql: string | null }>;
-  const tables = new Map<string, ReadonlySet<string>>();
+  const tables = new Map<string, TableSignature>();
   const objects = new Map<string, string>();
   for (const row of rows) {
     if (row.type === 'table') {
-      tables.set(row.name, new Set(readColumns(database, `table_info`, row.name)));
+      tables.set(row.name, {
+        columns: readTableColumns(database, row.name),
+        checks: new Set(extractChecks(row.sql ?? '')),
+        uniqueKeys: readImplicitUniqueKeys(database, row.name),
+      });
     } else if (row.sql !== null) {
       objects.set(
         row.name,
         row.type === 'index'
-          ? `index:${row.tbl_name}:${readIndexUnique(database, row.tbl_name, row.name)}:${readColumns(database, 'index_info', row.name).join(',')}`
+          ? `index:${row.tbl_name}:${normalizeSql(row.sql)}`
           : `trigger:${row.tbl_name}:${normalizeSql(row.sql)}`,
       );
     }
@@ -97,27 +123,55 @@ function readSchema(database: DatabaseSync): OperationalTargetSchema {
   return { tables, objects };
 }
 
-function readColumns(
-  database: DatabaseSync,
-  pragma: 'table_info' | 'index_info',
-  object: string,
-): string[] {
-  return (
-    database.prepare(`PRAGMA ${pragma}(${quoteIdentifier(object)})`).all() as Array<{
-      name?: unknown;
-    }>
-  )
-    .map((row) => row.name)
-    .filter((name): name is string => typeof name === 'string');
+function readTableColumns(database: DatabaseSync, table: string): ReadonlyMap<string, string> {
+  const rows = database.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all() as Array<{
+    name?: unknown;
+    type?: unknown;
+    notnull?: unknown;
+    dflt_value?: unknown;
+    pk?: unknown;
+  }>;
+  return new Map(
+    rows
+      .filter(
+        (row): row is typeof row & { name: string; type: string; notnull: number; pk: number } =>
+          typeof row.name === 'string' &&
+          typeof row.type === 'string' &&
+          typeof row.notnull === 'number' &&
+          typeof row.pk === 'number',
+      )
+      .map((row) => [
+        row.name,
+        `${row.type.toUpperCase()}:${row.notnull}:${String(row.dflt_value)}:${row.pk}`,
+      ]),
+  );
 }
 
-function readIndexUnique(database: DatabaseSync, table: string, name: string): string {
-  const rows = database.prepare(`PRAGMA index_list(${quoteIdentifier(table)})`).all() as Array<{
+function readImplicitUniqueKeys(database: DatabaseSync, table: string): ReadonlySet<string> {
+  const indexes = database.prepare(`PRAGMA index_list(${quoteIdentifier(table)})`).all() as Array<{
     name?: unknown;
-    unique?: unknown;
+    origin?: unknown;
   }>;
-  const index = rows.find((row) => row.name === name);
-  return index?.unique === 1 ? 'unique' : 'nonunique';
+  return new Set(
+    indexes
+      .filter(
+        (index): index is { name: string; origin: string } =>
+          typeof index.name === 'string' &&
+          typeof index.origin === 'string' &&
+          index.origin !== 'c',
+      )
+      .map((index) =>
+        (
+          database.prepare(`PRAGMA index_info(${quoteIdentifier(index.name)})`).all() as Array<{
+            seqno: number;
+            name: string;
+          }>
+        )
+          .sort((left, right) => left.seqno - right.seqno)
+          .map((column) => column.name)
+          .join(','),
+      ),
+  );
 }
 
 function quoteIdentifier(value: string): string {
@@ -125,7 +179,44 @@ function quoteIdentifier(value: string): string {
 }
 
 function normalizeSql(value: string): string {
-  return value.replaceAll(/\s+/gu, ' ').trim();
+  return value.replaceAll(/\s+/gu, ' ').trim().toUpperCase();
+}
+
+function extractChecks(sql: string): string[] {
+  const normalized = normalizeSql(sql);
+  const checks: string[] = [];
+  for (
+    let start = normalized.indexOf('CHECK');
+    start >= 0;
+    start = normalized.indexOf('CHECK', start + 1)
+  ) {
+    const open = normalized.indexOf('(', start + 5);
+    if (open < 0) break;
+    let depth = 0;
+    for (let end = open; end < normalized.length; end += 1) {
+      if (normalized[end] === '(') depth += 1;
+      if (normalized[end] === ')') depth -= 1;
+      if (depth === 0) {
+        checks.push(normalized.slice(open + 1, end).replaceAll(/\s+/gu, ''));
+        start = end;
+        break;
+      }
+    }
+  }
+  return checks;
+}
+
+function isReleasedNullableColumn(
+  table: string,
+  column: string,
+  observed: string | undefined,
+  required: string,
+): boolean {
+  return (
+    table === 'workflow_quote_companion_cleanup' &&
+    column === 'record_json' &&
+    observed === required.replace(':1:', ':0:')
+  );
 }
 
 function incomplete(detail: string): IncompleteOperationalSchemaError {
