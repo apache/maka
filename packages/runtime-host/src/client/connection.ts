@@ -408,9 +408,15 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.compositionRevision = accepted.compositionRevision;
     const connectionResource = options?.connectionResource;
     if (connectionResource) {
+      const abortForResourceClosure = (cause: Error) =>
+        this.#transport.abort(
+          new RuntimeHostTransportError('closed', 'Runtime Host connection resource closed', {
+            cause,
+          }),
+        );
       void connectionResource.closed.then(
-        () => this.#transport.abort(new Error('Runtime Host connection resource closed')),
-        (error) => this.#transport.abort(asError(error)),
+        () => abortForResourceClosure(new Error('Runtime Host connection resource closed')),
+        (error) => abortForResourceClosure(asError(error)),
       );
       this.closed = this.#transport.closed.finally(() => connectionResource.close());
     } else {

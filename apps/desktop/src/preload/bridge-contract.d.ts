@@ -252,21 +252,23 @@ export interface DesktopRuntimeHostProfileChangedEvent {
 }
 
 export type DesktopRuntimeHostSshTerminalEvent =
-  | { readonly kind: 'opened'; readonly sessionId: string }
-  | { readonly kind: 'data'; readonly sessionId: string; readonly data: string }
-  | { readonly kind: 'connected'; readonly sessionId: string }
+  | { readonly kind: 'opened'; readonly revision: number; readonly sessionId: string }
+  | { readonly kind: 'data'; readonly revision: number; readonly sessionId: string; readonly data: string }
+  | { readonly kind: 'connected'; readonly revision: number; readonly sessionId: string }
   | {
       readonly kind: 'closed';
+      readonly revision: number;
       readonly sessionId: string;
       readonly code: number | null;
       readonly signal: string | null;
     };
 
 export type DesktopRuntimeHostSshTerminalSnapshot =
-  | { readonly kind: 'idle' }
-  | { readonly kind: 'connecting'; readonly sessionId: string; readonly output: string }
+  | { readonly kind: 'idle'; readonly revision: number }
+  | { readonly kind: 'connecting'; readonly revision: number; readonly sessionId: string; readonly output: string }
   | {
       readonly kind: 'closed';
+      readonly revision: number;
       readonly sessionId: string;
       readonly output: string;
       readonly code: number | null;

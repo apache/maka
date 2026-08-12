@@ -20,22 +20,46 @@ export function RuntimeHostSshTerminalDialog() {
   const terminalRef = useRef<Terminal | undefined>(undefined);
   const sessionIdRef = useRef<string | undefined>(undefined);
   const pendingOutputRef = useRef('');
-  const observationRevisionRef = useRef(0);
+  const observationRevisionRef = useRef(-1);
   const [isOpen, setIsOpen] = useState(false);
   const [closed, setClosed] = useState(false);
 
   useEffect(() => {
+    let hydrating = true;
+    const pending: DesktopRuntimeHostSshTerminalEvent[] = [];
     const unsubscribe = window.maka.runtimeHostSshTerminal.subscribe((event) => {
-      observationRevisionRef.current += 1;
-      acceptEvent(event);
+      if (hydrating) {
+        pending.push(event);
+        return;
+      }
+      acceptEventIfNew(event);
     });
-    const revision = observationRevisionRef.current;
-    void window.maka.runtimeHostSshTerminal.getSnapshot().then((snapshot) => {
-      if (observationRevisionRef.current !== revision) return;
-      acceptSnapshot(snapshot);
-    });
+    const finishHydration = () => {
+      pending.sort((left, right) => left.revision - right.revision);
+      for (const event of pending) acceptEventIfNew(event);
+      hydrating = false;
+    };
+    void window.maka.runtimeHostSshTerminal.getSnapshot().then(
+      (snapshot) => {
+        acceptSnapshotIfNew(snapshot);
+        finishHydration();
+      },
+      finishHydration,
+    );
     return unsubscribe;
   }, []);
+
+  function acceptEventIfNew(event: DesktopRuntimeHostSshTerminalEvent) {
+    if (event.revision <= observationRevisionRef.current) return;
+    observationRevisionRef.current = event.revision;
+    acceptEvent(event);
+  }
+
+  function acceptSnapshotIfNew(snapshot: DesktopRuntimeHostSshTerminalSnapshot) {
+    if (snapshot.revision <= observationRevisionRef.current) return;
+    observationRevisionRef.current = snapshot.revision;
+    acceptSnapshot(snapshot);
+  }
 
   function acceptEvent(event: DesktopRuntimeHostSshTerminalEvent) {
     if (event.kind === 'opened') {
@@ -45,8 +69,13 @@ export function RuntimeHostSshTerminalDialog() {
       setIsOpen(true);
       return;
     }
-    if (event.sessionId !== sessionIdRef.current) return;
     if (event.kind === 'data') {
+      if (event.sessionId !== sessionIdRef.current) {
+        sessionIdRef.current = event.sessionId;
+        pendingOutputRef.current = '';
+        setClosed(false);
+        setIsOpen(true);
+      }
       const terminal = terminalRef.current;
       if (terminal) {
         terminal.write(event.data);
@@ -64,11 +93,22 @@ export function RuntimeHostSshTerminalDialog() {
       setIsOpen(false);
       return;
     }
+    if (event.sessionId !== sessionIdRef.current) {
+      sessionIdRef.current = event.sessionId;
+      pendingOutputRef.current = '';
+      setIsOpen(true);
+    }
     setClosed(true);
   }
 
   function acceptSnapshot(snapshot: DesktopRuntimeHostSshTerminalSnapshot) {
-    if (snapshot.kind === 'idle') return;
+    if (snapshot.kind === 'idle') {
+      sessionIdRef.current = undefined;
+      pendingOutputRef.current = '';
+      setClosed(false);
+      setIsOpen(false);
+      return;
+    }
     sessionIdRef.current = snapshot.sessionId;
     pendingOutputRef.current = snapshot.output;
     setClosed(snapshot.kind === 'closed');
@@ -129,7 +169,7 @@ export function RuntimeHostSshTerminalDialog() {
   function onOpenChange(open: boolean) {
     if (!open) {
       const sessionId = sessionIdRef.current;
-      if (sessionId && !closed) {
+      if (sessionId) {
         void window.maka.runtimeHostSshTerminal.cancel(sessionId).catch(() => undefined);
       }
     }

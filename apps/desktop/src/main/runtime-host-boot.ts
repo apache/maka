@@ -454,6 +454,10 @@ const sessionCopyOwnerProcessId = randomUUID();
 let remoteHostFailurePromptOpen = false;
 const runtimeHostAtOwnerStart = currentRuntimeHost();
 if (!runtimeHostAtOwnerStart) throw new Error("No Runtime Host target is selected");
+const needsInteractiveSshStartup =
+  runtimeHostAtOwnerStart.profile.kind === "remote" &&
+  runtimeHostAtOwnerStart.profile.transport.kind === "ssh";
+if (needsInteractiveSshStartup) wireLifecycle();
 owner = await startRuntimeHostDesktopOwner(
   {
     rootPath: workspaceRoot,
@@ -626,6 +630,7 @@ owner = await startRuntimeHostDesktopOwner(
   }
   throw error;
 });
+if (!needsInteractiveSshStartup) wireLifecycle();
 
 async function handleRemoteRuntimeHostFailure(error: unknown): Promise<never> {
   if (remoteHostFailurePromptOpen) return new Promise<never>(() => undefined);
@@ -683,8 +688,6 @@ void clientSettingsEffects
   .catch((error) =>
     console.error("[runtime-host] Client settings startup failed:", error),
   );
-
-wireLifecycle();
 
 function registerHostClientIpc(
   client: DesktopRuntimeHostClient,

@@ -10,28 +10,10 @@ import {
   type RuntimeHostSshTunnel,
   type RuntimeHostSshTunnelInput,
 } from '@maka/runtime-host/client';
-
-export type DesktopRuntimeHostSshTerminalEvent =
-  | { readonly kind: 'opened'; readonly sessionId: string }
-  | { readonly kind: 'data'; readonly sessionId: string; readonly data: string }
-  | { readonly kind: 'connected'; readonly sessionId: string }
-  | {
-      readonly kind: 'closed';
-      readonly sessionId: string;
-      readonly code: number | null;
-      readonly signal: string | null;
-    };
-
-export type DesktopRuntimeHostSshTerminalSnapshot =
-  | { readonly kind: 'idle' }
-  | { readonly kind: 'connecting'; readonly sessionId: string; readonly output: string }
-  | {
-      readonly kind: 'closed';
-      readonly sessionId: string;
-      readonly output: string;
-      readonly code: number | null;
-      readonly signal: string | null;
-    };
+import type {
+  DesktopRuntimeHostSshTerminalEvent,
+  DesktopRuntimeHostSshTerminalSnapshot,
+} from '../preload/bridge-contract.js';
 
 interface ActiveTerminal {
   readonly sessionId: string;
@@ -58,6 +40,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   close(): Promise<void>;
 } {
   let active: ActiveTerminal | undefined;
+  let revision = 0;
   let presentation: Exclude<DesktopRuntimeHostSshTerminalSnapshot, { kind: 'idle' }> | undefined;
   const spawnProcess: RuntimeHostSshProcessFactory = ({ executable, args, interaction }) => {
     if (interaction !== 'terminal') {
@@ -94,27 +77,38 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     };
     active = terminal;
     const reveal = () => {
-      if (active !== terminal || terminal.phase !== 'connecting' || terminal.revealed) return;
+      if (
+        active !== terminal ||
+        terminal.phase !== 'connecting' ||
+        terminal.revealed ||
+        terminal.dismissed
+      ) {
+        return;
+      }
       terminal.revealed = true;
-      presentation = { kind: 'connecting', sessionId, output: terminal.output };
-      input.send('runtime-host-ssh-terminal:event', { kind: 'opened', sessionId });
+      revision += 1;
+      presentation = { kind: 'connecting', revision, sessionId, output: terminal.output };
+      input.send('runtime-host-ssh-terminal:event', { kind: 'opened', revision, sessionId });
     };
     terminal.revealTimer = setTimeout(reveal, input.revealDelayMs ?? TERMINAL_REVEAL_DELAY_MS);
     pty.onData((data) => {
-      if (active !== terminal || terminal.phase !== 'connecting') return;
+      if (active !== terminal || terminal.phase !== 'connecting' || terminal.dismissed) return;
       terminal.output = `${terminal.output}${data}`.slice(-TERMINAL_OUTPUT_MAX);
       reveal();
+      revision += 1;
       if (presentation?.kind === 'connecting' && presentation.sessionId === sessionId) {
-        presentation = { ...presentation, output: terminal.output };
+        presentation = { ...presentation, revision, output: terminal.output };
       }
-      input.send('runtime-host-ssh-terminal:event', { kind: 'data', sessionId, data });
+      input.send('runtime-host-ssh-terminal:event', { kind: 'data', revision, sessionId, data });
     });
     pty.onExit(({ exitCode, signal }) => {
       if (terminal.revealTimer !== undefined) clearTimeout(terminal.revealTimer);
       if (active === terminal) active = undefined;
       if (terminal.revealed && terminal.phase === 'connecting' && !terminal.dismissed) {
+        revision += 1;
         presentation = {
           kind: 'closed',
+          revision,
           sessionId,
           output: terminal.output,
           code: exitCode,
@@ -122,6 +116,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         };
         input.send('runtime-host-ssh-terminal:event', {
           kind: 'closed',
+          revision,
           sessionId,
           code: exitCode,
           signal: signal === 0 ? null : String(signal),
@@ -148,7 +143,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     'runtime-host-ssh-terminal:resize',
     'runtime-host-ssh-terminal:cancel',
   ] as const;
-  input.ipcMain.handle(channels[0], () => presentation ?? { kind: 'idle' });
+  input.ipcMain.handle(channels[0], () => presentation ?? { kind: 'idle', revision });
   input.ipcMain.handle(channels[1], (_event, request: { sessionId: string; data: string }) => {
     const terminal = findConnecting(active, request.sessionId);
     if (!terminal) return;
@@ -176,7 +171,10 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     },
   );
   input.ipcMain.handle(channels[3], (_event, sessionId: string) => {
-    if (presentation?.sessionId === sessionId) presentation = undefined;
+    if (presentation?.sessionId === sessionId) {
+      presentation = undefined;
+      revision += 1;
+    }
     const terminal = findActive(active, sessionId);
     if (!terminal) return;
     terminal.dismissed = true;
@@ -196,6 +194,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       if (terminal) {
         terminal.phase = 'connected';
         presentation = undefined;
+        revision += 1;
         if (terminal.revealTimer !== undefined) {
           clearTimeout(terminal.revealTimer);
           terminal.revealTimer = undefined;
@@ -203,6 +202,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         if (terminal.revealed) {
           input.send('runtime-host-ssh-terminal:event', {
             kind: 'connected',
+            revision,
             sessionId: terminal.sessionId,
           });
         }
