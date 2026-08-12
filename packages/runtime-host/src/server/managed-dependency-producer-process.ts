@@ -368,12 +368,6 @@ async function observeProducerProcess(
     const result = await lifecycle.completion;
     clearInterval(monitor);
     await quotaCheck;
-    if (!result.ioDrained) {
-      throw new ManagedDependencyProducerProcessError(
-        'output_drain_incomplete',
-        'Managed dependency producer output did not drain before its deadline',
-      );
-    }
     if (termination) {
       if (termination === 'filesystem_limit_exceeded') {
         throw new ManagedDependencyProducerProcessError(
@@ -390,6 +384,12 @@ async function observeProducerProcess(
         );
       }
       throw new ManagedDependencyProducerProcessError(termination);
+    }
+    if (!result.ioDrained) {
+      throw new ManagedDependencyProducerProcessError(
+        'output_drain_incomplete',
+        'Managed dependency producer output did not drain before its deadline',
+      );
     }
     try {
       await enforceFilesystemLimit(

@@ -244,6 +244,10 @@ export function manageChildProcessLifecycle<OutputKey extends PropertyKey>(
 
   function maybeFinish(): void {
     if (!rootExited || !outputDrainResult || signalsInFlight > 0) return;
+    if (terminationStarted && !killSent) {
+      if (outputDrainResult.incomplete.size > 0) forceKill();
+      return;
+    }
     finish();
   }
 

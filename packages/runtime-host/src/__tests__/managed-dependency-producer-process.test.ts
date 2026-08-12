@@ -11,6 +11,10 @@ import {
   runManagedNpmDependencyProvision,
 } from '../server/managed-dependency-producer-process.js';
 
+const productionProfileSkip = isManagedNpmNodeVersionSupported(process.versions.node)
+  ? false
+  : `Host Node ${process.versions.node} is outside the attested managed npm profile`;
+
 test('does not expose an npm entry before runtime attestation is installed', () => {
   assert.equal('runManagedNpmDependencyProvision' in runtimeHostServer, false);
 });
@@ -28,7 +32,9 @@ test('admits only Node versions compatible with the fixed npm execution profile'
   assert.equal(isManagedNpmNodeVersionSupported('invalid'), false);
 });
 
-test('runs the fixed npm install protocol with a hermetic environment', async (t) => {
+test('runs the fixed npm install protocol with a hermetic environment', {
+  skip: productionProfileSkip,
+}, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-managed-npm-provision-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const projectRoot = join(root, 'project');
@@ -83,7 +89,9 @@ test('runs the fixed npm install protocol with a hermetic environment', async (t
   assert.equal(await readFile(join(outputRoot, 'fixture', 'index.js'), 'utf8'), 'safe\n');
 });
 
-test('rejects lifecycle-script lock entries before starting npm', async (t) => {
+test('rejects lifecycle-script lock entries before starting npm', {
+  skip: productionProfileSkip,
+}, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-managed-npm-unsafe-lock-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const projectRoot = join(root, 'project');
@@ -117,7 +125,9 @@ test('rejects lifecycle-script lock entries before starting npm', async (t) => {
   await assert.rejects(readFile(marker, 'utf8'), { code: 'ENOENT' });
 });
 
-test('rejects a pre-positioned scratch redirect before starting npm', async (t) => {
+test('rejects a pre-positioned scratch redirect before starting npm', {
+  skip: productionProfileSkip,
+}, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-managed-npm-scratch-redirect-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const projectRoot = join(root, 'project');
@@ -155,7 +165,9 @@ test('rejects a pre-positioned scratch redirect before starting npm', async (t) 
   await assert.rejects(readFile(marker, 'utf8'), { code: 'ENOENT' });
 });
 
-test('denies child-process creation inside the fixed npm execution profile', async (t) => {
+test('denies child-process creation inside the fixed npm execution profile', {
+  skip: productionProfileSkip,
+}, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-managed-npm-child-denied-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const projectRoot = join(root, 'project');
@@ -229,6 +241,39 @@ test('aborts and reaps the complete producer process tree before rejecting', asy
     `const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: ['ignore', process.stdout, process.stderr] });`,
     `writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid));`,
     "process.on('SIGTERM', () => {});",
+    'setInterval(() => {}, 1000);',
+  ].join('');
+  const abort = new AbortController();
+  const task = runManagedDependencyProducerProcessInternal({
+    argv: [process.execPath, '-e', producer],
+    cwd: root,
+    env: process.env,
+    monitorRoot: root,
+    abortSignal: abort.signal,
+    timeoutMs: 5_000,
+    maxObservedBytes: 1024 * 1024,
+    maxObservedEntries: 100,
+  });
+  const childPid = Number.parseInt(await waitForFile(childPidPath), 10);
+
+  abort.abort();
+
+  await assert.rejects(task, /aborted/u);
+  await waitForProcessExit(childPid);
+});
+
+test('reaps a surviving descendant after the direct producer accepts SIGTERM', {
+  skip: process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false,
+}, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-dependency-producer-root-exit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const childPidPath = join(root, 'child.pid');
+  const descendant = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+  const producer = [
+    "const { spawn } = require('node:child_process');",
+    "const { writeFileSync } = require('node:fs');",
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: ['ignore', process.stdout, process.stderr] });`,
+    `writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid));`,
     'setInterval(() => {}, 1000);',
   ].join('');
   const abort = new AbortController();
