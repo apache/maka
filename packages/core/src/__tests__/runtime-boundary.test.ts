@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { RuntimeEvent } from '../runtime-event.js';
+import { decodeRuntimeEvent, type RuntimeEvent } from '../runtime-event.js';
 import {
   buildImmutableRuntimePrefix,
   createRuntimeBoundaryCursor,
@@ -40,6 +40,25 @@ describe('immutable RuntimeEvent boundary', () => {
     });
     assert.match(prefix.prefixDigest, /^sha256:[0-9a-f]{64}$/);
     assert.equal(prefix.prefixDigest, equivalent.prefixDigest);
+  });
+
+  it('preserves the released Automation prefix identity after semantic decoding', () => {
+    const identity = runtimeIdentity('run-legacy');
+    const releasedEvent = decodeRuntimeEvent({
+      ...event('event-legacy', identity),
+      content: {
+        kind: 'text',
+        text: 'automated prompt',
+        origin: { kind: 'automation', automationId: 'automation-1' },
+      },
+    });
+
+    const prefix = buildImmutableRuntimePrefix(identity, [{ eventSeq: 1, event: releasedEvent }]);
+
+    assert.equal(
+      prefix.prefixDigest,
+      'sha256:d4c8211024788a3fd7554a644f6983f6af088eeb050404f507c76a519080d7ca',
+    );
   });
 
   it('rejects gaps in the immutable physical sequence', () => {

@@ -339,9 +339,26 @@ function digestCanonicalRuntimePrefix(
   updateLengthPrefixed(hash, Buffer.from(stableJsonStringify(identity), 'utf8'));
   for (const row of rows) {
     hash.update(uint64be(row.eventSeq));
-    updateLengthPrefixed(hash, Buffer.from(encodeCanonicalRuntimeEvent(row.event).json, 'utf8'));
+    updateLengthPrefixed(hash, Buffer.from(encodeRuntimePrefixV1Event(row.event), 'utf8'));
   }
   return `sha256:${hash.digest('hex')}`;
+}
+
+function encodeRuntimePrefixV1Event(event: RuntimeEvent): string {
+  const canonical = encodeCanonicalRuntimeEvent(event);
+  const content = canonical.event.content;
+  if (content?.kind !== 'text' || content.origin?.kind !== 'legacy_automation') {
+    return canonical.json;
+  }
+  // v1 identity binds the bytes released writers used, while callers consume
+  // the semantic legacy marker. Changing these bytes would orphan continuations.
+  return stableJsonStringify({
+    ...canonical.event,
+    content: {
+      ...content,
+      origin: { kind: 'automation', automationId: content.origin.automationId },
+    },
+  });
 }
 
 function decodePrefixIdentity(value: unknown): RuntimePrefixIdentityV1 {
