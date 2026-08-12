@@ -83,6 +83,141 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.equal(methods.includes('initialize'), false);
     });
 
+    test('strips configured headers when a redirect leaves the endpoint origin', async () => {
+      // Undici forwards custom headers (X-API-Key) across cross-origin
+      // redirects; the manager's scoped fetch must not.
+      const crossOriginSeen: Array<{ authorization?: string; apiKey?: string }> = [];
+      const target = createServer((req, res) => {
+        crossOriginSeen.push({
+          ...(typeof req.headers.authorization === 'string'
+            ? { authorization: req.headers.authorization }
+            : {}),
+          ...(typeof req.headers['x-api-key'] === 'string'
+            ? { apiKey: req.headers['x-api-key'] as string }
+            : {}),
+        });
+        res.writeHead(404, { 'content-type': 'application/json' }).end('{}');
+      });
+      await new Promise<void>((resolve, reject) => {
+        target.once('error', reject);
+        target.listen(0, '127.0.0.1', resolve);
+      });
+      const targetAddress = target.address();
+      if (!targetAddress || typeof targetAddress === 'string') throw new Error('no target port');
+      const redirector = createServer((req, res) => {
+        res
+          .writeHead(307, { location: `http://127.0.0.1:${targetAddress.port}${req.url ?? '/'}` })
+          .end();
+      });
+      await new Promise<void>((resolve, reject) => {
+        redirector.once('error', reject);
+        redirector.listen(0, '127.0.0.1', resolve);
+      });
+      const redirectorAddress = redirector.address();
+      if (!redirectorAddress || typeof redirectorAddress === 'string')
+        throw new Error('no redirector port');
+
+      try {
+        const manager = createManager();
+        await manager.sync({
+          version: MCP_CONFIG_VERSION,
+          mcpServers: {
+            remote: {
+              url: `http://127.0.0.1:${redirectorAddress.port}/mcp`,
+              transport: 'streamable-http',
+              headers: { Authorization: 'Bearer remote-test', 'X-API-Key': 'key-123456' },
+            },
+          },
+        });
+        assert.equal(manager.status('remote')?.state, 'error');
+        assert.ok(crossOriginSeen.length > 0);
+        for (const seen of crossOriginSeen) {
+          assert.equal(seen.authorization, undefined);
+          assert.equal(seen.apiKey, undefined);
+        }
+      } finally {
+        target.closeAllConnections();
+        redirector.closeAllConnections();
+        await Promise.all([
+          new Promise<void>((resolve) => target.close(() => resolve())),
+          new Promise<void>((resolve) => redirector.close(() => resolve())),
+        ]);
+      }
+    });
+
+    test('refuses a redirect that downgrades to cleartext http off the machine', async () => {
+      const redirector = createServer((_req, res) => {
+        res.writeHead(307, { location: 'http://203.0.113.5/mcp' }).end();
+      });
+      await new Promise<void>((resolve, reject) => {
+        redirector.once('error', reject);
+        redirector.listen(0, '127.0.0.1', resolve);
+      });
+      const address = redirector.address();
+      if (!address || typeof address === 'string') throw new Error('no redirector port');
+      try {
+        const manager = createManager();
+        await manager.sync({
+          version: MCP_CONFIG_VERSION,
+          mcpServers: {
+            remote: {
+              url: `http://127.0.0.1:${address.port}/mcp`,
+              transport: 'streamable-http',
+              headers: { 'X-API-Key': 'key-123456' },
+            },
+          },
+        });
+        assert.equal(manager.status('remote')?.state, 'error');
+        assert.match(manager.status('remote')?.error ?? '', /cleartext|https/iu);
+      } finally {
+        redirector.closeAllConnections();
+        await new Promise<void>((resolve) => redirector.close(() => resolve()));
+      }
+    });
+
+    test('auto falls back to legacy SSE without replacing protocol headers', async () => {
+      const fixture = await createRemoteFixture('sse');
+      const manager = createManager();
+      await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+
+      assert.equal(manager.status('remote')?.transport, 'sse');
+      const result = await manager.callTool(bindingFor(manager, 'remote', 'echo'), {
+        value: 'legacy',
+      });
+      assert.deepEqual(result.content, [{ type: 'text', text: 'legacy' }]);
+      const get = fixture.requests.find(
+        (request) => request.method === 'GET' && request.path === '/sse',
+      );
+      assert.equal(get?.authorization, 'Bearer remote-test');
+      assert.match(get?.accept ?? '', /text\/event-stream/u);
+      assert.ok(
+        fixture.requests.some(
+          (request) =>
+            request.method === 'POST' &&
+            request.path === '/messages' &&
+            request.authorization === 'Bearer remote-test',
+        ),
+      );
+      assertLegacyHandshake(fixture);
+    });
+
+    test('still sends low-level discovery when a legacy server omits tools capability', async () => {
+      const fixture = await createRemoteFixture('streamable-http', {
+        advertiseTools: false,
+      });
+      const manager = createManager();
+
+      await manager.sync(remoteConfig(fixture.url));
+
+      assert.ok(
+        fixture.requests.some((request) => request.protocolMethods.includes('tools/list')),
+        JSON.stringify({
+          status: manager.status('remote'),
+          methods: fixture.requests.flatMap((request) => request.protocolMethods),
+        }),
+      );
+    });
+
     test('bounds and sanitizes connection errors before publishing status', async () => {
       const fixture = await createRemoteFixture('streamable-http');
       fixture.setToolListMode('duplicate');
@@ -813,6 +948,44 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
 
       assert.equal(countProtocolMethod(fixture, 'tools/call'), callsBefore);
     });
+
+    test('a failed tool call rejects with a sanitized cause, never the raw chain', async () => {
+      // The scrubbed message is only half the boundary: the normalized
+      // error's cause retains the RAW transport error, and an endpoint that
+      // reflects the Authorization header into an HTTP failure would leak
+      // it to any cause-aware logger or serializer past the manager. The
+      // retained cause keeps its typed identity but loses the raw text and
+      // the deeper chain.
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+      const aborted = new AbortController();
+      const reflected = new Error('carrier: Bearer remote-test', {
+        cause: new Error('deeper: Bearer remote-test'),
+      });
+      aborted.abort(reflected);
+
+      let rejection: unknown;
+      try {
+        await manager.callTool(
+          bindingFor(manager, 'remote', 'echo'),
+          { value: 'x' },
+          {
+            signal: aborted.signal,
+          },
+        );
+      } catch (error) {
+        rejection = error;
+      }
+
+      assert.ok(rejection instanceof McpToolCallError);
+      assert.doesNotMatch(String((rejection as Error).message), /remote-test/u);
+      const cause = (rejection as Error & { cause?: unknown }).cause;
+      assert.ok(cause instanceof Error);
+      assert.notEqual(cause, reflected);
+      assert.doesNotMatch(cause.message, /remote-test/u);
+      assert.equal((cause as Error & { cause?: unknown }).cause, undefined);
+    });
   });
 
   describe('McpClientManager stdio E2E', () => {
@@ -849,6 +1022,54 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         manager.callTool(bindingFor(manager, 'fixture', 'fail'), {}),
         (error: unknown) =>
           error instanceof McpToolCallError && /deliberate failure/u.test(error.message),
+      );
+    });
+
+    test('a tool error echoing a configured env secret is scrubbed', async () => {
+      const manager = createManager();
+      await manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: {
+          fixture: {
+            command: process.execPath,
+            args: [fixturePath],
+            env: { FIXTURE_LEAK_TOKEN: 'env-secret-value' },
+          },
+        },
+      });
+      await assert.rejects(
+        manager.callTool(bindingFor(manager, 'fixture', 'fail'), {}),
+        (error: unknown) => {
+          assert.ok(error instanceof McpToolCallError);
+          assert.doesNotMatch(error.message, /env-secret-value/u);
+          assert.match(error.message, /\[redacted\]/u);
+          return true;
+        },
+      );
+    });
+
+    test('a short sensitive env value is withheld wholesale from tool errors', async () => {
+      const manager = createManager();
+      await manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: {
+          fixture: {
+            command: process.execPath,
+            args: [fixturePath],
+            // A 3-character credential cannot be spliced out; the key names
+            // it as a secret, so the whole echoing message must be withheld.
+            env: { FIXTURE_LEAK_TOKEN: 'k7#' },
+          },
+        },
+      });
+      await assert.rejects(
+        manager.callTool(bindingFor(manager, 'fixture', 'fail'), {}),
+        (error: unknown) => {
+          assert.ok(error instanceof McpToolCallError);
+          assert.doesNotMatch(error.message, /k7#/u);
+          assert.match(error.message, /withheld/u);
+          return true;
+        },
       );
     });
 

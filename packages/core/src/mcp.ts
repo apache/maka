@@ -42,7 +42,60 @@ export interface McpConfigFile {
   mcpServers: Record<string, McpServerConfig>;
 }
 
-export type McpConnectionState = 'disabled' | 'disconnected' | 'connecting' | 'connected' | 'error';
+/** The one definition of "traffic that never leaves this machine" — the
+ * only place cleartext http is acceptable for MCP endpoints, OAuth
+ * endpoints, and redirect hops. Storage validation, the runtime's fetch
+ * guard, the desktop OAuth controller and the editor's field validation
+ * all share it so the rule cannot drift. */
+export function isLoopbackHost(hostname: string): boolean {
+  // Only names whose loopback-ness the RUNTIME guarantees: `localhost` and
+  // the literal loopback addresses. `*.localhost` is loopback per RFC 6761
+  // §6.3, but Node hands it to the system resolver — under an attacker's
+  // resolver (or hosts file) the name can point anywhere, and everything
+  // built on this predicate (cleartext trust, provenance roots) would
+  // follow it off the machine.
+  return (
+    hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/u.test(hostname)
+  );
+}
+
+/** Private-range and link-local IP LITERALS (RFC 1918, RFC 3927/4291,
+ * CGNAT). Hostname-based checks are deliberately out of scope: they would
+ * need a resolve here and could still re-resolve differently at request
+ * time — callers treat privately-RESOLVING names as accepted risk. */
+export function isPrivateRangeHost(hostname: string): boolean {
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u.exec(hostname);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  }
+  if (hostname.startsWith('[')) {
+    const inner = hostname.slice(1, -1).toLowerCase();
+    return inner.startsWith('fc') || inner.startsWith('fd') || inner.startsWith('fe8');
+  }
+  return false;
+}
+
+/** The composed rule the config store enforces, the runtime's fetch guard
+ * re-checks per hop, and the editor mirrors onto the URL field: cleartext
+ * http is only acceptable where it never leaves the machine. One
+ * definition, so the three sites cannot drift. */
+export function isNonLoopbackCleartextHttp(url: URL): boolean {
+  return url.protocol === 'http:' && !isLoopbackHost(url.hostname);
+}
+
+export type McpConnectionState =
+  | 'disabled'
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'needs-auth'
+  | 'error';
 
 export interface McpNegotiatedProtocol {
   era: 'legacy' | 'modern';
@@ -95,6 +148,9 @@ export interface McpServerStatus {
   tools: McpToolDescriptor[];
   error?: string;
   stderrTail?: string[];
+  /** True when the connection is backed by stored OAuth credentials —
+   * the UI offers logout only where there is something to drop. */
+  authenticated?: boolean;
   updatedAt: number;
 }
 

@@ -82,7 +82,10 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
     };
   }
   if (params.name === 'fail') {
-    return { isError: true, content: [{ type: 'text', text: 'deliberate failure' }] };
+    // With FIXTURE_LEAK_TOKEN set, behaves like a server echoing a secret
+    // it was handed — the manager must scrub it out of the tool error.
+    const leak = process.env.FIXTURE_LEAK_TOKEN ? ` ${process.env.FIXTURE_LEAK_TOKEN}` : '';
+    return { isError: true, content: [{ type: 'text', text: `deliberate failure${leak}` }] };
   }
   if (params.name === 'slow') {
     await new Promise((resolve) => setTimeout(resolve, 30_000));
