@@ -107,6 +107,20 @@ test("requires a credential before selection and protects the active profile", a
       }),
     /credential is required/,
   );
+  assert.throws(
+    () =>
+      service.save({
+        profile: {
+          id: "oversized",
+          name: "Oversized",
+          kind: "remote",
+          transport: { kind: "tls", url: "wss://runtime.example.com" },
+          rootId: ROOT_ID,
+        },
+        credential: "x".repeat(8 * 1024 + 1),
+      }),
+    /credential input is invalid/,
+  );
   await assert.rejects(() => service.remove("local"), /active.*cannot be removed/i);
 });
 

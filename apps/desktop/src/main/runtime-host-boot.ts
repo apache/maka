@@ -185,6 +185,7 @@ if (runtimeHostStartupSelection.kind === "unavailable") {
 }
 const startupRuntimeHostProfileId = runtimeHostStartupSelection.selectedProfileId;
 let startupRuntimeHost = runtimeHostStartupSelection.target;
+let lastRuntimeHostTarget = startupRuntimeHost;
 let owner: RuntimeHostDesktopOwner | undefined;
 const currentRuntimeHost = (): ResolvedRuntimeHostProfile | undefined =>
   owner ? owner.current()?.target : startupRuntimeHost;
@@ -564,13 +565,17 @@ owner = await startRuntimeHostDesktopOwner(
   },
   {
     upgradePrompts: runtimeHostUpgradePrompts,
-    onTargetActivated: ({ epoch, target }) => {
+    onTargetStateChanged: ({ epoch, target, readiness }) => {
+      lastRuntimeHostTarget = target;
       mainWindowController.send("runtime-host-profiles:changed", {
         epoch,
-        activeProfileId: target.profile.id,
+        profileId: target.profile.id,
+        readiness,
       });
-      mainWindowController.send("projects:changed");
-      emitConnectionListChanged();
+      if (readiness === "ready") {
+        mainWindowController.send("projects:changed");
+        emitConnectionListChanged();
+      }
     },
     onFatalError: (error) => {
       if (error instanceof RuntimeHostUpgradeCancelledError) {
@@ -578,7 +583,7 @@ owner = await startRuntimeHostDesktopOwner(
         return;
       }
       console.error("[runtime-host] fatal:", error);
-      if (currentRuntimeHost()?.profile.kind === "remote") {
+      if ((currentRuntimeHost() ?? lastRuntimeHostTarget).profile.kind === "remote") {
         void handleRemoteRuntimeHostFailure(error);
         return;
       }
@@ -590,7 +595,7 @@ owner = await startRuntimeHostDesktopOwner(
     app.exit(0);
     return new Promise<never>(() => undefined);
   }
-  if (currentRuntimeHost()?.profile.kind === "remote") {
+  if ((currentRuntimeHost() ?? lastRuntimeHostTarget).profile.kind === "remote") {
     return handleRemoteRuntimeHostFailure(error);
   }
   throw error;
@@ -601,7 +606,7 @@ async function handleRemoteRuntimeHostFailure(error: unknown): Promise<never> {
   remoteHostFailurePromptOpen = true;
   const isChinese =
     resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
-  const failedTarget = currentRuntimeHost() ?? startupRuntimeHost;
+  const failedTarget = currentRuntimeHost() ?? lastRuntimeHostTarget;
   const result = await whileAwaitingPerson(
     dialog.showMessageBox({
       type: "warning",

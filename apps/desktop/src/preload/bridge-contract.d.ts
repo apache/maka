@@ -234,7 +234,8 @@ export interface DesktopRuntimeHostProfileSaveInput {
 
 export interface DesktopRuntimeHostProfileChangedEvent {
   readonly epoch: string;
-  readonly activeProfileId: string;
+  readonly profileId: string;
+  readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
 }
 
 export interface DesktopProjectCapabilities {

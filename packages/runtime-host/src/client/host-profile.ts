@@ -22,6 +22,7 @@ const PROFILE_DOCUMENT_MAX_BYTES = 64 * 1024;
 const PROFILE_COUNT_MAX = 32;
 const PROFILE_NAME_MAX_BYTES = 128;
 const PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export const RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES = 8 * 1024;
 
 export const LOCAL_RUNTIME_HOST_PROFILE = Object.freeze({
   id: 'local',
@@ -93,7 +94,11 @@ export function createRuntimeHostProfileCredentialStore(
       return credentials.getSecret(profileCredentialSlot(profile), 'runtime_host_access');
     },
     set: (profile, credential) => {
-      if (!credential || /\s/u.test(credential)) {
+      if (
+        !credential ||
+        /\s/u.test(credential) ||
+        Buffer.byteLength(credential, 'utf8') > RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES
+      ) {
         return Promise.reject(new Error('Runtime Host access credential is invalid'));
       }
       return credentials.setSecret(
@@ -235,23 +240,23 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     }
   }
 
-  resolve(profileId?: string): Promise<ResolvedRuntimeHostProfile> {
+  async resolve(profileId?: string): Promise<ResolvedRuntimeHostProfile> {
     if (profileId === undefined || profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
-      return Promise.resolve({ profile: LOCAL_RUNTIME_HOST_PROFILE });
+      return { profile: LOCAL_RUNTIME_HOST_PROFILE };
     }
-    return this.#exclusive(async () => {
-      const profile = (await this.read()).profiles.find((candidate) => candidate.id === profileId);
-      if (!profile) {
-        throw new RuntimeHostPermanentReconnectError(`Unknown Runtime Host profile: ${profileId}`);
-      }
-      const credential = await this.credentials.get(profile);
-      if (!credential) {
-        throw new RuntimeHostPermanentReconnectError(
-          `Runtime Host profile ${profile.id} has no access credential`,
-        );
-      }
-      return { profile, credential };
-    });
+    const id = requireProfileId(profileId);
+    const document = await this.read();
+    const profile = document.profiles.find((candidate) => candidate.id === id);
+    if (!profile) {
+      throw new RuntimeHostPermanentReconnectError(`Unknown Runtime Host profile: ${id}`);
+    }
+    const credential = await this.credentials.get(profile);
+    if (!credential) {
+      throw new RuntimeHostPermanentReconnectError(
+        `Runtime Host profile ${profile.id} has no access credential`,
+      );
+    }
+    return { profile, credential };
   }
 
   save(
@@ -280,13 +285,14 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
           ? current.profiles.map((candidate) => (candidate.id === profile.id ? profile : candidate))
           : [...current.profiles, profile],
       });
-      await writeProfileDocument(this.path, next);
       if (suppliedCredential !== undefined) {
-        try {
-          await this.credentials.set(profile, suppliedCredential);
-        } catch (error) {
+        await this.credentials.set(profile, suppliedCredential);
+      }
+      try {
+        await writeProfileDocument(this.path, next);
+      } catch (error) {
+        if (suppliedCredential !== undefined) {
           try {
-            await writeProfileDocument(this.path, current);
             await restoreCredential(
               this.credentials,
               previousProfile ?? profile,
@@ -298,8 +304,8 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
               'Runtime Host profile credential update failed and the profile could not be restored',
             );
           }
-          throw error;
         }
+        throw error;
       }
       return next;
     });
@@ -318,17 +324,16 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
         schemaVersion: PROFILE_SCHEMA_VERSION,
         profiles: current.profiles.filter((candidate) => candidate.id !== id),
       });
-      const previousCredential = await this.credentials.get(profile);
-      await this.credentials.delete(profile);
+      await writeProfileDocument(this.path, next);
       try {
-        await writeProfileDocument(this.path, next);
+        await this.credentials.delete(profile);
       } catch (error) {
         try {
-          await restoreCredential(this.credentials, profile, previousCredential);
+          await writeProfileDocument(this.path, current);
         } catch (rollbackError) {
           throw new AggregateError(
             [error, rollbackError],
-            'Runtime Host profile removal failed and its credential could not be restored',
+            'Runtime Host profile credential removal failed and the profile could not be restored',
           );
         }
         throw error;
@@ -471,7 +476,6 @@ async function writeProfileDocument(
       await handle.close();
     }
     await rename(temporaryPath, path);
-    if (process.platform !== 'win32') await chmod(path, 0o600);
   } finally {
     await rm(temporaryPath, { force: true });
   }

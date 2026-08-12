@@ -1,4 +1,4 @@
-import type { ProjectRecord } from '@maka/core/project';
+import { findProjectByIdentity, type ProjectRecord } from '@maka/core/project';
 import type {
   ProjectCatalogProject,
   ProjectCatalogProjectDetails,
@@ -59,8 +59,9 @@ async function projectRecord(
   },
   project: ProjectCatalogProject,
 ): Promise<ProjectRecord> {
-  const details = (await target.client.listProjects(target.includeHostPaths)).find(
-    (candidate) => candidate.id === project.id || candidate.aliases.includes(project.id),
+  const details = findProjectByIdentity(
+    await target.client.listProjects(target.includeHostPaths),
+    project.id,
   );
   if (!details) throw new Error(`Project ${project.id} disappeared after mutation`);
   return toProjectRecord(details);

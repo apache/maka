@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
@@ -133,6 +133,15 @@ describe('Runtime Host profiles', () => {
       'first',
       'second',
     ]);
+  });
+
+  test('resolves an atomic profile snapshot without waiting for the writer lock', async () => {
+    const path = await profilePath();
+    const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());
+    await catalog.save(remoteProfile('office', 'wss://a.example.com', ROOT_A), 'token-a');
+    await mkdir(`${path}.lock`);
+
+    assert.equal((await catalog.resolve('office')).credential, 'token-a');
   });
 
   test('rejects malformed, secret-bearing, or insecure profile documents', async () => {

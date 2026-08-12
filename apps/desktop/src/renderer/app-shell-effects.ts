@@ -27,7 +27,10 @@ import {
   persistableSessionWorkbarPanels,
   type SessionWorkbarPanelsState,
 } from './session-workbar-tabs.js';
-import type { WindowCommand } from '../preload/bridge-contract.js';
+import type {
+  DesktopRuntimeHostProfileChangedEvent,
+  WindowCommand,
+} from '../preload/bridge-contract.js';
 import {
   mergeShellRunNotification,
   mergeShellRunUpdates,
@@ -246,8 +249,9 @@ export function useAppShellBootstrapSubscriptions(options: {
   const handleConnectionSubscriptionEvent = useEffectEvent((event: ConnectionEvent) => {
     options.handleConnectionEvent(event);
   });
-  const handleRuntimeHostChange = useEffectEvent(() => {
+  const handleRuntimeHostChange = useEffectEvent((event: DesktopRuntimeHostProfileChangedEvent) => {
     options.clearRuntimeHostRendererState();
+    if (event.readiness !== 'ready') return;
     void options.refreshProjects();
     void options.refreshSessions();
     void options.refreshConnections();

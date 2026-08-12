@@ -38,6 +38,25 @@ export interface RuntimeHostDesktopTargetSnapshot {
   readonly candidate?: DesktopRuntimeHostCandidate;
 }
 
+export type RuntimeHostDesktopTargetState =
+  | {
+      readonly epoch: string;
+      readonly target: ResolvedRuntimeHostProfile;
+      readonly readiness: 'connecting' | 'reconnecting';
+    }
+  | {
+      readonly epoch: string;
+      readonly target: ResolvedRuntimeHostProfile;
+      readonly readiness: 'ready';
+      readonly candidate: DesktopRuntimeHostCandidate;
+    }
+  | {
+      readonly epoch: string;
+      readonly target: ResolvedRuntimeHostProfile;
+      readonly readiness: 'unavailable';
+      readonly error: Error;
+    };
+
 export type RuntimeHostUpdatePreparation =
   | { readonly kind: 'active_tasks' }
   | { readonly kind: 'prepared'; rollback(): void };
@@ -77,6 +96,7 @@ interface DesktopRuntimeHostTargetGeneration {
   readonly target: ResolvedRuntimeHostProfile;
   readonly observations: RuntimeHostSessionObservationRegistry;
   lifecycle?: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>;
+  unsubscribeLifecycle?: () => void;
   valid: boolean;
 }
 
@@ -95,7 +115,7 @@ export async function startRuntimeHostDesktopOwner(
       signal: AbortSignal,
     ) => Promise<void>;
     reconnectBackoff?: RuntimeHostReconnectBackoff;
-    onTargetActivated?: (snapshot: RuntimeHostDesktopTargetSnapshot) => void;
+    onTargetStateChanged?: (state: RuntimeHostDesktopTargetState) => void;
   } = {},
 ): Promise<RuntimeHostDesktopOwner> {
   const owner = new RuntimeHostDesktopOwnerImpl(
@@ -106,7 +126,7 @@ export async function startRuntimeHostDesktopOwner(
     options.waitForHostExit ?? waitForProcessExit,
     options.waitForHostRetirement ?? waitForProcessRetirement,
     options.reconnectBackoff,
-    options.onTargetActivated,
+    options.onTargetStateChanged,
   );
   await owner.start();
   return owner;
@@ -133,8 +153,8 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       signal: AbortSignal,
     ) => Promise<void>,
     private readonly reconnectBackoff: RuntimeHostReconnectBackoff | undefined,
-    private readonly onTargetActivated:
-      | ((snapshot: RuntimeHostDesktopTargetSnapshot) => void)
+    private readonly onTargetStateChanged:
+      | ((state: RuntimeHostDesktopTargetState) => void)
       | undefined,
   ) {
     this.#ipcMain = new RuntimeHostReconnectingIpcMain(input.ipcMain);
@@ -142,6 +162,11 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
   }
 
   async start(): Promise<void> {
+    this.#publishState({
+      epoch: this.#target.epoch,
+      target: this.#target.target,
+      readiness: 'connecting',
+    });
     try {
       this.#target.lifecycle = await this.#startLifecycle(this.#target, true);
       this.#activate(this.#target);
@@ -219,6 +244,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     await this.#switchTail;
     this.#target.valid = false;
     this.#activeTarget = undefined;
+    this.#target.unsubscribeLifecycle?.();
     this.#ipcMain.deactivate(this.#target.epoch);
     try {
       await this.#target.lifecycle?.close();
@@ -235,26 +261,49 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     remote: DesktopRuntimeHostCandidateStartInput['remote'],
   ): Promise<void> {
     if (this.#closed) throw new Error('Desktop Runtime Host owner is closed');
-    if (sameRuntimeHostTarget(this.#target.input.remote, remote)) return;
+    if (this.#activeTarget && sameRuntimeHostTarget(this.#target.input.remote, remote)) return;
 
     const previousTarget = this.#target;
-    const previousLifecycle = this.#requireLifecycle();
+    const previousWasActive = this.#activeTarget === previousTarget;
     previousTarget.valid = false;
+    previousTarget.unsubscribeLifecycle?.();
     this.#ipcMain.deactivate(previousTarget.epoch);
     this.#activeTarget = undefined;
-    await previousLifecycle.close();
+    const nextTarget = this.#createTarget(withRuntimeHostTarget(previousTarget.input, remote));
+    this.#target = nextTarget;
+    this.#publishState({
+      epoch: nextTarget.epoch,
+      target: nextTarget.target,
+      readiness: 'connecting',
+    });
+    await previousTarget.lifecycle?.close();
+    if (!previousWasActive) await previousTarget.observations.close();
     if (this.#closed) throw new Error('Desktop Runtime Host owner is closed');
 
-    const nextTarget = this.#createTarget(withRuntimeHostTarget(previousTarget.input, remote));
     try {
       nextTarget.lifecycle = await this.#startLifecycle(nextTarget, false);
     } catch (switchError) {
       nextTarget.valid = false;
       await nextTarget.observations.close();
+      if (!previousWasActive) {
+        this.#publishState({
+          epoch: nextTarget.epoch,
+          target: nextTarget.target,
+          readiness: 'unavailable',
+          error: switchError instanceof Error ? switchError : new Error(String(switchError)),
+        });
+        throw switchError;
+      }
       const rollbackTarget = this.#createTarget(
         previousTarget.input,
         previousTarget.observations,
       );
+      this.#target = rollbackTarget;
+      this.#publishState({
+        epoch: rollbackTarget.epoch,
+        target: rollbackTarget.target,
+        readiness: 'connecting',
+      });
       try {
         rollbackTarget.lifecycle = await this.#startLifecycle(rollbackTarget, false);
       } catch (rollbackError) {
@@ -264,7 +313,13 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
           [switchError, rollbackError],
           'Runtime Host switch failed and the previous Host could not be restored',
         );
-        this.onFatalError(failure);
+        this.#target = nextTarget;
+        this.#publishState({
+          epoch: nextTarget.epoch,
+          target: nextTarget.target,
+          readiness: 'unavailable',
+          error: failure,
+        });
         throw failure;
       }
       this.#activate(rollbackTarget);
@@ -283,6 +338,18 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       return await startRuntimeHostReconnectLifecycle({
         connect: (signal) => this.connect(target, signal),
         onFatalError: (error) => {
+          if (!starting && this.#activeTarget === target) {
+            target.valid = false;
+            target.unsubscribeLifecycle?.();
+            this.#activeTarget = undefined;
+            this.#ipcMain.deactivate(target.epoch);
+            this.#publishState({
+              epoch: target.epoch,
+              target: target.target,
+              readiness: 'unavailable',
+              error,
+            });
+          }
           if (reportInitialFailure || !starting) this.onFatalError(error);
         },
         ...(this.reconnectBackoff ? { backoff: this.reconnectBackoff } : {}),
@@ -391,8 +458,43 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     this.#target = target;
     this.#activeTarget = target;
     this.#ipcMain.activate(target.epoch);
+    target.unsubscribeLifecycle = target.lifecycle?.subscribe((candidate) => {
+      if (!target.valid || this.#activeTarget !== target) return;
+      this.#publishState(
+        candidate
+          ? {
+              epoch: target.epoch,
+              target: target.target,
+              readiness: 'ready',
+              candidate,
+            }
+          : {
+              epoch: target.epoch,
+              target: target.target,
+              readiness: 'reconnecting',
+            },
+      );
+    });
+    const candidate = target.lifecycle?.current;
+    this.#publishState(
+      candidate
+        ? {
+            epoch: target.epoch,
+            target: target.target,
+            readiness: 'ready',
+            candidate,
+          }
+        : {
+            epoch: target.epoch,
+            target: target.target,
+            readiness: 'reconnecting',
+          },
+    );
+  }
+
+  #publishState(state: RuntimeHostDesktopTargetState): void {
     try {
-      this.onTargetActivated?.(this.current()!);
+      this.onTargetStateChanged?.(state);
     } catch (error) {
       this.onFatalError(error instanceof Error ? error : new Error(String(error)));
     }

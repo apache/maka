@@ -1,6 +1,6 @@
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
-import type { ProjectRecord } from '@maka/core/project';
+import { findProjectByIdentity, type ProjectRecord } from '@maka/core/project';
 import {
   type ProjectCatalog,
   ProjectArchivedError,
@@ -88,10 +88,7 @@ export class HostWorkspaceResolver {
       return { target: { kind: 'host_path', path: cwd }, cwd, projectId: null };
     }
 
-    const project = (await this.catalog.list()).find(
-      (candidate) =>
-        candidate.id === target.projectId || candidate.aliases?.includes(target.projectId),
-    );
+    const project = findProjectByIdentity(await this.catalog.list(), target.projectId);
     if (!project) {
       throw new WorkspaceResolutionError(
         'not_found',

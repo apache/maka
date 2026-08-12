@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import {
   createClientRuntimeHostProfileCatalog,
   LOCAL_RUNTIME_HOST_PROFILE,
+  RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   type RemoteRuntimeHostProfile,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfileCatalog,
@@ -272,7 +273,9 @@ function requireSaveInput(value: unknown): asserts value is {
   if (
     "credential" in value &&
     value.credential !== undefined &&
-    typeof value.credential !== "string"
+    (typeof value.credential !== "string" ||
+      Buffer.byteLength(value.credential, "utf8") >
+        RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES)
   ) {
     throw new Error("Runtime Host credential input is invalid");
   }

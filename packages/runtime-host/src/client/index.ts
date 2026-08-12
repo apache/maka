@@ -17,6 +17,7 @@ export {
 } from './connection.js';
 export {
   LOCAL_RUNTIME_HOST_PROFILE,
+  RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   createClientRuntimeHostProfileCatalog,
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostProfileCredentialStore,

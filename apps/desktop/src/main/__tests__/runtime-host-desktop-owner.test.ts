@@ -29,6 +29,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   const secondReleased = new Promise<void>((resolve) => {
     releaseSecond = resolve;
   });
+  const readiness: string[] = [];
   const owner = await startRuntimeHostDesktopOwner({} as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async () => {
       starts += 1;
@@ -40,6 +41,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
       assert.ok(result);
       return result;
     },
+    onTargetStateChanged: (state) => readiness.push(state.readiness),
   });
 
   first.disconnect();
@@ -59,6 +61,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   assert.equal(first.botMessages, 0);
   assert.equal(second.botMessages, 1);
   assert.deepEqual(second.stoppedSessions, ['session-1']);
+  assert.deepEqual(readiness, ['connecting', 'ready', 'reconnecting', 'ready']);
   await owner.close();
   assert.equal(second.closeCalls, 1);
 });
@@ -139,8 +142,9 @@ test('switches Runtime Host targets without replacing the Desktop owner', async 
         starts.push(input);
         return ready(starts.length === 1 ? local.candidate : remote.candidate);
       },
-      onTargetActivated: ({ epoch, target }) =>
-        activations.push({ epoch, profileId: target.profile.id }),
+      onTargetStateChanged: ({ epoch, target, readiness }) => {
+        if (readiness === 'ready') activations.push({ epoch, profileId: target.profile.id });
+      },
     },
   );
 
@@ -174,8 +178,9 @@ test('restores the previous Runtime Host when a target switch fails', async () =
         return ready(starts.length === 1 ? first.candidate : restored.candidate);
       },
       onFatalError: (error) => fatalErrors.push(error),
-      onTargetActivated: ({ epoch, target }) =>
-        activations.push({ epoch, profileId: target.profile.id }),
+      onTargetStateChanged: ({ epoch, target, readiness }) => {
+        if (readiness === 'ready') activations.push({ epoch, profileId: target.profile.id });
+      },
     },
   );
 
@@ -197,18 +202,21 @@ test('restores the previous Runtime Host when a target switch fails', async () =
 
 test('reports no active Host when both target switch and restoration fail', async () => {
   const first = candidateHarness();
+  const recovered = candidateHarness();
   const fatalErrors: Error[] = [];
+  const readiness: string[] = [];
   let starts = 0;
   const owner = await startRuntimeHostDesktopOwner(
     {} as DesktopRuntimeHostCandidateStartInput,
     {
       startCandidate: async () => {
         starts += 1;
-        return starts === 1
-          ? ready(first.candidate)
-          : { kind: 'failed', reason: 'host_unresponsive' };
+        if (starts === 1) return ready(first.candidate);
+        if (starts === 4) return ready(recovered.candidate);
+        return { kind: 'failed', reason: 'host_unresponsive' };
       },
       onFatalError: (error) => fatalErrors.push(error),
+      onTargetStateChanged: (state) => readiness.push(state.readiness),
     },
   );
 
@@ -218,7 +226,17 @@ test('reports no active Host when both target switch and restoration fail', asyn
   );
 
   assert.equal(owner.current(), undefined);
-  assert.equal(fatalErrors.length, 1);
+  assert.deepEqual(fatalErrors, []);
+  assert.deepEqual(readiness, [
+    'connecting',
+    'ready',
+    'connecting',
+    'connecting',
+    'unavailable',
+  ]);
+  await owner.switchTarget(undefined);
+  assert.equal(owner.current()?.target.profile.id, 'local');
+  assert.deepEqual(readiness.slice(-2), ['connecting', 'ready']);
   await owner.close();
 });
 

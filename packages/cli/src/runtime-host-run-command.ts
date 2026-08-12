@@ -1,4 +1,5 @@
 import { type SessionEvent } from '@maka/core/events';
+import { findProjectByIdentity } from '@maka/core/project';
 import { type StoredMessage } from '@maka/core/session';
 import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-inputs';
 import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
@@ -80,7 +81,7 @@ export async function runRuntimeHostTextCli(
           ),
         createContext: async (input) => {
           const context = await connect(input.workspaceRoot, input.hostProfileId);
-          await assertRuntimeHostRunReady(
+          const preparedInput = await prepareRuntimeHostRunInput(
             context.connection,
             context.catalog,
             context.profile,
@@ -89,7 +90,7 @@ export async function runRuntimeHostTextCli(
           return commandDeps.createContext(
             context.connection,
             context.catalog,
-            input,
+            preparedInput,
             context.profile,
           );
         },
@@ -164,34 +165,38 @@ export function createRuntimeHostRunContext(
   };
 }
 
-async function assertRuntimeHostRunReady(
+async function prepareRuntimeHostRunInput(
   connection: RuntimeHostConnection,
   catalog: RuntimeHostCliConnectionContext['catalog'],
   profile: RuntimeHostProfile,
   input: Parameters<MakaRunDeps['createContext']>[0],
-): Promise<void> {
+): Promise<Parameters<MakaRunDeps['createContext']>[0]> {
+  let projectId = input.projectId;
   if (profile.kind === 'remote' && !input.resumeSessionId) {
-    if (!input.projectId) {
+    if (!projectId) {
       throw new Error(`Runtime Host profile ${profile.id} requires --project for a new Session`);
     }
-    const project = (await readRuntimeHostProjects(connection)).find(
-      (candidate) => candidate.id === input.projectId,
-    );
+    const project = findProjectByIdentity(await readRuntimeHostProjects(connection), projectId);
     if (!project || project.archivedAt !== null || !project.available) {
-      throw new Error(`Runtime Host Project is unavailable: ${input.projectId}`);
+      throw new Error(`Runtime Host Project is unavailable: ${projectId}`);
     }
+    projectId = project.id;
   }
+  const preparedInput = projectId === input.projectId ? input : { ...input, projectId };
   const snapshot = await readRuntimeHostCliTaskReadiness({
     connection,
     catalog,
-    cwd: input.cwd,
+    cwd: preparedInput.cwd,
     ...(profile.kind === 'remote' ? { workspaceState: 'ready' as const } : {}),
-    ...(input.requestedConnectionSlug ? { connectionSlug: input.requestedConnectionSlug } : {}),
-    ...(input.requestedModel ? { model: input.requestedModel } : {}),
+    ...(preparedInput.requestedConnectionSlug
+      ? { connectionSlug: preparedInput.requestedConnectionSlug }
+      : {}),
+    ...(preparedInput.requestedModel ? { model: preparedInput.requestedModel } : {}),
   });
   if (isRuntimeHostCliTaskBlocked(snapshot)) {
     throw new Error(`Task is not ready:\n${formatRuntimeHostCliTaskBlockers(snapshot)}`);
   }
+  return preparedInput;
 }
 
 class RuntimeHostRunRuntime implements MakaRunRuntime {

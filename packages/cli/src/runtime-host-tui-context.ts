@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { PermissionMode } from '@maka/core/permission';
+import { findProjectByIdentity } from '@maka/core/project';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
@@ -160,9 +161,7 @@ export async function resolveRuntimeHostTuiWorkspace(
   if (!input.projectId) {
     throw new Error(`Runtime Host profile ${profile.id} requires --project for a new Session`);
   }
-  const project = (await readRuntimeHostProjects(connection)).find(
-    (candidate) => candidate.id === input.projectId,
-  );
+  const project = findProjectByIdentity(await readRuntimeHostProjects(connection), input.projectId);
   if (!project || project.archivedAt !== null || !project.available) {
     throw new Error(`Runtime Host Project is unavailable: ${input.projectId}`);
   }

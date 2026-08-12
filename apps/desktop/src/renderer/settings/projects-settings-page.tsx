@@ -21,6 +21,13 @@ import { SettingsPage, SettingsSection } from './settings-section';
 import { RuntimeHostProfilesSection } from './runtime-host-profiles-section.js';
 import { useKeyedActionGuard } from './use-action-guard';
 
+const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
+  chooseClientDirectory: false,
+  selectNoProject: false,
+  setLocalDefault: false,
+  viewClientPath: false,
+};
+
 /**
  * Settings · 偏好 · 项目 — the management view of the project catalog, and the
  * home of the default project.
@@ -47,12 +54,8 @@ export function ProjectsSettingsPage(props: {
   const mountedRef = useMountedRef();
   const actionGuard = useKeyedActionGuard<string>();
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [capabilities, setCapabilities] = useState<DesktopProjectCapabilities>({
-    chooseClientDirectory: false,
-    selectNoProject: false,
-    setLocalDefault: false,
-    viewClientPath: false,
-  });
+  const [capabilities, setCapabilities] =
+    useState<DesktopProjectCapabilities>(NO_PROJECT_CAPABILITIES);
   const [homePath, setHomePath] = useState<string | undefined>(undefined);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
@@ -70,12 +73,21 @@ export function ProjectsSettingsPage(props: {
   useEffect(() => {
     void reload();
     const unsubscribe = window.maka.projects.subscribeChanges(() => void reload());
+    const unsubscribeRuntimeHost = window.maka.runtimeHostProfiles.subscribeChanges((event) => {
+      if (event.readiness === 'ready') return;
+      reloadGeneration.current += 1;
+      setProjects([]);
+      setCapabilities(NO_PROJECT_CAPABILITIES);
+    });
     // Paths render unabbreviated until this lands, which is why
     // `collapseHomePath` treats an unknown home as a no-op rather than a bug.
     void window.maka.app.info().then((info) => {
       if (mountedRef.current) setHomePath(info.homePath);
     });
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      unsubscribeRuntimeHost();
+    };
   }, [reload, mountedRef]);
 
   // Archived projects are removed-from-Maka, not deleted; they belong to the

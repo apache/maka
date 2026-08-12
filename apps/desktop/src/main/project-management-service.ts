@@ -1,4 +1,4 @@
-import type { ProjectRecord } from '@maka/core/project';
+import { findProjectByIdentity, type ProjectRecord } from '@maka/core/project';
 import type {
   DesktopProjectCapabilities,
   DesktopProjectSnapshot,
@@ -170,9 +170,7 @@ function selectableProject(
   projects: readonly ProjectRecord[],
   id: string,
 ): ProjectRecord | undefined {
-  const project = projects.find(
-    (candidate) => candidate.id === id || candidate.aliases?.includes(id),
-  );
+  const project = findProjectByIdentity(projects, id);
   return project?.available && project.archivedAt === undefined ? project : undefined;
 }
 

@@ -19,7 +19,7 @@ describe('Runtime Host TUI workspace selection', () => {
     );
   });
 
-  test('resolves a remote Project without reading a Client path', async () => {
+  test('canonicalizes a remote Project alias without reading a Client path', async () => {
     const connection = {
       request: async (operation: string) => {
         assert.equal(operation, 'project.catalog.query');
@@ -34,11 +34,17 @@ describe('Runtime Host TUI workspace selection', () => {
               projectIndex: 0,
               id: 'project-1',
               name: 'Project',
-              aliasCount: 0,
+              aliasCount: 1,
               locationCount: 1,
               preferredLocationIndex: 0,
               archivedAt: null,
               available: true,
+            },
+            {
+              kind: 'alias',
+              projectIndex: 0,
+              itemIndex: 0,
+              alias: 'project-old',
             },
           ],
           nextCursor: null,
@@ -48,7 +54,7 @@ describe('Runtime Host TUI workspace selection', () => {
 
     assert.deepEqual(
       await resolveRuntimeHostTuiWorkspace(connection, REMOTE_PROFILE, {
-        projectId: 'project-1',
+        projectId: 'project-old',
       }),
       { kind: 'project', projectId: 'project-1' },
     );

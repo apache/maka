@@ -51,12 +51,12 @@ describe('Runtime Host maka run adapter', () => {
     assert.match(stderr.join(''), /repair connection "openai-main" in `maka`/);
   });
 
-  test('routes a remote run through the selected Host profile and existing Project', async () => {
+  test('routes a remote run through the selected Host profile and canonical Project', async () => {
     let selectedProfile: string | undefined;
     let contextInput: MakaRunContextInput | undefined;
     const connection = remoteReadinessConnection();
     const exitCode = await runRuntimeHostTextCli(
-      ['answer once', '--host', 'office', '--project', 'project-1'],
+      ['answer once', '--host', 'office', '--project', 'project-old'],
       {
         workspaceRoot: () => '/runtime-host-data',
         processCwd: () => process.cwd(),
@@ -844,11 +844,17 @@ function remoteReadinessConnection(): RuntimeHostConnection {
               projectIndex: 0,
               id: 'project-1',
               name: 'Project',
-              aliasCount: 0,
+              aliasCount: 1,
               locationCount: 1,
               preferredLocationIndex: 0,
               archivedAt: null,
               available: true,
+            },
+            {
+              kind: 'alias',
+              projectIndex: 0,
+              itemIndex: 0,
+              alias: 'project-old',
             },
           ],
           nextCursor: null,
