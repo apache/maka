@@ -531,7 +531,14 @@ export function reconcileTerminalLiveTurn(
     });
     return !toolsCovered;
   });
-  if (steps.length === current.steps.length) return current;
+  // Once the turn is terminal, the refreshed transcript is authoritative for
+  // every accepted steer. Anything still present only in the live projection
+  // was either persisted (and now renders from `messages`) or nacked before
+  // persistence; retaining it would leave a ghost user instruction on screen.
+  const steeringSettled = current.terminal === true && current.steering !== undefined;
+  if (steps.length === current.steps.length && !steeringSettled) return current;
   if (steps.length === 0 && current.terminal) return undefined;
-  return { ...current, steps };
+  if (!steeringSettled) return { ...current, steps };
+  const { steering: _steering, ...withoutSteering } = current;
+  return { ...withoutSteering, steps };
 }

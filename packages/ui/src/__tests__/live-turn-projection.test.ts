@@ -522,6 +522,16 @@ describe('reconcileTerminalLiveTurn', () => {
     assert.equal(reconcileTerminalLiveTurn(toolOnly, []), toolOnly);
   });
 
+  it('drops terminal live steering even while other uncovered evidence remains', () => {
+    const withSteering: LiveTurnProjection = {
+      ...toolOnly,
+      steering: [{ id: 'steer-1', text: 'change direction', ts: 2 }],
+    };
+
+    assert.deepEqual(reconcileTerminalLiveTurn(withSteering, []), toolOnly);
+    assert.equal(reconcileTerminalLiveTurn({ ...withSteering, steps: [] }, []), undefined);
+  });
+
   it('retains interrupted live output until a persisted result covers it', () => {
     const withOutput: LiveTurnProjection = {
       ...toolOnly,
