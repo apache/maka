@@ -10,6 +10,7 @@ import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 import type {
   AttachmentRef,
   InlineReference,
+  MessageContent,
   QuoteRef,
   ShellRunUpdate,
   ToolActivityKind,
@@ -467,19 +468,7 @@ export function overlayLiveTurn(
       if (persistedUserIds.has(message.id)) continue;
       timeline.push({
         kind: "user",
-        message: {
-          id: message.id,
-          role: "user",
-          text: message.content.displayText ?? message.content.text,
-          ts: message.ts,
-          ...(message.content.attachments?.length
-            ? { attachments: message.content.attachments }
-            : {}),
-          ...(message.content.quotes?.length ? { quotes: message.content.quotes } : {}),
-          ...(message.content.inlineReferences !== undefined
-            ? { inlineReferences: message.content.inlineReferences }
-            : {}),
-        },
+        message: chatItemFromContent(message.id, message.ts, message.content),
         messageId: message.id,
       });
     }
@@ -1011,21 +1000,30 @@ function buildTurnTimeline(
 }
 
 function chatItemFromUserMessage(message: UserMessage): ChatItem {
+  return chatItemFromContent(message.id, message.ts, message, message.origin);
+}
+
+function chatItemFromContent(
+  id: string,
+  ts: number,
+  content: MessageContent,
+  hostOrigin?: NonNullable<UserMessage["origin"]>,
+): ChatItem {
   return {
-    id: message.id,
+    id,
     role: "user",
-    text: message.displayText ?? message.text,
-    ts: message.ts,
-    ...(message.attachments && message.attachments.length > 0
-      ? { attachments: message.attachments }
+    text: content.displayText ?? content.text,
+    ts,
+    ...(content.attachments && content.attachments.length > 0
+      ? { attachments: content.attachments }
       : {}),
-    ...(message.quotes && message.quotes.length > 0
-      ? { quotes: message.quotes }
+    ...(content.quotes && content.quotes.length > 0
+      ? { quotes: content.quotes }
       : {}),
-    ...(message.inlineReferences !== undefined
-      ? { inlineReferences: message.inlineReferences }
+    ...(content.inlineReferences !== undefined
+      ? { inlineReferences: content.inlineReferences }
       : {}),
-    ...(message.origin ? { hostOrigin: message.origin } : {}),
+    ...(hostOrigin ? { hostOrigin } : {}),
   };
 }
 

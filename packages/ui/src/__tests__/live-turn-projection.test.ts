@@ -10,6 +10,16 @@ import {
 } from '../live-turn-projection.js';
 import { overlayLiveTurn, type ToolActivityItem } from '../materialize.js';
 
+function visibleTimeline(projection: LiveTurnProjection): string[] {
+  return overlayLiveTurn([], projection)[0]?.timeline.map((item) =>
+    item.kind === 'user'
+      ? `user:${item.messageId}`
+      : item.kind === 'tools'
+        ? `tools:${item.items.map((tool) => tool.toolUseId).join(',')}`
+        : item.kind,
+  ) ?? [];
+}
+
 // A client that just sent cannot read "has my turn started" off session status:
 // it is the same before the turn starts and after it ends. The arm carries
 // `unconfirmed` until the authority says something about THAT turn, which is
@@ -296,16 +306,7 @@ describe('applyLiveTurnEvent', () => {
       createdAt: 100,
       ts: 100,
     });
-    assert.deepEqual(
-      overlayLiveTurn([], output)[0]?.timeline.map((item) =>
-        item.kind === 'user'
-          ? `user:${item.messageId}`
-          : item.kind === 'tools'
-            ? `tools:${item.items.map((tool) => tool.toolUseId).join(',')}`
-            : item.kind,
-      ),
-      ['user:steer-1', 'tools:tool-1'],
-    );
+    assert.deepEqual(visibleTimeline(output), ['user:steer-1', 'tools:tool-1']);
 
     const projection = applyLiveTurnEvent(output, {
       type: 'tool_start',
@@ -320,16 +321,7 @@ describe('applyLiveTurnEvent', () => {
 
     assert.equal(projection.steps.length, 1);
     assert.equal(projection.steps[0]?.stepId, 'step-1');
-    assert.deepEqual(
-      overlayLiveTurn([], projection)[0]?.timeline.map((item) =>
-        item.kind === 'user'
-          ? `user:${item.messageId}`
-          : item.kind === 'tools'
-            ? `tools:${item.items.map((tool) => tool.toolUseId).join(',')}`
-            : item.kind,
-      ),
-      ['user:steer-1', 'tools:tool-1'],
-    );
+    assert.deepEqual(visibleTimeline(projection), ['user:steer-1', 'tools:tool-1']);
     assert.deepEqual(projection.steps[0]?.tools, [{
       toolUseId: 'tool-1',
       toolName: 'Bash',
@@ -551,6 +543,14 @@ describe('reconcileTerminalLiveTurn', () => {
       tools: [{ toolUseId: 'tool-1', toolName: 'Bash', status: 'completed' as const, args: {} }],
     }],
   };
+  const terminalState = {
+    type: 'turn_state' as const,
+    id: 'terminal-1',
+    turnId: 'turn-1',
+    ts: 3,
+    status: 'completed' as const,
+    partialOutputRetained: false,
+  };
 
   it('settles a tool-only terminal step once persisted history covers it', () => {
     assert.equal(reconcileTerminalLiveTurn(toolOnly, [
@@ -605,14 +605,7 @@ describe('reconcileTerminalLiveTurn', () => {
       isError: false,
       content: { kind: 'text' as const, text: 'ok' },
     }];
-    const terminalTranscript = [{
-      type: 'turn_state' as const,
-      id: 'terminal-1',
-      turnId: 'turn-1',
-      ts: 3,
-      status: 'completed' as const,
-      partialOutputRetained: false,
-    }];
+    const terminalTranscript = [terminalState];
 
     assert.equal(reconcileTerminalLiveTurn(withSteering, staleTranscript), withSteering);
     assert.deepEqual(
@@ -633,14 +626,7 @@ describe('reconcileTerminalLiveTurn', () => {
     };
 
     assert.equal(reconcileTerminalLiveTurn(withSteering, []), withSteering);
-    assert.deepEqual(reconcileTerminalLiveTurn(withSteering, [{
-      type: 'turn_state',
-      id: 'terminal-1',
-      turnId: 'turn-1',
-      ts: 3,
-      status: 'completed',
-      partialOutputRetained: false,
-    }]), toolOnly);
+    assert.deepEqual(reconcileTerminalLiveTurn(withSteering, [terminalState]), toolOnly);
   });
 
   it('retains interrupted live output until a persisted result covers it', () => {

@@ -12,181 +12,157 @@ import {
   applyLiveTurnEvent,
   armLiveTurn,
   settleLiveTurnStep,
+  type LiveTurnProjection,
 } from "../live-turn-projection.js";
+
+function textStep(
+  live: LiveTurnProjection | undefined,
+  messageId: string,
+  text: string,
+  ts: number,
+): LiveTurnProjection {
+  return applyLiveTurnEvent(live, {
+    type: "text_complete",
+    id: `event-${messageId}`,
+    messageId,
+    turnId: "t1",
+    ts,
+    text,
+  });
+}
+
+function steer(live: LiveTurnProjection | undefined): LiveTurnProjection {
+  return applyLiveTurnEvent(live, {
+    type: "steering_message",
+    id: "event-steer",
+    messageId: "steer-1",
+    turnId: "t1",
+    ts: 3,
+    content: { text: "steer" },
+  })!;
+}
+
+const originalUser = {
+  type: "user" as const,
+  id: "original",
+  turnId: "t1",
+  ts: 1,
+  text: "request",
+};
+const beforeAssistant = {
+  type: "assistant" as const,
+  id: "before-steer",
+  turnId: "t1",
+  ts: 2,
+  text: "before",
+  modelId: "fixture",
+};
+const steeringUser = {
+  type: "user" as const,
+  id: "steer-1",
+  turnId: "t1",
+  ts: 3,
+  text: "steer",
+};
+
+function timelineText(turn: ReturnType<typeof materializeTurns>[number] | undefined): string[] {
+  return turn?.timeline.map((item) =>
+    item.kind === "user" ? `user:${item.message.text}` : `${item.kind}:${"text" in item ? item.text : ""}`,
+  ) ?? [];
+}
 
 describe("steering timeline", () => {
   test("keeps a steering message at its conversational position", () => {
     const [turn] = materializeTurns([
-      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
-      {
-        type: "assistant",
-        id: "before-steer",
-        turnId: "t1",
-        ts: 2,
-        text: "working on the original request",
-        modelId: "fixture",
-      },
-      { type: "user", id: "steer-1", turnId: "t1", ts: 3, text: "inserted instruction" },
+      originalUser,
+      beforeAssistant,
+      steeringUser,
       {
         type: "assistant",
         id: "after-steer",
         turnId: "t1",
         ts: 4,
-        text: "following the inserted instruction",
+        text: "after",
         modelId: "fixture",
       },
     ]);
 
-    assert.deepEqual(
-      turn?.timeline.map((item) =>
-        item.kind === "user" ? `user:${item.message.text}` : `${item.kind}:${"text" in item ? item.text : ""}`,
-      ),
-      [
-        "text:working on the original request",
-        "user:inserted instruction",
-        "text:following the inserted instruction",
-      ],
-    );
+    assert.deepEqual(timelineText(turn), [
+      "text:before",
+      "user:steer",
+      "text:after",
+    ]);
   });
 
   test("keeps a live steering message between the output visible before and after it", () => {
-    let live = applyLiveTurnEvent(armLiveTurn("t1"), {
-      type: "text_complete",
-      id: "event-before",
-      messageId: "before-steer",
-      turnId: "t1",
-      ts: 2,
-      text: "working on the original request",
-    });
-    live = applyLiveTurnEvent(live, {
-      type: "steering_message",
-      id: "event-steer",
-      messageId: "steer-1",
-      turnId: "t1",
-      ts: 3,
-      content: { text: "inserted instruction" },
-    })!;
-    live = applyLiveTurnEvent(live, {
-      type: "text_complete",
-      id: "event-after",
-      messageId: "after-steer",
-      turnId: "t1",
-      ts: 4,
-      text: "following the inserted instruction",
-    });
+    let live = textStep(armLiveTurn("t1"), "before-steer", "before", 2);
+    live = steer(live);
+    live = textStep(live, "after-steer", "after", 4);
 
     const [turn] = overlayLiveTurn(
-      materializeTurns([
-        { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
-      ]),
+      materializeTurns([originalUser]),
       live,
     );
-    assert.deepEqual(
-      turn?.timeline.map((item) =>
-        item.kind === "user" ? `user:${item.message.text}` : `${item.kind}:${"text" in item ? item.text : ""}`,
-      ),
-      [
-        "text:working on the original request",
-        "user:inserted instruction",
-        "text:following the inserted instruction",
-      ],
-    );
+    assert.deepEqual(timelineText(turn), [
+      "text:before",
+      "user:steer",
+      "text:after",
+    ]);
   });
 
   test("keeps a live steering message visible when its preceding step settles first", () => {
-    let live = applyLiveTurnEvent(armLiveTurn("t1"), {
-      type: "text_complete",
-      id: "event-before",
-      messageId: "before-steer",
-      turnId: "t1",
-      ts: 2,
-      text: "working on the original request",
-    })!;
-    live = applyLiveTurnEvent(live, {
-      type: "steering_message",
-      id: "event-steer",
-      messageId: "steer-1",
-      turnId: "t1",
-      ts: 3,
-      content: { text: "inserted instruction" },
-    })!;
+    let live = textStep(armLiveTurn("t1"), "before-steer", "before", 2);
+    live = steer(live);
     live = settleLiveTurnStep(live, "before-steer")!;
 
     const [turn] = overlayLiveTurn(
-      materializeTurns([
-        { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
-        {
-          type: "assistant",
-          id: "before-steer",
-          turnId: "t1",
-          ts: 2,
-          text: "working on the original request",
-          modelId: "fixture",
-        },
-      ]),
+      materializeTurns([originalUser, beforeAssistant]),
       live,
     );
 
-    assert.deepEqual(
-      turn?.timeline.map((item) =>
-        item.kind === "user" ? `user:${item.message.text}` : `${item.kind}:${"text" in item ? item.text : ""}`,
-      ),
-      [
-        "text:working on the original request",
-        "user:inserted instruction",
-      ],
-    );
+    assert.deepEqual(timelineText(turn), [
+      "text:before",
+      "user:steer",
+    ]);
   });
 
   test("overlays a steering message immediately and deduplicates its persisted row", () => {
-    const settled = materializeTurns([
-      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
-    ]);
+    const settled = materializeTurns([originalUser]);
+    const content = {
+      text: "model-facing instruction",
+      displayText: "inserted instruction",
+      attachments: [{
+        kind: "code" as const,
+        name: "example.ts",
+        mimeType: "text/typescript",
+        bytes: 12,
+        ref: { kind: "workspace_file" as const, relativePath: "example.ts" },
+      }],
+      quotes: [{ text: "source excerpt", sourceTurnId: "source-turn" }],
+      inlineReferences: [],
+    };
     const live = applyLiveTurnEvent(armLiveTurn("t1"), {
       type: "steering_message",
       id: "event-steer",
       messageId: "steer-1",
       turnId: "t1",
       ts: 2,
-      content: {
-        text: "model-facing instruction",
-        displayText: "inserted instruction",
-        attachments: [{
-          kind: "code",
-          name: "example.ts",
-          mimeType: "text/typescript",
-          bytes: 12,
-          ref: { kind: "workspace_file", relativePath: "example.ts" },
-        }],
-        quotes: [{ text: "source excerpt", sourceTurnId: "source-turn" }],
-        inlineReferences: [],
-      },
+      content,
     });
 
     const [overlaid] = overlayLiveTurn(settled, live);
     const liveUser = overlaid?.timeline.find((item) => item.kind === "user")?.message;
-    assert.deepEqual(liveUser, {
-      id: "steer-1",
-      role: "user",
-      text: "inserted instruction",
-      ts: 2,
-      attachments: [{
-        kind: "code",
-        name: "example.ts",
-        mimeType: "text/typescript",
-        bytes: 12,
-        ref: { kind: "workspace_file", relativePath: "example.ts" },
-      }],
-      quotes: [{ text: "source excerpt", sourceTurnId: "source-turn" }],
-      inlineReferences: [],
-    });
+    assert.equal(liveUser?.text, content.displayText);
+    assert.deepEqual(liveUser?.attachments, content.attachments);
+    assert.deepEqual(liveUser?.quotes, content.quotes);
+    assert.deepEqual(liveUser?.inlineReferences, content.inlineReferences);
 
     const persisted = materializeTurns([
-      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
+      originalUser,
       { type: "user", id: "steer-1", turnId: "t1", ts: 2, text: "inserted instruction" },
     ]);
     const [deduplicated] = overlayLiveTurn(persisted, live);
-    assert.equal(deduplicated?.user?.text, "original request");
+    assert.equal(deduplicated?.user?.text, "request");
     assert.deepEqual(
       deduplicated?.timeline.flatMap((item) =>
         item.kind === "user" ? [item.message.text] : [],

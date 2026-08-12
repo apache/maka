@@ -412,9 +412,6 @@ export const TurnView = memo(function TurnView(props: {
     () => splitTimelineAtUserMessages(foldedTimeline, showAssistantMessage),
     [foldedTimeline, showAssistantMessage],
   );
-  const lastAssistantSegment = conversationSegments.findLastIndex(
-    (segment) => segment.kind === 'assistant',
-  );
   return (
     <section
       className="maka-turn"
@@ -553,7 +550,7 @@ export const TurnView = memo(function TurnView(props: {
             </LocalizedChatMessage>
           );
         }
-        const ownsTurnChrome = segmentIndex === lastAssistantSegment;
+        const ownsTurnChrome = segmentIndex === conversationSegments.length - 1;
         return (
           <LocalizedChatMessage
             key={`assistant-${
@@ -687,21 +684,16 @@ function splitTimelineAtUserMessages(
   includeEmptyAssistant: boolean,
 ): ConversationSegment[] {
   const segments: ConversationSegment[] = [];
-  let assistantItems: AssistantFoldedTimelineEntry[] = [];
-  const flushAssistant = (): void => {
-    if (assistantItems.length === 0) return;
-    segments.push({ kind: 'assistant', items: assistantItems });
-    assistantItems = [];
-  };
   for (const item of items) {
+    const last = segments.at(-1);
     if (item.kind === 'user') {
-      flushAssistant();
       segments.push({ kind: 'user', item });
+    } else if (last?.kind === 'assistant') {
+      last.items.push(item);
     } else {
-      assistantItems.push(item);
+      segments.push({ kind: 'assistant', items: [item] });
     }
   }
-  flushAssistant();
   if (includeEmptyAssistant && segments.at(-1)?.kind !== 'assistant') {
     segments.push({ kind: 'assistant', items: [] });
   }

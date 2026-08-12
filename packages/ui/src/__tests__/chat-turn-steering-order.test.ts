@@ -16,23 +16,13 @@ test('renders steering where it arrived in the assistant timeline', () => {
     notes: [],
     startedAt: 1,
     timeline: [
-      {
-        kind: 'text',
-        text: 'output visible before steering',
-        messageId: 'before-steer',
-        ts: 2,
-      },
+      { kind: 'text', text: 'output visible before steering', messageId: 'before-steer', ts: 2 },
       {
         kind: 'user',
         message: { id: 'steer-1', role: 'user', text: 'inserted instruction', ts: 3 },
         messageId: 'steer-1',
       },
-      {
-        kind: 'text',
-        text: 'output visible after steering',
-        messageId: 'after-steer',
-        ts: 4,
-      },
+      { kind: 'text', text: 'output visible after steering', messageId: 'after-steer', ts: 4 },
     ],
   };
 
@@ -42,20 +32,14 @@ test('renders steering where it arrived in the assistant timeline', () => {
       children: createElement(TurnView, { turn, failedReasonLabel: 'failure detail' }),
     }),
   );
-  const before = markup.indexOf('output visible before steering');
-  const steering = markup.indexOf('inserted instruction');
-  const after = markup.indexOf('output visible after steering');
-
-  assert.notEqual(before, -1);
-  assert.notEqual(steering, -1);
-  assert.notEqual(after, -1);
-  assert.equal(before < steering && steering < after, true);
-  for (const text of [
+  const texts = [
     'output visible before steering',
     'inserted instruction',
     'output visible after steering',
-    'failure detail',
-  ]) {
+  ];
+  const [before, steering, after] = texts.map((text) => markup.indexOf(text));
+  assert.equal(before < steering && steering < after, true);
+  for (const text of [...texts, 'failure detail']) {
     assert.equal(markup.split(text).length - 1, 1, `${text} should render exactly once`);
   }
 });
