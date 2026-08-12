@@ -28,7 +28,7 @@ const QQ_INTENT_GUILDS = 1 << 0;
 const QQ_INTENT_DIRECT_MESSAGE = 1 << 12;
 const QQ_INTENT_PUBLIC_GUILD_MESSAGES = 1 << 30;
 const QQ_INTENT_PUBLIC_MESSAGES = 1 << 25;
-export const QQ_INTENTS =
+const QQ_INTENTS =
   QQ_INTENT_GUILDS |
   QQ_INTENT_DIRECT_MESSAGE |
   QQ_INTENT_PUBLIC_GUILD_MESSAGES |
@@ -736,5 +736,4 @@ export const __TEST__ = {
   qqC2CMessageToEvent,
   pickQQSendRoute,
   pickQQTypingRoute,
-  QQ_INTENTS,
 };
