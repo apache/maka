@@ -140,6 +140,7 @@ const LIVE_TOOL_BUFFER_MAX_CHUNKS = 512;
 
 export type MakaPiTranscriptEntry =
   | { kind: 'user'; text: string }
+  | { kind: 'legacy_automation'; text: string }
   | { kind: 'assistant'; messageId: string; text: string }
   | { kind: 'thinking'; messageId: string; text: string; expanded: boolean }
   | {
@@ -802,7 +803,12 @@ export function applyMakaSessionEventToTranscript(
 function chatItemToTranscriptEntries(item: ChatItem): MakaPiTranscriptEntry[] {
   switch (item.kind) {
     case 'user':
-      return [{ kind: 'user', text: item.message.displayText ?? item.message.text }];
+      return [
+        {
+          kind: item.message.origin?.kind === 'legacy_automation' ? 'legacy_automation' : 'user',
+          text: item.message.displayText ?? item.message.text,
+        },
+      ];
     case 'assistant': {
       const entries: MakaPiTranscriptEntry[] = [];
       // Stored thinking happened before the reply text, so it resumes above it.
@@ -1231,6 +1237,8 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
   switch (entry.kind) {
     case 'user':
       return renderUserBlock(entry.text, width);
+    case 'legacy_automation':
+      return renderLegacyAutomationBlock(entry.text, width);
     case 'assistant':
       return renderAssistantBlock(entry.text, width);
     case 'thinking':
@@ -1247,6 +1255,8 @@ function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): 
     // User text is immutable, so length is a safe change key.
     case 'user':
       return `user|${width}|${entry.text.length}`;
+    case 'legacy_automation':
+      return `legacy_automation|${width}|${entry.text}`;
     case 'assistant':
       // text_complete authoritatively replaces streamed text, including with a
       // same-length final, so the full value must participate in the cache key.
@@ -1647,6 +1657,14 @@ function renderUserBlock(text: string, width: number): string[] {
   // renderIndented reserves a 2-column gutter; reuse it and swap the two
   // leading spaces for `> ` so wrapped lines stay aligned under the prefix.
   return renderIndented(text, width, 2).map((line) => fitLine(`${prefix} ${line.slice(2)}`, width));
+}
+
+function renderLegacyAutomationBlock(text: string, width: number): string[] {
+  if (!text.trim()) return [];
+  return [
+    fitLine(ansi.dim('Legacy Automation (history only)'), width),
+    ...renderIndented(text, width, 2).map((line) => fitLine(line, width)),
+  ];
 }
 
 /** An assistant turn: bare markdown prose, no speaker label or indent. */
