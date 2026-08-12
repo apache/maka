@@ -475,6 +475,11 @@ for (const { name, mutation } of [
         END;
       `),
   },
+  {
+    name: 'a current authority database with an unexpected view',
+    mutation: (database: DatabaseSync) =>
+      database.exec('CREATE VIEW unexpected_operational_view AS SELECT * FROM usage_llm_calls'),
+  },
 ] as const) {
   test(`rejects ${name}`, async () => {
     await assertCurrentDatabaseRejected(
