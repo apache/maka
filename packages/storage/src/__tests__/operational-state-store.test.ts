@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -67,6 +67,298 @@ test('preserves operational state when every schema is current', async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('migrates released Reminder state after Automation is retired', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-v016-'));
+  try {
+    const databasePath = join(root, 'runtime.sqlite');
+    await copyV016Database(databasePath);
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec('DELETE FROM automation_pending_fires; DELETE FROM automation_definitions');
+    legacy.close();
+    const lease = acquireOperationalStateDatabase(root);
+    const rows = lease.database
+      .prepare('SELECT task_id, record_json FROM workflow_scheduled_tasks ORDER BY task_id')
+      .all() as Array<{ task_id: string; record_json: string }>;
+    assert.deepEqual(
+      rows.map(({ task_id }) => task_id),
+      ['60999192-d3b2-45b6-affb-e76355d4cf85'],
+    );
+    lease.close();
+    const reopened = acquireOperationalStateDatabase(root);
+    const reminder = JSON.parse(rows[0]?.record_json ?? '') as Record<string, unknown>;
+    assert.deepEqual(reminder, {
+      id: '60999192-d3b2-45b6-affb-e76355d4cf85',
+      title: 'Reminder v0.1.6',
+      intent: { kind: 'text', body: 'preserve reminder' },
+      schedule: { kind: 'once', runAt: 10_000 },
+      effect: { kind: 'notify', channel: 'local' },
+      status: 'active',
+      nextFireAt: 10_000,
+      lastFireAt: null,
+      fireCount: 0,
+      maxFires: null,
+      expiresAt: null,
+      createdBy: { kind: 'user' },
+      createdAt: 100,
+      updatedAt: 100,
+      runs: [],
+      lastError: null,
+    });
+    assert.equal(
+      reopened.database.prepare('SELECT COUNT(*) AS count FROM session_metadata').get()?.count,
+      1,
+    );
+    assert.equal(
+      reopened.database.prepare('SELECT COUNT(*) AS count FROM session_messages').get()?.count,
+      1,
+    );
+    assert.equal(
+      reopened.database
+        .prepare(
+          "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'automation_definitions'",
+        )
+        .get(),
+      undefined,
+    );
+    assert.equal(
+      reopened.database
+        .prepare("SELECT 1 FROM operational_schema_migrations WHERE scope = 'automation'")
+        .get(),
+      undefined,
+    );
+    reopened.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('leaves released Automation unchanged when its configuration cannot be preserved', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-v016-automation-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    await copyV016Database(databasePath);
+    assert.throws(() => acquireOperationalStateDatabase(root), /cannot be migrated without losing/);
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      preserved.prepare('SELECT COUNT(*) AS count FROM automation_definitions').get()?.count,
+      1,
+    );
+    assert.equal(
+      preserved
+        .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_scheduled_tasks'")
+        .get(),
+      undefined,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects legacy Automation tables without their registry authority', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-v016-missing-automation-scope-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    await copyV016Database(databasePath);
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("DELETE FROM operational_schema_migrations WHERE scope = 'automation'");
+    legacy.close();
+
+    assert.throws(() => acquireOperationalStateDatabase(root), /Automation schema registry/);
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      preserved.prepare('SELECT COUNT(*) AS count FROM automation_definitions').get()?.count,
+      1,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects a released Workflow registry whose reminder table is missing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-v016-missing-reminders-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    await copyV016Database(databasePath);
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DROP TABLE workflow_plan_reminders;
+      UPDATE operational_schema_migrations SET version = 5 WHERE scope = 'workflow';
+    `);
+    legacy.close();
+
+    assert.throws(() => acquireOperationalStateDatabase(root), /missing workflow_plan_reminders/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects a released Reminder table after its Workflow authority removed it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-stale-reminders-'));
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    lease.database.exec('CREATE TABLE workflow_plan_reminders (reminder_id TEXT PRIMARY KEY)');
+    rewindRuntimeSchema(lease.database);
+    lease.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      /still contains released Plan Reminder/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects a current Workflow registry with missing ScheduledTask authority', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-missing-scheduled-tasks-'));
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    lease.database.exec('DROP TABLE workflow_scheduled_tasks');
+    lease.close();
+
+    assert.throws(() => acquireOperationalStateDatabase(root), /missing ScheduledTask authority/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('cleans the known removed Automation v2 scope', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-automation-v2-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    await copyV016Database(databasePath);
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DELETE FROM automation_pending_fires;
+      DELETE FROM automation_definitions;
+      ALTER TABLE automation_definitions DROP COLUMN durable;
+      UPDATE operational_schema_migrations SET version = 2 WHERE scope = 'automation';
+    `);
+    legacy.close();
+
+    const lease = acquireOperationalStateDatabase(root);
+    assert.equal(
+      lease.database
+        .prepare("SELECT 1 FROM operational_schema_migrations WHERE scope = 'automation'")
+        .get(),
+      undefined,
+    );
+    lease.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('leaves an oversized released scheduling catalog unchanged', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-oversized-catalog-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    await copyV016Database(databasePath);
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      WITH RECURSIVE sequence(value) AS (
+        SELECT 1
+        UNION ALL
+        SELECT value + 1 FROM sequence WHERE value < 256
+      )
+      INSERT INTO workflow_plan_reminders(reminder_id, created_at, updated_at, record_json)
+      SELECT
+        'reminder-' || value,
+        created_at + value,
+        updated_at + value,
+        json_set(
+          record_json,
+          '$.id', 'reminder-' || value,
+          '$.createdAt', created_at + value,
+          '$.updatedAt', updated_at + value
+        )
+      FROM workflow_plan_reminders, sequence
+      WHERE reminder_id = '60999192-d3b2-45b6-affb-e76355d4cf85';
+      DELETE FROM automation_pending_fires;
+      DELETE FROM automation_definitions;
+    `);
+    legacy.close();
+
+    assert.throws(() => acquireOperationalStateDatabase(root), /exceeding the supported 256/);
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      preserved.prepare('SELECT COUNT(*) AS count FROM workflow_plan_reminders').get()?.count,
+      257,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('does not classify a SQLite write failure as a migration blocker', {
+  skip:
+    process.platform === 'win32'
+      ? 'POSIX permissions are required to make the SQLite database read-only'
+      : false,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-readonly-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    await copyV016Database(databasePath);
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DELETE FROM automation_pending_fires;
+      DELETE FROM automation_definitions;
+    `);
+    legacy.close();
+    await chmod(databasePath, 0o444);
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code !== 'operational_state_migration_blocked' &&
+        /readonly/i.test(error.message),
+    );
+  } finally {
+    await chmod(databasePath, 0o644).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rolls back rather than dropping a contradictory legacy history fact', async () => {
+  await assertReleasedReminderRejected(
+    'contradictory-history',
+    /lastRun contradicts runs/,
+    (row) => {
+      row.runs = [{ id: 'run-newest', at: 200, status: 'triggered', message: 'newest' }];
+      row.lastRun = { id: 'run-other', at: 100, status: 'blocked', message: 'other' };
+      row.runCount = 1;
+    },
+  );
+});
+
+test('keeps a released Reminder with an unrepresentable block reason unchanged', async () => {
+  await assertReleasedReminderRejected(
+    'block-reason',
+    /block reason cannot be preserved/,
+    (row) => {
+      const blockedRun = {
+        id: 'blocked-run',
+        at: 200,
+        status: 'blocked',
+        message: 'Incognito mode is active',
+        blockReason: 'incognito_active',
+      };
+      row.runs = [blockedRun];
+      row.lastRun = blockedRun;
+      row.runCount = 1;
+    },
+    (row) =>
+      assert.equal(
+        (row.runs as Array<Record<string, unknown>>)[0]?.blockReason,
+        'incognito_active',
+      ),
+  );
 });
 
 test('rejects a newer scope before migrating an older scope', async () => {
@@ -249,6 +541,61 @@ test('rejects an invalid registered schema version before migrating', async () =
 function rewindRuntimeSchema(database: DatabaseSync): void {
   database.exec('DROP TABLE runtime_session_event_ordinals');
   database.exec(`PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION - 1}`);
+}
+
+async function copyV016Database(databasePath: string): Promise<void> {
+  await copyFile(
+    new URL('../../test-fixtures/v0.1.6-operational-state/runtime.sqlite', import.meta.url),
+    databasePath,
+  );
+}
+
+async function assertReleasedReminderRejected(
+  name: string,
+  message: RegExp,
+  mutate: (row: Record<string, unknown>) => void,
+  verify: (row: Record<string, unknown>) => void = () => {},
+): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), `maka-operational-v016-${name}-`));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    await copyV016Database(databasePath);
+    const database = new DatabaseSync(databasePath);
+    const stored = database.prepare('SELECT record_json FROM workflow_plan_reminders').get() as {
+      record_json: string;
+    };
+    const reminder = JSON.parse(stored.record_json) as Record<string, unknown>;
+    mutate(reminder);
+    database
+      .prepare('UPDATE workflow_plan_reminders SET record_json = ?')
+      .run(JSON.stringify(reminder));
+    database.exec('DELETE FROM automation_pending_fires; DELETE FROM automation_definitions');
+    database.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        message.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    const preservedRow = preserved
+      .prepare('SELECT record_json FROM workflow_plan_reminders')
+      .get() as { record_json: string };
+    verify(JSON.parse(preservedRow.record_json) as Record<string, unknown>);
+    assert.equal(
+      preserved
+        .prepare(
+          "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'workflow_scheduled_tasks'",
+        )
+        .get(),
+      undefined,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 function sessionHeader(): SessionHeader {

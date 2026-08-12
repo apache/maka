@@ -27,6 +27,11 @@ import {
   migrateSqliteArtifactDatabase,
   SQLITE_ARTIFACT_SCHEMA_VERSION,
 } from './sqlite-artifact-schema.js';
+import {
+  assertLegacySchedulingSchema,
+  insertMigratedScheduledTasks,
+  planLegacyScheduledTasks,
+} from './sqlite-legacy-scheduling.js';
 
 export const OPERATIONAL_STATE_DATABASE_NAME = 'runtime.sqlite';
 export const OPERATIONAL_STATE_SCHEMA_VERSION = 2;
@@ -54,6 +59,17 @@ const owners = new Map<string, OperationalStateDatabaseOwner>();
 
 export interface OperationalStateDatabaseOptions {
   now?: () => number;
+}
+
+export class OperationalStateMigrationBlockedError extends Error {
+  readonly code = 'operational_state_migration_blocked';
+
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : 'Operational state migration is blocked', {
+      cause,
+    });
+    this.name = 'OperationalStateMigrationBlockedError';
+  }
 }
 
 export interface OperationalStateDatabaseLease {
@@ -98,20 +114,10 @@ class OperationalStateDatabaseOwner {
     const Database = loadDatabaseSync();
     this.database = new Database(databasePath);
     try {
-      // Preflight reads must wait for another opener's WAL transition, but this
-      // connection-only pragma keeps rejected databases byte-for-byte intact.
       configureSqliteRuntimeLockWait(this.database);
-      // Reject every unsupported authority before the first migration commits,
-      // so a newer later scope cannot leave an older earlier scope half-upgraded.
-      assertOperationalSchemaCanMigrate(this.database);
+      this.database.exec('PRAGMA foreign_keys = ON');
+      inspectAndMigrateOperationalState(this.database, options.now ?? Date.now);
       configureSqliteRuntimeDatabase(this.database);
-      migrateSqliteRuntimeDatabase(this.database);
-      migrateSqliteSessionMetadataDatabase(this.database);
-      migrateSqliteCoreExecutionDatabase(this.database);
-      migrateSqliteWorkflowDatabase(this.database);
-      migrateSqliteUsageDatabase(this.database);
-      migrateSqliteArtifactDatabase(this.database);
-      migrateOperationalStateDatabase(this.database, options.now ?? Date.now);
     } catch (error) {
       this.database.close();
       this.closed = true;
@@ -183,26 +189,86 @@ class OperationalStateDatabaseOwner {
   }
 }
 
-function assertOperationalSchemaCanMigrate(database: DatabaseSync): void {
-  assertSupportedOperationalSchemaVersion(
-    'runtime',
-    readUserVersion(database),
-    SQLITE_RUNTIME_SCHEMA_VERSION,
-  );
+function inspectAndMigrateOperationalState(database: DatabaseSync, now: () => number): void {
+  try {
+    if (inspectOperationalStateSchema(database).status === 'needs_migration') {
+      migrateOperationalStateDatabaseInternal(database, now);
+    }
+  } catch (error) {
+    if (isSqliteEnvironmentError(error)) throw error;
+    throw new OperationalStateMigrationBlockedError(error);
+  }
+}
+
+function isSqliteEnvironmentError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const errcode = (error as { errcode?: unknown }).errcode;
+  if (typeof errcode !== 'number') return false;
+  return [5, 6, 7, 8, 10, 13, 14].includes(errcode & 0xff);
+}
+
+export interface OperationalStateSchemaInspection {
+  readonly status: 'current' | 'needs_migration';
+  readonly versions: ReadonlyMap<string, number>;
+}
+
+export function inspectOperationalStateSchema(
+  database: DatabaseSync,
+): OperationalStateSchemaInspection {
+  if (database.isTransaction) return inspectOperationalStateSchemaInternal(database);
+  database.exec('BEGIN');
+  try {
+    const inspection = inspectOperationalStateSchemaInternal(database);
+    database.exec('COMMIT');
+    return inspection;
+  } catch (error) {
+    rollback(database);
+    throw error;
+  }
+}
+
+function inspectOperationalStateSchemaInternal(
+  database: DatabaseSync,
+): OperationalStateSchemaInspection {
+  let needsMigration = false;
+  const runtimeVersion = readUserVersion(database);
+  const versions = new Map<string, number>([['runtime', runtimeVersion]]);
+  assertSupportedOperationalSchemaVersion('runtime', runtimeVersion, SQLITE_RUNTIME_SCHEMA_VERSION);
+  needsMigration ||= runtimeVersion < SQLITE_RUNTIME_SCHEMA_VERSION;
+
   if (hasTable(database, 'session_metadata_schema')) {
+    const sessionMetadataVersion = readSqliteSessionMetadataSchemaVersion(database);
+    versions.set('session_metadata', sessionMetadataVersion);
     assertSupportedOperationalSchemaVersion(
       'session_metadata',
-      readSqliteSessionMetadataSchemaVersion(database),
+      sessionMetadataVersion,
       SQLITE_SESSION_METADATA_SCHEMA_VERSION,
     );
+    needsMigration ||= sessionMetadataVersion < SQLITE_SESSION_METADATA_SCHEMA_VERSION;
+  } else {
+    needsMigration = true;
   }
 
-  if (!hasTable(database, 'operational_schema_migrations')) return;
+  if (!hasTable(database, 'operational_schema_migrations')) {
+    if (runtimeVersion === 0 && !hasApplicationSchemaObjects(database)) {
+      return { status: 'needs_migration', versions };
+    }
+    throw new Error(
+      'Operational schema registry is missing from a nonempty database; ' +
+        'Maka did not migrate or delete the database. Restore or repair this workspace before opening it.',
+    );
+  }
   const rows = database
     .prepare('SELECT scope, version FROM operational_schema_migrations')
     .all() as Array<{ scope?: unknown; version?: unknown }>;
+  const registered = new Map<string, number>();
   for (const { scope, version } of rows) {
-    if (typeof scope !== 'string') continue;
+    if (typeof scope !== 'string') {
+      throw new Error(
+        'Operational schema registry has an invalid scope; ' +
+          'Maka did not migrate or delete the database. Restore or repair this workspace before opening it.',
+      );
+    }
     const supportedVersion = OPERATIONAL_SCHEMA_VERSIONS.get(scope);
     if (supportedVersion === undefined) {
       const removedVersion = REMOVED_OPERATIONAL_SCHEMA_VERSIONS.get(scope);
@@ -211,6 +277,8 @@ function assertOperationalSchemaCanMigrate(database: DatabaseSync): void {
           throw new Error(`Operational schema ${scope} has invalid version ${String(version)}`);
         }
         assertSupportedOperationalSchemaVersion(scope, version, removedVersion);
+        versions.set(scope, version);
+        needsMigration = true;
         continue;
       }
       throw new Error(
@@ -225,7 +293,21 @@ function assertOperationalSchemaCanMigrate(database: DatabaseSync): void {
       );
     }
     assertSupportedOperationalSchemaVersion(scope, version, supportedVersion);
+    registered.set(scope, version);
+    if (scope === 'workflow' || scope === 'automation') versions.set(scope, version);
   }
+  assertLegacySchedulingSchema(database, versions);
+  for (const [scope, version] of OPERATIONAL_SCHEMA_VERSIONS) {
+    const registeredVersion = registered.get(scope);
+    if (registeredVersion === undefined) {
+      throw new Error(
+        `Operational schema registry is missing scope ${scope}; ` +
+          'Maka did not migrate or delete the database. Restore or repair this workspace before opening it.',
+      );
+    }
+    needsMigration ||= registeredVersion < version;
+  }
+  return { status: needsMigration ? 'needs_migration' : 'current', versions };
 }
 
 function assertSupportedOperationalSchemaVersion(
@@ -251,9 +333,29 @@ function hasTable(database: DatabaseSync, name: string): boolean {
   return table?.present === 1;
 }
 
-function migrateOperationalStateDatabase(db: DatabaseSync, now: () => number): void {
+function hasApplicationSchemaObjects(database: DatabaseSync): boolean {
+  const object = database
+    .prepare("SELECT 1 AS present FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' LIMIT 1")
+    .get() as { present?: unknown } | undefined;
+  return object?.present === 1;
+}
+
+export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: () => number): void {
   db.exec('BEGIN IMMEDIATE');
   try {
+    const inspection = inspectOperationalStateSchema(db);
+    if (inspection.status === 'current') {
+      db.exec('COMMIT');
+      return;
+    }
+    const legacyScheduledTasks = planLegacyScheduledTasks(db, inspection.versions);
+    migrateSqliteRuntimeDatabase(db, { transaction: 'caller' });
+    migrateSqliteSessionMetadataDatabase(db, { transaction: 'caller' });
+    migrateSqliteCoreExecutionDatabase(db);
+    migrateSqliteWorkflowDatabase(db);
+    insertMigratedScheduledTasks(db, legacyScheduledTasks);
+    migrateSqliteUsageDatabase(db);
+    migrateSqliteArtifactDatabase(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS operational_schema_migrations (
         scope TEXT PRIMARY KEY,
@@ -279,22 +381,6 @@ function migrateOperationalStateDatabase(db: DatabaseSync, now: () => number): v
 }
 
 function registerSchema(db: DatabaseSync, scope: string, version: number, appliedAt: number): void {
-  const existing = db
-    .prepare('SELECT version FROM operational_schema_migrations WHERE scope = ?')
-    .get(scope) as { version?: unknown } | undefined;
-  if (existing) {
-    if (
-      typeof existing.version !== 'number' ||
-      !Number.isSafeInteger(existing.version) ||
-      existing.version < 0
-    ) {
-      throw new Error(
-        `Operational schema ${scope} has invalid version ${String(existing.version)}; ` +
-          'Maka did not migrate or delete the database. Restore or repair this workspace before opening it.',
-      );
-    }
-    assertSupportedOperationalSchemaVersion(scope, existing.version, version);
-  }
   db.prepare(`
     INSERT INTO operational_schema_migrations(scope, version, applied_at)
     VALUES (?, ?, ?)

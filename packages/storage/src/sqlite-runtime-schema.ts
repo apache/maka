@@ -318,7 +318,10 @@ export function configureSqliteRuntimeLockWait(db: DatabaseSync): void {
   db.exec(`PRAGMA busy_timeout = ${SQLITE_INITIALIZATION_BUSY_TIMEOUT_MS}`);
 }
 
-export function migrateSqliteRuntimeDatabase(db: DatabaseSync): void {
+export function migrateSqliteRuntimeDatabase(
+  db: DatabaseSync,
+  options: { transaction?: 'self' | 'caller' } = {},
+): void {
   const observedVersion = readUserVersion(db);
   if (observedVersion > SQLITE_RUNTIME_SCHEMA_VERSION) {
     throw new Error(
@@ -331,7 +334,8 @@ export function migrateSqliteRuntimeDatabase(db: DatabaseSync): void {
   // Any pending upgrade is serialized by one write transaction, then re-reads
   // user_version under that lock so a concurrent opener cannot apply a
   // migration another process just committed.
-  db.exec('BEGIN IMMEDIATE');
+  const ownsTransaction = options.transaction !== 'caller';
+  if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
   try {
     const current = readUserVersion(db);
     if (current > SQLITE_RUNTIME_SCHEMA_VERSION) {
@@ -345,9 +349,9 @@ export function migrateSqliteRuntimeDatabase(db: DatabaseSync): void {
       db.exec(sql);
       db.exec(`PRAGMA user_version = ${version}`);
     }
-    db.exec('COMMIT');
+    if (ownsTransaction) db.exec('COMMIT');
   } catch (error) {
-    rollback(db);
+    if (ownsTransaction) rollback(db);
     throw error;
   }
 }
