@@ -36,7 +36,7 @@ import {
   type TurnTimelineItem,
   type TurnViewModel,
 } from './materialize.js';
-import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
+import { foldTimeline, type FoldedTimelineChild, type FoldedTimelineEntry } from './timeline-fold.js';
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants } from './primitives/chat.js';
@@ -408,6 +408,13 @@ export const TurnView = memo(function TurnView(props: {
   // flat timeline. Settled turn identities are stable (memoized projections),
   // so this only recomputes for the turn whose timeline actually changed.
   const foldedTimeline = useMemo(() => foldTimeline(turn.timeline), [turn.timeline]);
+  const conversationSegments = useMemo(
+    () => splitTimelineAtUserMessages(foldedTimeline, showAssistantMessage),
+    [foldedTimeline, showAssistantMessage],
+  );
+  const lastAssistantSegment = conversationSegments.findLastIndex(
+    (segment) => segment.kind === 'assistant',
+  );
   return (
     <section
       className="maka-turn"
@@ -515,24 +522,6 @@ export const TurnView = memo(function TurnView(props: {
 
         </LocalizedChatMessage>
       )}
-      {turn.userInterjections?.map((message) => (
-        <LocalizedChatMessage
-          key={message.id}
-          accessibleLabel={copy.userAriaLabel}
-          sender="user"
-          className="maka-chat-message maka-user-message maka-steering-message"
-        >
-          <MessageBody
-            role="user"
-            text={message.text}
-            ts={message.ts}
-            attachments={message.attachments}
-            quotes={message.quotes}
-            inlineReferences={message.inlineReferences}
-            onReadAttachmentBytes={props.onReadAttachmentBytes}
-          />
-        </LocalizedChatMessage>
-      ))}
       {turn.notes.map((note) => (
         <ChatSystemMessage
           key={note.id}
@@ -542,21 +531,45 @@ export const TurnView = memo(function TurnView(props: {
           {note.text}
         </ChatSystemMessage>
       ))}
-      {showAssistantMessage && (
-        <LocalizedChatMessage
-          accessibleLabel={copy.assistantAriaLabel}
-          sender="assistant"
-          data-turn-status={turn.status}
-          className="maka-chat-message maka-assistant-answer"
-        >
-          <div className="maka-assistant-answer-content">
-            {turn.status === 'aborted' && (
+      {conversationSegments.map((segment, segmentIndex) => {
+        if (segment.kind === 'user') {
+          const message = segment.item.message;
+          return (
+            <LocalizedChatMessage
+              key={`user-${message.id}`}
+              accessibleLabel={copy.userAriaLabel}
+              sender="user"
+              className="maka-chat-message maka-user-message maka-steering-message"
+            >
+              <MessageBody
+                role="user"
+                text={message.text}
+                ts={message.ts}
+                attachments={message.attachments}
+                quotes={message.quotes}
+                inlineReferences={message.inlineReferences}
+                onReadAttachmentBytes={props.onReadAttachmentBytes}
+              />
+            </LocalizedChatMessage>
+          );
+        }
+        const ownsTurnChrome = segmentIndex === lastAssistantSegment;
+        return (
+          <LocalizedChatMessage
+            key={`assistant-${segment.items[0] ? foldedTimelineEntryKey(segment.items[0], 0) : 'empty'}`}
+            accessibleLabel={copy.assistantAriaLabel}
+            sender="assistant"
+            data-turn-status={turn.status}
+            className="maka-chat-message maka-assistant-answer"
+          >
+            <div className="maka-assistant-answer-content">
+              {ownsTurnChrome && turn.status === 'aborted' && (
               <Marker variant="aborted" role="status">
                 <Ban size={ICON_SIZE.meta} aria-hidden="true" />
                 <em>{turnAbortMarkerLabel(turn.abortSource, locale)}</em>
               </Marker>
-            )}
-            {turn.status === 'failed' && props.failedReasonLabel && (
+              )}
+              {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
               <Marker variant="failed-banner" role="alert">
                 <Marker as="span" variant="failed-icon" aria-hidden="true">
                   <AlertOctagon size={ICON_SIZE.control} />
@@ -578,29 +591,29 @@ export const TurnView = memo(function TurnView(props: {
                   />
                 )}
               </Marker>
-            )}
-            {/* The turn timeline is the rendering source of truth
+              )}
+              {/* The turn timeline is the rendering source of truth
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
                 and Astryx tool group in the order the model produced them.
                 #1307: runs of reasoning + tools between answer texts render
                 through the derived fold as collapsed Processing blocks. */}
-            {foldedTimeline.map((item, index) =>
-              item.kind === 'processing' ? (
-                <ProcessingBlock
-                  key={`processing-${item.id}`}
-                  entries={item.children}
-                  onOpenLinkedSession={props.onOpenLinkedSession}
-                />
-              ) : (
-                <TurnTimelineEntry
-                  key={timelineEntryKey(item, index)}
-                  item={item}
-                  onStreamingSettled={props.liveStreaming?.onStreamingSettled}
-                  onOpenLinkedSession={props.onOpenLinkedSession}
-                />
-              ),
-            )}
-            {props.liveStreaming && (
+              {segment.items.map((item, index) =>
+                item.kind === 'processing' ? (
+                  <ProcessingBlock
+                    key={`processing-${item.id}`}
+                    entries={item.children}
+                    onOpenLinkedSession={props.onOpenLinkedSession}
+                  />
+                ) : (
+                  <TurnTimelineEntry
+                    key={timelineEntryKey(item, index)}
+                    item={item}
+                    onStreamingSettled={props.liveStreaming?.onStreamingSettled}
+                    onOpenLinkedSession={props.onOpenLinkedSession}
+                  />
+                ),
+              )}
+              {ownsTurnChrome && props.liveStreaming && (
               <>
                 {props.liveStreaming.providerRetry ? (
                   <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
@@ -608,9 +621,9 @@ export const TurnView = memo(function TurnView(props: {
                   props.liveStreaming.runningStatus && <TurnRunningStatus startedAt={turn.startedAt} />
                 )}
               </>
-            )}
-          </div>
-          {reverseBadges.length > 0 && (
+              )}
+            </div>
+            {ownsTurnChrome && reverseBadges.length > 0 && (
             <Marker variant="lineage-row-reverse" aria-label={copy.derivativesAriaLabel}>
               {reverseBadges.map((badge) => (
                 <UiButton
@@ -626,8 +639,8 @@ export const TurnView = memo(function TurnView(props: {
                 />
               ))}
             </Marker>
-          )}
-          {props.liveStreaming ? (
+            )}
+            {ownsTurnChrome && (props.liveStreaming ? (
             /* #642: reserved-height footer placeholder while streaming — same
                `mt-0.5 h-8` box the real footer occupies, so the live→settled
                swap is height-neutral (the footer slot never grows/shrinks). No
@@ -635,7 +648,7 @@ export const TurnView = memo(function TurnView(props: {
                `completed`, so a real `TurnFooterActions` would render a
                clickable regenerate/branch on a still-streaming answer. */
             (<div aria-hidden="true" className="maka-live-turn-footer-placeholder" />)
-          ) : (
+            ) : (
             props.footerActions && props.footerActions.length > 0 && (
               <TurnFooterActions
                 actions={props.footerActions}
@@ -643,12 +656,49 @@ export const TurnView = memo(function TurnView(props: {
                 assistantText={finalAssistantReplyText(turn)}
               />
             )
-          )}
-        </LocalizedChatMessage>
-      )}
+            ))}
+          </LocalizedChatMessage>
+        );
+      })}
     </section>
   );
 });
+
+type UserTimelineItem = Extract<TurnTimelineItem, { kind: 'user' }>;
+type AssistantFoldedTimelineEntry = Exclude<FoldedTimelineEntry, UserTimelineItem>;
+type ConversationSegment =
+  | { kind: 'user'; item: UserTimelineItem }
+  | { kind: 'assistant'; items: AssistantFoldedTimelineEntry[] };
+
+function splitTimelineAtUserMessages(
+  items: readonly FoldedTimelineEntry[],
+  includeEmptyAssistant: boolean,
+): ConversationSegment[] {
+  const segments: ConversationSegment[] = [];
+  let assistantItems: AssistantFoldedTimelineEntry[] = [];
+  const flushAssistant = (): void => {
+    if (assistantItems.length === 0) return;
+    segments.push({ kind: 'assistant', items: assistantItems });
+    assistantItems = [];
+  };
+  for (const item of items) {
+    if (item.kind === 'user') {
+      flushAssistant();
+      segments.push({ kind: 'user', item });
+    } else {
+      assistantItems.push(item);
+    }
+  }
+  flushAssistant();
+  if (includeEmptyAssistant && segments.at(-1)?.kind !== 'assistant') {
+    segments.push({ kind: 'assistant', items: [] });
+  }
+  return segments;
+}
+
+function foldedTimelineEntryKey(item: FoldedTimelineEntry, index: number): string {
+  return item.kind === 'processing' ? `processing-${item.id}` : timelineEntryKey(item, index);
+}
 
 export interface TurnFooterActionMeta {
   id: 'regenerate' | 'branch' | 'copy' | 'info';
@@ -976,7 +1026,7 @@ function timelineEntryKey(item: TurnTimelineItem, index: number): string {
 
 /** Render one timeline entry: reasoning disclosure / answer bubble / tool group. */
 function TurnTimelineEntry(props: {
-  item: TurnTimelineItem;
+  item: Exclude<TurnTimelineItem, { kind: 'user' }>;
   onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
 }) {

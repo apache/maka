@@ -282,8 +282,8 @@ function mergeLiveOverPersisted(
 }
 
 /**
- * One entry on a turn's render timeline — the interleaved thinking / answer /
- * tool sequence in the order the model actually produced it. This is the
+ * One entry on a turn's render timeline — interleaved thinking, answer, tool,
+ * and mid-turn user messages in conversational order. This is the
  * rendering source of truth (see `TurnViewModel.timeline`); the aggregate
  * `assistant` / `assistantThinking` fields are kept only for older consumers
  * (copy, export, prompt rail).
@@ -295,6 +295,8 @@ function mergeLiveOverPersisted(
  * - `tools`: one contiguous group of tool activity. Adjacent groups are
  *   pre-merged; presentation may split ordinary evidence and linked-session
  *   navigation into adjacent native Astryx segments without reordering them.
+ * - `user`: an instruction inserted after the turn began, kept at the ledger
+ *   position where Runtime acknowledged it.
  *
  * The model stays FLAT: the collapsed "Processing" fold (#1307) is a render
  * concern applied by `foldTimeline` (timeline-fold.ts) at the component layer,
@@ -302,6 +304,11 @@ function mergeLiveOverPersisted(
  * folding) never have to maintain a nesting invariant.
  */
 export type TurnTimelineItem =
+  | {
+      kind: "user";
+      message: ChatItem;
+      messageId: string;
+    }
   | {
       kind: "thinking";
       text: string;
@@ -360,7 +367,7 @@ export interface TurnViewModel {
    */
   assistantThinking?: string;
   /**
-   * Interleaved thinking / answer / tool sequence in production order — the
+   * Interleaved thinking / answer / tool / steering sequence in production order — the
    * rendering source of truth for the turn body. Built from the per-step
    * assistant rows and each step's paired tools (see buildTurnTimeline).
    */
@@ -448,6 +455,29 @@ export function overlayLiveTurn(
     if (settledItems.length > 0)
       timeline.push({ kind: "tools", items: settledItems });
   }
+  const persistedUserIds = new Set([
+    ...(current.user ? [current.user.id] : []),
+    ...(current.userInterjections ?? []).map((message) => message.id),
+  ]);
+  const pendingSteering = (liveTurn.steering ?? []).filter(
+    (message) => !persistedUserIds.has(message.id),
+  );
+  const appendSteeringAfter = (stepId: string | undefined): void => {
+    for (const message of pendingSteering) {
+      if (message.afterStepId !== stepId) continue;
+      timeline.push({
+        kind: "user",
+        message: {
+          id: message.id,
+          role: "user",
+          text: message.text,
+          ts: message.ts,
+        },
+        messageId: message.id,
+      });
+    }
+  };
+  appendSteeringAfter(undefined);
   for (const step of liveTurn.steps) {
     const contentOrder = step.contentOrder ?? [
       ...(step.thinking ? ["thinking" as const] : []),
@@ -481,12 +511,9 @@ export function overlayLiveTurn(
           timeline.push({ kind: "tools", items: stepTools });
       }
     }
+    appendSteeringAfter(step.stepId);
   }
   const mergedTimeline = mergeAdjacentTimeline(timeline);
-  const persistedUserIds = new Set([
-    ...(current.user ? [current.user.id] : []),
-    ...(current.userInterjections ?? []).map((message) => message.id),
-  ]);
   const userInterjections = [
     ...(current.userInterjections ?? []),
     ...(liveTurn.steering ?? []).flatMap((message) =>
@@ -645,22 +672,7 @@ export function materializeTurns(
     if (turnMessageList) turnMessageList.push(message);
     else messagesByTurn.set(turnId, [message]);
     if (message.type === "user") {
-      const user: ChatItem = {
-        id: message.id,
-        role: "user",
-        text: message.displayText ?? message.text,
-        ts: message.ts,
-        ...(message.attachments && message.attachments.length > 0
-          ? { attachments: message.attachments }
-          : {}),
-        ...(message.quotes && message.quotes.length > 0
-          ? { quotes: message.quotes }
-          : {}),
-        ...(message.inlineReferences !== undefined
-          ? { inlineReferences: message.inlineReferences }
-          : {}),
-        ...(message.origin ? { hostOrigin: message.origin } : {}),
-      };
+      const user = chatItemFromUserMessage(message);
       if (!turn.user) {
         turn.user = user;
       } else {
@@ -917,11 +929,24 @@ function buildTurnTimeline(
 ): TurnTimelineItem[] {
   const raw: TurnTimelineItem[] = [];
   let pending: ToolActivityItem[] = [];
+  let sawUser = false;
   const flushTools = (items: ToolActivityItem[]): void => {
     if (items.length > 0) raw.push({ kind: "tools", items });
   };
   for (const message of turnMessages) {
-    if (message.type === "tool_call") {
+    if (message.type === "user") {
+      if (!sawUser) {
+        sawUser = true;
+        continue;
+      }
+      flushTools(pending);
+      pending = [];
+      raw.push({
+        kind: "user",
+        message: chatItemFromUserMessage(message),
+        messageId: message.id,
+      });
+    } else if (message.type === "tool_call") {
       const item = toolItemByUseId.get(message.id);
       if (item) pending.push(item);
     } else if (message.type === "assistant") {
@@ -992,6 +1017,25 @@ function buildTurnTimeline(
   }
   flushTools(pending);
   return mergeAdjacentTimeline(raw);
+}
+
+function chatItemFromUserMessage(message: UserMessage): ChatItem {
+  return {
+    id: message.id,
+    role: "user",
+    text: message.displayText ?? message.text,
+    ts: message.ts,
+    ...(message.attachments && message.attachments.length > 0
+      ? { attachments: message.attachments }
+      : {}),
+    ...(message.quotes && message.quotes.length > 0
+      ? { quotes: message.quotes }
+      : {}),
+    ...(message.inlineReferences !== undefined
+      ? { inlineReferences: message.inlineReferences }
+      : {}),
+    ...(message.origin ? { hostOrigin: message.origin } : {}),
+  };
 }
 
 function mergeAdjacentTimeline(

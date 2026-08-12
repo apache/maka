@@ -9,7 +9,7 @@ import type { TurnTimelineItem } from './materialize.js';
  * maintain a nesting invariant. This module derives the folded view right
  * before rendering:
  *
- *  - answer `text` entries stay in place and are the only grouping boundary;
+ *  - answer `text` and inserted `user` entries stay in place and bound groups;
  *  - a maximal thinking+tools run between two texts folds into ONE
  *    `processing` block when it contains at least one tools group, preserving
  *    the run's interleaved order as `children`;

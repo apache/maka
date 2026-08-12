@@ -42,6 +42,8 @@ export interface LiveSteeringProjection {
   id: string;
   text: string;
   ts: number;
+  /** The last provider step visible when Runtime acknowledged this message. */
+  afterStepId?: string;
 }
 
 export interface LiveTurnProjection {
@@ -164,6 +166,9 @@ export function applyLiveTurnEvent(
           id: event.messageId,
           text: event.content.displayText ?? event.content.text,
           ts: event.ts,
+          ...(prior.steps.at(-1)?.stepId
+            ? { afterStepId: prior.steps.at(-1)!.stepId }
+            : {}),
         },
       ],
     };
