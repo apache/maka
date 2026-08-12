@@ -227,10 +227,22 @@ export interface DesktopRuntimeHostProfileSnapshot {
   };
 }
 
-export interface DesktopRuntimeHostProfileSaveInput {
+export interface DesktopRuntimeHostProfileAddInput {
   readonly profile: RemoteRuntimeHostProfile;
   readonly credential?: string;
 }
+
+export type DesktopRuntimeHostProfileAddResult =
+  | {
+      readonly kind: 'connected';
+      readonly snapshot: DesktopRuntimeHostProfileSnapshot;
+      readonly warning?: string;
+    }
+  | {
+      readonly kind: 'unavailable';
+      readonly snapshot: DesktopRuntimeHostProfileSnapshot;
+      readonly message: string;
+    };
 
 export interface DesktopRuntimeHostProfileChangedEvent {
   readonly epoch: string;
@@ -278,7 +290,9 @@ export interface MakaBridge {
 
   runtimeHostProfiles: {
     getSnapshot(): Promise<DesktopRuntimeHostProfileSnapshot>;
-    save(input: DesktopRuntimeHostProfileSaveInput): Promise<DesktopRuntimeHostProfileSnapshot>;
+    addAndSelect(
+      input: DesktopRuntimeHostProfileAddInput,
+    ): Promise<DesktopRuntimeHostProfileAddResult>;
     remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
     select(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
     subscribeChanges(

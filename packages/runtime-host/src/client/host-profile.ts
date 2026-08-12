@@ -12,6 +12,7 @@ import {
 import {
   connectRemoteRuntimeHost,
   normalizeRemoteRuntimeHostUrl,
+  type ConnectRemoteRuntimeHostResult,
   type RuntimeHostConnection,
 } from './connection.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
@@ -169,10 +170,14 @@ export async function connectRemoteRuntimeHostProfile(
     );
   }
   if (connected.kind !== 'connected') {
+    const unavailableMessage =
+      connected.kind === 'unavailable'
+        ? remoteProfileUnavailableMessage(input.profile.id, connected.reason)
+        : undefined;
     throw new Error(
       connected.kind === 'draining'
         ? `Runtime Host profile ${input.profile.id} is draining`
-        : `Runtime Host profile ${input.profile.id} is unavailable (${connected.reason})`,
+        : unavailableMessage,
     );
   }
   try {
@@ -186,6 +191,22 @@ export async function connectRemoteRuntimeHostProfile(
   } catch (error) {
     await connected.connection.close().catch(() => undefined);
     throw error;
+  }
+}
+
+function remoteProfileUnavailableMessage(
+  profileId: string,
+  reason: Extract<ConnectRemoteRuntimeHostResult, { kind: 'unavailable' }>['reason'],
+): string {
+  switch (reason) {
+    case 'authentication_failed':
+      return `Runtime Host profile ${profileId} rejected its access credential`;
+    case 'tls_failed':
+      return `Runtime Host profile ${profileId} could not verify the TLS connection`;
+    case 'unreachable':
+      return `Runtime Host profile ${profileId} could not reach its endpoint`;
+    default:
+      return `Runtime Host profile ${profileId} is unavailable (${reason})`;
   }
 }
 

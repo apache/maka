@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import {
   type AccessCredentialPrincipalKind,
   HOST_OPERATION_SPECS,
+  operationAllowsRemoteOwner,
   type OperationKey,
 } from '../protocol/index.js';
 
@@ -189,8 +190,8 @@ function validateGrants(grants: readonly OperationKey[]): readonly OperationKey[
     if (!Object.hasOwn(HOST_OPERATION_SPECS, grant)) {
       throw new RuntimeHostAccessInputError(`Unknown Runtime Host operation grant: ${grant}`);
     }
-    if (grant === 'access.credential.issue' || grant === 'access.credential.revoke') {
-      throw new RuntimeHostAccessInputError('Access credential administration is local-owner only');
+    if (!operationAllowsRemoteOwner(grant)) {
+      throw new RuntimeHostAccessInputError(`Runtime Host operation ${grant} is local-owner only`);
     }
   }
   return Object.freeze([...grants]);

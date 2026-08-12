@@ -75,9 +75,8 @@ export function RuntimeHostProfilesSection() {
 
   async function saveAndConnect() {
     setSwitching(true);
-    let saved = false;
     try {
-      const savedSnapshot = await window.maka.runtimeHostProfiles.save({
+      const result = await window.maka.runtimeHostProfiles.addAndSelect({
         profile: {
           id: draft.id,
           name: draft.name,
@@ -88,24 +87,18 @@ export function RuntimeHostProfilesSection() {
         credential: draft.credential,
       });
       if (!mountedRef.current) return;
-      saved = true;
-      setSnapshot(savedSnapshot);
-      setDraft((value) => ({ ...value, credential: "" }));
-      const connected = await window.maka.runtimeHostProfiles.select(draft.id);
-      if (!mountedRef.current) return;
-      setSnapshot(connected);
-      if (connected.unavailable?.profileId === draft.id) {
-        toast.error(copy.selectFailed, connected.unavailable.message);
+      setSnapshot(result.snapshot);
+      if (result.kind === "unavailable") {
+        toast.error(copy.selectFailed, result.message);
         return;
       }
+      if (result.warning) toast.warning(copy.selectionNotSaved, result.warning);
       setShowAdd(false);
       setDraft(createRemoteHostDraft());
     } catch (error) {
       if (mountedRef.current) {
-        toast.error(
-          saved ? copy.selectFailed : copy.saveFailed,
-          settingsActionErrorMessage(error, locale),
-        );
+        await reload().catch(() => undefined);
+        toast.error(copy.saveFailed, settingsActionErrorMessage(error, locale));
       }
     } finally {
       if (mountedRef.current) setSwitching(false);

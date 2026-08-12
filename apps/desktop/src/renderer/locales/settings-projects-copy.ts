@@ -27,6 +27,7 @@ export type SettingsProjectsCopy = {
     loadFailed: string;
     selectFailed: string;
     saveFailed: string;
+    selectionNotSaved: string;
     removeFailed: string;
     moreActions(name: string): string;
   };
@@ -94,6 +95,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       loadFailed: '无法读取 Runtime Host profiles',
       selectFailed: '无法选择 Runtime Host',
       saveFailed: '无法保存 Runtime Host profile',
+      selectionNotSaved: 'Runtime Host 已连接，但未保存为启动选择',
       removeFailed: '无法移除 Runtime Host profile',
       moreActions: (name: string) => `更多操作：${name}`,
     },
@@ -159,6 +161,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       loadFailed: 'Could not load Runtime Host profiles',
       selectFailed: 'Could not select the Runtime Host',
       saveFailed: 'Could not save the Runtime Host profile',
+      selectionNotSaved: 'Runtime Host connected, but the startup selection was not saved',
       removeFailed: 'Could not remove the Runtime Host profile',
       moreActions: (name: string) => `More actions for ${name}`,
     },

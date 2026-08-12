@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { resolveRootControlNamespace, resolveStorageRoot } from '@maka/storage/root-authority';
+import { classifyRemoteRuntimeHostConnectFailure } from '../client/connection.js';
 import {
   connectRemoteRuntimeHost,
   connectRuntimeHost,
@@ -334,7 +335,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         surface: 'tui',
         protocol: PROTOCOL,
       }),
-      { kind: 'unavailable', reason: 'connect_failed' },
+      { kind: 'unavailable', reason: 'authentication_failed' },
     );
   } finally {
     await Promise.allSettled([remote?.close(), local?.close()]);
@@ -345,6 +346,25 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     });
     await rm(base, { recursive: true, force: true });
   }
+});
+
+test('classifies safe remote connection failures without exposing raw errors', () => {
+  assert.equal(
+    classifyRemoteRuntimeHostConnectFailure(
+      Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }),
+    ),
+    'unreachable',
+  );
+  assert.equal(
+    classifyRemoteRuntimeHostConnectFailure(
+      Object.assign(new Error('certificate details'), { code: 'CERT_HAS_EXPIRED' }),
+    ),
+    'tls_failed',
+  );
+  assert.equal(
+    classifyRemoteRuntimeHostConnectFailure(new Error('unexpected sensitive detail')),
+    'connect_failed',
+  );
 });
 
 test('access credentials persist only as hashes and stay revoked after reload', async () => {
@@ -368,6 +388,16 @@ test('access credentials persist only as hashes and stay revoked after reload', 
     );
     assert.equal(authority.authenticate(credential)?.principalId, 'device-1');
     assert.equal(authority.authenticate(credential)?.principalKind, 'remote_owner');
+    await assert.rejects(
+      authority.issue({
+        principalKind: 'remote_owner',
+        principalId: 'upgrader',
+        operationGrants: ['host.upgrade.prepare'],
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+      }),
+      /local-owner only/u,
+    );
     await assert.rejects(
       authority.issue({
         principalKind: 'capability_provider',

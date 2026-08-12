@@ -52,7 +52,7 @@ Open `Settings → Workspace → Runtime Host`, choose **Add remote Host**, and 
 - the `rootId` from the ready event;
 - the issued access credential.
 
-Choose **Save and connect**. The credential is stored separately from the Profile. Maka verifies the TLS certificate and exact State Root; it never falls back to Local discovery. If the connection fails, the current Host remains active when it can be restored. The setup form stays open for corrections, and the saved Profile can be retried.
+Choose **Save and connect**. The credential is stored separately from the Profile. Maka verifies the TLS certificate and exact State Root; it never falls back to Local discovery. If the connection fails, the current Host remains active, the incomplete Profile is removed, and the setup form keeps its values for correction. A successful connection saves the Profile for later use.
 
 After connecting, choose one of the Projects already registered on that Host. Local directory picking and other Client-path actions stay unavailable for a remote Host.
 

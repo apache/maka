@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { ClientRequest, IncomingMessage } from 'node:http';
 import { connect } from 'node:net';
 import { performance } from 'node:perf_hooks';
 import WebSocket from 'ws';
@@ -181,7 +182,14 @@ export type ConnectRemoteRuntimeHostResult =
   | { kind: 'draining' }
   | {
       kind: 'unavailable';
-      reason: 'connect_failed' | 'handshake_failed' | 'root_mismatch' | 'composition_mismatch';
+      reason:
+        | 'authentication_failed'
+        | 'tls_failed'
+        | 'unreachable'
+        | 'connect_failed'
+        | 'handshake_failed'
+        | 'root_mismatch'
+        | 'composition_mismatch';
     };
 
 type ConnectResolvedRuntimeHostResult =
@@ -1064,8 +1072,8 @@ export async function connectRemoteRuntimeHost(
   let transport: WebSocketTransport;
   try {
     transport = await openWebSocketTransport(url, input.credential, normalized.connectTimeoutMs);
-  } catch {
-    return { kind: 'unavailable', reason: 'connect_failed' };
+  } catch (error) {
+    return { kind: 'unavailable', reason: classifyRemoteRuntimeHostConnectFailure(error) };
   }
   const timer = setTimeout(() => {
     transport.abort(new Error('Timed out handshaking with Runtime Host'));
@@ -1428,7 +1436,7 @@ function openWebSocketTransport(
   timeoutMs: number,
 ): Promise<WebSocketTransport> {
   if (!credential || /\s/u.test(credential)) {
-    return Promise.reject(new Error('Runtime Host access credential is invalid'));
+    return Promise.reject(new RemoteRuntimeHostConnectError('authentication_failed'));
   }
   return new Promise((resolve, reject) => {
     const webSocketOptions = {
@@ -1449,13 +1457,77 @@ function openWebSocketTransport(
       socket.terminate();
       reject(error);
     };
+    const onUnexpectedResponse = (_request: ClientRequest, response: IncomingMessage) => {
+      cleanup();
+      response.resume();
+      socket.once('error', () => undefined);
+      reject(
+        new RemoteRuntimeHostConnectError(
+          response.statusCode === 401 ? 'authentication_failed' : 'connect_failed',
+        ),
+      );
+      socket.terminate();
+    };
     const cleanup = () => {
       socket.off('open', onOpen);
       socket.off('error', onError);
+      socket.off('unexpected-response', onUnexpectedResponse);
     };
     socket.once('open', onOpen);
     socket.once('error', onError);
+    socket.once('unexpected-response', onUnexpectedResponse);
   });
+}
+
+type RemoteRuntimeHostConnectFailureReason = Extract<
+  ConnectRemoteRuntimeHostResult,
+  { kind: 'unavailable' }
+>['reason'];
+
+const REMOTE_NETWORK_ERROR_CODES = new Set([
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+]);
+const REMOTE_TLS_ERROR_CODES = new Set([
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'CERT_REVOKED',
+  'CERT_SIGNATURE_FAILURE',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+]);
+
+class RemoteRuntimeHostConnectError extends Error {
+  constructor(readonly reason: RemoteRuntimeHostConnectFailureReason) {
+    super(`Remote Runtime Host connection failed (${reason})`);
+    this.name = 'RemoteRuntimeHostConnectError';
+  }
+}
+
+export function classifyRemoteRuntimeHostConnectFailure(
+  error: unknown,
+): RemoteRuntimeHostConnectFailureReason {
+  if (error instanceof RemoteRuntimeHostConnectError) return error.reason;
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : undefined;
+  if (code && REMOTE_NETWORK_ERROR_CODES.has(code)) return 'unreachable';
+  if (
+    code &&
+    (REMOTE_TLS_ERROR_CODES.has(code) || code.startsWith('ERR_TLS_') || code.startsWith('ERR_SSL_'))
+  ) {
+    return 'tls_failed';
+  }
+  return 'connect_failed';
 }
 
 function openTransport(

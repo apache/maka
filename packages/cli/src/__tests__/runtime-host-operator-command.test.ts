@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
+  HOST_OPERATION_SPECS,
+  REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
@@ -63,6 +66,17 @@ describe('Runtime Host operator commands', () => {
       ]).kind,
       'error',
     );
+    assert.deepEqual(
+      Object.keys(HOST_OPERATION_SPECS)
+        .filter(
+          (operation) =>
+            !REMOTE_OWNER_OPERATION_GRANTS.includes(
+              operation as (typeof REMOTE_OWNER_OPERATION_GRANTS)[number],
+            ),
+        )
+        .sort(),
+      ['access.credential.issue', 'access.credential.revoke', 'host.upgrade.prepare'],
+    );
   });
 
   test('emits bounded service identity and listener facts without credentials', () => {
@@ -70,7 +84,7 @@ describe('Runtime Host operator commands', () => {
       rootId: 'a'.repeat(64),
       hostEpoch: 'epoch-1',
       endpoint: '/tmp/maka.sock',
-      websocketEndpoints: ['wss://0.0.0.0:7443/runtime-host'],
+      websocketEndpoints: ['wss://runtime.example.com:443/runtime-host'],
       compositionDescriptor: { id: 'maka.interactive', revision: '2' },
     });
 
@@ -89,8 +103,8 @@ describe('Runtime Host operator commands', () => {
         {
           kind: 'websocket',
           tls: true,
-          host: '0.0.0.0',
-          port: 7443,
+          host: 'runtime.example.com',
+          port: 443,
           path: '/runtime-host',
         },
       ],
@@ -124,7 +138,7 @@ describe('Runtime Host operator commands', () => {
 
     assert.equal(
       await runRuntimeHostProjectCli(
-        { kind: 'add', rootPath: '/srv/maka', path: '/work/project' },
+        { kind: 'add', rootPath: '/srv/maka', path: 'project' },
         {
           connect: async () => connection,
           write: (value) => output.push(value),
@@ -134,7 +148,7 @@ describe('Runtime Host operator commands', () => {
     );
     assert.deepEqual(request, {
       operation: 'project.catalog.mutate',
-      input: { kind: 'register', path: '/work/project' },
+      input: { kind: 'register', path: resolve('project') },
     });
     assert.equal(closed, true);
     assert.equal(

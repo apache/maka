@@ -39,7 +39,7 @@ test("defaults Desktop to Local and keeps remote credentials outside profiles", 
       return { ok: true, activeTarget: target };
     },
   });
-  const saved = await service.save({
+  const added = await service.addAndSelect({
     profile: {
       id: "office",
       name: "Office",
@@ -49,7 +49,8 @@ test("defaults Desktop to Local and keeps remote credentials outside profiles", 
     },
     credential: "opaque-token",
   });
-  assert.deepEqual(saved.profiles.map(({ id }) => id), ["local", "office"]);
+  assert.equal(added.kind, "connected");
+  assert.deepEqual(added.snapshot.profiles.map(({ id }) => id), ["local", "office"]);
   assert.equal(
     (await readFile(join(root, "runtime-host-profiles.json"), "utf8")).includes(
       "opaque-token",
@@ -57,7 +58,6 @@ test("defaults Desktop to Local and keeps remote credentials outside profiles", 
     false,
   );
 
-  await service.select("office");
   assert.deepEqual(activations, ["office"]);
   assert.equal((await service.getSnapshot()).activeProfileId, "office");
   assert.deepEqual(await resolveSelectedDesktopRuntimeHostProfile(root), {
@@ -76,7 +76,7 @@ test("defaults Desktop to Local and keeps remote credentials outside profiles", 
   });
   await assert.rejects(
     () =>
-      service.save({
+      service.addAndSelect({
         profile: {
           id: "office",
           name: "Changed while active",
@@ -96,7 +96,7 @@ test("requires a credential before selection and protects the active profile", a
   });
   await assert.rejects(
     () =>
-      service.save({
+      service.addAndSelect({
         profile: {
           id: "office",
           name: "Office",
@@ -109,7 +109,7 @@ test("requires a credential before selection and protects the active profile", a
   );
   assert.throws(
     () =>
-      service.save({
+      service.addAndSelect({
         profile: {
           id: "oversized",
           name: "Oversized",
@@ -124,7 +124,7 @@ test("requires a credential before selection and protects the active profile", a
   await assert.rejects(() => service.remove("local"), /active.*cannot be removed/i);
 });
 
-test("keeps a failed remote selection unavailable without changing the active Host", async () => {
+test("rolls back a failed new remote profile without changing the active Host", async () => {
   const root = await clientRoot();
   const service = createProfileService(root, {
     activate: async () => ({
@@ -133,7 +133,7 @@ test("keeps a failed remote selection unavailable without changing the active Ho
       error: new Error("remote unavailable"),
     }),
   });
-  await service.save({
+  const result = await service.addAndSelect({
     profile: {
       id: "office",
       name: "Office",
@@ -143,23 +143,36 @@ test("keeps a failed remote selection unavailable without changing the active Ho
     },
     credential: "opaque-token",
   });
-
-  const snapshot = await service.select("office");
-  assert.equal(snapshot.selectedProfileId, "office");
-  assert.equal(snapshot.activeProfileId, "local");
-  assert.deepEqual(snapshot.unavailable, {
-    profileId: "office",
+  assert.deepEqual(result, {
+    kind: "unavailable",
+    snapshot: {
+      profiles: [{ id: "local", name: "Local", kind: "local" }],
+      selectedProfileId: "local",
+      activeProfile: { id: "local", name: "Local", kind: "local" },
+      activeProfileId: "local",
+    },
     message: "remote unavailable",
   });
   const startup = await resolveSelectedDesktopRuntimeHostProfile(root);
-  assert.equal(startup.kind, "ready");
-  if (startup.kind !== "ready") assert.fail("Expected a ready startup selection");
-  assert.equal(startup.selectedProfileId, "office");
-  assert.equal(startup.target.profile.id, "office");
+  assert.deepEqual(startup, {
+    kind: "ready",
+    selectedProfileId: "local",
+    target: { profile: { id: "local", name: "Local", kind: "local" } },
+  });
 });
 
 test("serializes removal behind an in-flight Host switch", async () => {
   const root = await clientRoot();
+  await profileCatalog(root).save(
+    {
+      id: "office",
+      name: "Office",
+      kind: "remote",
+      transport: { kind: "tls", url: "wss://runtime.example.com" },
+      rootId: ROOT_ID,
+    },
+    "opaque-token",
+  );
   let releaseActivation!: () => void;
   const activationStarted = new Promise<void>((resolve) => {
     releaseActivation = resolve;
@@ -175,17 +188,6 @@ test("serializes removal behind an in-flight Host switch", async () => {
       return { ok: true, activeTarget };
     },
   });
-  await service.save({
-    profile: {
-      id: "office",
-      name: "Office",
-      kind: "remote",
-      transport: { kind: "tls", url: "wss://runtime.example.com" },
-      rootId: ROOT_ID,
-    },
-    credential: "opaque-token",
-  });
-
   const selecting = service.select("office");
   await enteredActivation;
   const removing = service.remove("office");
@@ -203,7 +205,7 @@ test("preserves a dangling Desktop selection as unavailable", async () => {
   const service = createProfileService(root, {
     activate: async (activeTarget) => ({ ok: true, activeTarget }),
   });
-  await service.save({
+  await service.addAndSelect({
     profile: {
       id: "office",
       name: "Office",
@@ -213,14 +215,7 @@ test("preserves a dangling Desktop selection as unavailable", async () => {
     },
     credential: "opaque-token",
   });
-  await service.select("office");
-
-  const catalog = createFileRuntimeHostProfileCatalog(
-    join(root, "runtime-host-profiles.json"),
-    createRuntimeHostProfileCredentialStore(
-      createFileCredentialStore(join(root, "runtime-host-client")),
-    ),
-  );
+  const catalog = profileCatalog(root);
   await catalog.remove("office");
 
   const recovered = await resolveSelectedDesktopRuntimeHostProfile(root);
@@ -269,8 +264,7 @@ test("reconnects when another process rotates the active profile credential", as
     transport: { kind: "tls" as const, url: "wss://a.example.com" },
     rootId: "a".repeat(64),
   };
-  await service.save({ profile: profileA, credential: "token-a" });
-  await service.select("office");
+  await service.addAndSelect({ profile: profileA, credential: "token-a" });
 
   const externalCatalog = createFileRuntimeHostProfileCatalog(
     join(root, "runtime-host-profiles.json"),
@@ -300,7 +294,7 @@ test("reconnects when another process rotates the active profile credential", as
   ]);
 });
 
-test("keeps a healthy Host active when selection persistence fails", async () => {
+test("returns the active Host snapshot when selection persistence fails", async () => {
   const root = await clientRoot();
   const activations: string[] = [];
   const service = createProfileService(root, {
@@ -312,7 +306,7 @@ test("keeps a healthy Host active when selection persistence fails", async () =>
       throw new Error("selection disk unavailable");
     },
   });
-  await service.save({
+  const result = await service.addAndSelect({
     profile: {
       id: "office",
       name: "Office",
@@ -322,21 +316,27 @@ test("keeps a healthy Host active when selection persistence fails", async () =>
     },
     credential: "opaque-token",
   });
-
-  await assert.rejects(
-    () => service.select("office"),
-    /switched for this run, but the selection could not be saved/,
-  );
+  assert.equal(result.kind, "connected");
+  if (result.kind !== "connected") assert.fail("Expected a connected result");
+  assert.match(result.warning ?? "", /selection could not be saved/);
   assert.deepEqual(activations, ["office"]);
-  const snapshot = await service.getSnapshot();
-  assert.equal(snapshot.selectedProfileId, "office");
-  assert.equal(snapshot.activeProfileId, "office");
+  assert.equal(result.snapshot.selectedProfileId, "office");
+  assert.equal(result.snapshot.activeProfileId, "office");
 });
 
 async function clientRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "maka-desktop-host-profile-"));
   temporaryDirectories.push(root);
   return root;
+}
+
+function profileCatalog(root: string) {
+  return createFileRuntimeHostProfileCatalog(
+    join(root, "runtime-host-profiles.json"),
+    createRuntimeHostProfileCredentialStore(
+      createFileCredentialStore(join(root, "runtime-host-client")),
+    ),
+  );
 }
 
 const LOCAL_TARGET = {

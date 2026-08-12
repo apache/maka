@@ -52,7 +52,7 @@ npm --workspace maka-agent exec -- maka runtime-host access issue \
 - ready event 中的 `rootId`；
 - 刚刚签发的 access credential。
 
-选择**保存并连接**。Credential 与 Profile 分开存储。Maka 会验证 TLS 证书和确切的 State Root，绝不 fallback 到 Local discovery。连接失败且原 Host 能恢复时，原 Host 会继续工作；配置表单会保留以便修正，已保存的 remote Profile 也可以重试。
+选择**保存并连接**。Credential 与 Profile 分开存储。Maka 会验证 TLS 证书和确切的 State Root，绝不 fallback 到 Local discovery。连接失败时，当前 Host 会继续工作，未完成的 Profile 会被删除，配置表单则保留原值以便修正。连接成功后，Profile 才会作为可复用配置保留下来。
 
 连接成功后，从 Host 已注册的 Project 中选择一个。Remote Host 下不会提供本地目录选择器或其他 Client-path 操作。
 

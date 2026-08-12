@@ -14,7 +14,7 @@ import type {
   AppUpdateStatus,
   WindowCommand,
   PetPackChangedEvent,
-  DesktopRuntimeHostProfileSaveInput,
+  DesktopRuntimeHostProfileAddInput,
   DesktopRuntimeHostProfileChangedEvent,
   DesktopProjectSnapshot,
 } from './bridge-contract.js';
@@ -380,8 +380,8 @@ const makaBridge = {
     getSnapshot() {
       return ipcRenderer.invoke('runtime-host-profiles:getSnapshot');
     },
-    save(input: DesktopRuntimeHostProfileSaveInput) {
-      return ipcRenderer.invoke('runtime-host-profiles:save', input);
+    addAndSelect(input: DesktopRuntimeHostProfileAddInput) {
+      return ipcRenderer.invoke('runtime-host-profiles:add-and-select', input);
     },
     remove(profileId: string) {
       return ipcRenderer.invoke('runtime-host-profiles:remove', profileId);

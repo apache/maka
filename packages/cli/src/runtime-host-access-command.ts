@@ -3,8 +3,8 @@ import {
   consumeAccessCredentialDelivery,
 } from '@maka/runtime-host/client';
 import {
-  HOST_OPERATION_SPECS,
   isOperationKey,
+  REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type AccessCredentialPrincipalKind,
   type OperationKey,
@@ -34,11 +34,6 @@ export interface ResolvedRuntimeHostAccessIssue {
   readonly canUseHostPaths: boolean;
 }
 
-const CLIENT_PRESET_EXCLUDED_OPERATIONS = new Set<OperationKey>([
-  'access.credential.issue',
-  'access.credential.revoke',
-  'host.upgrade.prepare',
-]);
 const CLIENT_CAPABILITY_PUBLICATION_OPERATIONS = new Set<OperationKey>([
   'client.capability.replace',
   'client.capability.unregister',
@@ -87,10 +82,9 @@ export function resolveRuntimeHostAccessIssue(
     };
   }
   const canPublishClientCapabilities = options.preset === 'desktop-client';
-  const operationGrants = (Object.keys(HOST_OPERATION_SPECS) as OperationKey[]).filter(
+  const operationGrants = REMOTE_OWNER_OPERATION_GRANTS.filter(
     (operation) =>
-      !CLIENT_PRESET_EXCLUDED_OPERATIONS.has(operation) &&
-      (canPublishClientCapabilities || !CLIENT_CAPABILITY_PUBLICATION_OPERATIONS.has(operation)),
+      canPublishClientCapabilities || !CLIENT_CAPABILITY_PUBLICATION_OPERATIONS.has(operation),
   );
   return {
     principalKind: 'remote_owner',

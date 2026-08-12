@@ -4,6 +4,7 @@ import {
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '@maka/runtime-host/protocol';
+import { resolve } from 'node:path';
 
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -31,7 +32,7 @@ export async function runRuntimeHostProjectCli(
         ? await readRuntimeHostProjectDetails(connection)
         : await connection.request('project.catalog.mutate', {
             kind: 'register',
-            path: command.path,
+            path: resolve(command.path),
           });
     deps.write(`${JSON.stringify(result, null, 2)}\n`);
     return 0;

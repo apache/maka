@@ -350,6 +350,29 @@ describe('Runtime Host profiles', () => {
       RuntimeHostPermanentReconnectError,
     );
   });
+
+  test('reports actionable remote connection failure categories', async () => {
+    const reasons = [
+      ['authentication_failed', /rejected its access credential/],
+      ['tls_failed', /could not verify the TLS connection/],
+      ['unreachable', /could not reach its endpoint/],
+    ] as const;
+    for (const [reason, expected] of reasons) {
+      await assert.rejects(
+        () =>
+          connectRemoteRuntimeHostProfile(
+            {
+              profile: remoteProfile('office', 'wss://runtime.example.com/', ROOT_A),
+              credential: 'opaque-token',
+              surface: 'run',
+              clientInstanceId: 'client-1',
+            },
+            { connect: async () => ({ kind: 'unavailable', reason }) },
+          ),
+        expected,
+      );
+    }
+  });
 });
 
 async function profilePath(): Promise<string> {

@@ -113,7 +113,7 @@ export function createRuntimeHostServiceReadyEvent(host: {
           kind: 'websocket' as const,
           tls: url.protocol === 'wss:',
           host: url.hostname,
-          port: Number(url.port),
+          port: url.port === '' ? (url.protocol === 'wss:' ? 443 : 80) : Number(url.port),
           path: url.pathname,
         };
       }),
