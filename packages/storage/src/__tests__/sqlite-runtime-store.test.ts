@@ -1476,6 +1476,50 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('compacts long-lived partial streams without changing their projected text', async () => {
+    await withStore(async (store, dbPath) => {
+      for (let index = 0; index < 33; index += 1) {
+        await store.appendRuntimeEvent(
+          'session-1',
+          'run-1',
+          functionCallEvent({
+            id: `partial-${index}`,
+            ts: index + 1,
+            partial: true,
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'text', text: 'x' },
+            refs: { providerEventId: 'message-1' },
+          }),
+        );
+      }
+
+      const events = await store.readRuntimeEvents('session-1', 'run-1');
+      assert.equal(events[0]?.content?.kind, 'text');
+      assert.equal(
+        events[0]?.content?.kind === 'text' ? events[0].content.text : undefined,
+        'x'.repeat(33),
+      );
+
+      const inspect = new DatabaseSync(dbPath);
+      try {
+        const snapshot = inspect
+          .prepare('SELECT text_content FROM runtime_partial_snapshots')
+          .get() as { text_content?: unknown };
+        const segments = inspect
+          .prepare(`
+            SELECT count(*) AS count, min(segment_seq) AS first_sequence
+            FROM runtime_partial_segments
+          `)
+          .get() as { count?: unknown; first_sequence?: unknown };
+        assert.equal(snapshot.text_content, 'x'.repeat(32));
+        assert.deepEqual({ ...segments }, { count: 1, first_sequence: 1 });
+      } finally {
+        inspect.close();
+      }
+    });
+  });
+
   it('rejects a partial batch that crosses presentation streams atomically', async () => {
     await withStore(async (store) => {
       const partial = (id: string, providerEventId: string, text: string): RuntimeEvent =>

@@ -93,6 +93,7 @@ export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 export type { ToolRecoveryMode } from '@maka/core/runtime-event';
 
 const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
+const RUNTIME_PARTIAL_SEGMENT_COMPACTION_THRESHOLD = 32;
 
 function assertRuntimeEventScanBudget(budget: RuntimeEventScanBudget): void {
   for (const [name, value] of Object.entries(budget)) {
@@ -2795,8 +2796,47 @@ export class SqliteRuntimeStore
         WHERE stream_key = ?
       `)
         .run(partial.key, partial.text, partial.updatedAt ?? event.ts, partial.key);
+      this.compactRuntimePartialSegments(partial.key);
     }
     return !existing;
+  }
+
+  private compactRuntimePartialSegments(streamKey: string): void {
+    const rows = this.db
+      .prepare(`
+        SELECT segment_seq, text_content
+        FROM runtime_partial_segments
+        WHERE stream_key = ?
+        ORDER BY segment_seq
+      `)
+      .all(streamKey) as Array<{ segment_seq?: unknown; text_content?: unknown }>;
+    if (rows.length < RUNTIME_PARTIAL_SEGMENT_COMPACTION_THRESHOLD) return;
+    const text: string[] = [];
+    let lastSequence = 0;
+    for (const row of rows) {
+      if (
+        !Number.isSafeInteger(row.segment_seq) ||
+        (row.segment_seq as number) < 1 ||
+        typeof row.text_content !== 'string'
+      ) {
+        throw new Error('Invalid RuntimeEvent partial segment');
+      }
+      lastSequence = row.segment_seq as number;
+      text.push(row.text_content);
+    }
+    this.db
+      .prepare(`
+        UPDATE runtime_partial_snapshots
+        SET text_content = text_content || ?
+        WHERE stream_key = ?
+      `)
+      .run(text.join(''), streamKey);
+    this.db
+      .prepare(`
+        DELETE FROM runtime_partial_segments
+        WHERE stream_key = ? AND segment_seq <= ?
+      `)
+      .run(streamKey, lastSequence);
   }
 
   private hasCompletedPartialStream(sessionId: string, runId: string, streamKey: string): boolean {

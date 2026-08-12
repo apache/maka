@@ -21,6 +21,9 @@ const PERMISSION_OUTCOME_READ_CONCURRENCY = 8;
 export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES = SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES;
 export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES = 16 * 1024 * 1024;
 const ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS = ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES * 2;
+// SQLite folds each partial stream after 32 append segments. Keep a separate physical
+// scan guard while allowing every representable active message to retain one short batch.
+const ACTIVE_TRANSCRIPT_SOURCE_MAX_PARTIAL_SEGMENTS = ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS * 32;
 const ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES = 256 * 1024;
 
 export function createSessionTranscriptReader(input: {
@@ -163,7 +166,7 @@ async function readActiveProjectionEvents(
       maxBatchBytes: ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES,
       maxRecordBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
       maxPartialRecords: ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS,
-      maxPartialSegments: ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS,
+      maxPartialSegments: ACTIVE_TRANSCRIPT_SOURCE_MAX_PARTIAL_SEGMENTS,
       maxPartialBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
     },
     (batch) => {

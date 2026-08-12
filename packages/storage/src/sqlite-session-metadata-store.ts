@@ -96,6 +96,7 @@ import {
   readSqliteSessionMetadataSchemaVersion,
   SQLITE_AGENT_GRAPH_CONTROL_TABLES,
   SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
+  SQLITE_SESSION_MESSAGE_CHUNK_MARKER,
 } from './sqlite-session-metadata-schema.js';
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 import {
@@ -1398,24 +1399,30 @@ export class SqliteSessionMetadataStore {
       const rows = this.db
         .prepare(
           `
-          SELECT sequence, record_bytes AS total_bytes
-          FROM session_messages
-          WHERE session_id = ?
-            AND sequence <= ?
-            AND sequence ${comparison} ?
-          ORDER BY sequence ${order}
+          SELECT message.sequence,
+            coalesce(payload.record_bytes, length(CAST(message.record_json AS BLOB))) AS total_bytes,
+            payload.record_bytes IS NOT NULL AS chunked
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id = ?
+            AND message.sequence <= ?
+            AND message.sequence ${comparison} ?
+          ORDER BY message.sequence ${order}
           LIMIT ?
         `,
         )
         .all(sessionId, throughSequence, position, request.maxMessages + 1) as Array<{
         sequence?: unknown;
         total_bytes?: unknown;
+        chunked?: unknown;
       }>;
       const slices: Array<{
         sequence: number;
         byteOffset: number;
         totalBytes: number;
         byteLength: number;
+        chunked: boolean;
       }> = [];
       let rawBytes = 0;
       let next: { position: number; byteOffset: number | null } | null = null;
@@ -1448,6 +1455,7 @@ export class SqliteSessionMetadataStore {
           byteOffset,
           totalBytes,
           byteLength,
+          chunked: row.chunked === 1,
         });
         rawBytes += byteLength;
         if (!complete) {
@@ -1522,10 +1530,15 @@ export class SqliteSessionMetadataStore {
         const rows = this.db
           .prepare(
             `
-              SELECT sequence, record_bytes AS stored_bytes
-              FROM session_messages
-              WHERE session_id = ? AND sequence <= ? AND message_id IN (${placeholders})
-              ORDER BY sequence ASC
+              SELECT message.sequence,
+                coalesce(payload.record_bytes, length(CAST(message.record_json AS BLOB)))
+                  AS stored_bytes
+              FROM session_messages AS message
+              LEFT JOIN session_message_payloads AS payload
+                ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+              WHERE message.session_id = ? AND message.sequence <= ?
+                AND message.message_id IN (${placeholders})
+              ORDER BY message.sequence ASC
               LIMIT ?
             `,
           )
@@ -1564,28 +1577,13 @@ export class SqliteSessionMetadataStore {
       ) {
         const batch = selected.slice(offset, offset + SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(', ');
-        const rows = this.db
-          .prepare(
-            `
-              SELECT sequence, record_json
-              FROM session_messages
-              WHERE session_id = ? AND sequence IN (${placeholders})
-              ORDER BY sequence ASC
-            `,
-          )
-          .all(sessionId, ...batch) as Array<{
-          sequence?: unknown;
-          record_json?: unknown;
-        }>;
+        const rows = readStoredMessageRows(this.db, sessionId, batch, placeholders);
         if (rows.length !== batch.length) {
           throw new StoredSessionMessageIncompatibleError(sessionId, -1);
         }
         for (const row of rows) {
-          if (typeof row.record_json !== 'string' || typeof row.sequence !== 'number') {
-            throw new StoredSessionMessageIncompatibleError(sessionId, -1);
-          }
           try {
-            messages.push(decodeStoredMessage(JSON.parse(row.record_json) as unknown));
+            messages.push(decodeStoredMessage(JSON.parse(row.recordJson) as unknown));
           } catch (error) {
             throw new StoredSessionMessageIncompatibleError(sessionId, row.sequence, {
               cause: error,
@@ -1618,18 +1616,24 @@ export class SqliteSessionMetadataStore {
       throw new Error('Session message preview limit must be between 1 and 128');
     }
     if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
-    const rows = this.db
-      .prepare(
-        `
-        SELECT sequence, record_json
-        FROM session_messages
-        WHERE session_id = ?
-        ORDER BY sequence DESC
-        LIMIT ?
-      `,
-      )
-      .all(sessionId, limit) as Array<{ sequence?: unknown; record_json?: unknown }>;
-    return rows.reverse().map((row) => decodeStoredMessageRow(row, sessionId));
+    const sequences = (
+      this.db
+        .prepare(`
+          SELECT sequence FROM session_messages
+          WHERE session_id = ? ORDER BY sequence DESC LIMIT ?
+        `)
+        .all(sessionId, limit) as Array<{ sequence?: unknown }>
+    )
+      .map((row) => requireStoredMessageSequence(row.sequence, sessionId))
+      .reverse();
+    return readStoredMessageRows(
+      this.db,
+      sessionId,
+      sequences,
+      sequences.map(() => '?').join(', '),
+    ).map((row) =>
+      decodeStoredMessageRow({ sequence: row.sequence, record_json: row.recordJson }, sessionId),
+    );
   }
 
   async beginCatalogProjectionWrite(): Promise<void> {
@@ -3474,8 +3478,12 @@ export class SqliteSessionMetadataStore {
   ): void {
     const insertMessage = this.db.prepare(`
       INSERT INTO session_messages(
-        session_id, sequence, message_id, message_type, message_ts, record_json, record_bytes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        session_id, sequence, message_id, message_type, message_ts, record_json
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const insertPayload = this.db.prepare(`
+      INSERT INTO session_message_payloads(session_id, sequence, record_bytes, sha256)
+      VALUES (?, ?, ?, ?)
     `);
     const insertChunk = this.db.prepare(`
       INSERT INTO session_message_chunks(session_id, sequence, chunk_index, data, sha256)
@@ -3485,16 +3493,22 @@ export class SqliteSessionMetadataStore {
       const entry = entries[index]!;
       const sequence = firstSequence + index;
       const encoded = Buffer.from(entry.json, 'utf8');
+      const chunked = encoded.byteLength > SQLITE_SESSION_MESSAGE_CHUNK_BYTES;
       insertMessage.run(
         sessionId,
         sequence,
         entry.message.id,
         entry.message.type,
         entry.message.ts,
-        entry.json,
-        encoded.byteLength,
+        chunked ? SQLITE_SESSION_MESSAGE_CHUNK_MARKER : entry.json,
       );
-      if (encoded.byteLength <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES) continue;
+      if (!chunked) continue;
+      insertPayload.run(
+        sessionId,
+        sequence,
+        encoded.byteLength,
+        createHash('sha256').update(encoded).digest('hex'),
+      );
       for (
         let offset = 0;
         offset < encoded.byteLength;
@@ -3519,25 +3533,30 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
-    const rows = this.db
-      .prepare(
-        `
-        SELECT sequence, record_json
-        FROM session_messages
-        WHERE session_id = ?
-        ORDER BY sequence
-      `,
-      )
-      .all(sessionId) as Array<{ sequence?: unknown; record_json?: unknown }>;
+    const sequences = (
+      this.db
+        .prepare('SELECT sequence FROM session_messages WHERE session_id = ? ORDER BY sequence')
+        .all(sessionId) as Array<{ sequence?: unknown }>
+    ).map((row) => requireStoredMessageSequence(row.sequence, sessionId));
+    const rows: Array<{ sequence: number; recordJson: string }> = [];
+    for (
+      let offset = 0;
+      offset < sequences.length;
+      offset += SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE
+    ) {
+      rows.push(
+        ...readStoredMessageRows(
+          this.db,
+          sessionId,
+          sequences.slice(offset, offset + SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE),
+        ),
+      );
+    }
     return rows.map((row) => {
-      const sequence = requireStoredMessageSequence(row.sequence, sessionId);
-      if (typeof row.record_json !== 'string') {
-        throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
-      }
       try {
-        return decode(JSON.parse(row.record_json) as unknown);
+        return decode(JSON.parse(row.recordJson) as unknown);
       } catch (error) {
-        throw new StoredSessionMessageIncompatibleError(sessionId, sequence, { cause: error });
+        throw new StoredSessionMessageIncompatibleError(sessionId, row.sequence, { cause: error });
       }
     });
   }
@@ -4857,6 +4876,103 @@ function decodeStoredMessageRow(
   }
 }
 
+function readStoredMessageRows(
+  db: DatabaseSync,
+  sessionId: string,
+  sequences: readonly number[],
+  placeholders = sequences.map(() => '?').join(', '),
+): Array<{ sequence: number; recordJson: string }> {
+  if (sequences.length === 0) return [];
+  const rows = db
+    .prepare(
+      `
+        SELECT message.sequence, message.record_json, payload.record_bytes, payload.sha256
+        FROM session_messages AS message
+        LEFT JOIN session_message_payloads AS payload
+          ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+        WHERE message.session_id = ? AND message.sequence IN (${placeholders})
+        ORDER BY message.sequence
+      `,
+    )
+    .all(sessionId, ...sequences) as Array<{
+    sequence?: unknown;
+    record_json?: unknown;
+    record_bytes?: unknown;
+    sha256?: unknown;
+  }>;
+  if (rows.length !== sequences.length) {
+    throw new StoredSessionMessageIncompatibleError(sessionId, -1);
+  }
+  return rows.map((row) => {
+    const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+    if (row.record_bytes === null) {
+      if (
+        typeof row.record_json !== 'string' ||
+        row.record_json === SQLITE_SESSION_MESSAGE_CHUNK_MARKER
+      ) {
+        throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+      }
+      return { sequence, recordJson: row.record_json };
+    }
+    const recordBytes = requireTranscriptRecordByteLength(row.record_bytes, sessionId, sequence);
+    if (
+      row.record_json !== SQLITE_SESSION_MESSAGE_CHUNK_MARKER ||
+      recordBytes <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES ||
+      typeof row.sha256 !== 'string'
+    ) {
+      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+    }
+    const data = readChunkedTranscriptRecord(db, sessionId, sequence, recordBytes);
+    if (createHash('sha256').update(data).digest('hex') !== row.sha256) {
+      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+    }
+    return { sequence, recordJson: data.toString('utf8') };
+  });
+}
+
+function readChunkedTranscriptRecord(
+  db: DatabaseSync,
+  sessionId: string,
+  sequence: number,
+  recordBytes: number,
+): Buffer {
+  const rows = db
+    .prepare(`
+      SELECT chunk_index, data, sha256
+      FROM session_message_chunks
+      WHERE session_id = ? AND sequence = ?
+      ORDER BY chunk_index
+    `)
+    .all(sessionId, sequence) as Array<{
+    chunk_index?: unknown;
+    data?: unknown;
+    sha256?: unknown;
+  }>;
+  const expectedChunks = Math.ceil(recordBytes / SQLITE_SESSION_MESSAGE_CHUNK_BYTES);
+  if (rows.length !== expectedChunks) {
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+  }
+  const chunks = rows.map((row, index) => {
+    if (
+      row.chunk_index !== index ||
+      !(row.data instanceof Uint8Array) ||
+      typeof row.sha256 !== 'string'
+    ) {
+      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+    }
+    const chunk = Buffer.from(row.data);
+    if (createHash('sha256').update(chunk).digest('hex') !== row.sha256) {
+      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+    }
+    return chunk;
+  });
+  const data = Buffer.concat(chunks, recordBytes);
+  if (data.byteLength !== recordBytes) {
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+  }
+  return data;
+}
+
 function requireStoredMessageSequence(value: unknown, sessionId: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
     throw new StoredSessionMessageIncompatibleError(sessionId, -1);
@@ -4874,6 +4990,7 @@ interface TranscriptRecordSlice {
   readonly byteOffset: number;
   readonly totalBytes: number;
   readonly byteLength: number;
+  readonly chunked: boolean;
 }
 
 function requireTranscriptRecordByteLength(
@@ -4893,9 +5010,7 @@ function readTranscriptSlices(
   slices: readonly TranscriptRecordSlice[],
 ): Map<number, Buffer> {
   if (slices.length === 0) return new Map();
-  const chunkedSlices = slices.filter(
-    (slice) => slice.totalBytes > SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
-  );
+  const chunkedSlices = slices.filter((slice) => slice.chunked);
   const values = chunkedSlices.map(() => '(?, ?, ?)').join(', ');
   const parameters = chunkedSlices.flatMap((slice) => [
     slice.sequence,
@@ -4933,7 +5048,7 @@ function readTranscriptSlices(
   }
   const result = new Map<number, Buffer>();
   for (const slice of slices) {
-    if (slice.totalBytes <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES) continue;
+    if (!slice.chunked) continue;
     const selected = rowsBySequence.get(slice.sequence) ?? [];
     const firstChunk = Math.floor(slice.byteOffset / SQLITE_SESSION_MESSAGE_CHUNK_BYTES);
     const lastChunk = Math.floor(
@@ -4966,9 +5081,7 @@ function readTranscriptSlices(
     }
     result.set(slice.sequence, data);
   }
-  const inlineSlices = slices.filter(
-    (slice) => slice.totalBytes <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
-  );
+  const inlineSlices = slices.filter((slice) => !slice.chunked);
   if (inlineSlices.length > 0) {
     const inlineValues = inlineSlices.map(() => '(?, ?, ?)').join(', ');
     const inlineParameters = inlineSlices.flatMap((slice) => [

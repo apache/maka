@@ -52,8 +52,8 @@ describe('SqliteSessionMetadataStore', () => {
       database
         .prepare(`
           INSERT INTO session_messages(
-            session_id, sequence, message_id, message_type, message_ts, record_json, record_bytes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            session_id, sequence, message_id, message_type, message_ts, record_json
+          ) VALUES (?, ?, ?, ?, ?, ?)
         `)
         .run(
           'session-1',
@@ -62,7 +62,6 @@ describe('SqliteSessionMetadataStore', () => {
           'user',
           5,
           incompatible,
-          Buffer.byteLength(incompatible, 'utf8'),
         );
       database.close();
 

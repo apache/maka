@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 23;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
+export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
 export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
   'agent_graph_intent_claims',
@@ -855,36 +856,16 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
     23,
     `
-    ALTER TABLE session_messages RENAME TO session_messages_v22;
-
-    CREATE TABLE session_messages (
+    CREATE TABLE session_message_payloads (
       session_id TEXT NOT NULL,
       sequence INTEGER NOT NULL CHECK (sequence >= 0),
-      message_id TEXT NOT NULL,
-      message_type TEXT NOT NULL,
-      message_ts INTEGER NOT NULL CHECK (message_ts >= 0),
-      record_json TEXT NOT NULL,
-      record_bytes INTEGER NOT NULL
-        CHECK (record_bytes > 0 AND record_bytes = length(CAST(record_json AS BLOB))),
+      record_bytes INTEGER NOT NULL CHECK (record_bytes > ${SQLITE_SESSION_MESSAGE_CHUNK_BYTES}),
+      sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
       PRIMARY KEY(session_id, sequence),
-      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
-    );
-
-    INSERT INTO session_messages(
-      session_id, sequence, message_id, message_type, message_ts, record_json, record_bytes
-    )
-    SELECT
-      session_id, sequence, message_id, message_type, message_ts, record_json,
-      length(CAST(record_json AS BLOB))
-    FROM session_messages_v22;
-
-    DROP TABLE session_messages_v22;
-
-    CREATE INDEX session_messages_by_identity
-      ON session_messages(session_id, message_id);
-
-    CREATE INDEX session_messages_by_time
-      ON session_messages(session_id, message_ts, sequence);
+      FOREIGN KEY(session_id, sequence)
+        REFERENCES session_messages(session_id, sequence)
+        ON DELETE CASCADE
+    ) WITHOUT ROWID;
 
     CREATE TABLE session_message_chunks (
       session_id TEXT NOT NULL,
@@ -894,7 +875,7 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
       PRIMARY KEY(session_id, sequence, chunk_index),
       FOREIGN KEY(session_id, sequence)
-        REFERENCES session_messages(session_id, sequence)
+        REFERENCES session_message_payloads(session_id, sequence)
         ON DELETE CASCADE
     ) WITHOUT ROWID;
 
@@ -947,45 +928,74 @@ export function migrateSqliteSessionMetadataDatabase(db: DatabaseSync): void {
 }
 
 function backfillSessionMessageChunks(db: DatabaseSync): void {
+  const selectBatch = db.prepare(`
+    SELECT session_id, sequence, record_json
+    FROM session_messages
+    WHERE ? IS NULL OR session_id > ? OR (session_id = ? AND sequence > ?)
+    ORDER BY session_id, sequence
+    LIMIT 128
+  `);
+  const markChunked = db.prepare(`
+    UPDATE session_messages
+    SET record_json = ?
+    WHERE session_id = ? AND sequence = ?
+  `);
+  const insertPayload = db.prepare(`
+    INSERT INTO session_message_payloads(session_id, sequence, record_bytes, sha256)
+    VALUES (?, ?, ?, ?)
+  `);
   const insert = db.prepare(`
     INSERT INTO session_message_chunks(session_id, sequence, chunk_index, data, sha256)
     VALUES (?, ?, ?, ?, ?)
   `);
-  const rows = db
-    .prepare(`
-      SELECT session_id, sequence, record_json
-      FROM session_messages
-      ORDER BY session_id, sequence
-    `)
-    .iterate() as Iterable<{
-    session_id?: unknown;
-    sequence?: unknown;
-    record_json?: unknown;
-  }>;
-  for (const row of rows) {
-    if (
-      typeof row.session_id !== 'string' ||
-      !Number.isSafeInteger(row.sequence) ||
-      typeof row.record_json !== 'string'
-    ) {
-      throw new Error('Invalid Session message while migrating transcript chunks');
-    }
-    const encoded = Buffer.from(row.record_json, 'utf8');
-    if (encoded.byteLength <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES) continue;
-    for (
-      let offset = 0;
-      offset < encoded.byteLength;
-      offset += SQLITE_SESSION_MESSAGE_CHUNK_BYTES
-    ) {
-      insert.run(
+  let afterSessionId: string | null = null;
+  let afterSequence = -1;
+  while (true) {
+    const rows = selectBatch.all(
+      afterSessionId,
+      afterSessionId,
+      afterSessionId,
+      afterSequence,
+    ) as Array<{
+      session_id?: unknown;
+      sequence?: unknown;
+      record_json?: unknown;
+    }>;
+    if (rows.length === 0) return;
+    for (const row of rows) {
+      if (
+        typeof row.session_id !== 'string' ||
+        !Number.isSafeInteger(row.sequence) ||
+        typeof row.record_json !== 'string'
+      ) {
+        throw new Error('Invalid Session message while migrating transcript chunks');
+      }
+      const sequence = row.sequence as number;
+      afterSessionId = row.session_id;
+      afterSequence = sequence;
+      const encoded = Buffer.from(row.record_json, 'utf8');
+      if (encoded.byteLength <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES) continue;
+      markChunked.run(SQLITE_SESSION_MESSAGE_CHUNK_MARKER, row.session_id, sequence);
+      insertPayload.run(
         row.session_id,
-        row.sequence as number,
-        offset / SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
-        encoded.subarray(offset, offset + SQLITE_SESSION_MESSAGE_CHUNK_BYTES),
-        createHash('sha256')
-          .update(encoded.subarray(offset, offset + SQLITE_SESSION_MESSAGE_CHUNK_BYTES))
-          .digest('hex'),
+        sequence,
+        encoded.byteLength,
+        createHash('sha256').update(encoded).digest('hex'),
       );
+      for (
+        let offset = 0;
+        offset < encoded.byteLength;
+        offset += SQLITE_SESSION_MESSAGE_CHUNK_BYTES
+      ) {
+        const chunk = encoded.subarray(offset, offset + SQLITE_SESSION_MESSAGE_CHUNK_BYTES);
+        insert.run(
+          row.session_id,
+          sequence,
+          offset / SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
+          chunk,
+          createHash('sha256').update(chunk).digest('hex'),
+        );
+      }
     }
   }
 }

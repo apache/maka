@@ -41,13 +41,14 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
       name: 'Backup',
       labels: [],
     });
-    await sessions.appendMessage(session.id, {
+    const message = {
       type: 'user',
       id: 'message-1',
       turnId: 'turn-1',
       ts: 1,
-      text: 'durable',
-    });
+      text: 'durable'.repeat(12_000),
+    } as const;
+    await sessions.appendMessage(session.id, message);
     await sessions.close?.();
     const artifacts = createSqliteArtifactStore(stateRoot);
     const artifact = await artifacts.create({
@@ -69,7 +70,7 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
     const restored = createSessionStore(restoreRoot);
     const restoredCatalog = createProjectCatalog(restoreRoot);
     try {
-      assert.equal((await restored.readMessages(session.id))[0]?.id, 'message-1');
+      assert.deepEqual(await restored.readMessages(session.id), [message]);
       assert.equal(
         await readFile(join(restoreRoot, 'artifacts', artifact.relativePath), 'utf8'),
         'artifact',

@@ -279,12 +279,19 @@ describe('SQLite SessionStore', () => {
       ts: 1,
       text: '三🙂x'.repeat(40_000),
     };
+    const smallMessage = {
+      type: 'user' as const,
+      id: 'message-small',
+      turnId: 'turn-small',
+      ts: 2,
+      text: 'small inline record',
+    };
     let sessionId = '';
     const store = createSessionStore(root);
     try {
       const session = await store.create(makeInput());
       sessionId = session.id;
-      await store.appendMessage(session.id, message);
+      await store.appendMessages(session.id, [message, smallMessage]);
       const fragments = [];
       let position = 0;
       let byteOffset: number | undefined;
@@ -311,26 +318,16 @@ describe('SQLite SessionStore', () => {
 
     const path = join(root, OPERATIONAL_STATE_DATABASE_NAME);
     const legacy = new DatabaseSync(path);
+    const legacyRecord = JSON.stringify(message);
+    legacy
+      .prepare(`
+        UPDATE session_messages SET record_json = ?
+        WHERE session_id = ? AND sequence = 0
+      `)
+      .run(legacyRecord, sessionId);
     legacy.exec(`
       DROP TABLE session_message_chunks;
-      ALTER TABLE session_messages RENAME TO session_messages_v23;
-      CREATE TABLE session_messages (
-        session_id TEXT NOT NULL,
-        sequence INTEGER NOT NULL CHECK (sequence >= 0),
-        message_id TEXT NOT NULL,
-        message_type TEXT NOT NULL,
-        message_ts INTEGER NOT NULL CHECK (message_ts >= 0),
-        record_json TEXT NOT NULL,
-        PRIMARY KEY(session_id, sequence),
-        FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
-      );
-      INSERT INTO session_messages
-      SELECT session_id, sequence, message_id, message_type, message_ts, record_json
-      FROM session_messages_v23;
-      DROP TABLE session_messages_v23;
-      CREATE INDEX session_messages_by_identity ON session_messages(session_id, message_id);
-      CREATE INDEX session_messages_by_time
-        ON session_messages(session_id, message_ts, sequence);
+      DROP TABLE session_message_payloads;
       UPDATE session_metadata_schema SET version = 22 WHERE scope = 'session_metadata';
     `);
     legacy.close();
@@ -348,6 +345,7 @@ describe('SQLite SessionStore', () => {
         page.fragments[0]?.totalBytes,
         Buffer.byteLength(JSON.stringify(message), 'utf8'),
       );
+      assert.deepEqual(await migrated.readMessages(sessionId), [message, smallMessage]);
     } finally {
       await migrated.close?.();
     }
@@ -355,8 +353,23 @@ describe('SQLite SessionStore', () => {
     const inspected = new DatabaseSync(path);
     try {
       const parent = inspected
-        .prepare('SELECT record_bytes FROM session_messages WHERE session_id = ? AND sequence = 0')
-        .get(sessionId) as { record_bytes?: unknown };
+        .prepare('SELECT record_json FROM session_messages WHERE session_id = ? AND sequence = 0')
+        .get(sessionId) as { record_json?: unknown };
+      const payload = inspected
+        .prepare(`
+          SELECT record_bytes, sha256 FROM session_message_payloads
+          WHERE session_id = ? AND sequence = 0
+        `)
+        .get(sessionId) as { record_bytes?: unknown; sha256?: unknown };
+      const inline = inspected
+        .prepare(`
+          SELECT message.record_json, payload.sequence AS payload_sequence
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id = ? AND message.sequence = 1
+        `)
+        .get(sessionId) as { record_json?: unknown; payload_sequence?: unknown };
       const chunks = inspected
         .prepare(`
           SELECT count(*) AS count, sum(length(data)) AS bytes,
@@ -371,7 +384,11 @@ describe('SQLite SessionStore', () => {
         last_chunk?: unknown;
       };
       const encodedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
-      assert.equal(parent.record_bytes, encodedBytes);
+      assert.equal(parent.record_json, '{"$maka":"session-message-chunks-v1"}');
+      assert.equal(payload.record_bytes, encodedBytes);
+      assert.equal(typeof payload.sha256, 'string');
+      assert.equal(inline.record_json, JSON.stringify(smallMessage));
+      assert.equal(inline.payload_sequence, null);
       assert.equal(chunks.bytes, encodedBytes);
       assert.equal(chunks.count, Math.ceil(encodedBytes / (64 * 1024)));
       assert.equal(chunks.first_chunk, 0);
@@ -400,6 +417,7 @@ describe('SQLite SessionStore', () => {
         }),
         /incompatible/i,
       );
+      await assert.rejects(corrupted.readMessages(sessionId), /incompatible/i);
     } finally {
       await corrupted.close?.();
       await rm(root, { recursive: true, force: true });
