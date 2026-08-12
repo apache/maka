@@ -462,6 +462,65 @@ test('releases a materialized overlay through the connection-bound control opera
   );
 });
 
+test('fails the connection when overlay release is not confirmed', async () => {
+  const message = Buffer.from(
+    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'overlay' }),
+    'utf8',
+  );
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
+      const opened = openResult(hostEpoch, 'subscription-overlay-release-failure', {
+        throughSequence: null,
+        overlayMessageCount: 1,
+        durable: { ...transcriptPage(), throughSequence: null },
+        overlay: {
+          ...transcriptPage({
+            source: 'overlay',
+            rawBytes: message.byteLength,
+            fragments: [
+              {
+                kind: 'overlay',
+                messageIndex: 0,
+                byteOffset: 0,
+                totalBytes: message.byteLength,
+                data: message.toString('base64'),
+              },
+            ],
+          }),
+          throughSequence: null,
+        },
+      });
+      await writeProtocolFrame(transport, {
+        requestId: openRequest.requestId,
+        operation: 'subscription.open',
+        ok: true,
+        result: opened,
+      });
+      const release = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in release));
+      assert.equal(release.operation, 'session.transcript.overlay.release');
+      await writeProtocolFrame(transport, {
+        requestId: release.requestId,
+        operation: 'session.transcript.overlay.release',
+        ok: false,
+        error: { code: 'internal_failure', message: 'release failed' },
+      });
+    },
+    async (connection) => {
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'tail', maxBytes: 16 * 1024 },
+      });
+      await assert.rejects(
+        () => subscription.loadTranscript(decodeStoredMessage),
+        hasSubscriptionReason('transcript_release_failed'),
+      );
+      await assert.rejects(() => connection.request('host.status', {}));
+    },
+  );
+});
+
 test('accepts an identical retried page but rejects a durable sequence gap', async () => {
   const message = Buffer.from(
     JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
@@ -669,6 +728,52 @@ test('acknowledges the overlay only after complete materialization', async () =>
   assert.equal(releases, 1);
   await subscription.loadTranscript(decodeStoredMessage);
   assert.equal(releases, 1);
+});
+
+test('closes the subscription when overlay release is not confirmed', async () => {
+  const message = Buffer.from(
+    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'ok' }),
+    'utf8',
+  );
+  let closes = 0;
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-overlay-release-failure', {
+      throughSequence: null,
+      overlayMessageCount: 1,
+      durable: { ...transcriptPage(), throughSequence: null },
+      overlay: {
+        ...transcriptPage({
+          source: 'overlay',
+          rawBytes: message.byteLength,
+          fragments: [
+            {
+              kind: 'overlay',
+              messageIndex: 0,
+              byteOffset: 0,
+              totalBytes: message.byteLength,
+              data: message.toString('base64'),
+            },
+          ],
+        }),
+        throughSequence: null,
+      },
+    }),
+    async () => {
+      closes += 1;
+    },
+    async () => {
+      throw new Error('unexpected page request');
+    },
+    async () => {
+      throw new Error('release not dispatched');
+    },
+  );
+
+  await assert.rejects(
+    () => subscription.loadTranscript(decodeStoredMessage),
+    hasSubscriptionReason('transcript_release_failed'),
+  );
+  assert.equal(closes, 1);
 });
 
 test('close stops transcript pagination after the in-flight page', async () => {

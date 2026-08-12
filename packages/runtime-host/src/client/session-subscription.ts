@@ -21,14 +21,16 @@ export type RuntimeHostSubscriptionFailureReason =
   | 'correlation_changed'
   | 'projection_revision_invalid'
   | 'slow_consumer'
+  | 'transcript_release_failed'
   | 'connection_closed';
 
 export class RuntimeHostSubscriptionError extends Error {
   constructor(
     readonly reason: RuntimeHostSubscriptionFailureReason,
     message: string,
+    options: ErrorOptions = {},
   ) {
-    super(message);
+    super(message, options);
     this.name = 'RuntimeHostSubscriptionError';
   }
 }
@@ -217,7 +219,16 @@ export class ClientSessionSubscription
       }
     }
     if (bootstrap.overlayMessageCount > 0) {
-      await this.#releaseTranscriptOverlay().catch(() => undefined);
+      try {
+        await this.#releaseTranscriptOverlay();
+      } catch (cause) {
+        await this.close().catch(() => undefined);
+        throw new RuntimeHostSubscriptionError(
+          'transcript_release_failed',
+          'Runtime Host Session transcript overlay release was not confirmed',
+          { cause },
+        );
+      }
     }
     return messages;
   }

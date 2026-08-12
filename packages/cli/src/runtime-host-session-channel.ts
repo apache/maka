@@ -434,6 +434,7 @@ export class RuntimeHostSessionChannel {
       (error.reason === 'connection_closed' ||
         error.reason === 'sequence_gap' ||
         error.reason === 'projection_revision_invalid' ||
+        error.reason === 'transcript_release_failed' ||
         error.reason === 'slow_consumer')
     );
   }
