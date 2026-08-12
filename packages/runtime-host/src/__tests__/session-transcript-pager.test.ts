@@ -247,6 +247,7 @@ function transcriptReader(
         sequence: number;
         byteOffset: number;
         totalBytes: number;
+        payloadDigest: null;
         data: Buffer;
       }>;
       let rawBytes = 0;
@@ -269,6 +270,7 @@ function transcriptReader(
           sequence: candidate.sequence,
           byteOffset,
           totalBytes: candidate.data.byteLength,
+          payloadDigest: null,
           data: candidate.data.subarray(byteOffset, end),
         });
         rawBytes += end - byteOffset;

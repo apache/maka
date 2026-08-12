@@ -218,6 +218,17 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     },
     'session.transcript.page': (input, context) =>
       this.#readTranscriptPage(context.connectionId, input),
+    'session.transcript.overlay.release': async (input, context) => {
+      const subscriber = this.#ownedSubscriber(context.connectionId, input.subscriptionId);
+      if (!subscriber) {
+        return {
+          ok: false,
+          error: { code: 'not_found', message: 'Session subscription was not found' },
+        };
+      }
+      this.#releaseSubscriberTranscriptOverlay(subscriber);
+      return { ok: true, result: { subscriptionId: input.subscriptionId } };
+    },
   };
 
   readonly #connections = new Map<string, ConnectionState>();
@@ -901,9 +912,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
                 pumping: false,
                 terminalQueued: false,
                 ...(transcript ? { transcript } : {}),
-                ...(retainedTranscriptOverlay && transcript?.overlayMessages !== undefined
-                  ? { retainedTranscriptOverlay }
-                  : {}),
+                ...(retainedTranscriptOverlay ? { retainedTranscriptOverlay } : {}),
               };
               if (subscriber.retainedTranscriptOverlay)
                 this.#retainTranscriptOverlay(subscriber.retainedTranscriptOverlay);
@@ -1008,9 +1017,6 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         });
         if (this.#ownedSubscriber(connectionId, input.subscriptionId) !== subscriber) {
           return transcriptSubscriptionNotFound();
-        }
-        if (transcript.overlayMessages === undefined) {
-          this.#releaseSubscriberTranscriptOverlay(subscriber);
         }
         return { ok: true, result: page };
       } catch (error) {
@@ -1555,6 +1561,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   }
 
   #releaseSubscriberTranscriptOverlay(subscriber: Subscriber): void {
+    if (subscriber.transcript) subscriber.transcript.overlayMessages = undefined;
     const retained = subscriber.retainedTranscriptOverlay;
     if (!retained) return;
     subscriber.retainedTranscriptOverlay = undefined;

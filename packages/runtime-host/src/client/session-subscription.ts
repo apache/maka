@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   encodeProtocolMessage,
   type SessionAssistantStreamIdentity,
@@ -66,6 +67,7 @@ export class ClientSessionSubscription
   readonly #readTranscriptPage: (
     input: SessionTranscriptPageInput,
   ) => Promise<SessionTranscriptPage>;
+  readonly #releaseTranscriptOverlay: () => Promise<void>;
   readonly #expectedSessionId: string;
   readonly #queue: QueuedFrame[] = [];
   #queuedBytes = 0;
@@ -89,6 +91,7 @@ export class ClientSessionSubscription
     result: SubscriptionOpenResult,
     requestClose: () => Promise<void>,
     readTranscriptPage: (input: SessionTranscriptPageInput) => Promise<SessionTranscriptPage>,
+    releaseTranscriptOverlay: () => Promise<void> = async () => undefined,
   ) {
     this.hostEpoch = result.hostEpoch;
     this.subscriptionId = result.subscriptionId;
@@ -101,6 +104,7 @@ export class ClientSessionSubscription
     this.#latestTranscriptThroughSequence = result.transcript?.throughSequence ?? null;
     this.#requestClose = requestClose;
     this.#readTranscriptPage = readTranscriptPage;
+    this.#releaseTranscriptOverlay = releaseTranscriptOverlay;
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
@@ -211,6 +215,9 @@ export class ClientSessionSubscription
       } else {
         messages[index] = entry.value;
       }
+    }
+    if (bootstrap.overlayMessageCount > 0) {
+      await this.#releaseTranscriptOverlay().catch(() => undefined);
     }
     return messages;
   }
@@ -411,6 +418,7 @@ class TranscriptFragmentAssembler {
     | {
         identity: number;
         totalBytes: number;
+        payloadDigest: `sha256:${string}` | null;
         chunks: Buffer[];
         edge: number;
       }
@@ -451,8 +459,13 @@ class TranscriptFragmentAssembler {
     }
     const identity = fragment.kind === 'durable' ? fragment.sequence : fragment.messageIndex;
     const bytes = Buffer.from(fragment.data, 'base64');
-    if (!this.#current) this.#start(identity, fragment.totalBytes);
-    if (this.#current?.identity !== identity || this.#current.totalBytes !== fragment.totalBytes) {
+    const payloadDigest = fragment.kind === 'durable' ? fragment.payloadDigest : null;
+    if (!this.#current) this.#start(identity, fragment.totalBytes, payloadDigest);
+    if (
+      this.#current?.identity !== identity ||
+      this.#current.totalBytes !== fragment.totalBytes ||
+      this.#current.payloadDigest !== payloadDigest
+    ) {
       throw new RuntimeHostSubscriptionError(
         'correlation_changed',
         'Session transcript message identity changed between fragments',
@@ -477,7 +490,7 @@ class TranscriptFragmentAssembler {
     }
   }
 
-  #start(identity: number, totalBytes: number): void {
+  #start(identity: number, totalBytes: number, payloadDigest: `sha256:${string}` | null): void {
     if (
       this.#lastStartedIdentity !== undefined &&
       (this.direction === 'older'
@@ -493,6 +506,7 @@ class TranscriptFragmentAssembler {
     this.#current = {
       identity,
       totalBytes,
+      payloadDigest,
       chunks: [],
       edge: this.direction === 'older' ? totalBytes : 0,
     };
@@ -501,15 +515,22 @@ class TranscriptFragmentAssembler {
   #completeCurrent(): void {
     const current = this.#current!;
     const chunks = this.direction === 'older' ? current.chunks.reverse() : current.chunks;
+    const data = Buffer.concat(chunks, current.totalBytes);
     try {
+      if (
+        current.payloadDigest !== null &&
+        `sha256:${createHash('sha256').update(data).digest('hex')}` !== current.payloadDigest
+      ) {
+        throw new Error('payload digest mismatch');
+      }
       this.#messages.push({
         identity: current.identity,
-        value: JSON.parse(Buffer.concat(chunks, current.totalBytes).toString('utf8')) as unknown,
+        value: JSON.parse(data.toString('utf8')) as unknown,
       });
     } catch (cause) {
       throw new RuntimeHostSubscriptionError(
         'correlation_changed',
-        `Session transcript message is invalid JSON: ${errorMessage(cause)}`,
+        `Session transcript message failed integrity validation: ${errorMessage(cause)}`,
       );
     }
     this.#current = undefined;

@@ -20,6 +20,7 @@ const input = {
   anchorSequence: 2,
   maxBytes: 1024,
 };
+const payloadDigest = `sha256:${'a'.repeat(64)}` as const;
 
 const page = {
   kind: 'page' as const,
@@ -34,6 +35,7 @@ const page = {
       sequence: 2,
       byteOffset: 0,
       totalBytes: 4,
+      payloadDigest: null,
       data: Buffer.from('test').toString('base64'),
     },
   ],
@@ -67,6 +69,15 @@ test('Session transcript protocol accepts bounded correlated pages and bootstrap
     () => decodeSessionTranscriptBootstrap({ ...bootstrap, overlayMessageCount: 4_097 }),
     isProtocolError,
   );
+  const release = { subscriptionId: 'subscription-1' };
+  assert.deepEqual(
+    HOST_OPERATION_SPECS['session.transcript.overlay.release'].decodeInput(release),
+    release,
+  );
+  assert.deepEqual(
+    HOST_OPERATION_SPECS['session.transcript.overlay.release'].decodeOutput(release),
+    release,
+  );
 });
 
 test('a maximum single-fragment continuation remains transport safe', () => {
@@ -81,6 +92,7 @@ test('a maximum single-fragment continuation remains transport safe', () => {
         sequence: 2,
         byteOffset: 1,
         totalBytes: data.byteLength + 1,
+        payloadDigest,
         data: data.toString('base64'),
       },
     ],
@@ -109,6 +121,7 @@ test('a maximum multi-message page remains transport safe', () => {
       sequence,
       byteOffset: 0,
       totalBytes: fragmentBytes,
+      payloadDigest,
       data: Buffer.alloc(fragmentBytes, 0x61).toString('base64'),
     })),
     nextCursor: 'c'.repeat(1_024),

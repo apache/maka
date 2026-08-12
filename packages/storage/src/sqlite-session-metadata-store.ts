@@ -1401,7 +1401,8 @@ export class SqliteSessionMetadataStore {
           `
           SELECT message.sequence,
             coalesce(payload.record_bytes, length(CAST(message.record_json AS BLOB))) AS total_bytes,
-            payload.record_bytes IS NOT NULL AS chunked
+            payload.record_bytes IS NOT NULL AS chunked,
+            payload.sha256 AS payload_sha256
           FROM session_messages AS message
           LEFT JOIN session_message_payloads AS payload
             ON payload.session_id = message.session_id AND payload.sequence = message.sequence
@@ -1416,20 +1417,19 @@ export class SqliteSessionMetadataStore {
         sequence?: unknown;
         total_bytes?: unknown;
         chunked?: unknown;
+        payload_sha256?: unknown;
       }>;
-      const slices: Array<{
-        sequence: number;
-        byteOffset: number;
-        totalBytes: number;
-        byteLength: number;
-        chunked: boolean;
-      }> = [];
+      const slices: TranscriptRecordSlice[] = [];
       let rawBytes = 0;
       let next: { position: number; byteOffset: number | null } | null = null;
       for (const row of rows) {
         if (slices.length >= request.maxMessages || rawBytes >= request.maxBytes) break;
         const sequence = requireStoredMessageSequence(row.sequence, sessionId);
         const totalBytes = requireTranscriptRecordByteLength(row.total_bytes, sessionId, sequence);
+        const chunked = row.chunked === 1;
+        const payloadDigest = chunked
+          ? requireTranscriptPayloadDigest(row.payload_sha256, sessionId, sequence)
+          : null;
         const continued = sequence === position && request.byteOffset !== undefined;
         const edge = continued
           ? request.byteOffset!
@@ -1455,7 +1455,8 @@ export class SqliteSessionMetadataStore {
           byteOffset,
           totalBytes,
           byteLength,
-          chunked: row.chunked === 1,
+          chunked,
+          payloadDigest,
         });
         rawBytes += byteLength;
         if (!complete) {
@@ -1474,16 +1475,18 @@ export class SqliteSessionMetadataStore {
         };
       }
       const dataBySequence = readTranscriptSlices(this.db, sessionId, slices);
-      const fragments = slices.map(({ sequence, byteOffset, totalBytes, byteLength }) => {
-        const data = dataBySequence.get(sequence);
-        if (!data || data.byteLength !== byteLength) {
-          throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
-        }
-        if (byteOffset === 0 && byteLength === totalBytes) {
-          validateTranscriptRecord(data, sessionId, sequence);
-        }
-        return { sequence, byteOffset, totalBytes, data };
-      });
+      const fragments = slices.map(
+        ({ sequence, byteOffset, totalBytes, byteLength, payloadDigest }) => {
+          const data = dataBySequence.get(sequence);
+          if (!data || data.byteLength !== byteLength) {
+            throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+          }
+          if (byteOffset === 0 && byteLength === totalBytes) {
+            validateTranscriptRecord(data, sessionId, sequence);
+          }
+          return { sequence, byteOffset, totalBytes, payloadDigest, data };
+        },
+      );
       return { throughSequence, fragments, rawBytes, next };
     });
   }
@@ -4991,6 +4994,18 @@ interface TranscriptRecordSlice {
   readonly totalBytes: number;
   readonly byteLength: number;
   readonly chunked: boolean;
+  readonly payloadDigest: `sha256:${string}` | null;
+}
+
+function requireTranscriptPayloadDigest(
+  value: unknown,
+  sessionId: string,
+  sequence: number,
+): `sha256:${string}` {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+  }
+  return `sha256:${value}`;
 }
 
 function requireTranscriptRecordByteLength(

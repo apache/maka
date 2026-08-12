@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -345,6 +345,7 @@ test('reassembles a large message from bounded backward pages', async () => {
               sequence: 0,
               byteOffset: splitAt,
               totalBytes: encoded.byteLength,
+              payloadDigest: null,
               data: encoded.subarray(splitAt).toString('base64'),
             },
           ],
@@ -382,6 +383,7 @@ test('reassembles a large message from bounded backward pages', async () => {
               sequence: 0,
               byteOffset: 0,
               totalBytes: encoded.byteLength,
+              payloadDigest: null,
               data: encoded.subarray(0, splitAt).toString('base64'),
             },
           ],
@@ -400,6 +402,66 @@ test('reassembles a large message from bounded backward pages', async () => {
   );
 });
 
+test('releases a materialized overlay through the connection-bound control operation', async () => {
+  const message = Buffer.from(
+    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'overlay' }),
+    'utf8',
+  );
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
+      const opened = openResult(hostEpoch, 'subscription-overlay-release', {
+        throughSequence: null,
+        overlayMessageCount: 1,
+        durable: { ...transcriptPage(), throughSequence: null },
+        overlay: {
+          ...transcriptPage({
+            source: 'overlay',
+            rawBytes: message.byteLength,
+            fragments: [
+              {
+                kind: 'overlay',
+                messageIndex: 0,
+                byteOffset: 0,
+                totalBytes: message.byteLength,
+                data: message.toString('base64'),
+              },
+            ],
+          }),
+          throughSequence: null,
+        },
+      });
+      await writeProtocolFrame(transport, {
+        requestId: openRequest.requestId,
+        operation: 'subscription.open',
+        ok: true,
+        result: opened,
+      });
+      const release = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in release));
+      assert.equal(release.operation, 'session.transcript.overlay.release');
+      assert.deepEqual(release.input, { subscriptionId: opened.subscriptionId });
+      await writeProtocolFrame(transport, {
+        requestId: release.requestId,
+        operation: 'session.transcript.overlay.release',
+        ok: true,
+        result: { subscriptionId: opened.subscriptionId },
+      });
+      await answerClose(transport, opened.subscriptionId);
+    },
+    async (connection) => {
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'tail', maxBytes: 16 * 1024 },
+      });
+      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [
+        { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'overlay' },
+      ]);
+      await subscription.close();
+    },
+  );
+});
+
 test('accepts an identical retried page but rejects a durable sequence gap', async () => {
   const message = Buffer.from(
     JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
@@ -410,6 +472,7 @@ test('accepts an identical retried page but rejects a durable sequence gap', asy
     sequence: 0,
     byteOffset: 0,
     totalBytes: message.byteLength,
+    payloadDigest: null,
     data: message.toString('base64'),
   };
   const duplicatePage = transcriptPage({ rawBytes: message.byteLength, fragments: [fragment] });
@@ -451,6 +514,42 @@ test('accepts an identical retried page but rejects a durable sequence gap', asy
   );
 });
 
+test('rejects a durable message that does not match its payload digest', async () => {
+  const message = Buffer.from(
+    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
+    'utf8',
+  );
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-digest-mismatch', {
+      throughSequence: 0,
+      overlayMessageCount: 0,
+      durable: transcriptPage({
+        rawBytes: message.byteLength,
+        fragments: [
+          {
+            kind: 'durable',
+            sequence: 0,
+            byteOffset: 0,
+            totalBytes: message.byteLength,
+            payloadDigest: `sha256:${createHash('sha256').update('different').digest('hex')}`,
+            data: message.toString('base64'),
+          },
+        ],
+      }),
+      overlay: transcriptPage({ source: 'overlay' }),
+    }),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected page request');
+    },
+  );
+
+  await assert.rejects(
+    () => subscription.loadTranscript(decodeStoredMessage),
+    hasSubscriptionReason('correlation_changed'),
+  );
+});
+
 test('rejects a transcript cursor that does not advance', async () => {
   const message = Buffer.from(
     JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
@@ -465,6 +564,7 @@ test('rejects a transcript cursor that does not advance', async () => {
         sequence: 0,
         byteOffset: 0,
         totalBytes: message.byteLength,
+        payloadDigest: null,
         data: message.toString('base64'),
       },
     ],
@@ -526,6 +626,51 @@ test('rejects an overlay that terminates before its declared high-water', async 
   );
 });
 
+test('acknowledges the overlay only after complete materialization', async () => {
+  const message = Buffer.from(
+    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'ok' }),
+    'utf8',
+  );
+  let releases = 0;
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-overlay-release', {
+      throughSequence: null,
+      overlayMessageCount: 1,
+      durable: { ...transcriptPage(), throughSequence: null },
+      overlay: {
+        ...transcriptPage({
+          source: 'overlay',
+          rawBytes: message.byteLength,
+          fragments: [
+            {
+              kind: 'overlay',
+              messageIndex: 0,
+              byteOffset: 0,
+              totalBytes: message.byteLength,
+              data: message.toString('base64'),
+            },
+          ],
+        }),
+        throughSequence: null,
+      },
+    }),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected page request');
+    },
+    async () => {
+      releases += 1;
+    },
+  );
+
+  assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [
+    { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'ok' },
+  ]);
+  assert.equal(releases, 1);
+  await subscription.loadTranscript(decodeStoredMessage);
+  assert.equal(releases, 1);
+});
+
 test('close stops transcript pagination after the in-flight page', async () => {
   const message = Buffer.from(
     JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
@@ -545,6 +690,7 @@ test('close stops transcript pagination after the in-flight page', async () => {
             sequence: 0,
             byteOffset: Math.ceil(message.byteLength / 2),
             totalBytes: message.byteLength,
+            payloadDigest: null,
             data: message.subarray(Math.ceil(message.byteLength / 2)).toString('base64'),
           },
         ],
@@ -736,6 +882,7 @@ function transcriptBootstrap(message: Buffer): SessionTranscriptBootstrap {
           sequence: 0,
           byteOffset: 0,
           totalBytes: message.byteLength,
+          payloadDigest: null,
           data: message.toString('base64'),
         },
       ],

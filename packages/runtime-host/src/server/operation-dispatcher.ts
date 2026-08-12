@@ -75,7 +75,10 @@ export type ExternalSessionOperationKey = Extract<OperationKey, `external-sessio
 export type AgentGraphOperationKey = Extract<OperationKey, `agent.graph.${string}`>;
 export type SessionContinuityOperationKey = Extract<
   OperationKey,
-  'subscription.open' | 'subscription.close' | 'session.transcript.page'
+  | 'subscription.open'
+  | 'subscription.close'
+  | 'session.transcript.page'
+  | 'session.transcript.overlay.release'
 >;
 export type SessionRevisionOperationKey = Extract<
   OperationKey,

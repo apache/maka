@@ -32,7 +32,6 @@ export interface SubscriberTranscriptState {
   readonly subscriptionId: string;
   readonly openedThroughSequence: number | null;
   overlayMessages: readonly Buffer[] | undefined;
-  overlayContinuationCursor: string | null;
   readonly cursorSecret: Buffer;
   durableThroughSequence: number | null;
 }
@@ -90,7 +89,6 @@ export async function createSessionTranscriptBootstrap(input: {
       openedThroughSequence: input.throughSequence,
       durableThroughSequence: input.throughSequence,
       overlayMessages,
-      overlayContinuationCursor: null,
       cursorSecret,
     };
     const bootstrap: SessionTranscriptBootstrap = {
@@ -101,8 +99,6 @@ export async function createSessionTranscriptBootstrap(input: {
     };
     const encodedBytes = Buffer.byteLength(JSON.stringify(bootstrap), 'utf8');
     if (input.maxEncodedBytes === undefined || encodedBytes <= input.maxEncodedBytes) {
-      state.overlayContinuationCursor = bootstrap.overlay.nextCursor;
-      if (bootstrap.overlay.nextCursor === null) state.overlayMessages = undefined;
       return { state, bootstrap };
     }
     if (rawBudget <= 2) {
@@ -155,7 +151,7 @@ export async function readSessionTranscriptPage(input: {
     throw new TranscriptPageRequestError('Transcript overlay watermark changed');
   }
   if (request.source === 'overlay' && state.overlayMessages === undefined) {
-    throw new TranscriptPageRequestError('Transcript overlay has already been consumed');
+    throw new TranscriptPageRequestError('Transcript overlay has been released');
   }
   const position = resolvePosition(state, request);
   if (position === null) return emptyPage(state, request);
@@ -169,18 +165,13 @@ export async function readSessionTranscriptPage(input: {
       request.maxBytes,
       SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
     );
-    const page = pageFromSelection(
+    return pageFromSelection(
       state,
       'overlay',
       request.direction,
       selected,
       request.throughSequence,
     );
-    if (request.cursor !== null && request.cursor === state.overlayContinuationCursor) {
-      state.overlayContinuationCursor = page.nextCursor;
-      if (page.nextCursor === null) state.overlayMessages = undefined;
-    }
-    return page;
   }
   if (request.throughSequence === null) return emptyPage(state, request);
   const storage = await input.reader.readDurablePage(state.sessionId, {
@@ -260,6 +251,7 @@ function storageSelection(
       sequence: fragment.sequence,
       byteOffset: fragment.byteOffset,
       totalBytes: fragment.totalBytes,
+      payloadDigest: fragment.payloadDigest,
       data: fragment.data.toString('base64'),
     })),
     rawBytes: storage.rawBytes,

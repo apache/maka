@@ -156,6 +156,7 @@ export interface SessionTranscriptStorageFragment {
   readonly sequence: number;
   readonly byteOffset: number;
   readonly totalBytes: number;
+  readonly payloadDigest: `sha256:${string}` | null;
   readonly data: Buffer;
 }
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -312,6 +313,8 @@ describe('SQLite SessionStore', () => {
         JSON.parse(Buffer.concat(fragments.map(({ data }) => data)).toString('utf8')),
         message,
       );
+      assert.equal(new Set(fragments.map(({ payloadDigest }) => payloadDigest)).size, 1);
+      assert.match(fragments[0]?.payloadDigest ?? '', /^sha256:[0-9a-f]{64}$/);
     } finally {
       await store.close?.();
     }
@@ -447,6 +450,32 @@ describe('SQLite SessionStore', () => {
         }),
         /incompatible/i,
       );
+      const rewritten = new DatabaseSync(path);
+      try {
+        const chunk = rewritten
+          .prepare(`
+            SELECT data FROM session_message_chunks
+            WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
+          `)
+          .get(sessionId) as { data: Uint8Array };
+        rewritten
+          .prepare(`
+            UPDATE session_message_chunks SET sha256 = ?
+            WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
+          `)
+          .run(createHash('sha256').update(chunk.data).digest('hex'), sessionId);
+      } finally {
+        rewritten.close();
+      }
+      const page = await corrupted.readTranscriptPageSnapshot(sessionId, {
+        direction: 'newer',
+        throughSequence: 0,
+        position: 0,
+        byteOffset: 64 * 1024,
+        maxBytes: 1_000,
+        maxMessages: 1,
+      });
+      assert.match(page.fragments[0]?.payloadDigest ?? '', /^sha256:[0-9a-f]{64}$/);
       await assert.rejects(corrupted.readMessages(sessionId), /incompatible/i);
     } finally {
       await corrupted.close?.();

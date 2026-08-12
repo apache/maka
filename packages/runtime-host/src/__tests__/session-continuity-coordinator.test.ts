@@ -942,7 +942,7 @@ test('fails fast when retained active overlays leave no preparation capacity', a
   coordinator.close();
 });
 
-test('releases retained overlays after their bootstrap continuation is consumed', async () => {
+test('releases retained overlays after their materialization is acknowledged', async () => {
   let generation = 0;
   const baseReader = transcriptReader([]);
   const reader: SessionTranscriptReader = {
@@ -1555,7 +1555,9 @@ async function consumeBootstrapOverlay(
 ): Promise<void> {
   assert.ok(opened.transcript);
   let cursor = opened.transcript.overlay.nextCursor;
+  let finalCursor: string | null = null;
   while (cursor !== null) {
+    finalCursor = cursor;
     const outcome = await coordinator.handlers['session.transcript.page'](
       {
         subscriptionId: opened.subscriptionId,
@@ -1570,8 +1572,59 @@ async function consumeBootstrapOverlay(
     );
     assert.equal(outcome.ok, true);
     if (!outcome.ok) throw new Error('Transcript overlay page failed');
+    if (outcome.result.nextCursor === null) {
+      assert.deepEqual(
+        await coordinator.handlers['session.transcript.page'](
+          {
+            subscriptionId: opened.subscriptionId,
+            source: 'overlay',
+            direction: 'older',
+            throughSequence: opened.transcript.throughSequence,
+            cursor,
+            anchorSequence: null,
+            maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+          },
+          connectionContext(connectionId),
+        ),
+        outcome,
+      );
+    }
     cursor = outcome.result.nextCursor;
   }
+  const released = await coordinator.handlers['session.transcript.overlay.release'](
+    { subscriptionId: opened.subscriptionId },
+    connectionContext(connectionId),
+  );
+  assert.deepEqual(released, {
+    ok: true,
+    result: { subscriptionId: opened.subscriptionId },
+  });
+  assert.deepEqual(
+    await coordinator.handlers['session.transcript.overlay.release'](
+      { subscriptionId: opened.subscriptionId },
+      connectionContext(connectionId),
+    ),
+    released,
+  );
+  assert.ok(finalCursor);
+  assert.deepEqual(
+    await coordinator.handlers['session.transcript.page'](
+      {
+        subscriptionId: opened.subscriptionId,
+        source: 'overlay',
+        direction: 'older',
+        throughSequence: opened.transcript.throughSequence,
+        cursor: finalCursor,
+        anchorSequence: null,
+        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+      },
+      connectionContext(connectionId),
+    ),
+    {
+      ok: false,
+      error: { code: 'invalid_request', message: 'Transcript overlay has been released' },
+    },
+  );
 }
 
 function connectionContext(connectionId: string): ConnectionContext {
@@ -1775,6 +1828,7 @@ function transcriptReader(
         sequence: number;
         byteOffset: number;
         totalBytes: number;
+        payloadDigest: null;
         data: Buffer;
       }>;
       let rawBytes = 0;
@@ -1797,6 +1851,7 @@ function transcriptReader(
           sequence: candidate.sequence,
           byteOffset,
           totalBytes: candidate.data.byteLength,
+          payloadDigest: null,
           data: candidate.data.subarray(byteOffset, end),
         });
         rawBytes += end - byteOffset;

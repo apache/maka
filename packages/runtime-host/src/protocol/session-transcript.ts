@@ -26,6 +26,7 @@ export type SessionTranscriptFragment =
       readonly sequence: number;
       readonly byteOffset: number;
       readonly totalBytes: number;
+      readonly payloadDigest: `sha256:${string}` | null;
       readonly data: string;
     }
   | {
@@ -64,6 +65,14 @@ export interface SessionTranscriptPageInput {
   readonly maxBytes: number;
 }
 
+export interface SessionTranscriptOverlayReleaseInput {
+  readonly subscriptionId: string;
+}
+
+export interface SessionTranscriptOverlayReleaseResult {
+  readonly subscriptionId: string;
+}
+
 const QUERY_ERRORS = [
   'host_not_ready',
   'host_draining',
@@ -84,7 +93,37 @@ export const SESSION_TRANSCRIPT_OPERATION_SPECS = {
     decodeOutput: decodeSessionTranscriptPage,
     assertOutputForInput: assertSessionTranscriptPageOutput,
   }),
+  'session.transcript.overlay.release': defineOperation({
+    mode: 'control',
+    availability: 'ready',
+    errors: QUERY_ERRORS,
+    decodeInput: decodeSessionTranscriptOverlayReleaseInput,
+    decodeOutput: decodeSessionTranscriptOverlayReleaseResult,
+    assertOutputForInput: (input, output) => {
+      if (input.subscriptionId !== output.subscriptionId) {
+        throw invalidProtocolFrame('Session transcript overlay release identity changed');
+      }
+    },
+  }),
 } as const;
+
+function decodeSessionTranscriptOverlayReleaseInput(
+  value: unknown,
+): SessionTranscriptOverlayReleaseInput {
+  const input = requireExactRecord(value, 'Session transcript overlay release input', [
+    'subscriptionId',
+  ]);
+  return { subscriptionId: requireId(input.subscriptionId, 'subscriptionId') };
+}
+
+function decodeSessionTranscriptOverlayReleaseResult(
+  value: unknown,
+): SessionTranscriptOverlayReleaseResult {
+  const result = requireExactRecord(value, 'Session transcript overlay release result', [
+    'subscriptionId',
+  ]);
+  return { subscriptionId: requireId(result.subscriptionId, 'subscriptionId') };
+}
 
 export function decodeSessionTranscriptPageInput(value: unknown): SessionTranscriptPageInput {
   const input = requireExactRecord(value, 'Session transcript page input', [
@@ -256,6 +295,7 @@ function decodeSessionTranscriptFragment(
     identityKey,
     'byteOffset',
     'totalBytes',
+    ...(source === 'durable' ? ['payloadDigest'] : []),
     'data',
   ]);
   if (exact.kind !== source) {
@@ -278,7 +318,11 @@ function decodeSessionTranscriptFragment(
     if (throughSequence === null || sequence > throughSequence) {
       throw invalidProtocolFrame('Session transcript fragment exceeds watermark');
     }
-    return { kind: 'durable', sequence, byteOffset, totalBytes, data };
+    const payloadDigest =
+      exact.payloadDigest === null
+        ? null
+        : requirePayloadDigest(exact.payloadDigest, 'Session transcript payload digest');
+    return { kind: 'durable', sequence, byteOffset, totalBytes, payloadDigest, data };
   }
   return {
     kind: 'overlay',
@@ -287,6 +331,13 @@ function decodeSessionTranscriptFragment(
     totalBytes,
     data,
   };
+}
+
+function requirePayloadDigest(value: unknown, label: string): `sha256:${string}` {
+  if (typeof value !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(value)) {
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  }
+  return value as `sha256:${string}`;
 }
 
 function requireBase64Fragment(value: unknown): string {
