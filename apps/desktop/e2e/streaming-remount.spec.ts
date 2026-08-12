@@ -34,6 +34,42 @@ test('returning to a live conversation leaves accumulated output settled', async
     ),
   ).toBe(0);
 
+  await liveBubble.evaluate((element) => {
+    const observed = {
+      texts: [] as string[],
+      maxActiveAnimations: 0,
+    };
+    (window as typeof window & { __makaStreamingRemountObserved?: typeof observed })
+      .__makaStreamingRemountObserved = observed;
+    new MutationObserver(() => {
+      observed.texts.push(element.textContent ?? '');
+      observed.maxActiveAnimations = Math.max(
+        observed.maxActiveAnimations,
+        element
+          .getAnimations({ subtree: true })
+          .filter((animation) => animation.playState !== 'finished').length,
+      );
+    }).observe(element, { childList: true, characterData: true, subtree: true });
+  });
+
+  const steering = 'continue after returning to this conversation';
+  await composer.fill(steering);
+  await composer.press('Enter');
+  await expect(liveBubble).toContainText(steering);
+
+  const observed = await page.evaluate(() => (
+    window as typeof window & {
+      __makaStreamingRemountObserved?: {
+        texts: string[];
+        maxActiveAnimations: number;
+      };
+    }
+  ).__makaStreamingRemountObserved);
+  expect(observed?.texts.some((text) =>
+    text.includes('continue after') && !text.includes(steering)
+  )).toBe(true);
+  expect(observed?.maxActiveAnimations).toBeGreaterThan(0);
+
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await expect(page.locator('[data-agents-page]')).toHaveAttribute(
     'data-sidebar-state',
@@ -118,42 +154,6 @@ test('returning to a live conversation leaves accumulated output settled', async
     text.includes('background output') && !text.includes(backgroundSteering)
   )).toBe(false);
   expect(backgroundRestoreObserved?.maxActiveAnimations).toBe(0);
-
-  await liveBubble.evaluate((element) => {
-    const observed = {
-      texts: [] as string[],
-      maxActiveAnimations: 0,
-    };
-    (window as typeof window & { __makaStreamingRemountObserved?: typeof observed })
-      .__makaStreamingRemountObserved = observed;
-    new MutationObserver(() => {
-      observed.texts.push(element.textContent ?? '');
-      observed.maxActiveAnimations = Math.max(
-        observed.maxActiveAnimations,
-        element
-          .getAnimations({ subtree: true })
-          .filter((animation) => animation.playState !== 'finished').length,
-      );
-    }).observe(element, { childList: true, characterData: true, subtree: true });
-  });
-
-  const steering = 'continue after returning to this conversation';
-  await composer.fill(steering);
-  await composer.press('Enter');
-  await expect(liveBubble).toContainText(steering);
-
-  const observed = await page.evaluate(() => (
-    window as typeof window & {
-      __makaStreamingRemountObserved?: {
-        texts: string[];
-        maxActiveAnimations: number;
-      };
-    }
-  ).__makaStreamingRemountObserved);
-  expect(observed?.texts.some((text) =>
-    text.includes('continue after') && !text.includes(steering)
-  )).toBe(true);
-  expect(observed?.maxActiveAnimations).toBeGreaterThan(0);
 });
 
 test('rewritten live text reveals only the suffix beyond its verified prefix', async ({
