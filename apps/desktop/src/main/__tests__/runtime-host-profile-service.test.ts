@@ -376,7 +376,7 @@ test("reconnects when another process rotates the active profile credential", as
   ]);
 });
 
-test("returns the active Host snapshot when selection persistence fails", async () => {
+test("keeps the prior selection when the active Host selection cannot be persisted", async () => {
   const root = await clientRoot();
   const activations: string[] = [];
   const service = createProfileService(root, {
@@ -402,7 +402,7 @@ test("returns the active Host snapshot when selection persistence fails", async 
   if (result.kind !== "connected") assert.fail("Expected a connected result");
   assert.match(result.warning ?? "", /selection could not be saved/);
   assert.deepEqual(activations, ["office"]);
-  assert.equal(result.snapshot.selectedProfileId, "office");
+  assert.equal(result.snapshot.selectedProfileId, "local");
   assert.equal(result.snapshot.activeProfileId, "office");
 });
 

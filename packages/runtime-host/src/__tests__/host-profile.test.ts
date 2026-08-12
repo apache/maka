@@ -162,6 +162,25 @@ describe('Runtime Host profiles', () => {
     });
     const rotated = await desktop.resolve(profile.id);
     assert.equal(rotated.credential, 'rotated-token');
+    let committed = false;
+    assert.equal(
+      (
+        await desktop.commitIfCurrentTarget(created, async () => {
+          committed = true;
+        })
+      ).committed,
+      false,
+    );
+    assert.equal(committed, false);
+    assert.equal(
+      (
+        await desktop.commitIfCurrentTarget(rotated, async () => {
+          committed = true;
+        })
+      ).committed,
+      true,
+    );
+    assert.equal(committed, true);
     assert.equal((await desktop.removeIfCurrent(rotated)).removed, true);
     assert.deepEqual(await desktop.read(), { schemaVersion: 1, profiles: [] });
   });

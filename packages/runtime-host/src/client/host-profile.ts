@@ -69,6 +69,13 @@ export interface RuntimeHostProfileCatalog {
     readonly removed: boolean;
     readonly document: RuntimeHostProfileDocument;
   }>;
+  commitIfCurrentTarget(
+    target: ResolvedRuntimeHostProfile,
+    commit: () => Promise<void>,
+  ): Promise<{
+    readonly committed: boolean;
+    readonly document: RuntimeHostProfileDocument;
+  }>;
 }
 
 export interface RuntimeHostProfileCredentialStore {
@@ -390,6 +397,32 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
         return { removed: false, document: current };
       }
       return { removed: true, document: await this.#removeProfile(current, profile) };
+    });
+  }
+
+  commitIfCurrentTarget(
+    target: ResolvedRuntimeHostProfile,
+    commit: () => Promise<void>,
+  ): Promise<{
+    readonly committed: boolean;
+    readonly document: RuntimeHostProfileDocument;
+  }> {
+    if (target.profile.kind !== 'remote' || target.credential === undefined) {
+      return Promise.reject(new Error('Expected a resolved remote Runtime Host profile'));
+    }
+    const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
+    return this.#exclusive(async () => {
+      const current = await this.read();
+      const profile = current.profiles.find((candidate) => candidate.id === expectedProfile.id);
+      if (
+        !profile ||
+        profileCredentialBinding(profile) !== profileCredentialBinding(expectedProfile) ||
+        (await this.credentials.get(profile)) !== target.credential
+      ) {
+        return { committed: false, document: current };
+      }
+      await commit();
+      return { committed: true, document: current };
     });
   }
 

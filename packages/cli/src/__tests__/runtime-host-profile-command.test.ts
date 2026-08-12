@@ -116,6 +116,7 @@ function createProfileCatalogCapture(): {
     },
     remove: async () => assert.fail('unexpected profile removal'),
     removeIfCurrent: async () => assert.fail('unexpected conditional profile removal'),
+    commitIfCurrentTarget: async () => assert.fail('unexpected conditional profile commit'),
   };
   return {
     get document() {

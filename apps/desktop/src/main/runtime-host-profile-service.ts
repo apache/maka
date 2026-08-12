@@ -8,6 +8,7 @@ import {
   type RemoteRuntimeHostProfile,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfileCatalog,
+  type RuntimeHostProfileDocument,
 } from "@maka/runtime-host/client";
 import type {
   DesktopRuntimeHostProfileAddInput,
@@ -102,18 +103,21 @@ export function createDesktopRuntimeHostProfileService(input: {
   let unavailable = input.unavailable;
   let mutationTail: Promise<void> = Promise.resolve();
 
-  const snapshot = async (): Promise<DesktopRuntimeHostProfileSnapshot> => {
+  const snapshot = async (
+    document?: RuntimeHostProfileDocument,
+    knownActiveProfileId?: string,
+  ): Promise<DesktopRuntimeHostProfileSnapshot> => {
     const activeTarget = input.getActiveTarget();
-    const document = await catalog.read();
-    const remoteProfiles = [...document.profiles];
-    const activeProfileId = activeTarget && await catalog
+    const currentDocument = document ?? await catalog.read();
+    const remoteProfiles = [...currentDocument.profiles];
+    const activeProfileId = knownActiveProfileId ?? (activeTarget && await catalog
       .resolve(activeTarget.profile.id)
       .then((resolved) =>
         sameRuntimeHostTarget(resolved, activeTarget)
           ? activeTarget.profile.id
           : undefined,
       )
-      .catch(() => undefined);
+      .catch(() => undefined));
     return {
       profiles: [LOCAL_RUNTIME_HOST_PROFILE, ...remoteProfiles],
       selectedProfileId,
@@ -144,33 +148,50 @@ export function createDesktopRuntimeHostProfileService(input: {
     }
     const activeTarget = input.getActiveTarget();
     if (activeTarget && sameRuntimeHostTarget(target, activeTarget)) {
-      await persistSelection(profileId);
+      const document = await persistCurrentSelection(target);
       selectedProfileId = profileId;
       unavailable = undefined;
-      return snapshot();
+      return snapshot(document, profileId);
     }
     const activation = await input.activate(target);
     if (!activation.ok) {
-      await persistSelection(profileId);
+      const document = await persistCurrentSelection(target);
       selectedProfileId = profileId;
       unavailable = { profileId, error: asError(activation.error) };
-      return snapshot();
+      return snapshot(document);
     }
-    selectedProfileId = profileId;
-    unavailable = undefined;
+    let document: RuntimeHostProfileDocument | undefined;
     try {
-      await persistSelection(profileId);
+      document = await persistCurrentSelection(target);
     } catch (error) {
       throw new Error(
         "Runtime Host switched for this run, but the selection could not be saved",
         { cause: error },
       );
     }
-    return snapshot();
+    selectedProfileId = profileId;
+    unavailable = undefined;
+    return snapshot(document, profileId);
   };
 
   const persistSelection = (profileId: string): Promise<void> =>
     input.writeSelection?.(profileId) ?? writeSelectedProfileId(selectionPath, profileId);
+
+  const persistCurrentSelection = async (
+    target: ResolvedRuntimeHostProfile,
+  ): Promise<RuntimeHostProfileDocument | undefined> => {
+    if (target.profile.kind === "local") {
+      await persistSelection(target.profile.id);
+      return undefined;
+    }
+    const result = await catalog.commitIfCurrentTarget(target, () =>
+      persistSelection(target.profile.id),
+    );
+    if (!result.committed) {
+      throw new Error("Runtime Host profile changed while connecting and was not selected");
+    }
+    return result.document;
+  };
 
   const mutate = <T>(operation: () => Promise<T>): Promise<T> => {
     const pending = mutationTail.then(operation);
@@ -215,20 +236,13 @@ export function createDesktopRuntimeHostProfileService(input: {
             message: asError(activation.error).message,
           };
         }
-        const currentTarget = await catalog.resolve(profile.id).catch(() => undefined);
-        if (!currentTarget || !sameRuntimeHostTarget(currentTarget, target)) {
-          return {
-            kind: "connected",
-            snapshot: await snapshot(),
-            warning:
-              "Runtime Host connected, but its profile changed while connecting and was not selected",
-          };
-        }
-        selectedProfileId = value.profile.id;
-        unavailable = undefined;
+        let selection: Awaited<
+          ReturnType<RuntimeHostProfileCatalog["commitIfCurrentTarget"]>
+        >;
         try {
-          await persistSelection(value.profile.id);
-          return { kind: "connected", snapshot: await snapshot() };
+          selection = await catalog.commitIfCurrentTarget(target, () =>
+            persistSelection(value.profile.id),
+          );
         } catch {
           return {
             kind: "connected",
@@ -236,6 +250,20 @@ export function createDesktopRuntimeHostProfileService(input: {
             warning: "Runtime Host switched for this run, but the selection could not be saved",
           };
         }
+        if (!selection.committed) {
+          return {
+            kind: "connected",
+            snapshot: await snapshot(selection.document),
+            warning:
+              "Runtime Host connected, but its profile changed while connecting and was not selected",
+          };
+        }
+        selectedProfileId = value.profile.id;
+        unavailable = undefined;
+        return {
+          kind: "connected",
+          snapshot: await snapshot(selection.document, value.profile.id),
+        };
       });
     },
     remove(profileId) {
