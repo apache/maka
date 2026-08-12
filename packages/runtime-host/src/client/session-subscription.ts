@@ -260,13 +260,7 @@ export class ClientSessionSubscription
           'Session transcript cursor did not advance',
         );
       }
-      const duplicate = assembler.accept(page.fragments);
-      if (duplicate && page.nextCursor !== null) {
-        throw new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Session transcript cursor did not advance',
-        );
-      }
+      assembler.accept(page.fragments);
       cursor = page.nextCursor;
     }
     return assembler.finish();
@@ -435,19 +429,14 @@ class TranscriptFragmentAssembler {
       }
     | undefined;
   #lastStartedIdentity: number | undefined;
-  #lastPageEncoding: string | undefined;
 
   constructor(
     private readonly source: 'durable' | 'overlay',
     private readonly direction: 'older' | 'newer',
   ) {}
 
-  accept(fragments: readonly SessionTranscriptFragment[]): boolean {
-    const pageEncoding = JSON.stringify(fragments);
-    if (pageEncoding === this.#lastPageEncoding) return true;
-    this.#lastPageEncoding = pageEncoding;
+  accept(fragments: readonly SessionTranscriptFragment[]): void {
     for (const fragment of fragments) this.#accept(fragment);
-    return false;
   }
 
   finish(): Array<{ identity: number; value: unknown }> {

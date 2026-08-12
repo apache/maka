@@ -410,27 +410,11 @@ test('releases a materialized overlay through the connection-bound control opera
   await withProtocolPeer(
     async (transport, hostEpoch, rootId) => {
       const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
-      const opened = openResult(hostEpoch, 'subscription-overlay-release', {
-        throughSequence: null,
-        overlayMessageCount: 1,
-        durable: { ...transcriptPage(), throughSequence: null },
-        overlay: {
-          ...transcriptPage({
-            source: 'overlay',
-            rawBytes: message.byteLength,
-            fragments: [
-              {
-                kind: 'overlay',
-                messageIndex: 0,
-                byteOffset: 0,
-                totalBytes: message.byteLength,
-                data: message.toString('base64'),
-              },
-            ],
-          }),
-          throughSequence: null,
-        },
-      });
+      const opened = openResult(
+        hostEpoch,
+        'subscription-overlay-release',
+        overlayBootstrap(message),
+      );
       await writeProtocolFrame(transport, {
         requestId: openRequest.requestId,
         operation: 'subscription.open',
@@ -470,27 +454,11 @@ test('fails the connection when overlay release is not confirmed', async () => {
   await withProtocolPeer(
     async (transport, hostEpoch, rootId) => {
       const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
-      const opened = openResult(hostEpoch, 'subscription-overlay-release-failure', {
-        throughSequence: null,
-        overlayMessageCount: 1,
-        durable: { ...transcriptPage(), throughSequence: null },
-        overlay: {
-          ...transcriptPage({
-            source: 'overlay',
-            rawBytes: message.byteLength,
-            fragments: [
-              {
-                kind: 'overlay',
-                messageIndex: 0,
-                byteOffset: 0,
-                totalBytes: message.byteLength,
-                data: message.toString('base64'),
-              },
-            ],
-          }),
-          throughSequence: null,
-        },
-      });
+      const opened = openResult(
+        hostEpoch,
+        'subscription-overlay-release-failure',
+        overlayBootstrap(message),
+      );
       await writeProtocolFrame(transport, {
         requestId: openRequest.requestId,
         operation: 'subscription.open',
@@ -521,7 +489,7 @@ test('fails the connection when overlay release is not confirmed', async () => {
   );
 });
 
-test('accepts an identical retried page but rejects a durable sequence gap', async () => {
+test('rejects a durable sequence gap', async () => {
   const message = Buffer.from(
     JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
     'utf8',
@@ -534,21 +502,6 @@ test('accepts an identical retried page but rejects a durable sequence gap', asy
     payloadDigest: null,
     data: message.toString('base64'),
   };
-  const duplicatePage = transcriptPage({ rawBytes: message.byteLength, fragments: [fragment] });
-  const retried = new ClientSessionSubscription(
-    openResult('host-1', 'subscription-retried', {
-      throughSequence: 0,
-      overlayMessageCount: 0,
-      durable: { ...duplicatePage, nextCursor: 'retry-cursor' },
-      overlay: transcriptPage({ source: 'overlay' }),
-    }),
-    async () => undefined,
-    async () => duplicatePage,
-  );
-  assert.deepEqual(await retried.loadTranscript(decodeStoredMessage), [
-    { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' },
-  ]);
-
   const gap = new ClientSessionSubscription(
     openResult('host-1', 'subscription-gap', {
       throughSequence: 1,
@@ -692,27 +645,7 @@ test('acknowledges the overlay only after complete materialization', async () =>
   );
   let releases = 0;
   const subscription = new ClientSessionSubscription(
-    openResult('host-1', 'subscription-overlay-release', {
-      throughSequence: null,
-      overlayMessageCount: 1,
-      durable: { ...transcriptPage(), throughSequence: null },
-      overlay: {
-        ...transcriptPage({
-          source: 'overlay',
-          rawBytes: message.byteLength,
-          fragments: [
-            {
-              kind: 'overlay',
-              messageIndex: 0,
-              byteOffset: 0,
-              totalBytes: message.byteLength,
-              data: message.toString('base64'),
-            },
-          ],
-        }),
-        throughSequence: null,
-      },
-    }),
+    openResult('host-1', 'subscription-overlay-release', overlayBootstrap(message)),
     async () => undefined,
     async () => {
       throw new Error('unexpected page request');
@@ -728,52 +661,6 @@ test('acknowledges the overlay only after complete materialization', async () =>
   assert.equal(releases, 1);
   await subscription.loadTranscript(decodeStoredMessage);
   assert.equal(releases, 1);
-});
-
-test('closes the subscription when overlay release is not confirmed', async () => {
-  const message = Buffer.from(
-    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'ok' }),
-    'utf8',
-  );
-  let closes = 0;
-  const subscription = new ClientSessionSubscription(
-    openResult('host-1', 'subscription-overlay-release-failure', {
-      throughSequence: null,
-      overlayMessageCount: 1,
-      durable: { ...transcriptPage(), throughSequence: null },
-      overlay: {
-        ...transcriptPage({
-          source: 'overlay',
-          rawBytes: message.byteLength,
-          fragments: [
-            {
-              kind: 'overlay',
-              messageIndex: 0,
-              byteOffset: 0,
-              totalBytes: message.byteLength,
-              data: message.toString('base64'),
-            },
-          ],
-        }),
-        throughSequence: null,
-      },
-    }),
-    async () => {
-      closes += 1;
-    },
-    async () => {
-      throw new Error('unexpected page request');
-    },
-    async () => {
-      throw new Error('release not dispatched');
-    },
-  );
-
-  await assert.rejects(
-    () => subscription.loadTranscript(decodeStoredMessage),
-    hasSubscriptionReason('transcript_release_failed'),
-  );
-  assert.equal(closes, 1);
 });
 
 test('close stops transcript pagination after the in-flight page', async () => {
@@ -993,6 +880,30 @@ function transcriptBootstrap(message: Buffer): SessionTranscriptBootstrap {
       ],
     }),
     overlay: transcriptPage({ source: 'overlay' }),
+  };
+}
+
+function overlayBootstrap(message: Buffer): SessionTranscriptBootstrap {
+  return {
+    throughSequence: null,
+    overlayMessageCount: 1,
+    durable: { ...transcriptPage(), throughSequence: null },
+    overlay: {
+      ...transcriptPage({
+        source: 'overlay',
+        rawBytes: message.byteLength,
+        fragments: [
+          {
+            kind: 'overlay',
+            messageIndex: 0,
+            byteOffset: 0,
+            totalBytes: message.byteLength,
+            data: message.toString('base64'),
+          },
+        ],
+      }),
+      throughSequence: null,
+    },
   };
 }
 

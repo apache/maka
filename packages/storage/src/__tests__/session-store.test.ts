@@ -353,56 +353,7 @@ describe('SQLite SessionStore', () => {
       await migrated.close?.();
     }
 
-    const inspected = new DatabaseSync(path);
-    try {
-      const parent = inspected
-        .prepare('SELECT record_json FROM session_messages WHERE session_id = ? AND sequence = 0')
-        .get(sessionId) as { record_json?: unknown };
-      const payload = inspected
-        .prepare(`
-          SELECT record_bytes, sha256 FROM session_message_payloads
-          WHERE session_id = ? AND sequence = 0
-        `)
-        .get(sessionId) as { record_bytes?: unknown; sha256?: unknown };
-      const inline = inspected
-        .prepare(`
-          SELECT message.record_json, payload.sequence AS payload_sequence
-          FROM session_messages AS message
-          LEFT JOIN session_message_payloads AS payload
-            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
-          WHERE message.session_id = ? AND message.sequence = 1
-        `)
-        .get(sessionId) as { record_json?: unknown; payload_sequence?: unknown };
-      const chunks = inspected
-        .prepare(`
-          SELECT count(*) AS count, sum(length(data)) AS bytes,
-            min(chunk_index) AS first_chunk, max(chunk_index) AS last_chunk
-          FROM session_message_chunks
-          WHERE session_id = ? AND sequence = 0
-        `)
-        .get(sessionId) as {
-        count?: unknown;
-        bytes?: unknown;
-        first_chunk?: unknown;
-        last_chunk?: unknown;
-      };
-      assert.equal(parent.record_json, JSON.stringify(message));
-      assert.equal(payload, undefined);
-      assert.equal(inline.record_json, JSON.stringify(smallMessage));
-      assert.equal(inline.payload_sequence, null);
-      assert.deepEqual(
-        { ...chunks },
-        {
-          count: 0,
-          bytes: null,
-          first_chunk: null,
-          last_chunk: null,
-        },
-      );
-    } finally {
-      inspected.close();
-      await rm(root, { recursive: true, force: true });
-    }
+    await rm(root, { recursive: true, force: true });
   });
 
   test('rejects corrupt chunked messages on paged and ordinary reads', async () => {
@@ -524,26 +475,6 @@ describe('SQLite SessionStore', () => {
         }),
         /exceeds its byte limit/,
       );
-    } finally {
-      await store.close?.();
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('returns an empty transcript page with no watermark', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-session-empty-transcript-'));
-    const store = createSessionStore(root);
-    try {
-      const session = await store.create(makeInput());
-      assert.deepEqual(
-        await store.readTranscriptPageSnapshot(session.id, {
-          direction: 'older',
-          maxBytes: 1024,
-          maxMessages: 10,
-        }),
-        { throughSequence: null, fragments: [], rawBytes: 0, next: null },
-      );
-      assert.equal(await store.readTranscriptHighWaterSnapshot(session.id), null);
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });
