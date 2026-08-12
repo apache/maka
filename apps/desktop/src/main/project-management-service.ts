@@ -1,4 +1,8 @@
 import type { ProjectRecord } from '@maka/core/project';
+import type {
+  DesktopProjectCapabilities,
+  DesktopProjectSnapshot,
+} from '../preload/bridge-contract.js';
 import type { CurrentProjectSelection } from './project-root-controller.js';
 
 type DirectoryActionResult =
@@ -10,7 +14,7 @@ type SelectedDirectoryActionResult =
 
 export interface ProjectManagementService {
   current(): Promise<CurrentProjectSelection>;
-  list(): Promise<ProjectRecord[]>;
+  getSnapshot(): Promise<DesktopProjectSnapshot>;
   add(): Promise<SelectedDirectoryActionResult>;
   select(
     projectId: unknown,
@@ -45,7 +49,7 @@ export function createProjectManagementService(deps: {
     currentSelection(): Promise<CurrentProjectSelection>;
     setSelection(projectId: string | null, projectPath: string): void;
   };
-  allowLocalDirectoryActions?(): boolean;
+  capabilities: DesktopProjectCapabilities;
 }): ProjectManagementService {
   async function current(): Promise<CurrentProjectSelection> {
     const selection = await deps.selection.currentSelection();
@@ -72,7 +76,12 @@ export function createProjectManagementService(deps: {
 
   return {
     current,
-    list: () => deps.catalog.list(),
+    async getSnapshot() {
+      return {
+        projects: await deps.catalog.list(),
+        capabilities: deps.capabilities,
+      };
+    },
 
     async add() {
       requireLocalDirectoryActions(deps);
@@ -86,6 +95,9 @@ export function createProjectManagementService(deps: {
 
     async select(projectId) {
       if (projectId === null) {
+        if (!deps.capabilities.selectNoProject) {
+          throw new Error('The active Runtime Host requires a Project');
+        }
         const selection = await deps.selection.currentSelection();
         deps.selection.setSelection(null, selection.path);
         return { project: null, path: selection.path };
@@ -117,7 +129,7 @@ export function createProjectManagementService(deps: {
     },
 
     async pathFor(projectId) {
-      if (deps.allowLocalDirectoryActions?.() === false) return null;
+      if (!deps.capabilities.viewClientPath) return null;
       const id = requireProjectId(projectId);
       const project = selectableProject(await deps.catalog.list(), id);
       return project?.preferredPath ?? null;
@@ -142,9 +154,9 @@ export function createProjectManagementService(deps: {
 }
 
 function requireLocalDirectoryActions(
-  deps: { readonly allowLocalDirectoryActions?: () => boolean },
+  deps: { readonly capabilities: DesktopProjectCapabilities },
 ): void {
-  if (deps.allowLocalDirectoryActions?.() === false) {
+  if (!deps.capabilities.chooseClientDirectory) {
     throw new Error('Remote Runtime Host projects must be registered on the Host');
   }
 }

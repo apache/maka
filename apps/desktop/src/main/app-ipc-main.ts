@@ -103,7 +103,9 @@ export function registerAppIpc(
     if (!isAppUpdateInstallRequest(input)) throw new TypeError('Invalid app update install request');
     return updateService.installUpdate(input);
   });
-  handleReconnectableRead(targetIpc, 'projects:list', () => deps.projectManagement.list());
+  handleReconnectableRead(targetIpc, 'projects:getSnapshot', () =>
+    deps.projectManagement.getSnapshot(),
+  );
   targetIpc.handle('projects:add', () => deps.projectManagement.add());
   targetIpc.handle('projects:select', (_event, projectId: unknown) =>
     deps.projectManagement.select(projectId));

@@ -237,6 +237,18 @@ export interface DesktopRuntimeHostProfileChangedEvent {
   readonly activeProfileId: string;
 }
 
+export interface DesktopProjectCapabilities {
+  readonly chooseClientDirectory: boolean;
+  readonly selectNoProject: boolean;
+  readonly setLocalDefault: boolean;
+  readonly viewClientPath: boolean;
+}
+
+export interface DesktopProjectSnapshot {
+  readonly projects: readonly ProjectRecord[];
+  readonly capabilities: DesktopProjectCapabilities;
+}
+
 /**
  * Commands dispatched by the native application menu (see
  * main/application-menu.ts). The renderer owns the implementations.
@@ -440,7 +452,7 @@ export interface MakaBridge {
     }): Promise<ExternalSessionImportIpcResult>;
   };
   projects: {
-    list(): Promise<ProjectRecord[]>;
+    getSnapshot(): Promise<DesktopProjectSnapshot>;
     subscribeChanges(handler: () => void): () => void;
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }

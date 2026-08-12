@@ -44,7 +44,7 @@ interface ChatMessageSurfaceProps extends Omit<
   sessionHealthNotice?: SessionHealthNoticeView;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
   taskReadinessNotice?: TaskReadinessNotice;
-  onTaskReadinessAction: () => void;
+  onTaskReadinessAction?: () => void;
   showOnboardingHero: boolean;
   onboardingState: OnboardingState | undefined;
   isOnboardingLoading: boolean;
@@ -161,12 +161,12 @@ export function ChatMessageSurface({
             role="status"
             title={taskReadinessNotice.title}
             description={taskReadinessNotice.description}
-            endContent={<Button
+            endContent={onTaskReadinessAction ? <Button
               label={taskReadinessNotice.actionLabel}
               variant="ghost"
               size="sm"
               onClick={onTaskReadinessAction}
-            />} />
+            /> : undefined} />
         </div>
       )}
       {workspaceReadinessRecovery && (

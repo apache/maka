@@ -60,7 +60,7 @@ export interface ProjectRowActions {
   onRename(projectId: string, name: string): void | Promise<void>;
   onArchive(projectId: string): void | Promise<void>;
   onRestore(projectId: string): void | Promise<void>;
-  onRelink(projectId: string): void | Promise<void>;
+  onRelink?(projectId: string): void | Promise<void>;
 }
 
 export interface SessionHistoryGroup {
@@ -524,13 +524,15 @@ function ProjectItemEndContent(props: {
                   onClick: () => runProjectAction('new', () => actions.onNew(project.id)),
                 },
               ]
-            : [
+            : actions.onRelink
+              ? [
                 {
                   label: copy.projectRelink,
                   icon: Plug,
-                  onClick: () => runProjectAction('relink', () => actions.onRelink(project.id)),
+                  onClick: () => runProjectAction('relink', () => actions.onRelink!(project.id)),
                 },
-              ]),
+              ]
+              : []),
           {
             label: copy.projectRename,
             icon: Pencil,

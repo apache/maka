@@ -23,14 +23,17 @@ export interface DesktopRuntimeHostProfileService {
   select(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
 }
 
-export interface DesktopRuntimeHostStartupSelection {
-  readonly selectedProfileId: string;
-  readonly target: ResolvedRuntimeHostProfile;
-  readonly unavailable?: {
-    readonly profileId: string;
-    readonly error: Error;
-  };
-}
+export type DesktopRuntimeHostStartupSelection =
+  | {
+      readonly kind: "ready";
+      readonly selectedProfileId: string;
+      readonly target: ResolvedRuntimeHostProfile;
+    }
+  | {
+      readonly kind: "unavailable";
+      readonly selectedProfileId?: string;
+      readonly error: Error;
+    };
 
 export type DesktopRuntimeHostActivationResult =
   | { readonly ok: true }
@@ -51,24 +54,21 @@ export async function resolveSelectedDesktopRuntimeHostProfile(
       readSelectedProfileId(selectionPath));
   } catch (error) {
     return {
-      selectedProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
-      target: { profile: LOCAL_RUNTIME_HOST_PROFILE },
-      unavailable: {
-        profileId: LOCAL_RUNTIME_HOST_PROFILE.id,
-        error: asError(error),
-      },
+      kind: "unavailable",
+      error: asError(error),
     };
   }
   try {
     return {
+      kind: "ready",
       selectedProfileId,
       target: await catalog.resolve(selectedProfileId),
     };
   } catch (error) {
     return {
+      kind: "unavailable",
       selectedProfileId,
-      target: { profile: LOCAL_RUNTIME_HOST_PROFILE },
-      unavailable: { profileId: selectedProfileId, error: asError(error) },
+      error: asError(error),
     };
   }
 }
@@ -83,7 +83,10 @@ export function selectDesktopRuntimeHostProfile(
 export function createDesktopRuntimeHostProfileService(input: {
   readonly clientDataRoot: string;
   readonly selectedProfileId: string;
-  readonly unavailable?: DesktopRuntimeHostStartupSelection["unavailable"];
+  readonly unavailable?: {
+    readonly profileId: string;
+    readonly error: Error;
+  };
   readonly getActiveTarget: () => ResolvedRuntimeHostProfile | undefined;
   readonly activate: (
     target: ResolvedRuntimeHostProfile,

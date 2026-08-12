@@ -16,6 +16,7 @@ import type {
   PetPackChangedEvent,
   DesktopRuntimeHostProfileSaveInput,
   DesktopRuntimeHostProfileChangedEvent,
+  DesktopProjectSnapshot,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type {
@@ -710,8 +711,8 @@ const makaBridge = {
     },
   },
   projects: {
-    list(): Promise<ProjectRecord[]> {
-      return ipcRenderer.invoke('projects:list');
+    getSnapshot(): Promise<DesktopProjectSnapshot> {
+      return ipcRenderer.invoke('projects:getSnapshot');
     },
     subscribeChanges(handler: () => void): () => void {
       const listener = () => handler();

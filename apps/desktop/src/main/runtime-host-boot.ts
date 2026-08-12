@@ -147,15 +147,9 @@ const userDataDir = app.getPath("userData");
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );
-const runtimeHostStartupSelection = await resolveSelectedDesktopRuntimeHostProfile(userDataDir);
-let startupRuntimeHost = runtimeHostStartupSelection.target;
-let startupRuntimeHostProfileId = runtimeHostStartupSelection.selectedProfileId;
-let startupRuntimeHostUnavailable = runtimeHostStartupSelection.unavailable;
-if (
-  startupRuntimeHostUnavailable &&
-  startupRuntimeHostUnavailable.profileId !== LOCAL_RUNTIME_HOST_PROFILE.id
-) {
-  if (isIsolatedE2e) throw startupRuntimeHostUnavailable.error;
+let runtimeHostStartupSelection = await resolveSelectedDesktopRuntimeHostProfile(userDataDir);
+if (runtimeHostStartupSelection.kind === "unavailable") {
+  if (isIsolatedE2e) throw runtimeHostStartupSelection.error;
   const isChinese = resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
   const result = await whileAwaitingPerson(
     dialog.showMessageBox({
@@ -164,7 +158,7 @@ if (
       message: isChinese
         ? "之前选择的 Runtime Host profile 当前无法使用"
         : "The selected Runtime Host profile is currently unavailable",
-      detail: startupRuntimeHostUnavailable.error.message,
+      detail: runtimeHostStartupSelection.error.message,
       buttons: isChinese
         ? ["重试", "明确改用 Local", "退出"]
         : ["Retry", "Explicitly use Local", "Quit"],
@@ -183,9 +177,14 @@ if (
     await new Promise<never>(() => {});
   }
   await selectDesktopRuntimeHostProfile(userDataDir, LOCAL_RUNTIME_HOST_PROFILE.id);
-  startupRuntimeHostProfileId = LOCAL_RUNTIME_HOST_PROFILE.id;
-  startupRuntimeHostUnavailable = undefined;
+  runtimeHostStartupSelection = {
+    kind: "ready",
+    selectedProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+    target: { profile: LOCAL_RUNTIME_HOST_PROFILE },
+  };
 }
+const startupRuntimeHostProfileId = runtimeHostStartupSelection.selectedProfileId;
+let startupRuntimeHost = runtimeHostStartupSelection.target;
 let owner: RuntimeHostDesktopOwner | undefined;
 const currentRuntimeHost = (): ResolvedRuntimeHostProfile | undefined =>
   owner ? owner.current()?.target : startupRuntimeHost;
@@ -254,12 +253,6 @@ const mainWindowController = createMainWindowController({
   startHidden,
   onClose: () => onMainWindowClose(),
 });
-if (startupRuntimeHostUnavailable) {
-  console.warn(
-    "[runtime-host] saved profile selection is invalid; using Local:",
-    startupRuntimeHostUnavailable.error,
-  );
-}
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
   settings: settingsStore,
@@ -299,9 +292,6 @@ const oauthPresentation = new RuntimeHostOAuthPresentation((url) => shell.openEx
 const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   clientDataRoot: userDataDir,
   selectedProfileId: startupRuntimeHostProfileId,
-  ...(startupRuntimeHostUnavailable
-    ? { unavailable: startupRuntimeHostUnavailable }
-    : {}),
   getActiveTarget: currentRuntimeHost,
   activate: async (target) => {
     try {
@@ -704,7 +694,19 @@ function registerHostClientIpc(
       return result.canceled ? undefined : result.filePaths[0];
     },
     selection: targetProjectRoot,
-    allowLocalDirectoryActions: () => target.kind === "local",
+    capabilities: target.kind === "local"
+      ? {
+          chooseClientDirectory: true,
+          selectNoProject: true,
+          setLocalDefault: true,
+          viewClientPath: true,
+        }
+      : {
+          chooseClientDirectory: false,
+          selectNoProject: false,
+          setLocalDefault: false,
+          viewClientPath: false,
+        },
   });
   const targetContext = {
     client,

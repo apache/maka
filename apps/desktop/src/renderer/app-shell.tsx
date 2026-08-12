@@ -1713,6 +1713,7 @@ function AppShellContent({
   const {
     projectInfo,
     projects,
+    projectCapabilities,
     selectedProjectId,
     currentProjectId,
     currentProject,
@@ -1751,23 +1752,25 @@ function AppShellContent({
   const workspacePicker: WorkspacePickerModel = {
     label:
       currentProject?.name ??
-      (currentProjectId === null
+      (currentProjectId === null && projectCapabilities.selectNoProject
         ? getConversationCopy(uiLocale).workspace.noProject
         : undefined),
     branch: currentProjectId === null ? null : projectInfo?.projectGit.branch,
     pending: projectPickerPending,
     projects: projects.filter((project) => project.archivedAt === undefined),
     selectedProjectId: currentProjectId,
-    onAdd: () => {
-      void addProject();
-    },
+    ...(projectCapabilities.chooseClientDirectory
+      ? { onAdd: () => void addProject() }
+      : {}),
     onSelectProject: (projectId: string) => {
       void selectProject(projectId);
     },
-    onRelink: (projectId: string) => {
-      void relinkProject(projectId, true);
-    },
-    onSelectNoProject: selectNoProject,
+    ...(projectCapabilities.chooseClientDirectory
+      ? { onRelink: (projectId: string) => void relinkProject(projectId, true) }
+      : {}),
+    ...(projectCapabilities.selectNoProject
+      ? { onSelectNoProject: selectNoProject }
+      : {}),
   };
   const taskReadinessRequest = {
     ...resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
@@ -1817,9 +1820,9 @@ function AppShellContent({
     onRename: renameProject,
     onArchive: archiveProject,
     onRestore: restoreProject,
-    onRelink: async (projectId) => {
-      await relinkProject(projectId);
-    },
+    ...(projectCapabilities.chooseClientDirectory
+      ? { onRelink: (projectId: string) => relinkProject(projectId).then(() => undefined) }
+      : {}),
   };
 
   // Composer mention popups: `/` uses Runtime's session/project-aware,
@@ -3011,9 +3014,9 @@ function AppShellContent({
                   taskReadinessNotice?.action === 'workspace_picker'
                     ? activeSession
                       ? openNewTaskSurface
-                      : () => {
-                          void addProject();
-                        }
+                      : projectCapabilities.chooseClientDirectory
+                        ? () => void addProject()
+                        : undefined
                     : taskReadiness.refresh
                 }
                 showOnboardingHero={showOnboardingHero}

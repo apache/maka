@@ -16,9 +16,7 @@ import { PasswordInput } from "./password-input.js";
 import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsRow, SettingsSection } from "./settings-section.js";
 
-export function RuntimeHostProfilesSection(props: {
-  onActiveProfileKind?(kind: "local" | "remote" | undefined): void;
-}) {
+export function RuntimeHostProfilesSection() {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
   const mountedRef = useMountedRef();
@@ -46,10 +44,6 @@ export function RuntimeHostProfilesSection(props: {
       toast.error(copy.loadFailed, settingsActionErrorMessage(error, locale)),
     );
   }, [copy.loadFailed, locale, reload, toast]);
-
-  useEffect(() => {
-    props.onActiveProfileKind?.(snapshot?.activeProfile?.kind);
-  }, [props.onActiveProfileKind, snapshot]);
 
   async function select(profileId: string) {
     setSwitching(true);

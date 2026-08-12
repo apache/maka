@@ -28,6 +28,7 @@ test("defaults Desktop to Local and keeps remote credentials outside profiles", 
   const root = await clientRoot();
   const activations: string[] = [];
   assert.deepEqual(await resolveSelectedDesktopRuntimeHostProfile(root), {
+    kind: "ready",
     selectedProfileId: "local",
     target: { profile: { id: "local", name: "Local", kind: "local" } },
   });
@@ -60,6 +61,7 @@ test("defaults Desktop to Local and keeps remote credentials outside profiles", 
   assert.deepEqual(activations, ["office"]);
   assert.equal((await service.getSnapshot()).activeProfileId, "office");
   assert.deepEqual(await resolveSelectedDesktopRuntimeHostProfile(root), {
+    kind: "ready",
     selectedProfileId: "office",
     target: {
       profile: {
@@ -136,6 +138,8 @@ test("keeps a failed remote selection unavailable without changing the active Ho
     message: "remote unavailable",
   });
   const startup = await resolveSelectedDesktopRuntimeHostProfile(root);
+  assert.equal(startup.kind, "ready");
+  if (startup.kind !== "ready") assert.fail("Expected a ready startup selection");
   assert.equal(startup.selectedProfileId, "office");
   assert.equal(startup.target.profile.id, "office");
 });
@@ -206,13 +210,29 @@ test("preserves a dangling Desktop selection as unavailable", async () => {
   await catalog.remove("office");
 
   const recovered = await resolveSelectedDesktopRuntimeHostProfile(root);
+  assert.equal(recovered.kind, "unavailable");
+  if (recovered.kind !== "unavailable") assert.fail("Expected an unavailable selection");
   assert.equal(recovered.selectedProfileId, "office");
-  assert.equal(recovered.target.profile.id, "local");
-  assert.match(recovered.unavailable?.error.message ?? "", /Unknown Runtime Host profile/);
+  assert.match(recovered.error.message, /Unknown Runtime Host profile/);
   assert.match(
     await readFile(join(root, "runtime-host-profile-selection.json"), "utf8"),
     /"profileId": "office"/,
   );
+});
+
+test("does not synthesize Local when the selection authority cannot be read", async () => {
+  const root = await clientRoot();
+  const selection = await resolveSelectedDesktopRuntimeHostProfile(root, {
+    readSelection: async () => {
+      throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+    },
+  });
+
+  assert.equal(selection.kind, "unavailable");
+  if (selection.kind !== "unavailable") assert.fail("Expected an unavailable selection");
+  assert.equal(selection.selectedProfileId, undefined);
+  assert.match(selection.error.message, /permission denied/);
+  assert.equal("target" in selection, false);
 });
 
 test("reconnects when another process rotates the active profile credential", async () => {
