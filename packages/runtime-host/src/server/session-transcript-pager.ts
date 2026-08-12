@@ -54,6 +54,7 @@ export async function createSessionTranscriptBootstrap(input: {
   reader: SessionTranscriptReader;
   sessionId: string;
   subscriptionId: string;
+  throughSequence: number | null;
   rootTurn: TurnSnapshot | null;
   activeAssistantStreams: Iterable<ActiveTranscriptAssistantStream>;
   maxBytes: number;
@@ -76,20 +77,23 @@ export async function createSessionTranscriptBootstrap(input: {
     const durableBudget = rawBudget - selectedOverlay.rawBytes;
     const durableStorage = await input.reader.readDurablePage(input.sessionId, {
       direction: 'older',
+      throughSequence: input.throughSequence,
       maxBytes: durableBudget,
       maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
     });
-    const throughSequence = durableStorage.throughSequence;
+    if (durableStorage.throughSequence !== input.throughSequence) {
+      throw new Error('Session transcript durable watermark changed during bootstrap');
+    }
     const state: SubscriberTranscriptState = {
       sessionId: input.sessionId,
       subscriptionId: input.subscriptionId,
-      openedThroughSequence: throughSequence,
-      durableThroughSequence: throughSequence,
+      openedThroughSequence: input.throughSequence,
+      durableThroughSequence: input.throughSequence,
       overlayMessages,
       cursorSecret,
     };
     const bootstrap: SessionTranscriptBootstrap = {
-      throughSequence,
+      throughSequence: input.throughSequence,
       durable: pageFromSelection(state, 'durable', 'older', storageSelection(durableStorage)),
       overlay: pageFromSelection(state, 'overlay', 'older', selectedOverlay),
     };
@@ -108,6 +112,7 @@ export async function createSessionTranscriptBootstrap(input: {
 export async function prepareSessionTranscriptOverlay(input: {
   reader: SessionTranscriptReader;
   sessionId: string;
+  throughSequence: number | null;
   rootTurn: TurnSnapshot | null;
   activeAssistantStreams: Iterable<ActiveTranscriptAssistantStream>;
 }): Promise<readonly Buffer[]> {
@@ -117,6 +122,7 @@ export async function prepareSessionTranscriptOverlay(input: {
     input.reader.readDurableMessagesById(
       input.sessionId,
       activeAssistantStreams.map((stream) => stream.messageId),
+      input.throughSequence,
     ),
   ]);
   const overlayMessages = mergeActiveAssistantStreams(

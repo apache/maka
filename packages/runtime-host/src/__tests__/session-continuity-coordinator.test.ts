@@ -745,6 +745,126 @@ test('bounds retained active overlay generations across Host connections', async
   coordinator.close();
 });
 
+test('releases the active overlay budget after the last transcript subscriber leaves', async () => {
+  const overlay = assistantMessage('x'.repeat(15 * 1024 * 1024));
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async (sessionId) => canonicalFor(sessionId),
+    new SessionAdmissionGate(),
+    undefined,
+    transcriptReader([], [overlay]),
+  );
+
+  for (let index = 0; index < 5; index += 1) {
+    const connectionId = `connection-idle-overlay-${index}`;
+    const sessionId = `session-idle-overlay-${index}`;
+    const connection = coordinator.attachConnection(connectionId, new RecordingSink());
+    const outcome = await coordinator.handlers['subscription.open'](
+      {
+        sessionId,
+        transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+      },
+      connectionContext(connectionId),
+    );
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) continue;
+    connection.abort(outcome.result.subscriptionId);
+  }
+  coordinator.close();
+});
+
+test('releases the active overlay budget when subscription open fails after preparation', async () => {
+  const overlay = assistantMessage('x'.repeat(15 * 1024 * 1024));
+  const baseReader = transcriptReader([], [overlay]);
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    readDurableHighWater: async () => 0,
+    readDurablePage: async () => {
+      throw new Error('injected durable bootstrap failure');
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async (sessionId) => canonicalFor(sessionId),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+
+  for (let index = 0; index < 5; index += 1) {
+    const connectionId = `connection-failed-overlay-${index}`;
+    coordinator.attachConnection(connectionId, new RecordingSink());
+    const outcome = await coordinator.handlers['subscription.open'](
+      {
+        sessionId: `session-failed-overlay-${index}`,
+        transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+      },
+      connectionContext(connectionId),
+    );
+    assert.deepEqual(outcome, {
+      ok: false,
+      error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
+    });
+  }
+  coordinator.close();
+});
+
+test('releases the active overlay budget when its connection closes during open', async () => {
+  const durable = [assistantMessage('durable')];
+  const overlay = assistantMessage('x'.repeat(15 * 1024 * 1024));
+  const baseReader = transcriptReader(durable, [overlay]);
+  const pageStarted = deferred<void>();
+  const continuePage = deferred<void>();
+  let delayFirstPage = true;
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    readDurablePage: async (...args) => {
+      if (delayFirstPage) {
+        delayFirstPage = false;
+        pageStarted.resolve();
+        await continuePage.promise;
+      }
+      return baseReader.readDurablePage(...args);
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async (sessionId) => canonicalFor(sessionId),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+  const interrupted = coordinator.attachConnection(
+    'connection-interrupted-overlay',
+    new RecordingSink(),
+  );
+  const opening = coordinator.handlers['subscription.open'](
+    {
+      sessionId: 'session-interrupted-overlay',
+      transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+    },
+    connectionContext('connection-interrupted-overlay'),
+  );
+  await pageStarted.promise;
+  interrupted.close();
+  continuePage.resolve();
+  await assert.rejects(opening, /connection closed during subscription open/);
+
+  for (let index = 0; index < 4; index += 1) {
+    const connectionId = `connection-after-interruption-${index}`;
+    coordinator.attachConnection(connectionId, new RecordingSink());
+    const outcome = await coordinator.handlers['subscription.open'](
+      {
+        sessionId: `session-after-interruption-${index}`,
+        transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+      },
+      connectionContext(connectionId),
+    );
+    assert.equal(outcome.ok, true);
+  }
+  coordinator.close();
+});
+
 test('fits a transcript bootstrap inside a near-limit subscription open response', async () => {
   const durable = Array.from({ length: 300 }, (_, index) => ({
     type: 'system_note' as const,
@@ -849,6 +969,47 @@ test('a non-prefix durable final replaces a stale active assistant draft', async
   assert.deepEqual(await client.loadTranscript((value) => value), [
     assistantMessage('authoritative final'),
   ]);
+  coordinator.close();
+});
+
+test('binds durable handoff reconciliation to the bootstrap watermark', async () => {
+  const durable: StoredMessage[] = [];
+  const partial = assistantMessage('part');
+  const final = assistantMessage('partial complete');
+  const baseReader = transcriptReader(durable, [partial]);
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    readDurableMessagesById: async (...args) => {
+      const messages = await baseReader.readDurableMessagesById(...args);
+      durable.push(final);
+      return messages;
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textEvent(1),
+    text: partial.text,
+  });
+  coordinator.attachConnection('connection-fixed-handoff', new RecordingSink());
+  const opened = await open(coordinator, 'connection-fixed-handoff', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
+  assert.equal(opened.transcript?.throughSequence, null);
+  const client = new ClientSessionSubscription(
+    opened,
+    async () => undefined,
+    async () => {
+      throw new Error('the fixed empty watermark unexpectedly exposed a later durable row');
+    },
+  );
+  assert.deepEqual(await client.loadTranscript((value) => value), [partial]);
   coordinator.close();
 });
 
@@ -1288,7 +1449,11 @@ function transcriptReader(
     readDurableHighWater: async () => (durable.length === 0 ? null : durable.length - 1),
     readDurablePage: async (_sessionId, request) => {
       const throughSequence =
-        request.throughSequence ?? (durable.length === 0 ? null : durable.length - 1);
+        request.throughSequence === undefined
+          ? durable.length === 0
+            ? null
+            : durable.length - 1
+          : request.throughSequence;
       if (throughSequence === null) {
         return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
       }
@@ -1360,8 +1525,12 @@ function transcriptReader(
         next,
       };
     },
-    readDurableMessagesById: async (_sessionId, messageIds) =>
-      durable.filter((message) => messageIds.includes(message.id)),
+    readDurableMessagesById: async (_sessionId, messageIds, throughSequence) =>
+      throughSequence === null
+        ? []
+        : durable.filter(
+            (message, sequence) => sequence <= throughSequence && messageIds.includes(message.id),
+          ),
     readActiveOverlay: async () => overlay,
   };
 }

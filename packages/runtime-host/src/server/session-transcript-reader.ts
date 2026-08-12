@@ -29,8 +29,12 @@ export function createSessionTranscriptReader(input: {
       input.stores.sessionStore.readTranscriptHighWaterSnapshot(sessionId),
     readDurablePage: (sessionId, request) =>
       input.stores.sessionStore.readTranscriptPageSnapshot(sessionId, request),
-    readDurableMessagesById: (sessionId, messageIds) =>
-      input.stores.sessionStore.readTranscriptMessagesSnapshot(sessionId, messageIds),
+    readDurableMessagesById: (sessionId, messageIds, throughSequence) =>
+      input.stores.sessionStore.readTranscriptMessagesSnapshot(
+        sessionId,
+        messageIds,
+        throughSequence,
+      ),
     readActiveOverlay: async (sessionId, rootTurn) => {
       if (!rootTurn || isTerminalTurn(rootTurn)) return [];
 
@@ -71,6 +75,7 @@ export interface SessionTranscriptReader {
   readDurableMessagesById(
     sessionId: string,
     messageIds: readonly string[],
+    throughSequence: number | null,
   ): Promise<readonly StoredMessage[]>;
   readActiveOverlay(
     sessionId: string,

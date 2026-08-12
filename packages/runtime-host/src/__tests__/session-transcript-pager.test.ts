@@ -17,6 +17,7 @@ test('reads newly durable messages forward from an announced watermark', async (
     reader,
     sessionId: 'session-1',
     subscriptionId: 'subscription-1',
+    throughSequence: 1,
     rootTurn: null,
     activeAssistantStreams: [],
     maxBytes: 1024,
@@ -53,6 +54,7 @@ test('rejects cursor tampering and cross-subscription replay', async () => {
     reader,
     sessionId: 'session-1',
     subscriptionId: 'subscription-1',
+    throughSequence: 0,
     rootTurn: null,
     activeAssistantStreams: [],
     maxBytes: 128,
@@ -61,6 +63,7 @@ test('rejects cursor tampering and cross-subscription replay', async () => {
     reader,
     sessionId: 'session-1',
     subscriptionId: 'subscription-2',
+    throughSequence: 0,
     rootTurn: null,
     activeAssistantStreams: [],
     maxBytes: 128,
@@ -100,6 +103,7 @@ test('keeps a durable continuation when overlay bytes reduce the bootstrap budge
     reader,
     sessionId: 'session-1',
     subscriptionId: 'subscription-1',
+    throughSequence: 1,
     rootTurn: null,
     activeAssistantStreams: [],
     maxBytes: Buffer.byteLength(JSON.stringify(durable[0]), 'utf8') * 2,
@@ -114,6 +118,7 @@ test('shrinks the raw bootstrap until it fits its aggregate encoded budget', asy
     reader: transcriptReader(durable),
     sessionId: 'session-1',
     subscriptionId: 'subscription-1',
+    throughSequence: durable.length - 1,
     rootTurn: null,
     activeAssistantStreams: [],
     maxBytes: 16 * 1024,
@@ -129,6 +134,7 @@ test('rejects an active overlay that exceeds its retained message bound', async 
     prepareSessionTranscriptOverlay({
       reader: transcriptReader([], overlay),
       sessionId: 'session-1',
+      throughSequence: null,
       rootTurn: null,
       activeAssistantStreams: [],
     }),
@@ -154,7 +160,11 @@ function transcriptReader(
     readDurableHighWater: async () => (durable.length === 0 ? null : durable.length - 1),
     readDurablePage: async (_sessionId, request) => {
       const throughSequence =
-        request.throughSequence ?? (durable.length === 0 ? null : durable.length - 1);
+        request.throughSequence === undefined
+          ? durable.length === 0
+            ? null
+            : durable.length - 1
+          : request.throughSequence;
       if (throughSequence === null) {
         return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
       }
@@ -226,8 +236,12 @@ function transcriptReader(
         next,
       };
     },
-    readDurableMessagesById: async (_sessionId, messageIds) =>
-      durable.filter((message) => messageIds.includes(message.id)),
+    readDurableMessagesById: async (_sessionId, messageIds, throughSequence) =>
+      throughSequence === null
+        ? []
+        : durable.filter(
+            (message, sequence) => sequence <= throughSequence && messageIds.includes(message.id),
+          ),
     readActiveOverlay: async () => overlay,
   };
 }

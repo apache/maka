@@ -352,8 +352,10 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readMessagesSnapshot: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
       readTranscriptPageSnapshot: (sessionId, request) =>
         run(() => sessionStore.readTranscriptPageSnapshot(sessionId, request)),
-      readTranscriptMessagesSnapshot: (sessionId, messageIds) =>
-        run(() => sessionStore.readTranscriptMessagesSnapshot(sessionId, messageIds)),
+      readTranscriptMessagesSnapshot: (sessionId, messageIds, throughSequence) =>
+        run(() =>
+          sessionStore.readTranscriptMessagesSnapshot(sessionId, messageIds, throughSequence),
+        ),
       readTranscriptHighWaterSnapshot: (sessionId) =>
         run(() => sessionStore.readTranscriptHighWaterSnapshot(sessionId)),
       readMessagesForRecovery: (sessionId) =>

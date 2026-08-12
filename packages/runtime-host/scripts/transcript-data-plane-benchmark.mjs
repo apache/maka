@@ -41,10 +41,12 @@ async function runFixture(fixture) {
   const reader = sqliteReader(store);
   try {
     const openedAt = performance.now();
+    const throughSequence = await reader.readDurableHighWater(session.id);
     const { bootstrap, state } = await createSessionTranscriptBootstrap({
       reader,
       sessionId: session.id,
       subscriptionId: `benchmark-${fixture.name}`,
+      throughSequence,
       rootTurn: null,
       activeAssistantStreams: [],
       maxBytes: BOOTSTRAP_BYTES,
@@ -142,8 +144,8 @@ function sqliteReader(store) {
   return {
     readDurableHighWater: (sessionId) => store.readTranscriptHighWaterSnapshot(sessionId),
     readDurablePage: (sessionId, request) => store.readTranscriptPageSnapshot(sessionId, request),
-    readDurableMessagesById: (sessionId, messageIds) =>
-      store.readTranscriptMessagesSnapshot(sessionId, messageIds),
+    readDurableMessagesById: (sessionId, messageIds, throughSequence) =>
+      store.readTranscriptMessagesSnapshot(sessionId, messageIds, throughSequence),
     readActiveOverlay: async () => [],
   };
 }

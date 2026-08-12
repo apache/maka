@@ -154,6 +154,32 @@ describe('SQLite SessionStore', () => {
         ts: 5,
         text: 'appended after the watermark',
       });
+      assert.deepEqual(
+        await store.readTranscriptMessagesSnapshot(session.id, ['message-4'], 3),
+        [],
+      );
+      assert.deepEqual(
+        await store.readTranscriptMessagesSnapshot(session.id, ['message-4'], null),
+        [],
+      );
+      assert.deepEqual(await store.readTranscriptMessagesSnapshot(session.id, ['message-4'], 4), [
+        {
+          type: 'user',
+          id: 'message-4',
+          turnId: 'turn-4',
+          ts: 5,
+          text: 'appended after the watermark',
+        },
+      ]);
+      assert.deepEqual(
+        await store.readTranscriptPageSnapshot(session.id, {
+          direction: 'older',
+          throughSequence: null,
+          maxBytes: 64 * 1024,
+          maxMessages: 2,
+        }),
+        { throughSequence: null, fragments: [], rawBytes: 0, next: null },
+      );
       const older = await store.readTranscriptPageSnapshot(session.id, {
         direction: 'older',
         throughSequence: tail.throughSequence ?? undefined,

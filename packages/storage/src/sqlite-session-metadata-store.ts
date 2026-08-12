@@ -1409,11 +1409,12 @@ export class SqliteSessionMetadataStore {
         .prepare('SELECT MAX(sequence) AS high_water FROM session_messages WHERE session_id = ?')
         .get(sessionId) as { high_water?: unknown };
       const actualHighWater = nullableStoredMessageSequence(highWaterRow.high_water, sessionId);
-      if (actualHighWater === null) {
+      const throughSequence =
+        request.throughSequence === undefined ? actualHighWater : request.throughSequence;
+      if (throughSequence === null) {
         return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
       }
-      const throughSequence = request.throughSequence ?? actualHighWater;
-      if (throughSequence > actualHighWater) {
+      if (actualHighWater === null || throughSequence > actualHighWater) {
         throw new Error(`Session transcript watermark is ahead of durable storage: ${sessionId}`);
       }
       const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
@@ -1507,6 +1508,7 @@ export class SqliteSessionMetadataStore {
   async readTranscriptMessages(
     sessionId: string,
     messageIds: readonly string[],
+    throughSequence: number | null,
   ): Promise<StoredMessage[]> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
@@ -1515,17 +1517,24 @@ export class SqliteSessionMetadataStore {
       throw new Error('Invalid Session transcript message identity set');
     }
     if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+    if (
+      throughSequence !== null &&
+      (!Number.isSafeInteger(throughSequence) || throughSequence < 0)
+    ) {
+      throw new Error('Invalid Session transcript watermark');
+    }
+    if (throughSequence === null) return [];
     const placeholders = messageIds.map(() => '?').join(', ');
     const rows = this.db
       .prepare(
         `
           SELECT record_json
           FROM session_messages
-          WHERE session_id = ? AND message_id IN (${placeholders})
+          WHERE session_id = ? AND sequence <= ? AND message_id IN (${placeholders})
           ORDER BY sequence ASC
         `,
       )
-      .all(sessionId, ...messageIds) as Array<{ record_json?: unknown }>;
+      .all(sessionId, throughSequence, ...messageIds) as Array<{ record_json?: unknown }>;
     return rows.map((row) => {
       if (typeof row.record_json !== 'string') {
         throw new StoredSessionMessageIncompatibleError(sessionId, -1);
@@ -4838,6 +4847,7 @@ function assertTranscriptPageRequest(request: SessionTranscriptPageRequest): voi
   }
   if (
     request.throughSequence !== undefined &&
+    request.throughSequence !== null &&
     (!Number.isSafeInteger(request.throughSequence) || request.throughSequence < 0)
   ) {
     throw new Error('Invalid Session transcript watermark');

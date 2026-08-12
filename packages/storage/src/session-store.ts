@@ -162,7 +162,7 @@ export interface SessionTranscriptStorageFragment {
 export interface SessionTranscriptPageRequest {
   readonly direction: 'older' | 'newer';
   /** Inclusive durable high-water mark. Omit only for the first read. */
-  readonly throughSequence?: number;
+  readonly throughSequence?: number | null;
   /** Inclusive sequence position for this read. Defaults to the watermark edge. */
   readonly position?: number;
   /** Continuation byte offset within position. */
@@ -216,10 +216,11 @@ export interface SessionStore {
 }
 
 export interface SessionAuthorityStore extends SessionStore {
-  /** Read a bounded set of durable messages used to reconcile active overlays. */
+  /** Read a bounded set of durable messages at an inclusive transcript watermark. */
   readTranscriptMessagesSnapshot(
     sessionId: string,
     messageIds: readonly string[],
+    throughSequence: number | null,
   ): Promise<StoredMessage[]>;
   /** Observe successful durable ledger appends. Listeners must not throw. */
   subscribeTranscriptChanges(listener: (sessionId: string) => void): () => void;
@@ -645,9 +646,10 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async readTranscriptMessagesSnapshot(
     sessionId: string,
     messageIds: readonly string[],
+    throughSequence: number | null,
   ): Promise<StoredMessage[]> {
     await this.ensureReady();
-    return this.metadata.readTranscriptMessages(sessionId, messageIds);
+    return this.metadata.readTranscriptMessages(sessionId, messageIds, throughSequence);
   }
 
   async readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null> {
