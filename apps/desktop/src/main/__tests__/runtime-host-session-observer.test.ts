@@ -260,6 +260,78 @@ test("rejects a pending observation when its first seed fails", async () => {
   await observations.close();
 });
 
+test("keeps an active observation across a failed Host replacement", async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const target = eventTarget(12);
+  const firstSource = {
+    async observe() {},
+    async unobserve() {},
+  };
+  let recovered = 0;
+  const recoveredSource = {
+    async observe() {
+      recovered++;
+    },
+    async unobserve() {},
+  };
+  const failingSource = {
+    async observe() {
+      throw new Error("replacement seed failed");
+    },
+    async unobserve() {},
+  };
+
+  await observations.attach(firstSource);
+  await observations.observe("session-1", "observer-1", target);
+  observations.detach(firstSource);
+  assert.deepEqual(await observations.attach(failingSource), []);
+  observations.detach(failingSource);
+
+  assert.deepEqual(await observations.attach(recoveredSource), ["session-1"]);
+  assert.equal(recovered, 1);
+  await observations.close();
+});
+
+test("ignores a stale seed failure after its replacement succeeds", async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  let rejectStale!: (error: Error) => void;
+  const replacementSeed = deferred<void>();
+  const staleSeed = new Promise<void>((_resolve, reject) => {
+    rejectStale = reject;
+  });
+  const staleSource = {
+    observe: () => staleSeed,
+    async unobserve() {},
+  };
+  const replacementSource = {
+    observe: () => replacementSeed.promise,
+    async unobserve() {},
+  };
+  let ready = false;
+
+  await observations.attach(staleSource);
+  const observing = observations.observe(
+    "session-1",
+    "observer-1",
+    eventTarget(12),
+  ).then(() => {
+    ready = true;
+  });
+  observations.detach(staleSource);
+  const attaching = observations.attach(replacementSource);
+
+  rejectStale(new Error("stale seed failed"));
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(ready, false);
+
+  replacementSeed.resolve(undefined);
+  assert.deepEqual(await attaching, ["session-1"]);
+  await observing;
+  assert.equal(ready, true);
+  await observations.close();
+});
+
 test("does not publish a terminal error while an owner-managed connection is replaced", async () => {
   let rejectFrame!: (error: Error) => void;
   let closeCount = 0;

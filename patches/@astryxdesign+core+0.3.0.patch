@@ -134,7 +134,7 @@ index 08b5f7d..94c623b 100644
      ...(isOrdered && start != null && start !== 1 ? {
        start
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
-index 084703a..2bbf154 100644
+index 084703a..bdcc0cc 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
 @@ -82,6 +82,8 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
@@ -156,7 +156,7 @@ index 084703a..2bbf154 100644
      var displayName: string;
  }
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
-index 867ed5a..bf3be32 100644
+index 867ed5a..4b8f835 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 @@ -8,7 +8,7 @@
@@ -246,6 +246,7 @@ index 867ed5a..bf3be32 100644
    return rendered;
  }
  Markdown.displayName = 'Markdown';
+\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
 index 65f9278..f7515e2 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
@@ -263,7 +264,7 @@ index 65f9278..f7515e2 100644
    return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
  }
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
-index ae17b68..246fb50 100644
+index ae17b68..5a70b1d 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
 @@ -11,6 +11,8 @@ export interface UseStreamingTextOptions {
@@ -276,7 +277,7 @@ index ae17b68..246fb50 100644
  /**
   * Smooths bursty streamed text into a steady character-by-character reveal.
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js
-index d5e9ac9..6330175 100644
+index d5e9ac9..ab0b20b 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js
 +++ b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js
 @@ -21,7 +21,7 @@
@@ -288,7 +289,7 @@ index d5e9ac9..6330175 100644
  import { useMediaQuery } from "./useMediaQuery.js";
  import { useTheme } from "../theme/useTheme.js";
 
-@@ -103,56 +103,67 @@ export function useStreamingText(targetText, isStreaming, options) {
+@@ -103,56 +103,74 @@ export function useStreamingText(targetText, isStreaming, options) {
      const tick = speed === 'fast' ? base / 20 : base / 10;
      return Math.max(4, Math.round(tick));
    }, [token, speed]);
@@ -308,16 +309,6 @@ index d5e9ac9..6330175 100644
 -    if (targetText.length === 0 && displayedLen !== 0) {
 -      displayedLenRef.current = 0;
 -      setDisplayedLen(0);
--    }
--  }
--
--  // Snap to full text when streaming ends
--  const prevIsStreamingRef = useRef(isStreaming);
--  if (isStreaming !== prevIsStreamingRef.current) {
--    prevIsStreamingRef.current = isStreaming;
--    if (!isStreaming && targetText.length > 0) {
--      displayedLenRef.current = targetText.length;
--      setDisplayedLen(targetText.length);
 +  const commonPrefixLength = (a, b) => {
 +    let offset = 0;
 +    while (offset < a.length && offset < b.length) {
@@ -328,7 +319,23 @@ index d5e9ac9..6330175 100644
      }
 -  }
 -
+-  // Snap to full text when streaming ends
+-  const prevIsStreamingRef = useRef(isStreaming);
+-  if (isStreaming !== prevIsStreamingRef.current) {
+-    prevIsStreamingRef.current = isStreaming;
+-    if (!isStreaming && targetText.length > 0) {
+-      displayedLenRef.current = targetText.length;
+-      setDisplayedLen(targetText.length);
 +    return offset;
++  };
++  const advanceTextOffset = (text, offset, amount) => {
++    const next = Math.min(offset + amount, text.length);
++    if (next > 0 && next < text.length && text.charCodeAt(next - 1) >= 0xd800 && text.charCodeAt(next - 1) <= 0xdbff && text.charCodeAt(next) >= 0xdc00 && text.charCodeAt(next) <= 0xdfff) {
++      return next + 1;
+     }
+-  }
+-
++    return next;
 +  };
    // Respect the user's reduced-motion preference — skip the progressive
    // reveal and snap straight to the full text. Uses the package's SSR-safe
@@ -384,14 +391,14 @@ index d5e9ac9..6330175 100644
 +        if (current.displayedLen < current.targetText.length) {
 +          const next = {
 +            ...current,
-+            displayedLen: Math.min(current.displayedLen + charsPerTick, current.targetText.length)
++            displayedLen: advanceTextOffset(current.targetText, current.displayedLen, charsPerTick)
 +          };
 +          presentationRef.current = next;
 +          setPresentation(next);
          }
        }
        rafRef.current = requestAnimationFrame(tick);
-@@ -164,9 +175,9 @@ export function useStreamingText(targetText, isStreaming, options) {
+@@ -164,9 +182,9 @@ export function useStreamingText(targetText, isStreaming, options) {
          rafRef.current = null;
        }
      };
@@ -540,7 +547,7 @@ index a6f850b..b6e0f2a 100644
  }
 
 diff --git a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
-index 02c069f..412f186 100644
+index 02c069f..acdc18a 100644
 --- a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
 +++ b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
 @@ -22,7 +22,7 @@
@@ -552,7 +559,7 @@ index 02c069f..412f186 100644
  import {useMediaQuery} from './useMediaQuery';
  import {useTheme} from '../theme/useTheme';
 
-@@ -40,6 +40,44 @@ export interface UseStreamingTextOptions {
+@@ -40,6 +40,60 @@ export interface UseStreamingTextOptions {
     * @default 'natural'
     */
    speed?: StreamingTextSpeed;
@@ -570,6 +577,22 @@ index 02c069f..412f186 100644
 +    offset += aCodePoint !== undefined && aCodePoint > 0xffff ? 2 : 1;
 +  }
 +  return offset;
++}
++
++/** Advances a UTF-16 offset without stopping between a surrogate pair. */
++function advanceTextOffset(text: string, offset: number, amount: number): number {
++  const next = Math.min(offset + amount, text.length);
++  if (
++    next > 0
++    && next < text.length
++    && text.charCodeAt(next - 1) >= 0xd800
++    && text.charCodeAt(next - 1) <= 0xdbff
++    && text.charCodeAt(next) >= 0xdc00
++    && text.charCodeAt(next) <= 0xdfff
++  ) {
++    return next + 1;
++  }
++  return next;
 +}
 +
 +interface StreamingPresentation {
@@ -597,7 +620,7 @@ index 02c069f..412f186 100644
  }
 
  // Fallback values when no Theme provider is present
-@@ -117,35 +155,6 @@ export function useStreamingText(
+@@ -117,35 +171,6 @@ export function useStreamingText(
      return Math.max(4, Math.round(tick));
    }, [token, speed]);
 
@@ -633,7 +656,7 @@ index 02c069f..412f186 100644
    // Respect the user's reduced-motion preference — skip the progressive
    // reveal and snap straight to the full text. Uses the package's SSR-safe
    // useMediaQuery (useMediaQuery.ts) so the read stays in sync if the
-@@ -153,10 +162,40 @@ export function useStreamingText(
+@@ -153,10 +178,40 @@ export function useStreamingText(
    const prefersReducedMotion = useMediaQuery(
      '(prefers-reduced-motion: reduce)',
    );
@@ -675,7 +698,7 @@ index 02c069f..412f186 100644
        return;
      }
 
-@@ -164,14 +203,18 @@ export function useStreamingText(
+@@ -164,14 +219,19 @@ export function useStreamingText(
        const elapsed = now - lastTickRef.current;
        if (elapsed >= tickMs) {
          lastTickRef.current = now;
@@ -692,9 +715,10 @@ index 02c069f..412f186 100644
 +        if (current.displayedLen < current.targetText.length) {
 +          const next = {
 +            ...current,
-+            displayedLen: Math.min(
-+              current.displayedLen + charsPerTick,
-+              current.targetText.length,
++            displayedLen: advanceTextOffset(
++              current.targetText,
++              current.displayedLen,
++              charsPerTick,
 +            ),
 +          };
 +          presentationRef.current = next;
@@ -702,7 +726,7 @@ index 02c069f..412f186 100644
          }
        }
 
-@@ -185,11 +228,11 @@ export function useStreamingText(
+@@ -185,11 +245,11 @@ export function useStreamingText(
          rafRef.current = null;
        }
      };

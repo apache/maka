@@ -23,7 +23,9 @@ afterEach(() => {
   });
 });
 
-test('settles an authoritative baseline delivered after mount', async () => {
+function streamingRoot(
+  requestAnimationFrame: (callback: FrameRequestCallback) => number = () => 1,
+) {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, {
     document,
@@ -33,13 +35,17 @@ test('settles an authoritative baseline delivered after mount', async () => {
       addEventListener() {},
       removeEventListener() {},
     }),
-    requestAnimationFrame: () => 1,
+    requestAnimationFrame,
     cancelAnimationFrame() {},
     IS_REACT_ACT_ENVIRONMENT: true,
   });
   const container = document.querySelector('#root');
   assert.ok(container);
-  const root = createRoot(container);
+  return { container, root: createRoot(container) };
+}
+
+test('settles an authoritative baseline delivered after mount', async () => {
+  const { container, root } = streamingRoot();
 
   function Harness(props: { target: string; baseline: string }) {
     return useStreamingText(props.target, true, {
@@ -59,6 +65,28 @@ test('settles an authoritative baseline delivered after mount', async () => {
     <Harness target="old background" baseline="old background" />,
   ));
   assert.equal(container.textContent, 'old background');
+
+  await act(() => root.unmount());
+});
+
+test('never reveals half of a Unicode code point', async () => {
+  let frame: FrameRequestCallback | undefined;
+  const { container, root } = streamingRoot((callback) => {
+    frame = callback;
+    return 1;
+  });
+
+  function Harness() {
+    return useStreamingText('a123456789😀tail', true, {
+      settledText: 'a',
+    });
+  }
+
+  await act(() => root.render(<Harness />));
+  assert.equal(container.textContent, 'a');
+  assert.ok(frame);
+  await act(() => frame?.(100));
+  assert.equal(container.textContent, 'a123456789😀');
 
   await act(() => root.unmount());
 });
