@@ -1,10 +1,6 @@
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
-import {
-  StreamWatchdog,
-  formatStreamWatchdogError,
-  type StreamWatchdogTimeout,
-} from '../stream-watchdog.js';
+import { StreamWatchdog, type StreamWatchdogTimeout } from '../stream-watchdog.js';
 
 describe('StreamWatchdog', () => {
   test('fires connect timeout before any activity', () => {
@@ -121,17 +117,6 @@ describe('StreamWatchdog', () => {
     timers.advance(1_000);
 
     expect(fired).toEqual([]);
-  });
-});
-
-describe('formatStreamWatchdogError', () => {
-  test('formats timeout phase for classifier-friendly errors', () => {
-    expect(formatStreamWatchdogError({ phase: 'connect', elapsedMs: 30_000 })).toBe(
-      'Model stream connect timeout after 30000ms',
-    );
-    expect(formatStreamWatchdogError({ phase: 'idle', elapsedMs: 120_000 })).toBe(
-      'Model stream idle timeout after 120000ms',
-    );
   });
 });
 

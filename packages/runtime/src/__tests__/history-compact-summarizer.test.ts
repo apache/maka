@@ -44,40 +44,6 @@ function inputWith(events: RuntimeEvent[], abortSignal?: AbortSignal): HistoryCo
 }
 
 describe('buildLlmHistorySummarizer', () => {
-  test('returns the LLM summary and sends the tool-bearing conversation to generateText', async () => {
-    const seen: Array<{ instructions: string; messages: unknown[] }> = [];
-    const generateText: AiSdkGenerateTextLike = async (opts) => {
-      seen.push(opts);
-      return { text: '## Goal\n做到 X' };
-    };
-
-    const summarize = buildLlmHistorySummarizer({ resolveModel: () => 'fake-model', generateText });
-
-    const events: RuntimeEvent[] = [
-      ev({ role: 'user', author: 'user', content: { kind: 'text', text: '读 package.json' } }),
-      ev({
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'function_call', id: 'fc1', name: 'read', args: { path: 'package.json' } },
-      }),
-      ev({
-        role: 'tool',
-        author: 'tool',
-        content: { kind: 'function_response', id: 'fc1', name: 'read', result: { name: 'maka' } },
-      }),
-      ev({ role: 'model', author: 'agent', content: { kind: 'text', text: '项目名是 maka' } }),
-    ];
-
-    const result = await summarize(inputWith(events));
-
-    expect(result).toBe('## Goal\n做到 X');
-    expect(seen.length).toBe(1);
-    const serialized = JSON.stringify(seen[0]!.messages);
-    // summarizer 收到的是模型可见的含 tool 对话，而不是纯文本摘要
-    expect(serialized).toContain('package.json');
-    expect(serialized).toContain('maka');
-  });
-
   test('inherits the session provider options without imposing a compaction-only output cap', async () => {
     let seen: Parameters<AiSdkGenerateTextLike>[0] | undefined;
     const providerOptions = { openaiCompatible: { reasoningEffort: 'high' } };

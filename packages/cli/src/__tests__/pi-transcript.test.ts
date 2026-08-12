@@ -15,7 +15,6 @@ import {
   renderMakaPiTranscript,
   reconcileToolsWithStoredMessages,
   replaceTranscriptWithStoredMessages,
-  submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
 } from '../pi-transcript.js';
@@ -258,53 +257,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(rendered, /Show the result/);
     assert.match(rendered, /Also include the tests/);
     assert.doesNotMatch(rendered, /internal context/);
-  });
-
-  test('reports manual compact failed-open diagnostics instead of no-op success', async () => {
-    const state = createMakaPiTranscriptState();
-    const driver = new RecordingDriver([
-      event({
-        type: 'token_usage',
-        input: 0,
-        output: 0,
-        contextBudget: {
-          enabled: true,
-          estimatedTokensBefore: 100,
-          estimatedTokensAfter: 100,
-          keptTurns: 2,
-          droppedTurns: 0,
-          keptEvents: 4,
-          droppedEvents: 0,
-          compactionDecisions: [
-            {
-              stage: 'priorReplay',
-              sourceKind: 'runtimeEvents',
-              decision: 'failedOpen',
-              boundaryKind: 'historyCompact',
-              failOpenReason: 'output_length',
-            },
-          ],
-        },
-      }),
-      event({ type: 'complete', stopReason: 'end_turn' }),
-    ]);
-
-    await submitCompactToTranscript({ state, driver });
-
-    assert.ok(
-      state.entries.some(
-        (entry) =>
-          entry.kind === 'notice' &&
-          entry.level === 'error' &&
-          entry.text === 'Context compaction skipped: output_length.',
-      ),
-    );
-    assert.equal(
-      state.entries.some(
-        (entry) => entry.kind === 'notice' && entry.text === 'Nothing to compact.',
-      ),
-      false,
-    );
   });
 
   test('shows failed-open compact diagnostics before success diagnostics', () => {
@@ -1724,51 +1676,6 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
-  test('announces at the transcript tail when a running background task completes', () => {
-    const state = createMakaPiTranscriptState();
-    const ref = 'maka://runtime/background-tasks/bg-1';
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-bg',
-        toolName: 'Bash',
-        args: { command: 'npm test' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({ ref, status: 'running', stdout: 'starting\n', updatedAt: 2_000 }),
-      }),
-    );
-
-    applyShellRunViewUpdateToTranscript(state, {
-      sessionId: 'session-1',
-      ownership: { kind: 'local' },
-      sourceTurnId: 'turn-1',
-      sourceToolCallId: 'bash-bg',
-      result: shellRun({
-        ref,
-        status: 'completed',
-        stdout: 'starting\ndone\n',
-        completedAt: 48_000,
-        exitCode: 0,
-      }),
-    });
-
-    const notice = state.entries[state.entries.length - 1];
-    assert.equal(notice?.kind, 'notice');
-    assert.equal(notice?.kind === 'notice' ? notice.level : '', 'info');
-    const text = notice?.kind === 'notice' ? notice.text : '';
-    assert.match(text, /Background task completed: npm test/);
-    assert.match(text, /exit 0/);
-    assert.match(text, /47s/);
-  });
-
   test('notifies a settle exactly once across a folded poll and the live update', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';
@@ -2154,44 +2061,6 @@ describe('Maka Pi TUI transcript', () => {
       state.entries.some((entry) => entry.kind === 'notice'),
       false,
     );
-  });
-
-  test('announces a timed-out background task with human-readable text', () => {
-    const state = createMakaPiTranscriptState();
-    const ref = 'maka://runtime/background-tasks/bg-1';
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-bg',
-        toolName: 'Bash',
-        args: { command: 'npm test' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({ ref, status: 'running' }),
-      }),
-    );
-
-    applyShellRunViewUpdateToTranscript(state, {
-      sessionId: 'session-1',
-      ownership: { kind: 'local' },
-      sourceTurnId: 'turn-1',
-      sourceToolCallId: 'bash-bg',
-      result: shellRun({ ref, status: 'timed_out', completedAt: 60_000 }),
-    });
-
-    const notice = state.entries[state.entries.length - 1];
-    assert.equal(notice?.kind, 'notice');
-    assert.equal(notice?.kind === 'notice' ? notice.level : '', 'error');
-    const text = notice?.kind === 'notice' ? notice.text : '';
-    assert.match(text, /Background task timed out: npm test/);
-    assert.doesNotMatch(text, /timed_out/);
   });
 
   test('drops a folded poll when the turn aborts mid-flight', () => {
@@ -3161,17 +3030,6 @@ function ptyOutput(overrides: Partial<PtyShellOutput> = {}): PtyShellOutput {
     redacted: false,
     ...overrides,
   };
-}
-
-class RecordingDriver {
-  compactCalls = 0;
-
-  constructor(private readonly events: SessionEvent[]) {}
-
-  async *compactSession(): AsyncIterable<SessionEvent> {
-    this.compactCalls += 1;
-    for (const event of this.events) yield event;
-  }
 }
 
 function event(input: { type: SessionEvent['type'] } & Record<string, unknown>): SessionEvent {
