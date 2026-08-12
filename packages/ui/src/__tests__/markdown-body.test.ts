@@ -189,20 +189,22 @@ it('pins Mermaid security and complexity limits for untrusted assistant output',
   assert.equal(config.theme, 'dark');
 });
 
-it('does not reveal the unreached tail on the first streaming render', () => {
+it('keeps a new stream behind the display cursor on its first render', () => {
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: 'visible start and unreached tail',
+    text: 'new output that has not been presented yet',
     streaming: true,
   }));
 
-  assert.doesNotMatch(markup, /unreached tail/);
+  assert.doesNotMatch(markup, /new output that has not been presented yet/);
 });
 
-it('keeps the lazy fallback behind the streaming display cursor', () => {
-  const markup = renderToStaticMarkup(createElement(Markdown, {
-    text: 'visible start and lazy unreached tail',
+it('shows only the restored prefix on its first streaming render', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: '**output restored** with a new delta',
     streaming: true,
+    initialText: '**output restored**',
   }));
 
-  assert.doesNotMatch(markup, /lazy unreached tail/);
+  assert.match(markup, /<strong[^>]*>output restored<\/strong>/);
+  assert.doesNotMatch(markup, /new delta/);
 });

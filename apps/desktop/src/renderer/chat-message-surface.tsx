@@ -1,4 +1,4 @@
-import { useMemo, type ComponentProps, type ReactNode } from 'react';
+import { useMemo, useState, type ComponentProps, type ReactNode } from 'react';
 import { isDeepResearchSession } from '@maka/core/explore-agent';
 import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
 import { type OnboardingState } from '@maka/core/onboarding';
@@ -101,6 +101,16 @@ export function ChatMessageSurface({
     isDeepResearchSession(activeSession?.labels),
   );
   const liveTurn = useAppShellSessionUiSelector(sessionUiController, selectLiveTurn, activeSessionId);
+  const [activation, setActivation] = useState({
+    sessionId: activeSessionId,
+    initialLiveTurn: liveTurn,
+  });
+  if (activation.sessionId !== activeSessionId) {
+    setActivation({
+      sessionId: activeSessionId,
+      initialLiveTurn: liveTurn,
+    });
+  }
   // Select the raw per-session record: its identity is the store's own, so a
   // change to any OTHER map cannot rebuild the array. Deriving it in the
   // selector would need a comparator to say the same thing, and would still
@@ -149,6 +159,9 @@ export function ChatMessageSurface({
       <ChatView
         {...chatViewRest}
         liveTurn={liveTurn}
+        initialLiveTurn={activation.sessionId === activeSessionId
+          ? activation.initialLiveTurn
+          : liveTurn}
         shellRunUpdates={shellRunUpdates}
         deepResearchRun={deepResearchRun}
         emptyOverride={emptyOverride}

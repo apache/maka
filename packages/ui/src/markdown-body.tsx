@@ -105,9 +105,13 @@ const MARKDOWN_COMPONENTS = {
 export function MarkdownBody(props: {
   text: string;
   streaming?: boolean;
+  initialText?: string;
   density?: 'default' | 'compact';
 }) {
   const safeText = neutralizeUnsafeMarkdownImages(props.text);
+  const initialText = props.initialText === undefined
+    ? undefined
+    : neutralizeUnsafeMarkdownImages(props.initialText);
   const budgetedText = props.streaming ? safeText : applyMermaidRenderBudget(safeText);
   const density = props.density ?? 'default';
   const components = props.streaming
@@ -141,6 +145,7 @@ export function MarkdownBody(props: {
         density={density}
         components={components}
         isStreaming={props.streaming}
+        initialDisplayedLength={initialText?.length}
       >
         {budgetedText}
       </AstryxMarkdown>
