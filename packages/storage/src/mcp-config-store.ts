@@ -31,6 +31,16 @@ export interface McpConfigStore {
   remove(serverId: string): Promise<McpConfigFile>;
 }
 
+/** Thrown by insert when the id is taken. Same-process callers (the IPC
+ * layer) match on instanceof and answer the renderer with a typed
+ * envelope; the message never has to carry a machine-readable code. */
+export class McpServerExistsError extends Error {
+  constructor(readonly serverId: string) {
+    super(`MCP server "${serverId}" already exists`);
+    this.name = 'McpServerExistsError';
+  }
+}
+
 export function createMcpConfigStore(workspaceRoot: string): McpConfigStore {
   return new FileMcpConfigStore(join(workspaceRoot, 'mcp.json'));
 }

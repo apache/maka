@@ -89,6 +89,11 @@ export function isNonLoopbackCleartextHttp(url: URL): boolean {
   return url.protocol === 'http:' && !isLoopbackHost(url.hostname);
 }
 
+/** Result of adding a new server. A taken id is an expected dialog outcome,
+ * so it travels as data the renderer can switch on rather than as prose
+ * fished out of a flattened IPC error string. */
+export type McpConfigAddResult = { status: 'added'; config: McpConfigFile } | { status: 'exists' };
+
 export type McpConnectionState =
   | 'disabled'
   | 'disconnected'

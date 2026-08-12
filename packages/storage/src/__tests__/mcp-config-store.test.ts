@@ -433,6 +433,28 @@ test('normalizes and bounds the remote oauth block', async () => {
       }),
     /clientId is required/u,
   );
+  // Scopes join space-delimited on the wire and must be RFC 6749 §3.3
+  // scope-tokens: an empty, whitespace-containing, control-carrying,
+  // quoted/backslashed or non-ASCII entry would silently change the
+  // requested grant or come back as invalid_scope far from the mistake.
+  for (const scopes of [
+    [''],
+    ['read write'],
+    ['read', 'a\tb'],
+    ['read"admin'],
+    ['read\\admin'],
+    ['readadmin'],
+    ['café'],
+  ]) {
+    assert.throws(
+      () =>
+        normalizeMcpConfig({
+          version: 1,
+          mcpServers: { bad: { url: 'https://example.com/mcp', oauth: { clientId: 'x', scopes } } },
+        }),
+      /scope token/u,
+    );
+  }
   // stdio servers have no oauth block; unknown fields there stay rejected
   // by the stdio branch simply dropping them.
   const stdio = normalizeMcpConfig({

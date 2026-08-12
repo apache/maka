@@ -72,6 +72,10 @@ import {
 
 export { McpToolCallError } from './tool-call-error.js';
 export {
+  createCredentialMcpOAuthStorage,
+  type McpCredentialSecretStore,
+} from './credential-oauth-storage.js';
+export {
   createMemoryMcpOAuthStorage,
   McpAuthRequiredError,
   McpOAuthProvider,

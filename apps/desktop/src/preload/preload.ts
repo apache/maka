@@ -156,6 +156,7 @@ import {
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
+  McpConfigAddResult,
   McpConfigFile,
   McpServerConfig,
   McpServerStatus,
@@ -2096,6 +2097,9 @@ const makaBridge = {
     setConfig(config: McpConfigFile, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
       return invokeSelectedRuntimeHost(host, 'mcp:setConfig', config);
     },
+    add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult> {
+      return invokeSelectedRuntimeHost(host, 'mcp:add', serverId, config);
+    },
     upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
       return invokeSelectedRuntimeHost(host, 'mcp:upsert', serverId, config);
     },
@@ -2110,6 +2114,19 @@ const makaBridge = {
     },
     test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult> {
       return invokeSelectedRuntimeHost(host, 'mcp:test', serverId);
+    },
+    // Same scoped seam as every other MCP method: the handlers live on the
+    // Runtime Host's ScopedIpcMain, whose first argument is the host ref —
+    // a raw invoke would put serverId in that slot and fail the scope check
+    // before the handler ever ran.
+    login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus> {
+      return invokeSelectedRuntimeHost(host, 'mcp:login', serverId);
+    },
+    cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<boolean> {
+      return invokeSelectedRuntimeHost(host, 'mcp:cancelLogin', serverId);
+    },
+    logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus> {
+      return invokeSelectedRuntimeHost(host, 'mcp:logout', serverId);
     },
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void {
       return subscribeActiveRuntimeHostEvent('mcp:changed', handler);
