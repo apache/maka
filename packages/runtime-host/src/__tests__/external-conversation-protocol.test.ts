@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { EXTERNAL_CONVERSATION_OPERATION_SPECS } from '../protocol/external-conversation.js';
+import { operationAllowsRemoteOwner } from '../protocol/operations.js';
 
 const reconcile = EXTERNAL_CONVERSATION_OPERATION_SPECS['external-conversation.reconcile'];
 
 describe('external-conversation protocol', () => {
+  test('is available to a remote Desktop owner', () => {
+    assert.equal(operationAllowsRemoteOwner('external-conversation.reconcile'), true);
+  });
+
   test('decodes resolve and release without accepting a Client-selected Session id', () => {
     assert.deepEqual(
       reconcile.decodeInput({

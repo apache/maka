@@ -19,7 +19,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { BotIncomingMessage, BotRegistry } from '@maka/runtime';
+import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
 import { createTestBotSessionAdapter } from './bot-session-adapter-fixture.js';
 

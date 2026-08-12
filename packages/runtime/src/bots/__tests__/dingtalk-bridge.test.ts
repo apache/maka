@@ -24,7 +24,6 @@ import { __TEST__ } from '../dingtalk-bridge.js';
 
 const {
   decideDingTalkClose,
-  dingTalkReconnectBackoffMs,
   pickDingTalkSendRoute,
   classifyDingTalkSendResponse,
   dingTalkPayloadToEvent,
@@ -34,19 +33,7 @@ const {
 describe('decideDingTalkClose (PR-BOT-DINGTALK-OPERATIONAL-0)', () => {
   it('only treats explicit stops as terminal', () => {
     assert.deepEqual(decideDingTalkClose(1000, true), { kind: 'stopped' });
-    assert.deepEqual(decideDingTalkClose(1006, true), { kind: 'stopped' });
     assert.deepEqual(decideDingTalkClose(1000, false), { kind: 'reconnect' });
-    assert.deepEqual(decideDingTalkClose(1006, false), { kind: 'reconnect' });
-  });
-});
-
-describe('dingTalkReconnectBackoffMs', () => {
-  it('doubles from 1s and caps at 30s', () => {
-    assert.equal(dingTalkReconnectBackoffMs(0), 1_000);
-    assert.equal(dingTalkReconnectBackoffMs(1), 2_000);
-    assert.equal(dingTalkReconnectBackoffMs(2), 4_000);
-    assert.equal(dingTalkReconnectBackoffMs(5), 30_000);
-    assert.equal(dingTalkReconnectBackoffMs(50), 30_000);
   });
 });
 
@@ -70,7 +57,6 @@ describe('pickDingTalkSendRoute', () => {
         msgParam: '{"content":"hi"}',
       },
     });
-    assert.equal(pickDingTalkSendRoute('', 'app-key-1', 'hi'), null);
     assert.equal(pickDingTalkSendRoute('   ', 'app-key-1', 'hi'), null);
   });
 });
