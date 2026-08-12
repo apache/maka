@@ -162,25 +162,6 @@ describe('Runtime Host profiles', () => {
     });
     const rotated = await desktop.resolve(profile.id);
     assert.equal(rotated.credential, 'rotated-token');
-    let committed = false;
-    assert.equal(
-      (
-        await desktop.commitIfCurrentTarget(created, async () => {
-          committed = true;
-        })
-      ).committed,
-      false,
-    );
-    assert.equal(committed, false);
-    assert.equal(
-      (
-        await desktop.commitIfCurrentTarget(rotated, async () => {
-          committed = true;
-        })
-      ).committed,
-      true,
-    );
-    assert.equal(committed, true);
     assert.equal((await desktop.removeIfCurrent(rotated)).removed, true);
     assert.deepEqual(await desktop.read(), { schemaVersion: 1, profiles: [] });
   });
@@ -401,9 +382,28 @@ describe('Runtime Host profiles', () => {
     );
   });
 
-  test('reports actionable remote connection failure categories', async () => {
+  test('treats rejected remote credentials as a terminal profile failure', async () => {
+    await assert.rejects(
+      () =>
+        connectRemoteRuntimeHostProfile(
+          {
+            profile: remoteProfile('office', 'wss://runtime.example.com/', ROOT_A),
+            credential: 'revoked-token',
+            surface: 'run',
+            clientInstanceId: 'client-1',
+          },
+          { connect: async () => ({ kind: 'unavailable', reason: 'authentication_failed' }) },
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+        assert.match(error.message, /rejected its access credential/u);
+        return true;
+      },
+    );
+  });
+
+  test('reports retryable remote connection failure categories', async () => {
     const reasons = [
-      ['authentication_failed', /rejected its access credential/],
       ['tls_failed', /could not verify the TLS connection/],
       ['unreachable', /could not reach its endpoint/],
     ] as const;
@@ -419,7 +419,12 @@ describe('Runtime Host profiles', () => {
             },
             { connect: async () => ({ kind: 'unavailable', reason }) },
           ),
-        expected,
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.equal(error instanceof RuntimeHostPermanentReconnectError, false);
+          assert.match(error.message, expected);
+          return true;
+        },
       );
     }
   });

@@ -13,6 +13,7 @@ import { normalizeMcpConfig } from '@maka/storage';
 import {
   connectRemoteRuntimeHost,
   loadOrCreateRuntimeHostClientInstanceId,
+  remoteRuntimeHostUnavailableError,
   RuntimeHostPermanentReconnectError,
   startRuntimeHostCapabilityProviderService,
   type ClientCapabilityProvider,
@@ -160,14 +161,10 @@ async function connectRemoteCapabilityProvider(input: {
       `Runtime Host protocol is incompatible (Host ${connected.handshake.protocolMin}-${connected.handshake.protocolMax})`,
     );
   }
-  if (connected.kind === 'unavailable' && connected.reason === 'root_mismatch') {
-    throw new RuntimeHostPermanentReconnectError('Runtime Host root identity does not match');
+  if (connected.kind === 'unavailable') {
+    throw remoteRuntimeHostUnavailableError('Runtime Host', connected.reason);
   }
-  throw new Error(
-    connected.kind === 'unavailable'
-      ? `Runtime Host is unavailable (${connected.reason})`
-      : 'Runtime Host is draining',
-  );
+  throw new Error('Runtime Host is draining');
 }
 
 export function createMcpCapabilityProvider(

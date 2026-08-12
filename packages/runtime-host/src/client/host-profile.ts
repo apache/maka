@@ -69,13 +69,6 @@ export interface RuntimeHostProfileCatalog {
     readonly removed: boolean;
     readonly document: RuntimeHostProfileDocument;
   }>;
-  commitIfCurrentTarget(
-    target: ResolvedRuntimeHostProfile,
-    commit: () => Promise<void>,
-  ): Promise<{
-    readonly committed: boolean;
-    readonly document: RuntimeHostProfileDocument;
-  }>;
 }
 
 export interface RuntimeHostProfileCredentialStore {
@@ -174,25 +167,13 @@ export async function connectRemoteRuntimeHostProfile(
       `Runtime Host profile ${input.profile.id} is incompatible with this Maka Client`,
     );
   }
-  if (
-    connected.kind === 'unavailable' &&
-    (connected.reason === 'root_mismatch' || connected.reason === 'composition_mismatch')
-  ) {
-    throw new RuntimeHostPermanentReconnectError(
-      connected.reason === 'root_mismatch'
-        ? `Runtime Host profile ${input.profile.id} connected to an unexpected State Root`
-        : `Runtime Host profile ${input.profile.id} has an incompatible Host composition`,
-    );
-  }
   if (connected.kind !== 'connected') {
-    const unavailableMessage =
-      connected.kind === 'unavailable'
-        ? remoteProfileUnavailableMessage(input.profile.id, connected.reason)
-        : undefined;
-    throw new Error(
-      connected.kind === 'draining'
-        ? `Runtime Host profile ${input.profile.id} is draining`
-        : unavailableMessage,
+    if (connected.kind === 'draining') {
+      throw new Error(`Runtime Host profile ${input.profile.id} is draining`);
+    }
+    throw remoteRuntimeHostUnavailableError(
+      `Runtime Host profile ${input.profile.id}`,
+      connected.reason,
     );
   }
   try {
@@ -209,20 +190,32 @@ export async function connectRemoteRuntimeHostProfile(
   }
 }
 
-function remoteProfileUnavailableMessage(
-  profileId: string,
+export function remoteRuntimeHostUnavailableError(
+  subject: string,
   reason: Extract<ConnectRemoteRuntimeHostResult, { kind: 'unavailable' }>['reason'],
-): string {
+): Error {
+  let message: string;
   switch (reason) {
     case 'authentication_failed':
-      return `Runtime Host profile ${profileId} rejected its access credential`;
+      return new RuntimeHostPermanentReconnectError(`${subject} rejected its access credential`);
+    case 'root_mismatch':
+      return new RuntimeHostPermanentReconnectError(
+        `${subject} connected to an unexpected State Root`,
+      );
+    case 'composition_mismatch':
+      return new RuntimeHostPermanentReconnectError(
+        `${subject} has an incompatible Host composition`,
+      );
     case 'tls_failed':
-      return `Runtime Host profile ${profileId} could not verify the TLS connection`;
+      message = `${subject} could not verify the TLS connection`;
+      break;
     case 'unreachable':
-      return `Runtime Host profile ${profileId} could not reach its endpoint`;
+      message = `${subject} could not reach its endpoint`;
+      break;
     default:
-      return `Runtime Host profile ${profileId} is unavailable (${reason})`;
+      message = `${subject} is unavailable (${reason})`;
   }
+  return new Error(message);
 }
 
 export function decodeRuntimeHostProfileDocument(value: unknown): RuntimeHostProfileDocument {
@@ -397,32 +390,6 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
         return { removed: false, document: current };
       }
       return { removed: true, document: await this.#removeProfile(current, profile) };
-    });
-  }
-
-  commitIfCurrentTarget(
-    target: ResolvedRuntimeHostProfile,
-    commit: () => Promise<void>,
-  ): Promise<{
-    readonly committed: boolean;
-    readonly document: RuntimeHostProfileDocument;
-  }> {
-    if (target.profile.kind !== 'remote' || target.credential === undefined) {
-      return Promise.reject(new Error('Expected a resolved remote Runtime Host profile'));
-    }
-    const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
-    return this.#exclusive(async () => {
-      const current = await this.read();
-      const profile = current.profiles.find((candidate) => candidate.id === expectedProfile.id);
-      if (
-        !profile ||
-        profileCredentialBinding(profile) !== profileCredentialBinding(expectedProfile) ||
-        (await this.credentials.get(profile)) !== target.credential
-      ) {
-        return { committed: false, document: current };
-      }
-      await commit();
-      return { committed: true, document: current };
     });
   }
 

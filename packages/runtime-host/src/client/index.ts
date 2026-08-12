@@ -23,6 +23,7 @@ export {
   createRuntimeHostProfileCredentialStore,
   connectRemoteRuntimeHostProfile,
   decodeRuntimeHostProfileDocument,
+  remoteRuntimeHostUnavailableError,
   type RemoteRuntimeHostProfile,
   type RuntimeHostRemoteTransport,
   type ResolvedRuntimeHostProfile,

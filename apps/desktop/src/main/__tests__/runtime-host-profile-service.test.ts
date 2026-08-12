@@ -7,6 +7,7 @@ import {
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostProfileCredentialStore,
   type ResolvedRuntimeHostProfile,
+  type RuntimeHostProfileCatalog,
 } from "@maka/runtime-host/client";
 import { createFileCredentialStore } from "@maka/storage";
 import {
@@ -282,6 +283,60 @@ test("serializes removal behind an in-flight Host switch", async () => {
   assert.deepEqual(snapshot.profiles.map((profile) => profile.id), ["local", "office"]);
 });
 
+test("serializes a snapshot with a Host selection that starts while it is reading", async () => {
+  const root = await clientRoot();
+  const stored = profileCatalog(root);
+  await stored.save(
+    {
+      id: "office",
+      name: "Office",
+      kind: "remote",
+      transport: { kind: "tls", url: "wss://runtime.example.com" },
+      rootId: ROOT_ID,
+    },
+    "opaque-token",
+  );
+  const gate = deferredGate();
+  let gateNextRead = true;
+  const catalog: RuntimeHostProfileCatalog = {
+    read: async () => {
+      if (gateNextRead) {
+        gateNextRead = false;
+        gate.enter();
+        await gate.released;
+      }
+      return stored.read();
+    },
+    resolve: (profileId) => stored.resolve(profileId),
+    create: (profile, credential) => stored.create(profile, credential),
+    save: (profile, credential) => stored.save(profile, credential),
+    remove: (profileId) => stored.remove(profileId),
+    removeIfCurrent: (target) => stored.removeIfCurrent(target),
+  };
+  const activations: string[] = [];
+  const service = createProfileService(root, {
+    catalog,
+    activate: async (target) => {
+      activations.push(target.profile.id);
+      return { ok: true };
+    },
+  });
+
+  const reading = service.getSnapshot();
+  await gate.entered;
+  const selecting = service.select("office");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(activations, []);
+
+  gate.release();
+  const beforeSelection = await reading;
+  assert.equal(beforeSelection.selectedProfileId, "local");
+  assert.equal(beforeSelection.activeProfileId, "local");
+  const afterSelection = await selecting;
+  assert.equal(afterSelection.selectedProfileId, "office");
+  assert.equal(afterSelection.activeProfileId, "office");
+});
+
 test("preserves a dangling Desktop selection as unavailable", async () => {
   const root = await clientRoot();
   const service = createProfileService(root, {
@@ -384,9 +439,7 @@ test("keeps the prior selection when the active Host selection cannot be persist
       activations.push(target.profile.id);
       return { ok: true, activeTarget: target };
     },
-    writeSelection: async () => {
-      throw new Error("selection disk unavailable");
-    },
+    selectionFailure: new Error("selection disk unavailable"),
   });
   const result = await service.addAndSelect({
     profile: {
@@ -445,7 +498,8 @@ function createProfileService(
     readonly activate?: (
       target: ResolvedRuntimeHostProfile,
     ) => Promise<DesktopRuntimeHostActivationResult>;
-    readonly writeSelection?: (profileId: string) => Promise<void>;
+    readonly catalog?: RuntimeHostProfileCatalog;
+    readonly selectionFailure?: Error;
   } = {},
 ) {
   let activeTarget = options.activeTarget ?? LOCAL_TARGET;
@@ -460,8 +514,15 @@ function createProfileService(
       if (result.ok) activeTarget = target;
       return result;
     },
-    ...(options.writeSelection
-      ? { writeSelection: options.writeSelection }
+    ...(options.catalog ? { catalog: options.catalog } : {}),
+    ...(options.selectionFailure
+      ? {
+          selectionAuthority: {
+            selectIfCurrentTarget: async () => {
+              throw options.selectionFailure;
+            },
+          },
+        }
       : {}),
   });
 }

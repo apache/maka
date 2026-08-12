@@ -5,11 +5,13 @@ import {
   createClientRuntimeHostProfileCatalog,
   LOCAL_RUNTIME_HOST_PROFILE,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
+  RuntimeHostPermanentReconnectError,
   type RemoteRuntimeHostProfile,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfileCatalog,
   type RuntimeHostProfileDocument,
 } from "@maka/runtime-host/client";
+import { withFileUpdateLock } from "@maka/storage/file-update-lock";
 import type {
   DesktopRuntimeHostProfileAddInput,
   DesktopRuntimeHostProfileAddResult,
@@ -41,6 +43,13 @@ export type DesktopRuntimeHostStartupSelection =
 export type DesktopRuntimeHostActivationResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly error: unknown };
+
+export interface DesktopRuntimeHostProfileSelectionAuthority {
+  selectIfCurrentTarget(target: ResolvedRuntimeHostProfile): Promise<{
+    readonly selected: boolean;
+    readonly document: RuntimeHostProfileDocument;
+  }>;
+}
 
 export async function resolveSelectedDesktopRuntimeHostProfile(
   clientDataRoot: string,
@@ -94,11 +103,17 @@ export function createDesktopRuntimeHostProfileService(input: {
   readonly activate: (
     target: ResolvedRuntimeHostProfile,
   ) => Promise<DesktopRuntimeHostActivationResult>;
-  readonly writeSelection?: (profileId: string) => Promise<void>;
   readonly catalog?: RuntimeHostProfileCatalog;
+  readonly selectionAuthority?: DesktopRuntimeHostProfileSelectionAuthority;
 }): DesktopRuntimeHostProfileService {
   const catalog = input.catalog ?? createClientRuntimeHostProfileCatalog(input.clientDataRoot);
   const selectionPath = join(input.clientDataRoot, SELECTION_FILE);
+  const selectionAuthority = input.selectionAuthority ??
+    createDesktopRuntimeHostProfileSelectionAuthority({
+      catalog,
+      profilePath: join(input.clientDataRoot, "runtime-host-profiles.json"),
+      selectionPath,
+    });
   let selectedProfileId = input.selectedProfileId;
   let unavailable = input.unavailable;
   let mutationTail: Promise<void> = Promise.resolve();
@@ -175,19 +190,13 @@ export function createDesktopRuntimeHostProfileService(input: {
   };
 
   const persistSelection = (profileId: string): Promise<void> =>
-    input.writeSelection?.(profileId) ?? writeSelectedProfileId(selectionPath, profileId);
+    writeSelectedProfileId(selectionPath, profileId);
 
   const persistCurrentSelection = async (
     target: ResolvedRuntimeHostProfile,
-  ): Promise<RuntimeHostProfileDocument | undefined> => {
-    if (target.profile.kind === "local") {
-      await persistSelection(target.profile.id);
-      return undefined;
-    }
-    const result = await catalog.commitIfCurrentTarget(target, () =>
-      persistSelection(target.profile.id),
-    );
-    if (!result.committed) {
+  ): Promise<RuntimeHostProfileDocument> => {
+    const result = await selectionAuthority.selectIfCurrentTarget(target);
+    if (!result.selected) {
       throw new Error("Runtime Host profile changed while connecting and was not selected");
     }
     return result.document;
@@ -204,8 +213,7 @@ export function createDesktopRuntimeHostProfileService(input: {
 
   return {
     async getSnapshot() {
-      await mutationTail;
-      return snapshot();
+      return mutate(() => snapshot());
     },
     addAndSelect(value) {
       requireSaveInput(value);
@@ -237,12 +245,10 @@ export function createDesktopRuntimeHostProfileService(input: {
           };
         }
         let selection: Awaited<
-          ReturnType<RuntimeHostProfileCatalog["commitIfCurrentTarget"]>
+          ReturnType<DesktopRuntimeHostProfileSelectionAuthority["selectIfCurrentTarget"]>
         >;
         try {
-          selection = await catalog.commitIfCurrentTarget(target, () =>
-            persistSelection(value.profile.id),
-          );
+          selection = await selectionAuthority.selectIfCurrentTarget(target);
         } catch {
           return {
             kind: "connected",
@@ -250,7 +256,7 @@ export function createDesktopRuntimeHostProfileService(input: {
             warning: "Runtime Host switched for this run, but the selection could not be saved",
           };
         }
-        if (!selection.committed) {
+        if (!selection.selected) {
           return {
             kind: "connected",
             snapshot: await snapshot(selection.document),
@@ -282,6 +288,32 @@ export function createDesktopRuntimeHostProfileService(input: {
     select(profileId) {
       return mutate(() => selectProfile(profileId));
     },
+  };
+}
+
+function createDesktopRuntimeHostProfileSelectionAuthority(input: {
+  readonly catalog: RuntimeHostProfileCatalog;
+  readonly profilePath: string;
+  readonly selectionPath: string;
+}): DesktopRuntimeHostProfileSelectionAuthority {
+  return {
+    selectIfCurrentTarget: (target) =>
+      withFileUpdateLock(input.profilePath, async () => {
+        const document = await input.catalog.read();
+        if (target.profile.kind === "remote") {
+          let current: ResolvedRuntimeHostProfile | undefined;
+          try {
+            current = await input.catalog.resolve(target.profile.id);
+          } catch (error) {
+            if (!(error instanceof RuntimeHostPermanentReconnectError)) throw error;
+          }
+          if (!current || !sameRuntimeHostTarget(current, target)) {
+            return { selected: false, document };
+          }
+        }
+        await writeSelectedProfileId(input.selectionPath, target.profile.id);
+        return { selected: true, document };
+      }),
   };
 }
 
