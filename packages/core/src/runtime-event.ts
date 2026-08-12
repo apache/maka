@@ -23,6 +23,7 @@ import {
 import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from './interaction.js';
 import type { PermissionRequestPayload, PermissionResponse } from './permission.js';
 import type { TurnOrigin } from './runtime-inputs.js';
+import type { HookExecutionStatus, HookSource } from './hooks.js';
 import type { UserQuestionRequest } from './user-question.js';
 import {
   defineObjectShape,
@@ -241,6 +242,18 @@ export interface RuntimeEventProtocolMarker {
   toolBoundary: ToolBoundaryProtocol;
 }
 
+export interface RuntimeEventHookCompleted {
+  eventName: 'PreToolUse';
+  handlerId: string;
+  definitionHash: `sha256:${string}`;
+  source: HookSource;
+  toolUseId: string;
+  toolName: string;
+  status: HookExecutionStatus;
+  durationMs: number;
+  message?: string;
+}
+
 export interface RuntimeEventContinuationStartV2 {
   protocol: 'continuation_start_v2';
   /** Mirrors store-owned claim state; recovery never trusts this field alone. */
@@ -308,6 +321,8 @@ export interface RuntimeEventActions {
   toolRecovery?: ToolRecoveryFactEnvelope;
   /** Protocols that were actually active from the first event of this run. */
   runtimeProtocol?: RuntimeEventProtocolMarker;
+  /** Bounded, non-model-visible result of one user-configured lifecycle Hook. */
+  hookCompleted?: RuntimeEventHookCompleted;
   /** Durable provider-call T1 for a claimed continuation. */
   continuationStart?: RuntimeEventContinuationStartV2;
   /** Reserved workspace authority fact; only its atomic SQLite writer may persist it. */
@@ -497,6 +512,7 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
     'toolDispatch',
     'toolRecovery',
     'runtimeProtocol',
+    'hookCompleted',
     'continuationStart',
     'workspaceFact',
   ],
@@ -526,6 +542,19 @@ const RUNTIME_TOOL_DISPATCH_SHAPE = defineObjectShape<RuntimeEventToolDispatch>(
 const RUNTIME_PROTOCOL_MARKER_SHAPE = defineObjectShape<RuntimeEventProtocolMarker>()(
   ['toolBoundary'],
   [],
+);
+const RUNTIME_HOOK_COMPLETED_SHAPE = defineObjectShape<RuntimeEventHookCompleted>()(
+  [
+    'eventName',
+    'handlerId',
+    'definitionHash',
+    'source',
+    'toolUseId',
+    'toolName',
+    'status',
+    'durationMs',
+  ],
+  ['message'],
 );
 const RUNTIME_CONTINUATION_START_SHAPE = defineObjectShape<RuntimeEventContinuationStartV2>()(
   [
@@ -741,9 +770,34 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
     (value.toolDispatch === undefined || isRuntimeToolDispatch(value.toolDispatch)) &&
     (value.toolRecovery === undefined || isToolRecoveryFactEnvelope(value.toolRecovery)) &&
     (value.runtimeProtocol === undefined || isRuntimeProtocolMarker(value.runtimeProtocol)) &&
+    (value.hookCompleted === undefined || isRuntimeHookCompleted(value.hookCompleted)) &&
     (value.continuationStart === undefined ||
       isRuntimeContinuationStart(value.continuationStart)) &&
     (value.workspaceFact === undefined || isRuntimeEventWorkspaceFactEnvelope(value.workspaceFact))
+  );
+}
+
+function isRuntimeHookCompleted(value: unknown): value is RuntimeEventHookCompleted {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, RUNTIME_HOOK_COMPLETED_SHAPE) &&
+    value.eventName === 'PreToolUse' &&
+    typeof value.handlerId === 'string' &&
+    value.handlerId.length > 0 &&
+    typeof value.definitionHash === 'string' &&
+    /^sha256:[0-9a-f]{64}$/u.test(value.definitionHash) &&
+    (value.source === 'user' || value.source === 'project') &&
+    typeof value.toolUseId === 'string' &&
+    value.toolUseId.length > 0 &&
+    typeof value.toolName === 'string' &&
+    value.toolName.length > 0 &&
+    (value.status === 'allowed' ||
+      value.status === 'denied' ||
+      value.status === 'failed' ||
+      value.status === 'skipped_untrusted') &&
+    isFiniteNumber(value.durationMs) &&
+    value.durationMs >= 0 &&
+    isOptionalString(value.message)
   );
 }
 

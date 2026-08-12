@@ -17,6 +17,69 @@ import type { InvocationContext } from '../invocation-context.js';
 import { MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN, ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime with real SQLite boundary', () => {
+  it('keeps a PreToolUse denial on the generic lane before T1 and never calls the tool', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-hook-deny-'));
+    const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+    try {
+      let implementationCalls = 0;
+      const events: SessionEvent[] = [];
+      const runtime = createTestToolRuntime({
+        sessionId: 'session-1',
+        header: header(),
+        connection: connection(),
+        modelId: 'model-1',
+        appendMessage: async () => {},
+        newId: nextId(),
+        now: nextNow(),
+        getPermissionPauseTarget: () => null,
+        runId: 'run-1',
+        invocationId: 'invocation-1',
+        runtimeCommitSink: store,
+        preToolUseHooks: {
+          prepareTurn: () => {},
+          runPreToolUse: async () => ({
+            denied: true,
+            reason: 'Policy denied this command',
+            audits: [],
+            auditWriteFailures: [],
+          }),
+        },
+      });
+      const tool: MakaTool<Record<string, never>, string> = {
+        name: 'Bash',
+        description: 'fixture',
+        parameters: { type: 'object', additionalProperties: false },
+        impl: async () => {
+          implementationCalls += 1;
+          return 'should not run';
+        },
+      };
+      const settlement = await runtime.settleToolCall({
+        tool,
+        turnId: 'turn-1',
+        toolCallId: 'provider-call-1',
+        input: {},
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: (event) => events.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            events.push(event);
+          },
+        },
+      });
+      assert.equal(implementationCalls, 0);
+      assert.match(JSON.stringify(settlement.result), /Policy denied this command/u);
+      const toolStart = events.find((event) => event.type === 'tool_start');
+      assert.ok(toolStart && toolStart.type === 'tool_start');
+      assert.equal(toolStart.operationId, undefined);
+      assert.equal(events.filter((event) => event.type === 'tool_result').length, 1);
+      assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), []);
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('replays raw MCP model arguments without persisting the execution binding', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-mcp-args-'));
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));

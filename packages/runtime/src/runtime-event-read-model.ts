@@ -321,6 +321,12 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
+    if (event.actions?.hookCompleted) {
+      // Lifecycle Hook results are bounded policy/audit facts. A denial's
+      // synthetic function response owns the provider-visible row.
+      projected = true;
+    }
+
     if (isContinuationStartRuntimeEvent(event)) {
       // Continuation start is a canonical lineage/recovery fact with no
       // legacy chat row. Its following model events own the visible output.
