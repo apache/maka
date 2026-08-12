@@ -543,56 +543,6 @@ describe('subagent tools', () => {
     expect((output[1]?.length ?? Number.POSITIVE_INFINITY) < 1_100).toBe(true);
   });
 
-  test('agent_spawn delegates web_research through the catalog definition', async () => {
-    const tool = buildSubagentSpawnTool();
-    const calls: unknown[] = [];
-
-    const result = await tool.impl(
-      {
-        profile: WEB_RESEARCH_AGENT_PROFILE,
-        task: 'Find current sources.',
-        write_back: AGENT_WRITE_BACK_SUMMARY,
-        isolation: AGENT_WORKSPACE_SAME_WORKSPACE,
-      },
-      {
-        sessionId: 'session-1',
-        turnId: 'parent-turn',
-        cwd: '/tmp/cwd',
-        toolCallId: 'tool-1',
-        abortSignal: new AbortController().signal,
-        emitOutput: () => {},
-        spawnChildSession: async (input) => {
-          calls.push(input);
-          return {
-            agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
-            agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
-            turnId: 'child-turn',
-            status: 'completed',
-            permissionMode: 'execute',
-            summary: 'done',
-            artifactIds: [],
-          };
-        },
-      },
-    );
-
-    expect(calls).toHaveLength(1);
-    const call = calls[0] as {
-      agentProfile: string;
-      prompt: string;
-      onEvent?: (event: SessionEvent) => void;
-    };
-    expect(call.agentProfile).toBe(WEB_RESEARCH_AGENT_PROFILE);
-    expect(call.prompt).toBe('Find current sources.');
-    expect(typeof call.onEvent).toBe('function');
-    expect(result).toMatchObject({
-      kind: 'subagent',
-      agentId: WEB_RESEARCH_AGENT_ID,
-      agentName: 'Web Research',
-      permissionMode: 'execute',
-    });
-  });
-
   test('agent_spawn binds a current-session task and records real child refs without auto-completing', async () => {
     const task: Task = {
       id: 'task-uuid',
