@@ -481,7 +481,11 @@ export const TurnView = memo(function TurnView(props: {
       )}
       {turn.user && (
         <LocalizedChatMessage
-          accessibleLabel={copy.userAriaLabel}
+          accessibleLabel={
+            turn.user.hostOrigin?.kind === 'legacy_automation'
+              ? copy.legacyAutomationTriggered
+              : copy.userAriaLabel
+          }
           sender="user"
           className="maka-chat-message maka-user-message"
         >
