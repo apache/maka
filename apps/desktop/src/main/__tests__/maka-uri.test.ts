@@ -8,9 +8,9 @@ import {
 
 describe('Maka URI safety boundary', () => {
   it('parses only supported settings and compose destinations', () => {
-    assert.deepEqual(parseMakaUri('maka://settings/account'), {
+    assert.deepEqual(parseMakaUri('maka://settings/general'), {
       kind: 'settings',
-      section: 'account',
+      section: 'general',
     });
     assert.deepEqual(parseMakaUri('maka://compose?text=hello'), {
       kind: 'compose',
