@@ -1,6 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
 import { readFileSync, rmSync, statSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
@@ -10,8 +9,12 @@ import {
   type ExternalProfile as Profile,
 } from './toolchain-verification.js';
 import { isInferenceAdmissionEvent } from './provider-admission.js';
+import { captureBoundedStream, type BoundedCapture } from './bounded-log.js';
 
 type SubjectStatus = 'completed' | 'failed' | 'infra_failed' | 'indeterminate';
+const TRAJECTORY_LIMIT_BYTES = 16 * 1024 * 1024;
+const STDERR_LIMIT_BYTES = 4 * 1024 * 1024;
+const LOG_TAIL_BYTES = 1024 * 1024;
 
 interface Usage {
   inputTokens: number;
@@ -59,7 +62,11 @@ try {
   artifacts.push({ kind: 'toolchain', profile, ...identity });
   await writeState('toolchain_verified');
 
-  const key = process.env.OPENAI_API_KEY ?? process.env.ANTHROPIC_API_KEY;
+  const key =
+    process.env.OPENAI_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? process.env.DEEPSEEK_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.DEEPSEEK_API_KEY;
   if (!key) throw new Error('external subject credential is missing');
   const proxy = await startMeteringProxy(baseUrl, key, profile === 'claude-code');
   try {
@@ -77,7 +84,7 @@ try {
     child = undefined;
     await writeState('child_exited', { exitCode: result.exitCode });
     usage = proxy.usage();
-    costUsd = usage ? estimateCost(usage) : null;
+    costUsd = usage && proxy.usageComplete() ? estimateCost(usage) : null;
     const output = await readFile(trajectoryPath, 'utf8').catch(() => '');
     const classified = classifyExecution(
       profile,
@@ -93,16 +100,18 @@ try {
       status,
       requests: proxy.requestCount(),
       admittedRequests: proxy.admittedRequestCount(),
+      usageRequests: proxy.usageRequestCount(),
     });
     artifacts.push(
-      fileArtifact('trajectory', trajectoryPath, profile),
-      fileArtifact('stderr', stderrPath, profile),
+      fileArtifact('trajectory', trajectoryPath, profile, result.trajectory),
+      fileArtifact('stderr', stderrPath, profile, result.stderr),
       {
         kind: 'provider-metering',
         profile,
         requests: proxy.requestCount(),
         admittedRequests: proxy.admittedRequestCount(),
-        usageComplete: usage !== null,
+        usageRequests: proxy.usageRequestCount(),
+        usageComplete: proxy.usageComplete(),
       },
       fileArtifact('wrapper-state', statePath, profile),
       ...profileArtifacts,
@@ -201,6 +210,7 @@ async function prepareProfile(
     );
     const path = join(home, '.env');
     await writeFile(path, 'OPENAI_API_KEY=maka-eval-local\n', { mode: 0o600 });
+    env.OPENAI_API_KEY = 'maka-eval-local';
     env.REASONIX_HOME = home;
     credentialPath = path;
   } else if (selected === 'opencode') {
@@ -397,30 +407,30 @@ async function runChild(
   env: NodeJS.ProcessEnv,
   stdoutPath: string,
   childStderrPath: string,
-): Promise<{ exitCode: number }> {
-  const stdout = createWriteStream(stdoutPath, { flags: 'w', mode: 0o600 });
-  const stderr = createWriteStream(childStderrPath, { flags: 'w', mode: 0o600 });
+): Promise<{ exitCode: number; trajectory: BoundedCapture; stderr: BoundedCapture }> {
   const running = spawn(executable, executableArgs, {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child = running;
-  running.stdout.pipe(stdout);
-  running.stderr.pipe(stderr);
+  const trajectory = captureBoundedStream(
+    running.stdout,
+    stdoutPath,
+    TRAJECTORY_LIMIT_BYTES,
+    LOG_TAIL_BYTES,
+  );
+  const stderr = captureBoundedStream(
+    running.stderr,
+    childStderrPath,
+    STDERR_LIMIT_BYTES,
+    LOG_TAIL_BYTES,
+  );
   const exitCode = await new Promise<number>((resolveExit, reject) => {
     running.once('error', reject);
     running.once('exit', (code) => resolveExit(code ?? 1));
   });
-  await Promise.all([finished(stdout), finished(stderr)]);
-  return { exitCode };
-}
-
-function finished(stream: ReturnType<typeof createWriteStream>): Promise<void> {
-  if (stream.closed) return Promise.resolve();
-  return new Promise((resolveFinished, reject) => {
-    stream.once('close', resolveFinished);
-    stream.once('error', reject);
-  });
+  const [trajectoryResult, stderrResult] = await Promise.all([trajectory, stderr]);
+  return { exitCode, trajectory: trajectoryResult, stderr: stderrResult };
 }
 
 function prepareClaudeWorkspace(root: string, home: string): void {
@@ -492,12 +502,15 @@ async function startMeteringProxy(
   usage(): Usage | null;
   requestCount(): number;
   admittedRequestCount(): number;
+  usageRequestCount(): number;
+  usageComplete(): boolean;
   close(): Promise<void>;
 }> {
   const total = zeroUsage();
   let measured = false;
   let requests = 0;
   let admittedRequests = 0;
+  let usageRequests = 0;
   const active = new Set<Promise<void>>();
   const server = createServer((request, response) => {
     const operation = (async () => {
@@ -543,10 +556,13 @@ async function startMeteringProxy(
         response.end();
       } finally {
         const parsed = parser.finish();
-        if (upstream.ok && parsed.admitted) admittedRequests += 1;
-        if (parsed.usage) {
-          measured = true;
-          addUsage(total, parsed.usage);
+        if (upstream.ok && parsed.admitted) {
+          admittedRequests += 1;
+          if (parsed.usage) {
+            usageRequests += 1;
+            measured = true;
+            addUsage(total, parsed.usage);
+          }
         }
       }
     })().catch((error: unknown) => {
@@ -565,6 +581,8 @@ async function startMeteringProxy(
       measured ? { ...total, totalTokens: total.inputTokens + total.outputTokens } : null,
     requestCount: () => requests,
     admittedRequestCount: () => admittedRequests,
+    usageRequestCount: () => usageRequests,
+    usageComplete: () => admittedRequests > 0 && usageRequests === admittedRequests,
     close: async () => {
       await Promise.allSettled([...active]);
       await closeServer(server);
@@ -627,7 +645,12 @@ function usageFromEvent(event: Record<string, unknown>, anthropic: boolean): Usa
       ? raw.completion_tokens_details
       : {};
   const cacheRead = number(raw.cache_read_input_tokens ?? inputDetails.cached_tokens);
-  const cacheWrite = number(raw.cache_creation_input_tokens);
+  const cacheWrite = number(
+    raw.cache_creation_input_tokens ??
+      raw.cache_write_input_tokens ??
+      inputDetails.cache_write_tokens ??
+      inputDetails.cache_creation_tokens,
+  );
   const reasoning = number(outputDetails.reasoning_tokens);
   const totalInput = anthropic ? input + cacheRead + cacheWrite : input;
   return {
@@ -708,7 +731,12 @@ function joinUpstream(baseUrl: string, requestUrl: string): string {
   return base.toString();
 }
 
-function fileArtifact(kind: string, path: string, selected: Profile): Record<string, unknown> {
+function fileArtifact(
+  kind: string,
+  path: string,
+  selected: Profile,
+  capture?: BoundedCapture,
+): Record<string, unknown> {
   const bytes = statSync(path).size;
   return {
     kind,
@@ -716,6 +744,12 @@ function fileArtifact(kind: string, path: string, selected: Profile): Record<str
     path: `/logs/agent/${basename(path)}`,
     bytes,
     sha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+    ...(capture
+      ? {
+          observedBytes: capture.observedBytes,
+          truncatedBytes: capture.truncatedBytes,
+        }
+      : {}),
   };
 }
 

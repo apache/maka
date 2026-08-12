@@ -130,6 +130,75 @@ test('subject preflight settles before the attempt timer starts', async () => {
   }
 });
 
+test('resume replaces a terminal attempt whose subject identity is stale', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-resume-identity-'));
+  const store = new FileAttemptStore(join(root, 'attempts'));
+  await store.append({
+    cellId: 'task::1::external',
+    sequence: 1,
+    startedAt: 1,
+    completedAt: 2,
+    result: {
+      score: 1,
+      usage: null,
+      costUsd: null,
+      durationMs: 1,
+      status: 'completed',
+      failureReason: null,
+      artifacts: [{ kind: 'identity', value: 'stale' }],
+    },
+  });
+  const executor: ExperimentExecutor = {
+    kind: 'harbor',
+    runAttempt: async (_input, operation) => ({
+      kind: 'settled',
+      value: await operation({
+        context: {
+          cwd: '/app',
+          taskInput: 'solve',
+          metadata: {},
+          execute: async () => assert.fail('resume identity test does not execute a process'),
+        },
+        verify: async () => ({
+          status: 'completed',
+          score: 1,
+          failureReason: null,
+          artifacts: [],
+        }),
+      }),
+    }),
+  };
+  const subject: SubjectAdapter = {
+    kind: 'external',
+    canReuse: ({ attempt }) =>
+      attempt.result.artifacts.some(
+        (artifact) => artifact.kind === 'identity' && artifact.value === 'current',
+      ),
+    execute: async () => ({
+      usage: null,
+      costUsd: null,
+      durationMs: 1,
+      status: 'completed',
+      failureReason: null,
+      artifacts: [{ kind: 'identity', value: 'current' }],
+    }),
+  };
+  try {
+    const results = await runExperiment({
+      spec: experiment(),
+      store,
+      executor,
+      subjects: [subject],
+    });
+    assert.equal(results.get('task::1::external')?.sequence, 2);
+    assert.deepEqual(results.get('task::1::external')?.result.artifacts, [
+      { kind: 'identity', value: 'current' },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('eight-arm spec and wrappers freeze the working provider contracts', async () => {
   const specPath = new URL(
     '../../experiments/terminal-bench-2.1-deepseek-v4-flash-eight-arm.json',

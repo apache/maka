@@ -37,6 +37,21 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
         );
       }
     },
+    canReuse: ({ cell, attempt }) => {
+      const config = decodeConfig(cell.subject.config, cell.subject.credentials);
+      const toolchain = wrapperToolchain(config, cell.executor.config);
+      if (!toolchain) return true;
+      const identity = verifiedToolchains.get(cell.subject.id);
+      if (!identity) return false;
+      const artifact = attempt.result.artifacts.find(
+        (candidate) =>
+          candidate.kind === 'toolchain' &&
+          candidate.profile === toolchain.profile &&
+          candidate.version === identity.version &&
+          candidate.fingerprint === identity.fingerprint,
+      );
+      return artifact !== undefined;
+    },
     async execute({ cell, context }) {
       const config = decodeConfig(cell.subject.config, cell.subject.credentials);
       const toolchain = wrapperToolchain(config, cell.executor.config);

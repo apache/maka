@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { createExternalSubjectAdapter } from '../external-subject.js';
 import type { ExperimentCell, ExperimentSpec } from '../experiment.js';
+import type { CellAttempt } from '../result.js';
 import { TOOLCHAIN_IDENTITIES, TOOLCHAIN_IDENTITY_ENV } from '../toolchain-verification.js';
 
 test('passes declared environment and credential bindings to one external command', async () => {
@@ -161,6 +162,12 @@ test('verifies a mounted toolchain once before cell execution', async () => {
     } satisfies ExperimentCell;
     const adapter = createExternalSubjectAdapter();
     await adapter.prepare?.({ spec: {} as ExperimentSpec, cells: [cell] });
+    const attempt = toolchainAttempt(cell.id, TOOLCHAIN_IDENTITIES.codex.fingerprint);
+    assert.equal(adapter.canReuse?.({ cell, attempt }), true);
+    assert.equal(
+      adapter.canReuse?.({ cell, attempt: toolchainAttempt(cell.id, 'sha256:stale') }),
+      false,
+    );
     await unlink(join(root, 'checksums.sha256'));
     let environment: Readonly<Record<string, string>> | undefined;
 
@@ -195,6 +202,31 @@ test('verifies a mounted toolchain once before cell execution', async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+function toolchainAttempt(cellId: string, fingerprint: string): CellAttempt {
+  return {
+    cellId,
+    sequence: 1,
+    startedAt: 1,
+    completedAt: 2,
+    result: {
+      score: 1,
+      usage: null,
+      costUsd: null,
+      durationMs: 1,
+      status: 'completed',
+      failureReason: null,
+      artifacts: [
+        {
+          kind: 'toolchain',
+          profile: 'codex',
+          version: TOOLCHAIN_IDENTITIES.codex.version,
+          fingerprint,
+        },
+      ],
+    },
+  };
+}
 
 function externalCell(config: ExperimentCell['subject']['config']): ExperimentCell {
   return {

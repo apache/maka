@@ -6,9 +6,9 @@ import {
 } from './experiment.js';
 import {
   decodeEvalResult,
-  selectCellResult,
   type CellAttempt,
   type EvalResult,
+  isReplaceableAttempt,
   type NormalizedUsage,
 } from './result.js';
 
@@ -48,6 +48,7 @@ export interface SubjectAdapter {
     readonly spec: ExperimentSpec;
     readonly cells: readonly ExperimentCell[];
   }): Promise<void>;
+  canReuse?(input: { readonly cell: ExperimentCell; readonly attempt: CellAttempt }): boolean;
   execute(input: {
     readonly cell: ExperimentCell;
     readonly context: SubjectExecutionContext;
@@ -140,11 +141,12 @@ export async function runExperiment(input: {
           if (input.signal?.aborted) return;
           const attempts = await input.store.list(cell.id);
           if (input.signal?.aborted) return;
-          if (selectCellResult(attempts)) return;
+          const subject = subjects.get(cell.subject.kind)!;
+          if (selectSubjectResult(attempts, subject, cell)) return;
           const startedAt = (input.now ?? Date.now)();
           const result = await executeCell(
             input.executor,
-            subjects.get(cell.subject.kind)!,
+            subject,
             cell,
             subjectCredentialNames,
             input.signal,
@@ -172,12 +174,33 @@ export async function runExperiment(input: {
       (
         await Promise.all(
           cells.map(
-            async (cell) => [cell.id, selectCellResult(await input.store.list(cell.id))] as const,
+            async (cell) =>
+              [
+                cell.id,
+                selectSubjectResult(
+                  await input.store.list(cell.id),
+                  subjects.get(cell.subject.kind)!,
+                  cell,
+                ),
+              ] as const,
           ),
         )
       ).flatMap(([cellId, result]) => (result ? [[cellId, result] as const] : [])),
     );
   });
+}
+
+function selectSubjectResult(
+  attempts: readonly CellAttempt[],
+  subject: SubjectAdapter,
+  cell: ExperimentCell,
+): CellAttempt | undefined {
+  return [...attempts]
+    .sort((left, right) => left.sequence - right.sequence)
+    .find(
+      (attempt) =>
+        !isReplaceableAttempt(attempt) && (subject.canReuse?.({ cell, attempt }) ?? true),
+    );
 }
 
 function groupTaskCells(cells: readonly ExperimentCell[]): ExperimentCell[][] {
