@@ -47,7 +47,7 @@ describe('SqliteSessionMetadataStore', () => {
         turnId: 'turn-legacy',
         ts: 5,
         text: 'private message text',
-        origin: { kind: 'automation', automationId: 'legacy-automation' },
+        origin: { kind: 'future_trigger', triggerId: 'future-trigger' },
       });
       database
         .prepare(`
