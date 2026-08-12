@@ -95,6 +95,56 @@ describe("steering timeline", () => {
     const [deduplicated] = overlayLiveTurn(persisted, live);
     assert.deepEqual(timelineText(deduplicated), ["text:before", "user:inserted instruction"]);
   });
+
+  test("keeps a persisted tool before live steering during handoff", () => {
+    const persisted = materializeTurns([
+      originalUser,
+      {
+        type: "tool_call",
+        id: "tool-1",
+        turnId: "t1",
+        stepId: "tool-step",
+        ts: 2,
+        toolName: "Read",
+        args: {},
+      },
+      steeringUser,
+    ]);
+    const tool = applyLiveTurnEvent(armLiveTurn("t1"), {
+      type: "tool_start",
+      id: "tool-event",
+      turnId: "t1",
+      stepId: "tool-step",
+      toolUseId: "tool-1",
+      toolName: "Read",
+      args: {},
+      ts: 2,
+    });
+    const steering = applyLiveTurnEvent(tool, {
+      type: "steering_message",
+      id: "steer-event",
+      messageId: "steer-1",
+      turnId: "t1",
+      ts: 3,
+      content: { text: "steer" },
+    });
+    const live = applyLiveTurnEvent(steering, {
+      type: "text_delta",
+      id: "text-event",
+      messageId: "after-steer",
+      turnId: "t1",
+      ts: 4,
+      text: "after",
+    });
+
+    const [overlaid] = overlayLiveTurn(persisted, live);
+    assert.deepEqual(timelineText(overlaid), ["tools:", "user:steer", "text:after"]);
+    assert.deepEqual(
+      overlaid?.timeline.flatMap((item) =>
+        item.kind === "tools" ? item.items.map((tool) => tool.toolUseId) : []),
+      ["tool-1"],
+    );
+  });
 });
 
 describe("materializeChat message metadata", () => {
