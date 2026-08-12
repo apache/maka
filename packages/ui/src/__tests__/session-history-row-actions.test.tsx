@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
 import { LocaleProvider } from '../locale-context.js';
 import { SessionHistoryList, type SessionRowActions } from '../session-history-list.js';
 
