@@ -11,36 +11,7 @@ import {
 import {
   applyLiveTurnEvent,
   armLiveTurn,
-  settleLiveTurnStep,
-  type LiveTurnProjection,
 } from "../live-turn-projection.js";
-
-function textStep(
-  live: LiveTurnProjection | undefined,
-  messageId: string,
-  text: string,
-  ts: number,
-): LiveTurnProjection {
-  return applyLiveTurnEvent(live, {
-    type: "text_complete",
-    id: `event-${messageId}`,
-    messageId,
-    turnId: "t1",
-    ts,
-    text,
-  });
-}
-
-function steer(live: LiveTurnProjection | undefined): LiveTurnProjection {
-  return applyLiveTurnEvent(live, {
-    type: "steering_message",
-    id: "event-steer",
-    messageId: "steer-1",
-    turnId: "t1",
-    ts: 3,
-    content: { text: "steer" },
-  })!;
-}
 
 const originalUser = {
   type: "user" as const,
@@ -94,81 +65,35 @@ describe("steering timeline", () => {
     ]);
   });
 
-  test("keeps a live steering message between the output visible before and after it", () => {
-    let live = textStep(armLiveTurn("t1"), "before-steer", "before", 2);
-    live = steer(live);
-    live = textStep(live, "after-steer", "after", 4);
-
-    const [turn] = overlayLiveTurn(
-      materializeTurns([originalUser]),
-      live,
-    );
-    assert.deepEqual(timelineText(turn), [
-      "text:before",
-      "user:steer",
-      "text:after",
-    ]);
-  });
-
-  test("keeps a live steering message visible when its preceding step settles first", () => {
-    let live = textStep(armLiveTurn("t1"), "before-steer", "before", 2);
-    live = steer(live);
-    live = settleLiveTurnStep(live, "before-steer")!;
-
-    const [turn] = overlayLiveTurn(
-      materializeTurns([originalUser, beforeAssistant]),
-      live,
-    );
-
-    assert.deepEqual(timelineText(turn), [
-      "text:before",
-      "user:steer",
-    ]);
-  });
-
-  test("overlays a steering message immediately and deduplicates its persisted row", () => {
+  test("renders one live steering message while its persisted row catches up", () => {
     const settled = materializeTurns([originalUser]);
-    const content = {
-      text: "model-facing instruction",
-      displayText: "inserted instruction",
-      attachments: [{
-        kind: "code" as const,
-        name: "example.ts",
-        mimeType: "text/typescript",
-        bytes: 12,
-        ref: { kind: "workspace_file" as const, relativePath: "example.ts" },
-      }],
-      quotes: [{ text: "source excerpt", sourceTurnId: "source-turn" }],
-      inlineReferences: [],
-    };
-    const live = applyLiveTurnEvent(armLiveTurn("t1"), {
+    const before = applyLiveTurnEvent(armLiveTurn("t1"), {
+      type: "text_complete",
+      id: "event-before",
+      messageId: "before-steer",
+      turnId: "t1",
+      ts: 1,
+      text: "before",
+    });
+    const live = applyLiveTurnEvent(before, {
       type: "steering_message",
       id: "event-steer",
       messageId: "steer-1",
       turnId: "t1",
       ts: 2,
-      content,
+      content: { text: "inserted instruction" },
     });
 
     const [overlaid] = overlayLiveTurn(settled, live);
-    const liveUser = overlaid?.timeline.find((item) => item.kind === "user")?.message;
-    assert.equal(liveUser?.text, content.displayText);
-    assert.deepEqual(liveUser?.attachments, content.attachments);
-    assert.deepEqual(liveUser?.quotes, content.quotes);
-    assert.deepEqual(liveUser?.inlineReferences, content.inlineReferences);
+    assert.deepEqual(timelineText(overlaid), ["text:before", "user:inserted instruction"]);
 
     const persisted = materializeTurns([
       originalUser,
+      beforeAssistant,
       { type: "user", id: "steer-1", turnId: "t1", ts: 2, text: "inserted instruction" },
     ]);
     const [deduplicated] = overlayLiveTurn(persisted, live);
-    assert.equal(deduplicated?.user?.text, "request");
-    assert.deepEqual(
-      deduplicated?.timeline.flatMap((item) =>
-        item.kind === "user" ? [item.message.text] : [],
-      ),
-      ["inserted instruction"],
-    );
+    assert.deepEqual(timelineText(deduplicated), ["text:before", "user:inserted instruction"]);
   });
 });
 

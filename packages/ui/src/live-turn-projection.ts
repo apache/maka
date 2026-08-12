@@ -228,7 +228,9 @@ export function applyLiveTurnEvent(
       : existingToolStep?.stepId ?? `tool:${event.toolUseId}`;
   const stepIndex = prior.steps.findIndex((step) => step.stepId === stepId);
   const isNewStep = stepIndex < 0;
-  const claimsPendingSteering = isNewStep && (prior.pendingSteering?.length ?? 0) > 0;
+  const claimsPendingSteering = isNewStep
+    && existingToolStep === undefined
+    && (prior.pendingSteering?.length ?? 0) > 0;
   const step: LiveTurnStepProjection = isNewStep
     ? {
         stepId,
@@ -404,19 +406,10 @@ export function applyLiveTurnEvent(
     if (sourceWithoutTool.tools.length === 0 && sourceWithoutTool.contentOrder) {
       sourceWithoutTool.contentOrder = sourceWithoutTool.contentOrder.filter((kind) => kind !== 'tools');
     }
-    const sourceIsEmpty = !sourceWithoutTool.thinking && !sourceWithoutTool.text && sourceWithoutTool.tools.length === 0;
-    if (sourceIsEmpty && (sourceWithoutTool.leadingSteering?.length ?? 0) > 0) {
-      const migratedIds = new Set(
-        (sourceWithoutTool.leadingSteering ?? []).map((message) => message.id),
-      );
-      nextStep = {
-        ...nextStep,
-        leadingSteering: [
-          ...(sourceWithoutTool.leadingSteering ?? []),
-          ...(nextStep.leadingSteering ?? []).filter((message) => !migratedIds.has(message.id)),
-        ],
-      };
-    }
+    const sourceIsEmpty = !sourceWithoutTool.thinking
+      && !sourceWithoutTool.text
+      && sourceWithoutTool.tools.length === 0
+      && (sourceWithoutTool.leadingSteering?.length ?? 0) === 0;
     steps = [];
     for (let index = 0; index < prior.steps.length; index += 1) {
       const candidate = prior.steps[index]!;
@@ -544,16 +537,17 @@ export function reconcileTerminalLiveTurn(
   messages: readonly StoredMessage[],
 ): LiveTurnProjection | undefined {
   const turnMessages = messages.filter((message) => message.turnId === current.turnId);
-  const assistantIds = new Set(turnMessages.flatMap((message) => message.type === 'assistant' ? [message.id] : []));
-  const toolCallIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_call' ? [message.id] : []));
-  const toolResultIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_result' ? [message.toolUseId] : []));
   const transcriptReachedTerminal = turnMessages.some(
     (message) => message.type === 'turn_state' && message.status !== 'running',
   );
-  const steering = liveSteeringMessages(current);
-  if (current.terminal && steering.length > 0 && !transcriptReachedTerminal) {
-    return current;
-  }
+  if (
+    current.terminal === true
+    && liveSteeringMessages(current).length > 0
+    && !transcriptReachedTerminal
+  ) return current;
+  const assistantIds = new Set(turnMessages.flatMap((message) => message.type === 'assistant' ? [message.id] : []));
+  const toolCallIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_call' ? [message.id] : []));
+  const toolResultIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_result' ? [message.toolUseId] : []));
   let steps = current.steps.filter((step) => {
     if (step.text?.text.length) return true;
     if (step.thinking && !assistantIds.has(step.stepId)) return true;
@@ -569,14 +563,12 @@ export function reconcileTerminalLiveTurn(
     });
     return !toolsCovered;
   });
-  // A live terminal event can render before the asynchronously refreshed
-  // transcript. Only a persisted terminal turn_state proves this snapshot is
-  // new enough to own every accepted steer; before that fence, dropping live
-  // steering would create a visible gap. Past it, an absent user row means the
-  // steer was nacked, so retaining the live copy would create a ghost.
+  // Once persisted turn_state records the terminal handoff, the transcript is
+  // authoritative for accepted steering; retaining the live copy would leave
+  // a duplicate or a nacked ghost instruction on screen.
   const steeringSettled = current.terminal === true
     && transcriptReachedTerminal
-    && steering.length > 0;
+    && liveSteeringMessages(current).length > 0;
   if (steeringSettled) {
     steps = steps.map((step) => {
       if (!step.leadingSteering) return step;

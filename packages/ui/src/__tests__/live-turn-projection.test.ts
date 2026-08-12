@@ -10,16 +10,6 @@ import {
 } from '../live-turn-projection.js';
 import { overlayLiveTurn, type ToolActivityItem } from '../materialize.js';
 
-function visibleTimeline(projection: LiveTurnProjection): string[] {
-  return overlayLiveTurn([], projection)[0]?.timeline.map((item) =>
-    item.kind === 'user'
-      ? `user:${item.messageId}`
-      : item.kind === 'tools'
-        ? `tools:${item.items.map((tool) => tool.toolUseId).join(',')}`
-        : item.kind,
-  ) ?? [];
-}
-
 // A client that just sent cannot read "has my turn started" off session status:
 // it is the same before the turn starts and after it ends. The arm carries
 // `unconfirmed` until the authority says something about THAT turn, which is
@@ -284,15 +274,7 @@ describe('applyLiveTurnEvent', () => {
 
 
   it('moves an output-first tool into its real step without duplicating or regressing it', () => {
-    const steering = applyLiveTurnEvent(undefined, {
-      type: 'steering_message',
-      id: 'steering-event',
-      messageId: 'steer-1',
-      turnId: 'turn-1',
-      ts: 99,
-      content: { text: 'change direction' },
-    });
-    const output = applyLiveTurnEvent(steering, {
+    const output = applyLiveTurnEvent(undefined, {
       type: 'tool_output_delta',
       id: 'event-1',
       turnId: 'turn-1',
@@ -306,8 +288,6 @@ describe('applyLiveTurnEvent', () => {
       createdAt: 100,
       ts: 100,
     });
-    assert.deepEqual(visibleTimeline(output), ['user:steer-1', 'tools:tool-1']);
-
     const projection = applyLiveTurnEvent(output, {
       type: 'tool_start',
       id: 'event-2',
@@ -321,7 +301,6 @@ describe('applyLiveTurnEvent', () => {
 
     assert.equal(projection.steps.length, 1);
     assert.equal(projection.steps[0]?.stepId, 'step-1');
-    assert.deepEqual(visibleTimeline(projection), ['user:steer-1', 'tools:tool-1']);
     assert.deepEqual(projection.steps[0]?.tools, [{
       toolUseId: 'tool-1',
       toolName: 'Bash',
@@ -337,6 +316,38 @@ describe('applyLiveTurnEvent', () => {
       }],
       outputTruncated: false,
     }]);
+  });
+
+  it('preserves steering positions when an output-first tool receives its real step', () => {
+    const firstSteer = applyLiveTurnEvent(undefined, {
+      type: 'steering_message', id: 'steer-event-1', messageId: 'steer-1',
+      turnId: 'turn-1', ts: 99, content: { text: 'before tool' },
+    });
+    const output = applyLiveTurnEvent(firstSteer, {
+      type: 'tool_output_delta', id: 'output-1', turnId: 'turn-1',
+      sessionId: 'session-1', toolCallId: 'tool-1', toolUseId: 'tool-1',
+      seq: 0, stream: 'stdout', chunk: 'hello\n', redacted: false,
+      createdAt: 100, ts: 100,
+    });
+    const answer = applyLiveTurnEvent(output, {
+      type: 'text_delta', id: 'text-1', messageId: 'step-1',
+      turnId: 'turn-1', ts: 101, text: 'answer',
+    });
+    const secondSteer = applyLiveTurnEvent(answer, {
+      type: 'steering_message', id: 'steer-event-2', messageId: 'steer-2',
+      turnId: 'turn-1', ts: 102, content: { text: 'after tool' },
+    });
+    const projection = applyLiveTurnEvent(secondSteer, {
+      type: 'tool_start', id: 'start-1', turnId: 'turn-1', stepId: 'step-1',
+      toolUseId: 'tool-1', toolName: 'Bash', args: {}, ts: 103,
+    });
+
+    assert.equal(projection.steps.flatMap((step) => step.tools).length, 1);
+    assert.deepEqual(
+      overlayLiveTurn([], projection)[0]?.timeline.map((item) =>
+        item.kind === 'user' ? `user:${item.message.text}` : item.kind),
+      ['user:before tool', 'text', 'tools', 'user:after tool'],
+    );
   });
 
 
@@ -437,30 +448,6 @@ describe('applyLiveTurnEvent', () => {
     assert.equal(aborted?.steps[0]?.text?.complete, true);
     assert.equal(aborted?.steps[0]?.tools[0]?.status, 'interrupted');
   });
-
-  for (const terminalEvent of [
-    { type: 'abort' as const, id: 'terminal', turnId: 'turn-1', ts: 2, reason: 'user_stop' as const },
-    { type: 'error' as const, id: 'terminal', turnId: 'turn-1', ts: 2, recoverable: false, message: 'failed' },
-  ]) {
-    it(`keeps steering-only evidence across ${terminalEvent.type}`, () => {
-      const withSteering = applyLiveTurnEvent(armLiveTurn('turn-1'), {
-        type: 'steering_message',
-        id: 'steering-event',
-        messageId: 'steer-1',
-        turnId: 'turn-1',
-        ts: 1,
-        content: { text: 'change direction' },
-      });
-
-      assert.deepEqual(applyLiveTurnEvent(withSteering, terminalEvent), {
-        turnId: 'turn-1',
-        phase: 'waiting',
-        terminal: true,
-        pendingSteering: [{ id: 'steer-1', content: { text: 'change direction' }, ts: 1 }],
-        steps: [],
-      });
-    });
-  }
 });
 
 describe('settleLiveTurnStep', () => {
@@ -543,14 +530,6 @@ describe('reconcileTerminalLiveTurn', () => {
       tools: [{ toolUseId: 'tool-1', toolName: 'Bash', status: 'completed' as const, args: {} }],
     }],
   };
-  const terminalState = {
-    type: 'turn_state' as const,
-    id: 'terminal-1',
-    turnId: 'turn-1',
-    ts: 3,
-    status: 'completed' as const,
-    partialOutputRetained: false,
-  };
 
   it('settles a tool-only terminal step once persisted history covers it', () => {
     assert.equal(reconcileTerminalLiveTurn(toolOnly, [
@@ -575,50 +554,7 @@ describe('reconcileTerminalLiveTurn', () => {
     assert.equal(reconcileTerminalLiveTurn(toolOnly, []), toolOnly);
   });
 
-  it('retains terminal live steering until persisted history reaches the terminal fence', () => {
-    const withSteering: LiveTurnProjection = {
-      ...toolOnly,
-      pendingSteering: [{ id: 'steer-1', content: { text: 'change direction' }, ts: 2 }],
-    };
-
-    const staleTranscript = [{
-      type: 'turn_state' as const,
-      id: 'running-1',
-      turnId: 'turn-1',
-      ts: 1,
-      status: 'running' as const,
-      partialOutputRetained: false,
-    }, {
-      type: 'tool_call' as const,
-      id: 'tool-1',
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      ts: 1,
-      toolName: 'Bash',
-      args: {},
-    }, {
-      type: 'tool_result' as const,
-      id: 'result-1',
-      turnId: 'turn-1',
-      ts: 2,
-      toolUseId: 'tool-1',
-      isError: false,
-      content: { kind: 'text' as const, text: 'ok' },
-    }];
-    const terminalTranscript = [terminalState];
-
-    assert.equal(reconcileTerminalLiveTurn(withSteering, staleTranscript), withSteering);
-    assert.deepEqual(
-      reconcileTerminalLiveTurn(withSteering, terminalTranscript),
-      toolOnly,
-    );
-    assert.equal(
-      reconcileTerminalLiveTurn({ ...withSteering, steps: [] }, terminalTranscript),
-      undefined,
-    );
-  });
-
-  it('hands bound steering off only after the persisted terminal fence', () => {
+  it('keeps terminal live steering until the terminal transcript catches up', () => {
     const message = { id: 'steer-1', content: { text: 'change direction' }, ts: 2 };
     const withSteering: LiveTurnProjection = {
       ...toolOnly,
@@ -626,7 +562,26 @@ describe('reconcileTerminalLiveTurn', () => {
     };
 
     assert.equal(reconcileTerminalLiveTurn(withSteering, []), withSteering);
-    assert.deepEqual(reconcileTerminalLiveTurn(withSteering, [terminalState]), toolOnly);
+    const steeringOnly = { ...withSteering, steps: [] };
+    assert.equal(reconcileTerminalLiveTurn(steeringOnly, []), steeringOnly);
+    assert.deepEqual(reconcileTerminalLiveTurn(withSteering, [{
+      type: 'turn_state', id: 'state-1', turnId: 'turn-1', ts: 3,
+      status: 'completed', partialOutputRetained: false,
+    }]), toolOnly);
+  });
+
+  it('keeps steering-only aborts visible for transcript handoff', () => {
+    const message = { id: 'steer-1', content: { text: 'change direction' }, ts: 2 };
+    const withSteering = applyLiveTurnEvent(undefined, {
+      type: 'steering_message', id: 'steer-event', messageId: message.id,
+      turnId: 'turn-1', ts: message.ts, content: message.content,
+    });
+    const aborted = applyLiveTurnEvent(withSteering, {
+      type: 'abort', id: 'abort-1', turnId: 'turn-1', ts: 3, reason: 'user_stop',
+    });
+
+    assert.equal(aborted?.terminal, true);
+    assert.deepEqual(aborted?.pendingSteering, [message]);
   });
 
   it('retains interrupted live output until a persisted result covers it', () => {

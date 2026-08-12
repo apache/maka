@@ -430,7 +430,9 @@ export function overlayLiveTurn(
   );
   const liveToolIds = new Set<string>();
   const liveContentKeys = new Set<string>();
+  const liveSteeringIds = new Set<string>();
   for (const step of liveTurn.steps) {
+    for (const message of step.leadingSteering ?? []) liveSteeringIds.add(message.id);
     if (step.thinking) liveContentKeys.add(`thinking\0${step.stepId}`);
     if (step.text) liveContentKeys.add(`text\0${step.stepId}`);
     for (const liveTool of step.tools) {
@@ -444,9 +446,11 @@ export function overlayLiveTurn(
       );
     }
   }
+  for (const message of liveTurn.pendingSteering ?? []) liveSteeringIds.add(message.id);
   const timeline: TurnTimelineItem[] = [];
   for (const item of current.timeline) {
     if (item.kind !== "tools") {
+      if (item.kind === "user" && liveSteeringIds.has(item.messageId)) continue;
       if (liveContentKeys.has(`${item.kind}\0${item.messageId}`)) continue;
       timeline.push(item);
       continue;
@@ -457,15 +461,13 @@ export function overlayLiveTurn(
     if (settledItems.length > 0)
       timeline.push({ kind: "tools", items: settledItems });
   }
-  const persistedUserIds = new Set([
-    ...(current.user ? [current.user.id] : []),
-    ...current.timeline.flatMap((item) => item.kind === "user" ? [item.messageId] : []),
-  ]);
+  const emittedSteeringIds = new Set<string>();
   const appendLiveSteering = (
     messages: readonly LiveSteeringProjection[],
   ): void => {
     for (const message of messages) {
-      if (persistedUserIds.has(message.id)) continue;
+      if (emittedSteeringIds.has(message.id)) continue;
+      emittedSteeringIds.add(message.id);
       timeline.push({
         kind: "user",
         message: chatItemFromContent(message.id, message.ts, message.content),
