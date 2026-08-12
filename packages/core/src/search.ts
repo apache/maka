@@ -25,20 +25,7 @@ export type SearchErrorReason =
   | 'needs_human_browser'
   | 'provider_error'
   | 'parse_error'
-  // PR-SEARCH-2.5 (xuan msg `57ca05cd` + `a91c61c6`): incognito gate.
-  // Returned when the workspace is currently incognito and search is
-  // disabled by policy. ALSO returned when the workspace privacy
-  // authority returned a malformed snapshot (`validateWorkspacePrivacyContext`
-  // failed) — fail-closed behavior treats unverifiable state as
-  // incognito to preserve privacy. The two paths share this reason so
-  // consumers do not need an extra UI state; the `message` field
-  // distinguishes them when needed:
-  //   - active: "Search is disabled while incognito is active."
-  //   - malformed: "Search is disabled because workspace privacy state could not be verified."
-  // The state is user-visible (the user toggled incognito on, or the
-  // system failed closed), so exposing the reason is intentional —
-  // the data we don't expose is session content / result counts /
-  // snippets.
+  // Malformed privacy state fails closed to the same user-visible reason.
   | 'incognito_active';
 
 export type SearchSourceSnapshot =
@@ -72,23 +59,7 @@ export interface WebFetchRequest {
   refresh?: boolean;
 }
 
-/**
- * Optional navigation target for a `SearchResult`.
- *
- * PR-SEARCH-1.5 (@xuan msg `772d8198`): a closed discriminated union so
- * source-kind-specific identifiers (thread sessionId / turnId, future
- * memory entry id, future activity timestamp range, etc.) stay typed and
- * isolated. Adding a new variant is an explicit contract change.
- *
- * Today only `'thread'` exists. `web` / `web_fetch` results continue to
- * use `SearchResult.url` for navigation; they do NOT need a `target`.
- *
- * Note: thread navigation deliberately does NOT use `maka://session/<id>`
- * URIs — `packages/ui/src/maka-uri.ts:24` defers that scheme until a real
- * session navigation contract exists. Consumers of `SearchResultTarget`
- * route via the existing renderer-side session-pane state (sessionId →
- * load session, turnId → scroll-into-view), NOT via a URL router.
- */
+/** Non-URL navigation target; web results continue to use `url`. */
 export type SearchResultTarget = { kind: 'thread'; sessionId: string; turnId?: string };
 
 export interface SearchResult {
@@ -96,12 +67,7 @@ export interface SearchResult {
   citationIndex?: number;
   title: string;
   url?: string;
-  /**
-   * Closed-union navigation target. Populated for source kinds whose
-   * navigation does NOT map to a URL — currently only `thread`. Future
-   * memory/activity variants extend this union without polluting the
-   * top-level shape.
-   */
+  /** Navigation target for source kinds that do not map to a URL. */
   target?: SearchResultTarget;
   snippet?: string;
   summary?: string;

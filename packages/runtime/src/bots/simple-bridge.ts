@@ -227,12 +227,6 @@ export const __TEST__ = {
   normalizeTelegramReplyToMessageId,
   isAllowedUser,
   classifyTelegramSendResponse,
-  TELEGRAM_RETRY_MIN_MS,
-  TELEGRAM_RETRY_MAX_MS,
-  ephemeralDelayFromOptions,
-  EPHEMERAL_REPLY_MIN_MS,
-  EPHEMERAL_REPLY_MAX_MS,
-  telegramAttachmentKind,
 };
 
 export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {

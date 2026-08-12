@@ -1,11 +1,3 @@
-/**
- * Session disk format: JSONL with SessionHeader as line 1 + append-only
- * StoredMessage lines.
- * Storage layer enforces append-only for messages and read-rewrite-write
- * (atomic temp + rename) for header. Per-session write queue invariant
- * is enforced by the storage implementation.
- */
-
 import {
   decodeMessageContent,
   TOOL_ACTIVITY_KINDS,
@@ -31,10 +23,7 @@ import {
 } from './record-schema.js';
 import { isPermissionDecisionFields } from './interaction-record-schema.js';
 import { isTokenUsageFields, type TokenUsageFields } from './usage-record-schema.js';
-import {
-  decodePersistedToolResultContentForRecovery,
-  normalizeToolResultContentForRead,
-} from './tool-result-record-schema.js';
+import { decodeCanonicalToolResultContent } from './tool-result-record-schema.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 
 export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './explore-agent.js';
@@ -971,19 +960,8 @@ const SYSTEM_NOTE_KINDS = new Set([
   'abort',
 ]);
 
-export function decodeStoredMessageForRead(value: unknown): StoredMessage {
-  return decodeStoredMessage(value, normalizeToolResultContentForRead);
-}
-
-export function decodeStoredMessageForRecovery(value: unknown): StoredMessage {
-  return decodeStoredMessage(value, decodePersistedToolResultContentForRecovery);
-}
-
-function decodeStoredMessage(
-  value: unknown,
-  decodeToolResultContent: (content: unknown) => ToolResultContent,
-): StoredMessage {
-  const message = decodeStoredMessageContent(value, decodeToolResultContent);
+export function decodeStoredMessage(value: unknown): StoredMessage {
+  const message = decodeStoredMessageContent(value, decodeCanonicalToolResultContent);
   if (!isRecord(message)) throw new Error('Invalid stored message schema');
   switch (message.type) {
     case 'user':

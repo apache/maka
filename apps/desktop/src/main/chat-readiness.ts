@@ -1,7 +1,6 @@
 import {
   isConnectionReady,
   normalizeOpenAiCodexConnection,
-  normalizeRequestedModelForReadiness,
   type ChatConfigurationReason,
 } from '@maka/core/connection-readiness';
 import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
@@ -85,16 +84,15 @@ export async function requireReadyConnection(
   // copy, (3) the throw-error API the rest of main.ts expects.
   const normalizedConnection = normalizeOpenAiCodexConnection(connection);
   const apiKey = await deps.getApiKey(normalizedConnection.slug);
-  const normalizedRequestedModel = normalizeRequestedModelForReadiness(connection, requestedModel);
   const verdict = isConnectionReady({
     connection: normalizedConnection,
     hasSecret: typeof apiKey === 'string' && apiKey.length > 0,
-    requestedModel: normalizedRequestedModel,
+    requestedModel,
   });
 
   if (verdict.ready === false) {
     throw chatConfigurationError(
-      messageForReason(verdict.reason, normalizedConnection, normalizedRequestedModel),
+      messageForReason(verdict.reason, normalizedConnection, requestedModel),
       verdict.reason,
     );
   }

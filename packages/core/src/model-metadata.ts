@@ -102,84 +102,29 @@ export function openAiAdapterApiProtocol(
   providerType?: ProviderType,
 ): 'openai-responses' | 'openai-chat' {
   const id = modelId.trim();
-  return (providerType === 'deepseek' && id === 'deepseek-v4-flash') ||
+  return (providerType === 'deepseek' && deepSeekModelSupportsResponses(id)) ||
     /^gpt-5/i.test(id) ||
     ((providerType === 'xai' || providerType === 'xai-oauth') && id === 'grok-4.5')
     ? 'openai-responses'
     : 'openai-chat';
 }
 
-/**
- * Anthropic model families whose every member reads images.
- *
- * The generated table is a snapshot of models.dev, so a Claude released after
- * that snapshot is simply absent from it — `lookupModelMetadata('anthropic',
- * 'claude-opus-5')` returns `{}` today. Absent used to resolve to "no vision",
- * which is the wrong default for this provider: every Claude in these families
- * accepts image input, and the fail-closed rule was written for text-only
- * models, not for models nobody has listed yet.
- *
- * The two mistakes are not symmetrical. Sending an image to a Claude that
- * turned out not to read it costs one turn and produces a message. Withholding
- * it silently drops the user's attachment and downgrades an image tool result
- * to a sentence, with nothing on screen to explain why, until someone
- * regenerates the table.
- *
- * Anthropic has used two id shapes, and both have to match. From Claude 4 on
- * the family comes first (`claude-opus-5`); before that the version came first
- * and the family sat behind it (`claude-3-5-sonnet-20241022`,
- * `claude-3-opus-20240229`). The pre-4 ids are the ones most likely to be
- * pinned by hand, none of them is in the generated table, and all of them read
- * images — so `(?:[\d.]+-)*` skips any leading version segments before the
- * family name.
- *
- * What must keep missing is the generation that genuinely cannot read images:
- * `claude-2.1`, `claude-2.0` and `claude-instant-*` have no family segment at
- * all, so they never reach the alternation.
- *
- * A connection that reports `vision` still wins over this, in both directions.
- */
+/** DeepSeek models whose first-party API contract includes the Responses wire. */
+export function deepSeekModelSupportsResponses(modelId: string): boolean {
+  const id = modelId.trim().toLowerCase();
+  return id === 'deepseek-v4-flash' || id === 'deepseek-v4-pro';
+}
+
+/** Vision-capable Claude families, including models newer than the generated snapshot. */
 const VISION_BY_DEFAULT = /^claude-(?:[\d.]+-)*(?:opus|sonnet|haiku|fable)\b/;
 
-/**
- * The providers whose bare `claude-*` ids are Anthropic's own models.
- *
- * Both fetch over the Anthropic protocol and both store the bare `{ id }`
- * entries that leave `vision` unknown, and `claude-subscription` is usually
- * where a new Claude becomes usable first — it is the same table of models
- * reached through a subscription instead of an API key.
- *
- * Deliberately narrower than "speaks the Anthropic protocol". `anthropic`
- * and `claude-subscription` are the only two whose base URL is Anthropic's own;
- * `anthropic-compatible`, `kimi-coding-plan` and `minimax-coding-plan` share
- * the wire format while serving somebody else's models, and a `claude-`
- * prefixed id there says nothing about what is behind it. The same goes for
- * aggregators like OpenRouter, which do serve Claude but under ids the
- * generated table already carries.
- */
+/** First-party paths where a bare `claude-*` id identifies an Anthropic model. */
 const VISION_BY_DEFAULT_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderType>([
   'anthropic',
   'claude-subscription',
 ]);
 
-/**
- * Resolve whether a model accepts image input for the send path.
- *
- * A user declaration (`declaredVision`, from the relay connection's
- * `relayModelProfiles[modelId].vision`) wins over everything below:
- * for custom relays the user is the only one who actually knows the backing
- * model. Absent a declaration, stored `connection.models` win when they
- * declare `vision` explicitly (provider-fetched facts). But `model-fetcher`
- * stores bare `{ id }` entries for many providers, and older connections
- * predate any enrichment — so when `vision` is unknown we fall back to the
- * generated models.dev snapshot and access-path-specific in-repo overrides.
- *
- * Unknown then resolves to false — the send path stays fail-closed for
- * text-only models — with one exception: an unlisted Claude on one of
- * Anthropic's own providers resolves to true, because there absent means
- * "newer than the snapshot" rather than "text-only". See
- * {@link VISION_BY_DEFAULT}.
- */
+/** Resolve vision support by user declaration, inventory, metadata, then first-party Claude fallback. */
 export function resolveModelVisionSupport(
   providerType: ProviderType,
   models: readonly ModelInfo[] | undefined,
@@ -441,6 +386,11 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
     'deepseek-v4-flash': {
       capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
       thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+    },
+    'deepseek-v4-pro': {
+      capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
+      lastUpdated: '2026-08-13',
+      thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
     },
   },
   'zai-coding-plan': {

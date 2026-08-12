@@ -74,7 +74,7 @@ export function decideDingTalkClose(
 /**
  * Pure helper: exponential backoff for stream reconnect.
  */
-export function dingTalkReconnectBackoffMs(attempts: number): number {
+function dingTalkReconnectBackoffMs(attempts: number): number {
   const exp = Math.min(2 ** attempts, RECONNECT_DELAY_MAX_MS / RECONNECT_DELAY_MIN_MS);
   return Math.min(RECONNECT_DELAY_MIN_MS * exp, RECONNECT_DELAY_MAX_MS);
 }
@@ -551,7 +551,6 @@ export class DingTalkBotBridge extends BaseBotAdapter implements SendCapable {
 
 export const __TEST__ = {
   decideDingTalkClose,
-  dingTalkReconnectBackoffMs,
   buildDingTalkGroupSendBody,
   buildDingTalkSingleSendBody,
   pickDingTalkSendRoute,

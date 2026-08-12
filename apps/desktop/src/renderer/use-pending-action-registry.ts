@@ -45,6 +45,8 @@ export interface KeyedPendingRegistry {
   clearKey(key: string): void;
   /** Clears every pending key prefixed with `${sessionId}:` (session teardown). */
   clearForSession(sessionId: string): void;
+  /** Clears the registry when its owning Runtime Host generation changes. */
+  clearAll(): void;
 }
 
 export function useKeyedPendingRegistry(options?: {
@@ -86,7 +88,15 @@ export function useKeyedPendingRegistry(options?: {
         if (key.startsWith(prefix)) clearKey(key);
       }
     };
-    controllerRef.current = { keysRef, timersRef, addKey, clearKey, clearForSession };
+    const clearAll = (): void => {
+      for (const timeoutHandle of timersRef.current.values()) {
+        clearTimeout(timeoutHandle);
+      }
+      timersRef.current.clear();
+      keysRef.current.clear();
+      syncState();
+    };
+    controllerRef.current = { keysRef, timersRef, addKey, clearKey, clearForSession, clearAll };
   }
 
   return { keys, ...controllerRef.current };

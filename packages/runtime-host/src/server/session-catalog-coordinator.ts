@@ -55,6 +55,7 @@ import {
 } from '../protocol/index.js';
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
+import { resolveAdmittedConnectionModel } from './connection-model-admission.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
 
@@ -598,8 +599,8 @@ export class HostSessionCatalogCoordinator {
       );
     }
     const connection = readiness.connection;
-    const model = connection.models.find((candidate) => candidate.id === selected.modelId);
-    if (!connection.enabledModelIds.includes(selected.modelId) || !model) {
+    const model = resolveAdmittedConnectionModel(connection, selected.modelId);
+    if (!model) {
       throw new SessionOperationFailure('invalid_request', 'Session model is not enabled');
     }
     if (isModelExplicitlyUnsupportedForChat(model)) {

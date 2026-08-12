@@ -111,6 +111,10 @@ import type { ShellRunPtyDataEvent, ShellRunPtySnapshot } from '@maka/runtime/sh
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from '@maka/ui';
 import type { ConfigCategory } from '@maka/storage';
 import type { OnboardingMilestone, OnboardingMilestoneId, OnboardingState } from '@maka/core/onboarding';
+import type {
+  RemoteRuntimeHostProfile,
+  RuntimeHostProfile,
+} from '@maka/runtime-host/client';
 
 export interface OnboardingSnapshot {
   state: OnboardingState;
@@ -212,6 +216,53 @@ export type AppUpdateInstallResult =
   | { ok: false; reason: 'active_tasks' }
   | { ok: false; reason: 'not_downloaded' | 'install_failed' };
 
+export interface DesktopRuntimeHostProfileSnapshot {
+  readonly profiles: readonly RuntimeHostProfile[];
+  readonly selectedProfileId: string;
+  readonly activeProfile?: RuntimeHostProfile;
+  readonly activeProfileId?: string;
+  readonly unavailable?: {
+    readonly profileId: string;
+    readonly message: string;
+  };
+}
+
+export interface DesktopRuntimeHostProfileAddInput {
+  readonly profile: RemoteRuntimeHostProfile;
+  readonly credential?: string;
+}
+
+export type DesktopRuntimeHostProfileAddResult =
+  | {
+      readonly kind: 'connected';
+      readonly snapshot: DesktopRuntimeHostProfileSnapshot;
+      readonly warning?: string;
+    }
+  | {
+      readonly kind: 'unavailable';
+      readonly snapshot: DesktopRuntimeHostProfileSnapshot;
+      readonly message: string;
+    };
+
+export interface DesktopRuntimeHostProfileChangedEvent {
+  readonly epoch: string;
+  readonly profileId: string;
+  readonly targetChanged: boolean;
+  readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
+}
+
+export interface DesktopProjectCapabilities {
+  readonly chooseClientDirectory: boolean;
+  readonly selectNoProject: boolean;
+  readonly setLocalDefault: boolean;
+  readonly viewClientPath: boolean;
+}
+
+export interface DesktopProjectSnapshot {
+  readonly projects: readonly ProjectRecord[];
+  readonly capabilities: DesktopProjectCapabilities;
+}
+
 /**
  * Commands dispatched by the native application menu (see
  * main/application-menu.ts). The renderer owns the implementations.
@@ -226,7 +277,6 @@ export interface PetPackChangedEvent {
 }
 
 export interface MakaBridge {
-
   runtimeHost: {
     query<K extends RendererRuntimeHostQueryOperation>(
       operation: K,
@@ -236,6 +286,18 @@ export interface MakaBridge {
       operation: K,
       input: OperationInput<K>,
     ): Promise<OperationOutput<K>>;
+  };
+
+  runtimeHostProfiles: {
+    getSnapshot(): Promise<DesktopRuntimeHostProfileSnapshot>;
+    addAndSelect(
+      input: DesktopRuntimeHostProfileAddInput,
+    ): Promise<DesktopRuntimeHostProfileAddResult>;
+    remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
+    select(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
+    subscribeChanges(
+      handler: (event: DesktopRuntimeHostProfileChangedEvent) => void,
+    ): () => void;
   };
 
   pets: {
@@ -360,7 +422,11 @@ export interface MakaBridge {
     }): Promise<
       { ok: true; path: string } | { ok: false; reason: 'canceled' | 'write_failed' | 'invalid_input' }
     >;
-    subscribeEvents(sessionId: string, handler: (event: SessionEvent) => void): () => void;
+    subscribeEvents(
+      sessionId: string,
+      handler: (event: SessionEvent) => void,
+      onSeeded?: () => void,
+    ): () => void;
     subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
     archive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
     unarchive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
@@ -406,7 +472,7 @@ export interface MakaBridge {
     }): Promise<ExternalSessionImportIpcResult>;
   };
   projects: {
-    list(): Promise<ProjectRecord[]>;
+    getSnapshot(): Promise<DesktopProjectSnapshot>;
     subscribeChanges(handler: () => void): () => void;
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }

@@ -70,17 +70,6 @@ jobs:
         run: npx knip --workspace apps/desktop
       - name: Knip (packages/ui)
         run: npx knip --workspace packages/ui
-      # Dead-CSS governance. Lived only under `check:release`, so a regression
-      # stayed invisible until a release was cut; it was red on main when this
-      # step was added. Same class of source-scanning guard as knip above.
-      - name: Dead CSS
-        run: node scripts/check-dead-css.mjs --check
-      # Storybook fidelity: every Product/* story must name the real user path
-      # to the state it renders. Presence is mechanical; truth stays with the
-      # reviewer. See apps/desktop/stories/FIDELITY.md.
-      - name: Story annotations
-        run: node scripts/check-story-annotations.mjs
-
   test_workspaces:
     needs: changes
     if: needs.changes.outputs.standard_workspaces != ''

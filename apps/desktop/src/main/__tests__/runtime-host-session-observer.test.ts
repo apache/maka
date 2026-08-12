@@ -195,6 +195,143 @@ test("restores renderer observation after the Host connection is replaced", asyn
   await secondObserver.close();
 });
 
+test("does not report an observation ready before its source has seeded", async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const staleSeeded = deferred<void>();
+  const staleSource = {
+    async observe() {
+      await staleSeeded.promise;
+    },
+    async unobserve() {},
+  };
+  let ready = false;
+
+  const observing = observations.observe(
+    "session-1",
+    "observer-1",
+    eventTarget(12),
+  ).then(() => {
+    ready = true;
+  });
+  await Promise.resolve();
+  assert.equal(ready, false);
+
+  const staleAttach = observations.attach(staleSource);
+  await Promise.resolve();
+  assert.equal(ready, false);
+
+  observations.detach(staleSource);
+  staleSeeded.resolve();
+  await staleAttach;
+  assert.equal(ready, false);
+
+  const seeded = deferred<void>();
+  const source = {
+    async observe() {
+      await seeded.promise;
+    },
+    async unobserve() {},
+  };
+  const attaching = observations.attach(source);
+  await Promise.resolve();
+  assert.equal(ready, false);
+
+  seeded.resolve();
+  await Promise.all([observing, attaching]);
+  assert.equal(ready, true);
+  await observations.close();
+});
+
+test("rejects a pending observation when its first seed fails", async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const observing = observations.observe(
+    "session-1",
+    "observer-1",
+    eventTarget(12),
+  );
+
+  assert.deepEqual(await observations.attach({
+    async observe() {
+      throw new Error("seed failed");
+    },
+    async unobserve() {},
+  }), []);
+  await assert.rejects(observing, /ended before it became ready/);
+  await observations.close();
+});
+
+test("keeps an active observation across a failed Host replacement", async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const target = eventTarget(12);
+  const firstSource = {
+    async observe() {},
+    async unobserve() {},
+  };
+  let recovered = 0;
+  const recoveredSource = {
+    async observe() {
+      recovered++;
+    },
+    async unobserve() {},
+  };
+  const failingSource = {
+    async observe() {
+      throw new Error("replacement seed failed");
+    },
+    async unobserve() {},
+  };
+
+  await observations.attach(firstSource);
+  await observations.observe("session-1", "observer-1", target);
+  observations.detach(firstSource);
+  assert.deepEqual(await observations.attach(failingSource), []);
+  observations.detach(failingSource);
+
+  assert.deepEqual(await observations.attach(recoveredSource), ["session-1"]);
+  assert.equal(recovered, 1);
+  await observations.close();
+});
+
+test("ignores a stale seed failure after its replacement succeeds", async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  let rejectStale!: (error: Error) => void;
+  const replacementSeed = deferred<void>();
+  const staleSeed = new Promise<void>((_resolve, reject) => {
+    rejectStale = reject;
+  });
+  const staleSource = {
+    observe: () => staleSeed,
+    async unobserve() {},
+  };
+  const replacementSource = {
+    observe: () => replacementSeed.promise,
+    async unobserve() {},
+  };
+  let ready = false;
+
+  await observations.attach(staleSource);
+  const observing = observations.observe(
+    "session-1",
+    "observer-1",
+    eventTarget(12),
+  ).then(() => {
+    ready = true;
+  });
+  observations.detach(staleSource);
+  const attaching = observations.attach(replacementSource);
+
+  rejectStale(new Error("stale seed failed"));
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(ready, false);
+
+  replacementSeed.resolve(undefined);
+  assert.deepEqual(await attaching, ["session-1"]);
+  await observing;
+  assert.equal(ready, true);
+  await observations.close();
+});
+
 test("does not publish a terminal error while an owner-managed connection is replaced", async () => {
   let rejectFrame!: (error: Error) => void;
   let closeCount = 0;

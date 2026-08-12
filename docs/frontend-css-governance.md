@@ -37,26 +37,18 @@ Astryx reset and component layers come first; Maka base tokens and product `comp
 - Component-local properties are allowed only with a `/* local: ... */` comment.
 - Do not add raw colors, radii, or ungoverned z-index values.
 
-## 6. Dead CSS
+## 6. How these rules are checked
 
-- `scripts/check-dead-css.mjs` scans `apps/desktop/src/renderer/styles/**/*.css` and `apps/desktop/src/renderer/reference-shell.css`.
-- Runtime-generated class names that static search cannot find must be explicitly allowlisted.
-- Change `scripts/check-dead-css-baseline.json` only after review confirms the class-count change.
-
-## 7. How these rules are checked
-
-The rules above are conventions enforced in review, plus the fast scripts that
-survive as their own commands — `check-dead-css`, `check-a11y`, `check-copy`,
-`check-console`. The source-scanning contract suite that used to re-assert them
-as tests is gone: it charged every refactor a rewrite of its own guards while
-catching only what a linter should.
+These rules are conventions enforced in review. Static correctness belongs to
+Biome, Knip, and typecheck; accessibility keeps its focused check. CSS usage and
+Story prose are not decided by repository-wide regex baselines.
 
 - Renderer CSS behavior is verified where it renders: Storybook, the app, or an
   e2e assertion on the real surface.
-- A rule worth machine-enforcing belongs in a `scripts/check-*.mjs` (fast,
-  one job, no build) rather than a test that regexes the source tree.
+- Remove selectors with the source or surface that owned them instead of
+  maintaining an allowlist of strings that may be generated at runtime.
 
-## 8. Change order
+## 7. Change order
 
 When changing renderer CSS:
 
@@ -65,9 +57,8 @@ When changing renderer CSS:
 3. Remove dead selectors.
 4. Remove remaining `!important` only after primitive and layer ownership is stable.
 
-## 9. Governing principles
+## 8. Governing principles
 
-- Make CI guards trustworthy before structural convergence.
 - Delete dead CSS before aesthetic refactoring.
 - Resolve shared `Button`, `Textarea`, and `EmptyState` overrides at the component API seam instead of accumulating renderer specificity.
 - Every change to cascade order requires the narrowest relevant regression check on the rendered surface.

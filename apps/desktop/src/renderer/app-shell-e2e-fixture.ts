@@ -106,9 +106,7 @@ export function createAppShellE2eFixtureActions(options: {
       state.workbarTab === 'files' ||
       state.workbarTab === 'inspector'
     ) {
-      openWorkbarTab(state.workbarTab, 'right', {
-        preview: state.workbarPreview,
-      });
+      openWorkbarTab(state.workbarTab, 'right');
     }
     if (state.openSettingsSection) {
       openSettingsSection(state.openSettingsSection);

@@ -164,6 +164,7 @@ const conversation: StoredMessage[] = [
 
 const baseChatProps: ChatViewProps = {
   messages: conversation,
+  scrollBehavior: 'smooth',
   activeSession,
   activeConnectionLabel: 'Anthropic',
   activeModel: 'claude-sonnet-4-5',

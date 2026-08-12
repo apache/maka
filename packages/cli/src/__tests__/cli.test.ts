@@ -2,12 +2,15 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { describe, test } from 'node:test';
-import { resolveMakaCliExitCode } from '../cli.js';
+import { parseMakaCliArgs } from '../cli.js';
 
 describe('Maka CLI args', () => {
-  test('preserves an established process exit code', () => {
-    assert.equal(resolveMakaCliExitCode(2, undefined), 2);
-    assert.equal(resolveMakaCliExitCode(0, 143), 143);
+  test('selects a Runtime Host and Project for TUI startup', () => {
+    assert.deepEqual(parseMakaCliArgs(['--host', 'office', '--project', 'project-1'], '0.1.0'), {
+      kind: 'tui',
+      hostProfileId: 'office',
+      projectId: 'project-1',
+    });
   });
 
   test('establishes the fatal exit before reporting can throw', async () => {

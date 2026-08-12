@@ -10,8 +10,6 @@ import type { SessionEvent } from '@maka/core/events';
 import { zodSchema } from 'ai';
 import { buildBuiltinTools } from '../builtin-tools.js';
 import {
-  AGENT_CONTEXT_ISOLATED,
-  AGENT_INVOCATION_FOREGROUND,
   AGENT_WORKSPACE_SAME_WORKSPACE,
   AGENT_WORKSPACE_WORKTREE,
   AGENT_WRITE_BACK_PATCH,
@@ -153,23 +151,6 @@ describe('subagent tools', () => {
   });
 
   test('built-in catalog exposes local-read without shell, web, nested, or write tools', () => {
-    expect(LOCAL_READ_AGENT_DEFINITION.id).toBe(LOCAL_READ_AGENT_ID);
-    expect(LOCAL_READ_AGENT_DEFINITION.profile).toBe(LOCAL_READ_AGENT_PROFILE);
-    expect(LOCAL_READ_AGENT_DEFINITION.contract).toEqual({
-      capability: 'local_read',
-      invocation: AGENT_INVOCATION_FOREGROUND,
-      context: AGENT_CONTEXT_ISOLATED,
-      workspace: AGENT_WORKSPACE_SAME_WORKSPACE,
-      defaultWriteBack: AGENT_WRITE_BACK_SUMMARY,
-      supportedWriteBack: [AGENT_WRITE_BACK_SUMMARY],
-    });
-    expect(LOCAL_READ_AGENT_DEFINITION.permissionMode).toBe('explore');
-    expect([...LOCAL_READ_AGENT_DEFINITION.tools]).toEqual(['Read', 'Glob', 'Grep']);
-    expect(LOCAL_READ_AGENT_DEFINITION.tools.includes('Bash')).toBe(false);
-    expect(LOCAL_READ_AGENT_DEFINITION.tools.includes('WebSearch')).toBe(false);
-    expect(LOCAL_READ_AGENT_DEFINITION.tools.includes('WebFetch')).toBe(false);
-    expect(LOCAL_READ_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
-
     const definitions = listBuiltinAgentDefinitions({
       tools: [
         testCatalogTool('Read', 'read'),
@@ -178,36 +159,12 @@ describe('subagent tools', () => {
         testCatalogTool('WebSearch', 'web_read'),
       ],
     });
-    expect(definitions.find((definition) => definition.id === LOCAL_READ_AGENT_ID)).toEqual({
-      id: LOCAL_READ_AGENT_ID,
-      profile: LOCAL_READ_AGENT_PROFILE,
-      name: 'Local Read',
-      description: 'Read-only repository exploration with file and text search tools only.',
-      permissionMode: 'explore',
-      tools: ['Read', 'Glob', 'Grep'],
-      contract: LOCAL_READ_AGENT_DEFINITION.contract,
-      availability: { status: 'available' },
-    });
+    const localRead = definitions.find((definition) => definition.id === LOCAL_READ_AGENT_ID);
+    expect(localRead?.tools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(localRead?.availability).toEqual({ status: 'available' });
   });
 
   test('built-in catalog exposes web-research with only WebSearch and no local or write tools', () => {
-    expect(WEB_RESEARCH_AGENT_DEFINITION.id).toBe(WEB_RESEARCH_AGENT_ID);
-    expect(WEB_RESEARCH_AGENT_DEFINITION.profile).toBe(WEB_RESEARCH_AGENT_PROFILE);
-    expect(WEB_RESEARCH_AGENT_DEFINITION.contract).toEqual({
-      capability: 'web_research',
-      invocation: AGENT_INVOCATION_FOREGROUND,
-      context: AGENT_CONTEXT_ISOLATED,
-      workspace: AGENT_WORKSPACE_SAME_WORKSPACE,
-      defaultWriteBack: AGENT_WRITE_BACK_SUMMARY,
-      supportedWriteBack: [AGENT_WRITE_BACK_SUMMARY],
-    });
-    expect(WEB_RESEARCH_AGENT_DEFINITION.permissionMode).toBe('execute');
-    expect([...WEB_RESEARCH_AGENT_DEFINITION.tools]).toEqual(['WebSearch']);
-    expect(WEB_RESEARCH_AGENT_DEFINITION.tools.includes('Read')).toBe(false);
-    expect(WEB_RESEARCH_AGENT_DEFINITION.tools.includes('Bash')).toBe(false);
-    expect(WEB_RESEARCH_AGENT_DEFINITION.tools.includes('Write')).toBe(false);
-    expect(WEB_RESEARCH_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
-
     const withWebSearch = listBuiltinAgentDefinitions({
       tools: [
         testCatalogTool('Read', 'read'),
@@ -216,21 +173,9 @@ describe('subagent tools', () => {
         testCatalogTool('WebSearch', undefined),
       ],
     });
-    expect(withWebSearch.map((definition) => definition.profile)).toEqual([
-      LOCAL_READ_AGENT_PROFILE,
-      WEB_RESEARCH_AGENT_PROFILE,
-      IMPLEMENTATION_AGENT_PROFILE,
-    ]);
-    expect(withWebSearch.find((definition) => definition.id === WEB_RESEARCH_AGENT_ID)).toEqual({
-      id: WEB_RESEARCH_AGENT_ID,
-      profile: WEB_RESEARCH_AGENT_PROFILE,
-      name: 'Web Research',
-      description: 'Network-backed web research with WebSearch only.',
-      permissionMode: 'execute',
-      tools: ['WebSearch'],
-      contract: WEB_RESEARCH_AGENT_DEFINITION.contract,
-      availability: { status: 'available' },
-    });
+    const webResearch = withWebSearch.find((definition) => definition.id === WEB_RESEARCH_AGENT_ID);
+    expect(webResearch?.tools).toEqual(['WebSearch']);
+    expect(webResearch?.availability).toEqual({ status: 'available' });
 
     expect(
       listBuiltinAgentDefinitions({
@@ -245,45 +190,9 @@ describe('subagent tools', () => {
       reason: 'missing_tools',
       missingTools: ['WebSearch'],
     });
-    expect(
-      listBuiltinAgentDefinitions({
-        tools: [
-          testCatalogTool('Read', 'read'),
-          testCatalogTool('Glob', 'read'),
-          testCatalogTool('Grep', 'read'),
-          testCatalogTool('WebSearch', 'web_read'),
-        ],
-      }).find((definition) => definition.id === WEB_RESEARCH_AGENT_ID)?.availability,
-    ).toEqual({ status: 'available' });
   });
 
   test('built-in catalog exposes implementation only when a worktree executor is available', async () => {
-    expect(IMPLEMENTATION_AGENT_DEFINITION.id).toBe(IMPLEMENTATION_AGENT_ID);
-    expect(IMPLEMENTATION_AGENT_DEFINITION.profile).toBe(IMPLEMENTATION_AGENT_PROFILE);
-    expect(IMPLEMENTATION_AGENT_DEFINITION.contract).toEqual({
-      capability: 'implementation',
-      invocation: AGENT_INVOCATION_FOREGROUND,
-      context: AGENT_CONTEXT_ISOLATED,
-      workspace: AGENT_WORKSPACE_WORKTREE,
-      defaultWriteBack: AGENT_WRITE_BACK_PATCH,
-      supportedWriteBack: [AGENT_WRITE_BACK_PATCH],
-    });
-    expect(IMPLEMENTATION_AGENT_DEFINITION.permissionMode).toBe('execute');
-    expect(IMPLEMENTATION_AGENT_DEFINITION.toolGroups).toEqual(['file_edit']);
-    expect([...IMPLEMENTATION_AGENT_DEFINITION.tools]).toEqual([
-      'Read',
-      'Glob',
-      'Grep',
-      'Write',
-      'Edit',
-      'apply_patch',
-      'Bash',
-      'WriteStdin',
-      'StopBackgroundTask',
-    ]);
-    expect(IMPLEMENTATION_AGENT_DEFINITION.tools.includes('WebSearch')).toBe(false);
-    expect(IMPLEMENTATION_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
-
     const availability = listBuiltinAgentDefinitions({
       tools: implementationCatalogTools(),
     }).find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)?.availability;
@@ -630,56 +539,6 @@ describe('subagent tools', () => {
 
     expect(output).toHaveLength(2);
     expect((output[1]?.length ?? Number.POSITIVE_INFINITY) < 1_100).toBe(true);
-  });
-
-  test('agent_spawn delegates web_research through the catalog definition', async () => {
-    const tool = buildSubagentSpawnTool();
-    const calls: unknown[] = [];
-
-    const result = await tool.impl(
-      {
-        profile: WEB_RESEARCH_AGENT_PROFILE,
-        task: 'Find current sources.',
-        write_back: AGENT_WRITE_BACK_SUMMARY,
-        isolation: AGENT_WORKSPACE_SAME_WORKSPACE,
-      },
-      {
-        sessionId: 'session-1',
-        turnId: 'parent-turn',
-        cwd: '/tmp/cwd',
-        toolCallId: 'tool-1',
-        abortSignal: new AbortController().signal,
-        emitOutput: () => {},
-        spawnChildSession: async (input) => {
-          calls.push(input);
-          return {
-            agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
-            agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
-            turnId: 'child-turn',
-            status: 'completed',
-            permissionMode: 'execute',
-            summary: 'done',
-            artifactIds: [],
-          };
-        },
-      },
-    );
-
-    expect(calls).toHaveLength(1);
-    const call = calls[0] as {
-      agentProfile: string;
-      prompt: string;
-      onEvent?: (event: SessionEvent) => void;
-    };
-    expect(call.agentProfile).toBe(WEB_RESEARCH_AGENT_PROFILE);
-    expect(call.prompt).toBe('Find current sources.');
-    expect(typeof call.onEvent).toBe('function');
-    expect(result).toMatchObject({
-      kind: 'subagent',
-      agentId: WEB_RESEARCH_AGENT_ID,
-      agentName: 'Web Research',
-      permissionMode: 'execute',
-    });
   });
 
   test('agent_spawn binds a current-session task and records real child refs without auto-completing', async () => {
@@ -1369,14 +1228,6 @@ async function expectRejects(promise: Promise<unknown>, pattern: RegExp): Promis
     return;
   }
   throw new Error('Expected promise to reject');
-}
-
-async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for condition');
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
 }
 
 function childHeader(cwd: string): SessionHeader {

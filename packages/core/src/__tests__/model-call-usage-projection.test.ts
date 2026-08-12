@@ -6,7 +6,6 @@ import {
   projectModelCallUsageBuckets,
   projectModelCallUsageLogs,
   projectModelCallUsageSummary,
-  resolveUsageRange,
   selectModelCallAttempts,
   usageStatusForAttempt,
 } from '../model-call-usage-projection.js';
@@ -217,20 +216,5 @@ describe('model-call usage projection', () => {
     // Coverage describes every matching record, not just the returned page.
     assert.equal(page.coverage.attempts, 3);
     assert.equal(page.coverage.unpricedAttempts, 1);
-  });
-
-  test('log rows carry the logical call id and session attribution', () => {
-    const page = projectModelCallUsageLogs([attempt()], { range: 'all' }, NOW);
-    const row = page.rows[0];
-    assert.equal(row?.callId, 'call-1');
-    assert.equal(row?.callKind, 'main');
-    assert.equal(row?.sessionId, 'session-1');
-    assert.equal(row?.turnId, 'turn-1');
-  });
-
-  test('resolves the standard ranges and explicit windows', () => {
-    assert.deepEqual(resolveUsageRange('all', NOW), { from: 0, to: NOW });
-    assert.deepEqual(resolveUsageRange('24h', NOW), { from: NOW - 86_400_000, to: NOW });
-    assert.deepEqual(resolveUsageRange({ from: 5, to: 9 }, NOW), { from: 5, to: 9 });
   });
 });

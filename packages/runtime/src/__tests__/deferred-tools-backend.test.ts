@@ -918,12 +918,6 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
   }
 }
 
-async function collect(iterable: AsyncIterable<SessionEvent>): Promise<SessionEvent[]> {
-  const events: SessionEvent[] = [];
-  for await (const event of iterable) events.push(event);
-  return events;
-}
-
 function header(permissionMode: SessionHeader['permissionMode'] = 'ask'): SessionHeader {
   return {
     id: 'session-1',

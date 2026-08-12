@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 
 import { DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS } from '@maka/runtime/computer-use-tools';
 
@@ -542,17 +541,6 @@ test('cancel during first fade restores full opacity for the next move', () => {
 
   engine.paint(ctx, 0, 0);
   assert.equal(globalAlpha, 1);
-});
-
-test('overlay cancel waits for the renderer frame before reporting finished', async () => {
-  const source = await readFile(
-    new URL('../../../src/overlay/cursor-overlay.ts', import.meta.url),
-    'utf8',
-  );
-  const cancelBlock = source.match(/onCancel\(\(p\) => \{([\s\S]*?)\n\}\);/)?.[1] ?? '';
-  assert.match(cancelBlock, /engine\.cancel\(\)/);
-  assert.match(cancelBlock, /kick\(\)/);
-  assert.doesNotMatch(cancelBlock, /reportPhase\('finished'\)/);
 });
 
 test('click press animation clears over about 0.25 seconds', () => {

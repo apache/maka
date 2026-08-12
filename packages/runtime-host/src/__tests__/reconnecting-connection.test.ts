@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createRuntimeHostReconnectingConnection,
+  remoteRuntimeHostUnavailableError,
   RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
   RuntimeHostRequestInterruptedError,
@@ -156,6 +157,34 @@ test('a reconnecting Client rejects a different Host composition permanently', a
 
   assert.ok(fatalError instanceof RuntimeHostPermanentReconnectError);
   assert.match(fatalError.message, /composition changed/u);
+  await connection.close();
+});
+
+test('a reconnecting Client stops after its remote credential is rejected', async () => {
+  const first = connectionHarness('first', () => undefined);
+  let attempts = 0;
+  let fatalError: Error | undefined;
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection: first.connection,
+    connect: async () => {
+      attempts += 1;
+      throw remoteRuntimeHostUnavailableError(
+        'Runtime Host profile office',
+        'authentication_failed',
+      );
+    },
+    backoff: { minMs: 0, maxMs: 0 },
+    onFatalError: (error) => {
+      fatalError = error;
+    },
+  });
+
+  first.disconnect();
+  await connection.closed;
+
+  assert.equal(attempts, 1);
+  assert.ok(fatalError instanceof RuntimeHostPermanentReconnectError);
+  assert.match(fatalError.message, /rejected its access credential/u);
   await connection.close();
 });
 

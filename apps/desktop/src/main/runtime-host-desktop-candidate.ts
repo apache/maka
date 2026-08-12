@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
@@ -5,10 +6,11 @@ import type { SessionChangedEvent, SessionChangedReason } from '@maka/core/sessi
 import type { BotRegistry } from '@maka/runtime/bots';
 import {
   connectOrSpawnRuntimeHost,
-  waitForRuntimeHostReady,
+  connectRemoteRuntimeHostProfile,
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostConnection,
+  type RemoteRuntimeHostProfile,
 } from "@maka/runtime-host/client";
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -57,9 +59,12 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly resizeImage: (bytes: Uint8Array) => Promise<Uint8Array>;
   readonly nativeCapabilities: DesktopNativeCapabilityProviderInput;
   readonly botRegistry: BotRegistry;
-  readonly resolveBotCreateTarget: () => Promise<{ readonly workspace: WorkspaceTarget }>;
+  readonly resolveBotCreateTarget: (
+    target: DesktopRuntimeHostTargetPolicy,
+  ) => Promise<{ readonly workspace: WorkspaceTarget }>;
   readonly resolveSessionCreateProject: (
     input: Pick<CreateSessionRequestInput, "cwd" | "projectId">,
+    target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<WorkspaceTarget>;
   readonly emitSessionsChanged: (
     reason: SessionChangedReason,
@@ -73,6 +78,8 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly sendToRenderer?: RuntimeHostSessionDomainsIpcDeps["sendToRenderer"];
   readonly onError?: RuntimeHostSessionDomainsIpcDeps["onError"];
+  readonly isTargetActive?: () => boolean;
+  readonly isTargetValid?: () => boolean;
   readonly newId?: () => string;
   readonly now?: () => number;
   readonly createSessionCopyCleanup: (input: {
@@ -88,8 +95,17 @@ export interface DesktopRuntimeHostCandidateDeps {
     client: DesktopRuntimeHostClient,
     ipcMain: ReconnectableReadIpcMain,
     controls: DesktopRuntimeHostCandidateControls,
+    target: DesktopRuntimeHostTargetPolicy,
+    isTargetActive: () => boolean,
   ) => void | (() => void | Promise<void>);
 }
+
+export type DesktopRuntimeHostTargetPolicy =
+  | { readonly kind: "local"; readonly rootId: string }
+  | {
+      readonly kind: "remote";
+      readonly rootId: string;
+    };
 
 export interface DesktopRuntimeHostCandidateControls {
   refreshClientCapabilities(): Promise<void>;
@@ -105,6 +121,10 @@ export interface DesktopRuntimeHostCandidateStartInput extends DesktopRuntimeHos
   readonly generation?: string;
   readonly takeoverHostEpoch?: string;
   readonly signal?: AbortSignal;
+  readonly remote?: {
+    readonly profile: RemoteRuntimeHostProfile;
+    readonly credential: string;
+  };
 }
 
 export type DesktopRuntimeHostCandidateStartResult =
@@ -118,7 +138,7 @@ export interface DesktopRuntimeHostCandidate {
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
-  readonly hostLifecycleMode: HostRegistration["lifecycleMode"];
+  readonly hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote";
   stopSession(sessionId: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -127,7 +147,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
-  readonly hostLifecycleMode: HostRegistration["lifecycleMode"];
+  readonly hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote";
   readonly #client: DesktopRuntimeHostClient;
   readonly #observer: RuntimeHostSessionObserver;
   readonly #ipc: ScopedIpcMain;
@@ -152,7 +172,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     detachSessionObservations: () => void;
     closeSessionObservations: () => Promise<void>;
     connectionClosed: Promise<void>;
-    hostLifecycleMode: HostRegistration["lifecycleMode"];
+    hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote";
     hasRegisteredCapabilities: () => boolean;
     stopSession: (sessionId: string) => Promise<void>;
   }) {
@@ -212,14 +232,16 @@ export async function startDesktopRuntimeHostCandidate(
   input: DesktopRuntimeHostCandidateStartInput,
   observationRegistry?: RuntimeHostSessionObservationRegistry,
 ): Promise<DesktopRuntimeHostCandidateStartResult> {
+  if (input.remote) {
+    return startRemoteDesktopRuntimeHostCandidate(
+      input,
+      input.remote,
+      observationRegistry,
+    );
+  }
   const connection = await connectOrSpawnRuntimeHost(connectInput(input));
   if (connection.kind !== "connected") return connection;
   try {
-    await waitForRuntimeHostReady(
-      connection.connection,
-      input.electionDeadlineMs ?? 45_000,
-      input.signal,
-    );
     return {
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(
@@ -227,6 +249,7 @@ export async function startDesktopRuntimeHostCandidate(
         input,
         observationRegistry,
         connection.registration.lifecycleMode,
+        { kind: "local", rootId: connection.connection.rootId },
       ),
     };
   } catch (error) {
@@ -235,14 +258,78 @@ export async function startDesktopRuntimeHostCandidate(
   }
 }
 
+async function startRemoteDesktopRuntimeHostCandidate(
+  input: DesktopRuntimeHostCandidateStartInput,
+  remote: NonNullable<DesktopRuntimeHostCandidateStartInput["remote"]>,
+  observationRegistry?: RuntimeHostSessionObservationRegistry,
+): Promise<DesktopRuntimeHostCandidateStartResult> {
+  const connection = await connectRemoteRuntimeHostProfile({
+    profile: remote.profile,
+    credential: remote.credential,
+    surface: "desktop",
+    clientInstanceId: input.clientInstanceId ?? randomUUID(),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+    ...(input.connectTimeoutMs === undefined
+      ? {}
+      : { connectTimeoutMs: input.connectTimeoutMs }),
+    ...(input.handshakeTimeoutMs === undefined
+      ? {}
+      : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+    readyTimeoutMs: input.electionDeadlineMs ?? 45_000,
+  });
+  try {
+    return {
+      kind: "ready",
+      candidate: await createDesktopRuntimeHostCandidate(
+        connection,
+        input,
+        observationRegistry,
+        "remote",
+        {
+          kind: "remote",
+          rootId: remote.profile.rootId,
+        },
+      ),
+    };
+  } catch (error) {
+    await connection.close().catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function createDesktopRuntimeHostCandidate(
   connection: RuntimeHostConnection,
   deps: DesktopRuntimeHostCandidateDeps,
   observationRegistry?: RuntimeHostSessionObservationRegistry,
-  hostLifecycleMode?: HostRegistration["lifecycleMode"],
+  hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote" = "ephemeral",
+  target: DesktopRuntimeHostTargetPolicy = {
+    kind: "local",
+    rootId: connection.rootId,
+  },
 ): Promise<DesktopRuntimeHostCandidate> {
   const client = new DesktopRuntimeHostClient(connection);
   const ipc = new ScopedIpcMain(deps.ipcMain);
+  const isTargetActive = deps.isTargetActive ?? (() => true);
+  const emitSessionsChanged: DesktopRuntimeHostCandidateDeps["emitSessionsChanged"] = (
+    reason,
+    sessionId,
+    extra,
+  ) => {
+    if (isTargetActive()) deps.emitSessionsChanged(reason, sessionId, extra);
+  };
+  const emitModeChanged: DesktopRuntimeHostCandidateDeps["emitModeChanged"] = (
+    ...args
+  ) => {
+    if (isTargetActive()) deps.emitModeChanged(...args);
+  };
+  const sendToRenderer: DesktopRuntimeHostCandidateDeps["sendToRenderer"] = (
+    ...args
+  ) => {
+    if (isTargetActive()) deps.sendToRenderer?.(...args);
+  };
+  const reportError = (error: unknown): void => {
+    if (isTargetActive()) deps.onError?.(error);
+  };
   const sessionObservations =
     observationRegistry ??
     new RuntimeHostSessionObservationRegistry((error) => deps.onError?.(error));
@@ -309,7 +396,7 @@ export async function createDesktopRuntimeHostCandidate(
       sessionId: string,
       interactions: readonly ActiveInteractionRequestEvent[],
     ): void => {
-      deps.sendToRenderer?.('sessions:active-interactions-changed', {
+      sendToRenderer?.('sessions:active-interactions-changed', {
         sessionId,
         interactions,
       });
@@ -317,7 +404,7 @@ export async function createDesktopRuntimeHostCandidate(
     const sessionObserver = new RuntimeHostSessionObserver({
       client,
       emitSessionsChanged: (reason, sessionId, extra) =>
-        deps.emitSessionsChanged(reason, sessionId, extra),
+        emitSessionsChanged(reason, sessionId, extra),
       emitSessionDomainChanged: (change) => domains?.sessionDomainChanged(change),
       emitRuntimeResourcePtyData: (event) => domains?.runtimeResourcePtyData(event),
       emitAgentGraphChanged: (event) => domains?.agentGraphChanged(event),
@@ -336,9 +423,9 @@ export async function createDesktopRuntimeHostCandidate(
       {
         client,
         sessionObserver,
-        emitModeChanged: deps.emitModeChanged,
-        ...(deps.sendToRenderer ? { sendToRenderer: deps.sendToRenderer } : {}),
-        ...(deps.onError ? { onError: deps.onError } : {}),
+        emitModeChanged,
+        ...(deps.sendToRenderer ? { sendToRenderer } : {}),
+        ...(deps.onError ? { onError: reportError } : {}),
         ...(deps.newId ? { newId: deps.newId } : {}),
         ...(deps.now ? { now: deps.now } : {}),
       },
@@ -348,8 +435,8 @@ export async function createDesktopRuntimeHostCandidate(
     const restoredSessionIds = await sessionObservations.attach(sessionObserver);
     observationsAttached = true;
     for (const sessionId of restoredSessionIds) {
-      deps.emitSessionsChanged("message-appended", sessionId);
-      deps.emitSessionsChanged("goal-change", sessionId);
+      emitSessionsChanged("message-appended", sessionId);
+      emitSessionsChanged("goal-change", sessionId);
       domains.sessionSubscriptionRecovered(sessionId);
       emitActiveInteractionsChanged(
         sessionId,
@@ -359,16 +446,19 @@ export async function createDesktopRuntimeHostCandidate(
     const watchComputerUseTurn = (sessionId: string, turnId: string): void => {
       void sessionObserver
         .watchTurn(sessionId, turnId)
-        .catch((error) => deps.onError?.(error));
+        .catch(reportError);
     };
     const createNativeProvider = (): DesktopNativeCapabilityProvider => {
       let provider: DesktopNativeCapabilityProvider;
       provider = createDesktopNativeCapabilityProvider(
         deps.nativeCapabilities,
         {
+          hostPathAccess: target.kind === "local" ? "cwd" : "none",
+          ...(target.kind === "remote" ? { clientCwd: deps.workspaceRoot } : {}),
           releaseResourcesOnClose: false,
           onSessionUsed: (sessionId) => nativeSessionIds.add(sessionId),
           onComputerUseTurnUsed: watchComputerUseTurn,
+          isTargetValid: deps.isTargetValid,
           onClosed: () => providers.delete(provider),
         },
       );
@@ -403,8 +493,8 @@ export async function createDesktopRuntimeHostCandidate(
       removeSession: async (sessionId) => {
         const disposition = await client.removeSessionCopy(sessionId);
         if (disposition === "retained") return disposition;
-        await releaseNativeSession(sessionId).catch((error) => deps.onError?.(error));
-        deps.emitSessionsChanged("deleted", sessionId);
+        await releaseNativeSession(sessionId).catch(reportError);
+        emitSessionsChanged("deleted", sessionId);
         return disposition;
       },
       resumeSessionCopy: async ({ sessionId, kind, sourceSessionId, sourceTurnId }) => {
@@ -415,9 +505,13 @@ export async function createDesktopRuntimeHostCandidate(
         });
       },
     });
-    const registeredClientIpc = deps.registerClientIpc?.(client, ipc, {
-      refreshClientCapabilities,
-    });
+    const registeredClientIpc = deps.registerClientIpc?.(
+      client,
+      ipc,
+      { refreshClientCapabilities },
+      target,
+      isTargetActive,
+    );
     disposeClientIpc =
       typeof registeredClientIpc === "function"
         ? registeredClientIpc
@@ -425,8 +519,8 @@ export async function createDesktopRuntimeHostCandidate(
     registerRuntimeHostSessionCatalogIpc(
       {
         client,
-        resolveCreateProject: deps.resolveSessionCreateProject,
-        emitSessionsChanged: deps.emitSessionsChanged,
+        resolveCreateProject: (input) => deps.resolveSessionCreateProject(input, target),
+        emitSessionsChanged,
         releaseSessionResources: releaseNativeSession,
         sessionCopyCleanup,
         ...(deps.newId ? { newId: deps.newId } : {}),
@@ -436,7 +530,7 @@ export async function createDesktopRuntimeHostCandidate(
     registerRuntimeHostExternalSessionsIpc(
       {
         client,
-        emitSessionsChanged: deps.emitSessionsChanged,
+        emitSessionsChanged,
       },
       ipc,
     );
@@ -446,12 +540,12 @@ export async function createDesktopRuntimeHostCandidate(
         observer: sessionObserver,
         observations: sessionObservations,
         attachmentApprovals: deps.attachmentApprovals,
-        emitSessionsChanged: deps.emitSessionsChanged,
+        emitSessionsChanged,
         stat: deps.stat,
         resizeImage: deps.resizeImage,
         beforeStop: deps.nativeCapabilities.releaseComputerUseSession,
         sessionCopyCleanup,
-        onBackgroundError: (error) => deps.onError?.(error),
+        onBackgroundError: reportError,
         ...(deps.e2eInteractions
           ? { e2eInteractions: deps.e2eInteractions }
           : {}),
@@ -463,8 +557,8 @@ export async function createDesktopRuntimeHostCandidate(
       botRegistry: deps.botRegistry,
       sessions: createRuntimeHostBotSessionAdapter({
         client,
-        resolveCreateTarget: deps.resolveBotCreateTarget,
-        emitSessionsChanged: deps.emitSessionsChanged,
+        resolveCreateTarget: () => deps.resolveBotCreateTarget(target),
+        emitSessionsChanged,
         ...(deps.newId ? { newId: deps.newId } : {}),
       }),
     });

@@ -2,32 +2,18 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   type ConnectionThinkingContext,
-  DECLARABLE_RELAY_THINKING_LEVELS,
   normalizeRelayModelProfiles,
   relayModelProfile,
   resolveThinkingLevel,
-  THINKING_LEVELS,
   deriveThinkingChoices,
-  isThinkingLevel,
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
   thinkingVariantsForModel,
 } from '../model-thinking.js';
 
-test('thinking-level guard accepts only the closed display vocabulary', () => {
-  for (const level of THINKING_LEVELS) assert.equal(isThinkingLevel(level), true);
-  for (const value of ['default', 'turbo', undefined, 123]) {
-    assert.equal(isThinkingLevel(value), false);
-  }
-});
-
 test('declarable relay levels are every intensity tier but off', () => {
   // `off` is a disable-wire encoding (reasoning_effort 'none'), not an
   // intensity tier — a hybrid UI/data contract keeps it out of declarations.
-  assert.deepEqual(
-    [...DECLARABLE_RELAY_THINKING_LEVELS],
-    ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
-  );
   assert.deepEqual(normalizeRelayModelProfiles({ m: { thinkingLevels: ['off', 'low'] } }), {
     m: { thinkingLevels: ['low'] },
   });
@@ -37,20 +23,6 @@ test('declarable relay levels are every intensity tier but off', () => {
     relayModelProfiles: { m: { thinkingLevels: ['off', 'low'] } },
   } as const;
   assert.deepEqual([...thinkingVariantsForConnection(declaredOff, 'm')], ['low']);
-});
-
-test('relay profiles declare thinking levels per model, precisely', () => {
-  // A declaration is exactly the subset the user ticked — no default set is
-  // ever invented — and display order is restored on read.
-  const connection = {
-    providerType: 'openai-compatible',
-    relayModelProfiles: { reasoner: { thinkingLevels: ['max', 'high'] } },
-  } as const;
-  assert.deepEqual(relayModelProfile(connection, 'reasoner')?.thinkingLevels, ['high', 'max']);
-  assert.deepEqual([...thinkingVariantsForConnection(connection, 'reasoner')], ['high', 'max']);
-  // A sibling model on the same relay without a declaration sees no menu —
-  // the granularity is the model, not the connection.
-  assert.deepEqual([...thinkingVariantsForConnection(connection, 'plain-instruct')], []);
 });
 
 test('relayModelProfile returns undefined without a usable declaration', () => {

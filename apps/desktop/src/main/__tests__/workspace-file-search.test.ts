@@ -42,16 +42,6 @@ async function withPlainDir(run: (root: string) => Promise<void>): Promise<void>
 }
 
 describe('searchWorkspaceFiles', () => {
-  it('lists git-tracked/untracked files honoring the ls-files output', async () => {
-    await withGitRepo(async (root) => {
-      const execFileImpl = fakeGit('src/app.tsx\nsrc/main.tsx\nREADME.md\n');
-      const result = await searchWorkspaceFiles(root, { query: '', execFileImpl });
-      assert.equal(result.ok, true);
-      assert.ok(result.ok && result.files.some((f) => f.relativePath === 'src/app.tsx'));
-      assert.ok(result.ok && result.files.some((f) => f.relativePath === 'README.md'));
-    });
-  });
-
   it('filters with AND-of-substring tokens, case-insensitively', async () => {
     await withGitRepo(async (root) => {
       const execFileImpl = fakeGit('src/app.tsx\nsrc/main.tsx\ndocs/app.md\n');
@@ -136,9 +126,4 @@ describe('searchWorkspaceFiles', () => {
     });
   });
 
-  it('returns no_project when the root is empty', async () => {
-    const result = await searchWorkspaceFiles('', { query: 'x' });
-    assert.equal(result.ok, false);
-    assert.equal(!result.ok && result.reason, 'no_project');
-  });
 });

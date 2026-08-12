@@ -20,6 +20,7 @@ import {
 import { deriveMemorySettingsViewModel } from './memory-settings-view-model';
 import { useKeyedActionGuard } from './use-action-guard';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
+import { readScrollMotionBehavior } from '../scroll-motion-policy';
 
 export interface MemoryDocumentControllerProps {
   settings: AppSettings;
@@ -421,7 +422,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
       editorRef.current?.setSelectionRange(range.start, range.end);
       editorRef.current?.scrollIntoView({
         block: 'center',
-        behavior: 'smooth',
+        behavior: readScrollMotionBehavior(),
       });
     });
   }

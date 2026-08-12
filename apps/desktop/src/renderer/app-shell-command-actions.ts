@@ -48,6 +48,7 @@ export interface AppShellCommandListOptions {
   activeId: string | undefined;
   activePermissionMode: PermissionMode | undefined;
   canSetPermissionMode: boolean;
+  clientPathsAccessible: boolean;
   connections: LlmConnection[];
   defaultConnection: string | null;
   dailyReviewBridge: DailyReviewBridge;
@@ -167,8 +168,12 @@ export function buildAppShellCommandList(
     onOpenWorkspace: async () => {
       await optionsRef.current.openWorkspaceFolder();
     },
-    onOpenProjectFolder: () => optionsRef.current.openProjectFolder(),
-    onOpenSkillsFolder: () => optionsRef.current.openSkillsFolder(),
+    ...(options.clientPathsAccessible
+      ? {
+          onOpenProjectFolder: () => optionsRef.current.openProjectFolder(),
+          onOpenSkillsFolder: () => optionsRef.current.openSkillsFolder(),
+        }
+      : {}),
     onSelectModule: (selection) => {
       optionsRef.current.setNavSelection(selection);
     },

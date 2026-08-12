@@ -38,6 +38,6 @@
 .maka-search-modal-snippet-hit {
   padding: 0 var(--space-0-5);
   border-radius: var(--radius-control);
-  background: oklch(from var(--link) l c h / 0.14);
+  background: oklch(from var(--accent) l c h / 0.14);
   color: var(--foreground);
 }

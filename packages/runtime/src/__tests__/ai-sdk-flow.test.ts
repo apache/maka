@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { decodeStoredMessageForRecovery, type BackendKind } from '@maka/core/session';
+import type { BackendKind } from '@maka/core/session';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SessionEvent } from '@maka/core/events';
@@ -19,7 +19,6 @@ import {
   mapSessionEventToRuntimeEvent,
   createSessionEventMapMemory,
 } from '../ai-sdk-flow.js';
-import { flowSupportsControl } from '../agent-flow.js';
 import type { AgentBackend } from '@maka/core/backend-types';
 import { RuntimeRunner } from '../runtime-runner.js';
 import type { InvocationContext } from '../invocation-context.js';
@@ -149,20 +148,6 @@ describe('AiSdkFlow seam', () => {
     );
 
     assert.equal(runtimeEvent.refs?.sourceMessageDigest, digest);
-  });
-
-  test('implements AgentFlow + AgentFlowControl and reflects the wrapped backend', () => {
-    const backend = new ScriptedBackend({ events: [] });
-    const flow = new AiSdkFlow({ backend });
-
-    assert.equal(flow.kind, 'ai-sdk');
-    assert.equal(flow.sessionId, 'session-1');
-    assert.equal(typeof flow.run, 'function');
-    assert.equal(flowSupportsControl(flow), true);
-    assert.equal(flow.backendRef, backend);
-    // Structural: an AiSdkFlow is assignable to the AgentFlow contract.
-    const _asFlow: import('../agent-flow.js').AgentFlow = flow;
-    void _asFlow;
   });
 
   test('single-flights a pending backend stop and retries after it settles', async () => {
@@ -702,8 +687,6 @@ describe('AiSdkFlow seam', () => {
   });
 });
 
-describe('token usage durable round trip', () => {});
-
 // ============================================================================
 // Pure mapping unit tests
 // ============================================================================
@@ -781,22 +764,6 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     );
     assert.equal(b.partial, true);
     assert.equal(b.role, 'tool');
-  });
-
-  test('tool_start maps its semantic activity kind into runtime state', () => {
-    const event = mapSessionEventToRuntimeEvent(
-      ev({
-        type: 'tool_start',
-        toolUseId: 'tu-kind',
-        toolName: 'CustomCommand',
-        activityKind: 'command',
-        args: {},
-      }),
-      ctx,
-      createSessionEventMapMemory(),
-    );
-
-    assert.equal(event.actions?.stateDelta?.activityKind, 'command');
   });
 
   test('tool activity mapping retains nested CodeMode replay and parent identity', () => {

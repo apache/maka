@@ -184,11 +184,16 @@ export function useAppShellComposerAttachments(options: {
     );
   }
 
+  function clearAllAttachments(): void {
+    setPendingByKey({});
+  }
+
   return {
     pendingAttachments,
     pickAttachments,
     attachFilePaths,
     removeAttachment,
     clearSubmittedAttachments,
+    clearAllAttachments,
   };
 }

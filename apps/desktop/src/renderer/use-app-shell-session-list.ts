@@ -88,6 +88,12 @@ export function useAppShellSessionList(toastApi: ToastApi) {
     ));
   }
 
+  function clearSessions(): void {
+    sessionReadBoundariesRef.current = {};
+    commitSessions([]);
+    setAuthoritativeSessionIds(new Set());
+  }
+
   return {
     sessions,
     authoritativeSessionIds,
@@ -97,5 +103,6 @@ export function useAppShellSessionList(toastApi: ToastApi) {
     seedSessions,
     upsertSessionSummary,
     markSessionReadLocally,
+    clearSessions,
   };
 }

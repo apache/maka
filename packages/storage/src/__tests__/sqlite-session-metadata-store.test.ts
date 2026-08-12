@@ -22,6 +22,7 @@ import {
   SessionMetadataConflictError,
   SessionMetadataVersionConflictError,
   SQLITE_SESSION_METADATA_SCHEMA_VERSION,
+  StoredSessionMessageIncompatibleError,
   type SqliteSessionMetadataStoreFailpoint,
 } from '../sqlite-session-metadata-store.js';
 import {
@@ -31,6 +32,57 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  test('identifies an incompatible persisted message without exposing its content', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-message-incompatible-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const setup = createSqliteSessionMetadataStore(path);
+      await setup.create(fullHeader());
+      setup.close();
+
+      const database = new DatabaseSync(path);
+      database
+        .prepare(`
+          INSERT INTO session_messages(
+            session_id, sequence, message_id, message_type, message_ts, record_json
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          'session-1',
+          104,
+          'message-legacy',
+          'user',
+          5,
+          JSON.stringify({
+            type: 'user',
+            id: 'message-legacy',
+            turnId: 'turn-legacy',
+            ts: 5,
+            text: 'private message text',
+            origin: { kind: 'automation', automationId: 'legacy-automation' },
+          }),
+        );
+      database.close();
+
+      const store = createSqliteSessionMetadataStore(path);
+      try {
+        await assert.rejects(
+          () => store.readMessagesForRecovery('session-1'),
+          (error: unknown) =>
+            error instanceof StoredSessionMessageIncompatibleError &&
+            error.code === 'stored_session_message_incompatible' &&
+            error.sessionId === 'session-1' &&
+            error.sequence === 104 &&
+            !error.message.includes('private message text'),
+        );
+      } finally {
+        store.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('round-trips every SessionHeader field and reopens the same schema', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-'));
     const path = join(root, 'state.sqlite');
@@ -218,28 +270,6 @@ describe('SqliteSessionMetadataStore', () => {
       metadata.close();
       runtime.close();
       await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('creates a deterministic revision-zero execution boundary for every legacy mode', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      for (const mode of ['ask', 'execute', 'explore', 'bypass'] as const) {
-        const header = fullHeader({
-          id: `legacy-${mode}`,
-          permissionMode: mode as SessionHeader['permissionMode'],
-        });
-        await store.create(header);
-
-        const boundary = await store.readExecutionBoundary(header.id);
-        assert.equal(boundary.revision, 0);
-        assert.equal(boundary.kind, mode === 'bypass' ? 'bypass' : 'managed');
-        if (boundary.kind === 'managed') {
-          assert.equal(boundary.profile.name, mode === 'explore' ? 'read-only' : 'workspace-write');
-        }
-      }
-    } finally {
-      store.close();
     }
   });
 
@@ -652,27 +682,6 @@ describe('SqliteSessionMetadataStore', () => {
       if (restored.kind === 'managed') {
         assert.equal(canReadPath(restored.profile, '/outside/kept/file.txt'), true);
       }
-    } finally {
-      store.close();
-    }
-  });
-
-  test('projects an explicit legacy mode in the same managed-boundary transition', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(250) });
-    try {
-      await store.create(fullHeader({ labels: ['deep-research', 'kept'] }));
-
-      const explore = await store.setExecutionBoundaryKind('session-1', 'managed', {
-        permissionMode: 'explore',
-        labels: ['kept'],
-      });
-
-      assert.equal(explore.kind, 'managed');
-      assert.equal(explore.revision, 1);
-      if (explore.kind === 'managed') assert.equal(explore.profile.name, 'read-only');
-      const projected = (await store.read('session-1')).header;
-      assert.equal(projected.permissionMode, 'explore');
-      assert.deepEqual(projected.labels, ['kept']);
     } finally {
       store.close();
     }

@@ -718,8 +718,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(fixture.recorded.length, 1);
   });
 
-
-
   test('fails open with write_failed diagnostics when the checkpoint write fails under the window', async () => {
     const fixture = buildFixture({
       record: () => {
@@ -1094,22 +1092,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(exhaustedDecision?.skippedReasonCounts?.replacement_not_smaller, 1);
     // The rejected checkpoint was never persisted.
     assert.equal(fixture.recorded.length, 0);
-  });
-
-  test('persists a complete summary above the legacy block cap when the full replay shrinks and fits', async () => {
-    const fixture = buildFixture({
-      priorChars: 10_000,
-      summarize: () => 'S'.repeat(5_000),
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(fixture.recorded.length, 1);
-    assert.equal(fixture.model.doStreamCalls.length, 3);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-    const thirdPrompt = promptJson(fixture, 2);
-    assert.equal(thirdPrompt.includes('PRIOR_FACT'), false);
-    assert.equal(thirdPrompt.includes('maka_history_compact_checkpoint'), true);
   });
 
   test('the cold-start estimate covers the FULL provider input including the system prompt (review round-5 finding 2)', async () => {

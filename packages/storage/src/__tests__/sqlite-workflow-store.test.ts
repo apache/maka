@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { createSqliteDeepResearchStore } from '../deep-research-store.js';
-import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import { openInteractiveScheduledTaskStoreForWrite } from '../scheduled-task-store.js';
 import { createSqlitePlanStore } from '../plan-store.js';
 import { createSqliteTaskLedgerStore } from '../task-ledger-store.js';
@@ -417,89 +416,6 @@ async function scheduledTaskStoreRoot(root: string) {
     owner,
     open: () => openInteractiveScheduledTaskStoreForWrite(owner.lease),
   };
-}
-
-function seedLegacyPlanLedger(root: string, eventCount = 3): void {
-  const lease = acquireOperationalStateDatabase(root);
-  try {
-    // Each dimension exceeds its projection bound by just enough to force
-    // truncation: 51 files > PLAN_MAX_FILES_PER_STEP, 21 risks >
-    // PLAN_MAX_RISKS, 31 title chars > PLAN_STEP_TITLE_MAX_CHARS, and four
-    // 4_000-byte descriptions oversubscribe PLAN_PROJECTION_ITEM_MAX_BYTES so
-    // the shared text budget must settle below 4_000 bytes.
-    const steps = Array.from({ length: 4 }, (_, index) => ({
-      id: `legacy step ${index}`,
-      title: '"'.repeat(31),
-      description: '"'.repeat(4_000),
-      files: Array.from({ length: 51 }, () => '"'.repeat(100)),
-    }));
-    const proposal = {
-      planId: 'legacy-plan',
-      proposalId: 'legacy-proposal',
-      sessionId: SESSION_ID,
-      turnId: 'legacy-turn',
-      revision: 1,
-      title: '"'.repeat(16 * 1024),
-      steps,
-      risks: Array.from({ length: 21 }, (_, index) => `Legacy risk ${index}`),
-      status: 'pending_approval',
-      submittedAt: 1,
-    };
-    const execution = {
-      executionId: 'legacy-execution',
-      planId: proposal.planId,
-      proposalId: proposal.proposalId,
-      sessionId: SESSION_ID,
-      status: 'active',
-      steps: steps.map((step) => ({ ...step, status: 'pending', updatedAt: 2 })),
-      startedAt: 2,
-      updatedAt: 2,
-    };
-    const events = [
-      {
-        type: 'plan_submitted',
-        id: 'legacy-submit',
-        sessionId: SESSION_ID,
-        ts: 1,
-        storeVersion: 1,
-        proposal,
-      },
-      {
-        type: 'plan_approved',
-        id: 'legacy-approve',
-        sessionId: SESSION_ID,
-        ts: 2,
-        storeVersion: 2,
-        proposalId: proposal.proposalId,
-        execution,
-      },
-      {
-        type: 'plan_progress_updated',
-        id: 'legacy-progress',
-        sessionId: SESSION_ID,
-        ts: 3,
-        storeVersion: 3,
-        executionId: execution.executionId,
-        steps: execution.steps.map((step, index) => ({
-          ...step,
-          status: index === 0 ? 'in_progress' : 'pending',
-          note: '"'.repeat(4_000),
-          updatedAt: 3,
-        })),
-        explanation: '"'.repeat(16 * 1024),
-      },
-    ];
-    const insert = lease.database.prepare(`
-      INSERT INTO workflow_plan_events(
-        session_id, sequence, event_id, store_version, record_json
-      ) VALUES (?, ?, ?, ?, ?)
-    `);
-    events.slice(0, eventCount).forEach((event, sequence) => {
-      insert.run(SESSION_ID, sequence, event.id, event.storeVersion, JSON.stringify(event));
-    });
-  } finally {
-    lease.close();
-  }
 }
 
 async function withRoot(run: (root: string) => Promise<void>): Promise<void> {

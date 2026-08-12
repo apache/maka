@@ -333,6 +333,7 @@ function AppShellContent({
     setActiveId,
     startNewSession,
     clearOwnedSessionState,
+    clearRuntimeHostSessionState,
     messages,
     setMessages,
     messageLoadPending,
@@ -367,10 +368,15 @@ function AppShellContent({
     attachFilePaths,
     removeAttachment,
     clearSubmittedAttachments,
+    clearAllAttachments,
   } = useAppShellComposerAttachments({ draftKey: attachmentDraftKey, toastApi });
-  const { pendingQuotes, addQuote, removeQuote, clearQuotes } = useAppShellComposerQuotes({
-    draftKey: attachmentDraftKey,
-  });
+  const {
+    pendingQuotes,
+    addQuote,
+    removeQuote,
+    clearQuotes,
+    clearAllQuotes,
+  } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
   const [scheduledTaskCreateRequestNonce, setScheduledTaskCreateRequestNonce] = useState(0);
   const [pendingCollaborationModeBySession, setPendingCollaborationModeBySession] = useState<Record<string, boolean>>({});
@@ -406,7 +412,7 @@ function AppShellContent({
   // injected into the system prompt). State and the fire-and-forget refresh
   // live in `useShellMemoryPill`; recompute is triggered on mount (bootstrap
   // subscriptions) and when Settings closes (closeSettings).
-  const { memoryActive, refreshMemoryActive } = useShellMemoryPill({ toastApi, uiLocale });
+  const { memoryActive, clearMemoryActive, refreshMemoryActive } = useShellMemoryPill({ toastApi, uiLocale });
   const {
     connections,
     defaultConnection,
@@ -827,6 +833,26 @@ function AppShellContent({
     orchestrationModeChangeRegistry.keysRef.current.delete(sessionId);
     setPendingOrchestrationModeBySession((current) => omitSessionKey(current, sessionId));
     sessionModelChangeRegistry.keysRef.current.delete(sessionId);
+  }
+
+  function clearRuntimeHostRendererState(): void {
+    clearRuntimeHostSessionState();
+    interactionHydrationEpochRef.current.clear();
+    turnActionRegistry.clearAll();
+    sessionRowActionRegistry.clearAll();
+    permissionModeChangeRegistry.clearAll();
+    collaborationModeChangeRegistry.clearAll();
+    orchestrationModeChangeRegistry.clearAll();
+    sessionModelChangeRegistry.clearAll();
+    setPendingCollaborationModeBySession({});
+    setPendingOrchestrationModeBySession({});
+    clearRuntimeHostProjectState();
+    clearRuntimeHostModuleData();
+    clearMemoryActive();
+    setConnections([]);
+    setDefaultConnection(null);
+    clearAllAttachments();
+    clearAllQuotes();
   }
 
   const sessionRowActionHandlers = useStableActions(createAppShellSessionRowActions, {
@@ -1651,6 +1677,7 @@ function AppShellContent({
     managedSkillSources,
     bundledSkillCatalog,
     scheduledTasks,
+    clearRuntimeHostModuleData,
     refreshScheduledTasks,
     createScheduledTask,
     updateScheduledTask,
@@ -1686,12 +1713,14 @@ function AppShellContent({
   const {
     projectInfo,
     projects,
+    projectCapabilities,
     selectedProjectId,
     currentProjectId,
     currentProject,
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
+    clearRuntimeHostProjectState,
     refreshAppInfo,
     refreshProjects,
     addProject,
@@ -1723,23 +1752,25 @@ function AppShellContent({
   const workspacePicker: WorkspacePickerModel = {
     label:
       currentProject?.name ??
-      (currentProjectId === null
+      (currentProjectId === null && projectCapabilities.selectNoProject
         ? getConversationCopy(uiLocale).workspace.noProject
         : undefined),
     branch: currentProjectId === null ? null : projectInfo?.projectGit.branch,
     pending: projectPickerPending,
     projects: projects.filter((project) => project.archivedAt === undefined),
     selectedProjectId: currentProjectId,
-    onAdd: () => {
-      void addProject();
-    },
+    ...(projectCapabilities.chooseClientDirectory
+      ? { onAdd: () => void addProject() }
+      : {}),
     onSelectProject: (projectId: string) => {
       void selectProject(projectId);
     },
-    onRelink: (projectId: string) => {
-      void relinkProject(projectId, true);
-    },
-    onSelectNoProject: selectNoProject,
+    ...(projectCapabilities.chooseClientDirectory
+      ? { onRelink: (projectId: string) => void relinkProject(projectId, true) }
+      : {}),
+    ...(projectCapabilities.selectNoProject
+      ? { onSelectNoProject: selectNoProject }
+      : {}),
   };
   const taskReadinessRequest = {
     ...resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
@@ -1789,9 +1820,9 @@ function AppShellContent({
     onRename: renameProject,
     onArchive: archiveProject,
     onRestore: restoreProject,
-    onRelink: async (projectId) => {
-      await relinkProject(projectId);
-    },
+    ...(projectCapabilities.chooseClientDirectory
+      ? { onRelink: (projectId: string) => relinkProject(projectId).then(() => undefined) }
+      : {}),
   };
 
   // Composer mention popups: `/` uses Runtime's session/project-aware,
@@ -2222,6 +2253,7 @@ function AppShellContent({
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
     confirmLiveTurn,
     clearSessionRendererState,
+    clearRuntimeHostRendererState,
     createSession,
     handleConnectionEvent,
     openHelp,
@@ -2262,12 +2294,22 @@ function AppShellContent({
     themePalette,
     themePref,
   });
+  const [activeEventSeed, setActiveEventSeed] = useState({
+    sessionId: undefined as string | undefined,
+    revision: 0,
+  });
   useActiveSessionEvents({
     uiLocale,
     activeId,
     activeIdRef,
     handleEvent,
     markSessionReadLocally,
+    onEventSeeded: (sessionId) => {
+      setActiveEventSeed((current) => ({
+        sessionId,
+        revision: current.revision + 1,
+      }));
+    },
     setMessageLoadErrorBySession,
     setMessageLoadPending,
     setMessages,
@@ -2437,6 +2479,7 @@ function AppShellContent({
     activeId,
     activePermissionMode,
     canSetPermissionMode: activeBoundarySurface.localInteractionAvailable,
+    clientPathsAccessible: projectCapabilities.viewClientPath,
     connections,
     defaultConnection,
     dailyReviewBridge,
@@ -2552,7 +2595,12 @@ function AppShellContent({
                 }}
                 project={
                   titlebarProjectName
-                    ? { name: titlebarProjectName, onOpenFolder: () => void openProjectFolder() }
+                    ? {
+                        name: titlebarProjectName,
+                        ...(projectCapabilities.viewClientPath
+                          ? { onOpenFolder: () => void openProjectFolder() }
+                          : {}),
+                      }
                     : undefined
                 }
                 parentSession={titlebarParentSession}
@@ -2633,11 +2681,17 @@ function AppShellContent({
                   scheduledTasks={scheduledTasks}
                   onRefreshSkills={() => refreshSkills()}
                   onRefreshManagedSkillSources={() => refreshManagedSkillSources()}
-                  onOpenSkill={(skillId) => openSkill(skillId)}
+                  onOpenSkill={projectCapabilities.viewClientPath
+                    ? (skillId) => openSkill(skillId)
+                    : undefined}
                   onUseSkill={useSkillInChat}
-                  onOpenSkillsFolder={() => openSkillsFolder()}
+                  onOpenSkillsFolder={projectCapabilities.viewClientPath
+                    ? () => openSkillsFolder()
+                    : undefined}
                   managedSkillSources={managedSkillSources}
-                  onImportManagedSkillSource={() => importManagedSkillSource()}
+                  onImportManagedSkillSource={projectCapabilities.viewClientPath
+                    ? () => importManagedSkillSource()
+                    : undefined}
                   onInstallManagedSkill={(sourceId) => installManagedSkill(sourceId)}
                   bundledSkillCatalog={bundledSkillCatalog}
                   onRefreshBundledSkillCatalog={() => refreshBundledSkillCatalog()}
@@ -2882,6 +2936,9 @@ function AppShellContent({
                   <ChatMessageSurface
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
+                liveContentSeedRevision={activeEventSeed.sessionId === activeId
+                  ? activeEventSeed.revision
+                  : 0}
                 messages={messages}
                 messageLoading={activeMessageLoading}
                 runningStatus={showRunningStatus}
@@ -2982,9 +3039,9 @@ function AppShellContent({
                   taskReadinessNotice?.action === 'workspace_picker'
                     ? activeSession
                       ? openNewTaskSurface
-                      : () => {
-                          void addProject();
-                        }
+                      : projectCapabilities.chooseClientDirectory
+                        ? () => void addProject()
+                        : undefined
                     : taskReadiness.refresh
                 }
                 showOnboardingHero={showOnboardingHero}

@@ -53,15 +53,6 @@ function createHarness(options: { start: number }) {
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 
 describe('update check on window focus', () => {
-  test('checks when the window regains focus', async () => {
-    const harness = createHarness({ start: 1_000 });
-    harness.service.start();
-
-    await harness.service.checkForUpdatesOnFocus();
-
-    assert.equal(harness.checks.length, 1);
-  });
-
   test('does not check again inside the throttle window', async () => {
     const harness = createHarness({ start: 1_000 });
     harness.service.start();

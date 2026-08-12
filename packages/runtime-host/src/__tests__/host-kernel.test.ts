@@ -86,6 +86,63 @@ const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 
 describe('non-serving Runtime Host kernel', () => {
+  test('reports a recovery failure when the election produces no ready Host', async () => {
+    await withHostPaths(async (paths) => {
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 5_000,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: (input) =>
+            launchTestRuntimeHostCandidate(paths, {
+              ...input,
+              env: {
+                MAKA_TEST_STARTUP_ERROR_CODE: 'stored_session_message_incompatible',
+              },
+            }),
+        },
+      );
+
+      assert.deepEqual(result, { kind: 'failed', reason: 'stored_data_incompatible' });
+    });
+  });
+
+  test('accepts a ready successor after an earlier Candidate fails', async () => {
+    await withHostPaths(async (paths) => {
+      let launches = 0;
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 5_000,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: (input) => {
+            launches += 1;
+            return launchTestRuntimeHostCandidate(paths, {
+              ...input,
+              ...(launches === 1 ? { env: { MAKA_TEST_STARTUP_ERROR_CODE: 'EACCES' } } : {}),
+            });
+          },
+        },
+      );
+
+      assert.equal(result.kind, 'connected');
+      assert.ok(launches >= 2);
+      if (result.kind === 'connected') await result.connection.close();
+    });
+  });
+
   test('rejects a bound composition mismatch without launching a Candidate', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
@@ -615,7 +672,7 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('startup failure uses the active shutdown deadline without releasing ownership', async () => {
+  test('startup failure preserves its cause when shutdown reaches the active deadline', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -661,7 +718,13 @@ describe('non-serving Runtime Host kernel', () => {
           1_000,
           'Runtime Host startup ignored its shutdown deadline',
         );
-        assert.ok(error instanceof RuntimeHostProcessTerminationRequiredError);
+        assert.ok(error instanceof AggregateError);
+        assert.match(String(error.cause), /forced startup recovery failure/);
+        assert.ok(
+          error.errors.some(
+            (candidate: unknown) => candidate instanceof RuntimeHostProcessTerminationRequiredError,
+          ),
+        );
         assert.deepEqual(lifecycle, ['begin-drain', 'recover', 'close']);
         assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
       } finally {
@@ -1828,6 +1891,14 @@ describe('non-serving Runtime Host kernel', () => {
 
   test('startup rejects invalid lifecycle durations and releases the owner lock', async () => {
     await withHostPaths(async (paths) => {
+      await assert.rejects(
+        () =>
+          startTestRuntimeHostCandidate(paths, {
+            rootPath: paths.root,
+            initialConnectionTimeoutMs: -1,
+          }),
+        RangeError,
+      );
       await assert.rejects(
         () =>
           startTestRuntimeHostCandidate(paths, {

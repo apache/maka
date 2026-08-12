@@ -19,6 +19,7 @@ type ToastApi = {
  */
 export function useShellMemoryPill({ toastApi, uiLocale }: { toastApi: ToastApi; uiLocale: UiLocale }): {
   memoryActive: boolean;
+  clearMemoryActive: () => void;
   refreshMemoryActive: (failureContext?: 'load') => Promise<void>;
 } {
   const [memoryActive, setMemoryActive] = useState(false);
@@ -34,5 +35,9 @@ export function useShellMemoryPill({ toastApi, uiLocale }: { toastApi: ToastApi;
       );
     }
   }
-  return { memoryActive, refreshMemoryActive };
+  return {
+    memoryActive,
+    clearMemoryActive: () => setMemoryActive(false),
+    refreshMemoryActive,
+  };
 }

@@ -15,7 +15,7 @@ import { useUiLocale } from './locale-context.js';
  */
 export interface TitlebarProject {
   name: string;
-  onOpenFolder(): void;
+  onOpenFolder?(): void;
 }
 
 /**
@@ -131,13 +131,17 @@ export function TitlebarSessionIdentity(props: {
           <BreadcrumbItem onClick={props.project.onOpenFolder}>
             <span
               className="maka-titlebar-identity__segment"
-              title={copy.chat.openProjectFolder(props.project.name)}
+              title={props.project.onOpenFolder
+                ? copy.chat.openProjectFolder(props.project.name)
+                : props.project.name}
             >
               {props.project.name}
             </span>
-            <span className="maka-visually-hidden">
-              {copy.chat.openProjectFolderAction}
-            </span>
+            {props.project.onOpenFolder ? (
+              <span className="maka-visually-hidden">
+                {copy.chat.openProjectFolderAction}
+              </span>
+            ) : null}
           </BreadcrumbItem>
         ) : null}
         {props.parentSession ? (

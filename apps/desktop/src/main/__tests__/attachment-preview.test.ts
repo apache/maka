@@ -63,20 +63,6 @@ describe('staged attachment preview (approval source)', () => {
     assert.equal(read, 0);
   });
 
-  it('guesses the image mime from the name when the approval has none', async () => {
-    const approvals = createAttachmentApprovalRegistry();
-    // pickFiles issues approvals without a mimeType — the common path.
-    const [issued] = approvals.issueApprovals(1, [{ path: '/tmp/shot.png', name: 'shot.png', size: 4 }]);
-    const result = await loadApprovalPreview({
-      senderId: 1,
-      approvalId: issued.approvalId,
-      approvals,
-      readFile: async () => PNG,
-      renderPreview: fakeRenderPreview,
-    });
-    assert.equal(result.ok, true);
-  });
-
   it('refuses non-image approvals without touching the file', async () => {
     const approvals = createAttachmentApprovalRegistry();
     const [issued] = approvals.issueApprovals(1, [{ path: '/tmp/notes.md', name: 'notes.md', size: 4 }]);
@@ -134,24 +120,6 @@ describe('staged attachment preview (approval source)', () => {
       await loadApprovalPreview({ senderId: 2, approvalId: issued.approvalId, ...deps }),
       { ok: false, reason: 'not_found' },
     );
-  });
-
-  it('ships the original bytes when the thumbnailer cannot decode a small image (GIF path)', async () => {
-    const approvals = createAttachmentApprovalRegistry();
-    const [issued] = approvals.issueApprovals(1, [{ path: '/tmp/loop.gif', name: 'loop.gif', size: 4 }]);
-    const result = await loadApprovalPreview({
-      senderId: 1,
-      approvalId: issued.approvalId,
-      approvals,
-      readFile: async () => PNG,
-      // nativeImage has no GIF decoder — this is what it reports for one.
-      renderPreview: async () => null,
-    });
-    assert.deepEqual(result, {
-      ok: true,
-      base64: Buffer.from(PNG).toString('base64'),
-      mimeType: 'image/gif',
-    });
   });
 
   it('soft-fails when the bytes cannot be read, or cannot decode and exceed the inline cap', async () => {

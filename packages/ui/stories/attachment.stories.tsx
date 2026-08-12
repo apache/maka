@@ -94,6 +94,7 @@ const baseComposer: ComposerProps = {
 
 const baseChat: ChatViewProps = {
   messages: [],
+  scrollBehavior: 'smooth',
   activeSession: session(),
   activeConnectionLabel: 'Anthropic',
   activeModel: 'claude-sonnet-4-5',

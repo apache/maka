@@ -9,6 +9,14 @@ const uninstallExecutableName = 'Uninstall Maka.exe';
 const temporaryCleanupRetries = 20;
 const temporaryCleanupRetryDelayMs = 250;
 
+export function installerVersion(path) {
+  const match = basename(path).match(/^Maka-(\d+\.\d+\.\d+)-win-x64\.exe$/u);
+  if (!match) {
+    throw new Error(`Cannot infer a release version from ${basename(path)}.`);
+  }
+  return match[1];
+}
+
 function delay(milliseconds) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 }
@@ -79,6 +87,7 @@ export async function waitUntilMissing(
 
 export async function verifyWindowsInstallerLifecycle(
   inputPath,
+  previousInputPath,
   {
     platform = process.platform,
     makeTemporaryDirectory = () => mkdtemp(join(tmpdir(), 'maka-installer-lifecycle-')),
@@ -103,6 +112,11 @@ export async function verifyWindowsInstallerLifecycle(
     throw new Error(`Expected the NSIS installer .exe, found ${basename(installer)}.`);
   }
   await requirePath(installer);
+  const previousInstaller = previousInputPath ? resolvePath(previousInputPath) : undefined;
+  if (previousInstaller) {
+    installerVersion(previousInstaller);
+    await requirePath(previousInstaller);
+  }
 
   const temporaryDirectory = await makeTemporaryDirectory();
   const installDirectory = join(temporaryDirectory, 'installed');
@@ -113,8 +127,25 @@ export async function verifyWindowsInstallerLifecycle(
   let primaryError;
 
   try {
-    console.log(`[verify-windows-installer] installing into ${installDirectory}`);
     installationStarted = true;
+    if (previousInstaller) {
+      const previousVersion = installerVersion(previousInstaller);
+      console.log(
+        `[verify-windows-installer] installing previous version ${previousVersion} into ${installDirectory}`,
+      );
+      await run(previousInstaller, ['/S', `/D=${installDirectory}`], { timeoutMs: 120_000 });
+      await requirePath(uninstaller);
+      console.log('[verify-windows-installer] verifying the previous installed application');
+      await verifyApp(installDirectory, {
+        workingDirectory: smokeDirectory,
+        expectedVersion: previousVersion,
+      });
+      console.log('[verify-windows-installer] waiting for previous-version processes to exit');
+      await waitForProcessesToExit(installDirectory);
+      console.log(`[verify-windows-installer] upgrading to ${installerVersion(installer)}`);
+    } else {
+      console.log(`[verify-windows-installer] installing into ${installDirectory}`);
+    }
     // NSIS requires /D to be the final argument. spawn passes it directly, so
     // spaces in a runner path do not need shell quoting.
     await run(installer, ['/S', `/D=${installDirectory}`], { timeoutMs: 120_000 });
@@ -139,11 +170,20 @@ export async function verifyWindowsInstallerLifecycle(
   } finally {
     const cleanupErrors = [];
     if (installationStarted && !uninstallCompleted) {
+      let installedProcessesExited = false;
       try {
-        await requirePath(uninstaller);
-        await run(uninstaller, ['/S'], { timeoutMs: 120_000 });
+        await waitForProcessesToExit(installDirectory);
+        installedProcessesExited = true;
       } catch (error) {
         cleanupErrors.push(error);
+      }
+      if (installedProcessesExited) {
+        try {
+          await requirePath(uninstaller);
+          await run(uninstaller, ['/S'], { timeoutMs: 120_000 });
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
       }
     }
     try {
@@ -170,6 +210,6 @@ export async function verifyWindowsInstallerLifecycle(
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const result = await verifyWindowsInstallerLifecycle(process.argv[2]);
+  const result = await verifyWindowsInstallerLifecycle(process.argv[2], process.argv[3]);
   console.log(`Verified installer lifecycle for ${result.installer}`);
 }

@@ -61,8 +61,7 @@ import {
   type SessionHeader,
   type StoredMessage,
   type SubagentSessionParent,
-  decodeStoredMessageForRead,
-  decodeStoredMessageForRecovery,
+  decodeStoredMessage,
 } from '@maka/core/session';
 import {
   type AgentGraphIntentAdmissionSnapshot,
@@ -249,6 +248,19 @@ export interface IdempotentAgentGraphOperatorMetadataResult
 
 export class SessionMetadataConflictError extends Error {
   readonly name: string = 'SessionMetadataConflictError';
+}
+
+export class StoredSessionMessageIncompatibleError extends Error {
+  readonly name = 'StoredSessionMessageIncompatibleError';
+  readonly code = 'stored_session_message_incompatible';
+
+  constructor(
+    readonly sessionId: string,
+    readonly sequence: number,
+    options?: ErrorOptions,
+  ) {
+    super(`Stored Session message ${sequence} for ${sessionId} is incompatible`, options);
+  }
 }
 
 export class SessionMetadataVersionConflictError extends SessionMetadataConflictError {
@@ -1277,7 +1289,7 @@ export class SqliteSessionMetadataStore {
     // through JSON so the stored form matches what the recovery path reads.
     const encoded = messages.map((message) => {
       const json = JSON.stringify(message);
-      const canonical = decodeStoredMessageForRecovery(JSON.parse(json) as unknown);
+      const canonical = decodeStoredMessage(JSON.parse(json) as unknown);
       return { message: canonical, json };
     });
     return this.transaction(() => {
@@ -1337,7 +1349,7 @@ export class SqliteSessionMetadataStore {
     if (messages.length === 0) return;
     const encoded = messages.map((message) => {
       const json = JSON.stringify(message);
-      const canonical = decodeStoredMessageForRecovery(JSON.parse(json) as unknown);
+      const canonical = decodeStoredMessage(JSON.parse(json) as unknown);
       return { message: canonical, json };
     });
     this.transaction(() => {
@@ -1379,11 +1391,11 @@ export class SqliteSessionMetadataStore {
   }
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
-    return this.readMessagesWith(sessionId, decodeStoredMessageForRead);
+    return this.readMessagesWith(sessionId, decodeStoredMessage);
   }
 
   async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
-    return this.readMessagesWith(sessionId, decodeStoredMessageForRecovery);
+    return this.readMessagesWith(sessionId, decodeStoredMessage);
   }
 
   async readPreviewMessages(sessionId: string, limit = 10): Promise<StoredMessage[]> {
@@ -1396,17 +1408,15 @@ export class SqliteSessionMetadataStore {
     const rows = this.db
       .prepare(
         `
-        SELECT record_json
+        SELECT sequence, record_json
         FROM session_messages
         WHERE session_id = ?
         ORDER BY sequence DESC
         LIMIT ?
       `,
       )
-      .all(sessionId, limit) as Array<{ record_json?: unknown }>;
-    return rows
-      .reverse()
-      .map((row, index) => decodeStoredMessageRow(row.record_json, sessionId, index, false));
+      .all(sessionId, limit) as Array<{ sequence?: unknown; record_json?: unknown }>;
+    return rows.reverse().map((row) => decodeStoredMessageRow(row, sessionId));
   }
 
   async beginCatalogProjectionWrite(): Promise<void> {
@@ -3254,21 +3264,22 @@ export class SqliteSessionMetadataStore {
     const rows = this.db
       .prepare(
         `
-        SELECT record_json
+        SELECT sequence, record_json
         FROM session_messages
         WHERE session_id = ?
         ORDER BY sequence
       `,
       )
-      .all(sessionId) as Array<{ record_json?: unknown }>;
-    return rows.map((row, index) => {
+      .all(sessionId) as Array<{ sequence?: unknown; record_json?: unknown }>;
+    return rows.map((row) => {
+      const sequence = requireStoredMessageSequence(row.sequence, sessionId);
       if (typeof row.record_json !== 'string') {
-        throw new Error(`Invalid Session message row ${index} for ${sessionId}`);
+        throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
       }
       try {
         return decode(JSON.parse(row.record_json) as unknown);
       } catch (error) {
-        throw new Error(`Invalid Session message row ${index} for ${sessionId}`, { cause: error });
+        throw new StoredSessionMessageIncompatibleError(sessionId, sequence, { cause: error });
       }
     });
   }
@@ -4571,20 +4582,26 @@ function assertGraphIntentId(value: string): void {
 }
 
 function decodeStoredMessageRow(
-  value: unknown,
+  row: { sequence?: unknown; record_json?: unknown },
   sessionId: string,
-  index: number,
-  recovery: boolean,
 ): StoredMessage {
-  if (typeof value !== 'string') {
-    throw new Error(`Invalid Session message row ${index} for ${sessionId}`);
+  const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+  if (typeof row.record_json !== 'string') {
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
   }
   try {
-    const parsed = JSON.parse(value) as unknown;
-    return recovery ? decodeStoredMessageForRecovery(parsed) : decodeStoredMessageForRead(parsed);
+    const parsed = JSON.parse(row.record_json) as unknown;
+    return decodeStoredMessage(parsed);
   } catch (error) {
-    throw new Error(`Invalid Session message row ${index} for ${sessionId}`, {
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence, {
       cause: error,
     });
   }
+}
+
+function requireStoredMessageSequence(value: unknown, sessionId: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new StoredSessionMessageIncompatibleError(sessionId, -1);
+  }
+  return value as number;
 }

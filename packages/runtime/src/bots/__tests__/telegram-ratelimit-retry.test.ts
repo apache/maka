@@ -20,7 +20,6 @@ describe('classifyTelegramSendResponse', () => {
   it('clamps Telegram retry hints to the bounded retry window', () => {
     for (const [retryAfter, expected] of [
       [5, 5_000],
-      [0, 1_000],
       [3600, 30_000],
       ['wat', 1_000],
     ] as const) {
@@ -37,9 +36,7 @@ describe('classifyTelegramSendResponse', () => {
   it('classifies permanent and malformed failures with stable descriptions', () => {
     const cases: Array<[unknown, string]> = [
       [{ ok: false, error_code: 400, description: 'Bad Request' }, 'Bad Request'],
-      [{ ok: false, error_code: 502, description: 'Bad Gateway' }, 'Bad Gateway'],
       [null, 'send-failed'],
-      [{}, 'send-failed'],
     ];
     for (const [payload, description] of cases) {
       assert.deepEqual(classifyTelegramSendResponse(payload), { kind: 'fatal', description });

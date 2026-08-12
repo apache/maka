@@ -192,7 +192,7 @@ class SqliteTaskLedgerStoreImpl implements SqliteTaskLedgerStore {
   ): Promise<{ created: Task[]; total: number }> {
     assertSafeSessionId(sessionId);
     if (!Array.isArray(drafts) || drafts.length === 0) {
-      throw new Error('TaskCreate requires at least one task draft');
+      throw new Error('Task creation requires at least one task draft');
     }
     // Front-door the per-batch cap before generating ids or normalizing drafts:
     // a single call can never add more than the absolute ledger cap, and rejecting
@@ -201,7 +201,7 @@ class SqliteTaskLedgerStoreImpl implements SqliteTaskLedgerStore {
     // inside the serialized mutate callback below.
     if (drafts.length > TASK_LEDGER_MAX_TASKS) {
       throw new Error(
-        `TaskCreate batch of ${drafts.length} tasks exceeds the ${TASK_LEDGER_MAX_TASKS}-task per-batch cap; split the work into smaller calls.`,
+        `Task creation batch of ${drafts.length} tasks exceeds the ${TASK_LEDGER_MAX_TASKS}-task per-batch cap; split the work into smaller calls.`,
       );
     }
     const normalizedDrafts = drafts.map((draft) => {

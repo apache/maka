@@ -193,15 +193,26 @@ export class ClientCapabilityChannel {
       throw new Error('Runtime Host repeated a Client Capability invocation identity');
     }
     const registration = this.#registrations.get(frame.registrationId);
-    const offered = registration?.offers
-      .find((offer) => offer.offerId === frame.offerId)
-      ?.tools.some((tool) => tool.serverId === frame.serverId && tool.name === frame.toolName);
-    if (!registration || !offered || !registration.provider.call) {
+    const offer = registration?.offers.find((candidate) => candidate.offerId === frame.offerId);
+    const offered = offer?.tools.some(
+      (tool) => tool.serverId === frame.serverId && tool.name === frame.toolName,
+    );
+    if (!registration || !offer || !offered || !registration.provider.call) {
       void this.#options
         .write({
           kind: 'client.capability.rejected',
           invocationId: frame.invocationId,
           message: 'Client Capability registration or tool is unavailable',
+        })
+        .catch((error: unknown) => this.#options.onFailure(asError(error)));
+      return;
+    }
+    if (offer.hostPathAccess === 'none' && frame.cwd !== undefined) {
+      void this.#options
+        .write({
+          kind: 'client.capability.rejected',
+          invocationId: frame.invocationId,
+          message: 'Client Capability does not allow Runtime Host paths',
         })
         .catch((error: unknown) => this.#options.onFailure(asError(error)));
       return;

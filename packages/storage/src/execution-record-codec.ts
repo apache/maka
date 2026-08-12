@@ -10,9 +10,9 @@ import {
   type RuntimeEvent,
 } from '@maka/core/runtime-event';
 
-import { decodeStoredMessageForRead, decodeStoredMessageForRecovery } from '@maka/core/session';
+import { decodeStoredMessage } from '@maka/core/session';
 
-export { decodeStoredMessageForRead, decodeStoredMessageForRecovery };
+export { decodeStoredMessage };
 
 export function decodeAgentRunHeader(
   value: unknown,

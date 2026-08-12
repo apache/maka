@@ -10,6 +10,7 @@ import type {
   ClientCapabilityCallFrame,
   ClientCapabilityCallResult,
   ClientCapabilityContentBlock,
+  ClientCapabilityHostPathAccess,
   ClientCapabilityOffer,
   ClientCapabilityServiceCallFrame,
   ClientCapabilityServiceOffer,
@@ -65,21 +66,26 @@ export interface DesktopNativeCapabilityProvider extends ClientCapabilityProvide
   close(): Promise<void>;
 }
 
+interface DesktopNativeCapabilityProviderOptions {
+  readonly releaseResourcesOnClose?: boolean;
+  readonly hostPathAccess?: ClientCapabilityHostPathAccess;
+  readonly clientCwd?: string;
+  readonly isTargetValid?: () => boolean;
+  readonly onSessionUsed?: (sessionId: string) => void;
+  readonly onComputerUseTurnUsed?: (sessionId: string, turnId: string) => void;
+  readonly onClosed?: () => void;
+}
+
 /** Adapt Desktop-owned Maka tools to the open Client Capability protocol. */
 export function createDesktopNativeCapabilityProvider(
   input: DesktopNativeCapabilityProviderInput,
-  providerOptions: {
-    readonly releaseResourcesOnClose?: boolean;
-    readonly onSessionUsed?: (sessionId: string) => void;
-    readonly onComputerUseTurnUsed?: (
-      sessionId: string,
-      turnId: string,
-    ) => void;
-    readonly onClosed?: () => void;
-  } = {},
+  providerOptions: DesktopNativeCapabilityProviderOptions = {},
 ): DesktopNativeCapabilityProvider {
   const groups = capabilityGroups(input);
-  const offers = Object.freeze(groups.map(capabilityOffer));
+  const hostPathAccess = providerOptions.hostPathAccess ?? "cwd";
+  const offers = Object.freeze(
+    groups.map((group) => capabilityOffer(group, hostPathAccess)),
+  );
   const bindings = indexBindings(groups);
   const oauthPresentation = input.oauthPresentation
     ? createOAuthPresentationClientProvider(input.oauthPresentation)
@@ -115,6 +121,9 @@ export function createDesktopNativeCapabilityProvider(
     call: (frame, options) => {
       if (closed)
         throw new Error("Desktop native capability provider is closed");
+      if (providerOptions.isTargetValid?.() === false) {
+        throw new Error("Desktop native capability target is no longer valid");
+      }
       const binding = bindings.get(bindingKey(frame));
       if (!binding) throw new Error("Desktop native capability is not offered");
 
@@ -141,6 +150,9 @@ export function createDesktopNativeCapabilityProvider(
     callService: (frame, options) => {
       if (closed)
         throw new Error("Desktop native capability provider is closed");
+      if (providerOptions.isTargetValid?.() === false) {
+        throw new Error("Desktop native capability target is no longer valid");
+      }
       const service = services.get(serviceKey(frame));
       if (service?.kind === "additional") {
         return invokeAdditionalService(service.value, frame, options);
@@ -268,18 +280,19 @@ async function invokeNativeTool(
   binding: NativeToolBinding,
   frame: ClientCapabilityCallFrame,
   options: Parameters<NonNullable<ClientCapabilityProvider["call"]>>[1],
-  providerOptions: {
-    readonly onSessionUsed?: (sessionId: string) => void;
-    readonly onComputerUseTurnUsed?: (
-      sessionId: string,
-      turnId: string,
-    ) => void;
-  },
+  providerOptions: DesktopNativeCapabilityProviderOptions,
   invocation: AbortController,
   usedSessionIds: Set<string>,
 ): Promise<ClientCapabilityCallResult> {
-  if (frame.cwd === undefined) {
-    throw new Error("Desktop native capability requires Host cwd context");
+  const hostPathAccess = providerOptions.hostPathAccess ?? "cwd";
+  if (hostPathAccess === "none" && frame.cwd !== undefined) {
+    throw new Error("Desktop native capability does not accept a Host path");
+  }
+  const cwd = hostPathAccess === "cwd"
+    ? frame.cwd ?? providerOptions.clientCwd
+    : providerOptions.clientCwd;
+  if (cwd === undefined) {
+    throw new Error("Desktop native capability requires an execution cwd");
   }
   const signal = AbortSignal.any([options.signal, invocation.signal]);
   signal.throwIfAborted();
@@ -296,7 +309,7 @@ async function invokeNativeTool(
   const output = await binding.tool.impl(args, {
     sessionId: frame.sessionId,
     turnId: frame.turnId,
-    cwd: frame.cwd,
+    cwd,
     toolCallId: frame.toolCallId,
     abortSignal: signal,
     emitOutput() {},
@@ -320,12 +333,15 @@ function abortInvocations(
   return settling;
 }
 
-function capabilityOffer(group: DesktopCapabilityGroup): ClientCapabilityOffer {
+function capabilityOffer(
+  group: DesktopCapabilityGroup,
+  hostPathAccess: ClientCapabilityHostPathAccess,
+): ClientCapabilityOffer {
   return Object.freeze({
     offerId: group.offerId,
     version: CAPABILITY_VERSION,
     affinity: "session",
-    hostPathAccess: "cwd",
+    hostPathAccess,
     label: group.label,
     description: group.description,
     tools: Object.freeze(

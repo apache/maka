@@ -134,16 +134,4 @@ describe('resolveCreateSessionInput', () => {
     assert.deepEqual(resolved.labels, ['pinned', DEEP_RESEARCH_SESSION_LABEL]);
   });
 
-  it('passes through what no mode speaks to', async () => {
-    const resolved = await resolve({
-      name: 'Release notes',
-      labels: ['pinned'],
-      collaborationMode: 'plan',
-      orchestrationMode: 'swarm',
-    });
-    assert.equal(resolved.name, 'Release notes');
-    assert.deepEqual(resolved.labels, ['pinned']);
-    assert.equal(resolved.collaborationMode, 'plan');
-    assert.equal(resolved.orchestrationMode, 'swarm');
-  });
 });

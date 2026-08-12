@@ -1,11 +1,16 @@
 import { spawn } from 'node:child_process';
 import { dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  candidateStartupFailureForExitCode,
+  type CandidateStartupFailure,
+} from '../candidate-startup-failure.js';
 
 export interface DetachedCandidateInput {
   rootPath: string;
   expectedRootId: string;
   generation?: string;
+  initialConnectionTimeoutMs?: number;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   executable?: string;
@@ -15,6 +20,7 @@ export interface DetachedCandidateInput {
 
 export interface DetachedCandidateAttempt {
   pid: number;
+  startupFailure?: Promise<CandidateStartupFailure | undefined>;
 }
 
 export interface OwnedCandidateAttempt extends DetachedCandidateAttempt {
@@ -32,9 +38,10 @@ export function launchDetachedRuntimeHostCandidate(
   input: DetachedCandidateInput,
 ): DetachedCandidateLaunch {
   const child = spawnCandidate(input, true);
+  const startupFailure = readStartupFailure(child);
   const spawned = spawnedPid(child).then(({ pid }) => {
     child.unref();
-    return { pid };
+    return { pid, startupFailure };
   });
   return { spawned };
 }
@@ -43,12 +50,14 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
   readonly spawned: Promise<OwnedCandidateAttempt>;
 } {
   const child = spawnCandidate(input, false);
+  const startupFailure = readStartupFailure(child);
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.once('exit', (code, signal) => resolve({ code, signal }));
   });
   return {
     spawned: spawnedPid(child).then(({ pid }) => ({
       pid,
+      startupFailure,
       releaseToEnvironment(): void {
         child.unref();
       },
@@ -72,6 +81,7 @@ function spawnCandidate(input: DetachedCandidateInput, detached: boolean) {
     '--expected-root-id',
     input.expectedRootId,
   ];
+  appendArgument(args, '--initial-connection-timeout-ms', input.initialConnectionTimeoutMs);
   appendArgument(args, '--idle-grace-ms', input.idleGraceMs);
   appendArgument(args, '--handshake-timeout-ms', input.handshakeTimeoutMs);
   appendArgument(args, '--generation', input.generation);
@@ -91,8 +101,8 @@ function spawnCandidate(input: DetachedCandidateInput, detached: boolean) {
   return child;
 }
 
-function spawnedPid(child: ReturnType<typeof spawn>): Promise<DetachedCandidateAttempt> {
-  return new Promise<DetachedCandidateAttempt>((resolve, reject) => {
+function spawnedPid(child: ReturnType<typeof spawn>): Promise<{ pid: number }> {
+  return new Promise<{ pid: number }>((resolve, reject) => {
     const onSpawn = () => {
       child.off('error', onError);
       const pid = child.pid;
@@ -108,6 +118,15 @@ function spawnedPid(child: ReturnType<typeof spawn>): Promise<DetachedCandidateA
     };
     child.once('spawn', onSpawn);
     child.once('error', onError);
+  });
+}
+
+function readStartupFailure(
+  child: ReturnType<typeof spawn>,
+): Promise<CandidateStartupFailure | undefined> {
+  return new Promise((resolve) => {
+    child.once('exit', (code) => resolve(candidateStartupFailureForExitCode(code)));
+    child.once('error', () => resolve(undefined));
   });
 }
 

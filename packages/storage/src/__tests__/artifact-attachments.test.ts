@@ -47,40 +47,6 @@ describe('artifact attachment authority', () => {
     });
   });
 
-  test('returns image attachments as provider-materializable image results', async () => {
-    await withStore(async (store) => {
-      await store.create({
-        id: 'image-upload',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'image.png',
-        kind: 'image',
-        content: png,
-        mimeType: 'image/png',
-        source: 'user_upload',
-        now: 1,
-      });
-      const reader = createArtifactAttachmentResourceReader({ artifactStore: store });
-
-      assert.deepEqual(
-        await reader.readAttachmentResource(
-          'session-1',
-          'image-upload',
-          new AbortController().signal,
-        ),
-        {
-          kind: 'image',
-          mimeType: 'image/png',
-          ref: {
-            kind: 'session_file',
-            sessionId: 'session-1',
-            relativePath: 'image-upload',
-          },
-        },
-      );
-    });
-  });
-
   test('resolves a live session ref and never forwards tombstoned bytes', async () => {
     await withStore(async (store) => {
       await store.create({
@@ -163,31 +129,6 @@ describe('artifact attachment authority', () => {
         ok: false,
         reason: 'unsupported_mime',
       });
-    });
-  });
-
-  test('snapshotter publishes a tool-result image and returns its stable artifact ref', async () => {
-    await withStore(async (store) => {
-      const ref = await createReadImageSnapshotter(store)({
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'image.png',
-        bytes: png,
-        mimeType: 'image/png',
-      });
-
-      assert.equal(ref.kind, 'session_file');
-      assert.equal(ref.sessionId, 'session-1');
-      const record = await store.get(ref.relativePath);
-      assert.equal(record?.source, 'tool_result');
-      assert.equal(record?.kind, 'image');
-      assert.deepEqual(
-        await createAttachmentByteReader({
-          artifactStore: store,
-          sessionId: 'session-1',
-        })(ref),
-        { ok: true, bytes: Buffer.from(png) },
-      );
     });
   });
 

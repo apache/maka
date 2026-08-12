@@ -11,7 +11,6 @@ import {
   type PlanEvent,
   type PlanExecution,
   type PlanExecutionStatus,
-  type LegacyPlanProjection,
   type PlanProposal,
   type PlanProposalStatus,
   type PlanStepDefinition,
@@ -391,7 +390,7 @@ function decodeProposal(value: unknown): PlanProposal {
       'status',
       'submittedAt',
     ],
-    ['supersedesProposalId', 'sourceExecutionId', 'overview', 'risks', 'legacyProjection'],
+    ['supersedesProposalId', 'sourceExecutionId', 'overview', 'risks'],
   );
   return {
     planId: requireEntityId(record.planId, 'planId'),
@@ -424,9 +423,6 @@ function decodeProposal(value: unknown): PlanProposal {
         }),
     status: requireProposalStatus(record.status),
     submittedAt: requireCount(record.submittedAt, 'Plan submittedAt'),
-    ...(record.legacyProjection === undefined
-      ? {}
-      : { legacyProjection: decodeLegacyProjection(record.legacyProjection) }),
   };
 }
 
@@ -444,14 +440,7 @@ function decodeExecution(value: unknown): PlanExecution {
       'startedAt',
       'updatedAt',
     ],
-    [
-      'completedAt',
-      'cancelledAt',
-      'interruptedAt',
-      'cancelReason',
-      'interruptionReason',
-      'legacyProjection',
-    ],
+    ['completedAt', 'cancelledAt', 'interruptedAt', 'cancelReason', 'interruptionReason'],
   );
   return {
     executionId: requireEntityId(record.executionId, 'executionId'),
@@ -489,18 +478,7 @@ function decodeExecution(value: unknown): PlanExecution {
       : {
           interruptionReason: lifecycleReason(record.interruptionReason, 'Plan interruptionReason'),
         }),
-    ...(record.legacyProjection === undefined
-      ? {}
-      : { legacyProjection: decodeLegacyProjection(record.legacyProjection) }),
   };
-}
-
-function decodeLegacyProjection(value: unknown): LegacyPlanProjection {
-  const record = requireExactRecord(value, 'Legacy Plan projection', ['truncated']);
-  if (record.truncated !== true) {
-    throw invalidProtocolFrame('Invalid legacy Plan projection');
-  }
-  return { truncated: true };
 }
 
 function decodeStepDefinition(value: unknown): PlanStepDefinition {

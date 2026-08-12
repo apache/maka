@@ -333,13 +333,16 @@ export const SKILL_CATALOG_OPERATION_SPECS = {
     SkillCatalogQueryInput,
     SkillCatalogQueryResult,
     (typeof QUERY_ERRORS)[number]
-  >({
-    mode: 'query',
-    availability: 'ready',
-    errors: QUERY_ERRORS,
-    decodeInput: decodeQueryInput,
-    decodeOutput: decodeQueryResult,
-  }),
+  >(
+    {
+      mode: 'query',
+      availability: 'ready',
+      errors: QUERY_ERRORS,
+      decodeInput: decodeQueryInput,
+      decodeOutput: decodeQueryResult,
+    },
+    usesWorkspaceHostPath,
+  ),
   'skill.catalog.invocable.query': defineHostPathOperation<
     SkillCatalogInvocableQueryInput,
     SkillCatalogInvocableQueryResult,
@@ -359,25 +362,35 @@ export const SKILL_CATALOG_OPERATION_SPECS = {
     SkillCatalogMutateInput,
     SkillCatalogMutateResult,
     (typeof MUTATION_ERRORS)[number]
-  >({
-    mode: 'command',
-    availability: 'ready',
-    errors: MUTATION_ERRORS,
-    decodeInput: decodeMutateInput,
-    decodeOutput: decodeMutateResult,
-  }),
+  >(
+    {
+      mode: 'command',
+      availability: 'ready',
+      errors: MUTATION_ERRORS,
+      decodeInput: decodeMutateInput,
+      decodeOutput: decodeMutateResult,
+    },
+    usesWorkspaceHostPath,
+  ),
   'skill.catalog.preview-update': defineHostPathOperation<
     SkillCatalogPreviewUpdateInput,
     SkillCatalogPreviewUpdateResult,
     (typeof QUERY_ERRORS)[number]
-  >({
-    mode: 'query',
-    availability: 'ready',
-    errors: QUERY_ERRORS,
-    decodeInput: decodePreviewInput,
-    decodeOutput: decodePreviewResult,
-  }),
+  >(
+    {
+      mode: 'query',
+      availability: 'ready',
+      errors: QUERY_ERRORS,
+      decodeInput: decodePreviewInput,
+      decodeOutput: decodePreviewResult,
+    },
+    usesWorkspaceHostPath,
+  ),
 } as const;
+
+function usesWorkspaceHostPath(input: { readonly context: SkillCatalogWorkspaceContext }): boolean {
+  return input.context.workspace.kind === 'host_path';
+}
 
 function decodeInvocableQueryInput(value: unknown): SkillCatalogInvocableQueryInput {
   const record = requireRecord(value, 'invocable skill catalog query input');

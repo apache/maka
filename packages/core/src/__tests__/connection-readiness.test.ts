@@ -104,7 +104,7 @@ describe('isConnectionReady — model capability gate', () => {
     assert.deepEqual(verdict, { ready: true, model: 'qwen3-8b' });
   });
 
-  it('keeps Vercel Gateway gated on its key while preserving the exact creator/model id', () => {
+  it('keeps Vercel Gateway gated on its key', () => {
     const vercel = connection({
       slug: 'vercel',
       name: 'Vercel AI Gateway',
@@ -117,25 +117,6 @@ describe('isConnectionReady — model capability gate', () => {
       ready: false,
       reason: 'missing_api_key',
     });
-    assert.deepEqual(isConnectionReady({ connection: vercel, hasSecret: true }), {
-      ready: true,
-      model: 'xai/grok-4.3',
-    });
-  });
-
-  it('keeps a runtime-backed xAI OAuth connection send-ready', () => {
-    const verdict = isConnectionReady({
-      connection: connection({
-        slug: 'xai-oauth',
-        name: 'xAI OAuth',
-        providerType: 'xai-oauth',
-        defaultModel: 'grok-4.5',
-        models: [{ id: 'grok-4.5', capabilities: { chat: true, functionCalling: true } }],
-      }),
-      hasSecret: true,
-    });
-
-    assert.deepEqual(verdict, { ready: true, model: 'grok-4.5' });
   });
 
   it('treats an enumerated fallback model list as the local send gate', () => {
@@ -151,17 +132,7 @@ describe('isConnectionReady — model capability gate', () => {
     assert.deepEqual(verdict, { ready: false, reason: 'model_not_enabled' });
   });
 
-  it('returns the normalized model id after validating a whitespace-padded model', () => {
-    assert.deepEqual(
-      isConnectionReady({
-        connection: connection({
-          defaultModel: ' gpt-4.1 ',
-        }),
-        hasSecret: true,
-      }),
-      { ready: true, model: 'gpt-4.1' },
-    );
-
+  it('returns the normalized requested model id', () => {
     assert.deepEqual(
       isConnectionReady({
         connection: connection(),

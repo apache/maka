@@ -1,16 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import {
-  lstat,
-  mkdtemp,
-  open,
-  readFile,
-  readdir,
-  rm,
-  stat,
-  symlink,
-  writeFile,
-} from 'node:fs/promises';
+import { lstat, mkdtemp, open, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -2853,27 +2843,4 @@ async function withTempDir(run: (base: string) => Promise<void>): Promise<void> 
   } finally {
     await rm(base, { recursive: true, force: true });
   }
-}
-
-async function snapshotRoot(root: string): Promise<readonly RootSnapshotEntry[]> {
-  const names = (await readdir(root)).sort();
-  return Promise.all(
-    names.map(async (name) => {
-      const path = join(root, name);
-      const metadata = await stat(path);
-      return {
-        name,
-        size: metadata.size,
-        mtimeMs: metadata.mtimeMs,
-        contents: metadata.isFile() ? await readFile(path, 'utf8') : null,
-      };
-    }),
-  );
-}
-
-interface RootSnapshotEntry {
-  readonly name: string;
-  readonly size: number;
-  readonly mtimeMs: number;
-  readonly contents: string | null;
 }

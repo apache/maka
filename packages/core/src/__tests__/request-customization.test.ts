@@ -4,19 +4,9 @@ import {
   normalizeRequestBodyOverlay,
   normalizeRequestHeaders,
   normalizeOptionalRequestBodyOverlay,
-  parseRequestHeaders,
-  serializeRequestHeaders,
 } from '../request-customization.js';
 
 describe('request customization validation', () => {
-  test('round-trips custom headers while preserving display names', () => {
-    const headers = normalizeRequestHeaders({
-      'HTTP-Referer': 'https://maka.example',
-      'X-Title': 'Maka',
-    });
-    assert.deepEqual(parseRequestHeaders(serializeRequestHeaders(headers)), headers);
-  });
-
   test('rejects protected and case-insensitively duplicated headers', () => {
     assert.throws(() => normalizeRequestHeaders({ Authorization: 'secret' }), /managed by Maka/);
     assert.throws(

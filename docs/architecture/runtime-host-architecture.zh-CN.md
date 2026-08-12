@@ -7,7 +7,7 @@ counterpart: ./runtime-host-architecture.md
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-08-11
+last_verified: 2026-08-12
 owners:
   - maka-backend
 ---
@@ -189,6 +189,20 @@ Authenticated Client 可以发布带大小限制、带版本的 tool 或 service
 
 发布或调用 capability 不会把 Session、Run 或 execution ownership 转移给 Client。Connection loss 会使对应 provider unavailable；拥有该操作的 Domain 仍通过自己的 durable contract 处理 capability loss 或明确的 result-unknown outcome。
 
+### Host profile 选择连接目标
+
+Host profile 是 Client-owned connection configuration，不是 Host state。内置 `local` profile 保留现有的零配置 Local IPC 与 candidate spawn 路径。Remote profile 包含显示名称、明确的连接方式和必填的 State Root identity；access credential 会单独保存，并绑定到这个 profile 的确切 target。当前连接方式是 direct TLS（`wss`）。一个 profile ID 对应不可变的 target：改变连接方式、endpoint 或 root 时必须创建新的 profile ID；显示名称与 credential 可以原地更新。
+
+选择 profile 只决定 Client 连接哪个 Host，不会移动 Project 或 Session、改变 Host Epoch，也不会修改所选 Host。Remote profile 只使用 authenticated WebSocket connector，绝不 fallback 到本地 discovery 或 candidate spawn。每次远程连接都固定 profile 中的 State Root identity；endpoint 给出不同 root 时必须失败。
+
+Desktop 会在当前进程内应用新 profile，不需要重启应用。每个 target generation 独占自己的 connection 与 Session observations，因此为某一 generation 捕获的 request 或 live event 不能跨到另一 generation。切换失败时会尝试恢复之前的 target；如果新旧 target 都无法连接，Desktop 会明确报告当前没有 active Host。
+
+持久化的 Desktop selection 表示期望连接的 target，不是当前 connection 已生效的证明。启动时若所选 profile 或 credential 不可用，Desktop 会让用户选择重试、明确使用 `local` 或退出，不会静默改写 selection。TUI 与 CLI 在启动时解析一个 profile，并把 selection 不可用作为错误报告。
+
+Remote Desktop generation 不能提交任意 Host path。它读取 Project summary、提交 Project ID，并阻止 Client-local capability 收到远端 Host path。目录选择、Git review、workspace search 和打开 Skill 文件等本地文件系统操作只在 `local` 下可用。
+
+Operator 与 Client 的配置流程见[连接远程 Runtime Host](../runtime-host-remote-access.zh-CN.md)。
+
 ### Runtime Host 解析 workspace
 
 Client 必须使用下面两种 target form 中的一个来表达 workspace：
@@ -201,9 +215,9 @@ type WorkspaceTarget =
 
 `project` 是可跨机器传递的形式。Runtime Host 通过自己的 Project Catalog 解析它，并返回 canonical target 与 `hostCwd`；`hostCwd` 是 Host 上的绝对目录。`host_path` 只供被明确允许指定 Host path 的 Client 使用，例如从本地 checkout 启动的 CLI。
 
-Project summary 不暴露 path。只有被允许读取 Host path 的 connection 才能读取或修改 project location、在 Host 上 reveal path，或提交 `host_path`。
+Project summary 不暴露已注册的 location。`canUseHostPaths` 控制 Client 能否在 operation 中指定 Host path，不是 path confidentiality boundary。Canonical Session projection 可以包含解析后的 `hostCwd`；remote Client 只能把它当作 Host metadata，不能当作 Client filesystem path。读取或修改 Project location、让 Host reveal path 仍是各自独立的 operation，而提交 `host_path` 必须具有 Host-path authority。
 
-Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 会按 State Root 在本地记住所选 Project；选择它不会修改 Host 全局状态。
+Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 会按 State Root 在本地记住所选 Project；选择它不会修改 Host 全局状态。Remote Client 必须从所选 Host 中选择已有 Project。Desktop 不能打开 Client-local directory picker 并假装它选择了 Host directory；CLI/TUI 也不能通过 Client filesystem 重新解释、验证、迁移或补全 Host path。
 
 ## 生命周期
 

@@ -60,10 +60,12 @@ describe('detectShell', () => {
 });
 
 describe('buildShellSpawnPlan', () => {
-  test('spawns PowerShell explicitly with non-interactive flags and the command as one argument', () => {
+  test('spawns PowerShell explicitly and preserves the command in an isolated script block', () => {
+    const command = "using namespace System.Text\nWrite-Output '$HOME'";
     const spawnPlan = buildShellSpawnPlan(
       { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: 'C:\\Users\\u\\bin\\pwsh.exe' },
-      'Get-ChildItem -Name',
+      command,
+      { INHERITED: 'kept', __maka_runtime_powershell_command: 'caller value' },
     );
     assert.equal(spawnPlan.file, 'C:\\Users\\u\\bin\\pwsh.exe');
     assert.equal(spawnPlan.useShellOption, false);
@@ -73,9 +75,16 @@ describe('buildShellSpawnPlan', () => {
       '-NonInteractive',
       '-Command',
     ]);
-    assert.ok(
-      spawnPlan.args[4]!.startsWith('Get-ChildItem -Name\n'),
-      'command comes first, verbatim',
+    const script = spawnPlan.args[4] ?? '';
+    assert.match(script, /\[Console\]::OutputEncoding = \$__makaUtf8/u);
+    assert.equal(spawnPlan.env?.INHERITED, 'kept');
+    assert.ok(spawnPlan.env?.__MAKA_RUNTIME_POWERSHELL_COMMAND?.startsWith(`${command}\n`));
+    assert.equal(spawnPlan.env?.__maka_runtime_powershell_command, undefined);
+    assert.match(script, /SetEnvironmentVariable\('__MAKA_RUNTIME_POWERSHELL_COMMAND', \$null\)/u);
+    assert.doesNotMatch(
+      script,
+      /Write-Output/u,
+      'user syntax is not interpolated into the wrapper',
     );
   });
 
@@ -89,10 +98,20 @@ describe('buildShellSpawnPlan', () => {
       'npm test',
     );
     assert.equal(
-      spawnPlan.args[4],
+      spawnPlan.env?.__MAKA_RUNTIME_POWERSHELL_COMMAND,
       'npm test\n' +
         '$__makaOk = $?\n' +
         'if (-not $__makaOk) { if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 1 } }',
+    );
+    assert.equal(
+      spawnPlan.args[4],
+      '$__makaUtf8 = [System.Text.UTF8Encoding]::new($false)\n' +
+        '[Console]::OutputEncoding = $__makaUtf8\n' +
+        '$OutputEncoding = $__makaUtf8\n' +
+        "$__makaCommandText = [Environment]::GetEnvironmentVariable('__MAKA_RUNTIME_POWERSHELL_COMMAND')\n" +
+        "[Environment]::SetEnvironmentVariable('__MAKA_RUNTIME_POWERSHELL_COMMAND', $null)\n" +
+        '$__makaCommand = [ScriptBlock]::Create($__makaCommandText)\n' +
+        '. $__makaCommand',
     );
   });
 
@@ -129,10 +148,18 @@ describe('buildPtyShellSpawnPlan', () => {
     const powershell = buildPtyShellSpawnPlan(
       { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: 'C:\\pf\\pwsh.exe' },
       'Write-Output ready',
+      { INHERITED: 'kept' },
     );
     assert.equal(powershell.file, 'C:\\pf\\pwsh.exe');
     assert.deepEqual(powershell.args.slice(0, 3), ['-NoLogo', '-NoProfile', '-Command']);
     assert.doesNotMatch(powershell.args.join(' '), /-NonInteractive/);
-    assert.match(powershell.args[3] ?? '', /^Write-Output ready\n/);
+    assert.match(
+      powershell.args[3] ?? '',
+      /\$OutputEncoding = \$__makaUtf8\n\$__makaCommandText = \[Environment\]::GetEnvironmentVariable/u,
+    );
+    assert.equal(powershell.env?.INHERITED, 'kept');
+    assert.ok(
+      powershell.env?.__MAKA_RUNTIME_POWERSHELL_COMMAND?.startsWith('Write-Output ready\n'),
+    );
   });
 });

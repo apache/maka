@@ -15,7 +15,7 @@ import {
   isTerminalRuntimeEventStatus,
 } from '@maka/core/runtime-event';
 
-import { normalizeToolResultContentForRead } from '@maka/core/tool-result-record-schema';
+import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 
 /** The statuses a settled boundary decision can carry — every status but `pending`. */
 type SettledSandboxBoundaryStatus = Exclude<
@@ -814,7 +814,7 @@ function projectFunctionResponse(
   let normalizedResult: ToolResultContent | undefined;
   if (!archivedPlaceholder) {
     try {
-      normalizedResult = normalizeToolResultContentForRead(compatibleResult);
+      normalizedResult = decodeCanonicalToolResultContent(compatibleResult);
     } catch (error) {
       diagnostic(
         state,

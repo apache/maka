@@ -64,20 +64,36 @@ export type SkillCatalogManagedUpdateMutationTypeContract = [
 ];
 
 describe('Runtime Host Skill catalog protocol', () => {
-  test('identifies Skill catalog queries that expose Host paths', () => {
+  test('only treats explicit Host-path Skill workspaces as Host-path input', () => {
     assert.equal(
       SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].usesHostPaths?.({
         kind: 'start',
         context: { workspace: { kind: 'project', projectId: 'project-1' } },
         view: 'governance',
       }),
-      true,
+      false,
     );
     assert.equal(
       SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].usesHostPaths?.({
         kind: 'start',
         context: CONTEXT,
         view: 'governance',
+      }),
+      true,
+    );
+    assert.equal(
+      SKILL_CATALOG_OPERATION_SPECS['skill.catalog.mutate'].usesHostPaths?.({
+        context: { workspace: { kind: 'project', projectId: 'project-1' } },
+        expectedRevision: REVISION,
+        mutation: { kind: 'create_starter' },
+      }),
+      false,
+    );
+    assert.equal(
+      SKILL_CATALOG_OPERATION_SPECS['skill.catalog.preview-update'].usesHostPaths?.({
+        context: CONTEXT,
+        expectedRevision: REVISION,
+        ref: 'workspace:legacy:research-brief',
       }),
       true,
     );
@@ -348,8 +364,10 @@ describe('Runtime Host Skill catalog protocol', () => {
       const bundledItems = result.items.filter(
         (item): item is SkillCatalogBundledItem => item.kind === 'bundled',
       );
-      assert.ok(bundledItems.length > 0);
-      assert.ok(bundledItems.some((item) => item.id === 'deep-research'));
+      assert.deepEqual(
+        bundledItems.map((item) => item.id),
+        ['computer-use'],
+      );
       assert.equal(
         bundledItems.every((item) => item.category.length > 0),
         true,

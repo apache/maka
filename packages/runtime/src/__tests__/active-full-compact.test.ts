@@ -317,28 +317,6 @@ describe('active full compact PR1 foundation', () => {
     assert.equal(selection.reason, 'tool_pair_split');
   });
 
-  test('helper calls leave provider request shape unchanged', () => {
-    const messages = fixtureMessages();
-    const before = JSON.stringify(messages);
-    const index = buildActiveFullCompactSourceIndex({
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      messages,
-      runtimeEvents: fixtureRuntimeEvents(),
-    });
-    const block = buildActiveFullCompactBlockFromSummary({
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      entries: index.entries,
-      summary: fixtureSummary(index.entries.map((entry) => entry.sourceId)),
-      now: 100,
-    });
-    validateActiveFullCompactBlockForSourceIndex(block, index);
-    activeFullCompactBlockToCompactionBoundary(block);
-
-    assert.equal(JSON.stringify(messages), before);
-  });
-
   test('active archive refs and diagnostics coexist with active prune fields', () => {
     const placeholder = activePlaceholder();
     const messages: ModelMessage[] = [

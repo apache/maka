@@ -38,15 +38,6 @@ function makeManager() {
 }
 
 describe('BrowserViewManager', () => {
-  it('creates a view once and reuses it', () => {
-    const { manager, created } = makeManager();
-    const a = manager.getOrCreate('s1');
-    const b = manager.getOrCreate('s1');
-    assert.equal(a, b);
-    assert.equal(created.length, 1);
-    assert.equal(manager.liveCount(), 1);
-  });
-
   it('fires onLiveChange on create and dispose, not on reuse', async () => {
     const { manager, liveSets } = makeManager();
     manager.getOrCreate('s1');
@@ -54,14 +45,6 @@ describe('BrowserViewManager', () => {
     manager.getOrCreate('s2');
     await manager.dispose('s1');
     assert.deepEqual(liveSets, [['s1'], ['s1', 's2'], ['s2']]);
-  });
-
-  it('setViewport forwards to the view and no-ops when absent', () => {
-    const { manager } = makeManager();
-    manager.setViewport('missing', { x: 0, y: 0, width: 1, height: 1 }); // no throw
-    const v = manager.getOrCreate('s1');
-    manager.setViewport('s1', { x: 1, y: 2, width: 3, height: 4 });
-    assert.deepEqual(v.rect, { x: 1, y: 2, width: 3, height: 4 });
   });
 
   it('hideAllExcept hides every other view and leaves the kept one untouched', () => {

@@ -8,7 +8,6 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
   chatModelChoiceLabel,
-  normalizeActiveChatModel,
   pickNewChatModel,
   type NewChatModel,
 } from './shell-chat-model-selection';
@@ -123,7 +122,7 @@ export function useShellChatModel(options: {
     : activeConnection?.name ?? activeSession?.llmConnectionSlug;
   const activeModel = activeSession?.backend === 'fake'
     ? undefined
-    : normalizeActiveChatModel(activeSession, activeConnection, chatModelChoices);
+    : activeSession?.model || activeConnection?.defaultModel;
   const activeModelLabel = activeSession?.backend === 'fake'
     ? undefined
     : chatModelChoiceLabel(chatModelChoices, activeSession?.llmConnectionSlug, activeModel);

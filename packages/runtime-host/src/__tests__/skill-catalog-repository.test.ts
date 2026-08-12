@@ -186,6 +186,46 @@ test('governance context status contains structural facts without synthetic budg
   }
 });
 
+test('removed bundled sources lose provenance trust without disabling the local copy', async () => {
+  const fixture = await createFixture();
+  const id = 'retired-bundled-skill';
+  const content = skillBody('Retired Bundled Skill', 'installed by an older Maka release');
+  const skillDirectory = await createSkill(join(fixture.root, 'skills'), id, content);
+  await writeFile(
+    join(skillDirectory, 'skill.lock.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      id,
+      sourceType: 'bundled',
+      sourceName: 'maka-bundled',
+      sourceVersion: '1',
+      contentSha256: sha256(content),
+      installedAt: '2026-07-01T00:00:00.000Z',
+    })}\n`,
+  );
+  const repository = fixture.repository();
+
+  const governance = await start(repository, fixture.project, 'governance');
+  const installed = governanceItem(governance, `workspace:legacy:${id}`);
+  assert.equal(installed.validationStatus, 'metadata_error');
+  assert.deepEqual(installed.validationCodes, ['unsupported_schema']);
+  assert.equal(installed.runtimeStatus, 'enabled');
+  assert.equal(installed.enabled, true);
+
+  const invocable = await repository.queryInvocable(
+    { kind: 'start' },
+    { projectRoot: fixture.project },
+    { toolNames: new Set(['Read']) },
+  );
+  assert.equal(invocable.kind, 'page');
+  if (invocable.kind !== 'page') return;
+  assert.deepEqual(
+    invocable.items.map((item) => item.id),
+    [id],
+  );
+  assert.equal(await readFile(join(skillDirectory, 'SKILL.md'), 'utf8'), content);
+});
+
 test('bounds oversized metadata with an explicit diagnostic and encodable mutation result', async () => {
   const fixture = await createFixture();
   const sourceId = 'oversized-metadata';

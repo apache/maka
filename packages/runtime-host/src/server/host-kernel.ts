@@ -128,14 +128,28 @@ export type RuntimeHostLifecycleMode = 'ephemeral' | 'service';
 export type RuntimeHostKernelOptions<K extends StorageRootKind = 'interactive'> =
   RuntimeHostKernelCommonOptions<K> &
     (
-      | { lifecycleMode?: 'ephemeral'; idleGraceMs?: number; generation?: string }
-      | { lifecycleMode: 'service'; idleGraceMs?: never; generation?: never }
+      | {
+          lifecycleMode?: 'ephemeral';
+          initialConnectionTimeoutMs?: number;
+          idleGraceMs?: number;
+          generation?: string;
+        }
+      | {
+          lifecycleMode: 'service';
+          initialConnectionTimeoutMs?: never;
+          idleGraceMs?: never;
+          generation?: never;
+        }
     );
 
 type RuntimeHostKernelInternalOptions = RuntimeHostKernelOptions<StorageRootKind>;
 
 type RuntimeHostLifecycle =
-  | { readonly kind: 'ephemeral'; readonly idleGraceMs: number }
+  | {
+      readonly kind: 'ephemeral';
+      readonly initialConnectionTimeoutMs: number;
+      readonly idleGraceMs: number;
+    }
   | { readonly kind: 'service' };
 
 export class RuntimeHostKernel {
@@ -157,6 +171,7 @@ export class RuntimeHostKernel {
   readonly #shutdownGraceMs: number;
   #listeners: RuntimeHostListenerSet | undefined;
   #state: HostLifecycleState = 'starting';
+  #hasAcceptedConnection = false;
   #activeOperations = 0;
   #activeCommandOperations = 0;
   #retainedUntilProcessExit = false;
@@ -213,7 +228,11 @@ export class RuntimeHostKernel {
           try {
             await host.closed;
           } catch (shutdownError) {
-            throw shutdownError;
+            throw new AggregateError(
+              [error, shutdownError],
+              'Runtime Host startup failed and shutdown did not complete cleanly',
+              { cause: error },
+            );
           }
         } else {
           await host.#abortStartup();
@@ -232,6 +251,10 @@ export class RuntimeHostKernel {
   get endpoint(): string {
     if (!this.#listeners) throw new Error('Runtime Host has not started listening');
     return this.#listeners.localEndpoint;
+  }
+
+  get rootId(): string {
+    return this.#options.owner.capability.rootId;
   }
 
   get connectionCount(): number {
@@ -432,6 +455,7 @@ export class RuntimeHostKernel {
           : {}),
       };
     }
+    this.#hasAcceptedConnection = true;
     this.#acceptedTransports.add(transport);
     this.#handshakingTransports.delete(transport);
     this.#cancelIdle();
@@ -660,11 +684,14 @@ export class RuntimeHostKernel {
     if (this.#lifecycle.kind === 'service') return;
     if (this.#shutdownRequested) return;
     if (!this.#isTrueIdle() || this.#idleTimer) return;
+    const timeoutMs = this.#hasAcceptedConnection
+      ? this.#lifecycle.idleGraceMs
+      : this.#lifecycle.initialConnectionTimeoutMs;
     this.#idleTimer = setTimeout(() => {
       this.#idleTimer = undefined;
       if (!this.#isTrueIdle()) return;
       void this.#commitShutdown().catch(() => undefined);
-    }, this.#lifecycle.idleGraceMs);
+    }, timeoutMs);
   }
 
   #isTrueIdle(): boolean {
@@ -866,8 +893,11 @@ function normalizeLifecycle<K extends StorageRootKind>(
 ): RuntimeHostLifecycle {
   const lifecycleMode: unknown = options.lifecycleMode;
   if (lifecycleMode === 'service') {
-    if (Object.hasOwn(options, 'idleGraceMs')) {
-      throw new TypeError('Runtime Host service lifecycle does not accept idleGraceMs');
+    if (
+      Object.hasOwn(options, 'initialConnectionTimeoutMs') ||
+      Object.hasOwn(options, 'idleGraceMs')
+    ) {
+      throw new TypeError('Runtime Host service lifecycle does not accept idle timeouts');
     }
     return { kind: 'service' };
   }
@@ -875,8 +905,10 @@ function normalizeLifecycle<K extends StorageRootKind>(
     throw new TypeError('Runtime Host lifecycleMode must be ephemeral or service');
   }
   const idleGraceMs = options.idleGraceMs ?? DEFAULT_IDLE_GRACE_MS;
+  const initialConnectionTimeoutMs = options.initialConnectionTimeoutMs ?? idleGraceMs;
+  assertDuration(initialConnectionTimeoutMs, 'initialConnectionTimeoutMs', 0);
   assertDuration(idleGraceMs, 'idleGraceMs', 0);
-  return { kind: 'ephemeral', idleGraceMs };
+  return { kind: 'ephemeral', initialConnectionTimeoutMs, idleGraceMs };
 }
 
 function eraseRootKind<K extends StorageRootKind>(

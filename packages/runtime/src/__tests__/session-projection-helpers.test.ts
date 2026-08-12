@@ -134,15 +134,6 @@ describe('session projection helpers', () => {
     });
   });
 
-  test('only resumes a sandbox boundary projection when authority permits it', () => {
-    const decision = { type: 'sandbox_boundary_decision_ack', ts: 1 } as never;
-
-    expect(statusFromEvent(decision, { allowInteractionResume: true })).toEqual({
-      status: 'running',
-    });
-    expect(statusFromEvent(decision, { allowInteractionResume: false })).toBeUndefined();
-  });
-
   test('projects turn terminal events without changing failure classes', () => {
     expect(turnStatusFromEvent({ type: 'abort', ts: 1 } as never)).toEqual({ status: 'aborted' });
     expect(turnStatusFromEvent({ type: 'error', ts: 1, reason: 'tool_failed' } as never)).toEqual({

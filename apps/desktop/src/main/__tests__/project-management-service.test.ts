@@ -9,6 +9,19 @@ import {
   type ProjectManagementCatalog,
 } from '../project-management-service.js';
 
+const LOCAL_CAPABILITIES = {
+  chooseClientDirectory: true,
+  selectNoProject: true,
+  setLocalDefault: true,
+  viewClientPath: true,
+} as const;
+const REMOTE_CAPABILITIES = {
+  chooseClientDirectory: false,
+  selectNoProject: false,
+  setLocalDefault: false,
+  viewClientPath: false,
+} as const;
+
 test('owns Project selection and reversible lifecycle actions in Desktop', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-service-'));
   const firstPath = join(base, 'first');
@@ -21,6 +34,7 @@ test('owns Project selection and reversible lifecycle actions in Desktop', async
     createId: () => 'project-1',
   });
   const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
     catalog: managementCatalog(catalog),
     chooseDirectory: async () => nextDirectory,
     selection: {
@@ -55,6 +69,7 @@ test('owns Project selection and reversible lifecycle actions in Desktop', async
 
 test('rejects malformed Project identities before catalog access', async () => {
   const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
     catalog: {
       list: unexpected,
       register: unexpected,
@@ -77,6 +92,7 @@ test('rejects malformed Project identities before catalog access', async () => {
 test('keeps an explicit no-Project selection local to Desktop', async () => {
   const selections: Array<{ projectId: string | null; path: string }> = [];
   const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
     catalog: {
       list: unexpected,
       register: unexpected,
@@ -99,6 +115,7 @@ test('keeps an explicit no-Project selection local to Desktop', async () => {
 test('does not silently replace a stale Project preference with another Project', async () => {
   const selections: Array<{ projectId: string | null; path: string }> = [];
   const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
     catalog: {
       list: async () => [
         { id: 'other', name: 'Other', locations: [], available: true },
@@ -118,6 +135,52 @@ test('does not silently replace a stale Project preference with another Project'
 
   assert.deepEqual(await service.current(), { projectId: null, path: '/last-known' });
   assert.deepEqual(selections, [{ projectId: null, path: '/last-known' }]);
+});
+
+test('does not expose Client directory actions for a remote Host', async () => {
+  let pickerCalls = 0;
+  const service = createProjectManagementService({
+    capabilities: REMOTE_CAPABILITIES,
+    catalog: {
+      list: async () => [
+        {
+          id: 'remote',
+          name: 'Remote',
+          locations: [],
+          available: true,
+        },
+      ],
+      register: unexpected,
+      relink: unexpected,
+      rename: unexpected,
+      archive: unexpected,
+      restore: unexpected,
+    },
+    chooseDirectory: async () => {
+      pickerCalls += 1;
+      return '/client/path';
+    },
+    selection: {
+      currentSelection: async () => ({ projectId: 'remote', path: '/host/project' }),
+      setSelection() {},
+    },
+  });
+
+  await assert.rejects(() => service.add(), /registered on the Host/);
+  await assert.rejects(() => service.relink('remote'), /registered on the Host/);
+  await assert.rejects(() => service.select(null), /requires a Project/);
+  assert.equal(await service.pathFor('remote'), null);
+  assert.deepEqual((await service.getSnapshot()).capabilities, REMOTE_CAPABILITIES);
+  assert.deepEqual(await service.select('remote'), {
+    project: {
+      id: 'remote',
+      name: 'Remote',
+      locations: [],
+      available: true,
+    },
+    path: '/host/project',
+  });
+  assert.equal(pickerCalls, 0);
 });
 
 function managementCatalog(catalog: ProjectCatalog): ProjectManagementCatalog {

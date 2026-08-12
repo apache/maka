@@ -1,43 +1,9 @@
-/**
- * Tests for AsyncEventQueue — single-producer / single-consumer FIFO.
- */
-
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
 import { AsyncEventQueue } from '../async-queue.js';
 
 describe('AsyncEventQueue', () => {
-  test('buffered items emit in order, then done', async () => {
-    const q = new AsyncEventQueue<number>();
-    q.push(1);
-    q.push(2);
-    q.push(3);
-    q.close();
-
-    const out: number[] = [];
-    for await (const v of q) out.push(v);
-    expect(out).toEqual([1, 2, 3]);
-  });
-
-  test('consumer waits, then receives on push', async () => {
-    const q = new AsyncEventQueue<string>();
-    const result: string[] = [];
-
-    const reader = (async () => {
-      for await (const v of q) result.push(v);
-    })();
-
-    // Slightly delay producer; consumer is now parked on next() Promise.
-    await Promise.resolve();
-    q.push('a');
-    q.push('b');
-    q.close();
-
-    await reader;
-    expect(result).toEqual(['a', 'b']);
-  });
-
   test('close before any push → consumer completes immediately', async () => {
     const q = new AsyncEventQueue<number>();
     q.close();

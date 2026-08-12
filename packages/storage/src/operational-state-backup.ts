@@ -16,7 +16,7 @@ import { dirname, relative, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 import { withArtifactWriterLock } from './artifact-writer-lock.js';
-import { decodeStoredMessageForRecovery } from './execution-record-codec.js';
+import { decodeStoredMessage } from './execution-record-codec.js';
 import {
   acquireOperationalStateDatabase,
   OPERATIONAL_STATE_DATABASE_NAME,
@@ -490,7 +490,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         ) {
           throw new Error('session message index is invalid');
         }
-        const message = decodeStoredMessageForRecovery(JSON.parse(row.record_json));
+        const message = decodeStoredMessage(JSON.parse(row.record_json));
         if (
           message.id !== row.message_id ||
           message.type !== row.message_type ||

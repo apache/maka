@@ -8,12 +8,19 @@ export interface ResolveMakaWorkspaceRootInput {
   workspaceName?: string;
 }
 
-export function resolveMakaWorkspaceRoot(input: ResolveMakaWorkspaceRootInput = {}): string {
+export type ResolveMakaClientDataRootInput = Omit<ResolveMakaWorkspaceRootInput, 'workspaceName'>;
+
+export function resolveMakaClientDataRoot(input: ResolveMakaClientDataRootInput = {}): string {
   const platform = input.platform ?? process.platform;
   const env = input.env ?? process.env;
   const home = input.homeDir ?? homedir();
+  return resolveElectronUserDataRoot(platform, env, home);
+}
+
+export function resolveMakaWorkspaceRoot(input: ResolveMakaWorkspaceRootInput = {}): string {
+  const platform = input.platform ?? process.platform;
   const workspaceName = input.workspaceName ?? 'default';
-  const userDataRoot = resolveElectronUserDataRoot(platform, env, home);
+  const userDataRoot = resolveMakaClientDataRoot(input);
   const pathApi = platform === 'win32' ? win32 : posix;
   return pathApi.join(userDataRoot, 'workspaces', workspaceName);
 }

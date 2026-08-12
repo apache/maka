@@ -30,6 +30,9 @@
     "react": "^19.2.8"
   },
   "devDependencies": {
-    "@types/react": "^19.2.18"
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "linkedom": "^0.18.13",
+    "react-dom": "^19.2.8"
   }
 }

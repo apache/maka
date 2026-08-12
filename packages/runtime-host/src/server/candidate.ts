@@ -5,6 +5,7 @@ import { RuntimeHostKernel } from './host-kernel.js';
 export interface InteractiveRuntimeHostCandidateOptions {
   rootPath: string;
   expectedRootId: string;
+  initialConnectionTimeoutMs?: number;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   generation?: string;
@@ -28,6 +29,7 @@ export async function startInteractiveRuntimeHostCandidate(
   const host = await RuntimeHostKernel.start({
     owner,
     lifecycleMode: 'ephemeral',
+    initialConnectionTimeoutMs: options.initialConnectionTimeoutMs,
     idleGraceMs: options.idleGraceMs,
     handshakeTimeoutMs: options.handshakeTimeoutMs,
     generation: options.generation,

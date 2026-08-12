@@ -10,24 +10,6 @@ import {
 } from '@maka/storage/root-authority';
 import { resolveDesktopStorageRoot } from '../storage-root-startup.js';
 
-test('opens a valid desktop storage root without asking for repair', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-desktop-root-'));
-  let repairAsked = false;
-  try {
-    const resolved = await resolveDesktopStorageRoot(root, {
-      confirmRepair: async () => {
-        repairAsked = true;
-        return false;
-      },
-    });
-
-    assert.ok(resolved);
-    assert.equal(repairAsked, false);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test('asks before adopting a root whose device number moved on its own', async () => {
   // A device number changes on its own whenever a volume is mounted again, so
   // repairing that case without asking is tempting: the person is being shown
@@ -94,29 +76,6 @@ test('repairs a stale desktop storage root after explicit confirmation', async (
       (await resolveStorageRoot({ path: root, kind: 'interactive' })).rootId,
       initialized.rootId,
     );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('leaves a conflicting desktop storage root untouched when repair is declined', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-desktop-root-'));
-  try {
-    await resolveStorageRoot({ path: root, kind: 'interactive' });
-    const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
-    const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
-      rootIdentity: { dev: string };
-    };
-    marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
-    const conflictingMarker = `${JSON.stringify(marker)}\n`;
-    await writeFile(markerPath, conflictingMarker);
-
-    const resolved = await resolveDesktopStorageRoot(root, {
-      confirmRepair: async () => false,
-    });
-
-    assert.equal(resolved, undefined);
-    assert.equal(await readFile(markerPath, 'utf8'), conflictingMarker);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

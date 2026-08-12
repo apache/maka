@@ -6,14 +6,13 @@ import {
   runtimeGateFromCallback,
   type RuntimeGate,
 } from '../runtime-runner.js';
-import type { AttachmentRef } from '@maka/core/events';
 import type {
   InvocationContext,
   InvocationProviders,
   InvocationRequest,
 } from '../invocation-context.js';
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
-import type { AgentFlow, FlowInput, RunnableAgentFlow } from '../agent-flow.js';
+import type { FlowInput, RunnableAgentFlow } from '../agent-flow.js';
 
 // ============================================================================
 // Test fakes / helpers
@@ -38,20 +37,6 @@ function makeRequest(overrides: Partial<InvocationRequest> = {}): InvocationRequ
     ...overrides,
   };
 }
-
-const attachment: AttachmentRef = {
-  kind: 'image',
-  name: 'chart.png',
-  mimeType: 'image/png',
-  bytes: 123,
-  ref: { kind: 'session_file', sessionId: 'sess-1', relativePath: 'attachments/chart.png' },
-};
-
-type AgentFlowContext = Parameters<AgentFlow['run']>[0];
-const _canonicalContextIsFlowContext: InvocationContext = {} as AgentFlowContext;
-const _flowContextIsCanonicalContext: AgentFlowContext = {} as InvocationContext;
-void _canonicalContextIsFlowContext;
-void _flowContextIsCanonicalContext;
 
 /**
  * Fake flow that runs a script to produce its events. The script receives

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { resolveRootControlNamespace, resolveStorageRoot } from '@maka/storage/root-authority';
+import { classifyRemoteRuntimeHostConnectFailure } from '../client/connection.js';
 import {
   connectRemoteRuntimeHost,
   connectRuntimeHost,
@@ -14,11 +16,13 @@ import {
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type RequestFrame,
 } from '../protocol/index.js';
 import {
   openRuntimeHostAccessAuthority,
   startExecutionRuntimeHostService,
 } from '../server/index.js';
+import { authorizeRuntimeHostOperation } from '../server/connection-authority.js';
 
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -152,12 +156,18 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       (error: unknown) =>
         error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
     );
+    const remoteSkills = await remote.request('skill.catalog.query', {
+      kind: 'start',
+      context: {
+        workspace: { kind: 'project', projectId: registeredProjectId },
+      },
+      view: 'governance',
+    });
+    assert.equal(remoteSkills.kind, 'page');
     await assert.rejects(
       remote.request('skill.catalog.query', {
         kind: 'start',
-        context: {
-          workspace: { kind: 'project', projectId: registeredProjectId },
-        },
+        context: { workspace: { kind: 'host_path', path: canonicalRoot } },
         view: 'governance',
       }),
       (error: unknown) =>
@@ -334,7 +344,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         surface: 'tui',
         protocol: PROTOCOL,
       }),
-      { kind: 'unavailable', reason: 'connect_failed' },
+      { kind: 'unavailable', reason: 'authentication_failed' },
     );
   } finally {
     await Promise.allSettled([remote?.close(), local?.close()]);
@@ -345,6 +355,25 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     });
     await rm(base, { recursive: true, force: true });
   }
+});
+
+test('classifies safe remote connection failures without exposing raw errors', () => {
+  assert.equal(
+    classifyRemoteRuntimeHostConnectFailure(
+      Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }),
+    ),
+    'unreachable',
+  );
+  assert.equal(
+    classifyRemoteRuntimeHostConnectFailure(
+      Object.assign(new Error('certificate details'), { code: 'CERT_HAS_EXPIRED' }),
+    ),
+    'tls_failed',
+  );
+  assert.equal(
+    classifyRemoteRuntimeHostConnectFailure(new Error('unexpected sensitive detail')),
+    'connect_failed',
+  );
 });
 
 test('access credentials persist only as hashes and stay revoked after reload', async () => {
@@ -370,6 +399,16 @@ test('access credentials persist only as hashes and stay revoked after reload', 
     assert.equal(authority.authenticate(credential)?.principalKind, 'remote_owner');
     await assert.rejects(
       authority.issue({
+        principalKind: 'remote_owner',
+        principalId: 'upgrader',
+        operationGrants: ['host.upgrade.prepare'],
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+      }),
+      /local-owner only/u,
+    );
+    await assert.rejects(
+      authority.issue({
         principalKind: 'capability_provider',
         principalId: 'overprivileged-provider',
         operationGrants: ['session.catalog.query'],
@@ -393,6 +432,51 @@ test('access credentials persist only as hashes and stay revoked after reload', 
     assert.equal(
       (await openRuntimeHostAccessAuthority(directory)).authenticate(credential),
       undefined,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('keeps a formerly accepted local-only grant inert when opening an existing access file', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-legacy-'));
+  const credential = 'maka_rh_existing';
+  try {
+    await writeFile(
+      join(directory, 'runtime-host-access.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        credentials: [
+          {
+            credentialId: 'existing-upgrader',
+            credentialHash: createHash('sha256').update(credential).digest('hex'),
+            principalId: 'existing-client',
+            principalKind: 'remote_owner',
+            status: 'active',
+            operationGrants: ['host.status', 'host.upgrade.prepare'],
+            canPublishClientCapabilities: false,
+            canUseHostPaths: false,
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const authority = await openRuntimeHostAccessAuthority(directory);
+    const connectionAuthority = authority.authenticate(credential);
+    assert.ok(connectionAuthority);
+    assert.deepEqual(connectionAuthority.operationGrants, ['host.status']);
+    assert.equal(
+      authorizeRuntimeHostOperation(connectionAuthority, {
+        requestId: 'upgrade-request',
+        operation: 'host.upgrade.prepare',
+        input: {
+          expectedHostEpoch: 'existing-host',
+          allowInterruptActiveTasks: false,
+        },
+      } as RequestFrame),
+      false,
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

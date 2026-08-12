@@ -1312,9 +1312,8 @@
  * This styles the `.maka-turn` container (NOT a per-turn marker), so it
  * stays hand-written here alongside the other model-catalog-preview turn
  * chrome. */
-/* Visual System 2.0 (T3): derived from `--accent`, not `--link`. Zero pixels
- * move — `--link` is defined exactly twice and both are `var(--accent)`, and
- * palettes override --accent alone — but the two names mean different things.
+/* Visual System 2.0 (T3): derived from `--accent`, not `--link`. The two names
+ * mean different things: palettes override --accent alone, while
  * DESIGN.md §3 scopes the link tier to link TEXT (and to `--accent-solid` at
  * that, for contrast); this is a selection wash and an outline, i.e. the
  * interaction accent doing its normal job. Deriving a surface from the link

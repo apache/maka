@@ -158,25 +158,10 @@ export interface AuthorizationUrlPayload {
   authRequestId: string;
 }
 
-// =============================================================
-// PKCE helpers — pure, no side effects, no global deps.
-// =============================================================
-
-/**
- * PKCE code_verifier requirements per RFC 7636 §4.1:
- *   - 43-128 chars in `[A-Z][a-z][0-9]-._~`
- *   - We generate exactly 43 chars from 32 random bytes (base64url
- *     encoding bloats to ~43 chars; matches the upstream pattern).
- */
+/** 32 random bytes encode to the RFC 7636 minimum 43-character verifier. */
 export const PKCE_VERIFIER_LENGTH_BYTES = 32;
 
-/**
- * Base64url-encode a buffer per RFC 4648 §5. We accept either a
- * Uint8Array or a Node Buffer (sharing the same shape).
- *
- * Pure helper, no Node-specific imports — safe for browser
- * polyfill if we ever ship to web. Tests cover both inputs.
- */
+/** Base64url-encode bytes per RFC 4648 §5. */
 export function base64urlEncode(bytes: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i++) {
@@ -192,16 +177,7 @@ export function base64urlEncode(bytes: Uint8Array): string {
   return standard.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-/**
- * Compute the PKCE code_challenge from a code_verifier per
- * RFC 7636 §4.2: challenge = base64url(SHA256(verifier)).
- *
- * Accepts a SHA256 implementation by injection so the same helper
- * works in main (Node crypto), in tests (vitest-friendly), and in
- * a future web build (SubtleCrypto). The injection point also
- * avoids pulling Node's `crypto` into `@maka/core` and forcing a
- * Node target.
- */
+/** Injected digest keeps PKCE derivation platform-independent. */
 export interface Sha256Digest {
   digest(input: string): Uint8Array;
 }
@@ -210,17 +186,7 @@ export function pkceCodeChallenge(verifier: string, sha256: Sha256Digest): strin
   return base64urlEncode(sha256.digest(verifier));
 }
 
-/**
- * Build the Claude subscription authorization URL per the upstream
- * pattern (external reference at main.js:16091-16110).
- *
- * Caller MUST persist the verifier + state pair in pending storage
- * with TTL; this helper is pure and just returns the URL + state
- * hint.
- *
- * Throws on missing config; caller catches and reports a closed
- * action-result envelope.
- */
+/** Build a Claude subscription authorization URL, rejecting incomplete inputs. */
 export interface ClaudeAuthorizationConfig {
   /** Anthropic-registered OAuth client_id. */
   clientId: string;
@@ -257,18 +223,7 @@ export function buildClaudeAuthorizationUrl(
   return url.toString();
 }
 
-/**
- * Parse a pasted Claude authorization payload. Anthropic's
- * callback page presents `<code>#<state>` (octothorpe-joined).
- *
- * xuan G-X2 hard gate: strict shape validation, fail-closed on
- * any deviation. We accept only base64url-safe characters either
- * side of the `#`; anything else returns null and the caller
- * surfaces `invalid_paste_code` to the user.
- *
- * Whitespace at the boundaries is trimmed (users will copy with
- * trailing newlines). Internal whitespace fails.
- */
+/** Parse the strict base64url-safe `<code>#<state>` callback payload. */
 export interface PastedAuthorization {
   code: string;
   state: string;
@@ -289,12 +244,7 @@ export function parsePastedAuthorization(raw: unknown): PastedAuthorization | nu
   return { code, state };
 }
 
-/**
- * Constant-time string comparison for state validation. xuan G-X1
- * requires this to defend against timing leaks during the state-
- * match step. Length mismatch fails fast (still constant time over
- * the shorter input).
- */
+/** Constant-time comparison for equal-length OAuth state values. */
 export function constantTimeStringEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;

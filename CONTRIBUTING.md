@@ -3,11 +3,14 @@
 [![docs](https://img.shields.io/badge/docs-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue?logo=googletranslate&logoColor=white)](./CONTRIBUTING.zh-CN.md)
 
 - [Where to start](#where-to-start)
+- [Public decisions](#public-decisions)
+- [Human ownership and AI attribution](#human-ownership-and-ai-attribution)
+- [Review and fast path](#review-and-fast-path)
+- [Provenance and licensing](#provenance-and-licensing)
 - [Quick start](#quick-start)
 - [Developing Maka](#developing-maka)
 - [Branch naming](#branch-naming)
 - [Pull requests](#pull-requests)
-- [License](#license)
 
 ## Where to start
 
@@ -20,9 +23,7 @@ These changes merge most readily:
 - Documentation
 - Fixes for environment-specific problems
 
-Product and UI changes are different: open an issue and agree the direction
-before implementing. Maintainers land features directly because they set that
-direction; an outside contributor is better off confirming it first.
+For project direction, governance, or material product decisions, follow the public decision process below before implementing a change.
 
 Looking for something to pick up:
 
@@ -36,6 +37,36 @@ To claim one, say so in a comment and a maintainer may assign it to you.
 Prefer the **Bug report** or **Feature request** template when opening an issue —
 they ask for the context that makes one actionable. Report security problems through
 the private flow in [SECURITY.md](./SECURITY.md), never as a public issue.
+
+## Public decisions
+
+Discuss project direction, governance, and material product decisions publicly before implementation, and record the reasoning. Once an ASF development list is available, project-level decisions should move there. Implementation-level technical decisions may be discussed in the pull request when the reasoning remains public and reviewable.
+
+## Human ownership and AI attribution
+
+Every contribution must have a human contributor of record. That person reviews the work, decides to submit it, and accepts responsibility for its accuracy, provenance, licensing, and any applicable ICLA representations. Agents may prepare changes, but they may not use ASF credentials or push commits to ASF repositories.
+
+Disclose generative tooling when it makes a substantive contribution to code, documentation, analysis, or a project position. Disclosure is not required when a human determines the facts and position and the tool only translates, edits wording, autocompletes, or corrects spelling. Automated messages must identify themselves.
+
+When AI authors a material part of a contribution, Maka project policy requires the final commit on the target branch to name the tool:
+
+```text
+Generated-by: <tool>
+```
+
+The trailer must survive squash or amend.
+
+## Review and fast path
+
+Material changes to user-visible behavior, public contracts, security, licensing, releases, or governance require independent review by another human. AI review does not count as independent human review. This requirement is separate from the human contributor of record, who is required for every contribution.
+
+A contribution may be self-merged without independent human review only when it is low impact, easy to reverse, does not affect a protected area above, and passes the required checks. The contributor must record why the fast path applies. Tests, CI, documentation, and mechanical changes may qualify, but their file type does not exempt them from review.
+
+## Provenance and licensing
+
+Submit only work that you have the right to contribute. Record third-party sources, licenses, and required attribution. Correctness review does not establish where content came from. For material AI-generated content, check the tool's output terms and scan non-trivial or suspicious output for third-party matches. Follow the current [ASF Generative Tooling Guidance](https://www.apache.org/legal/generative-tooling.html).
+
+By contributing you agree that your contributions are licensed under the [Apache License 2.0](./LICENSE).
 
 ## Quick start
 
@@ -171,8 +202,3 @@ cannot be judged from a diff.
 **Keep the description short and your own.** Long generated write-ups slow
 review down. Say what changed and why in your own words; if that needs many
 paragraphs, the pull request is probably too large.
-
-## License
-
-By contributing you agree that your contributions are licensed under the
-[Apache License 2.0](./LICENSE).
