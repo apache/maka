@@ -20,8 +20,8 @@ type Framework = 'harbor' | 'pier';
 
 interface RelayState {
   readonly child: ChildProcess;
-  readonly server: Server;
   readonly socket: Socket;
+  readonly closeRelay: () => Promise<void>;
   readonly lines: AsyncIterator<string>;
   readonly token: string;
   readonly trialName: string;
@@ -117,8 +117,7 @@ async function runHarnessAttempt(
       }
       clean = await waitForTrial(state.child);
     }
-    state.socket.destroy();
-    await closeServer(state.server);
+    await state.closeRelay();
   }
   if (hasValue && cleanupAction) {
     value = {
@@ -231,9 +230,20 @@ async function startTrial(
     options.preparationEnvironment,
   );
   const server = createServer();
+  const connections = new Set<Socket>();
+  server.on('connection', (socket) => {
+    connections.add(socket);
+    socket.once('close', () => connections.delete(socket));
+  });
   let child: ChildProcess | undefined;
-  let connectedSocket: Socket | undefined;
-  let abort: (() => void) | undefined;
+  let serverClosed: Promise<void> | undefined;
+  const stopServer = (destroyConnections = false) => {
+    serverClosed ??= closeServer(server);
+    if (destroyConnections) {
+      for (const socket of connections) socket.destroy();
+    }
+    return serverClosed;
+  };
   let stage: 'spawn' | 'exit-before-ready' | 'ready-decode' = 'spawn';
   try {
     server.listen(0, '127.0.0.1');
@@ -260,26 +270,40 @@ async function startTrial(
       [join(relayPath, 'run_trial.py'), framework, options.frameworkVersion, configPath],
       { cwd: dirname(specPath), env: environment, stdio: 'ignore' },
     );
-    await Promise.race([
-      once(child, 'spawn'),
-      once(child, 'error').then(([error]) => Promise.reject(error)),
-    ]);
+    await once(child, 'spawn', signal ? { signal } : undefined);
     stage = 'exit-before-ready';
-    abort = () => child?.kill('SIGTERM');
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) abort();
-    const socket = await Promise.race([
-      once(server, 'connection').then(([connected]) => connected as Socket),
-      once(child, 'exit').then(([code]) => {
-        throw new Error(`Trial exited before Agent.run (${code})`);
-      }),
-    ]);
-    connectedSocket = socket;
+    const exitedBeforeReady = once(child, 'exit').then(([code]) => {
+      throw new Error(`Trial exited before Agent.run (${code})`);
+    });
+    const connectionWait = new AbortController();
+    const connectionSignal = signal
+      ? AbortSignal.any([signal, connectionWait.signal])
+      : connectionWait.signal;
+    let socket: Socket;
+    try {
+      socket = await Promise.race([
+        once(server, 'connection', { signal: connectionSignal }).then(
+          ([connected]) => connected as Socket,
+        ),
+        exitedBeforeReady,
+      ]);
+    } finally {
+      connectionWait.abort();
+    }
+    const relayClosed = stopServer();
     stage = 'ready-decode';
     const lines = createInterface({ input: socket, crlfDelay: Number.POSITIVE_INFINITY })[
       Symbol.asyncIterator
     ]();
-    const ready = await readLine(lines);
+    const cancelReady = () => socket.destroy();
+    signal?.addEventListener('abort', cancelReady, { once: true });
+    if (signal?.aborted) cancelReady();
+    let ready: Record<string, unknown>;
+    try {
+      ready = await Promise.race([readLine(lines), exitedBeforeReady]);
+    } finally {
+      signal?.removeEventListener('abort', cancelReady);
+    }
     if (ready.token !== token || ready.kind !== 'ready' || typeof ready.instruction !== 'string') {
       throw new Error('relay returned an invalid ready message');
     }
@@ -287,8 +311,11 @@ async function startTrial(
       kind: 'ready',
       state: {
         child,
-        server,
         socket,
+        closeRelay: async () => {
+          for (const connection of connections) connection.destroy();
+          await relayClosed;
+        },
         lines,
         token,
         trialName,
@@ -300,12 +327,11 @@ async function startTrial(
       },
     };
   } catch (error) {
+    const relayClosed = stopServer(true);
     if (child?.pid !== undefined) {
-      child.kill('SIGTERM');
-      await waitForTrial(child);
+      await waitForTrial(child, signal, true);
     }
-    connectedSocket?.destroy();
-    await closeServer(server);
+    await relayClosed;
     await unlink(configPath).catch(() => undefined);
     await mkdir(trialPath, { recursive: true, mode: 0o700 });
     const diagnosticPath = 'preparation-error.json';
@@ -325,8 +351,6 @@ async function startTrial(
     return notStarted(code, [
       { kind: 'executor-preparation', framework, trialName, path: diagnosticPath },
     ]);
-  } finally {
-    if (abort) signal?.removeEventListener('abort', abort);
   }
 }
 
@@ -547,22 +571,32 @@ async function readLine(lines: AsyncIterator<string>): Promise<Record<string, un
   return JSON.parse(line.value) as Record<string, unknown>;
 }
 
-async function waitForTrial(child: ChildProcess, signal?: AbortSignal): Promise<boolean> {
+async function waitForTrial(
+  child: ChildProcess,
+  signal?: AbortSignal,
+  terminate = false,
+): Promise<boolean> {
   const exit =
     child.exitCode !== null || child.signalCode !== null
       ? Promise.resolve({ code: child.exitCode, signal: child.signalCode })
       : once(child, 'exit').then(([code, childSignal]) => ({ code, signal: childSignal }));
-  const cancel = () => child.kill('SIGTERM');
+  let terminating = terminate;
+  const cancel = () => {
+    terminating = true;
+    child.kill('SIGTERM');
+  };
   signal?.addEventListener('abort', cancel, { once: true });
-  if (signal?.aborted) cancel();
+  if (terminate || signal?.aborted) cancel();
   try {
     const first = await within(exit, 20_000);
     if (first) return first.code === 0 && first.signal === null;
-    child.kill('SIGTERM');
-    const second = await within(exit, 20_000);
-    if (second) return second.code === 0 && second.signal === null;
+    if (!terminating) {
+      child.kill('SIGTERM');
+      const second = await within(exit, 20_000);
+      if (second) return second.code === 0 && second.signal === null;
+    }
     child.kill('SIGKILL');
-    await exit;
+    if (!(await within(exit, 5_000))) child.unref();
     return false;
   } finally {
     signal?.removeEventListener('abort', cancel);
