@@ -756,6 +756,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   openAiResponsesTransportState?: OpenAiResponsesTransportState;
   /** Optional fire-and-forget telemetry hook. Tool implementations remain unaware. */
   recordToolInvocation?: ToolTelemetryRecorder;
+  /** User/project PreToolUse policy dispatcher, frozen per turn by its snapshot loader. */
+  preToolUseHooks?: ToolRuntimeInput['preToolUseHooks'];
   /** Optional Phase 2 SQLite T1/T2 boundary for real tool execution. */
   runtimeCommitSink?: RuntimeCommitSink;
   /** Durable session-lifetime cumulative usage checkpoint after each completed provider step. */
@@ -1268,6 +1270,7 @@ export class AiSdkBackend implements AgentBackend {
       readChildAgentOutput: input.readChildAgentOutput,
       getRunTrace: () => identity.scope().runTrace,
       recordToolInvocation: input.recordToolInvocation,
+      preToolUseHooks: input.preToolUseHooks,
       runtimeCommitSink: input.runtimeCommitSink,
       recordToolArtifacts: input.recordToolArtifacts,
     });

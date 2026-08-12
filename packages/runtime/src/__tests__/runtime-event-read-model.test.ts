@@ -1687,6 +1687,19 @@ const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
     },
   },
   runtimeProtocol: { action: { toolBoundary: 't1_after_preflight_v1' } },
+  hookCompleted: {
+    action: {
+      eventName: 'PreToolUse',
+      handlerId: 'coverage-hook',
+      definitionHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      source: 'user',
+      toolUseId: 'coverage-tool',
+      toolName: 'Bash',
+      status: 'allowed',
+      durationMs: 1,
+    },
+    event: { refs: { toolCallId: 'coverage-tool' } },
+  },
 };
 
 describe('RuntimeEventActions projection coverage', () => {
