@@ -181,12 +181,10 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   let backoffMs = DEFAULT_BACKOFF_MIN_MS;
   let sawUnresponsiveEndpoint = false;
   let startupFailure: CandidateStartupFailure | undefined;
+  let pendingCandidateReports = 0;
 
   while (performance.now() < deadline) {
     input.signal?.throwIfAborted();
-    if (isPermanentCandidateStartupFailure(startupFailure)) {
-      return { kind: 'failed', reason: startupFailure.reason };
-    }
     const result = await connectResolvedRuntimeHost({
       capability,
       controlDirectory,
@@ -232,6 +230,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
     if (isBlockingIncompatibility(result)) {
       return result;
     }
+    if (isPermanentCandidateStartupFailure(startupFailure) && pendingCandidateReports === 0) {
+      return { kind: 'failed', reason: startupFailure.reason };
+    }
 
     const now = performance.now();
     if (
@@ -250,16 +251,23 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           ...(input.generation === undefined ? {} : { generation: input.generation }),
         });
         const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
-        void attempt.startupFailure?.then((failure) => {
-          if (
-            failure &&
-            (!startupFailure ||
-              (!isPermanentCandidateStartupFailure(startupFailure) &&
-                isPermanentCandidateStartupFailure(failure)))
-          ) {
-            startupFailure = failure;
-          }
-        });
+        if (attempt.startupFailure) {
+          pendingCandidateReports += 1;
+          void attempt.startupFailure
+            .then((failure) => {
+              if (
+                failure &&
+                (!startupFailure ||
+                  (!isPermanentCandidateStartupFailure(startupFailure) &&
+                    isPermanentCandidateStartupFailure(failure)))
+              ) {
+                startupFailure = failure;
+              }
+            })
+            .finally(() => {
+              pendingCandidateReports -= 1;
+            });
+        }
       } catch {
         // A failed Candidate attempt is ordinary election evidence; discovery continues.
       }
