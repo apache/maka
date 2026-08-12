@@ -2,7 +2,6 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { StoredMessage } from '@maka/core/session';
 import {
   SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
-  SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES,
   type SessionTranscriptBootstrap,
   type SessionTranscriptFragment,
   type SessionTranscriptPage,
@@ -160,9 +159,7 @@ export async function readSessionTranscriptPage(input: {
       position.position,
       position.byteOffset,
       request.maxBytes,
-      request.maxBytes > SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES
-        ? requireFragmentContinuation(position)
-        : SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
+      SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
     );
     return pageFromSelection(
       state,
@@ -179,10 +176,7 @@ export async function readSessionTranscriptPage(input: {
     position: position.position,
     ...(position.byteOffset === null ? {} : { byteOffset: position.byteOffset }),
     maxBytes: request.maxBytes,
-    maxMessages:
-      request.maxBytes > SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES
-        ? requireFragmentContinuation(position)
-        : SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
+    maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
   });
   return pageFromSelection(
     state,
@@ -191,15 +185,6 @@ export async function readSessionTranscriptPage(input: {
     storageSelection(storage),
     request.throughSequence,
   );
-}
-
-function requireFragmentContinuation(position: { position: number; byteOffset: number | null }): 1 {
-  if (position.byteOffset === null) {
-    throw new TranscriptPageRequestError(
-      'Large transcript pages require an in-message continuation cursor',
-    );
-  }
-  return 1;
 }
 
 export function updateSubscriberTranscriptHighWater(

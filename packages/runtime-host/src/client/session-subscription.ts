@@ -3,7 +3,6 @@ import {
   type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
-  SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES,
   type SubscriptionFrame,
   type SubscriptionOpenResult,
   type SessionTranscriptBootstrap,
@@ -228,7 +227,6 @@ export class ClientSessionSubscription
     const assembler = new TranscriptFragmentAssembler(initial.source, initial.direction);
     assembler.accept(initial.fragments);
     let cursor = initial.nextCursor;
-    let previousPage = initial;
     while (cursor !== null) {
       const page = await this.loadTranscriptPage({
         source: initial.source,
@@ -236,7 +234,7 @@ export class ClientSessionSubscription
         throughSequence: initial.throughSequence,
         cursor,
         anchorSequence: null,
-        maxBytes: continuationPageByteLimit(initial.source, previousPage),
+        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
       });
       if (page.nextCursor === cursor) {
         throw new RuntimeHostSubscriptionError(
@@ -251,7 +249,6 @@ export class ClientSessionSubscription
           'Session transcript cursor did not advance',
         );
       }
-      previousPage = page;
       cursor = page.nextCursor;
     }
     return assembler.finish();
@@ -406,25 +403,6 @@ export class ClientSessionSubscription
     this.#queue.push({ frame, encodedBytes });
     this.#queuedBytes += encodedBytes;
   }
-}
-
-function continuationPageByteLimit(
-  source: 'durable' | 'overlay',
-  page: SessionTranscriptPage,
-): number {
-  if (page.fragments.length !== 1) return SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES;
-  const [fragment] = page.fragments;
-  if (!fragment || fragment.kind !== source) {
-    return SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES;
-  }
-  const fragmentBytes = Buffer.from(fragment.data, 'base64').byteLength;
-  const incomplete =
-    page.direction === 'older'
-      ? fragment.byteOffset > 0
-      : fragment.byteOffset + fragmentBytes < fragment.totalBytes;
-  return incomplete
-    ? SESSION_TRANSCRIPT_PAGE_MAX_BYTES
-    : SESSION_TRANSCRIPT_MULTI_MESSAGE_PAGE_MAX_BYTES;
 }
 
 class TranscriptFragmentAssembler {

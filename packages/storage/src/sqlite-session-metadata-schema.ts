@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 23;
@@ -890,6 +891,7 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       sequence INTEGER NOT NULL CHECK (sequence >= 0),
       chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
       data BLOB NOT NULL CHECK (length(data) BETWEEN 1 AND ${SQLITE_SESSION_MESSAGE_CHUNK_BYTES}),
+      sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
       PRIMARY KEY(session_id, sequence, chunk_index),
       FOREIGN KEY(session_id, sequence)
         REFERENCES session_messages(session_id, sequence)
@@ -946,8 +948,8 @@ export function migrateSqliteSessionMetadataDatabase(db: DatabaseSync): void {
 
 function backfillSessionMessageChunks(db: DatabaseSync): void {
   const insert = db.prepare(`
-    INSERT INTO session_message_chunks(session_id, sequence, chunk_index, data)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO session_message_chunks(session_id, sequence, chunk_index, data, sha256)
+    VALUES (?, ?, ?, ?, ?)
   `);
   const rows = db
     .prepare(`
@@ -969,6 +971,7 @@ function backfillSessionMessageChunks(db: DatabaseSync): void {
       throw new Error('Invalid Session message while migrating transcript chunks');
     }
     const encoded = Buffer.from(row.record_json, 'utf8');
+    if (encoded.byteLength <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES) continue;
     for (
       let offset = 0;
       offset < encoded.byteLength;
@@ -979,6 +982,9 @@ function backfillSessionMessageChunks(db: DatabaseSync): void {
         row.sequence as number,
         offset / SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
         encoded.subarray(offset, offset + SQLITE_SESSION_MESSAGE_CHUNK_BYTES),
+        createHash('sha256')
+          .update(encoded.subarray(offset, offset + SQLITE_SESSION_MESSAGE_CHUNK_BYTES))
+          .digest('hex'),
       );
     }
   }

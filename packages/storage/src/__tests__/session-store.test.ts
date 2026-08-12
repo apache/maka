@@ -378,7 +378,8 @@ describe('SQLite SessionStore', () => {
       assert.equal(chunks.last_chunk, (chunks.count as number) - 1);
       inspected
         .prepare(`
-          DELETE FROM session_message_chunks
+          UPDATE session_message_chunks
+          SET data = zeroblob(length(data))
           WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
         `)
         .run(sessionId);

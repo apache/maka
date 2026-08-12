@@ -96,6 +96,34 @@ test('a maximum single-fragment continuation remains transport safe', () => {
   assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES);
 });
 
+test('a maximum multi-message page remains transport safe', () => {
+  const fragmentBytes = SESSION_TRANSCRIPT_PAGE_MAX_BYTES / 256;
+  const result = {
+    ...page,
+    sessionId: 's'.repeat(128),
+    direction: 'newer' as const,
+    throughSequence: Number.MAX_SAFE_INTEGER,
+    rawBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+    fragments: Array.from({ length: 256 }, (_, sequence) => ({
+      kind: 'durable' as const,
+      sequence,
+      byteOffset: 0,
+      totalBytes: fragmentBytes,
+      data: Buffer.alloc(fragmentBytes, 0x61).toString('base64'),
+    })),
+    nextCursor: 'c'.repeat(1_024),
+  };
+  assert.deepEqual(decodeSessionTranscriptPage(result), result);
+  assert.ok(
+    encodeProtocolMessage({
+      requestId: 'r'.repeat(128),
+      operation: 'session.transcript.page',
+      ok: true,
+      result,
+    }).byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES,
+  );
+});
+
 test('Session transcript protocol rejects malformed and uncorrelated values', () => {
   assert.throws(
     () => decodeSessionTranscriptPageInput({ ...input, cursor: 'cursor', anchorSequence: 2 }),

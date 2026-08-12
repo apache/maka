@@ -488,7 +488,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         record_bytes?: unknown;
       }>;
       const readMessageChunks = database.prepare(`
-        SELECT chunk_index, data
+        SELECT chunk_index, data, sha256
         FROM session_message_chunks
         WHERE session_id = ? AND sequence = ?
         ORDER BY chunk_index
@@ -506,10 +506,14 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         }
         const encoded = Buffer.from(row.record_json, 'utf8');
         const expectedBytes = encoded.byteLength;
-        const expectedChunks = Math.ceil(expectedBytes / SQLITE_SESSION_MESSAGE_CHUNK_BYTES);
+        const expectedChunks =
+          expectedBytes <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES
+            ? 0
+            : Math.ceil(expectedBytes / SQLITE_SESSION_MESSAGE_CHUNK_BYTES);
         const chunks = readMessageChunks.all(row.session_id, row.sequence as number) as Array<{
           chunk_index?: unknown;
           data?: unknown;
+          sha256?: unknown;
         }>;
         if (row.record_bytes !== expectedBytes || chunks.length !== expectedChunks) {
           throw new Error('session message chunks do not match record');
@@ -523,6 +527,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
           if (
             chunk.chunk_index !== index ||
             !(chunk.data instanceof Uint8Array) ||
+            chunk.sha256 !== createHash('sha256').update(chunk.data).digest('hex') ||
             !Buffer.from(chunk.data).equals(expected)
           ) {
             throw new Error('session message chunks do not match record');

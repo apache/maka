@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -3477,8 +3478,8 @@ export class SqliteSessionMetadataStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     const insertChunk = this.db.prepare(`
-      INSERT INTO session_message_chunks(session_id, sequence, chunk_index, data)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO session_message_chunks(session_id, sequence, chunk_index, data, sha256)
+      VALUES (?, ?, ?, ?, ?)
     `);
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index]!;
@@ -3493,16 +3494,19 @@ export class SqliteSessionMetadataStore {
         entry.json,
         encoded.byteLength,
       );
+      if (encoded.byteLength <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES) continue;
       for (
         let offset = 0;
         offset < encoded.byteLength;
         offset += SQLITE_SESSION_MESSAGE_CHUNK_BYTES
       ) {
+        const chunk = encoded.subarray(offset, offset + SQLITE_SESSION_MESSAGE_CHUNK_BYTES);
         insertChunk.run(
           sessionId,
           sequence,
           offset / SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
-          encoded.subarray(offset, offset + SQLITE_SESSION_MESSAGE_CHUNK_BYTES),
+          chunk,
+          createHash('sha256').update(chunk).digest('hex'),
         );
       }
     }
@@ -4889,17 +4893,23 @@ function readTranscriptSlices(
   slices: readonly TranscriptRecordSlice[],
 ): Map<number, Buffer> {
   if (slices.length === 0) return new Map();
-  const values = slices.map(() => '(?, ?, ?)').join(', ');
-  const parameters = slices.flatMap((slice) => [
+  const chunkedSlices = slices.filter(
+    (slice) => slice.totalBytes > SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
+  );
+  const values = chunkedSlices.map(() => '(?, ?, ?)').join(', ');
+  const parameters = chunkedSlices.flatMap((slice) => [
     slice.sequence,
     Math.floor(slice.byteOffset / SQLITE_SESSION_MESSAGE_CHUNK_BYTES),
     Math.floor((slice.byteOffset + slice.byteLength - 1) / SQLITE_SESSION_MESSAGE_CHUNK_BYTES),
   ]);
-  const rows = db
-    .prepare(
-      `
+  const rows =
+    chunkedSlices.length === 0
+      ? []
+      : (db
+          .prepare(
+            `
         WITH requested(sequence, first_chunk, last_chunk) AS (VALUES ${values})
-        SELECT requested.sequence, chunk.chunk_index, chunk.data
+        SELECT requested.sequence, chunk.chunk_index, chunk.data, chunk.sha256
         FROM requested
         INNER JOIN session_message_chunks AS chunk
           ON chunk.session_id = ?
@@ -4907,12 +4917,13 @@ function readTranscriptSlices(
           AND chunk.chunk_index BETWEEN requested.first_chunk AND requested.last_chunk
         ORDER BY requested.sequence, chunk.chunk_index
       `,
-    )
-    .all(...parameters, sessionId) as Array<{
-    sequence?: unknown;
-    chunk_index?: unknown;
-    data?: unknown;
-  }>;
+          )
+          .all(...parameters, sessionId) as Array<{
+          sequence?: unknown;
+          chunk_index?: unknown;
+          data?: unknown;
+          sha256?: unknown;
+        }>);
   const rowsBySequence = new Map<number, typeof rows>();
   for (const row of rows) {
     const sequence = requireStoredMessageSequence(row.sequence, sessionId);
@@ -4922,6 +4933,7 @@ function readTranscriptSlices(
   }
   const result = new Map<number, Buffer>();
   for (const slice of slices) {
+    if (slice.totalBytes <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES) continue;
     const selected = rowsBySequence.get(slice.sequence) ?? [];
     const firstChunk = Math.floor(slice.byteOffset / SQLITE_SESSION_MESSAGE_CHUNK_BYTES);
     const lastChunk = Math.floor(
@@ -4933,10 +4945,18 @@ function readTranscriptSlices(
     const chunks: Buffer[] = [];
     for (let index = 0; index < selected.length; index += 1) {
       const row = selected[index]!;
-      if (row.chunk_index !== firstChunk + index || !(row.data instanceof Uint8Array)) {
+      if (
+        row.chunk_index !== firstChunk + index ||
+        !(row.data instanceof Uint8Array) ||
+        typeof row.sha256 !== 'string'
+      ) {
         throw new StoredSessionMessageIncompatibleError(sessionId, slice.sequence);
       }
-      chunks.push(Buffer.from(row.data));
+      const chunk = Buffer.from(row.data);
+      if (createHash('sha256').update(chunk).digest('hex') !== row.sha256) {
+        throw new StoredSessionMessageIncompatibleError(sessionId, slice.sequence);
+      }
+      chunks.push(chunk);
     }
     const joined = Buffer.concat(chunks);
     const start = slice.byteOffset - firstChunk * SQLITE_SESSION_MESSAGE_CHUNK_BYTES;
@@ -4945,6 +4965,37 @@ function readTranscriptSlices(
       throw new StoredSessionMessageIncompatibleError(sessionId, slice.sequence);
     }
     result.set(slice.sequence, data);
+  }
+  const inlineSlices = slices.filter(
+    (slice) => slice.totalBytes <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
+  );
+  if (inlineSlices.length > 0) {
+    const inlineValues = inlineSlices.map(() => '(?, ?, ?)').join(', ');
+    const inlineParameters = inlineSlices.flatMap((slice) => [
+      slice.sequence,
+      slice.byteOffset + 1,
+      slice.byteLength,
+    ]);
+    const inlineRows = db
+      .prepare(
+        `
+          WITH requested(sequence, byte_start, byte_length) AS (VALUES ${inlineValues})
+          SELECT requested.sequence,
+            substr(CAST(message.record_json AS BLOB), requested.byte_start, requested.byte_length)
+              AS data
+          FROM requested
+          INNER JOIN session_messages AS message
+            ON message.session_id = ? AND message.sequence = requested.sequence
+        `,
+      )
+      .all(...inlineParameters, sessionId) as Array<{ sequence?: unknown; data?: unknown }>;
+    for (const row of inlineRows) {
+      const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+      if (!(row.data instanceof Uint8Array)) {
+        throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+      }
+      result.set(sequence, Buffer.from(row.data));
+    }
   }
   return result;
 }
