@@ -11,27 +11,6 @@ import {
 import { applyLiveTurnEvent, armLiveTurn } from "../live-turn-projection.js";
 
 describe("materializeChat attachments", () => {
-  test("preserves the original prompt and projects same-turn steering separately", () => {
-    const messages: StoredMessage[] = [
-      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
-      { type: "user", id: "steer-1", turnId: "t1", ts: 2, text: "inserted instruction" },
-      {
-        type: "assistant",
-        id: "answer",
-        turnId: "t1",
-        ts: 3,
-        text: "done",
-        modelId: "fixture",
-      },
-    ];
-
-    const [turn] = materializeTurns(messages);
-    assert.equal(turn?.user?.text, "original request");
-    assert.deepEqual(turn?.userInterjections?.map((message) => message.text), [
-      "inserted instruction",
-    ]);
-  });
-
   test("overlays a steering message immediately and deduplicates its persisted row", () => {
     const settled = materializeTurns([
       { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
@@ -55,6 +34,7 @@ describe("materializeChat attachments", () => {
       { type: "user", id: "steer-1", turnId: "t1", ts: 2, text: "inserted instruction" },
     ]);
     const [deduplicated] = overlayLiveTurn(persisted, live);
+    assert.equal(deduplicated?.user?.text, "original request");
     assert.deepEqual(deduplicated?.userInterjections?.map((message) => message.text), [
       "inserted instruction",
     ]);
