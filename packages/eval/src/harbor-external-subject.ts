@@ -436,7 +436,7 @@ async function runChild(
 
 function prepareClaudeWorkspace(root: string, home: string): void {
   if (root !== '/') return;
-  const result = spawnSync('/bin/chown', ['-R', '1000:1000', '/app', home, '/logs/agent']);
+  const result = spawnSync('/bin/chown', ['-R', '1000:1000', process.cwd(), home, '/logs/agent']);
   if (result.status !== 0) throw new Error('Claude Code workspace ownership setup failed');
   if (!process.setgid || !process.setuid) {
     throw new Error('Claude Code user isolation is unavailable');

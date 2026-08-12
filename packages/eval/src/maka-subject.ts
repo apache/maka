@@ -34,6 +34,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
           rootPath: `${config.runtimeHostsPath}/${executionId}`,
           baseUrl: config.baseUrl,
           webTools: config.webTools,
+          hostSettlementTimeoutMs: config.hostSettlementTimeoutMs,
           execution: input,
         }),
       ).toString('base64url');
@@ -193,6 +194,7 @@ function subjectFailure(
               termination: process.termination,
               exitCode: process.exitCode,
               stdoutBytes: Buffer.byteLength(process.stdout),
+              ...(process.diagnostic ? { diagnostic: process.diagnostic } : {}),
             }
           : {}),
       },
@@ -204,6 +206,7 @@ interface MakaConfig {
   readonly nodePath: string;
   readonly shimPath: string;
   readonly runtimeHostsPath: string;
+  readonly hostSettlementTimeoutMs: number;
   readonly baseUrl: string;
   readonly webTools: 'enabled' | 'disabled';
   readonly connectionSlug: string;
@@ -228,13 +231,18 @@ function decodeConfig(value: JsonObject): MakaConfig {
     'orchestrationMode',
   ];
   if (Object.hasOwn(value, 'webTools')) fields.push('webTools');
+  if (Object.hasOwn(value, 'hostSettlementTimeoutMs')) fields.push('hostSettlementTimeoutMs');
   const config = exact(value, fields);
   if (!URL.canParse(String(config.baseUrl))) throw new Error('Maka baseUrl is invalid');
   const webTools = config.webTools ?? 'enabled';
   if (webTools !== 'enabled' && webTools !== 'disabled') {
     throw new Error('Maka config.webTools is invalid');
   }
-  return { ...config, webTools } as unknown as MakaConfig;
+  const hostSettlementTimeoutMs =
+    config.hostSettlementTimeoutMs === undefined
+      ? 15_000
+      : positiveInteger(config.hostSettlementTimeoutMs, 'Maka config.hostSettlementTimeoutMs');
+  return { ...config, webTools, hostSettlementTimeoutMs } as unknown as MakaConfig;
 }
 
 function exact(value: unknown, fields: readonly string[]): Record<string, unknown> {
@@ -246,10 +254,19 @@ function exact(value: unknown, fields: readonly string[]): Record<string, unknow
     fields.some((field) => !Object.hasOwn(record, field))
   )
     throw new Error('Maka config fields are invalid');
-  for (const field of fields)
+  for (const field of fields) {
+    if (field === 'hostSettlementTimeoutMs') continue;
     if (typeof record[field] !== 'string' || record[field] === '')
       throw new Error(`Maka config.${field} is invalid`);
+  }
   return record;
+}
+
+function positiveInteger(value: unknown, where: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${where} is invalid`);
+  }
+  return value;
 }
 
 function positive(value: unknown, where: string): number {

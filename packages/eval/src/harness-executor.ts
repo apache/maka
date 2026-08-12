@@ -17,10 +17,23 @@ import {
 import type { EvalResult } from './result.js';
 
 type Framework = 'harbor' | 'pier';
+type RelayTransportStage = 'ready' | 'execute' | 'receive' | 'cancel' | 'decision' | 'close';
+
+interface RelayTransportFailure {
+  readonly stage: RelayTransportStage;
+  readonly category: 'broken-pipe' | 'connection-reset' | 'peer-closed' | 'transport-error';
+  readonly delivery: 'not-delivered' | 'unknown';
+}
+
+interface RelayTransport {
+  readonly socket: Socket;
+  stage: RelayTransportStage;
+  failure?: RelayTransportFailure;
+}
 
 interface RelayState {
   readonly child: ChildProcess;
-  readonly socket: Socket;
+  readonly transport: RelayTransport;
   readonly closeRelay: () => Promise<void>;
   readonly lines: AsyncIterator<string>;
   readonly token: string;
@@ -28,7 +41,7 @@ interface RelayState {
   readonly trialPath: string;
   readonly taskInput: string;
   readonly credentials: Readonly<Record<string, string>>;
-  readonly containerCwd: string;
+  readonly cwd: string;
   used: boolean;
 }
 
@@ -93,8 +106,7 @@ async function runHarnessAttempt(
   const decide = (kind: 'verify' | 'abort') => {
     if (decision) return;
     decision = true;
-    state.socket.write(`${JSON.stringify({ token: state.token, kind })}\n`);
-    state.socket.end();
+    sendRelayMessage(state.transport, 'decision', { token: state.token, kind }, true);
   };
   try {
     value = await operation({
@@ -131,19 +143,26 @@ async function runHarnessAttempt(
     }
     await state.closeRelay();
   }
-  if (hasValue && cleanupAction) {
+  if (hasValue && (state.transport.failure || cleanupAction)) {
     value = {
       ...value!,
       artifacts: [
         ...value!.artifacts,
-        {
-          kind: 'executor-cleanup',
-          action: cleanupAction,
-          phase: cleanupEvidence!.phase,
-          deadlineMs: cleanupEvidence!.deadlineMs,
-          escalation: cleanupEvidence!.escalation,
-          outcome: cleanupEvidence!.outcome,
-        },
+        ...(state.transport.failure
+          ? [{ kind: 'executor-relay', ...state.transport.failure }]
+          : []),
+        ...(cleanupAction
+          ? [
+              {
+                kind: 'executor-cleanup',
+                action: cleanupAction,
+                phase: cleanupEvidence!.phase,
+                deadlineMs: cleanupEvidence!.deadlineMs,
+                escalation: cleanupEvidence!.escalation,
+                outcome: cleanupEvidence!.outcome,
+              },
+            ]
+          : []),
       ],
     };
   }
@@ -160,7 +179,7 @@ function relayContext(
   signal?: AbortSignal,
 ): SubjectExecutionContext {
   return {
-    cwd: state.containerCwd,
+    cwd: state.cwd,
     taskInput: state.taskInput,
     metadata: { trialName: state.trialName },
     ...(signal ? { signal } : {}),
@@ -174,25 +193,27 @@ function relayContext(
           return [target, value];
         }),
       );
-      state.socket.write(
-        `${JSON.stringify({
+      if (
+        !sendRelayMessage(state.transport, 'execute', {
           token: state.token,
           kind: 'execute',
           command: input.command,
           args: input.args,
-          cwd: state.containerCwd,
           environment: input.environment ?? {},
           credentials,
           captureStdout: input.captureStdout ?? true,
           ...(input.cancel ? { cancel: input.cancel } : {}),
-        })}\n`,
-      );
+        })
+      ) {
+        throw new Error('relay transport is unavailable');
+      }
       const cancel = () => {
-        state.socket.write(`${JSON.stringify({ token: state.token, kind: 'cancel' })}\n`);
+        sendRelayMessage(state.transport, 'cancel', { token: state.token, kind: 'cancel' });
       };
       signal?.addEventListener('abort', cancel, { once: true });
       if (signal?.aborted) cancel();
       try {
+        state.transport.stage = 'receive';
         const executed = await readLine(state.lines);
         if (
           executed.token !== state.token ||
@@ -201,7 +222,8 @@ function relayContext(
             executed.termination !== 'framework_timeout' &&
             executed.termination !== 'cancelled') ||
           typeof executed.exitCode !== 'number' ||
-          typeof executed.stdout !== 'string'
+          typeof executed.stdout !== 'string' ||
+          !validProcessDiagnostic(executed.diagnostic)
         ) {
           throw new Error('relay returned an invalid execution result');
         }
@@ -209,12 +231,30 @@ function relayContext(
           termination: executed.termination,
           exitCode: executed.exitCode,
           stdout: executed.stdout,
+          diagnostic: executed.diagnostic,
         };
       } finally {
         signal?.removeEventListener('abort', cancel);
       }
     },
   };
+}
+
+function validProcessDiagnostic(value: unknown): value is {
+  category: 'none' | 'process-stderr';
+  stderrBytes: number;
+  stderrSha256: string;
+} {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const diagnostic = value as Record<string, unknown>;
+  return (
+    (diagnostic.category === 'none' || diagnostic.category === 'process-stderr') &&
+    typeof diagnostic.stderrBytes === 'number' &&
+    Number.isSafeInteger(diagnostic.stderrBytes) &&
+    diagnostic.stderrBytes >= 0 &&
+    typeof diagnostic.stderrSha256 === 'string' &&
+    /^[0-9a-f]{64}$/u.test(diagnostic.stderrSha256)
+  );
 }
 
 async function startTrial(
@@ -250,6 +290,7 @@ async function startTrial(
   const connections = new Set<Socket>();
   server.on('connection', (socket) => {
     connections.add(socket);
+    socket.on('error', () => undefined);
     socket.once('close', () => connections.delete(socket));
   });
   let child: ChildProcess | undefined;
@@ -309,18 +350,26 @@ async function startTrial(
     }
     const relayClosed = stopServer();
     stage = 'ready-decode';
+    const transport = createRelayTransport(socket);
+    transport.stage = 'receive';
     const lines = createInterface({ input: socket, crlfDelay: Number.POSITIVE_INFINITY })[
       Symbol.asyncIterator
     ]();
     const ready = await abortable(Promise.race([readLine(lines), exitedBeforeReady]), signal);
-    if (ready.token !== token || ready.kind !== 'ready' || typeof ready.instruction !== 'string') {
+    if (
+      ready.token !== token ||
+      ready.kind !== 'ready' ||
+      typeof ready.instruction !== 'string' ||
+      typeof ready.cwd !== 'string' ||
+      !ready.cwd.startsWith('/')
+    ) {
       throw new Error('relay returned an invalid ready message');
     }
     return {
       kind: 'ready',
       state: {
         child,
-        socket,
+        transport,
         closeRelay: async () => {
           for (const connection of connections) connection.destroy();
           await relayClosed;
@@ -331,7 +380,7 @@ async function startTrial(
         trialPath,
         taskInput: ready.instruction,
         credentials,
-        containerCwd: options.containerCwd,
+        cwd: ready.cwd,
         used: false,
       },
     };
@@ -364,6 +413,65 @@ async function startTrial(
       { kind: 'executor-preparation', framework, trialName, path: diagnosticPath },
     ]);
   }
+}
+
+function createRelayTransport(socket: Socket): RelayTransport {
+  const transport: RelayTransport = { socket, stage: 'ready' };
+  socket.on('error', (error: NodeJS.ErrnoException) => {
+    transport.failure ??= {
+      stage: transport.stage,
+      category: relayTransportCategory(error.code),
+      delivery: 'unknown',
+    };
+  });
+  return transport;
+}
+
+function sendRelayMessage(
+  transport: RelayTransport,
+  stage: RelayTransportStage,
+  value: Record<string, unknown>,
+  end = false,
+): boolean {
+  transport.stage = stage;
+  const socket = transport.socket;
+  if (socket.destroyed || !socket.writable || socket.writableEnded || transport.failure) {
+    transport.failure = {
+      stage,
+      category: transport.failure?.category ?? 'peer-closed',
+      delivery: 'not-delivered',
+    };
+    return false;
+  }
+  try {
+    const payload = `${JSON.stringify(value)}\n`;
+    if (end) socket.end(payload);
+    else {
+      socket.write(payload, (error) => {
+        if (!error) return;
+        transport.failure = {
+          stage,
+          category: relayTransportCategory((error as NodeJS.ErrnoException).code),
+          delivery: 'unknown',
+        };
+      });
+    }
+    return true;
+  } catch (error) {
+    transport.failure = {
+      stage,
+      category: relayTransportCategory((error as NodeJS.ErrnoException).code),
+      delivery: 'not-delivered',
+    };
+    return false;
+  }
+}
+
+function relayTransportCategory(code: string | undefined): RelayTransportFailure['category'] {
+  if (code === 'EPIPE') return 'broken-pipe';
+  if (code === 'ECONNRESET') return 'connection-reset';
+  if (code === 'ERR_STREAM_WRITE_AFTER_END') return 'peer-closed';
+  return 'transport-error';
 }
 
 function notStarted(
@@ -460,7 +568,6 @@ interface HarnessOptions {
   readonly pythonPathEnv: string;
   readonly trialsRootEnv: string;
   readonly tasksRootEnv?: string;
-  readonly containerCwd: string;
   readonly environment: JsonObject;
   readonly preparationEnvironment: readonly string[];
   readonly mounts: readonly {
@@ -478,7 +585,6 @@ function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions 
     'frameworkVersion',
     'pythonPathEnv',
     'trialsRootEnv',
-    'containerCwd',
     'environment',
     'preparationEnvironment',
     'mounts',
@@ -499,7 +605,6 @@ function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions 
     frameworkVersion: text(options.frameworkVersion, 'frameworkVersion'),
     pythonPathEnv: machinePathEnv(options.pythonPathEnv, 'pythonPathEnv'),
     trialsRootEnv: machinePathEnv(options.trialsRootEnv, 'trialsRootEnv'),
-    containerCwd: absolute(options.containerCwd, 'containerCwd'),
     environment: decodeJsonObject(options.environment, 'environment'),
     preparationEnvironment,
     mounts: array(options.mounts, 'mounts').map((mount, index) => decodeMount(mount, index)),

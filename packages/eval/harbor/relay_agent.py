@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -19,6 +20,10 @@ elif framework == "pier":
     from pier.agents.base import BaseAgent
 else:
     raise RuntimeError("MAKA_EVAL_FRAMEWORK must be harbor or pier")
+
+
+class RelayTransportClosed(RuntimeError):
+    pass
 
 
 class RelayAgent(BaseAgent):
@@ -43,24 +48,36 @@ class RelayAgent(BaseAgent):
         execution: asyncio.Task[Any] | None = None
         control: asyncio.Task[bytes] | None = None
         request: dict[str, Any] | None = None
-        scope_path = f"/tmp/maka-eval-{self._token}.pid"
-        output_path = f"/tmp/maka-eval-{self._token}.stdout"
+        scope_path = f"/logs/agent/.maka-eval-{self._token}.pid"
         try:
-            await _send(writer, {"token": self._token, "kind": "ready", "instruction": instruction})
+            working_directory = await environment.exec("pwd")
+            cwd = str(working_directory.stdout or "").strip()
+            if working_directory.return_code != 0 or not cwd.startswith("/"):
+                raise RuntimeError("Maka Eval could not resolve the task working directory")
+            if not await _send(
+                writer,
+                {
+                    "token": self._token,
+                    "kind": "ready",
+                    "instruction": instruction,
+                    "cwd": cwd,
+                },
+            ):
+                raise RelayTransportClosed("Maka Eval relay transport closed before ready")
             request = json.loads(await reader.readline())
             _require_message(request, self._token, "execute")
-            command = await _prepare_command(
-                environment, request, self._token, scope_path, output_path
-            )
-            execution = asyncio.create_task(environment.exec(command, cwd=request["cwd"]))
+            command = await _prepare_command(environment, request, self._token, scope_path)
+            execution = asyncio.create_task(environment.exec(command, cwd=cwd))
             control = asyncio.create_task(reader.readline())
             done, _ = await asyncio.wait({execution, control}, return_when=asyncio.FIRST_COMPLETED)
-            cancelled = control in done
-            if cancelled:
+            execution_terminal = execution in done
+            cancelled = control in done and not execution_terminal
+            if control in done:
                 _require_message(json.loads(control.result()), self._token, "cancel")
-            result = await _settle(environment, request, scope_path, execution)
-            stdout = await _read_subject_output(environment, output_path)
-            await _send(
+                control = None
+            result = await _settle(environment, request, cwd, scope_path, execution)
+            stdout = str(getattr(result, "stdout", "") or "")
+            if not await _send(
                 writer,
                 {
                     "token": self._token,
@@ -68,15 +85,20 @@ class RelayAgent(BaseAgent):
                     "termination": "cancelled" if cancelled else "exited",
                     "exitCode": 130 if cancelled else result.return_code,
                     "stdout": stdout,
+                    "diagnostic": _process_diagnostic(result),
                 },
-            )
-            decision = json.loads(await (reader.readline() if cancelled else control))
+            ):
+                raise RelayTransportClosed("Maka Eval relay transport closed before result")
+            decision = json.loads(await (control if control is not None else reader.readline()))
+            if execution_terminal and decision.get("kind") == "cancel":
+                _require_message(decision, self._token, "cancel")
+                decision = json.loads(await reader.readline())
             if decision.get("token") != self._token or decision.get("kind") != "verify":
                 raise RuntimeError("Maka Eval aborted the Trial before verification")
         except asyncio.CancelledError:
             if request is not None and execution is not None:
-                result = await _settle(environment, request, scope_path, execution)
-                stdout = await _read_subject_output(environment, output_path)
+                result = await _settle(environment, request, cwd, scope_path, execution)
+                stdout = str(getattr(result, "stdout", "") or "")
                 with contextlib.suppress(BaseException):
                     await _send(
                         writer,
@@ -86,12 +108,13 @@ class RelayAgent(BaseAgent):
                             "termination": "framework_timeout",
                             "exitCode": 124,
                             "stdout": stdout,
+                            "diagnostic": _process_diagnostic(result),
                         },
                     )
             raise
         except BaseException:
             if request is not None and execution is not None:
-                await _settle_or_destroy(environment, request, scope_path, execution)
+                await _settle_or_destroy(environment, request, cwd, scope_path, execution)
             raise
         finally:
             if control is not None:
@@ -101,12 +124,13 @@ class RelayAgent(BaseAgent):
             if request is not None:
                 with contextlib.suppress(BaseException):
                     await environment.exec(
-                        f"rm -f -- {shlex.quote(scope_path)} {shlex.quote(output_path)}",
-                        cwd=request["cwd"],
+                        f"rm -f -- {shlex.quote(scope_path)}",
+                        cwd=cwd,
                         timeout_sec=10,
                     )
-            writer.close()
-            await writer.wait_closed()
+            with contextlib.suppress(BrokenPipeError, ConnectionError, RuntimeError):
+                writer.close()
+                await writer.wait_closed()
 
 
 async def _prepare_command(
@@ -114,9 +138,7 @@ async def _prepare_command(
     request: dict[str, Any],
     token: str,
     scope_path: str,
-    output_path: str | None = None,
 ) -> str:
-    output_path = output_path or f"/tmp/maka-eval-{token}.stdout"
     credentials = request.get("credentials")
     public_environment = request.get("environment", {})
     if not isinstance(credentials, dict) or not all(
@@ -150,28 +172,28 @@ async def _prepare_command(
         if secret_path is not None:
             secret_path.unlink(missing_ok=True)
     subject = shlex.join([request["command"], *request["args"]])
-    output_target = output_path if capture_stdout else "/dev/null"
-    initialize_output = f": > {shlex.quote(output_path)}; " if capture_stdout else ""
+    output_redirect = "" if capture_stdout else " >/dev/null"
     inner = (
-        f"umask 077; {initialize_output}"
+        "umask 077; "
         f"echo $$ > {shlex.quote(scope_path)}; "
         f". {shlex.quote(container_path)}; command -p rm -f {shlex.quote(container_path)}; "
-        f"exec {subject} >{shlex.quote(output_target)}"
+        f"exec {subject}{output_redirect}"
     )
     return f"setsid --wait sh -c {shlex.quote(inner)}"
 
 
-async def _read_subject_output(environment: Any, output_path: str) -> str:
-    with tempfile.TemporaryDirectory() as directory:
-        target = Path(directory) / "stdout"
-        try:
-            await environment.download_file(output_path, target)
-            return target.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError):
-            return ""
+def _process_diagnostic(result: Any) -> dict[str, Any]:
+    stderr = str(getattr(result, "stderr", "") or "").encode("utf-8", errors="replace")
+    return {
+        "category": "process-stderr" if stderr else "none",
+        "stderrBytes": len(stderr),
+        "stderrSha256": hashlib.sha256(stderr).hexdigest(),
+    }
 
 
-async def _settle(environment: Any, request: dict[str, Any], scope_path: str, execution: Any) -> Any:
+async def _settle(
+    environment: Any, request: dict[str, Any], cwd: str, scope_path: str, execution: Any
+) -> Any:
     if execution.done():
         result = execution.result()
     else:
@@ -182,7 +204,7 @@ async def _settle(environment: Any, request: dict[str, Any], scope_path: str, ex
                 cancelled = await asyncio.wait_for(
                     environment.exec(
                         shlex.join([cancel["command"], *cancel["args"]]),
-                        cwd=request["cwd"],
+                        cwd=cwd,
                     ),
                     timeout=10,
                 )
@@ -193,7 +215,7 @@ async def _settle(environment: Any, request: dict[str, Any], scope_path: str, ex
                         pass
         if result is None:
             for signal, timeout in (("TERM", 20), ("KILL", 10)):
-                await _signal(environment, request["cwd"], scope_path, signal)
+                await _signal(environment, cwd, scope_path, signal)
                 try:
                     result = await asyncio.wait_for(asyncio.shield(execution), timeout=timeout)
                     break
@@ -201,13 +223,15 @@ async def _settle(environment: Any, request: dict[str, Any], scope_path: str, ex
                     pass
         if result is None:
             raise RuntimeError("Maka Eval subject did not settle")
-    await _quiesce_scope(environment, request["cwd"], scope_path)
+    await _quiesce_scope(environment, cwd, scope_path)
     return result
 
 
-async def _settle_or_destroy(environment: Any, request: dict[str, Any], scope_path: str, execution: Any) -> None:
+async def _settle_or_destroy(
+    environment: Any, request: dict[str, Any], cwd: str, scope_path: str, execution: Any
+) -> None:
     try:
-        await _settle(environment, request, scope_path, execution)
+        await _settle(environment, request, cwd, scope_path, execution)
     except BaseException:
         with contextlib.suppress(BaseException):
             await environment.stop(delete=True)
@@ -250,6 +274,12 @@ def _require_message(value: dict[str, Any], token: str, kind: str) -> None:
         raise RuntimeError("invalid Maka Eval relay message")
 
 
-async def _send(writer: asyncio.StreamWriter, value: object) -> None:
-    writer.write((json.dumps(value, separators=(",", ":")) + "\n").encode())
-    await writer.drain()
+async def _send(writer: asyncio.StreamWriter, value: object) -> bool:
+    if writer.is_closing():
+        return False
+    try:
+        writer.write((json.dumps(value, separators=(",", ":")) + "\n").encode())
+        await writer.drain()
+        return True
+    except (BrokenPipeError, ConnectionError, RuntimeError):
+        return False

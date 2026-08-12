@@ -66,7 +66,8 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
           args: config.args.map((argument) =>
             argument
               .replaceAll('{{task.input}}', context.taskInput)
-              .replaceAll('{{task.id}}', cell.task.id),
+              .replaceAll('{{task.id}}', cell.task.id)
+              .replaceAll('{{task.cwd}}', context.cwd),
           ),
           credentialEnvironment: config.credentialEnvironment,
           ...(Object.keys(config.environment).length === 0 && !identity

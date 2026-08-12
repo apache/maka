@@ -67,9 +67,10 @@ await new Promise((resolve, reject) => {
   socket.once('error', reject);
 });
 await writeFile(process.env.MAKA_TEST_PID, String(process.pid));
-socket.write(JSON.stringify({ token: config.agent.kwargs.relay_token, kind: 'ready', instruction: 'solve' }) + '\\n');
-await message();
-socket.write(JSON.stringify({ token: config.agent.kwargs.relay_token, kind: 'executed', termination: 'exited', exitCode: 0, stdout: '' }) + '\\n');
+socket.write(JSON.stringify({ token: config.agent.kwargs.relay_token, kind: 'ready', instruction: 'solve', cwd: '/workspace' }) + '\\n');
+const execute = await message();
+if ('cwd' in execute) process.exit(9);
+socket.write(JSON.stringify({ token: config.agent.kwargs.relay_token, kind: 'executed', termination: 'exited', exitCode: 0, stdout: '', diagnostic: { category: 'none', stderrBytes: 0, stderrSha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } }) + '\\n');
 await message();
 await writeFile(process.env.MAKA_TEST_VERIFYING, '');
 while (true) {
@@ -169,10 +170,12 @@ await new Promise((resolve, reject) => {
   socket.once('connect', resolve);
   socket.once('error', reject);
 });
-socket.write(JSON.stringify({ token: config.agent.kwargs.relay_token, kind: 'ready', instruction: 'solve' }) + '\\n');
+socket.write(JSON.stringify({ token: config.agent.kwargs.relay_token, kind: 'ready', instruction: 'solve', cwd: '/workspace' }) + '\\n');
 await message();
-socket.write(JSON.stringify({ token: config.agent.kwargs.relay_token, kind: 'executed', termination: 'exited', exitCode: 0, stdout: '' }) + '\\n');
-await message();
+socket.write(
+  JSON.stringify({ token: config.agent.kwargs.relay_token, kind: 'executed', termination: 'exited', exitCode: 0, stdout: '', diagnostic: { category: 'none', stderrBytes: 0, stderrSha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } }) + '\\n',
+  () => socket.resetAndDestroy(),
+);
 setInterval(() => {}, 1_000);
 await new Promise(() => {});
 `,
@@ -219,6 +222,12 @@ await new Promise(() => {});
     const result = (await store.list('task::1::external'))[0]!.result;
     assert.equal(result.status, 'indeterminate');
     assert.deepEqual(result.artifacts, [
+      {
+        kind: 'executor-relay',
+        stage: 'decision',
+        category: 'connection-reset',
+        delivery: 'unknown',
+      },
       {
         kind: 'executor-cleanup',
         action: 'abort',
@@ -271,6 +280,71 @@ test('Maka framework termination is authoritative before stdout decoding', async
     },
   });
   assert.equal(external.status, 'failed');
+});
+
+test('relay diagnostics never persist credential-bearing stderr', async () => {
+  const sentinel = 'credential-sentinel-must-not-persist';
+  const result = await executeMaka('exited', () => '', {
+    category: 'process-stderr',
+    stderrBytes: Buffer.byteLength(sentinel),
+    stderrSha256: '9ac78461ba6cad8bf8f9af44ff735e284c8750a4c0f3cb2de0c95ecf3cb854fe',
+  });
+  const serialized = JSON.stringify(result);
+  assert.doesNotMatch(serialized, /credential-sentinel-must-not-persist/u);
+  assert.deepEqual(result.artifacts, [
+    {
+      kind: 'subject-failure',
+      stage: 'empty-output',
+      termination: 'exited',
+      exitCode: 1,
+      stdoutBytes: 0,
+      diagnostic: {
+        category: 'process-stderr',
+        stderrBytes: 36,
+        stderrSha256: '9ac78461ba6cad8bf8f9af44ff735e284c8750a4c0f3cb2de0c95ecf3cb854fe',
+      },
+    },
+  ]);
+});
+
+test('Maka forwards the configured Runtime Host settlement budget', async () => {
+  const makaCell = cell('maka', { ...makaConfig(), hostSettlementTimeoutMs: 120_000 });
+  let settlementBudget: unknown;
+  const result = await createMakaSubjectAdapter().execute({
+    cell: makaCell,
+    context: {
+      cwd: '/workspace',
+      taskInput: 'solve',
+      metadata: {},
+      execute: async (input) => {
+        const payload = JSON.parse(Buffer.from(input.args[1] ?? '', 'base64url').toString()) as {
+          hostSettlementTimeoutMs?: unknown;
+          execution: { executionId: string };
+        };
+        settlementBudget = payload.hostSettlementTimeoutMs;
+        return {
+          termination: 'exited',
+          exitCode: 0,
+          stdout: JSON.stringify({
+            executionId: payload.execution.executionId,
+            kind: 'settled',
+            status: 'completed',
+            usage: usage(),
+            costUsd: null,
+          }),
+        };
+      },
+    },
+  });
+  assert.equal(result.status, 'completed');
+  assert.equal(settlementBudget, 120_000);
+  assert.throws(
+    () =>
+      createMakaSubjectAdapter().validate?.(
+        cell('maka', { ...makaConfig(), hostSettlementTimeoutMs: 120_000.5 }),
+      ),
+    /hostSettlementTimeoutMs/u,
+  );
 });
 
 test('subject preflight settles before the attempt timer starts', async () => {
@@ -532,9 +606,10 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   ) as {
     subjects: Array<{ id: string; config: { args?: string[]; webTools?: string } }>;
     execution: { maxConcurrentTaskGroups: number };
-    executor: { config: { mounts: Array<{ target: string }> } };
+    executor: { config: { mounts: Array<{ target: string }>; containerCwd?: string } };
   };
   assert.equal(spec.execution.maxConcurrentTaskGroups, 16);
+  assert.equal(Object.hasOwn(spec.executor.config, 'containerCwd'), false);
   assert.deepEqual(
     spec.subjects.map(({ id }) => id),
     ['maka', 'codex', 'claude-code', 'reasonix', 'opencode', 'kimi-code', 'zcode', 'pi'],
@@ -557,6 +632,10 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   const maka = spec.subjects.find(({ id }) => id === 'maka')!;
   const zcode = spec.subjects.find(({ id }) => id === 'zcode')!;
   assert.equal(maka.config.webTools, 'disabled');
+  assert.equal(
+    (maka.config as { hostSettlementTimeoutMs?: number }).hostSettlementTimeoutMs,
+    120_000,
+  );
   assert.deepEqual(
     zcode.config.args?.slice(
       zcode.config.args.indexOf('--disallowedTools'),
@@ -576,6 +655,18 @@ test('Maka web-tool policy removes both hosted search and fetch surfaces', () =>
   const document = disabledWebToolsRuntimePolicyDocument();
   assert.equal(document.policy.webSearch.enabled, false);
   assert.equal(document.policy.privacy.incognitoActive, true);
+});
+
+test('experiment specs do not declare an executor working-directory authority', async () => {
+  for (const name of [
+    'terminal-bench-2.1-deepseek-v4-flash-four-arm.json',
+    'terminal-bench-2.1-deepseek-v4-flash-eight-arm.json',
+  ]) {
+    const spec = JSON.parse(
+      await readFile(new URL(`../../experiments/${name}`, import.meta.url), 'utf8'),
+    ) as { executor: { config: Record<string, unknown> } };
+    assert.equal(Object.hasOwn(spec.executor.config, 'containerCwd'), false);
+  }
 });
 
 async function verifyPreparationCancellation(
@@ -663,8 +754,13 @@ await new Promise(() => {});
 }
 
 async function executeMaka(
-  termination: 'framework_timeout' | 'cancelled',
+  termination: 'exited' | 'framework_timeout' | 'cancelled',
   stdout: (executionId: string) => string,
+  diagnostic?: {
+    category: 'none' | 'process-stderr';
+    stderrBytes: number;
+    stderrSha256: string;
+  },
 ) {
   return createMakaSubjectAdapter().execute({
     cell: cell('maka', makaConfig()),
@@ -678,8 +774,10 @@ async function executeMaka(
         };
         return {
           termination,
-          exitCode: termination === 'framework_timeout' ? 124 : 130,
+          exitCode:
+            termination === 'framework_timeout' ? 124 : termination === 'cancelled' ? 130 : 1,
           stdout: stdout(payload.execution.executionId),
+          ...(diagnostic ? { diagnostic } : {}),
         };
       },
     },
@@ -706,7 +804,6 @@ function executorConfig(): JsonObject {
     frameworkVersion: '0.20.0',
     pythonPathEnv: 'MAKA_TEST_PYTHON',
     trialsRootEnv: 'MAKA_TEST_TRIALS',
-    containerCwd: '/app',
     environment: {},
     preparationEnvironment: [
       'MAKA_TEST_BARRIER',

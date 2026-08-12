@@ -14,7 +14,6 @@
       "frameworkVersion": "0.20.0",
       "pythonPathEnv": "MAKA_EVAL_HARBOR_PYTHON",
       "trialsRootEnv": "MAKA_EVAL_TRIALS_DIR",
-      "containerCwd": "/app",
       "environment": { "type": "docker", "delete": true },
       "preparationEnvironment": [
         "DOCKER_HOST",

@@ -30,20 +30,48 @@ class Environment:
             self.uploaded_target.write_bytes(self.uploaded)
 
 
-def load_relay():
-    os.environ["MAKA_EVAL_FRAMEWORK"] = "harbor"
-    package = types.ModuleType("harbor")
-    agents = types.ModuleType("harbor.agents")
-    base = types.ModuleType("harbor.agents.base")
+def load_relay(framework="harbor"):
+    os.environ["MAKA_EVAL_FRAMEWORK"] = framework
+    package = types.ModuleType(framework)
+    agents = types.ModuleType(f"{framework}.agents")
+    base = types.ModuleType(f"{framework}.agents.base")
     base.BaseAgent = BaseAgent
-    sys.modules["harbor"] = package
-    sys.modules["harbor.agents"] = agents
-    sys.modules["harbor.agents.base"] = base
+    sys.modules[framework] = package
+    sys.modules[f"{framework}.agents"] = agents
+    sys.modules[f"{framework}.agents.base"] = base
     sys.modules.pop("relay_agent", None)
     return importlib.import_module("relay_agent")
 
 
 class RelayContractTest(unittest.TestCase):
+    def test_harbor_and_pier_load_the_same_relay_protocol(self):
+        classes = [load_relay(framework).RelayAgent for framework in ("harbor", "pier")]
+        self.assertEqual([relay.version(relay.__new__(relay)) for relay in classes], ["1", "1"])
+        self.assertEqual([relay.name() for relay in classes], ["maka-eval-relay"] * 2)
+
+    def test_command_keeps_capture_and_control_files_out_of_task_workspace(self):
+        relay = load_relay()
+        environment = Environment()
+        command = asyncio.run(
+            relay._prepare_command(
+                environment,
+                {
+                    "command": "/opt/agent",
+                    "args": ["run"],
+                    "environment": {},
+                    "credentials": {},
+                    "captureStdout": True,
+                },
+                "token",
+                "/logs/agent/.maka-eval-token.pid",
+            )
+        )
+
+        self.assertNotIn(".stdout", command)
+        self.assertNotIn(".stderr", command)
+        self.assertNotIn("/app", command)
+        self.assertIn("/logs/agent/.maka-eval-token.pid", command)
+
     def test_stages_environment_and_discards_unstructured_stdout(self):
         relay = load_relay()
         environment = Environment()

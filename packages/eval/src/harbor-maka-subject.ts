@@ -8,6 +8,7 @@ const payload = JSON.parse(Buffer.from(process.argv[2] ?? '', 'base64url').toStr
   rootPath: string;
   baseUrl: string;
   webTools: 'enabled' | 'disabled';
+  hostSettlementTimeoutMs: number;
   execution: HostedExecutionStartInput;
 };
 const abort = new AbortController();
@@ -30,6 +31,7 @@ const result = await runHostedExecution({
   baseUrl: payload.baseUrl,
   execution: payload.execution,
   signal: abort.signal,
+  hostSettlementTimeoutMs: payload.hostSettlementTimeoutMs,
 });
 process.stdout.write(`${JSON.stringify(result)}\n`);
 if (result.kind === 'indeterminate') process.exitCode = 1;

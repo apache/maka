@@ -12,7 +12,7 @@ import { TOOLCHAIN_IDENTITIES, TOOLCHAIN_IDENTITY_ENV } from '../toolchain-verif
 test('passes declared environment and credential bindings to one external command', async () => {
   const cell = externalCell({
     command: '/opt/pi/bin/pi',
-    args: ['--print', '{{task.input}}'],
+    args: ['--cwd', '{{task.cwd}}', '--print', '{{task.input}}'],
     environment: { PI_OFFLINE: '1' },
     credentialEnvironment: { DEEPSEEK_API_KEY: 'PROVIDER_KEY' },
     result: 'exit-code',
@@ -34,7 +34,7 @@ test('passes declared environment and credential bindings to one external comman
 
   assert.deepEqual(request, {
     command: '/opt/pi/bin/pi',
-    args: ['--print', 'solve the task'],
+    args: ['--cwd', '/app', '--print', 'solve the task'],
     environment: { PI_OFFLINE: '1' },
     credentialEnvironment: { DEEPSEEK_API_KEY: 'PROVIDER_KEY' },
     captureStdout: false,
