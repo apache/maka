@@ -15,6 +15,7 @@ import type {
   RawUsageFields,
   ModelStreamEvent,
   ModelStreamResult,
+  ModelStepOutcome,
   ModelFinishReason,
   ModelFailure,
   ModelFailureKind,
@@ -27,6 +28,7 @@ export type {
   RawUsageFields,
   ModelStreamEvent,
   ModelStreamResult,
+  ModelStepOutcome,
   ModelFinishReason,
   ModelFailure,
   ModelFailureKind,
@@ -290,6 +292,7 @@ export class ModelAdapter {
     return this.toModelStreamResult(sdkResult, input.onStreamActivity, {
       ...(responsesLane ? { lane: responsesLane } : {}),
       requestMessages: fullMessages,
+      abortSignal: input.abortSignal,
     });
   }
 
@@ -302,63 +305,82 @@ export class ModelAdapter {
   private toModelStreamResult(
     sdk: SdkStreamResult,
     onStreamActivity: () => void,
-    continuation: { lane?: string; requestMessages: ModelMessage[] },
+    continuation: { lane?: string; requestMessages: ModelMessage[]; abortSignal: AbortSignal },
   ): ModelStreamResult {
     const openAiChatReasoningTransportState =
       this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
         ? this.openAiChatReasoningTransportState
         : undefined;
     const openAiResponsesTransportState = this.openAiResponsesTransportState;
+    let settleOutcome!: (outcome: ModelStepOutcome) => void;
+    const outcome = new Promise<ModelStepOutcome>((resolve) => {
+      settleOutcome = resolve;
+    });
+    const request = { messages: continuation.requestMessages };
     const events: AsyncIterable<ModelStreamEvent> = {
       async *[Symbol.asyncIterator]() {
-        let succeeded = true;
+        let failure: ModelFailure | undefined;
+        let sawFinish = false;
+        let streamedFinishReason: string | undefined;
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
             for (const event of translateChunk(chunk, openAiChatReasoningTransportState)) {
-              if (event.kind === 'error') succeeded = false;
+              if (event.kind === 'error') failure = event.failure;
+              if (event.kind === 'finish') sawFinish = true;
+              if (event.kind === 'finish' || event.kind === 'step-finish') {
+                streamedFinishReason = event.finishReason ?? streamedFinishReason;
+              }
               yield event;
             }
           }
         } catch (error) {
-          succeeded = false;
-          yield { kind: 'error', failure: normalizeProviderFailure(error) };
+          failure = normalizeProviderFailure(error);
+          yield { kind: 'error', failure };
         } finally {
-          if (!continuation.lane) return;
-          if (!succeeded) {
-            openAiResponsesTransportState.clearSemantic(continuation.lane);
-            return;
-          }
-          const response = await Promise.resolve(sdk.response).catch(() => undefined);
-          if (
-            response?.id &&
-            openAiResponsesTransportState.canRecordSemantic(continuation.lane, response.id)
-          ) {
-            openAiResponsesTransportState.recordSemanticRequest(continuation.lane, {
-              requestMessages: structuredClone(continuation.requestMessages),
-              responseId: response.id,
-            });
-          } else {
-            openAiResponsesTransportState.clearSemantic(continuation.lane);
+          const [sdkUsage, sdkFinishReason] = await Promise.all([
+            sdk.usage.catch(() => undefined),
+            sdk.finishReason.catch(() => undefined),
+          ]);
+          const finishReason =
+            streamedFinishReason ?? rawFinishReasonString(sdkFinishReason) ?? 'unknown';
+          const usage = normalizeAiSdkUsage(sdkUsage, { rawFinishReason: finishReason });
+          let settled = settleModelStepOutcome({
+            aborted: continuation.abortSignal.aborted,
+            failure,
+            sawFinish,
+            finishReason,
+            usage,
+            request,
+          });
+
+          try {
+            if (continuation.lane) {
+              if (settled.kind === 'completed') {
+                const response = await Promise.resolve(sdk.response).catch(() => undefined);
+                if (
+                  response?.id &&
+                  openAiResponsesTransportState.canRecordSemantic(continuation.lane, response.id)
+                ) {
+                  openAiResponsesTransportState.recordSemanticRequest(continuation.lane, {
+                    requestMessages: structuredClone(continuation.requestMessages),
+                    responseId: response.id,
+                  });
+                  settled = { ...settled, continuation: 'pending' };
+                } else {
+                  openAiResponsesTransportState.clearSemantic(continuation.lane);
+                }
+              } else {
+                openAiResponsesTransportState.clearSemantic(continuation.lane);
+              }
+            }
+          } finally {
+            settleOutcome(settled);
           }
         }
       },
     };
-    const usage = (async () => {
-      const [sdkUsage, sdkFinishReason] = await Promise.all([
-        sdk.usage.catch(() => undefined),
-        sdk.finishReason.catch(() => undefined),
-      ]);
-      return normalizeAiSdkUsage(sdkUsage, { rawFinishReason: sdkFinishReason });
-    })();
-    const finishReason = (async () =>
-      rawFinishReasonString(await sdk.finishReason.catch(() => undefined)))();
-    // The SDK request contains only the wire delta during continuation. Keep
-    // Maka's public request metadata anchored to the complete durable
-    // projection so diagnostics and recovery never mistake an optimization for
-    // lost history.
-    const request = Promise.resolve({ messages: continuation.requestMessages });
-    return { events, usage, finishReason, request };
+    return { events, outcome };
   }
 
   endContinuation(lane: string): void {
@@ -367,10 +389,6 @@ export class ModelAdapter {
 
   recordContinuationResponse(lane: string, responseMessages: readonly ModelMessage[]): void {
     this.openAiResponsesTransportState.recordSemanticResponse(lane, responseMessages);
-  }
-
-  continuationResponsePending(lane: string): boolean {
-    return this.openAiResponsesTransportState.hasPendingSemantic(lane);
   }
 
   clearContinuation(lane: string): void {
@@ -468,40 +486,98 @@ export class ModelAdapter {
     return classifyError(error);
   }
 
-  mapFinishReason(reason: unknown): CompleteEvent['stopReason'] {
+  /** Map a successfully settled provider step to its runtime stop reason. */
+  mapFinishReason(reason: ModelFinishReason): CompleteEvent['stopReason'] {
     switch (reason) {
       case 'stop':
         return 'end_turn';
       case 'length':
         return 'max_tokens';
-      case 'content-filter':
-        return 'error';
-      case 'error':
-        return 'error';
       case 'tool-calls':
         return 'end_turn';
-      // The SDK's own two names for "the stream stopped and nothing named why".
-      // An upstream that drops the connection mid-answer lands here: it yields
-      // no error part and throws nothing, so these are the only signal that it
-      // happened. Calling them `end_turn` asserts the model said its piece —
-      // the one thing we know we cannot claim. A recorded run once reached
-      // `status: completed` on exactly this shape while its agent was still
-      // mid-task, caught only because the terminal SSE event never arrived.
-      //
-      // These are reached when nothing else named the stop: the SDK buckets
-      // every reason it does not recognize into `other` too, and
-      // `translateChunk` forwards the provider's own spelling in that case, so
-      // a genuinely new reason arrives here as itself and takes the tolerant
-      // default below. A provider spelling its reason `other` is
-      // indistinguishable from the bucket and lands here; the ambiguity is
-      // real and this resolves it toward the safe answer.
-      case 'other':
-      case 'unknown':
-        return 'error';
       default:
         return 'end_turn';
     }
   }
+}
+
+interface ModelStepSettlementEvidence {
+  aborted: boolean;
+  failure?: ModelFailure;
+  sawFinish: boolean;
+  finishReason: ModelFinishReason;
+  usage?: NormalizedUsage;
+  request: ModelRequestMetadata;
+}
+
+export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): ModelStepOutcome {
+  const { aborted, failure, sawFinish, finishReason, usage, request } = evidence;
+  if (aborted || failure?.kind === 'abort') {
+    return failedStepOutcome(
+      'aborted',
+      failure ?? normalizeModelFailure(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+      request,
+      usage,
+    );
+  }
+  if (failure) {
+    return failedStepOutcome(
+      failure.retryable ? 'retryable-failure' : 'terminal-failure',
+      failure,
+      request,
+      usage,
+    );
+  }
+  if (!sawFinish || finishReason === 'other' || finishReason === 'unknown') {
+    return failedStepOutcome(
+      'truncated',
+      modelStepFailure(
+        'provider_unavailable',
+        `Provider stream ended without finishing (${finishReason})`,
+      ),
+      request,
+      usage,
+    );
+  }
+  if (finishReason === 'content-filter' || finishReason === 'error') {
+    return failedStepOutcome(
+      'terminal-failure',
+      modelStepFailure(
+        finishReason === 'content-filter' ? 'unknown' : 'provider_unavailable',
+        finishReason === 'content-filter'
+          ? 'Provider stopped the stream on a content filter'
+          : 'Provider stopped the stream with an error',
+      ),
+      request,
+      usage,
+    );
+  }
+  return {
+    kind: 'completed',
+    finishReason,
+    ...(usage ? { usage } : {}),
+    request,
+    continuation: 'none',
+  };
+}
+
+function modelStepFailure(kind: ModelFailureKind, message: string): ModelFailure {
+  return { type: 'model_failure', kind, message, retryable: false };
+}
+
+function failedStepOutcome(
+  kind: Exclude<ModelStepOutcome['kind'], 'completed'>,
+  failure: ModelFailure,
+  request: ModelRequestMetadata,
+  usage?: NormalizedUsage,
+): Exclude<ModelStepOutcome, { kind: 'completed' }> {
+  return {
+    kind,
+    failure,
+    ...(usage ? { usage } : {}),
+    request,
+    continuation: 'none',
+  };
 }
 
 function selectedModelMaxOutputTokens(
