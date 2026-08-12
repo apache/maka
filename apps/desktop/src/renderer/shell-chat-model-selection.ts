@@ -1,7 +1,4 @@
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { LlmConnection } from '@maka/core/llm-connections';
-import type { SessionSummary } from '@maka/core/session';
-import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from '@maka/core/codex-model-compatibility';
 
 export type NewChatModel = { llmConnectionSlug: string; model: string };
 
@@ -18,24 +15,6 @@ export function pickNewChatModel(input: {
   }
   const first = input.choices[0];
   return first ? { llmConnectionSlug: first.connectionSlug, model: first.model } : undefined;
-}
-
-export function normalizeActiveChatModel(
-  session: SessionSummary | undefined,
-  connection: LlmConnection | undefined,
-  choices: readonly ChatModelChoice[],
-): string | undefined {
-  if (!session || session.backend === 'fake') return undefined;
-  const requested = session.model || connection?.defaultModel;
-  if (choices.some(
-    (choice) => choice.connectionSlug === session.llmConnectionSlug && choice.model === requested,
-  )) return requested;
-  if (
-    connection?.providerType !== 'openai-codex' ||
-    !requested ||
-    !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(requested)
-  ) return requested;
-  return choices.find((choice) => choice.connectionSlug === session.llmConnectionSlug)?.model;
 }
 
 export function chatModelChoiceLabel(

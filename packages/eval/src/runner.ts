@@ -6,9 +6,9 @@ import {
 } from './experiment.js';
 import {
   decodeEvalResult,
-  selectCellResult,
   type CellAttempt,
   type EvalResult,
+  isReplaceableAttempt,
   type NormalizedUsage,
 } from './result.js';
 
@@ -30,7 +30,9 @@ export interface SubjectExecutionContext {
   readonly execute: (input: {
     readonly command: string;
     readonly args: readonly string[];
-    readonly credentialNames: readonly string[];
+    readonly environment?: Readonly<Record<string, string>>;
+    readonly credentialEnvironment: Readonly<Record<string, string>>;
+    readonly captureStdout?: boolean;
     readonly cancel?: { readonly command: string; readonly args: readonly string[] };
   }) => Promise<{
     readonly termination: 'exited' | 'framework_timeout' | 'cancelled';
@@ -42,6 +44,11 @@ export interface SubjectExecutionContext {
 export interface SubjectAdapter {
   readonly kind: ExperimentCell['subject']['kind'];
   validate?(cell: ExperimentCell): void;
+  prepare?(input: {
+    readonly spec: ExperimentSpec;
+    readonly cells: readonly ExperimentCell[];
+  }): Promise<void>;
+  canReuse?(input: { readonly cell: ExperimentCell; readonly attempt: CellAttempt }): boolean;
   execute(input: {
     readonly cell: ExperimentCell;
     readonly context: SubjectExecutionContext;
@@ -55,34 +62,43 @@ export interface ExecutorVerification {
   readonly artifacts: readonly JsonObject[];
 }
 
+export type ExecutorPreparationCode =
+  | 'cancelled'
+  | 'preparation-failed'
+  | 'spawn-failed'
+  | 'exit-before-ready'
+  | 'invalid-ready'
+  | 'framework-version-mismatch';
+
+export type ExecutorAttemptOutcome =
+  | { readonly kind: 'settled'; readonly value: EvalResult }
+  | { readonly kind: 'indeterminate'; readonly value?: EvalResult }
+  | {
+      readonly kind: 'not_started';
+      readonly code: ExecutorPreparationCode;
+      readonly artifacts: readonly JsonObject[];
+    };
+
 export interface ExperimentExecutor {
   readonly kind: string;
+  validate?(cell: ExperimentCell): void;
   runAttempt(
-    input: { readonly cell: ExperimentCell; readonly signal?: AbortSignal },
+    input: {
+      readonly cell: ExperimentCell;
+      readonly subjectCredentialNames: readonly string[];
+      readonly signal?: AbortSignal;
+    },
     operation: (attempt: {
       readonly context: SubjectExecutionContext;
       verify(): Promise<ExecutorVerification>;
     }) => Promise<EvalResult>,
-  ): Promise<
-    | { readonly kind: 'settled'; readonly value: EvalResult }
-    | { readonly kind: 'indeterminate'; readonly value?: EvalResult }
-  >;
+  ): Promise<ExecutorAttemptOutcome>;
 }
 
 export interface AttemptStore {
   list(cellId: string): Promise<readonly CellAttempt[]>;
   append(attempt: CellAttempt): Promise<void>;
   runExclusive<T>(operation: () => Promise<T>): Promise<T>;
-}
-
-export class ExecutorPreparationFailure extends Error {
-  constructor(
-    readonly artifacts: readonly JsonObject[],
-    options?: ErrorOptions,
-  ) {
-    super('executor preparation failed', options);
-    this.name = 'ExecutorPreparationFailure';
-  }
 }
 
 export async function runExperiment(input: {
@@ -98,38 +114,58 @@ export async function runExperiment(input: {
     const cells = expandExperiment(input.spec);
     const selected = selectCells(cells, input.cellIds);
     const subjects = new Map(input.subjects.map((subject) => [subject.kind, subject]));
+    const subjectCredentialNames = [
+      ...new Set(input.spec.subjects.flatMap((subject) => subject.credentials)),
+    ];
     if (input.executor.kind !== input.spec.executor.kind) throw new Error('executor kind mismatch');
 
     for (const cell of selected) {
+      input.executor.validate?.(cell);
       const subject = subjects.get(cell.subject.kind);
       if (!subject) throw new Error(`missing subject adapter: ${cell.subject.kind}`);
       subject.validate?.(cell);
     }
+    for (const subject of subjects.values()) {
+      const cellsForSubject = selected.filter((cell) => cell.subject.kind === subject.kind);
+      if (cellsForSubject.length > 0) {
+        await subject.prepare?.({ spec: input.spec, cells: cellsForSubject });
+      }
+    }
     await runTaskGroups(
       groupTaskCells(selected),
       input.spec.execution.maxConcurrentTaskGroups,
-      async (group) => {
+      input.signal,
+      async (group, fail) => {
         if (input.signal?.aborted) return;
-        await Promise.all(
-          group.map(async (cell) => {
-            if (input.signal?.aborted) return;
-            const attempts = await input.store.list(cell.id);
-            if (selectCellResult(attempts)) return;
-            const startedAt = (input.now ?? Date.now)();
-            const result = await executeCell(
-              input.executor,
-              subjects.get(cell.subject.kind)!,
-              cell,
-              input.signal,
-            );
-            await input.store.append({
-              cellId: cell.id,
-              sequence: (attempts.at(-1)?.sequence ?? 0) + 1,
-              startedAt,
-              completedAt: (input.now ?? Date.now)(),
-              result,
-            });
-          }),
+        const operations = group.map(async (cell) => {
+          if (input.signal?.aborted) return;
+          const attempts = await input.store.list(cell.id);
+          if (input.signal?.aborted) return;
+          const subject = subjects.get(cell.subject.kind)!;
+          if (selectSubjectResult(attempts, subject, cell)) return;
+          const startedAt = (input.now ?? Date.now)();
+          const result = await executeCell(
+            input.executor,
+            subject,
+            cell,
+            subjectCredentialNames,
+            input.signal,
+          );
+          await input.store.append({
+            cellId: cell.id,
+            sequence: (attempts.at(-1)?.sequence ?? 0) + 1,
+            startedAt,
+            completedAt: (input.now ?? Date.now)(),
+            result,
+          });
+        });
+        await Promise.allSettled(
+          operations.map((operation) =>
+            operation.catch((error: unknown) => {
+              fail(error);
+              throw error;
+            }),
+          ),
         );
       },
     );
@@ -138,12 +174,33 @@ export async function runExperiment(input: {
       (
         await Promise.all(
           cells.map(
-            async (cell) => [cell.id, selectCellResult(await input.store.list(cell.id))] as const,
+            async (cell) =>
+              [
+                cell.id,
+                selectSubjectResult(
+                  await input.store.list(cell.id),
+                  subjects.get(cell.subject.kind)!,
+                  cell,
+                ),
+              ] as const,
           ),
         )
       ).flatMap(([cellId, result]) => (result ? [[cellId, result] as const] : [])),
     );
   });
+}
+
+function selectSubjectResult(
+  attempts: readonly CellAttempt[],
+  subject: SubjectAdapter,
+  cell: ExperimentCell,
+): CellAttempt | undefined {
+  return [...attempts]
+    .sort((left, right) => left.sequence - right.sequence)
+    .find(
+      (attempt) =>
+        !isReplaceableAttempt(attempt) && (subject.canReuse?.({ cell, attempt }) ?? true),
+    );
 }
 
 function groupTaskCells(cells: readonly ExperimentCell[]): ExperimentCell[][] {
@@ -160,31 +217,46 @@ function groupTaskCells(cells: readonly ExperimentCell[]): ExperimentCell[][] {
 async function runTaskGroups<T>(
   groups: readonly T[],
   maximum: number,
-  run: (group: T) => Promise<void>,
+  signal: AbortSignal | undefined,
+  run: (group: T, fail: (error: unknown) => void) => Promise<void>,
 ): Promise<void> {
   let next = 0;
+  let failed = false;
+  let failure: unknown;
+  const fail = (error: unknown) => {
+    if (failed) return;
+    failed = true;
+    failure = error;
+  };
   const worker = async () => {
     for (;;) {
+      if (failed || signal?.aborted) return;
       const group = groups[next];
       next += 1;
       if (group === undefined) return;
-      await run(group);
+      try {
+        await run(group, fail);
+      } catch (error) {
+        fail(error);
+      }
     }
   };
   await Promise.all(
     Array.from({ length: Math.min(maximum, groups.length) }, async () => await worker()),
   );
+  if (failed) throw failure;
 }
 
 async function executeCell(
   executor: ExperimentExecutor,
   subject: SubjectAdapter,
   cell: ExperimentCell,
+  subjectCredentialNames: readonly string[],
   signal?: AbortSignal,
 ): Promise<EvalResult> {
   try {
     const attempt = await executor.runAttempt(
-      { cell, ...(signal ? { signal } : {}) },
+      { cell, subjectCredentialNames, ...(signal ? { signal } : {}) },
       async ({ context, verify }) => {
         let execution: SubjectExecutionResult;
         try {
@@ -223,6 +295,15 @@ async function executeCell(
         }
       },
     );
+    if (attempt.kind === 'not_started') {
+      const cancelled = attempt.code === 'cancelled';
+      return failure(
+        cancelled ? 'indeterminate' : 'infra_failed',
+        cancelled ? 'executor preparation cancelled' : 'executor preparation failed',
+        undefined,
+        attempt.artifacts,
+      );
+    }
     if (attempt.kind === 'settled') return decodeEvalResult(attempt.value);
     if (!attempt.value) return failure('indeterminate', 'executor cleanup did not settle');
     const partial = decodeEvalResult(attempt.value);
@@ -230,15 +311,10 @@ async function executeCell(
       ...partial,
       score: null,
       status: 'indeterminate',
-      failureReason: 'executor cleanup did not settle',
+      failureReason: partial.failureReason ?? 'executor cleanup did not settle',
     };
-  } catch (error) {
-    return failure(
-      'infra_failed',
-      'executor preparation failed',
-      undefined,
-      error instanceof ExecutorPreparationFailure ? error.artifacts : [],
-    );
+  } catch {
+    return failure('infra_failed', 'executor preparation failed');
   }
 }
 

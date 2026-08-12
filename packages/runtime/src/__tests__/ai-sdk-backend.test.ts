@@ -65,10 +65,6 @@ import type { SandboxDiagnosticsSnapshot } from '../sandbox/diagnostics.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { RunTrace } from '../run-trace.js';
-import {
-  bindRuntimeInteractionRun,
-  type RuntimeInteractionRunOwner,
-} from '../interaction-authority.js';
 import type {
   ProviderRequestAttemptRecord,
   ProviderRequestCaptureRecord,
@@ -5976,30 +5972,6 @@ describe('AiSdkBackend error surfaces', () => {
       },
     });
   });
-
-  test('model stream timeout errors carry a stable reason for turn-history UI', () => {
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: () => 1,
-    });
-
-    const event = (
-      backend as unknown as {
-        makeErrorEvent(turnId: string, err: unknown): Extract<SessionEvent, { type: 'error' }>;
-      }
-    ).makeErrorEvent('turn-1', new Error('Model stream idle timeout after 120000ms'));
-
-    assert.equal(event.message, 'Request timed out');
-    assert.equal(event.reason, 'timeout');
-  });
 });
 
 describe('AiSdkBackend usage telemetry', () => {
@@ -7326,6 +7298,102 @@ describe('AiSdkBackend usage telemetry', () => {
       assert.equal(contextBudget?.activeArchiveFailures, undefined);
       assert.ok(((contextBudget?.activeEstimatedTokensSaved as number | undefined) ?? 0) > 0);
     }
+  });
+
+  test('projects superseded current-turn observations before the next provider step', async () => {
+    const durable = durableTurnHarness('turn-1', 'hi');
+    const messages: unknown[] = [];
+    const prompts: unknown[] = [];
+    const oldBody = 'OLD_READ_RESULT'.repeat(200);
+    const newBody = 'NEW_READ_RESULT'.repeat(200);
+    let streamCalls = 0;
+    let readCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async ({ prompt }) => {
+        streamCalls += 1;
+        prompts.push(prompt);
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls <= 2
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: `read-${streamCalls}`,
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ];
+        return {
+          stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        messages.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read description',
+          parameters: z.object({ path: z.string() }),
+          impl: async () => ({ body: readCalls++ === 0 ? oldBody : newBody }),
+        },
+      ],
+      contextBudget: {
+        charsPerToken: 1,
+        activeToolResultPrune: {
+          enabled: true,
+          maxCurrentResultEstimatedTokens: 10_000,
+          minSupersededResultEstimatedTokens: 1,
+        },
+      },
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async () => ({ artifactId: 'artifact-read-1' }),
+      }),
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    for await (const event of backend.send(durable.input())) durable.record(event);
+
+    assert.equal(streamCalls, 3);
+    assert.match(JSON.stringify(prompts[1]), /OLD_READ_RESULT/);
+    const thirdPrompt = JSON.stringify(prompts[2]);
+    assert.doesNotMatch(thirdPrompt, /OLD_READ_RESULT/);
+    assert.match(thirdPrompt, /NEW_READ_RESULT/);
+    assert.match(thirdPrompt, /newer_read_covers_range/);
+    const usageMessage = messages.find(
+      (message) => (message as { type?: string }).type === 'token_usage',
+    ) as { contextBudget?: Record<string, unknown> } | undefined;
+    assert.equal(usageMessage?.contextBudget?.activeSupersededToolResults, 1);
+    assert.equal(usageMessage?.contextBudget?.activeDuplicateToolResults, undefined);
   });
 
   test('active full compact sees the fresh tool result before active tool-result prune', async () => {
@@ -13157,66 +13225,6 @@ function compactPrompt(model: MockLanguageModelV4): unknown {
   }));
 }
 
-function promptTextSequence(model: MockLanguageModelV4): Array<{
-  role: string;
-  text: string | undefined;
-}> {
-  return (model.doStreamCalls[0]?.prompt ?? []).map((message) => ({
-    role: message.role,
-    text: Array.isArray(message.content)
-      ? message.content.find((part) => part.type === 'text')?.text
-      : undefined,
-  }));
-}
-
-function activeFullCompactBlockFixture(): ActiveFullCompactBlock {
-  return {
-    kind: 'maka.active_full_compact_block',
-    version: 1,
-    blockId: 'afcompact-sync-test',
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    createdAt: 1_001,
-    highWaterName: 'sync-test',
-    highWaterSeq: 1,
-    trigger: {
-      reason: 'manual_test',
-      stepNumber: 2,
-      estimatedTokensBefore: 100,
-      thresholdTokens: 50,
-    },
-    coverage: {
-      turnIds: ['turn-1'],
-      runtimeEventIds: ['runtime-event-1'],
-      providerMessageSourceIds: ['provider-message:0'],
-      toolCallIds: [],
-      contentKinds: ['text'],
-      bodySha256: ['sha256-sync-test'],
-    },
-    summary: {
-      schemaVersion: 1,
-      text: 'persist synchronously before the next provider request',
-    },
-    limitations: [],
-    sourceRefs: [
-      {
-        kind: 'provider_message',
-        sourceId: 'provider-message:0',
-        messageIndex: 0,
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        runtimeEventId: 'runtime-event-1',
-        contentKind: 'text',
-        bodySha256: 'sha256-sync-test',
-      },
-    ],
-  };
-}
-
-function countActiveFullCompactMarkers(text: string): number {
-  return text.match(/<maka_active_full_compact_block/g)?.length ?? 0;
-}
-
 function modelCallSettings(model: MockLanguageModelV4): unknown {
   const call = model.doStreamCalls[0] as unknown as Record<string, unknown> | undefined;
   if (!call) return {};
@@ -13291,74 +13299,6 @@ function nativeApplyPatchTool(): MakaTool {
     providerTool: { kind: 'openai-apply-patch' },
     impl: async () => ({ status: 'completed' }),
   };
-}
-
-function permissionTool(onExecute?: () => void): MakaTool {
-  return {
-    name: 'Bash',
-    description: 'shell',
-    parameters: z.object({ command: z.string() }),
-    impl: async () => {
-      onExecute?.();
-      return { ok: true };
-    },
-  };
-}
-
-function singlePermissionToolModel(): MockLanguageModelV4 {
-  let calls = 0;
-  return new MockLanguageModelV4({
-    doStream: async () => {
-      calls += 1;
-      const chunks: LanguageModelV4StreamPart[] =
-        calls === 1
-          ? [
-              { type: 'stream-start', warnings: [] },
-              {
-                type: 'tool-call',
-                toolCallId: 'tool-1',
-                toolName: 'Bash',
-                input: JSON.stringify({ command: 'rm local-file' }),
-              },
-              {
-                type: 'finish',
-                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                usage: emptyUsage(),
-              },
-            ]
-          : [
-              { type: 'stream-start', warnings: [] },
-              {
-                type: 'finish',
-                finishReason: { unified: 'stop', raw: 'stop' },
-                usage: emptyUsage(),
-              },
-            ];
-      return {
-        stream: simulateReadableStream({
-          chunks,
-          initialDelayInMs: null,
-          chunkDelayInMs: null,
-        }),
-      };
-    },
-  });
-}
-
-async function hostedInteractionBinding(overrides: Partial<RuntimeInteractionRunOwner>) {
-  return await bindRuntimeInteractionRun(
-    {
-      bindRun: (identity) => ({
-        ...identity,
-        acceptSandboxBoundaryRequest: async () => {},
-        acceptUserQuestionRequest: async () => {},
-        close: async () => {},
-        release: () => {},
-        ...overrides,
-      }),
-    },
-    { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' },
-  );
 }
 
 async function collectEvents(

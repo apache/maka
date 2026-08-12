@@ -14,6 +14,12 @@ import {
   sha256,
   utf8ByteLength,
 } from './context-budget-helpers.js';
+import {
+  planActiveToolResultSupersession,
+  type ActiveToolResultCall,
+  type ActiveToolResultObservation,
+  type ActiveToolResultSupersession,
+} from './active-tool-result-working-set.js';
 
 export const ACTIVE_ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND = 'maka.active_archived_tool_result';
 
@@ -24,6 +30,8 @@ export interface ActiveToolResultPrunePolicy {
   enabled: boolean;
   /** Tool result payloads above this estimate are archived and replaced. Defaults to 2048. */
   maxCurrentResultEstimatedTokens?: number;
+  /** Superseded results below this estimate stay verbatim. Defaults to 256. */
+  minSupersededResultEstimatedTokens?: number;
   /** Do not rewrite before this SDK step. Defaults to 1, so step 0 is untouched. */
   minStepNumber?: number;
 }
@@ -56,9 +64,12 @@ export interface ActiveArchivedToolResultPlaceholder {
   originalEstimatedTokens: number;
   originalBytes: number;
   reason: ActiveArchivedToolResultReason;
+  /** Why a newer completed step made this provider-visible result redundant. */
+  supersession?: ActiveToolResultSupersession;
 }
 
 const DEFAULT_MAX_CURRENT_RESULT_ESTIMATED_TOKENS = 2048;
+const DEFAULT_MIN_SUPERSEDED_RESULT_ESTIMATED_TOKENS = 256;
 const DEFAULT_CHARS_PER_TOKEN = 4;
 
 export interface ActiveToolResultPruneArchiveInput extends ActiveToolResultArchiveCandidate {
@@ -72,6 +83,7 @@ export interface ActiveToolResultPruneInput {
   turnId: string;
   charsPerToken?: number;
   eligibleToolCallIds?: ReadonlySet<string>;
+  completedToolCalls?: readonly ActiveToolResultCall[];
   archiveToolResult?: (
     input: ActiveToolResultPruneArchiveInput,
   ) => Promise<{ artifactId: string } | void> | { artifactId: string } | void;
@@ -87,6 +99,8 @@ export interface ActiveToolResultPruneResult {
 
 export interface ActiveToolResultPruneDiagnosticPatch {
   activePrunedToolResults?: number;
+  activeSupersededToolResults?: number;
+  activeDuplicateToolResults?: number;
   activeArchiveFailures?: number;
   activeEstimatedTokensSaved?: number;
 }
@@ -110,7 +124,43 @@ type ToolResultPartish = {
 
 type Replacement =
   | { changed: false; archiveFailure?: boolean }
-  | { changed: true; part: ToolResultPartish; estimatedTokensSaved: number };
+  | {
+      changed: true;
+      part: ToolResultPartish;
+      estimatedTokensSaved: number;
+      supersession?: ActiveToolResultSupersession;
+    };
+
+function collectSupersessionDecisions(
+  input: ActiveToolResultPruneInput,
+): Map<string, ActiveToolResultSupersession> {
+  if (!input.completedToolCalls || input.completedToolCalls.length === 0) return new Map();
+  const calls = new Map(input.completedToolCalls.map((call) => [call.toolCallId, call]));
+  const observations: ActiveToolResultObservation[] = [];
+  for (const message of input.messages) {
+    if (message.role !== 'tool' || !Array.isArray(message.content)) continue;
+    for (const part of message.content as unknown[]) {
+      if (!isToolResultPartish(part) || typeof part.toolCallId !== 'string') continue;
+      const call = calls.get(part.toolCallId);
+      if (!call || call.toolName !== part.toolName) continue;
+      const payload = extractPayload(part);
+      if (!payload || isArchivedPayload(payload.value)) continue;
+      observations.push({
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        input: call.input,
+        stepNumber: call.stepNumber,
+        bodySha256: sha256(serializeToolResultForArchive(payload.value)),
+        isError:
+          payload.field === 'output' &&
+          (payload.outputKind === 'error-text' || payload.outputKind === 'error-json'),
+        eligible:
+          input.eligibleToolCallIds === undefined || input.eligibleToolCallIds.has(call.toolCallId),
+      });
+    }
+  }
+  return planActiveToolResultSupersession(observations);
+}
 
 export async function rewriteActiveToolResultsInMessages(
   input: ActiveToolResultPruneInput,
@@ -124,11 +174,17 @@ export async function rewriteActiveToolResultsInMessages(
   const maxResultEstimatedTokens =
     finitePositive(policy.maxCurrentResultEstimatedTokens) ??
     DEFAULT_MAX_CURRENT_RESULT_ESTIMATED_TOKENS;
+  const minSupersededResultEstimatedTokens =
+    finitePositive(policy.minSupersededResultEstimatedTokens) ??
+    DEFAULT_MIN_SUPERSEDED_RESULT_ESTIMATED_TOKENS;
   const charsPerToken = input.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN;
   const archivedPlaceholders =
     input.archivedPlaceholders ?? new Map<string, ActiveArchivedToolResultPlaceholder>();
+  const supersessionDecisions = collectSupersessionDecisions(input);
 
   let rewritten = 0;
+  let activeSupersededToolResults = 0;
+  let activeDuplicateToolResults = 0;
   let archiveFailures = 0;
   let activeEstimatedTokensSaved = 0;
   let anyChanged = false;
@@ -155,13 +211,21 @@ export async function rewriteActiveToolResultsInMessages(
         turnId: input.turnId,
         charsPerToken,
         maxResultEstimatedTokens,
+        minSupersededResultEstimatedTokens,
         eligibleToolCallIds: input.eligibleToolCallIds,
         archiveToolResult: input.archiveToolResult,
         archivedPlaceholders,
+        supersession: supersessionDecisions.get(part.toolCallId as string),
       });
 
       if (replacement.changed) {
         rewritten += 1;
+        if (replacement.supersession) {
+          activeSupersededToolResults += 1;
+          if (replacement.supersession.reason === 'exact_duplicate') {
+            activeDuplicateToolResults += 1;
+          }
+        }
         activeEstimatedTokensSaved += replacement.estimatedTokensSaved;
         anyChanged = true;
         if (!nextContent) nextContent = originalContent.slice(0, index);
@@ -185,6 +249,8 @@ export async function rewriteActiveToolResultsInMessages(
     archiveFailures,
     diagnosticPatch: {
       ...(rewritten > 0 ? { activePrunedToolResults: rewritten } : {}),
+      ...(activeSupersededToolResults > 0 ? { activeSupersededToolResults } : {}),
+      ...(activeDuplicateToolResults > 0 ? { activeDuplicateToolResults } : {}),
       ...(archiveFailures > 0 ? { activeArchiveFailures: archiveFailures } : {}),
       ...(activeEstimatedTokensSaved > 0 ? { activeEstimatedTokensSaved } : {}),
     },
@@ -197,9 +263,11 @@ async function rewriteToolResultPart(input: {
   turnId: string;
   charsPerToken: number;
   maxResultEstimatedTokens: number;
+  minSupersededResultEstimatedTokens: number;
   eligibleToolCallIds?: ReadonlySet<string>;
   archiveToolResult?: ActiveToolResultPruneInput['archiveToolResult'];
   archivedPlaceholders: Map<string, ActiveArchivedToolResultPlaceholder>;
+  supersession?: ActiveToolResultSupersession;
 }): Promise<Replacement> {
   if (typeof input.part.toolCallId !== 'string' || typeof input.part.toolName !== 'string') {
     return { changed: false };
@@ -210,17 +278,17 @@ async function rewriteToolResultPart(input: {
 
   const payload = extractPayload(input.part);
   if (!payload) return { changed: false };
-  if (isActiveArchivedToolResultPlaceholder(payload.value)) return { changed: false };
-  if (
-    typeof payload.value === 'string' &&
-    isActiveArchivedToolResultPlaceholderText(payload.value)
-  ) {
-    return { changed: false };
-  }
+  if (isArchivedPayload(payload.value)) return { changed: false };
 
   const serializedResult = serializeToolResultForArchive(payload.value);
   const originalEstimatedTokens = estimateTokens(serializedResult.length, input.charsPerToken);
-  if (originalEstimatedTokens <= input.maxResultEstimatedTokens) return { changed: false };
+  if (
+    input.supersession
+      ? originalEstimatedTokens < input.minSupersededResultEstimatedTokens
+      : originalEstimatedTokens <= input.maxResultEstimatedTokens
+  ) {
+    return { changed: false };
+  }
 
   const originalBytes = utf8ByteLength(serializedResult);
   const bodySha256 = sha256(serializedResult);
@@ -266,7 +334,15 @@ async function rewriteToolResultPart(input: {
       originalEstimatedTokens,
       originalBytes,
       reason: 'active_current_turn_tool_result_pruned_before_next_step',
+      ...(input.supersession ? { supersession: input.supersession } : {}),
     };
+    input.archivedPlaceholders.set(cacheKey, placeholder);
+  } else if (input.supersession) {
+    placeholder = { ...placeholder, supersession: input.supersession };
+    input.archivedPlaceholders.set(cacheKey, placeholder);
+  } else if (placeholder.supersession) {
+    const { supersession: _supersession, ...genericPlaceholder } = placeholder;
+    placeholder = genericPlaceholder;
     input.archivedPlaceholders.set(cacheKey, placeholder);
   }
 
@@ -276,11 +352,15 @@ async function rewriteToolResultPart(input: {
       ? activePlaceholderText(placeholder)
       : serializeToolResultForArchive(placeholder);
   const placeholderEstimatedTokens = estimateTokens(placeholderText.length, input.charsPerToken);
+  if (input.supersession && placeholderEstimatedTokens >= originalEstimatedTokens) {
+    return { changed: false };
+  }
 
   return {
     changed: true,
     part: replacePayload(input.part, payload, placeholder),
     estimatedTokensSaved: Math.max(0, originalEstimatedTokens - placeholderEstimatedTokens),
+    ...(input.supersession ? { supersession: input.supersession } : {}),
   };
 }
 
@@ -360,7 +440,8 @@ export function isActiveArchivedToolResultPlaceholder(
     typeof candidate.originalBytes === 'number' &&
     Number.isFinite(candidate.originalBytes) &&
     candidate.originalBytes > 0 &&
-    candidate.reason === 'active_current_turn_tool_result_pruned_before_next_step'
+    candidate.reason === 'active_current_turn_tool_result_pruned_before_next_step' &&
+    isValidSupersession(candidate.supersession)
   );
 }
 
@@ -399,6 +480,31 @@ function isToolResultPartish(value: unknown): value is ToolResultPartish {
 
 function activePlaceholderText(placeholder: ActiveArchivedToolResultPlaceholder): string {
   return JSON.stringify(placeholder);
+}
+
+function isArchivedPayload(value: unknown): boolean {
+  return (
+    isActiveArchivedToolResultPlaceholder(value) ||
+    (typeof value === 'string' && isActiveArchivedToolResultPlaceholderText(value))
+  );
+}
+
+function isValidSupersession(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<ActiveToolResultSupersession>;
+  return (
+    (candidate.reason === 'exact_duplicate' ||
+      candidate.reason === 'newer_read_covers_range' ||
+      candidate.reason === 'newer_snapshot' ||
+      candidate.reason === 'failure_resolved') &&
+    typeof candidate.supersededByToolCallId === 'string' &&
+    candidate.supersededByToolCallId.length > 0 &&
+    (candidate.reason === 'failure_resolved'
+      ? typeof candidate.failureBodySha256 === 'string' &&
+        /^[a-f0-9]{64}$/.test(candidate.failureBodySha256)
+      : candidate.failureBodySha256 === undefined)
+  );
 }
 
 function isActiveArchivedToolResultPlaceholderText(value: string): boolean {

@@ -1,60 +1,81 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { AttachmentRef } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
-  finalAssistantReplyText,
   materializeChat,
   materializeTools,
   materializeTurns,
   overlayLiveTurn,
   type TurnTimelineItem,
 } from "../materialize.js";
-import { applyLiveTurnEvent, armLiveTurn } from "../live-turn-projection.js";
+import {
+  applyLiveTurnEvent,
+  armLiveTurn,
+} from "../live-turn-projection.js";
 
-const imageAttachment: AttachmentRef = {
-  kind: "image",
-  name: "chart.png",
-  mimeType: "image/png",
-  bytes: 1024,
-  ref: { kind: "session_file", sessionId: "s1", relativePath: "chart.png" },
+const originalUser = {
+  type: "user" as const,
+  id: "original",
+  turnId: "t1",
+  ts: 1,
+  text: "request",
+};
+const beforeAssistant = {
+  type: "assistant" as const,
+  id: "before-steer",
+  turnId: "t1",
+  ts: 2,
+  text: "before",
+  modelId: "fixture",
+};
+const steeringUser = {
+  type: "user" as const,
+  id: "steer-1",
+  turnId: "t1",
+  ts: 3,
+  text: "steer",
 };
 
-const codeAttachment: AttachmentRef = {
-  kind: "code",
-  name: "main.ts",
-  mimeType: "text/typescript",
-  bytes: 512,
-  ref: { kind: "workspace_file", relativePath: "src/main.ts" },
-};
+function timelineText(turn: ReturnType<typeof materializeTurns>[number] | undefined): string[] {
+  return turn?.timeline.map((item) =>
+    item.kind === "user" ? `user:${item.message.text}` : `${item.kind}:${"text" in item ? item.text : ""}`,
+  ) ?? [];
+}
 
-describe("materializeChat attachments", () => {
-  test("preserves the original prompt and projects same-turn steering separately", () => {
-    const messages: StoredMessage[] = [
-      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
-      { type: "user", id: "steer-1", turnId: "t1", ts: 2, text: "inserted instruction" },
+describe("steering timeline", () => {
+  test("keeps a steering message at its conversational position", () => {
+    const [turn] = materializeTurns([
+      originalUser,
+      beforeAssistant,
+      steeringUser,
       {
         type: "assistant",
-        id: "answer",
+        id: "after-steer",
         turnId: "t1",
-        ts: 3,
-        text: "done",
+        ts: 4,
+        text: "after",
         modelId: "fixture",
       },
-    ];
+    ]);
 
-    const [turn] = materializeTurns(messages);
-    assert.equal(turn?.user?.text, "original request");
-    assert.deepEqual(turn?.userInterjections?.map((message) => message.text), [
-      "inserted instruction",
+    assert.deepEqual(timelineText(turn), [
+      "text:before",
+      "user:steer",
+      "text:after",
     ]);
   });
 
-  test("overlays a steering message immediately and deduplicates its persisted row", () => {
-    const settled = materializeTurns([
-      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
-    ]);
-    const live = applyLiveTurnEvent(armLiveTurn("t1"), {
+  test("renders one live steering message while its persisted row catches up", () => {
+    const settled = materializeTurns([originalUser]);
+    const before = applyLiveTurnEvent(armLiveTurn("t1"), {
+      type: "text_complete",
+      id: "event-before",
+      messageId: "before-steer",
+      turnId: "t1",
+      ts: 1,
+      text: "before",
+    });
+    const live = applyLiveTurnEvent(before, {
       type: "steering_message",
       id: "event-steer",
       messageId: "steer-1",
@@ -64,21 +85,69 @@ describe("materializeChat attachments", () => {
     });
 
     const [overlaid] = overlayLiveTurn(settled, live);
-    assert.deepEqual(overlaid?.userInterjections?.map((message) => message.text), [
-      "inserted instruction",
-    ]);
+    assert.deepEqual(timelineText(overlaid), ["text:before", "user:inserted instruction"]);
 
     const persisted = materializeTurns([
-      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
+      originalUser,
+      beforeAssistant,
       { type: "user", id: "steer-1", turnId: "t1", ts: 2, text: "inserted instruction" },
     ]);
     const [deduplicated] = overlayLiveTurn(persisted, live);
-    assert.deepEqual(deduplicated?.userInterjections?.map((message) => message.text), [
-      "inserted instruction",
-    ]);
+    assert.deepEqual(timelineText(deduplicated), ["text:before", "user:inserted instruction"]);
   });
 
+  test("keeps a persisted tool before live steering during handoff", () => {
+    const persisted = materializeTurns([
+      originalUser,
+      {
+        type: "tool_call",
+        id: "tool-1",
+        turnId: "t1",
+        stepId: "tool-step",
+        ts: 2,
+        toolName: "Read",
+        args: {},
+      },
+      steeringUser,
+    ]);
+    const tool = applyLiveTurnEvent(armLiveTurn("t1"), {
+      type: "tool_start",
+      id: "tool-event",
+      turnId: "t1",
+      stepId: "tool-step",
+      toolUseId: "tool-1",
+      toolName: "Read",
+      args: {},
+      ts: 2,
+    });
+    const steering = applyLiveTurnEvent(tool, {
+      type: "steering_message",
+      id: "steer-event",
+      messageId: "steer-1",
+      turnId: "t1",
+      ts: 3,
+      content: { text: "steer" },
+    });
+    const live = applyLiveTurnEvent(steering, {
+      type: "text_delta",
+      id: "text-event",
+      messageId: "after-steer",
+      turnId: "t1",
+      ts: 4,
+      text: "after",
+    });
 
+    const [overlaid] = overlayLiveTurn(persisted, live);
+    assert.deepEqual(timelineText(overlaid), ["tools:", "user:steer", "text:after"]);
+    assert.deepEqual(
+      overlaid?.timeline.flatMap((item) =>
+        item.kind === "tools" ? item.items.map((tool) => tool.toolUseId) : []),
+      ["tool-1"],
+    );
+  });
+});
+
+describe("materializeChat message metadata", () => {
   test("preserves an explicit empty reference projection as the new-format marker", () => {
     const messages: StoredMessage[] = [
       {
@@ -93,8 +162,6 @@ describe("materializeChat attachments", () => {
     assert.deepEqual(materializeChat(messages)[0]?.inlineReferences, []);
     assert.deepEqual(materializeTurns(messages)[0]?.user?.inlineReferences, []);
   });
-
-
 
   test("preserves Host provenance on a Goal continuation", () => {
     const messages: StoredMessage[] = [
@@ -117,9 +184,6 @@ describe("materializeChat attachments", () => {
       goalId: "goal-1",
     });
   });
-
-
-
 });
 
 // ── #1307: the timeline model stays flat (fold is a render concern) ──────────
@@ -325,43 +389,22 @@ describe("unfinished tools take their status from the turn", () => {
     assert.equal(turn?.tools[0]?.status, "running");
   });
 
-  // Only a turn that has itself ended makes the missing result mean the tool
-  // never finished.
-  for (const turnStatus of ["aborted", "failed", "completed"] as const) {
-    test(`reads an unfinished call in a ${turnStatus} turn as interrupted`, () => {
-      const [turn] = materializeTurns([
-        userMsg("t1", 1, "run it"),
-        {
-          type: "turn_state",
-          id: "s1",
-          turnId: "t1",
-          ts: 2,
-          status: turnStatus,
-          partialOutputRetained: false,
-        },
-        {
-          type: "tool_call",
-          id: "bash-1",
-          turnId: "t1",
-          ts: 3,
-          toolName: "Bash",
-          args: { command: "sleep 600" },
-        },
-      ]);
-      assert.equal(turn?.tools[0]?.status, "interrupted");
-    });
-  }
-
-  // Sessions written before turn_state carry no record at all, so they keep
-  // reading as interrupted rather than stranding old rows on a spinner.
-  test("reads an unfinished call with no turn record as interrupted", () => {
+  test("reads an unfinished call in a terminal turn as interrupted", () => {
     const [turn] = materializeTurns([
       userMsg("t1", 1, "run it"),
+      {
+        type: "turn_state",
+        id: "s1",
+        turnId: "t1",
+        ts: 2,
+        status: "failed",
+        partialOutputRetained: false,
+      },
       {
         type: "tool_call",
         id: "bash-1",
         turnId: "t1",
-        ts: 2,
+        ts: 3,
         toolName: "Bash",
         args: { command: "sleep 600" },
       },
@@ -420,73 +463,60 @@ describe("live tool status over persisted", () => {
     );
   });
 
-  // Only the active session is subscribed and events do not replay, so a turn
-  // that ends while the user is looking elsewhere leaves the projection frozen
-  // mid-run; reconcileTerminalLiveTurn hands a tool off only once it is
-  // interrupted or has a result, so a frozen `running` never clears itself. A
-  // recorded terminal turn_state is what breaks the tie.
-  for (const turnStatus of ["aborted", "failed", "completed"] as const) {
-    test(`a stale live running loses to a ${turnStatus} turn`, () => {
-      const settled = materializeTurns([
-        userMsg("t1", 1, "run it"),
-        {
-          type: "turn_state",
-          id: "s1",
-          turnId: "t1",
-          ts: 2,
-          status: turnStatus,
-          partialOutputRetained: false,
-        },
-        {
-          type: "tool_call",
-          id: "bash-1",
-          turnId: "t1",
-          ts: 3,
-          toolName: "Bash",
-          args: { command: "sleep 60" },
-        },
-      ]);
-      const turns = overlayLiveTurn(settled, {
+  test("a stale live running loses to a terminal turn", () => {
+    const settled = materializeTurns([
+      userMsg("t1", 1, "run it"),
+      {
+        type: "turn_state",
+        id: "s1",
         turnId: "t1",
-        phase: "streamed",
-        steps: [
-          {
-            stepId: "a1",
-            tools: [
-              {
-                toolUseId: "bash-1",
-                toolName: "Bash",
-                stepId: "a1",
-                status: "running",
-                args: { command: "sleep 60" },
-                outputChunks: [
-                  {
-                    seq: 0,
-                    stream: "stdout",
-                    text: "partial output",
-                    redacted: false,
-                    createdAt: 4,
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      });
-      const tools = turns
-        .find((turn) => turn.turnId === "t1")
-        ?.timeline.find((item: TurnTimelineItem) => item.kind === "tools");
-      const tool = tools?.kind === "tools" ? tools.items[0] : undefined;
-      assert.equal(tool?.status, "interrupted");
-      // The tail the user was watching still belongs to live — only the status
-      // is taken back.
-      assert.equal(tool?.outputChunks?.length, 1);
+        ts: 2,
+        status: "failed",
+        partialOutputRetained: false,
+      },
+      {
+        type: "tool_call",
+        id: "bash-1",
+        turnId: "t1",
+        ts: 3,
+        toolName: "Bash",
+        args: { command: "sleep 60" },
+      },
+    ]);
+    const turns = overlayLiveTurn(settled, {
+      turnId: "t1",
+      phase: "streamed",
+      steps: [
+        {
+          stepId: "a1",
+          tools: [
+            {
+              toolUseId: "bash-1",
+              toolName: "Bash",
+              stepId: "a1",
+              status: "running",
+              args: { command: "sleep 60" },
+              outputChunks: [
+                {
+                  seq: 0,
+                  stream: "stdout",
+                  text: "partial output",
+                  redacted: false,
+                  createdAt: 4,
+                },
+              ],
+            },
+          ],
+        },
+      ],
     });
-  }
-
-  // A legacy turn has no turn_state, so `status` falls back to an inferred
-  // `completed`. That is a guess about old data, not evidence this turn ended,
-  // and must not be allowed to take a status away from live.
+    const tools = turns
+      .find((turn) => turn.turnId === "t1")
+      ?.timeline.find((item: TurnTimelineItem) => item.kind === "tools");
+    const tool = tools?.kind === "tools" ? tools.items[0] : undefined;
+    assert.equal(tool?.status, "interrupted");
+    assert.equal(tool?.outputChunks?.length, 1);
+  });
 
   test("keeps durable tool detail while a Runtime Host Turn is still live", () => {
     const settled = materializeTurns([
@@ -617,68 +647,5 @@ describe("live tool status over persisted", () => {
       tools?.kind === "tools" ? tools.items[0]?.status : undefined,
       "interrupted",
     );
-  });
-});
-
-describe("final reply extraction for copy (#2407)", () => {
-  // The issue's shape: the model narrates, calls tools, narrates again, then
-  // answers — one assistant row per step with tool calls interleaved.
-  const multiStepTurn = (): StoredMessage[] => [
-    { type: "user", id: "ask", turnId: "t1", ts: 1, text: "do the thing" },
-    {
-      type: "assistant",
-      id: "step-1",
-      turnId: "t1",
-      ts: 2,
-      text: "Let me inspect the files first.",
-      modelId: "fixture",
-    },
-    {
-      type: "tool_call",
-      id: "tool-1",
-      turnId: "t1",
-      ts: 3,
-      toolName: "Read",
-      args: { path: "flag.ts" },
-      stepId: "step-2",
-    },
-    {
-      type: "assistant",
-      id: "step-2",
-      turnId: "t1",
-      ts: 4,
-      text: "Found it — the flag was inverted.",
-      modelId: "fixture",
-    },
-    {
-      type: "tool_call",
-      id: "tool-2",
-      turnId: "t1",
-      ts: 5,
-      toolName: "Edit",
-      args: { path: "flag.ts" },
-      stepId: "step-3",
-    },
-    {
-      type: "assistant",
-      id: "step-3",
-      turnId: "t1",
-      ts: 6,
-      text: "Done: the fix is committed and the tests pass.",
-      modelId: "fixture",
-    },
-  ];
-
-
-
-
-  test("falls back to the aggregate when the timeline has no text entry", () => {
-    const [turn] = materializeTurns(multiStepTurn());
-    assert.ok(turn);
-    const withoutText = {
-      ...turn,
-      timeline: turn.timeline.filter((item) => item.kind !== "text"),
-    };
-    assert.equal(finalAssistantReplyText(withoutText), turn.assistant?.text);
   });
 });

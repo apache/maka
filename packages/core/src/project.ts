@@ -13,3 +13,9 @@ export interface ProjectRecord {
   available: boolean;
   preferredPath?: string;
 }
+
+export function findProjectByIdentity<
+  T extends { readonly id: string; readonly aliases?: readonly string[] },
+>(projects: readonly T[], identity: string): T | undefined {
+  return projects.find((project) => project.id === identity || project.aliases?.includes(identity));
+}

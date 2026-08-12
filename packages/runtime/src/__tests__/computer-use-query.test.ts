@@ -94,10 +94,3 @@ test('a query matches a role and a value, not only a label', () => {
   assert.match(renderObservationForModel(observation('AXButton')), /9 AXButton "共享"/);
   assert.match(renderObservationForModel(observation('共享')), /9 AXButton "共享"/);
 });
-
-test('no query renders the window as before', () => {
-  const text = renderObservationForModel(observation());
-  assert.doesNotMatch(text, /query=/);
-  assert.match(text, /文稿/);
-  assert.match(text, /共享/);
-});

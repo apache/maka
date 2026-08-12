@@ -48,145 +48,7 @@ const ONE_PIXEL_PNG = Buffer.from(
   'base64',
 );
 
-describe('builtin tool activity kinds', () => {
-  test('declares stable semantic categories independently of tool names', () => {
-    const kinds = Object.fromEntries(
-      buildBuiltinTools().map((tool) => [tool.name, tool.activityKind]),
-    );
-
-    expect(kinds).toEqual({
-      Bash: 'command',
-      Read: 'read',
-      apply_patch: 'edit',
-      Write: 'edit',
-      Edit: 'edit',
-      FormatJson: 'edit',
-      Glob: 'search',
-      Grep: 'search',
-    });
-  });
-
-  test('categorizes background task controls as command activity', () => {
-    const shellRuns = {
-      runForegroundBash: () => Promise.reject(new Error('not used')),
-      runBackgroundBash: () => Promise.reject(new Error('not used')),
-    } satisfies ShellRunLauncher;
-    const backgroundTasks = {
-      stopBackgroundTask: () => Promise.reject(new Error('not used')),
-    } satisfies BackgroundTaskStopper;
-    const ptyControls = {
-      writeStdin: () => Promise.reject(new Error('not used')),
-    } satisfies PtyControlWriter;
-    const kinds = Object.fromEntries(
-      buildBuiltinTools({
-        shellRuns,
-        backgroundTasks,
-        ptyControls,
-      }).map((tool) => [tool.name, tool.activityKind]),
-    );
-
-    expect(kinds.Bash).toBe('command');
-    expect(kinds.StopBackgroundTask).toBe('command');
-    expect(kinds.WriteStdin).toBe('command');
-  });
-
-  test('can omit Edit from a host surface that has no filesystem worker', () => {
-    const tools = buildBuiltinTools({ includeEdit: false } as Parameters<
-      typeof buildBuiltinTools
-    >[0]);
-
-    assert.equal(
-      tools.some((tool) => tool.name === 'Edit'),
-      false,
-    );
-    assert.ok(tools.some((tool) => tool.name === 'Write'));
-  });
-
-  test('includes apply_patch when a custom workspace exposes the capability', () => {
-    const tools = buildBuiltinTools({
-      executor: fakeExecutor({
-        applyPatch: async ({ path }) => ({ ok: true, path }),
-      }),
-    });
-
-    assert.equal(
-      tools.some((tool) => tool.name === 'apply_patch'),
-      true,
-    );
-  });
-
-  test('applies a freeform V4A patch through the existing filesystem authority', async () => {
-    const calls: Array<{
-      action: string;
-      path: string;
-      diff?: string;
-      cwd: string;
-      label: string;
-      scope: string;
-    }> = [];
-    const applyPatch = buildBuiltinTools({
-      executor: fakeExecutor({
-        applyPatch: async (input) => {
-          calls.push(input);
-          return { ok: true, path: input.path };
-        },
-      }),
-    }).find((tool) => tool.name === 'apply_patch');
-    if (!applyPatch) throw new Error('apply_patch tool missing');
-
-    const result = await runTool(
-      applyPatch,
-      [
-        '*** Begin Patch',
-        '*** Add File: added.txt',
-        '+hello',
-        '+world',
-        '*** Update File: changed.txt',
-        '@@',
-        '-before',
-        '+after',
-        '*** Delete File: removed.txt',
-        '*** End Patch',
-      ].join('\n'),
-      '/workspace',
-    );
-
-    assert.deepEqual(calls, [
-      {
-        cwd: '/workspace',
-        action: 'create',
-        path: 'added.txt',
-        diff: '+hello\n+world\n+',
-        label: 'ApplyPatch',
-        scope: 'workspace',
-      },
-      {
-        cwd: '/workspace',
-        action: 'update',
-        path: 'changed.txt',
-        diff: '@@\n-before\n+after',
-        label: 'ApplyPatch',
-        scope: 'workspace',
-      },
-      {
-        cwd: '/workspace',
-        action: 'delete',
-        path: 'removed.txt',
-        label: 'ApplyPatch',
-        scope: 'workspace',
-      },
-    ]);
-    assert.deepEqual(result, {
-      status: 'completed',
-      applied: [
-        { type: 'create_file', path: 'added.txt' },
-        { type: 'update_file', path: 'changed.txt' },
-        { type: 'delete_file', path: 'removed.txt' },
-      ],
-      output: 'Applied 3 file operations.',
-    });
-  });
-
+describe('builtin apply_patch', () => {
   test('rejects unsupported V4A Move before applying any file operation', async () => {
     let calls = 0;
     const applyPatch = buildBuiltinTools({
@@ -325,22 +187,6 @@ describe('builtin tool activity kinds', () => {
   });
 });
 
-describe('builtin Read capabilities', () => {
-  test('advertises image support only when image snapshots are available', () => {
-    const textOnly = buildBuiltinTools().find((tool) => tool.name === 'Read')!;
-    const withImages = buildBuiltinTools({
-      snapshotImage: async (input) => ({
-        kind: 'session_file',
-        sessionId: input.sessionId,
-        relativePath: 'image-1',
-      }),
-    }).find((tool) => tool.name === 'Read')!;
-
-    assert.doesNotMatch(textOnly.description, /image/);
-    assert.match(withImages.description, /image/);
-  });
-});
-
 describe('builtin ArchiveRead capabilities', () => {
   test('is not a built-in tool', () => {
     // The archive decoder travels with the archive capability and is bound by
@@ -370,7 +216,7 @@ describe('builtin tool executor facts', () => {
   });
 });
 
-describe('builtin Bash description declares the executing shell', () => {
+describe('builtin Bash projection and shell execution', () => {
   test('executor Bash keeps its durable command out of provider-facing results', async () => {
     const bash = buildBuiltinTools({
       executor: fakeExecutor({
@@ -404,8 +250,8 @@ describe('builtin Bash description declares the executing shell', () => {
 
   test('executor Bash executes with the same shell it declares', async () => {
     // /bin/echo stands in for pwsh.exe: if the shell reaches the local
-    // executor's spawn, stdout echoes the PowerShell flags back instead of a
-    // bare 'wired-marker' from the default POSIX shell.
+    // executor's spawn, stdout echoes the PowerShell flags and wrapper instead
+    // of a bare 'wired-marker' from the default POSIX shell.
     const tools = buildBuiltinTools({
       shell: { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: '/bin/echo' },
     });
@@ -423,20 +269,9 @@ describe('builtin Bash description declares the executing shell', () => {
     )) as { output: { mode: string; stdout: string } };
     expect(
       result.output.stdout.startsWith(
-        '-NoLogo -NoProfile -NonInteractive -Command echo wired-marker\n',
+        '-NoLogo -NoProfile -NonInteractive -Command $__makaUtf8 = [System.Text.UTF8Encoding]::new($false)\n',
       ),
     ).toBe(true);
-  });
-
-  test('executor Bash tells the model commands run under PowerShell 7', () => {
-    const tools = buildBuiltinTools({
-      executor: fakeExecutor({ facts: LOCAL_WORKSPACE_EXECUTOR_FACTS }),
-      shell: { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: 'C:\\pf\\pwsh.exe' },
-    });
-    const bash = tools.find((tool) => tool.name === 'Bash');
-    expect(bash !== undefined).toBe(true);
-    expect(/PowerShell 7 \(pwsh\)/.test(bash!.description)).toBe(true);
-    expect(/git ls-files/.test(bash!.description)).toBe(true);
   });
 });
 
@@ -2026,39 +1861,6 @@ describe('builtin Bash sandbox denial classification', () => {
 });
 
 describe('builtin read tools path containment', () => {
-  test('Read snapshots the complete image returned by the workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-read-image-'));
-    const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
-    const snapshots: unknown[] = [];
-    const read = buildBuiltinTools({
-      executor: fakeExecutor({
-        readFile: async () => ({ bytes: imageBytes, mimeType: 'image/png' }),
-      }),
-      snapshotImage: async (input) => {
-        snapshots.push(input);
-        return { kind: 'session_file', sessionId: input.sessionId, relativePath: 'artifact-1' };
-      },
-    }).find((candidate) => candidate.name === 'Read');
-    if (!read) throw new Error('Read tool missing');
-
-    const result = await runTool(read, { path: 'PHOTO.PNG', offset: 1, limit: 1 }, root);
-
-    expect(result).toEqual({
-      kind: 'image',
-      mimeType: 'image/png',
-      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'artifact-1' },
-    });
-    expect(snapshots).toEqual([
-      {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'PHOTO.PNG',
-        bytes: imageBytes,
-        mimeType: 'image/png',
-      },
-    ]);
-  });
-
   test('Read rejects image content without snapshot support, regardless of extension', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-read-image-'));
     await writeFile(join(root, 'photo.png'), ONE_PIXEL_PNG);

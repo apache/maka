@@ -16,17 +16,23 @@ export async function resolveDesktopSessionWorkspace(
   input: DesktopSessionWorkspaceInput,
   selection: DesktopSessionWorkspaceSelection,
   catalog: Pick<ProjectCatalog, 'register'>,
+  options: { readonly allowHostPath?: boolean } = {},
 ): Promise<WorkspaceTarget> {
   if (input.cwd) {
-    if (input.projectId === null) return { kind: 'host_path', path: input.cwd };
+    if (input.projectId === null) {
+      if (options.allowHostPath === false) throw remoteProjectRequired();
+      return { kind: 'host_path', path: input.cwd };
+    }
     if (typeof input.projectId === 'string') {
       return { kind: 'project', projectId: input.projectId };
     }
+    if (options.allowHostPath === false) throw remoteProjectRequired();
     return { kind: 'project', projectId: (await catalog.register(input.cwd)).id };
   }
 
   if (input.projectId !== undefined) {
     if (input.projectId === null) {
+      if (options.allowHostPath === false) throw remoteProjectRequired();
       return { kind: 'host_path', path: (await selection.current()).path };
     }
     const selected = await selection.select(input.projectId);
@@ -41,7 +47,13 @@ export async function resolveDesktopSessionWorkspace(
   }
 
   const current = await selection.current();
-  return typeof current.projectId === 'string'
-    ? { kind: 'project', projectId: current.projectId }
-    : { kind: 'host_path', path: current.path };
+  if (typeof current.projectId === 'string') {
+    return { kind: 'project', projectId: current.projectId };
+  }
+  if (options.allowHostPath === false) throw remoteProjectRequired();
+  return { kind: 'host_path', path: current.path };
+}
+
+function remoteProjectRequired(): Error {
+  return new Error('Select a project from the remote Runtime Host first');
 }

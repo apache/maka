@@ -98,6 +98,68 @@ test('projects a fresh workspace as an empty usable Memory state', async () => {
   assert.deepEqual(queries, ['state']);
 });
 
+test('does not project or open remote Runtime Host file paths', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  registerRuntimeHostMemoryIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      queryRuntimePolicy: async () => ({
+        revision: 1,
+        policy: createDefaultRuntimePolicy(),
+      }),
+      queryMemory: async () => ({
+        kind: 'state',
+        revision: revision('a'),
+        memoryRevision: null,
+        pendingRevision: null,
+        agentReadEnabled: true,
+        status: 'missing',
+        entryCount: 0,
+        activeEntryCount: 0,
+        archivedEntryCount: 0,
+        proposalCount: 0,
+        backups: [
+          {
+            kind: 'save',
+            revision: revision('b'),
+            updatedAt: 1,
+            sizeBytes: 10,
+            entryCount: 0,
+            activeEntryCount: 0,
+            archivedEntryCount: 0,
+            safeMode: false,
+          },
+        ],
+      }),
+    } as never,
+    workspaceRoot: '/client/maka-data',
+    allowLocalPaths: false,
+    openPath: async () => {
+      throw new Error('must not open a Client path');
+    },
+  });
+
+  const projected = (await handlers.get('memory:getState')?.({})) as {
+    path: string;
+    backups: Array<{ path: string }>;
+  };
+  const opened = (await handlers.get('memory:openFile')?.({})) as {
+    ok: boolean;
+    message: string;
+  };
+
+  assert.equal(projected.path, '');
+  assert.deepEqual(projected.backups.map(({ path }) => path), ['']);
+  assert.deepEqual(opened, {
+    ok: false,
+    message: 'Memory files are owned by the remote Runtime Host',
+  });
+});
+
 function revision(value: string): `sha256:${string}` {
   return `sha256:${value.repeat(64)}`;
 }

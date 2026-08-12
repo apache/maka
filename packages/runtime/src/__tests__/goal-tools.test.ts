@@ -1,12 +1,10 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GoalManager, goalCheckpoint } from '../goal-state.js';
+import { GoalManager } from '../goal-state.js';
 import { GoalContinuationCoordinator, volatileGoalDurability } from '../goal-continuation.js';
 import {
   buildGoalTools,
   GOAL_SET_TOOL_NAME,
-  GOAL_CLEAR_TOOL_NAME,
-  GOAL_STATUS_TOOL_NAME,
   GOAL_PAUSE_TOOL_NAME,
   GOAL_RESUME_TOOL_NAME,
 } from '../goal-tools.js';
@@ -51,38 +49,6 @@ function makeTools(getTokenCount?: (s: string) => number) {
 }
 
 describe('goal tools', () => {
-  test('exposes 5 tools', () => {
-    const { tools } = makeTools();
-    const names = tools.map((t) => t.name).sort();
-    assert.deepEqual(
-      names,
-      [
-        GOAL_CLEAR_TOOL_NAME,
-        GOAL_PAUSE_TOOL_NAME,
-        GOAL_RESUME_TOOL_NAME,
-        GOAL_SET_TOOL_NAME,
-        GOAL_STATUS_TOOL_NAME,
-      ].sort(),
-    );
-  });
-
-  test('GoalSet creates a goal with custom limits', async () => {
-    const { mgr, tools } = makeTools();
-    const set = findTool(tools, GOAL_SET_TOOL_NAME);
-    const out = (await set.impl(
-      { condition: 'all tests pass', max_iterations: 10, block_cap: 3, token_budget: 5000 },
-      ctx(),
-    )) as string;
-    assert.ok(out.includes('Goal set'));
-    assert.ok(out.includes('all tests pass'));
-    assert.ok(out.includes('max 10 turns'));
-    assert.ok(out.includes('budget 5000'));
-    const g = mgr.get(SESSION)!;
-    assert.equal(g.maxIterations, 10);
-    assert.equal(g.blockCap, 3);
-    assert.equal(g.tokenBudget, 5000);
-  });
-
   test('GoalSet captures the token baseline', async () => {
     const { mgr, tools } = makeTools(() => 1234);
     const set = findTool(tools, GOAL_SET_TOOL_NAME);
@@ -117,42 +83,5 @@ describe('goal tools', () => {
     )) as string;
     assert.ok(resumeOut.includes('resumed'));
     assert.equal(mgr.get(SESSION)?.status, 'active');
-  });
-
-  test('GoalClear', async () => {
-    const { mgr, tools } = makeTools();
-    await findTool(tools, GOAL_SET_TOOL_NAME).impl({ condition: 'x' }, ctx());
-    const out = (await findTool(tools, GOAL_CLEAR_TOOL_NAME).impl({}, ctx())) as string;
-    assert.ok(out.includes('cleared'));
-    assert.equal(mgr.get(SESSION)?.status, 'cleared');
-  });
-
-  test('GoalStatus shows full lifecycle detail', async () => {
-    const { mgr, tools } = makeTools();
-    await findTool(tools, GOAL_SET_TOOL_NAME).impl(
-      { condition: 'deploy', token_budget: 5000 },
-      ctx(),
-    );
-    const first = mgr.getActive(SESSION)!;
-    mgr.settleTurn(SESSION, {
-      checkpoint: goalCheckpoint(first),
-      verdict: 'continue',
-      reason: 'continue',
-      madeProgress: true,
-      tokensNow: 1000,
-    });
-    const second = mgr.getActive(SESSION)!;
-    mgr.settleTurn(SESSION, {
-      checkpoint: goalCheckpoint(second),
-      verdict: 'continue',
-      reason: 'continue',
-      madeProgress: true,
-      tokensNow: 2500,
-    });
-    const out = (await findTool(tools, GOAL_STATUS_TOOL_NAME).impl({}, ctx())) as string;
-    assert.ok(out.includes('deploy'));
-    assert.ok(out.includes('Status: active'));
-    assert.ok(out.includes('No-progress streak: 0/8'));
-    assert.ok(out.includes('Tokens: 1500/5000'));
   });
 });

@@ -7,6 +7,7 @@ import {
   activeToolResultLineageIdentity,
   rewriteActiveToolResultsInMessages,
 } from '../active-tool-result-prune.js';
+import { planActiveToolResultSupersession } from '../active-tool-result-working-set.js';
 import { composeRequestProjection } from '../request-projection.js';
 import { ToolAvailabilityRuntime, LOAD_TOOLS_NAME } from '../tool-availability.js';
 import type { MakaTool } from '../tool-runtime.js';
@@ -384,6 +385,384 @@ describe('active current-turn tool-result pruning', () => {
       'step 1 advertises the loaded group tool',
     );
   });
+
+  test('archives an exact duplicate below the ordinary size threshold', async () => {
+    const body = 'DUPLICATE_OBSERVATION'.repeat(80);
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages: [
+        largeToolMessage('CustomQuery', 'tool-old', body),
+        largeToolMessage('CustomQuery', 'tool-new', body),
+      ],
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('CustomQuery', 'tool-old', { query: 'status' }, 0),
+        completedCall('CustomQuery', 'tool-new', { query: 'status' }, 1),
+      ],
+      eligibleToolCallIds: new Set(['tool-old']),
+      archiveToolResult: () => ({ artifactId: 'artifact-tool-old' }),
+    });
+
+    assert.equal(rewritten.rewritten, 1);
+    assert.equal(rewritten.diagnosticPatch.activeSupersededToolResults, 1);
+    assert.equal(rewritten.diagnosticPatch.activeDuplicateToolResults, 1);
+    const prompt = JSON.stringify(rewritten.messages);
+    assert.match(prompt, /exact_duplicate/);
+    assert.match(prompt, /tool-new/);
+    assert.equal(prompt.split(body).length - 1, 1, 'only the newest full body remains');
+
+    const secondPass = await rewriteActiveToolResultsInMessages({
+      messages: rewritten.messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 3,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('CustomQuery', 'tool-old', { query: 'status' }, 0),
+        completedCall('CustomQuery', 'tool-new', { query: 'status' }, 1),
+      ],
+      eligibleToolCallIds: new Set(['tool-old']),
+      archiveToolResult: () => {
+        throw new Error('supersession placeholder must be idempotent');
+      },
+    });
+    assert.equal(secondPass.rewritten, 0);
+    assert.deepEqual(secondPass.messages, rewritten.messages);
+  });
+
+  test('a newer Read covering the old range supersedes different old content', async () => {
+    const oldBody = 'OLD_FILE_CONTENT'.repeat(100);
+    const newBody = 'NEW_FILE_CONTENT'.repeat(100);
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages: [
+        largeToolMessage('Read', 'read-old', oldBody),
+        largeToolMessage('Read', 'read-new', newBody),
+      ],
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Read', 'read-old', { path: './src/a.ts', offset: 20, limit: 10 }, 0),
+        completedCall('Read', 'read-new', { path: 'src/a.ts', offset: 0, limit: 100 }, 1),
+      ],
+      eligibleToolCallIds: new Set(['read-old']),
+      archiveToolResult: () => ({ artifactId: 'artifact-read-old' }),
+    });
+
+    assert.equal(rewritten.rewritten, 1);
+    assert.match(JSON.stringify(rewritten.messages), /newer_read_covers_range/);
+    assert.doesNotMatch(JSON.stringify(rewritten.messages), /OLD_FILE_CONTENT/);
+    assert.match(JSON.stringify(rewritten.messages), /NEW_FILE_CONTENT/);
+  });
+
+  test('keeps platform-dependent filesystem path spellings as distinct subjects', () => {
+    const cases = [
+      {
+        toolName: 'Read',
+        first: { path: ' target.ts' },
+        second: { path: 'target.ts' },
+      },
+      {
+        toolName: 'Read',
+        first: { path: 'dir\\target.ts' },
+        second: { path: 'dir/target.ts' },
+      },
+      {
+        toolName: 'Glob',
+        first: { pattern: '**/*.ts', cwd: '//server/share' },
+        second: { pattern: '**/*.ts', cwd: '/server/share' },
+      },
+      {
+        toolName: 'Grep',
+        first: { pattern: 'TODO', path: '\\\\server\\share' },
+        second: { pattern: 'TODO', path: '//server/share' },
+      },
+    ] as const;
+
+    for (const [index, testCase] of cases.entries()) {
+      const decisions = planActiveToolResultSupersession([
+        {
+          toolCallId: `old-${index}`,
+          toolName: testCase.toolName,
+          input: testCase.first,
+          stepNumber: 0,
+          bodySha256: `old-body-${index}`,
+          isError: false,
+          eligible: true,
+        },
+        {
+          toolCallId: `new-${index}`,
+          toolName: testCase.toolName,
+          input: testCase.second,
+          stepNumber: 1,
+          bodySha256: `new-body-${index}`,
+          isError: false,
+          eligible: true,
+        },
+      ]);
+
+      assert.equal(decisions.size, 0, `${testCase.toolName} case ${index} must fail open`);
+    }
+  });
+
+  test('does not merge parallel or non-covering Read observations', async () => {
+    const messages = [
+      largeToolMessage('Read', 'read-left', 'LEFT'.repeat(300)),
+      largeToolMessage('Read', 'read-right', 'RIGHT'.repeat(300)),
+      largeToolMessage('Read', 'read-parallel', 'PARALLEL'.repeat(300)),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Read', 'read-left', { path: 'a.ts', offset: 0, limit: 10 }, 0),
+        completedCall('Read', 'read-right', { path: 'a.ts', offset: 20, limit: 10 }, 1),
+        completedCall('Read', 'read-parallel', { path: 'a.ts', offset: 0, limit: 100 }, 0),
+      ],
+      eligibleToolCallIds: new Set(['read-left', 'read-parallel']),
+      archiveToolResult: () => ({ artifactId: 'unused' }),
+    });
+
+    assert.equal(rewritten.rewritten, 0);
+    assert.deepEqual(rewritten.messages, messages);
+  });
+
+  test('supersedes matching search snapshots and resolved failures', async () => {
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages: [
+        errorToolMessage('Grep', 'grep-old', 'FAILED_SEARCH'.repeat(100)),
+        largeToolMessage('Grep', 'grep-new', 'MATCHES'.repeat(200)),
+      ],
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Grep', 'grep-old', { pattern: 'TODO', path: './src' }, 0),
+        completedCall('Grep', 'grep-new', { path: 'src', pattern: 'TODO' }, 1),
+      ],
+      eligibleToolCallIds: new Set(['grep-old']),
+      archiveToolResult: () => ({ artifactId: 'artifact-grep-old' }),
+    });
+
+    assert.equal(rewritten.rewritten, 1);
+    const prompt = JSON.stringify(rewritten.messages);
+    assert.match(prompt, /failure_resolved/);
+    assert.match(prompt, /failureBodySha256/);
+    assert.match(prompt, /grep-new/);
+  });
+
+  test('a newer failed snapshot does not replace the last successful evidence', async () => {
+    const messages = [
+      largeToolMessage('Glob', 'glob-old', 'FILES'.repeat(300)),
+      errorToolMessage('Glob', 'glob-new', 'SEARCH_FAILED'.repeat(100)),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Glob', 'glob-old', { pattern: '**/*.ts' }, 0),
+        completedCall('Glob', 'glob-new', { pattern: '**/*.ts' }, 1),
+      ],
+      eligibleToolCallIds: new Set(['glob-old']),
+      archiveToolResult: () => ({ artifactId: 'unused' }),
+    });
+
+    assert.equal(rewritten.rewritten, 0);
+    assert.deepEqual(rewritten.messages, messages);
+  });
+
+  test('a same-value failure is not an exact duplicate of the last success', async () => {
+    const body = 'SAME_OBSERVATION'.repeat(100);
+    const messages = [
+      largeToolMessage('CustomQuery', 'query-success', body),
+      errorToolMessage('CustomQuery', 'query-failure', body),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('CustomQuery', 'query-success', { query: 'status' }, 0),
+        completedCall('CustomQuery', 'query-failure', { query: 'status' }, 1),
+      ],
+      eligibleToolCallIds: new Set(['query-success']),
+      archiveToolResult: () => ({ artifactId: 'unused' }),
+    });
+
+    assert.equal(rewritten.rewritten, 0);
+    assert.deepEqual(rewritten.messages, messages);
+  });
+
+  test('only allowlisted Bash snapshots participate in semantic supersession', async () => {
+    const messages = [
+      largeToolMessage('Bash', 'status-old', 'OLD_STATUS'.repeat(200)),
+      largeToolMessage('Bash', 'status-new', 'NEW_STATUS'.repeat(200)),
+      largeToolMessage('Bash', 'write-old', 'OLD_WRITE'.repeat(200)),
+      largeToolMessage('Bash', 'write-new', 'NEW_WRITE'.repeat(200)),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 4,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Bash', 'status-old', { command: 'git status --short' }, 0),
+        completedCall('Bash', 'status-new', { command: 'git status --short' }, 1),
+        completedCall('Bash', 'write-old', { command: 'printf data > out.txt' }, 2),
+        completedCall('Bash', 'write-new', { command: 'printf data > out.txt' }, 3),
+      ],
+      eligibleToolCallIds: new Set(['status-old', 'write-old']),
+      archiveToolResult: ({ toolCallId }) => ({ artifactId: `artifact-${toolCallId}` }),
+    });
+
+    assert.equal(rewritten.rewritten, 1);
+    const prompt = JSON.stringify(rewritten.messages);
+    assert.match(prompt, /newer_snapshot/);
+    assert.doesNotMatch(prompt, /OLD_STATUS/);
+    assert.match(prompt, /OLD_WRITE/);
+  });
+
+  test('test and build runs keep distinct warnings and failures visible', async () => {
+    const messages = [
+      largeToolMessage('Bash', 'build-warning', 'BUILD_DEPRECATION_WARNING'.repeat(100)),
+      largeToolMessage('Bash', 'build-clean', 'BUILD_FROM_INCREMENTAL_CACHE'.repeat(100)),
+      errorToolMessage('Bash', 'test-failure', 'FLAKY_TEST_FAILURE'.repeat(100)),
+      largeToolMessage('Bash', 'test-success', 'TESTS_PASSED'.repeat(100)),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 4,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Bash', 'build-warning', { command: 'npm run build' }, 0),
+        completedCall('Bash', 'build-clean', { command: 'npm run build' }, 1),
+        completedCall('Bash', 'test-failure', { command: 'cargo test' }, 2),
+        completedCall('Bash', 'test-success', { command: 'cargo test' }, 3),
+      ],
+      eligibleToolCallIds: new Set(['build-warning', 'test-failure']),
+      archiveToolResult: () => ({ artifactId: 'unused' }),
+    });
+
+    assert.equal(rewritten.rewritten, 0);
+    assert.deepEqual(rewritten.messages, messages);
+  });
+
+  test('foreground Bash output is not superseded by background or PTY handles', async () => {
+    const messages = [
+      largeToolMessage('Bash', 'test-foreground', 'FOREGROUND_TEST_OUTPUT'),
+      largeToolMessage('Bash', 'test-background', 'BACKGROUND_JOB_REF'),
+      largeToolMessage('Bash', 'test-pty', 'PTY_JOB_REF'),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 3,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Bash', 'test-foreground', { command: 'npm test' }, 0),
+        completedCall(
+          'Bash',
+          'test-background',
+          { command: 'npm test', run_in_background: true },
+          1,
+        ),
+        completedCall(
+          'Bash',
+          'test-pty',
+          { command: 'npm test', run_in_background: true, pty: true },
+          2,
+        ),
+      ],
+      eligibleToolCallIds: new Set(['test-foreground', 'test-background']),
+      archiveToolResult: () => ({ artifactId: 'unused' }),
+    });
+
+    assert.equal(rewritten.rewritten, 0);
+    assert.deepEqual(rewritten.messages, messages);
+  });
+
+  test('distinct background Bash job refs remain independently visible', async () => {
+    const messages = [
+      largeToolMessage('Bash', 'job-a', 'BACKGROUND_JOB_REF_A'),
+      largeToolMessage('Bash', 'job-b', 'BACKGROUND_JOB_REF_B'),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Bash', 'job-a', { command: 'npm test', run_in_background: true }, 0),
+        completedCall('Bash', 'job-b', { command: 'npm test', run_in_background: true }, 1),
+      ],
+      eligibleToolCallIds: new Set(['job-a']),
+      archiveToolResult: () => ({ artifactId: 'unused' }),
+    });
+
+    assert.equal(rewritten.rewritten, 0);
+    assert.deepEqual(rewritten.messages, messages);
+  });
 });
 
 function largeToolMessage(toolName: string, toolCallId: string, body: string): ModelMessage {
@@ -412,6 +791,24 @@ function largeTextToolMessage(toolName: string, toolCallId: string, body: string
       },
     ],
   };
+}
+
+function errorToolMessage(toolName: string, toolCallId: string, body: string): ModelMessage {
+  return {
+    role: 'tool',
+    content: [
+      {
+        type: 'tool-result',
+        toolCallId,
+        toolName,
+        output: { type: 'error-json', value: { body } },
+      },
+    ],
+  };
+}
+
+function completedCall(toolName: string, toolCallId: string, input: unknown, stepNumber: number) {
+  return { toolName, toolCallId, input, stepNumber };
 }
 
 function invalidActivePlaceholder(): Record<string, unknown> {

@@ -13,7 +13,6 @@ import {
   type MakaActivationDeps,
   type MakaActivationRuntime,
 } from '../activation-command.js';
-import { parseMakaCliArgs } from '../cli.js';
 import type { MakaRunOutcome } from '../run-command-core.js';
 
 const ROOTS = {
@@ -169,13 +168,6 @@ function fakeDeps(
 }
 
 describe('maka activate argument and request contracts', () => {
-  test('routes activate through the CLI parser', () => {
-    assert.deepEqual(parseMakaCliArgs(['activate'], '0.1.0'), {
-      kind: 'activate',
-      args: [],
-    });
-  });
-
   test('requires explicit non-overlapping roots and accepts JSON input options', () => {
     assert.deepEqual(
       parseMakaActivateArgs([

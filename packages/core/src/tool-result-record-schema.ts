@@ -1,7 +1,6 @@
 import {
   decodeCanonicalShellToolResultContent,
   isSandboxDenialSignal,
-  normalizeShellToolResultContent,
 } from './shell-run-result.js';
 import { isPermissionMode } from './permission.js';
 import { isStorageRef, type ToolResultContent } from './events.js';
@@ -190,17 +189,6 @@ const RIVE_ERROR_SHAPE = defineObjectShape<RiveError>()(
   ['code', 'suggestedAction'],
 );
 
-export function normalizeToolResultContentForRead(value: unknown): ToolResultContent {
-  const shell = normalizeShellToolResultContent(value);
-  if (shell.state === 'invalid') throw new Error('Invalid shell tool result content');
-  const normalized = shell.state === 'valid' ? shell.content : value;
-  return decodeCanonicalToolResultContent(normalizeLegacySubagentToolResultContent(normalized));
-}
-
-export function decodePersistedToolResultContentForRecovery(value: unknown): ToolResultContent {
-  return decodeCanonicalToolResultContent(normalizeLegacySubagentToolResultContent(value));
-}
-
 export function decodeCanonicalToolResultContent(value: unknown): ToolResultContent {
   const shell = decodeCanonicalShellToolResultContent(value);
   if (shell.state === 'invalid') throw new Error('Invalid shell tool result content');
@@ -209,18 +197,6 @@ export function decodeCanonicalToolResultContent(value: unknown): ToolResultCont
     throw new Error('Invalid tool result content');
   }
   return value;
-}
-
-function normalizeLegacySubagentToolResultContent(value: unknown): unknown {
-  if (
-    !isRecord(value) ||
-    value.kind !== 'subagent' ||
-    value.status !== 'waiting_permission' ||
-    !hasValidSubagentResultFields(value)
-  ) {
-    return value;
-  }
-  return { ...value, status: 'waiting_for_user' };
 }
 
 function isNonShellToolResultContent(value: unknown): value is ToolResultContent {

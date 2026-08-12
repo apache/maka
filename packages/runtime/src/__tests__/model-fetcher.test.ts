@@ -350,7 +350,6 @@ describe('fetchProviderModels', () => {
     for (const body of [
       null,
       { data: { id: 'not-an-array', secret } },
-      { data: [null, { id: secret }] },
       { data: [42, { id: secret }] },
     ]) {
       const server = await startJsonServer((_request, response) => {

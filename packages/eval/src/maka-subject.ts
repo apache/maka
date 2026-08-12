@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { HostedExecutionStartInput } from '@maka/runtime-host/protocol';
 import { decodeHostedExecutionProjection } from '@maka/runtime-host/protocol';
 import type { JsonObject } from './experiment.js';
-import type { SubjectAdapter } from './runner.js';
+import type { NormalizedUsage } from './result.js';
+import type { SubjectAdapter, SubjectExecutionContext } from './runner.js';
 
 export function createMakaSubjectAdapter(): SubjectAdapter {
   return {
@@ -32,79 +33,170 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
         JSON.stringify({
           rootPath: `${config.runtimeHostsPath}/${executionId}`,
           baseUrl: config.baseUrl,
+          webTools: config.webTools,
           execution: input,
         }),
       ).toString('base64url');
       const startedAt = Date.now();
+      let process: Awaited<ReturnType<typeof context.execute>>;
       try {
-        const process = await context.execute({
+        process = await context.execute({
           command: config.nodePath,
           args: [config.shimPath, payload],
-          credentialNames: cell.subject.credentials,
+          credentialEnvironment: Object.fromEntries(
+            cell.subject.credentials.map((name) => [name, name]),
+          ),
         });
-        const projection = decodeHostedExecutionProjection(JSON.parse(process.stdout));
-        if (projection.executionId !== executionId) {
-          throw new Error('Runtime Host returned a different execution identity');
-        }
-        if (projection.kind === 'indeterminate') {
-          return {
-            usage: null,
-            costUsd: null,
-            durationMs: Date.now() - startedAt,
-            status: 'indeterminate' as const,
-            failureReason: projection.failureReason,
-            artifacts: [],
-          };
-        }
-        if (process.termination === 'cancelled') {
-          return {
-            usage: projection.usage,
-            costUsd: projection.costUsd,
-            durationMs: Date.now() - startedAt,
-            status: 'indeterminate' as const,
-            failureReason: 'Maka subject cancelled',
-            artifacts: [],
-          };
-        }
-        if (process.termination === 'framework_timeout') {
-          return {
-            usage: projection.usage,
-            costUsd: projection.costUsd,
-            durationMs: Date.now() - startedAt,
-            status: 'failed' as const,
-            failureReason: 'Maka subject exceeded the framework timeout',
-            artifacts: [],
-          };
-        }
-        if (process.exitCode !== 0) {
-          return {
-            usage: projection.usage,
-            costUsd: projection.costUsd,
-            durationMs: Date.now() - startedAt,
-            status: 'indeterminate' as const,
-            failureReason: 'Maka execution shim did not settle cleanly',
-            artifacts: [],
-          };
-        }
+      } catch {
+        return subjectFailure('relay-execute', startedAt, context.signal);
+      }
+      if (process.termination !== 'exited') {
+        const projection = tryDecodeMatchingProjection(process.stdout, executionId);
+        const settled = projection?.kind === 'settled' ? projection : undefined;
         return {
-          usage: projection.usage,
-          costUsd: projection.costUsd,
+          usage: settled?.usage ?? null,
+          costUsd: settled
+            ? (settled.costUsd ?? estimateDeepSeekCost(settled.usage, config.model))
+            : null,
           durationMs: Date.now() - startedAt,
-          status: projection.status === 'completed' ? ('completed' as const) : ('failed' as const),
-          failureReason: projection.failureReason ?? null,
+          status:
+            process.termination === 'framework_timeout'
+              ? ('failed' as const)
+              : ('indeterminate' as const),
+          failureReason:
+            process.termination === 'framework_timeout'
+              ? 'Maka subject exceeded the framework timeout'
+              : 'Maka subject cancelled',
           artifacts: [],
         };
+      }
+      if (process.stdout.length === 0) {
+        return subjectFailure('empty-output', startedAt, context.signal, process);
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(process.stdout) as unknown;
       } catch {
+        return subjectFailure('json-parse', startedAt, context.signal, process);
+      }
+      let projection: ReturnType<typeof decodeHostedExecutionProjection>;
+      try {
+        projection = decodeHostedExecutionProjection(parsed);
+      } catch {
+        return subjectFailure('result-decode', startedAt, context.signal, process);
+      }
+      if (projection.executionId !== executionId) {
+        return subjectFailure('identity-check', startedAt, context.signal, process);
+      }
+      if (projection.kind === 'indeterminate') {
         return {
           usage: null,
           costUsd: null,
           durationMs: Date.now() - startedAt,
-          status: context.signal?.aborted ? ('indeterminate' as const) : ('infra_failed' as const),
-          failureReason: context.signal?.aborted ? 'Maka subject cancelled' : 'Maka subject failed',
+          status: 'indeterminate' as const,
+          failureReason: safeFailureReason(
+            projection.failureReason,
+            'Maka execution did not settle',
+          ),
           artifacts: [],
         };
       }
+      const result = (
+        status: 'completed' | 'failed' | 'indeterminate',
+        failureReason: string | null,
+      ) => ({
+        usage: projection.usage,
+        costUsd: projection.costUsd ?? estimateDeepSeekCost(projection.usage, config.model),
+        durationMs: Date.now() - startedAt,
+        status,
+        failureReason,
+        artifacts: [],
+      });
+      if (process.exitCode !== 0) {
+        return result('indeterminate', 'Maka execution shim did not settle cleanly');
+      }
+      if (projection.status === 'cancelled') {
+        return result('indeterminate', 'Maka subject cancelled');
+      }
+      return result(
+        projection.status,
+        projection.status === 'completed' || projection.failureReason == null
+          ? null
+          : safeFailureReason(projection.failureReason, 'Maka execution failed'),
+      );
     },
+  };
+}
+
+function tryDecodeMatchingProjection(
+  stdout: string,
+  executionId: string,
+): ReturnType<typeof decodeHostedExecutionProjection> | undefined {
+  if (stdout.length === 0) return undefined;
+  try {
+    const projection = decodeHostedExecutionProjection(JSON.parse(stdout) as unknown);
+    return projection.executionId === executionId ? projection : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function safeFailureReason(value: string, fallback: string): string {
+  if (SAFE_RUNTIME_FAILURE_REASONS.has(value)) return value;
+  if (
+    /^Runtime Host did not start: (?:composition_mismatch|existing_host|host_unresponsive|incompatible|startup_timeout|upgrade_required)$/u.test(
+      value,
+    ) ||
+    /^Runtime Host usage did not settle: (?:missing_attempt_usage|partial_attempt_usage|pending_usage_repair|unreadable_usage_record)$/u.test(
+      value,
+    )
+  )
+    return value;
+  return fallback;
+}
+
+const SAFE_RUNTIME_FAILURE_REASONS = new Set([
+  'Hosted execution is not active',
+  'Hosted execution was cancelled',
+  'Hosted execution was cancelled before admission',
+  'Runtime Host connection failed before execution settlement',
+  'Runtime Host could not settle execution',
+  'Runtime Host did not exit cleanly',
+]);
+
+type SubjectFailureStage =
+  | 'relay-execute'
+  | 'empty-output'
+  | 'json-parse'
+  | 'result-decode'
+  | 'identity-check';
+
+function subjectFailure(
+  stage: SubjectFailureStage,
+  startedAt: number,
+  signal?: AbortSignal,
+  process?: Awaited<ReturnType<SubjectExecutionContext['execute']>>,
+) {
+  const cancelled = signal?.aborted === true;
+  return {
+    usage: null,
+    costUsd: null,
+    durationMs: Date.now() - startedAt,
+    status: cancelled ? ('indeterminate' as const) : ('infra_failed' as const),
+    failureReason: cancelled ? 'Maka subject cancelled' : `Maka subject failed during ${stage}`,
+    artifacts: [
+      {
+        kind: 'subject-failure',
+        stage,
+        ...(process
+          ? {
+              termination: process.termination,
+              exitCode: process.exitCode,
+              stdoutBytes: Buffer.byteLength(process.stdout),
+            }
+          : {}),
+      },
+    ],
   };
 }
 
@@ -113,6 +205,7 @@ interface MakaConfig {
   readonly shimPath: string;
   readonly runtimeHostsPath: string;
   readonly baseUrl: string;
+  readonly webTools: 'enabled' | 'disabled';
   readonly connectionSlug: string;
   readonly model: string;
   readonly thinkingLevel: HostedExecutionStartInput['session']['thinkingLevel'];
@@ -134,9 +227,14 @@ function decodeConfig(value: JsonObject): MakaConfig {
     'collaborationMode',
     'orchestrationMode',
   ];
+  if (Object.hasOwn(value, 'webTools')) fields.push('webTools');
   const config = exact(value, fields);
   if (!URL.canParse(String(config.baseUrl))) throw new Error('Maka baseUrl is invalid');
-  return config as unknown as MakaConfig;
+  const webTools = config.webTools ?? 'enabled';
+  if (webTools !== 'enabled' && webTools !== 'disabled') {
+    throw new Error('Maka config.webTools is invalid');
+  }
+  return { ...config, webTools } as unknown as MakaConfig;
 }
 
 function exact(value: unknown, fields: readonly string[]): Record<string, unknown> {
@@ -157,4 +255,12 @@ function exact(value: unknown, fields: readonly string[]): Record<string, unknow
 function positive(value: unknown, where: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`${where} is invalid`);
   return value as number;
+}
+
+function estimateDeepSeekCost(usage: NormalizedUsage, model: string): number | null {
+  if (model !== 'deepseek-v4-flash') return null;
+  const uncached = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens);
+  return (
+    (uncached * 0.145 + usage.cacheReadTokens * 0.0029 + usage.outputTokens * 0.29) / 1_000_000
+  );
 }

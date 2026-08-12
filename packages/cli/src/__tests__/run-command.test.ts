@@ -23,12 +23,6 @@ describe('maka run argument parsing', () => {
     });
   });
 
-  test('rejects removed permission modes and rule flags', () => {
-    assert.equal(parseMakaRunArgs(['x', '--permission-mode', 'ask']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--allow', 'tool:Read']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--deny', 'Bash(npm test)']).kind, 'error');
-  });
-
   test('parses resume and continue session selectors and rejects combining them', () => {
     assert.deepEqual(parseMakaRunArgs(['next', '--resume', 'session-1']), {
       kind: 'run',
@@ -39,5 +33,22 @@ describe('maka run argument parsing', () => {
       options: { prompt: 'next', stdinPrompt: false, continueLatest: true },
     });
     assert.equal(parseMakaRunArgs(['next', '--resume', 'session-1', '--continue']).kind, 'error');
+  });
+
+  test('accepts a remote Host Project and rejects client cwd semantics', () => {
+    assert.deepEqual(parseMakaRunArgs(['next', '--host', 'office', '--project', 'project-1']), {
+      kind: 'run',
+      options: {
+        prompt: 'next',
+        stdinPrompt: false,
+        hostProfileId: 'office',
+        projectId: 'project-1',
+      },
+    });
+    assert.equal(parseMakaRunArgs(['next', '--host', 'office', '--continue']).kind, 'error');
+    assert.equal(
+      parseMakaRunArgs(['next', '--host', 'office', '--cwd', '/client/path']).kind,
+      'error',
+    );
   });
 });

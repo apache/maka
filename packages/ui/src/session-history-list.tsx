@@ -60,7 +60,7 @@ export interface ProjectRowActions {
   onRename(projectId: string, name: string): void | Promise<void>;
   onArchive(projectId: string): void | Promise<void>;
   onRestore(projectId: string): void | Promise<void>;
-  onRelink(projectId: string): void | Promise<void>;
+  onRelink?(projectId: string): void | Promise<void>;
 }
 
 export interface SessionHistoryGroup {
@@ -440,7 +440,11 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         onClick={(event) => {
           if (event.detail > 1 && props.actions) {
             props.onStartRename(
-              { kind: 'session', id: props.session.id, name: props.session.name },
+              {
+                kind: 'session',
+                id: props.session.id,
+                name: props.session.name,
+              },
               // The row's own button: a double-click starts the rename from
               // the row itself, not from the actions menu.
               event.currentTarget as HTMLElement,
@@ -450,17 +454,23 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           props.onSelectSession(props.session.id);
         }}
         endContent={
-          <SessionItemEndContent
+          <SessionItemMeta
             session={props.session}
             active={props.active}
             streaming={props.streaming}
             stale={props.stale}
             worktree={props.worktree}
-            actions={props.actions}
-            onStartRename={props.onStartRename}
+            reserveAction={props.actions !== undefined}
           />
         }
       />
+      {props.actions && (
+        <SessionItemActions
+          session={props.session}
+          actions={props.actions}
+          onStartRename={props.onStartRename}
+        />
+      )}
     </div>
   );
 });
@@ -524,13 +534,15 @@ function ProjectItemEndContent(props: {
                   onClick: () => runProjectAction('new', () => actions.onNew(project.id)),
                 },
               ]
-            : [
+            : actions.onRelink
+              ? [
                 {
                   label: copy.projectRelink,
                   icon: Plug,
-                  onClick: () => runProjectAction('relink', () => actions.onRelink(project.id)),
+                  onClick: () => runProjectAction('relink', () => actions.onRelink!(project.id)),
                 },
-              ]),
+              ]
+              : []),
           {
             label: copy.projectRename,
             icon: Pencil,
@@ -576,48 +588,17 @@ function ProjectItemEndContent(props: {
   );
 }
 
-const SessionItemEndContent = memo(function SessionItemEndContent(props: {
+const SessionItemMeta = memo(function SessionItemMeta(props: {
   session: SessionSummary;
   active: boolean;
   streaming: boolean;
   stale: boolean;
   worktree: boolean;
-  actions?: SessionRowActions;
-  onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
+  reserveAction: boolean;
 }) {
   const locale = useUiLocale();
-  const trailingRef = useRef<HTMLSpanElement>(null);
   const copy = getConversationCopy(locale).sessions;
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [pendingAction, setPendingAction] = useState<SessionRowActionId | null>(null);
-  const mountedRef = useMountedRef();
-  const pendingActionRef = useRef<SessionRowActionId | null>(null);
-  const pendingMenuIntentRef = useRef<(() => void) | null>(null);
-  const actions = props.actions;
   const statusDot = resolveSessionStatusDot(props.session, props.streaming, props.active, locale);
-
-  useEffect(
-    () => () => {
-      pendingActionRef.current = null;
-    },
-    [],
-  );
-
-  function runRowAction(actionId: SessionRowActionId, action: () => void | Promise<void>) {
-    if (pendingActionRef.current) return;
-    pendingActionRef.current = actionId;
-    setPendingAction(actionId);
-    void (async () => {
-      try {
-        await action();
-      } catch {
-        // AppShell owns visible session-action failure feedback.
-      } finally {
-        pendingActionRef.current = null;
-        if (mountedRef.current) setPendingAction(null);
-      }
-    })();
-  }
 
   // Signal (status/unread) and action (MoreMenu) are orthogonal — same as
   // project rows (badge + menu). No hover XOR state machine.
@@ -634,7 +615,7 @@ const SessionItemEndContent = memo(function SessionItemEndContent(props: {
   ) : null;
 
   return (
-    <EndContentHitTarget className="maka-session-row-end">
+    <span className="maka-session-row-end">
       {props.stale && (
         <Tooltip content={copy.staleTitle}>
           {/* `yellow`, not `warning`. Astryx keeps two archives: the semantic
@@ -664,78 +645,120 @@ const SessionItemEndContent = memo(function SessionItemEndContent(props: {
         />
       )}
       {signal}
-      {actions ? (
-        <span className="maka-session-row-trailing" ref={trailingRef}>
-          <MoreMenu
-            size="sm"
-            label={copy.actionsAriaLabel}
-            isDisabled={pendingAction !== null}
-            isMenuOpen={menuOpen}
-            onOpenChange={(open) => {
-              setMenuOpen(open);
-              if (open) return;
-              const intent = pendingMenuIntentRef.current;
-              pendingMenuIntentRef.current = null;
-              if (intent) {
-                window.requestAnimationFrame(() => {
-                  intent();
-                });
-              }
-            }}
-            items={[
-              {
-                label: props.session.isFlagged ? copy.unpin : copy.pin,
-                icon: props.session.isFlagged ? PinOff : Pin,
-                onClick: () =>
-                  runRowAction('flag', () =>
-                    actions.onToggleFlag(props.session.id, !props.session.isFlagged),
-                  ),
-              },
-              {
-                label: copy.rename,
-                icon: Pencil,
-                onClick: () => {
-                  // Read now, while the trigger is still the thing the user is
-                  // on: by the time the intent runs the menu has closed and
-                  // focus is mid-handover.
-                  const opener = trailingRef.current?.querySelector<HTMLElement>('button') ?? null;
-                  pendingMenuIntentRef.current = () =>
-                    props.onStartRename(
-                      { kind: 'session', id: props.session.id, name: props.session.name },
-                      opener,
-                    );
-                },
-              },
-              {
-                label: props.session.isArchived ? copy.unarchive : copy.archive,
-                icon: props.session.isArchived ? ArchiveRestore : Archive,
-                onClick: () =>
-                  runRowAction('archive', () =>
-                    props.session.isArchived
-                      ? actions.onUnarchive(props.session.id)
-                      : actions.onArchive(props.session.id),
-                  ),
-              },
-              { type: 'divider' },
-              {
-                label: copy.delete,
-                icon: Trash2,
-                onClick: () => {
-                  pendingMenuIntentRef.current = () =>
-                    runRowAction('delete', () => actions.onDelete(props.session.id));
-                },
-              },
-            ]}
-          />
-        </span>
-      ) : (
-        <span className="maka-session-row-trailing">
-          {signal ? null : <span className="maka-session-row-trailing-spacer" aria-hidden="true" />}
-        </span>
-      )}
-    </EndContentHitTarget>
+      <span className="maka-session-row-trailing" aria-hidden="true">
+        {!props.reserveAction && !signal && <span className="maka-session-row-trailing-spacer" />}
+      </span>
+    </span>
   );
 });
+
+function SessionItemActions(props: {
+  session: SessionSummary;
+  actions: SessionRowActions;
+  onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
+}) {
+  const trailingRef = useRef<HTMLSpanElement>(null);
+  const copy = getConversationCopy(useUiLocale()).sessions;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState<SessionRowActionId | null>(null);
+  const mountedRef = useMountedRef();
+  const pendingActionRef = useRef<SessionRowActionId | null>(null);
+  const pendingMenuIntentRef = useRef<(() => void) | null>(null);
+  const actions = props.actions;
+
+  useEffect(
+    () => () => {
+      pendingActionRef.current = null;
+    },
+    [],
+  );
+
+  function runRowAction(actionId: SessionRowActionId, action: () => void | Promise<void>) {
+    if (pendingActionRef.current) return;
+    pendingActionRef.current = actionId;
+    setPendingAction(actionId);
+    void (async () => {
+      try {
+        await action();
+      } catch {
+        // AppShell owns visible session-action failure feedback.
+      } finally {
+        pendingActionRef.current = null;
+        if (mountedRef.current) setPendingAction(null);
+      }
+    })();
+  }
+
+  return (
+    <span
+      className="maka-session-row-action"
+      ref={trailingRef}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      <MoreMenu
+        size="sm"
+        label={copy.actionsAriaLabel}
+        isDisabled={pendingAction !== null}
+        isMenuOpen={menuOpen}
+        onOpenChange={(open) => {
+          setMenuOpen(open);
+          if (open) return;
+          const intent = pendingMenuIntentRef.current;
+          pendingMenuIntentRef.current = null;
+          if (intent) window.requestAnimationFrame(intent);
+        }}
+        items={[
+          {
+            label: props.session.isFlagged ? copy.unpin : copy.pin,
+            icon: props.session.isFlagged ? PinOff : Pin,
+            onClick: () =>
+              runRowAction('flag', () =>
+                actions.onToggleFlag(props.session.id, !props.session.isFlagged),
+              ),
+          },
+          {
+            label: copy.rename,
+            icon: Pencil,
+            onClick: () => {
+              // Read now, while the trigger is still the thing the user is on:
+              // by the time the intent runs the menu has closed and focus is
+              // mid-handover.
+              const opener = trailingRef.current?.querySelector<HTMLElement>('button') ?? null;
+              pendingMenuIntentRef.current = () =>
+                props.onStartRename(
+                  {
+                    kind: 'session',
+                    id: props.session.id,
+                    name: props.session.name,
+                  },
+                  opener,
+                );
+            },
+          },
+          {
+            label: props.session.isArchived ? copy.unarchive : copy.archive,
+            icon: props.session.isArchived ? ArchiveRestore : Archive,
+            onClick: () =>
+              runRowAction('archive', () =>
+                props.session.isArchived
+                  ? actions.onUnarchive(props.session.id)
+                  : actions.onArchive(props.session.id),
+              ),
+          },
+          { type: 'divider' },
+          {
+            label: copy.delete,
+            icon: Trash2,
+            onClick: () => {
+              pendingMenuIntentRef.current = () =>
+                runRowAction('delete', () => actions.onDelete(props.session.id));
+            },
+          },
+        ]}
+      />
+    </span>
+  );
+}
 
 function resolveSessionStatusDot(
   session: SessionSummary,

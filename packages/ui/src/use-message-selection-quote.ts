@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import {
+  findEnclosingTurnId,
   resolveQuoteTarget,
   type QuoteScopeNode,
   type QuoteTarget,
@@ -14,6 +15,78 @@ import {
  * `selectionchange` events that would otherwise flash the layer mid-gesture.
  */
 const SELECTION_SETTLE_MS = 350;
+
+// Capturing an interactive descendant onto its Turn would retarget pointerup
+// away from the control and can suppress its click. Control labels are UI, not
+// transcript content, so they are not quote-selection gesture owners.
+const INTERACTIVE_QUOTE_TARGET = [
+  'a[href]',
+  'button',
+  'input',
+  'select',
+  'textarea',
+  'summary',
+  '[contenteditable]:not([contenteditable="false"])',
+  '[role="button"]',
+  '[role="link"]',
+  '[role="menuitem"]',
+  '[role="tab"]',
+].join(',');
+
+export type SelectionQuoteGestureDisposition = 'commit' | 'cancel';
+
+export interface SelectionQuoteGestureBoundary<Owner> {
+  beginPointerSelection(pointerId: number, owner: Owner): boolean;
+  selectionChanged(): void;
+  finishPointerSelection(pointerId: number, disposition: SelectionQuoteGestureDisposition): Owner | null;
+  discardActivePointerSelection(): Owner | null;
+}
+
+/**
+ * Turns pointer release into the commit boundary for drag selection without
+ * making unrelated pointer events another way to resurrect a dismissed quote.
+ */
+export function createSelectionQuoteGestureBoundary<Owner>(actions: {
+  hideAndCancel(): void;
+  scheduleSettle(): void;
+}): SelectionQuoteGestureBoundary<Owner> {
+  let active: { pointerId: number; owner: Owner; changed: boolean } | null = null;
+
+  function finish(
+    pointerId: number,
+    disposition: SelectionQuoteGestureDisposition,
+  ): Owner | null {
+    if (!active || pointerId !== active.pointerId) return null;
+    const completed = active;
+    active = null;
+    if (disposition === 'commit' && completed.changed) actions.scheduleSettle();
+    if (disposition === 'cancel') actions.hideAndCancel();
+    return completed.owner;
+  }
+
+  return {
+    beginPointerSelection(pointerId, owner) {
+      if (active) return false;
+      active = { pointerId, owner, changed: false };
+      actions.hideAndCancel();
+      return true;
+    },
+    selectionChanged() {
+      actions.hideAndCancel();
+      if (!active) actions.scheduleSettle();
+      else active.changed = true;
+    },
+    finishPointerSelection(pointerId, disposition) {
+      return finish(pointerId, disposition);
+    },
+    discardActivePointerSelection() {
+      if (!active) return null;
+      const discarded = active;
+      active = null;
+      return discarded.owner;
+    },
+  };
+}
 
 /**
  * A live text selection inside the chat transcript, captured as a quotable
@@ -60,10 +133,14 @@ function readSelection(root: HTMLElement): QuoteTarget | null {
  *
  * The selection is the single source of truth — the quote is derived from it
  * on every relevant event rather than snapshotted, so there is no stale state
- * to expire. `selectionchange` is the only trigger: it is the one event that
- * means the selection actually became something else. Watching key or pointer
- * events instead resurrects a dismissed layer on the next unrelated keystroke,
- * which is why Escape could not close this before.
+ * to expire. `selectionchange` remains the only event that says the selection
+ * became something else. Primary pointer events only gate that signal while a
+ * drag is active; they never capture a quote on their own, so an unrelated
+ * click cannot resurrect a dismissed layer. The pointer gate starts only
+ * inside a turn that can own a quote, and that turn captures the pointer so a
+ * release outside the Electron window still closes the gesture. Controls
+ * elsewhere in the scroll surface (including the quote actions themselves)
+ * are not selection gestures.
  *
  * Listeners live on `document` and resolve `scrollRef.current` at event time —
  * binding them to the element instead would capture whatever the ref held on
@@ -100,14 +177,85 @@ export function useMessageSelectionQuote(
       setQuote(target && anchor ? { ...target, anchor } : null);
     }
 
-    function onSelectionChange(): void {
+    function hideAndCancel(): void {
       // Hide first, re-show only once the selection settles: a layer anchored
       // to the previous selection is wrong the moment that selection changes.
       // This listener is outside React's event system, so concurrent rendering
       // may otherwise leave the stale layer painted for another frame.
       flushSync(() => setQuote(null));
       window.clearTimeout(settleTimer);
+    }
+
+    function scheduleSettle(): void {
+      window.clearTimeout(settleTimer);
       settleTimer = window.setTimeout(settle, SELECTION_SETTLE_MS);
+    }
+
+    const gesture = createSelectionQuoteGestureBoundary<Element>({ hideAndCancel, scheduleSettle });
+
+    function finishGesture(
+      pointerId: number,
+      disposition: SelectionQuoteGestureDisposition,
+    ): void {
+      const owner = gesture.finishPointerSelection(pointerId, disposition);
+      owner?.removeEventListener('lostpointercapture', onLostPointerCapture);
+    }
+
+    function onPointerDown(event: PointerEvent): void {
+      const root = scrollRef.current;
+      const targetNode = event.target instanceof Node ? event.target : null;
+      const targetElement =
+        targetNode instanceof Element ? targetNode : targetNode?.parentElement ?? null;
+      const turnOwner = targetElement?.closest('[data-turn-id]') ?? null;
+      const interactiveOwner = targetElement?.closest(INTERACTIVE_QUOTE_TARGET) ?? null;
+      if (
+        !root ||
+        !event.isPrimary ||
+        event.button !== 0 ||
+        !targetNode ||
+        !turnOwner ||
+        !root.contains(turnOwner) ||
+        (interactiveOwner !== null && turnOwner.contains(interactiveOwner)) ||
+        findEnclosingTurnId(
+          targetNode as unknown as QuoteScopeNode,
+          root as unknown as QuoteScopeNode,
+        ) === null
+      ) {
+        return;
+      }
+      if (!gesture.beginPointerSelection(event.pointerId, turnOwner)) return;
+      try {
+        // `lostpointercapture` belongs to the element that owns capture. Listen
+        // there instead of relying on it crossing the document boundary: in
+        // Electron, the owner receives this event even when a document-level
+        // capture listener does not. Keeping the listener on the owner also
+        // makes the capture lifetime and its cleanup one local responsibility.
+        turnOwner.addEventListener('lostpointercapture', onLostPointerCapture);
+        turnOwner.setPointerCapture(event.pointerId);
+      } catch {
+        // Capture can fail if Chromium has already retired the physical
+        // pointer. Do not retain a gesture that can no longer deliver its end.
+        finishGesture(event.pointerId, 'cancel');
+      }
+    }
+
+    function onSelectionChange(): void {
+      gesture.selectionChanged();
+    }
+
+    function onPointerUp(event: PointerEvent): void {
+      finishGesture(event.pointerId, 'commit');
+    }
+
+    function onPointerCancel(event: PointerEvent): void {
+      finishGesture(event.pointerId, 'cancel');
+    }
+
+    function onLostPointerCapture(event: Event): void {
+      // Capture loss can happen without a physical release (capture transfer,
+      // owner removal, or pointer lock), so it cancels rather than commits.
+      const pointerId = (event as PointerEvent).pointerId;
+      finishGesture(pointerId, 'cancel');
     }
 
     /**
@@ -132,11 +280,19 @@ export function useMessageSelectionQuote(
     }
 
     document.addEventListener('selectionchange', onSelectionChange);
+    document.addEventListener('pointerdown', onPointerDown, { capture: true });
+    document.addEventListener('pointerup', onPointerUp, { capture: true });
+    document.addEventListener('pointercancel', onPointerCancel, { capture: true });
     // Capture-phase: scroll does not bubble.
     document.addEventListener('scroll', onScroll, { capture: true, passive: true });
     return () => {
       window.clearTimeout(settleTimer);
       document.removeEventListener('selectionchange', onSelectionChange);
+      document.removeEventListener('pointerdown', onPointerDown, { capture: true });
+      document.removeEventListener('pointerup', onPointerUp, { capture: true });
+      document.removeEventListener('pointercancel', onPointerCancel, { capture: true });
+      const owner = gesture.discardActivePointerSelection();
+      owner?.removeEventListener('lostpointercapture', onLostPointerCapture);
       document.removeEventListener('scroll', onScroll, { capture: true });
     };
   }, [scrollRef, enabled]);

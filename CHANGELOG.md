@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- Disabled TUI taskbar-progress keepalives by default on native Windows and
+  Windows Terminal sessions, where repeated OSC 9;4 updates can make Explorer's
+  taskbar unresponsive. `MAKA_TASKBAR_PROGRESS=1` restores the prior behavior,
+  while `MAKA_TASKBAR_PROGRESS=0` disables it explicitly.
+
 ## 0.1.10 - 2026-08-10
 
 ### Highlights

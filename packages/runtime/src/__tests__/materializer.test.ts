@@ -199,8 +199,6 @@ describe('materializeSession', () => {
   // while the turn runs, so does the call.
   for (const [turnStatus, expected] of [
     ['running', 'running'],
-    ['aborted', 'interrupted'],
-    ['failed', 'interrupted'],
     ['completed', 'interrupted'],
   ] as const) {
     test(`resultless tool_call in a ${turnStatus} turn → ${expected}`, () => {

@@ -75,6 +75,28 @@ test('falls back to the current Host path when no Project preference exists', as
   );
 });
 
+test('requires a Host Project for remote session creation', async () => {
+  await assert.rejects(
+    () =>
+      resolveDesktopSessionWorkspace(
+        { cwd: '/client/path' },
+        selection(),
+        { register: unexpected },
+        { allowHostPath: false },
+      ),
+    /Select a project from the remote Runtime Host/,
+  );
+  assert.deepEqual(
+    await resolveDesktopSessionWorkspace(
+      { cwd: '/client/path', projectId: 'host-project' },
+      selection(),
+      { register: unexpected },
+      { allowHostPath: false },
+    ),
+    { kind: 'project', projectId: 'host-project' },
+  );
+});
+
 function selection(
   options: {
     readonly current?: { readonly projectId: string | null | undefined; readonly path: string };

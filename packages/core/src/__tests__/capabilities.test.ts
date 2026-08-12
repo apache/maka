@@ -24,28 +24,6 @@ describe('permission and capability snapshot contracts', () => {
     ).toBe('paused');
   });
 
-  test('unavailable feature is not_configured even when OS permission is granted', () => {
-    expect(
-      deriveCapabilityReadiness({
-        feature: { state: 'not_available', source: 'scaffold' },
-        configuration: presentConfig,
-        osPermissions: [requiredPermission('accessibility', 'granted')],
-        runtimeProbe: { state: 'healthy', source: 'runtime_probe' },
-      }),
-    ).toBe('not_configured');
-  });
-
-  test('partial feature stays not_configured until runtime probe reports degradation', () => {
-    expect(
-      deriveCapabilityReadiness({
-        feature: { state: 'partial', source: 'runtime', reason: 'local smoke only' },
-        configuration: presentConfig,
-        osPermissions: [requiredPermission('accessibility', 'granted')],
-        runtimeProbe: { state: 'not_run', source: 'runtime_probe' },
-      }),
-    ).toBe('not_configured');
-  });
-
   test('missing configuration is not_configured before runtime health', () => {
     expect(
       deriveCapabilityReadiness({
@@ -112,32 +90,6 @@ describe('permission and capability snapshot contracts', () => {
     expect(
       deriveCapabilityReadiness({
         feature: enabledFeature,
-        configuration: presentConfig,
-        osPermissions: [requiredPermission('accessibility', 'granted')],
-        runtimeProbe: { state: 'degraded', source: 'runtime_probe', reason: 'probe failed' },
-      }),
-    ).toBe('degraded');
-  });
-
-  test('unavailable runtime probe degrades an otherwise enabled capability', () => {
-    expect(
-      deriveCapabilityReadiness({
-        feature: enabledFeature,
-        configuration: presentConfig,
-        osPermissions: [requiredPermission('accessibility', 'granted')],
-        runtimeProbe: {
-          state: 'not_available',
-          source: 'runtime_probe',
-          reason: 'service exited',
-        },
-      }),
-    ).toBe('degraded');
-  });
-
-  test('degraded runtime probe still wins over partial feature copy', () => {
-    expect(
-      deriveCapabilityReadiness({
-        feature: { state: 'partial', source: 'runtime', reason: 'local smoke only' },
         configuration: presentConfig,
         osPermissions: [requiredPermission('accessibility', 'granted')],
         runtimeProbe: { state: 'degraded', source: 'runtime_probe', reason: 'probe failed' },

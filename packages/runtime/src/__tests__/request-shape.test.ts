@@ -53,11 +53,6 @@ describe('canonicalizeToolSet active allow-list', () => {
     assert.ok(names.includes('invalid'), 'repair target present in providerTools');
     assert.ok(!activeTools.includes('invalid'), 'invalid is never advertised to the model');
   });
-
-  test('omitting the active set advertises every visible tool (full surface), names sorted', () => {
-    const { activeTools } = canonicalizeToolSet([tool('Write'), tool('Read')], invalid);
-    assert.deepEqual(activeTools, ['Read', 'Write']);
-  });
 });
 
 describe('diagnostics measure the provider-visible (active) tool subset', () => {

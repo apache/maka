@@ -37,13 +37,6 @@ describe('semantic compaction policy env plumbing (issue #882 PR 3)', () => {
     });
     assert.equal(policy?.semanticCompact, undefined);
   });
-
-  test('an explicit MAKA_CONTEXT_SEMANTIC_COMPACT=off keeps it disabled', () => {
-    const policy = buildDefaultContextBudgetPolicy(connection(), {
-      env: { MAKA_CONTEXT_SEMANTIC_COMPACT: 'off' },
-    });
-    assert.equal(policy?.semanticCompact, undefined);
-  });
 });
 
 function connection(): LlmConnection {

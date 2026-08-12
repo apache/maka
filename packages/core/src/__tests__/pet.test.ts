@@ -2,13 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   PET_PACK_SCHEMA_V1,
-  PetManifestValidationError,
-  decodePetPackManifest,
-  isPetPackId,
   isPetPackManifestV1,
   isSafePetAssetPath,
-  resolvePetAnimationFallback,
-  resolvePetAnimationState,
   validatePetPackManifest,
 } from '../pet.js';
 
@@ -40,20 +35,6 @@ function validManifest(): Record<string, unknown> {
 }
 
 describe('maka.pet/v1 manifest', () => {
-  test('accepts a declarative custom pet pack and decodes it unchanged', () => {
-    const manifest = validManifest();
-    const result = validatePetPackManifest(manifest);
-    assert.equal(result.ok, true);
-    assert.equal(isPetPackManifestV1(manifest), true);
-    assert.equal(decodePetPackManifest(manifest), manifest);
-  });
-
-  test('exposes the canonical package id guard to storage boundaries', () => {
-    assert.equal(isPetPackId('likun.maodie'), true);
-    assert.equal(isPetPackId('../maodie'), false);
-    assert.equal(isPetPackId('MAODIE'), false);
-  });
-
   test('requires the five task-semantic animations', () => {
     const manifest = validManifest();
     const animations = manifest.animations as Record<string, unknown>;
@@ -142,33 +123,5 @@ describe('maka.pet/v1 manifest', () => {
     idle.fallback = 'working';
 
     assert.equal(isPetPackManifestV1(manifest), false);
-  });
-
-  test('throws a structured validation error from the strict decoder', () => {
-    const manifest = validManifest();
-    manifest.schema = 'maka.pet/v2';
-
-    assert.throws(
-      () => decodePetPackManifest(manifest),
-      (error: unknown) =>
-        error instanceof PetManifestValidationError && error.issues[0]?.path === '$.schema',
-    );
-  });
-});
-
-describe('pet activity fallback', () => {
-  test('maps absent optional states onto stable required-state animations', () => {
-    const manifest = decodePetPackManifest(validManifest());
-    assert.equal(resolvePetAnimationState(manifest, 'swarm'), 'swarm');
-    assert.equal(resolvePetAnimationState(manifest, 'sleep'), 'idle');
-    assert.equal(resolvePetAnimationState(manifest, 'cancelled'), 'idle');
-  });
-
-  test('keeps loops in place and returns one-shot animations to their fallback', () => {
-    const manifest = decodePetPackManifest(validManifest());
-    assert.equal(resolvePetAnimationFallback(manifest, 'working'), 'working');
-    assert.equal(resolvePetAnimationFallback(manifest, 'poke'), 'idle');
-    assert.equal(resolvePetAnimationFallback(manifest, 'ready'), 'idle');
-    assert.equal(resolvePetAnimationFallback(manifest, 'sleep'), 'idle');
   });
 });

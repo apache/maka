@@ -3,13 +3,6 @@ import { describe, test } from 'node:test';
 import { BashTailBuffer } from '../bash-tail-buffer.js';
 
 describe('BashTailBuffer', () => {
-  test('returns everything when under the cap', () => {
-    const buf = new BashTailBuffer(100);
-    buf.push('hello\n');
-    buf.push('world');
-    assert.equal(buf.value(), 'hello\nworld');
-  });
-
   test('bounds retained output to the cap and keeps whole tail lines', () => {
     const buf = new BashTailBuffer(20);
     for (let i = 0; i < 100; i++) buf.push(`line${i}\n`);

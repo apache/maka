@@ -335,24 +335,13 @@ async function withE2eWindow(
 
 export const test = base.extend<{
   window: Page;
-  artifactPaneWindow: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
+  linkColorWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
-  },
-  artifactPaneWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '.maka-artifact-list',
-        e2eFixtureScenario: 'artifact-pane',
-        locale: 'zh',
-      },
-      use,
-    );
   },
   gitReviewWindow: async ({}, use) => {
     await withE2eWindow(
@@ -377,6 +366,13 @@ export const test = base.extend<{
       readinessSelector: COMPOSER_INPUT,
       locale: 'zh',
       invocableSkills: true,
+    }, use);
+  },
+  linkColorWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '.settingsBotConfigDocLink',
+      e2eFixtureScenario: 'settings-bots-onboarding',
     }, use);
   },
 });

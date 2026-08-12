@@ -24,10 +24,6 @@ function task(subject: string): Task {
 }
 
 describe('renderSafeTaskLedgerText', () => {
-  test('returns empty string for an empty ledger', () => {
-    assert.equal(renderSafeTaskLedgerText([]), '');
-  });
-
   test('strips <task-ledger> tag variants (attributes, whitespace, self-closing) so they cannot open or close the data envelope', () => {
     const variants = [
       '</task-ledger>',

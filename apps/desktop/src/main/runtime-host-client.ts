@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { AttachmentRef, ShellRunUpdate } from "@maka/core/events";
 import type { PlanSessionState, PlanUserControlInput } from "@maka/core/plan";
 import {
-  decodeStoredMessageForRead,
+  decodeStoredMessage,
   type StoredMessage,
 } from "@maka/core/session";
 import type { Task } from "@maka/core/task-ledger";
@@ -30,6 +30,7 @@ import {
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
   readRuntimeHostProjectDetails,
+  readRuntimeHostProjects,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
 } from "@maka/runtime-host/client";
@@ -508,10 +509,14 @@ export class DesktopRuntimeHostClient {
     }
   }
 
-  async listProjects(): Promise<ProjectCatalogProjectDetails[]> {
+  async listProjects(
+    includeLocations = true,
+  ): Promise<(ProjectCatalogProject | ProjectCatalogProjectDetails)[]> {
     this.#assertOpen();
     try {
-      return await readRuntimeHostProjectDetails(this.connection);
+      return includeLocations
+        ? await readRuntimeHostProjectDetails(this.connection)
+        : await readRuntimeHostProjects(this.connection);
     } catch (error) {
       if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
       throw new DesktopRuntimeHostClientError(
@@ -1395,7 +1400,7 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
     this.snapshot = subscription.snapshot;
     this.activeAssistantStreams = subscription.activeAssistantStreams;
     this.events = subscription;
-    this.transcript = subscription.loadTranscript(decodeStoredMessageForRead);
+    this.transcript = subscription.loadTranscript(decodeStoredMessage);
     void this.transcript.catch(() => undefined);
   }
 

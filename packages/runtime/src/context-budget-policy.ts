@@ -136,6 +136,10 @@ function buildActiveToolResultPrunePolicy(
       env.MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MAX_ESTIMATED_TOKENS,
       2048,
     ),
+    minSupersededResultEstimatedTokens: parsePositiveInt(
+      env.MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MIN_SUPERSEDED_TOKENS,
+      256,
+    ),
     minStepNumber:
       parseOptionalNonNegativeInt(env.MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MIN_STEP_NUMBER) ?? 1,
   };

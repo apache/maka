@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppSettings, UpdateAppSettingsResult } from '@maka/core/settings';
 import type { ProjectRecord } from '@maka/core/project';
+import type { DesktopProjectCapabilities } from '../../preload/bridge-contract.js';
 import {
   Badge,
   Button,
@@ -17,7 +18,15 @@ import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 import { projectPathDisplay } from '../project-path-display.js';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
+import { RuntimeHostProfilesSection } from './runtime-host-profiles-section.js';
 import { useKeyedActionGuard } from './use-action-guard';
+
+const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
+  chooseClientDirectory: false,
+  selectNoProject: false,
+  setLocalDefault: false,
+  viewClientPath: false,
+};
 
 /**
  * Settings · 偏好 · 项目 — the management view of the project catalog, and the
@@ -45,6 +54,8 @@ export function ProjectsSettingsPage(props: {
   const mountedRef = useMountedRef();
   const actionGuard = useKeyedActionGuard<string>();
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [capabilities, setCapabilities] =
+    useState<DesktopProjectCapabilities>(NO_PROJECT_CAPABILITIES);
   const [homePath, setHomePath] = useState<string | undefined>(undefined);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
@@ -52,25 +63,39 @@ export function ProjectsSettingsPage(props: {
 
   const reload = useCallback(async () => {
     const generation = ++reloadGeneration.current;
-    const next = await window.maka.projects.list();
-    if (mountedRef.current && generation === reloadGeneration.current) setProjects(next);
+    const snapshot = await window.maka.projects.getSnapshot();
+    if (mountedRef.current && generation === reloadGeneration.current) {
+      setProjects([...snapshot.projects]);
+      setCapabilities(snapshot.capabilities);
+    }
   }, [mountedRef]);
 
   useEffect(() => {
     void reload();
     const unsubscribe = window.maka.projects.subscribeChanges(() => void reload());
+    const unsubscribeRuntimeHost = window.maka.runtimeHostProfiles.subscribeChanges((event) => {
+      if (!event.targetChanged) return;
+      reloadGeneration.current += 1;
+      setProjects([]);
+      setCapabilities(NO_PROJECT_CAPABILITIES);
+    });
     // Paths render unabbreviated until this lands, which is why
     // `collapseHomePath` treats an unknown home as a no-op rather than a bug.
     void window.maka.app.info().then((info) => {
       if (mountedRef.current) setHomePath(info.homePath);
     });
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      unsubscribeRuntimeHost();
+    };
   }, [reload, mountedRef]);
 
   // Archived projects are removed-from-Maka, not deleted; they belong to the
   // restore path, not to a list whose whole purpose is "what can I open".
   const listed = projects.filter((project) => project.archivedAt === undefined);
-  const defaultProjectId = props.settings.projects.defaultProjectId;
+  const defaultProjectId = capabilities.setLocalDefault
+    ? props.settings.projects.defaultProjectId
+    : undefined;
   // The stored id is a preference, not a guarantee: the project it names can be
   // archived or lose its folder afterwards. Saying so out loud beats silently
   // behaving like no default was ever set — a silent fallback is the same kind
@@ -98,6 +123,7 @@ export function ProjectsSettingsPage(props: {
 
   return (
     <SettingsPage as="section" aria-label={copy.section}>
+      <RuntimeHostProfilesSection />
       {/* No section title: the page header already says 项目, and repeating it
           straight above the rows is the same duplicate-heading noise we
           removed from the skills page. The rule this page exists for lives in
@@ -108,7 +134,7 @@ export function ProjectsSettingsPage(props: {
             ? `${copy.sectionHelp} ${copy.defaultUnavailable}`
             : copy.sectionHelp
         }
-        action={
+        action={capabilities.chooseClientDirectory ? (
           <Button
             variant="secondary"
             size="sm"
@@ -118,7 +144,7 @@ export function ProjectsSettingsPage(props: {
               if (result.ok) await reload();
             }}
           />
-        }
+        ) : undefined}
       >
         {listed.length === 0 ? (
           <EmptyState icon={<FolderOpen size={ICON_SIZE.empty} />} title={copy.emptyTitle} description={copy.emptyBody} />
@@ -133,9 +159,9 @@ export function ProjectsSettingsPage(props: {
               const isDefault = project.id === defaultProjectId;
               const endCluster = (
                     <>
-                      {isDefault ? (
+                      {capabilities.setLocalDefault && isDefault ? (
                         <Badge variant="neutral" label={copy.defaultBadge} />
-                      ) : (
+                      ) : capabilities.setLocalDefault ? (
                         <Button
                           variant="secondary"
                           size="sm"
@@ -158,7 +184,7 @@ export function ProjectsSettingsPage(props: {
                             )
                           }
                         />
-                      )}
+                      ) : null}
                       <MoreMenu
                         label={copy.moreActions(project.name)}
                         size="sm"
@@ -181,22 +207,28 @@ export function ProjectsSettingsPage(props: {
                               setRenamingId(project.id);
                             },
                           },
-                          {
-                            label: copy.openFolder,
-                            // Only offered when the catalog still vouches for the
-                            // folder; a menu entry that always fails is worse
-                            // than one that is not there.
-                            isDisabled: !project.available,
-                            onClick: () =>
-                              void runRowAction(
-                                `reveal:${project.id}`,
-                                async () => {
-                                  const result = await window.maka.projects.reveal(project.id);
-                                  if (!result.ok) throw new Error(result.reason);
+                          ...(capabilities.viewClientPath
+                            ? [
+                                {
+                                  label: copy.openFolder,
+                                  // Only offered when the catalog still vouches for the
+                                  // folder; a menu entry that always fails is worse
+                                  // than one that is not there.
+                                  isDisabled: !project.available,
+                                  onClick: () =>
+                                    void runRowAction(
+                                      `reveal:${project.id}`,
+                                      async () => {
+                                        const result = await window.maka.projects.reveal(
+                                          project.id,
+                                        );
+                                        if (!result.ok) throw new Error(result.reason);
+                                      },
+                                      copy.openFolderFailed,
+                                    ),
                                 },
-                                copy.openFolderFailed,
-                              ),
-                          },
+                              ]
+                            : []),
                           {
                             label: copy.remove,
                             onClick: () =>
@@ -242,7 +274,7 @@ export function ProjectsSettingsPage(props: {
                 );
               }
 
-              const path = project.preferredPath
+              const path = capabilities.viewClientPath && project.preferredPath
                 ? projectPathDisplay(project.preferredPath, { homePath })
                 : undefined;
 
@@ -287,7 +319,9 @@ export function ProjectsSettingsPage(props: {
                       />
                     </HStack>
                   ) : project.name}
-                  description={isRenaming ? undefined : (
+                  description={isRenaming || (!capabilities.viewClientPath && project.available)
+                    ? undefined
+                    : (
                     <code
                       className="settingsReadOnlyValue"
                       data-mono="true"

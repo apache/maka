@@ -1,22 +1,29 @@
 import { decodeJsonObject, type ExperimentSpec } from './experiment.js';
 
 export function parseExperimentSpec(value: unknown): ExperimentSpec {
-  const root = exact(value, 'experiment', [
-    'schemaVersion',
-    'id',
-    'benchmark',
-    'executor',
-    'execution',
-    'subjects',
-    'tasks',
-    'repetitions',
-    'budget',
-    'verifier',
-  ]);
+  const root = exact(
+    value,
+    'experiment',
+    [
+      'schemaVersion',
+      'id',
+      'benchmark',
+      'executor',
+      'subjects',
+      'tasks',
+      'repetitions',
+      'budget',
+      'verifier',
+    ],
+    ['execution'],
+  );
   if (root.schemaVersion !== 'maka.eval.v1') throw new Error('unsupported experiment schema');
   const benchmark = exact(root.benchmark, 'benchmark', ['id', 'version', 'config']);
   const executor = exact(root.executor, 'executor', ['kind', 'config']);
-  const execution = exact(root.execution, 'execution', ['maxConcurrentTaskGroups']);
+  const execution =
+    root.execution === undefined
+      ? { maxConcurrentTaskGroups: 1 }
+      : exact(root.execution, 'execution', ['maxConcurrentTaskGroups']);
   const subjects: ExperimentSpec['subjects'][number][] = array(root.subjects, 'subjects').map(
     (value, index) => {
       const subject = exact(value, `subjects[${index}]`, ['id', 'kind', 'credentials', 'config']);
@@ -68,11 +75,16 @@ export function parseExperimentSpec(value: unknown): ExperimentSpec {
   });
 }
 
-function exact(value: unknown, where: string, fields: readonly string[]): Record<string, unknown> {
+function exact(
+  value: unknown,
+  where: string,
+  fields: readonly string[],
+  optional: readonly string[] = [],
+): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error(`${where} must be an object`);
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => !fields.includes(key)))
+  if (Object.keys(record).some((key) => !fields.includes(key) && !optional.includes(key)))
     throw new Error(`${where} has unsupported fields`);
   for (const field of fields)
     if (!Object.hasOwn(record, field)) throw new Error(`${where}.${field} is required`);

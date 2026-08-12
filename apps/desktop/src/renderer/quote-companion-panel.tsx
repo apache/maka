@@ -25,6 +25,7 @@ import type {
   StagedCompanionQuote,
 } from './quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
+import { readScrollMotionBehavior } from './scroll-motion-policy';
 
 /**
  * The side-conversation workbar tab: a transient read-only fork of the main session.
@@ -267,6 +268,7 @@ export function QuoteCompanionPanel(props: {
       >
         <ChatView
           messages={companion.messages}
+          scrollBehavior={readScrollMotionBehavior()}
           liveTurn={companion.liveTurn}
           runningStatus={companion.processing}
           activeSession={companion.companionSession}

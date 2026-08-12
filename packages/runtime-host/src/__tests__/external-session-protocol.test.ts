@@ -10,29 +10,7 @@ import {
 } from '../protocol/index.js';
 
 describe('external Session protocol', () => {
-  test('declares three bounded ready-only operations', () => {
-    assert.deepEqual(
-      Object.fromEntries(
-        (
-          [
-            'external-session.source.query',
-            'external-session.catalog.query',
-            'external-session.import',
-          ] as const
-        ).map((operation) => [
-          operation,
-          {
-            mode: HOST_OPERATION_SPECS[operation].mode,
-            availability: HOST_OPERATION_SPECS[operation].availability,
-          },
-        ]),
-      ),
-      {
-        'external-session.source.query': { mode: 'query', availability: 'ready' },
-        'external-session.catalog.query': { mode: 'query', availability: 'ready' },
-        'external-session.import': { mode: 'command', availability: 'ready' },
-      },
-    );
+  test('identifies external Session queries that expose Host paths', () => {
     assert.equal(
       HOST_OPERATION_SPECS['external-session.catalog.query'].usesHostPaths?.({
         adapterId: 'codex',

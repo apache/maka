@@ -1,11 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type {
-  SessionSummary,
-  SubagentSessionParent,
-  SubagentSessionRuntime,
-  SubagentSessionSpawn,
-} from '../session.js';
+import type { SessionSummary, SubagentSessionParent, SubagentSessionSpawn } from '../session.js';
 import {
   childSessionsForParent,
   isLinkedSubagentSession,
@@ -27,18 +22,6 @@ const relation: SubagentSessionParent = {
     toolCallId: 'tool-call',
   },
   lifecycle: 'foreground',
-};
-
-const runtime: SubagentSessionRuntime = {
-  schemaVersion: 1,
-  definitionVersion: 1,
-  agentId: 'local-read',
-  agentName: 'Local Read',
-  profile: 'local_read',
-  systemPrompt: 'Read the assigned workspace task.',
-  toolNames: ['Read', 'Glob', 'Grep'],
-  categoryPolicy: { read: 'allow' },
-  permissionCeiling: 'ask',
 };
 
 const spawn: SubagentSessionSpawn = {

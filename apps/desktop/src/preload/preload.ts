@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
+import { notifyWhenSeeded } from './seed-completion.js';
 import type {
   MakaBridge,
   OnboardingSnapshot,
@@ -14,6 +15,9 @@ import type {
   AppUpdateStatus,
   WindowCommand,
   PetPackChangedEvent,
+  DesktopRuntimeHostProfileAddInput,
+  DesktopRuntimeHostProfileChangedEvent,
+  DesktopProjectSnapshot,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type {
@@ -373,6 +377,28 @@ async function bridgeResult<T>(operation: () => Promise<T>, code: string): Promi
 
 const makaBridge = {
   runtimeHost,
+  runtimeHostProfiles: {
+    getSnapshot() {
+      return ipcRenderer.invoke('runtime-host-profiles:getSnapshot');
+    },
+    addAndSelect(input: DesktopRuntimeHostProfileAddInput) {
+      return ipcRenderer.invoke('runtime-host-profiles:add-and-select', input);
+    },
+    remove(profileId: string) {
+      return ipcRenderer.invoke('runtime-host-profiles:remove', profileId);
+    },
+    select(profileId: string) {
+      return ipcRenderer.invoke('runtime-host-profiles:select', profileId);
+    },
+    subscribeChanges(handler: (event: DesktopRuntimeHostProfileChangedEvent) => void) {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: DesktopRuntimeHostProfileChangedEvent,
+      ) => handler(payload);
+      ipcRenderer.on('runtime-host-profiles:changed', listener);
+      return () => ipcRenderer.off('runtime-host-profiles:changed', listener);
+    },
+  },
   pets: {
     list() {
       return ipcRenderer.invoke('pets:list');
@@ -577,13 +603,21 @@ const makaBridge = {
     > {
       return ipcRenderer.invoke('chat:saveConversationToFile', input);
     },
-    subscribeEvents(sessionId: string, handler: (event: SessionEvent) => void): () => void {
+    subscribeEvents(
+      sessionId: string,
+      handler: (event: SessionEvent) => void,
+      onSeeded?: () => void,
+    ): () => void {
       const channel = `sessions:event:${sessionId}`;
       const listener = (_event: Electron.IpcRendererEvent, payload: SessionEvent) => handler(payload);
       ipcRenderer.on(channel, listener);
       const observerId = crypto.randomUUID();
-      void ipcRenderer.invoke('sessions:observe', sessionId, observerId).catch(() => undefined);
+      const disposeSeedNotification = notifyWhenSeeded(
+        ipcRenderer.invoke('sessions:observe', sessionId, observerId),
+        onSeeded,
+      );
       return () => {
+        disposeSeedNotification();
         ipcRenderer.off(channel, listener);
         void ipcRenderer.invoke('sessions:unobserve', observerId).catch(() => undefined);
       };
@@ -686,8 +720,8 @@ const makaBridge = {
     },
   },
   projects: {
-    list(): Promise<ProjectRecord[]> {
-      return ipcRenderer.invoke('projects:list');
+    getSnapshot(): Promise<DesktopProjectSnapshot> {
+      return ipcRenderer.invoke('projects:getSnapshot');
     },
     subscribeChanges(handler: () => void): () => void {
       const listener = () => handler();

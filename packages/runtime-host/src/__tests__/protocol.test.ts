@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
-import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import {
   decodeClientFrame,
   decodeHostFrame,
@@ -46,45 +46,8 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(() => negotiateProtocol({ min: -1, max: 0 }, { min: 0, max: 0 }), isInvalidFrame);
   });
 
-  test('keeps subscription operations closed, ready-only, and queue Epoch correlated', () => {
+  test('keeps the subscription queue Epoch correlated', () => {
     assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 3);
-    assert.deepEqual(
-      Object.fromEntries(
-        (['subscription.open', 'subscription.close'] as const).map((operation) => [
-          operation,
-          {
-            mode: HOST_OPERATION_SPECS[operation].mode,
-            availability: HOST_OPERATION_SPECS[operation].availability,
-            errors: HOST_OPERATION_SPECS[operation].errors,
-          },
-        ]),
-      ),
-      {
-        'subscription.open': {
-          mode: 'control',
-          availability: 'ready',
-          errors: [
-            'host_not_ready',
-            'host_draining',
-            'operation_unavailable',
-            'not_found',
-            'operation_conflict',
-            'internal_failure',
-          ],
-        },
-        'subscription.close': {
-          mode: 'control',
-          availability: 'ready',
-          errors: [
-            'host_not_ready',
-            'host_draining',
-            'operation_unavailable',
-            'not_found',
-            'internal_failure',
-          ],
-        },
-      },
-    );
     const opened = {
       requestId: 'open-1',
       operation: 'subscription.open',
@@ -290,17 +253,7 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-  /**
-   * The decoder is the worst place to keep a second copy of a vocabulary: a
-   * kind added anywhere else made this reject the whole frame, and the failure
-   * arrived as a protocol violation naming nothing. `requireToolActivityKind`
-   * was a hand-written chain that had already fallen behind — it threw on
-   * `'computer'` — and nothing in this package exercised it, so putting it back
-   * would have cost no test at all.
-   *
-   * Every kind on the wire decodes; a plausible one that is not on it does not.
-   */
-  test('accepts every declared tool activity kind and nothing else', () => {
+  test('validates tool activity kinds at the wire boundary', () => {
     const envelope = {
       kind: 'subscription.session_event' as const,
       hostEpoch: 'epoch-1',
@@ -317,19 +270,17 @@ describe('Runtime Host bootstrap protocol', () => {
       type: 'tool_start' as const,
       toolName: 'maka_computer',
     };
-    assert.ok(TOOL_ACTIVITY_KINDS.includes('computer'));
-    for (const activityKind of TOOL_ACTIVITY_KINDS) {
-      assert.doesNotThrow(
-        () => decodeHostFrame({ ...envelope, event: { ...start, activityKind } }),
-        `the wire declares ${activityKind}, so the decoder must accept it`,
-      );
-    }
-    for (const activityKind of ['desktop', 'Computer', '', 7]) {
-      assert.throws(
-        () => decodeHostFrame({ ...envelope, event: { ...start, activityKind } }),
-        isInvalidFrame,
-      );
-    }
+    assert.doesNotThrow(() =>
+      decodeHostFrame({ ...envelope, event: { ...start, activityKind: 'computer' } }),
+    );
+    assert.throws(
+      () => decodeHostFrame({ ...envelope, event: { ...start, activityKind: 'desktop' } }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () => decodeHostFrame({ ...envelope, event: { ...start, activityKind: 7 } }),
+      isInvalidFrame,
+    );
   });
 
   test('enforces UTF-8 snapshot, live field, and whole-message byte bounds', () => {

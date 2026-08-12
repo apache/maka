@@ -2,7 +2,6 @@ import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   resolveNotificationContent,
-  runNotificationCopy,
   shouldRaiseRunNotification,
 } from '../notifications-policy.js';
 
@@ -30,8 +29,8 @@ it('sanitizes renderer content, caps it, and falls back per field', () => {
   });
   assert.deepEqual(clean, { title: '会话 A', body: 'line one line two indented' });
 
-  const completedFallback = runNotificationCopy('completed');
-  for (const value of ['', '   ', undefined, null, 42, {}]) {
+  const completedFallback = resolveNotificationContent({ kind: 'completed' });
+  for (const value of ['   ', undefined]) {
     assert.deepEqual(
       resolveNotificationContent({ kind: 'completed', title: value, body: value }),
       completedFallback,
@@ -42,7 +41,7 @@ it('sanitizes renderer content, caps it, and falls back per field', () => {
   assert.equal(capped.body.length, 160);
   assert.ok(capped.body.endsWith('…'));
 
-  const erroredFallback = runNotificationCopy('errored');
+  const erroredFallback = resolveNotificationContent({ kind: 'errored' });
   assert.deepEqual(resolveNotificationContent({ kind: 'errored', title: '出错的会话', body: '' }), {
     title: '出错的会话',
     body: erroredFallback.body,

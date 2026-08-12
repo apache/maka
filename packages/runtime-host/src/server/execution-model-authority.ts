@@ -42,6 +42,7 @@ import {
   type HostOAuthExecutionBinding,
 } from './oauth-execution-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
+import { resolveAdmittedConnectionModel } from './connection-model-admission.js';
 
 export interface HostGoalEvaluatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
@@ -775,8 +776,9 @@ export async function resolveExecutionTarget(
     throw new AuxiliaryModelCallConfigurationError('Runtime Host model provider is not executable');
   }
   const model = header.model.trim();
-  const modelInfo = resolved.connection.models.find((candidate) => candidate.id === model);
-  if (!model || !resolved.connection.enabledModelIds.includes(model) || !modelInfo) {
+  const discovered = resolved.connection.models.some((candidate) => candidate.id === model);
+  const modelInfo = resolveAdmittedConnectionModel(resolved.connection, model);
+  if (!model || !modelInfo) {
     throw new AuxiliaryModelCallConfigurationError(
       'Runtime Host Session model is not enabled by its canonical connection',
     );
@@ -794,7 +796,9 @@ export async function resolveExecutionTarget(
     providerType: resolved.connection.providerType,
     ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
     defaultModel: model,
-    models: [...resolved.connection.models],
+    models: discovered
+      ? [...resolved.connection.models]
+      : [...resolved.connection.models, modelInfo],
     ...(resolved.connection.relayModelProfiles === undefined
       ? {}
       : { relayModelProfiles: resolved.connection.relayModelProfiles }),

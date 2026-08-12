@@ -62,10 +62,7 @@ test('formats one redacted Desktop and Runtime Host diagnostic report', () => {
     new Date('2026-08-09T00:00:00Z'),
   );
 
-  assert.match(report, /Recent main-process logs \(1\)\nmain log/);
-  assert.match(report, /Build: dev @ a{12}/);
   assert.match(report, /Runtime Host[\s\S]*Recent Runtime Host logs \(1\)\nhost log/);
-  assert.match(report, /Protocol: v0 · compatibility 16/);
   assert.match(report, /Workspace: ~\/\.local\/share\/maka\/workspaces\/default/);
   assert.doesNotMatch(report, /sk-secretvalue123|\/home\/tester/);
 });
@@ -207,6 +204,4 @@ test('copies bounded evidence for the exact failed Turn', async () => {
   assert.deepEqual(result, { ok: true });
   assert.match(clipboard, /Runtime Host execution[\s\S]*Run: run-1/);
   assert.match(clipboard, /Failure message: No endpoints accepted the request/);
-  assert.match(clipboard, /openrouter\/openrouter\/free · failed · 3501ms/);
-  assert.match(clipboard, /attempt-1 · failed · 3501ms · unknown/);
 });

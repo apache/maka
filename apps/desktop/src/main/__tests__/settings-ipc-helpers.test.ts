@@ -3,7 +3,6 @@ import { describe, test } from "node:test";
 import { createDefaultSettings, mergeSettings } from "@maka/core/settings";
 import { SENSITIVE_PLACEHOLDER } from "@maka/core/settings/network-settings";
 import {
-  botTestErrorMessage,
   buildSettingsUpdateResult,
   maskAppSettings,
   preserveSensitivePlaceholders,
@@ -155,33 +154,6 @@ describe("settings IPC helpers", () => {
       JSON.stringify(result).includes("sk-live-secret-token-value"),
       false,
     );
-  });
-
-  test("bot test diagnostics stay locale-neutral and actionable", () => {
-    assert.equal(
-      botTestErrorMessage("qq", "Bot connection test failed"),
-      "QQ connection test failed.",
-    );
-    assert.equal(
-      botTestErrorMessage("telegram", "Bot token is required"),
-      "Telegram requires a Bot Token.",
-    );
-    assert.equal(
-      botTestErrorMessage("feishu", "Feishu appId and appSecret are required"),
-      "Feishu requires an App ID and App Secret.",
-    );
-  });
-
-  test("settings update result wraps settings and omits warnings for normal personalization", () => {
-    const settings = createDefaultSettings();
-    settings.personalization.assistantTone = "请简洁一点。";
-
-    const result = buildSettingsUpdateResult(settings, {
-      personalization: { assistantTone: "请简洁一点。" },
-    });
-
-    assert.equal(result.settings.personalization.assistantTone, "请简洁一点。");
-    assert.equal(result.warnings, undefined);
   });
 
   test("settings update result returns transient personalization warning enums without raw phrases", () => {

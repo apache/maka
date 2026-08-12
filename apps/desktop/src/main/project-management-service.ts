@@ -1,4 +1,8 @@
-import type { ProjectRecord } from '@maka/core/project';
+import { findProjectByIdentity, type ProjectRecord } from '@maka/core/project';
+import type {
+  DesktopProjectCapabilities,
+  DesktopProjectSnapshot,
+} from '../preload/bridge-contract.js';
 import type { CurrentProjectSelection } from './project-root-controller.js';
 
 type DirectoryActionResult =
@@ -10,7 +14,7 @@ type SelectedDirectoryActionResult =
 
 export interface ProjectManagementService {
   current(): Promise<CurrentProjectSelection>;
-  list(): Promise<ProjectRecord[]>;
+  getSnapshot(): Promise<DesktopProjectSnapshot>;
   add(): Promise<SelectedDirectoryActionResult>;
   select(
     projectId: unknown,
@@ -45,6 +49,7 @@ export function createProjectManagementService(deps: {
     currentSelection(): Promise<CurrentProjectSelection>;
     setSelection(projectId: string | null, projectPath: string): void;
   };
+  capabilities: DesktopProjectCapabilities;
 }): ProjectManagementService {
   async function current(): Promise<CurrentProjectSelection> {
     const selection = await deps.selection.currentSelection();
@@ -64,15 +69,22 @@ export function createProjectManagementService(deps: {
       }
       return { projectId: undefined, path: selection.path };
     }
-    deps.selection.setSelection(requested.id, requested.preferredPath);
-    return { projectId: requested.id, path: requested.preferredPath };
+    const path = requested.preferredPath ?? selection.path;
+    deps.selection.setSelection(requested.id, path);
+    return { projectId: requested.id, path };
   }
 
   return {
     current,
-    list: () => deps.catalog.list(),
+    async getSnapshot() {
+      return {
+        projects: await deps.catalog.list(),
+        capabilities: deps.capabilities,
+      };
+    },
 
     async add() {
+      requireLocalDirectoryActions(deps);
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
       const project = await deps.catalog.register(path);
@@ -83,6 +95,9 @@ export function createProjectManagementService(deps: {
 
     async select(projectId) {
       if (projectId === null) {
+        if (!deps.capabilities.selectNoProject) {
+          throw new Error('The active Runtime Host requires a Project');
+        }
         const selection = await deps.selection.currentSelection();
         deps.selection.setSelection(null, selection.path);
         return { project: null, path: selection.path };
@@ -93,11 +108,13 @@ export function createProjectManagementService(deps: {
       if (!project) {
         return { project: null, path: selection.path };
       }
-      deps.selection.setSelection(project.id, project.preferredPath);
-      return { project, path: project.preferredPath };
+      const path = project.preferredPath ?? selection.path;
+      deps.selection.setSelection(project.id, path);
+      return { project, path };
     },
 
     async relink(projectId) {
+      requireLocalDirectoryActions(deps);
       const id = requireProjectId(projectId);
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
@@ -112,6 +129,7 @@ export function createProjectManagementService(deps: {
     },
 
     async pathFor(projectId) {
+      if (!deps.capabilities.viewClientPath) return null;
       const id = requireProjectId(projectId);
       const project = selectableProject(await deps.catalog.list(), id);
       return project?.preferredPath ?? null;
@@ -135,6 +153,14 @@ export function createProjectManagementService(deps: {
   };
 }
 
+function requireLocalDirectoryActions(
+  deps: { readonly capabilities: DesktopProjectCapabilities },
+): void {
+  if (!deps.capabilities.chooseClientDirectory) {
+    throw new Error('Remote Runtime Host projects must be registered on the Host');
+  }
+}
+
 function requireProjectId(value: unknown): string {
   if (typeof value !== 'string' || !value) throw new TypeError('Invalid project id.');
   return value;
@@ -143,23 +169,15 @@ function requireProjectId(value: unknown): string {
 function selectableProject(
   projects: readonly ProjectRecord[],
   id: string,
-): (ProjectRecord & { readonly preferredPath: string }) | undefined {
-  const project = projects.find(
-    (candidate) => candidate.id === id || candidate.aliases?.includes(id),
-  );
-  return isSelectableProject(project) ? project : undefined;
+): ProjectRecord | undefined {
+  const project = findProjectByIdentity(projects, id);
+  return project?.available && project.archivedAt === undefined ? project : undefined;
 }
 
 function requireSelectableProject(
   project: ProjectRecord,
 ): ProjectRecord & { readonly preferredPath: string } {
   const selected = selectableProject([project], project.id);
-  if (!selected) throw new Error(`Project is unavailable: ${project.id}`);
-  return selected;
-}
-
-function isSelectableProject(
-  project: ProjectRecord | undefined,
-): project is ProjectRecord & { readonly preferredPath: string } {
-  return Boolean(project?.available && project.archivedAt === undefined && project.preferredPath);
+  if (!selected?.preferredPath) throw new Error(`Project is unavailable: ${project.id}`);
+  return selected as ProjectRecord & { readonly preferredPath: string };
 }

@@ -1,25 +1,24 @@
-// Maka's Codex-style agent cursor.
+// Maka's agent-cursor renderer.
 //
-// Confirmed from the shipped Codex Computer Use native binary:
-// - AgentCursor is a normalized SwiftUI Shape with the exact path below.
-// - FogCursorStyle uses the hosting view center as its hotspot.
-// - MotionConfiguration.live supplies the thresholds and spring constants below.
-// - Long moves use independent position, axis, rotation, and stretch springs.
+// This file has mixed provenance:
+// - the first Maka renderer was a TypeScript adaptation of the MIT-licensed
+//   trycua/cua cursor-overlay, introduced in commit 025d0c628;
+// - the normalized glyph, center-hotspot convention, MotionConfiguration values,
+//   close-enough thresholds, path-measurement terms, and core scorer weights were
+//   recovered from the signed 2026-07-16 SkyComputerUseService build;
+// - the current candidate family, additional score terms, viewport behavior,
+//   frame clock, presentation fences, rendering, and host integration were
+//   authored or adjusted in Maka.
 //
-// - The candidate-path scoring function IS retained: it is inlined into the
-//   planner at 0x1000972ec, and planCursorPath reproduces it term for term
-//   below. An earlier note here claimed the scorer had been stripped; it had
-//   not, and the placeholder scorer written against that claim rewarded the
-//   bendiest candidate instead of the straightest.
-//
-// Geometry, hotspot, thresholds, and spring/style constants are exact for the
-// inspected 2026-07-16 build.
+// No OpenAI source code or executable is included or redistributed. See
+// docs/computer-use-cursor-provenance.md for the exact boundary.
 import { makaBrandPalette, type Palette, rgba } from './palette.js';
 
 const PI = Math.PI;
 const TAU = PI * 2;
 const SENTINEL = -200;
 
+// Exact MotionConfiguration.live values for the inspected 2026-07-16 build.
 export const CODEX_CURSOR_MOTION = {
   clickAngle: -44 * PI / 180,
   candidateCount: 20,
@@ -54,10 +53,11 @@ export const CODEX_CURSOR_MOTION = {
 } as const;
 
 /**
- * Codex `CloseEnoughConfiguration.default`, recovered from the inspected build
- * (doubles at 0x100d68cd0 / 0x100d68cd8). The action is released only once the
- * cursor has effectively landed; releasing earlier makes the click visibly fire
- * while the glyph is still travelling.
+ * Codex `CloseEnoughConfiguration.default` for the inspected 2026-07-16 build,
+ * recovered from doubles at 0x100d68cd0 / 0x100d68cd8. These addresses and
+ * defaults are build-specific. The action is released only once the cursor has
+ * effectively landed; releasing earlier makes the click visibly fire while the
+ * glyph is still travelling.
  *
  * These live here, next to the spring they are read against, because they are
  * not independently choosable: `cursorPresentationReadyDeadlineMs` below is
@@ -127,9 +127,9 @@ export function cursorPresentationReadyDeadlineMs(): number {
   return Math.ceil(seconds * 1000) + Math.ceil(1000 / 60);
 }
 
-// Candidate scoring, inlined at 0x1000972ec. These weights are deliberately not
-// MotionConfiguration fields: the recovered struct holds exactly the 30 values
-// above and none of the numbers below.
+// The five core coefficients were recovered from the scorer inlined at
+// 0x1000972ec in the inspected build. The current Maka score is not term-for-term:
+// it also includes raw path length and the local backwards-arrival penalty.
 /** Segments the scorer walks the candidate in (25 samples, 24 steps). */
 const SCORE_SAMPLES = 24;
 const SCORE_DETOUR_WEIGHT = 320;
@@ -187,8 +187,8 @@ export const CODEX_CURSOR_GLYPH = {
    */
   size: 18,
   shadowBlur: 9,
-  // Normalized AgentCursor.path(in:) coordinates recovered from the native
-  // function's read-only floating-point constants.
+  // Normalized AgentCursor.path(in:) coordinates recovered from the inspected
+  // native function's floating-point constants.
   start: [0.00599, 0.15864] as const,
   curve1: [
     [0.15158, 0.00627],
@@ -404,9 +404,10 @@ export function measureCursorPath(
 }
 
 /**
- * The recovered scorer. Every term is a cost, so the straightest candidate that
- * clears the viewport wins; a bulge only survives when it buys back more than
- * it spends in detour and turning.
+ * Maka's extension of the recovered core score. The detour, angle-energy,
+ * max-angle, total-turn, and out-of-bounds terms use binary-derived
+ * coefficients. Raw path length and the backwards-arrival term are Maka
+ * additions.
  */
 export function scoreCursorPath(
   measurement: PathMeasurement,
@@ -438,8 +439,9 @@ export function scoreCursorPath(
 }
 
 /**
- * Builds `candidateCount` cubics and returns the cheapest under the recovered
- * scorer.
+ * Builds Maka's local single-segment cubic candidate family and returns the
+ * cheapest under the mixed-provenance scorer above. This is not the inspected
+ * binary's later-reconstructed two-base-plus-18-mirrored candidate generator.
  *
  * `incomingHeading` is the direction the cursor is already travelling, and is
  * null whenever the cursor is at rest. It must stay null in that case: the

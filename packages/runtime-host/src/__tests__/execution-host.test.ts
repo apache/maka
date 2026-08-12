@@ -21,7 +21,7 @@ import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
-import { decodeStoredMessageForRead, type StoredMessage } from '@maka/core/session';
+import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
@@ -547,7 +547,7 @@ test('two Clients share one execution after the starting Client disconnects', as
     const secondSubscription = await second.openSessionSubscription({
       sessionId: fixture.sessionId,
     });
-    const transcript = await secondSubscription.loadTranscript(decodeStoredMessageForRead);
+    const transcript = await secondSubscription.loadTranscript(decodeStoredMessage);
     assert.ok(
       transcript.some(
         (message) =>

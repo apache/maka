@@ -34,7 +34,7 @@ import {
   requireShapedRecord,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
-import { defineOperation } from './operation-spec.js';
+import { defineHostPathOperation, defineOperation } from './operation-spec.js';
 
 export const SCHEDULED_TASK_PAGE_MAX_ITEMS = 64;
 export const SCHEDULED_TASK_CATALOG_MAX_ITEMS = 256;
@@ -100,18 +100,34 @@ export const SCHEDULED_TASK_OPERATION_SPECS = {
     decodeInput: decodeScheduledTaskQueryInput,
     decodeOutput: decodeScheduledTaskQueryResult,
   }),
-  'scheduled-task.mutate': defineOperation<
+  'scheduled-task.mutate': defineHostPathOperation<
     ScheduledTaskMutateInput,
     ScheduledTaskMutateResult,
     (typeof MUTATION_ERRORS)[number]
-  >({
-    mode: 'command',
-    availability: 'ready',
-    errors: MUTATION_ERRORS,
-    decodeInput: decodeScheduledTaskMutateInput,
-    decodeOutput: decodeScheduledTaskMutateResult,
-  }),
+  >(
+    {
+      mode: 'command',
+      availability: 'ready',
+      errors: MUTATION_ERRORS,
+      decodeInput: decodeScheduledTaskMutateInput,
+      decodeOutput: decodeScheduledTaskMutateResult,
+    },
+    scheduledTaskMutationUsesHostPath,
+  ),
 } as const;
+
+function scheduledTaskMutationUsesHostPath(input: ScheduledTaskMutateInput): boolean {
+  const effect =
+    input.kind === 'create'
+      ? input.input.effect
+      : input.kind === 'update'
+        ? input.patch.effect
+        : undefined;
+  return (
+    effect?.kind === 'agent_run' &&
+    (effect.execution.projectId == null || effect.execution.projectId === '')
+  );
+}
 
 export function decodeScheduledTaskQueryInput(value: unknown): ScheduledTaskQueryInput {
   const record = requireRecord(value, 'ScheduledTask query input');

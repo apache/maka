@@ -64,70 +64,36 @@ export type SkillCatalogManagedUpdateMutationTypeContract = [
 ];
 
 describe('Runtime Host Skill catalog protocol', () => {
-  test('declares the four frozen ready operations and their error sets', () => {
-    assert.deepEqual(Object.keys(SKILL_CATALOG_OPERATION_SPECS).sort(), [
-      'skill.catalog.invocable.query',
-      'skill.catalog.mutate',
-      'skill.catalog.preview-update',
-      'skill.catalog.query',
-    ]);
-    const queryErrors = [
-      'host_not_ready',
-      'host_draining',
-      'operation_unavailable',
-      'invalid_request',
-      'persistence_failed',
-      'internal_failure',
-    ];
-    assert.deepEqual(
-      {
-        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.invocable.query'].mode,
-        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.invocable.query'].availability,
-        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.invocable.query'].errors,
-      },
-      { mode: 'query', availability: 'ready', errors: queryErrors },
-    );
-    assert.deepEqual(
-      {
-        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].mode,
-        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].availability,
-        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].errors,
-      },
-      { mode: 'query', availability: 'ready', errors: queryErrors },
-    );
-    assert.deepEqual(
-      {
-        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.preview-update'].mode,
-        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.preview-update'].availability,
-        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.preview-update'].errors,
-      },
-      { mode: 'query', availability: 'ready', errors: queryErrors },
-    );
-    assert.deepEqual(
-      {
-        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.mutate'].mode,
-        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.mutate'].availability,
-        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.mutate'].errors,
-      },
-      {
-        mode: 'command',
-        availability: 'ready',
-        errors: [...queryErrors, 'commit_outcome_unknown'],
-      },
-    );
+  test('only treats explicit Host-path Skill workspaces as Host-path input', () => {
     assert.equal(
       SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].usesHostPaths?.({
         kind: 'start',
         context: { workspace: { kind: 'project', projectId: 'project-1' } },
         view: 'governance',
       }),
-      true,
+      false,
     );
     assert.equal(
       SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].usesHostPaths?.({
         kind: 'start',
         context: CONTEXT,
         view: 'governance',
+      }),
+      true,
+    );
+    assert.equal(
+      SKILL_CATALOG_OPERATION_SPECS['skill.catalog.mutate'].usesHostPaths?.({
+        context: { workspace: { kind: 'project', projectId: 'project-1' } },
+        expectedRevision: REVISION,
+        mutation: { kind: 'create_starter' },
+      }),
+      false,
+    );
+    assert.equal(
+      SKILL_CATALOG_OPERATION_SPECS['skill.catalog.preview-update'].usesHostPaths?.({
+        context: CONTEXT,
+        expectedRevision: REVISION,
+        ref: 'workspace:legacy:research-brief',
       }),
       true,
     );
@@ -398,8 +364,10 @@ describe('Runtime Host Skill catalog protocol', () => {
       const bundledItems = result.items.filter(
         (item): item is SkillCatalogBundledItem => item.kind === 'bundled',
       );
-      assert.ok(bundledItems.length > 0);
-      assert.ok(bundledItems.some((item) => item.id === 'deep-research'));
+      assert.deepEqual(
+        bundledItems.map((item) => item.id),
+        ['computer-use'],
+      );
       assert.equal(
         bundledItems.every((item) => item.category.length > 0),
         true,

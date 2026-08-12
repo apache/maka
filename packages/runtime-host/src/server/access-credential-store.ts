@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import {
   type AccessCredentialPrincipalKind,
   HOST_OPERATION_SPECS,
+  operationAllowsRemoteOwner,
   type OperationKey,
 } from '../protocol/index.js';
 
@@ -51,7 +52,7 @@ export function createAccessCredentialFile(
 }
 
 export function issuedAccessGrants(grants: readonly OperationKey[]): readonly OperationKey[] {
-  return validateGrants([...new Set<OperationKey>(['host.status', ...grants])]);
+  return validateIssuedGrants([...new Set<OperationKey>(['host.status', ...grants])]);
 }
 
 export function assertAccessCredentialFileCapacity(file: AccessCredentialFile): void {
@@ -155,7 +156,9 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
   if (new Set(rawOperationGrants).size !== rawOperationGrants.length) {
     throw new Error('Duplicate Runtime Host access operation grant');
   }
-  const operationGrants = validateGrants(rawOperationGrants);
+  const operationGrants = Object.freeze(
+    validateStoredGrants(rawOperationGrants).filter(operationAllowsRemoteOwner),
+  );
   if (!operationGrants.includes('host.status')) {
     throw new Error('Runtime Host access credential lacks its liveness grant');
   }
@@ -184,13 +187,20 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
   };
 }
 
-function validateGrants(grants: readonly OperationKey[]): readonly OperationKey[] {
+function validateStoredGrants(grants: readonly OperationKey[]): readonly OperationKey[] {
   for (const grant of grants) {
     if (!Object.hasOwn(HOST_OPERATION_SPECS, grant)) {
       throw new RuntimeHostAccessInputError(`Unknown Runtime Host operation grant: ${grant}`);
     }
-    if (grant === 'access.credential.issue' || grant === 'access.credential.revoke') {
-      throw new RuntimeHostAccessInputError('Access credential administration is local-owner only');
+  }
+  return Object.freeze([...grants]);
+}
+
+function validateIssuedGrants(grants: readonly OperationKey[]): readonly OperationKey[] {
+  validateStoredGrants(grants);
+  for (const grant of grants) {
+    if (!operationAllowsRemoteOwner(grant)) {
+      throw new RuntimeHostAccessInputError(`Runtime Host operation ${grant} is local-owner only`);
     }
   }
   return Object.freeze([...grants]);

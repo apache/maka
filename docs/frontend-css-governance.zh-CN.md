@@ -47,27 +47,15 @@ Astryx reset 和组件层在前，Maka base token 与产品 `components` 在后�
   - radius
   - 未纳入约束体系的 z-index
 
-## 6. Dead CSS 规则
+## 6. 这些规则靠什么保证
 
-- dead CSS 检查脚本是：
-  - `scripts/check-dead-css.mjs`
-- 当前扫描范围包括：
-  - `apps/desktop/src/renderer/styles/**/*.css`
-  - `apps/desktop/src/renderer/reference-shell.css`
-- 如果某个 class 是运行时动态生成、源码静态搜索不到，必须在脚本 allowlist 中明确登记。
-- 如果 dead class 数量变化，只有在评审明确确认的前提下，才允许修改 `scripts/check-dead-css-baseline.json`。
-
-## 7. 这些规则靠什么保证
-
-靠评审时的约定，加上仍然独立存在的快速脚本：`check-dead-css`、`check-a11y`、
-`check-copy`、`check-console`。原来用测试把这些规则再断言一遍的源码扫描套件已经
-删除——它让每次重构都要顺手改写自己的护栏，抓到的却只是 linter 该抓的东西。
+这些规则靠评审保证。静态正确性交给 Biome、Knip 和 typecheck；accessibility
+保留聚焦的检查。CSS 使用关系和 Story 文案不再由全仓 regex baseline 决定。
 
 - renderer CSS 的行为在它真正渲染的地方验证：Storybook、app，或对真实界面的 e2e 断言。
-- 真的值得机器强制的规则，写成 `scripts/check-*.mjs`（快、单一职责、不依赖构建），
-  而不是写成一个正则扫源码树的测试。
+- selector 应随其 source 或 surface 一起删除，不维护运行时字符串 allowlist。
 
-## 8. 推荐改动顺序
+## 7. 推荐改动顺序
 
 调整 renderer CSS 时，建议按下面顺序推进：
 
@@ -76,7 +64,7 @@ Astryx reset 和组件层在前，Maka base token 与产品 `components` 在后�
 3. 清理 dead selector。
 4. 只有在 primitive / layer 架构已经稳定后，再移除剩余 `!important`。
 
-## 9. 当前治理原则
+## 8. 当前治理原则
 
 - 先保证 CI 护栏可信，再做结构收敛。
 - 先删 dead CSS，再谈样式“美化性重构”。

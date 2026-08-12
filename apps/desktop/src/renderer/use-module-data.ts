@@ -40,6 +40,7 @@ export function useAppShellModuleData(options: {
   managedSkillSources: ManagedSkillSourceEntry[];
   bundledSkillCatalog: BundledSkillCatalogEntry[];
   scheduledTasks: ScheduledTask[];
+  clearRuntimeHostModuleData(): void;
 } {
   const { uiLocale, isSkillsSurfaceActive, isScheduledTasksSurfaceActive, toastApi } = options;
   const [skills, setSkills] = useState<SkillEntry[]>([]);
@@ -64,11 +65,19 @@ export function useAppShellModuleData(options: {
     toastApi,
   });
 
+  function clearRuntimeHostModuleData(): void {
+    setSkills([]);
+    setManagedSkillSources([]);
+    setBundledSkillCatalog([]);
+    setScheduledTasks([]);
+  }
+
   return {
     skills,
     managedSkillSources,
     bundledSkillCatalog,
     scheduledTasks,
+    clearRuntimeHostModuleData,
     ...scheduledTaskActions,
     ...skillActions,
   };

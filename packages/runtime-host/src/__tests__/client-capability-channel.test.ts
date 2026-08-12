@@ -124,3 +124,70 @@ test('Client Capability channel runs a self-described Host service through admis
   ]);
   channel.close(new Error('test complete'));
 });
+
+test('Client Capability channel rejects Host paths before invoking a path-isolated provider', async () => {
+  let registrationId = '';
+  let callCount = 0;
+  const written: unknown[] = [];
+  const provider: ClientCapabilityProvider = {
+    offers: () => [
+      {
+        offerId: 'path-isolated',
+        version: '0',
+        affinity: 'call',
+        hostPathAccess: 'none',
+        label: 'Path isolated',
+        tools: [
+          {
+            serverId: 'fixture',
+            name: 'inspect',
+            inputSchema: { type: 'object' },
+          },
+        ],
+      },
+    ],
+    call: async () => {
+      callCount += 1;
+      return { content: [] };
+    },
+  };
+  const channel = new ClientCapabilityChannel({
+    write: async (frame) => {
+      written.push(frame);
+    },
+    replace: async (input) => {
+      registrationId = input.registrationId;
+      return { registrationId, revision: 1 };
+    },
+    unregister: async (input) => ({ registrationId: input.registrationId, revision: 2 }),
+    onFailure: (error) => {
+      throw error;
+    },
+  });
+
+  await channel.replace(provider, 1_000);
+  channel.accept({
+    kind: 'client.capability.call',
+    invocationId: 'remote-path',
+    registrationId,
+    offerId: 'path-isolated',
+    serverId: 'fixture',
+    toolName: 'inspect',
+    sessionId: 'session',
+    turnId: 'turn',
+    toolCallId: 'tool-call',
+    cwd: '/srv/runtime-host',
+    arguments: {},
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(callCount, 0);
+  assert.deepEqual(written, [
+    {
+      kind: 'client.capability.rejected',
+      invocationId: 'remote-path',
+      message: 'Client Capability does not allow Runtime Host paths',
+    },
+  ]);
+  channel.close(new Error('test complete'));
+});

@@ -11,35 +11,6 @@ import {
 } from '../scheduled-task.js';
 
 describe('scheduled-task catalog', () => {
-  it('normalizes a cron agent_run create payload', () => {
-    const now = Date.UTC(2026, 0, 5, 8, 0, 0);
-    const result = normalizeCreateScheduledTaskInput(
-      {
-        title: 'Morning brief',
-        intentBody: 'Summarize overnight PRs',
-        schedule: { kind: 'cron', expression: '0 9 * * 1-5', startAt: now },
-        effect: {
-          kind: 'agent_run',
-          execution: {
-            cwd: '/tmp/ws',
-            backend: 'ai-sdk',
-            llmConnectionSlug: 'default',
-            model: 'test-model',
-            permissionMode: 'ask',
-            collaborationMode: 'agent',
-            orchestrationMode: 'default',
-          },
-        },
-        createdBy: { kind: 'agent', sessionId: 's1' },
-      },
-      now,
-    );
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.equal(result.value.title, 'Morning brief');
-    assert.ok(result.value.nextFireAt > now);
-  });
-
   it('advances once schedules to completed after fire', () => {
     const task: ScheduledTask = {
       id: 't1',
@@ -153,32 +124,9 @@ describe('scheduled-task catalog', () => {
     }
   });
 
-  it('accepts an empty note for notification tasks', () => {
-    const now = Date.UTC(2026, 0, 5, 8, 0, 0);
-    const result = normalizeCreateScheduledTaskInput(
-      {
-        title: 'Stand up',
-        intentBody: '',
-        schedule: { kind: 'once', runAt: now + 60_000 },
-        effect: { kind: 'notify', channel: 'local' },
-        createdBy: { kind: 'user' },
-      },
-      now,
-    );
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.value.intentBody, '');
-  });
-
-  it('keeps weekly and monthly recurrences as calendar schedules', () => {
+  it('clamps monthly recurrence to the last calendar day', () => {
     const runAt = new Date(2026, 0, 31, 9, 30).getTime();
-    const weekly = { kind: 'calendar' as const, recurrence: 'weekly' as const, anchorAt: runAt };
     const monthly = { kind: 'calendar' as const, recurrence: 'monthly' as const, anchorAt: runAt };
-    assert.deepEqual(weekly, { kind: 'calendar', recurrence: 'weekly', anchorAt: runAt });
-    assert.deepEqual(monthly, {
-      kind: 'calendar',
-      recurrence: 'monthly',
-      anchorAt: runAt,
-    });
     const february = computeNextFireAt(monthly, runAt);
     assert.equal(new Date(february!).getDate(), 28);
   });

@@ -6,7 +6,6 @@ import type { UiLocale } from './ui-locale.js';
 export type E2eFixtureScenario =
   | 'fetched-empty'
   | 'turn-narrative'
-  | 'artifact-pane'
   | 'settings-data'
   | 'settings-bots-onboarding'
   | 'settings-general'
@@ -32,6 +31,5 @@ export interface E2eFixtureState {
   sidebarCollapsed?: boolean;
   workbarCollapsed?: boolean;
   workbarTab?: 'review' | 'terminal' | 'tasks' | 'browser' | 'files' | 'inspector';
-  workbarPreview?: boolean;
   botOnboardingProvider?: BotOnboardingProvider;
 }

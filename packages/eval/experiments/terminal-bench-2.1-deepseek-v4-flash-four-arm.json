@@ -16,6 +16,19 @@
       "trialsRootEnv": "MAKA_EVAL_TRIALS_DIR",
       "containerCwd": "/app",
       "environment": { "type": "docker", "delete": true },
+      "preparationEnvironment": [
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH",
+        "DOCKER_CONFIG",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy"
+      ],
       "mounts": [
         {
           "sourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
