@@ -55,14 +55,7 @@ describe('SqliteSessionMetadataStore', () => {
             session_id, sequence, message_id, message_type, message_ts, record_json
           ) VALUES (?, ?, ?, ?, ?, ?)
         `)
-        .run(
-          'session-1',
-          104,
-          'message-legacy',
-          'user',
-          5,
-          incompatible,
-        );
+        .run('session-1', 104, 'message-legacy', 'user', 5, incompatible);
       database.close();
 
       const store = createSqliteSessionMetadataStore(path);
