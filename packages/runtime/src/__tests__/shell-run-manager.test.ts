@@ -1779,6 +1779,7 @@ describe('ShellRunProcessManager', () => {
 
   test('restores the trailing PTY flush after a queued control aborts before commit', async () => {
     const cwd = await workspace();
+    const dirtyTrigger = join(cwd, 'emit-dirty');
     const dirtyWritten = join(cwd, 'dirty-written');
     const store = createSqliteShellRunStore(await workspace());
     // The test owns flush timing: no automatic flush fires until it says so, so the
@@ -1792,18 +1793,17 @@ describe('ShellRunProcessManager', () => {
       shellInput({
         cwd,
         command: nodeCommand(`
-        const { writeFileSync } = require('node:fs');
+        const { existsSync, writeFileSync } = require('node:fs');
         process.stdin.setRawMode?.(true);
         process.stdin.resume();
         process.stdout.write('READY\\n');
-        let controlReceived = false;
         let protocolReply = Buffer.alloc(0);
+        const trigger = setInterval(() => {
+          if (!existsSync(${JSON.stringify(dirtyTrigger)})) return;
+          clearInterval(trigger);
+          process.stdout.write('DIRTY\\n\\u001b[5n');
+        }, 5);
         process.stdin.on('data', (chunk) => {
-          if (!controlReceived) {
-            controlReceived = true;
-            process.stdout.write('DIRTY\\n\\u001b[5n');
-            return;
-          }
           protocolReply = Buffer.concat([protocolReply, chunk]);
           if (protocolReply.includes(Buffer.from('\\u001b[0n'))) {
             writeFileSync(${JSON.stringify(dirtyWritten)}, 'written');
@@ -1822,12 +1822,7 @@ describe('ShellRunProcessManager', () => {
     try {
       await waitForPtyText(manager, initial.ref, /READY/);
       const beforeDirty = await store.readShellRun('session-1', 'shell-run-1');
-      await manager.writeStdin({
-        sessionId: 'session-1',
-        ref: initial.ref,
-        input: 'emit',
-        abortSignal: NO_ABORT,
-      });
+      await writeFile(dirtyTrigger, 'emit');
       await waitUntil(async () => {
         try {
           return (await readFile(dirtyWritten, 'utf8')) === 'written';
