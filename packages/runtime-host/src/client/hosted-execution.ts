@@ -53,14 +53,9 @@ export async function runHostedExecutionWithDependencies(
     const cause = connected.kind === 'failed' ? connected.reason : connected.kind;
     return indeterminate(input.execution.executionId, `Runtime Host did not start: ${cause}`);
   }
-  if (input.signal?.aborted) {
-    await connected.connection.close().catch(() => undefined);
-    await connected.host.settle(input.hostSettlementTimeoutMs ?? 15_000);
-    return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
-  }
-
   let projection: HostedExecutionProjection;
   try {
+    input.signal?.throwIfAborted();
     const target = input.execution.session.modelTarget;
     if (target.kind === 'explicit') {
       if (!input.baseUrl) throw new Error('Explicit model target requires baseUrl');
