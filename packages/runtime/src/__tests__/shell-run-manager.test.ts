@@ -1195,6 +1195,42 @@ describe('ShellRunProcessManager', () => {
     assert.equal(manager.livePtyCount(), 0);
   });
 
+  test('preserves the caller environment through a PowerShell PTY', {
+    skip: process.platform === 'win32' ? false : 'Windows PowerShell 5.1 regression',
+  }, async () => {
+    const shell = windowsPowerShellPlan();
+    assert.ok(shell, 'Windows PowerShell 5.1 must exist on the Windows baseline runner');
+    const marker = 'maka-pty-caller-env';
+    const previousHostOnly = process.env.MAKA_PTY_HOST_ONLY;
+    process.env.MAKA_PTY_HOST_ONLY = 'must-not-leak';
+    try {
+      const manager = await createTestManager();
+      const initial = await manager.runBackgroundBash(
+        shellInput({
+          cwd: await workspace(),
+          command:
+            'Write-Output "marker=$env:MAKA_PTY_CALLER_MARKER"; Write-Output "host=$env:MAKA_PTY_HOST_ONLY"',
+          pty: true,
+          shell,
+          env: { MAKA_PTY_CALLER_MARKER: marker },
+        }),
+      );
+      const result = await waitForTerminalShellRun(manager, initial.ref);
+
+      assert.equal(result.status, 'completed');
+      assert.ok(result.output);
+      assert.equal(result.output.mode, 'pty');
+      if (result.output.mode !== 'pty') throw new Error('expected pty output');
+      const output = terminalText(result.output);
+      assert.match(output, new RegExp(`marker=${marker}`));
+      assert.match(output, /host=\r?\n/u);
+      assert.doesNotMatch(output, /must-not-leak/u);
+    } finally {
+      if (previousHostOnly === undefined) delete process.env.MAKA_PTY_HOST_ONLY;
+      else process.env.MAKA_PTY_HOST_ONLY = previousHostOnly;
+    }
+  });
+
   test('writes semantic text and Enter actions through a real PTY', async () => {
     const manager = await createTestManager();
     const initial = await manager.runBackgroundBash(
