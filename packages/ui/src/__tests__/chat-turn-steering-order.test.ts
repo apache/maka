@@ -12,9 +12,6 @@ test('renders steering where it arrived in the assistant timeline', () => {
     status: 'completed',
     partialOutputRetained: false,
     user: { id: 'original', role: 'user', text: 'original request', ts: 1 },
-    userInterjections: [
-      { id: 'steer-1', role: 'user', text: 'inserted instruction', ts: 3 },
-    ],
     tools: [],
     notes: [],
     startedAt: 1,

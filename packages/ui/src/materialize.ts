@@ -18,7 +18,10 @@ import type {
 import type { ToolActivityStatus } from '@maka/core/tool-result-status';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
 import type { StoredMessage, TurnRecord, TurnStatus, UserMessage } from '@maka/core/session';
-import type { LiveTurnProjection } from "./live-turn-projection.js";
+import type {
+  LiveSteeringProjection,
+  LiveTurnProjection,
+} from "./live-turn-projection.js";
 
 export { isCancelledToolResultContent, isInFlightToolStatus, toolResultActivityStatus } from '@maka/core/tool-result-status';
 
@@ -355,8 +358,6 @@ export interface TurnViewModel {
   errorClass?: string;
   partialOutputRetained: boolean;
   user?: ChatItem;
-  /** User instructions inserted while this turn was already running. */
-  userInterjections?: ChatItem[];
   tools: ToolActivityItem[];
   assistant?: ChatItem;
   /**
@@ -403,7 +404,7 @@ export function overlayLiveTurn(
   if (
     targetIndex >= 0
     && liveTurn.steps.length === 0
-    && (liveTurn.steering?.length ?? 0) === 0
+    && (liveTurn.pendingSteering?.length ?? 0) === 0
   ) {
     return turns;
   }
@@ -457,28 +458,34 @@ export function overlayLiveTurn(
   }
   const persistedUserIds = new Set([
     ...(current.user ? [current.user.id] : []),
-    ...(current.userInterjections ?? []).map((message) => message.id),
+    ...current.timeline.flatMap((item) => item.kind === "user" ? [item.messageId] : []),
   ]);
-  const pendingSteering = (liveTurn.steering ?? []).filter(
-    (message) => !persistedUserIds.has(message.id),
-  );
-  const appendSteeringAfter = (stepId: string | undefined): void => {
-    for (const message of pendingSteering) {
-      if (message.afterStepId !== stepId) continue;
+  const appendLiveSteering = (
+    messages: readonly LiveSteeringProjection[],
+  ): void => {
+    for (const message of messages) {
+      if (persistedUserIds.has(message.id)) continue;
       timeline.push({
         kind: "user",
         message: {
           id: message.id,
           role: "user",
-          text: message.text,
+          text: message.content.displayText ?? message.content.text,
           ts: message.ts,
+          ...(message.content.attachments?.length
+            ? { attachments: message.content.attachments }
+            : {}),
+          ...(message.content.quotes?.length ? { quotes: message.content.quotes } : {}),
+          ...(message.content.inlineReferences !== undefined
+            ? { inlineReferences: message.content.inlineReferences }
+            : {}),
         },
         messageId: message.id,
       });
     }
   };
-  appendSteeringAfter(undefined);
   for (const step of liveTurn.steps) {
+    appendLiveSteering(step.leadingSteering ?? []);
     const contentOrder = step.contentOrder ?? [
       ...(step.thinking ? ["thinking" as const] : []),
       ...(step.text ? ["text" as const] : []),
@@ -511,25 +518,11 @@ export function overlayLiveTurn(
           timeline.push({ kind: "tools", items: stepTools });
       }
     }
-    appendSteeringAfter(step.stepId);
   }
+  appendLiveSteering(liveTurn.pendingSteering ?? []);
   const mergedTimeline = mergeAdjacentTimeline(timeline);
-  const userInterjections = [
-    ...(current.userInterjections ?? []),
-    ...(liveTurn.steering ?? []).flatMap((message) =>
-      persistedUserIds.has(message.id)
-        ? []
-        : [{
-            id: message.id,
-            role: "user" as const,
-            text: message.text,
-            ts: message.ts,
-          }],
-    ),
-  ];
   const next = {
     ...current,
-    ...(userInterjections.length > 0 ? { userInterjections } : {}),
     tools: timelineTools(mergedTimeline),
     timeline: mergedTimeline,
   };
@@ -675,8 +668,6 @@ export function materializeTurns(
       const user = chatItemFromUserMessage(message);
       if (!turn.user) {
         turn.user = user;
-      } else {
-        turn.userInterjections = [...(turn.userInterjections ?? []), user];
       }
     } else if (message.type === "assistant") {
       // A turn now holds one AssistantMessage per model step. Concatenate their

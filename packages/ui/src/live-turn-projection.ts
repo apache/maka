@@ -1,4 +1,4 @@
-import type { ProviderRetryEvent, SessionEvent } from '@maka/core/events';
+import type { MessageContent, ProviderRetryEvent, SessionEvent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { materializeToolResultPreviewForActivity } from '@maka/core/tool-result-preview';
@@ -23,6 +23,8 @@ export interface LiveThinkingProjection {
 export interface LiveTurnStepProjection {
   stepId: string;
   contentOrder?: LiveTurnStepContentKind[];
+  /** Steering drained immediately before this provider step began. */
+  leadingSteering?: LiveSteeringProjection[];
   thinking?: LiveThinkingProjection;
   text?: LiveTextProjection;
   tools: ToolActivityItem[];
@@ -40,17 +42,16 @@ export interface LiveTextProjection {
 
 export interface LiveSteeringProjection {
   id: string;
-  text: string;
+  content: MessageContent;
   ts: number;
-  /** The last provider step visible when Runtime acknowledged this message. */
-  afterStepId?: string;
 }
 
 export interface LiveTurnProjection {
   turnId: string;
   phase: 'waiting' | 'streamed';
   terminal?: true;
-  steering?: LiveSteeringProjection[];
+  /** Steering acknowledged after the current content and awaiting its next provider step. */
+  pendingSteering?: LiveSteeringProjection[];
   /**
    * Set by `armLiveTurn` and cleared by the first word the authority says about
    * this turn (`confirmLiveTurn`, or any event carrying the same turnId).
@@ -154,21 +155,17 @@ export function applyLiveTurnEvent(
     const prior = current?.turnId === event.turnId
       ? current
       : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
-    const steering = prior.steering ?? [];
-    if (steering.some((message) => message.id === event.messageId)) {
+    if (liveSteeringMessages(prior).some((message) => message.id === event.messageId)) {
       return confirmed(prior);
     }
     return {
       ...confirmed(prior),
-      steering: [
-        ...steering,
+      pendingSteering: [
+        ...(prior.pendingSteering ?? []),
         {
           id: event.messageId,
-          text: event.content.displayText ?? event.content.text,
+          content: structuredClone(event.content),
           ts: event.ts,
-          ...(prior.steps.at(-1)?.stepId
-            ? { afterStepId: prior.steps.at(-1)!.stepId }
-            : {}),
         },
       ],
     };
@@ -188,7 +185,7 @@ export function applyLiveTurnEvent(
   }
   if (event.type === 'complete') {
     if (!current || current.turnId !== event.turnId) return current;
-    if (current.steps.length === 0 && (current.steering?.length ?? 0) === 0) {
+    if (current.steps.length === 0 && liveSteeringMessages(current).length === 0) {
       return undefined;
     }
     const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
@@ -230,7 +227,16 @@ export function applyLiveTurnEvent(
       ? event.stepId ?? existingToolStep?.stepId ?? `tool:${event.toolUseId}`
       : existingToolStep?.stepId ?? `tool:${event.toolUseId}`;
   const stepIndex = prior.steps.findIndex((step) => step.stepId === stepId);
-  const step = stepIndex >= 0 ? prior.steps[stepIndex]! : { stepId, tools: [] };
+  const isNewStep = stepIndex < 0;
+  const step: LiveTurnStepProjection = isNewStep
+    ? {
+        stepId,
+        tools: [],
+        ...((prior.pendingSteering?.length ?? 0) > 0
+          ? { leadingSteering: prior.pendingSteering }
+          : {}),
+      }
+    : prior.steps[stepIndex]!;
   let nextStep: LiveTurnStepProjection;
   if (event.type === 'thinking_delta') {
     const delta = replaySafeDelta(step.thinking?.sourceEndOffset, event);
@@ -416,7 +422,19 @@ export function applyLiveTurnEvent(
       ? prior.steps.map((candidate, index) => index === stepIndex ? nextStep : candidate)
       : [...prior.steps, nextStep];
   }
-  return { ...priorWithoutRetry, phase: 'streamed', steps };
+  const { pendingSteering: _pendingSteering, ...withoutPendingSteering } = priorWithoutRetry;
+  return {
+    ...(isNewStep ? withoutPendingSteering : priorWithoutRetry),
+    phase: 'streamed',
+    steps,
+  };
+}
+
+function liveSteeringMessages(current: LiveTurnProjection): LiveSteeringProjection[] {
+  return [
+    ...(current.pendingSteering ?? []),
+    ...current.steps.flatMap((step) => step.leadingSteering ?? []),
+  ];
 }
 
 function replaySafeDelta(
@@ -516,7 +534,7 @@ export function reconcileTerminalLiveTurn(
   const assistantIds = new Set(turnMessages.flatMap((message) => message.type === 'assistant' ? [message.id] : []));
   const toolCallIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_call' ? [message.id] : []));
   const toolResultIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_result' ? [message.toolUseId] : []));
-  const steps = current.steps.filter((step) => {
+  let steps = current.steps.filter((step) => {
     if (step.text?.text.length) return true;
     if (step.thinking && !assistantIds.has(step.stepId)) return true;
     const toolsCovered = step.tools.every((tool) => {
@@ -535,10 +553,17 @@ export function reconcileTerminalLiveTurn(
   // every accepted steer. Anything still present only in the live projection
   // was either persisted (and now renders from `messages`) or nacked before
   // persistence; retaining it would leave a ghost user instruction on screen.
-  const steeringSettled = current.terminal === true && current.steering !== undefined;
+  const steeringSettled = current.terminal === true && liveSteeringMessages(current).length > 0;
+  if (steeringSettled) {
+    steps = steps.map((step) => {
+      if (!step.leadingSteering) return step;
+      const { leadingSteering: _leadingSteering, ...withoutSteering } = step;
+      return withoutSteering;
+    });
+  }
   if (steps.length === current.steps.length && !steeringSettled) return current;
   if (steps.length === 0 && current.terminal) return undefined;
   if (!steeringSettled) return { ...current, steps };
-  const { steering: _steering, ...withoutSteering } = current;
+  const { pendingSteering: _pendingSteering, ...withoutSteering } = current;
   return { ...withoutSteering, steps };
 }

@@ -8,7 +8,11 @@ import {
   overlayLiveTurn,
   type TurnTimelineItem,
 } from "../materialize.js";
-import { applyLiveTurnEvent, armLiveTurn } from "../live-turn-projection.js";
+import {
+  applyLiveTurnEvent,
+  armLiveTurn,
+  settleLiveTurnStep,
+} from "../live-turn-projection.js";
 
 describe("materializeChat attachments", () => {
   test("keeps a steering message at its conversational position", () => {
@@ -89,6 +93,51 @@ describe("materializeChat attachments", () => {
     );
   });
 
+  test("keeps a live steering message visible when its preceding step settles first", () => {
+    let live = applyLiveTurnEvent(armLiveTurn("t1"), {
+      type: "text_complete",
+      id: "event-before",
+      messageId: "before-steer",
+      turnId: "t1",
+      ts: 2,
+      text: "working on the original request",
+    })!;
+    live = applyLiveTurnEvent(live, {
+      type: "steering_message",
+      id: "event-steer",
+      messageId: "steer-1",
+      turnId: "t1",
+      ts: 3,
+      content: { text: "inserted instruction" },
+    })!;
+    live = settleLiveTurnStep(live, "before-steer")!;
+
+    const [turn] = overlayLiveTurn(
+      materializeTurns([
+        { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
+        {
+          type: "assistant",
+          id: "before-steer",
+          turnId: "t1",
+          ts: 2,
+          text: "working on the original request",
+          modelId: "fixture",
+        },
+      ]),
+      live,
+    );
+
+    assert.deepEqual(
+      turn?.timeline.map((item) =>
+        item.kind === "user" ? `user:${item.message.text}` : `${item.kind}:${"text" in item ? item.text : ""}`,
+      ),
+      [
+        "text:working on the original request",
+        "user:inserted instruction",
+      ],
+    );
+  });
+
   test("overlays a steering message immediately and deduplicates its persisted row", () => {
     const settled = materializeTurns([
       { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
@@ -99,19 +148,38 @@ describe("materializeChat attachments", () => {
       messageId: "steer-1",
       turnId: "t1",
       ts: 2,
-      content: { text: "inserted instruction" },
+      content: {
+        text: "model-facing instruction",
+        displayText: "inserted instruction",
+        attachments: [{
+          kind: "code",
+          name: "example.ts",
+          mimeType: "text/typescript",
+          bytes: 12,
+          ref: { kind: "workspace_file", relativePath: "example.ts" },
+        }],
+        quotes: [{ text: "source excerpt", sourceTurnId: "source-turn" }],
+        inlineReferences: [],
+      },
     });
 
     const [overlaid] = overlayLiveTurn(settled, live);
-    assert.deepEqual(overlaid?.userInterjections?.map((message) => message.text), [
-      "inserted instruction",
-    ]);
-    assert.deepEqual(
-      overlaid?.timeline.flatMap((item) =>
-        item.kind === "user" ? [item.message.text] : [],
-      ),
-      ["inserted instruction"],
-    );
+    const liveUser = overlaid?.timeline.find((item) => item.kind === "user")?.message;
+    assert.deepEqual(liveUser, {
+      id: "steer-1",
+      role: "user",
+      text: "inserted instruction",
+      ts: 2,
+      attachments: [{
+        kind: "code",
+        name: "example.ts",
+        mimeType: "text/typescript",
+        bytes: 12,
+        ref: { kind: "workspace_file", relativePath: "example.ts" },
+      }],
+      quotes: [{ text: "source excerpt", sourceTurnId: "source-turn" }],
+      inlineReferences: [],
+    });
 
     const persisted = materializeTurns([
       { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
@@ -119,9 +187,6 @@ describe("materializeChat attachments", () => {
     ]);
     const [deduplicated] = overlayLiveTurn(persisted, live);
     assert.equal(deduplicated?.user?.text, "original request");
-    assert.deepEqual(deduplicated?.userInterjections?.map((message) => message.text), [
-      "inserted instruction",
-    ]);
     assert.deepEqual(
       deduplicated?.timeline.flatMap((item) =>
         item.kind === "user" ? [item.message.text] : [],

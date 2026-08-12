@@ -556,7 +556,9 @@ export const TurnView = memo(function TurnView(props: {
         const ownsTurnChrome = segmentIndex === lastAssistantSegment;
         return (
           <LocalizedChatMessage
-            key={`assistant-${segment.items[0] ? foldedTimelineEntryKey(segment.items[0], 0) : 'empty'}`}
+            key={`assistant-${
+              segment.items[0] ? foldedTimelineEntryKey(segment.items[0], 0) : 'empty'
+            }`}
             accessibleLabel={copy.assistantAriaLabel}
             sender="assistant"
             data-turn-status={turn.status}
@@ -564,33 +566,35 @@ export const TurnView = memo(function TurnView(props: {
           >
             <div className="maka-assistant-answer-content">
               {ownsTurnChrome && turn.status === 'aborted' && (
-              <Marker variant="aborted" role="status">
-                <Ban size={ICON_SIZE.meta} aria-hidden="true" />
-                <em>{turnAbortMarkerLabel(turn.abortSource, locale)}</em>
-              </Marker>
+                <Marker variant="aborted" role="status">
+                  <Ban size={ICON_SIZE.meta} aria-hidden="true" />
+                  <em>{turnAbortMarkerLabel(turn.abortSource, locale)}</em>
+                </Marker>
               )}
               {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
-              <Marker variant="failed-banner" role="alert">
-                <Marker as="span" variant="failed-icon" aria-hidden="true">
-                  <AlertOctagon size={ICON_SIZE.control} />
-                </Marker>
-                <span>{props.failedReasonLabel}</span>
-                {(props.safeResumeAction?.detail ?? props.failedRecoveryLabel) && (
-                  <Marker as="span" variant="failed-recovery">
-                    {props.safeResumeAction?.detail ?? props.failedRecoveryLabel}
+                <Marker variant="failed-banner" role="alert">
+                  <Marker as="span" variant="failed-icon" aria-hidden="true">
+                    <AlertOctagon size={ICON_SIZE.control} />
                   </Marker>
-                )}
-                {props.safeResumeAction && (
-                  <UiButton
-                    variant="ghost"
-                    size="sm"
-                    className="maka-turn-failed-resume"
-                    isDisabled={props.safeResumeAction.pending}
-                    onClick={props.safeResumeAction.onResume}
-                    label={props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume}
-                  />
-                )}
-              </Marker>
+                  <span>{props.failedReasonLabel}</span>
+                  {(props.safeResumeAction?.detail ?? props.failedRecoveryLabel) && (
+                    <Marker as="span" variant="failed-recovery">
+                      {props.safeResumeAction?.detail ?? props.failedRecoveryLabel}
+                    </Marker>
+                  )}
+                  {props.safeResumeAction && (
+                    <UiButton
+                      variant="ghost"
+                      size="sm"
+                      className="maka-turn-failed-resume"
+                      isDisabled={props.safeResumeAction.pending}
+                      onClick={props.safeResumeAction.onResume}
+                      label={
+                        props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume
+                      }
+                    />
+                  )}
+                </Marker>
               )}
               {/* The turn timeline is the rendering source of truth
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
@@ -614,49 +618,57 @@ export const TurnView = memo(function TurnView(props: {
                 ),
               )}
               {ownsTurnChrome && props.liveStreaming && (
-              <>
-                {props.liveStreaming.providerRetry ? (
-                  <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
-                ) : (
-                  props.liveStreaming.runningStatus && <TurnRunningStatus startedAt={turn.startedAt} />
-                )}
-              </>
+                <>
+                  {props.liveStreaming.providerRetry ? (
+                    <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
+                  ) : (
+                    props.liveStreaming.runningStatus && (
+                      <TurnRunningStatus startedAt={turn.startedAt} />
+                    )
+                  )}
+                </>
               )}
             </div>
             {ownsTurnChrome && reverseBadges.length > 0 && (
-            <Marker variant="lineage-row-reverse" aria-label={copy.derivativesAriaLabel}>
-              {reverseBadges.map((badge) => (
-                <UiButton
-                  key={badge.id}
-                  variant="ghost"
-                  size="sm"
-                  className={markerVariants({ variant: 'lineage-badge' })}
-                  data-direction="reverse"
-                  tooltip={badge.tooltip ?? badge.label}
-                  onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
-                  icon={<GitBranch size={ICON_SIZE.meta} aria-hidden="true" />}
-                  label={badge.label}
-                />
-              ))}
-            </Marker>
+              <Marker variant="lineage-row-reverse" aria-label={copy.derivativesAriaLabel}>
+                {reverseBadges.map((badge) => (
+                  <UiButton
+                    key={badge.id}
+                    variant="ghost"
+                    size="sm"
+                    className={markerVariants({ variant: 'lineage-badge' })}
+                    data-direction="reverse"
+                    tooltip={badge.tooltip ?? badge.label}
+                    onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
+                    icon={<GitBranch size={ICON_SIZE.meta} aria-hidden="true" />}
+                    label={badge.label}
+                  />
+                ))}
+              </Marker>
             )}
-            {ownsTurnChrome && (props.liveStreaming ? (
-            /* #642: reserved-height footer placeholder while streaming — same
-               `mt-0.5 h-8` box the real footer occupies, so the live→settled
-               swap is height-neutral (the footer slot never grows/shrinks). No
-               actionable footer here: the live tail's derived status is
-               `completed`, so a real `TurnFooterActions` would render a
-               clickable regenerate/branch on a still-streaming answer. */
-            (<div aria-hidden="true" className="maka-live-turn-footer-placeholder" />)
-            ) : (
-            props.footerActions && props.footerActions.length > 0 && (
-              <TurnFooterActions
-                actions={props.footerActions}
-                onAction={props.onFooterAction ? (actionId) => props.onFooterAction?.(turn.turnId, actionId) : undefined}
-                assistantText={finalAssistantReplyText(turn)}
-              />
-            )
-            ))}
+            {ownsTurnChrome &&
+              (props.liveStreaming ? (
+                /* #642: reserved-height footer placeholder while streaming — same
+                   `mt-0.5 h-8` box the real footer occupies, so the live→settled
+                   swap is height-neutral (the footer slot never grows/shrinks). No
+                   actionable footer here: the live tail's derived status is
+                   `completed`, so a real `TurnFooterActions` would render a
+                   clickable regenerate/branch on a still-streaming answer. */
+                <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
+              ) : (
+                props.footerActions &&
+                props.footerActions.length > 0 && (
+                  <TurnFooterActions
+                    actions={props.footerActions}
+                    onAction={
+                      props.onFooterAction
+                        ? (actionId) => props.onFooterAction?.(turn.turnId, actionId)
+                        : undefined
+                    }
+                    assistantText={finalAssistantReplyText(turn)}
+                  />
+                )
+              ))}
           </LocalizedChatMessage>
         );
       })}

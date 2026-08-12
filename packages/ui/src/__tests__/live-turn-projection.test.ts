@@ -525,11 +525,21 @@ describe('reconcileTerminalLiveTurn', () => {
   it('drops terminal live steering even while other uncovered evidence remains', () => {
     const withSteering: LiveTurnProjection = {
       ...toolOnly,
-      steering: [{ id: 'steer-1', text: 'change direction', ts: 2 }],
+      pendingSteering: [{ id: 'steer-1', content: { text: 'change direction' }, ts: 2 }],
     };
 
     assert.deepEqual(reconcileTerminalLiveTurn(withSteering, []), toolOnly);
     assert.equal(reconcileTerminalLiveTurn({ ...withSteering, steps: [] }, []), undefined);
+  });
+
+  it('drops terminal steering already bound to a provider step', () => {
+    const message = { id: 'steer-1', content: { text: 'change direction' }, ts: 2 };
+    const withSteering: LiveTurnProjection = {
+      ...toolOnly,
+      steps: [{ ...toolOnly.steps[0]!, leadingSteering: [message] }],
+    };
+
+    assert.deepEqual(reconcileTerminalLiveTurn(withSteering, []), toolOnly);
   });
 
   it('retains interrupted live output until a persisted result covers it', () => {
