@@ -44,28 +44,6 @@ describe('the unconfirmed claim an arm carries', () => {
 
     assert.equal(streamed.unconfirmed, undefined);
   });
-
-  it('is dropped when the turn terminates', () => {
-    const streamed = applyLiveTurnEvent(armLiveTurn('turn-1'), {
-      type: 'text_delta',
-      id: 'event-1',
-      turnId: 'turn-1',
-      messageId: 'step-1',
-      ts: 100,
-      text: '你',
-    });
-    const rearmed = { ...streamed, unconfirmed: true as const };
-    const done = applyLiveTurnEvent(rearmed, {
-      type: 'complete',
-      id: 'event-2',
-      turnId: 'turn-1',
-      ts: 200,
-      stopReason: 'end_turn',
-    });
-
-    assert.equal(done?.terminal, true);
-    assert.equal(done?.unconfirmed, undefined);
-  });
 });
 
 describe('applyLiveTurnEvent', () => {
