@@ -156,12 +156,18 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       (error: unknown) =>
         error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
     );
+    const remoteSkills = await remote.request('skill.catalog.query', {
+      kind: 'start',
+      context: {
+        workspace: { kind: 'project', projectId: registeredProjectId },
+      },
+      view: 'governance',
+    });
+    assert.equal(remoteSkills.kind, 'page');
     await assert.rejects(
       remote.request('skill.catalog.query', {
         kind: 'start',
-        context: {
-          workspace: { kind: 'project', projectId: registeredProjectId },
-        },
+        context: { workspace: { kind: 'host_path', path: canonicalRoot } },
         view: 'governance',
       }),
       (error: unknown) =>
