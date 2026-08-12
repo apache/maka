@@ -226,6 +226,42 @@ test('rejects a current Workflow registry with missing ScheduledTask authority',
   }
 });
 
+test('rejects a null operational scope without migrating', async () => {
+  await assertCurrentDatabaseRejected(
+    'null-scope',
+    (database) => {
+      database.exec(`
+        INSERT INTO operational_schema_migrations(scope, version, applied_at) VALUES (NULL, 0, 0);
+        PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION - 1};
+      `);
+    },
+    /invalid scope/,
+    (database) =>
+      assert.equal(
+        (database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        SQLITE_RUNTIME_SCHEMA_VERSION - 1,
+      ),
+  );
+});
+
+test('rejects a nonempty database with no operational registry', async () => {
+  await assertCurrentDatabaseRejected(
+    'missing-registry',
+    (database) =>
+      database.exec(
+        'DROP TABLE operational_schema_migrations; DROP TABLE workflow_task_ledger_events',
+      ),
+    /registry is missing from a nonempty database/,
+    (database) =>
+      assert.equal(
+        database
+          .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_task_ledger_events'")
+          .get(),
+        undefined,
+      ),
+  );
+});
+
 test('cleans the known removed Automation v2 scope', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-automation-v2-'));
   const databasePath = join(root, 'runtime.sqlite');
@@ -592,6 +628,29 @@ async function assertReleasedReminderRejected(
         .get(),
       undefined,
     );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function assertCurrentDatabaseRejected(
+  name: string,
+  mutate: (database: DatabaseSync) => void,
+  message: RegExp,
+  verify: (database: DatabaseSync) => void,
+): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), `maka-operational-${name}-`));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const database = new DatabaseSync(databasePath);
+    mutate(database);
+    database.close();
+
+    assert.throws(() => acquireOperationalStateDatabase(root), message);
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    verify(preserved);
     preserved.close();
   } finally {
     await rm(root, { recursive: true, force: true });
