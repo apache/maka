@@ -52,6 +52,8 @@ interface ChatMessageSurfaceProps extends Omit<
   sessionUiController: AppShellSessionUiStateController;
   /** The shell's selected session. Not derived from `activeSession`, which the shell substitutes for an unsaved chat. */
   activeSessionId: string | undefined;
+  /** Advances after Runtime Host has seeded the active session's current live projection. */
+  liveContentSeedRevision: number;
   sessionHealthNotice?: SessionHealthNoticeView;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
   taskReadinessNotice?: TaskReadinessNotice;
@@ -84,6 +86,7 @@ function captureLiveContent(
 export function ChatMessageSurface({
   sessionUiController,
   activeSessionId,
+  liveContentSeedRevision,
   sessionHealthNotice,
   workspaceReadinessRecovery,
   taskReadinessNotice,
@@ -125,13 +128,21 @@ export function ChatMessageSurface({
     isDeepResearchSession(activeSession?.labels),
   );
   const liveTurn = useAppShellSessionUiSelector(sessionUiController, selectLiveTurn, activeSessionId);
-  const [activation, setActivation] = useState({
+  const [activation, setActivation] = useState(() => ({
     sessionId: activeSessionId,
+    seedRevision: liveContentSeedRevision,
     initialLiveContent: captureLiveContent(liveTurn),
-  });
+  }));
   if (activation.sessionId !== activeSessionId) {
     setActivation({
       sessionId: activeSessionId,
+      seedRevision: liveContentSeedRevision,
+      initialLiveContent: captureLiveContent(liveTurn),
+    });
+  } else if (activation.seedRevision !== liveContentSeedRevision) {
+    setActivation({
+      sessionId: activeSessionId,
+      seedRevision: liveContentSeedRevision,
       initialLiveContent: captureLiveContent(liveTurn),
     });
   } else if (
@@ -142,7 +153,11 @@ export function ChatMessageSurface({
       || liveTurn.turnId !== activation.initialLiveContent.turnId
     )
   ) {
-    setActivation({ sessionId: activeSessionId, initialLiveContent: undefined });
+    setActivation({
+      sessionId: activeSessionId,
+      seedRevision: liveContentSeedRevision,
+      initialLiveContent: undefined,
+    });
   }
   // Select the raw per-session record: its identity is the store's own, so a
   // change to any OTHER map cannot rebuild the array. Deriving it in the

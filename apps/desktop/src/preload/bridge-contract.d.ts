@@ -408,7 +408,11 @@ export interface MakaBridge {
     }): Promise<
       { ok: true; path: string } | { ok: false; reason: 'canceled' | 'write_failed' | 'invalid_input' }
     >;
-    subscribeEvents(sessionId: string, handler: (event: SessionEvent) => void): () => void;
+    subscribeEvents(
+      sessionId: string,
+      handler: (event: SessionEvent) => void,
+      onSeeded?: () => void,
+    ): () => void;
     subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
     archive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
     unarchive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;

@@ -35,10 +35,16 @@ test('returning to a live conversation leaves accumulated output settled', async
   ).toBe(0);
 
   await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await expect(page.locator('[data-agents-page]')).toHaveAttribute(
+    'data-sidebar-state',
+    'expanded',
+  );
   const originalSessionId = await sidebar.locator('[data-session-id]').first()
     .getAttribute('data-session-id');
   expect(originalSessionId).toBeTruthy();
+  await composer.fill('draft before switching conversations');
   await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  await expect(composer).toHaveText('');
   await composer.fill('temporary second conversation');
   await composer.press('Enter');
   await expect(page.getByRole('log')).toContainText(
@@ -47,8 +53,49 @@ test('returning to a live conversation leaves accumulated output settled', async
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
     timeout: 20_000,
   });
+  const backgroundSteering = 'background output accumulated while away';
+  await page.evaluate(
+    ({ sessionId, steering }) => new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        unsubscribe();
+        reject(new Error('Timed out waiting for background stream output'));
+      }, 10_000);
+      const unsubscribe = window.maka.sessions.subscribeEvents(sessionId, (event) => {
+        if (event.type !== 'text_delta' || !event.text.includes(steering)) return;
+        window.clearTimeout(timeout);
+        unsubscribe();
+        resolve();
+      });
+      void window.maka.sessions.steer(sessionId, steering).catch((error) => {
+        window.clearTimeout(timeout);
+        unsubscribe();
+        reject(error);
+      });
+    }),
+    { sessionId: originalSessionId!, steering: backgroundSteering },
+  );
+  await page.evaluate(() => {
+    const observed = {
+      texts: [] as string[],
+      maxActiveAnimations: 0,
+    };
+    (window as typeof window & { __makaBackgroundRestoreObserved?: typeof observed })
+      .__makaBackgroundRestoreObserved = observed;
+    new MutationObserver(() => {
+      const bubble = document.querySelector<HTMLElement>('.maka-bubble-streaming');
+      if (!bubble) return;
+      observed.texts.push(bubble.textContent ?? '');
+      observed.maxActiveAnimations = Math.max(
+        observed.maxActiveAnimations,
+        bubble
+          .getAnimations({ subtree: true })
+          .filter((animation) => animation.playState !== 'finished').length,
+      );
+    }).observe(document.body, { childList: true, characterData: true, subtree: true });
+  });
   await sidebar.locator(`[data-session-id="${originalSessionId}"]`).click();
   await liveBubble.waitFor({ state: 'attached' });
+  await expect(liveBubble).toContainText(backgroundSteering);
 
   expect((await liveBubble.textContent())?.split(accumulatedOutput)).toHaveLength(2);
   expect(
@@ -59,6 +106,18 @@ test('returning to a live conversation leaves accumulated output settled', async
           .filter((animation) => animation.playState !== 'finished').length,
     ),
   ).toBe(0);
+  const backgroundRestoreObserved = await page.evaluate(() => (
+    window as typeof window & {
+      __makaBackgroundRestoreObserved?: {
+        texts: string[];
+        maxActiveAnimations: number;
+      };
+    }
+  ).__makaBackgroundRestoreObserved);
+  expect(backgroundRestoreObserved?.texts.some((text) =>
+    text.includes('background output') && !text.includes(backgroundSteering)
+  )).toBe(false);
+  expect(backgroundRestoreObserved?.maxActiveAnimations).toBe(0);
 
   await liveBubble.evaluate((element) => {
     const observed = {
