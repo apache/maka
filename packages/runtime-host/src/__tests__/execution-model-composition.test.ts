@@ -140,7 +140,7 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
   });
 });
 
-test('backend creation admits an enabled statically known model before discovery', async () => {
+test('backend creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
   const modelId = 'deepseek-v4-flash';
   const backend = await createHostAiSdkBackend(
     backendCreationFixture({
@@ -162,6 +162,56 @@ test('backend creation admits an enabled statically known model before discovery
   );
 
   await backend.dispose();
+});
+
+test('backend creation does not bypass a non-empty DeepSeek inventory', async () => {
+  const modelId = 'deepseek-v4-flash';
+  await assert.rejects(
+    createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        modelId,
+        resolveExecutionConnection: async () => ({
+          kind: 'ready',
+          connection: {
+            slug: 'backend-creation-connection',
+            providerType: 'deepseek',
+            enabledModelIds: [modelId],
+            models: [{ id: 'deepseek-chat' }],
+          },
+          networkProxy: { enabled: false },
+          secretMaterial: { connection: { secret: API_KEY } },
+        }),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+      }),
+    ),
+    /Session model is not enabled/,
+  );
+});
+
+test('backend creation does not treat aliased provider metadata as inventory', async () => {
+  const modelId = 'claude-opus-5';
+  await assert.rejects(
+    createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        modelId,
+        resolveExecutionConnection: async () => ({
+          kind: 'ready',
+          connection: {
+            slug: 'backend-creation-connection',
+            providerType: 'opencode-free',
+            enabledModelIds: [modelId],
+            models: [],
+          },
+          networkProxy: { enabled: false },
+          secretMaterial: {},
+        }),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+      }),
+    ),
+    /Session model is not enabled/,
+  );
 });
 
 test('provider dispatch fails closed when the Run Composition commit fails', async () => {

@@ -283,7 +283,7 @@ test('creation on a relay connection honours declared levels via the catalog pro
   assert.equal(persistedThinkingLevel, 'low');
 });
 
-test('creation admits an enabled statically known model before discovery', async () => {
+test('creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
   const modelId = 'deepseek-v4-flash';
   let createAttempts = 0;
   const fixture = createFixture({
@@ -317,6 +317,39 @@ test('creation admits an enabled statically known model before discovery', async
 
   assert.equal(outcome.ok, true);
   assert.equal(createAttempts, 1);
+});
+
+test('creation does not bypass a non-empty DeepSeek inventory', async () => {
+  const modelId = 'deepseek-v4-flash';
+  let createAttempts = 0;
+  const fixture = createFixture({
+    connection: {
+      providerType: 'deepseek',
+      enabledModelIds: [modelId],
+      models: [{ id: 'deepseek-chat' }],
+    },
+    stores: {
+      createStableSession: async () => {
+        createAttempts += 1;
+        assert.fail('A model missing from a non-empty inventory must not be persisted');
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: modelId },
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: { code: 'invalid_request', message: 'Session model is not enabled' },
+  });
+  assert.equal(createAttempts, 0);
 });
 
 test('creation on a relay connection without declarations still fails closed on any thinkingLevel', async () => {

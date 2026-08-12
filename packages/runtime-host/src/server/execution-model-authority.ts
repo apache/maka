@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PROVIDER_DEFAULTS, type RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
-import { modelMetadataIdsForProvider } from '@maka/core/model-metadata';
 import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
@@ -43,6 +42,7 @@ import {
   type HostOAuthExecutionBinding,
 } from './oauth-execution-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
+import { resolveAdmittedConnectionModel } from './connection-model-admission.js';
 
 export interface HostGoalEvaluatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
@@ -776,20 +776,13 @@ export async function resolveExecutionTarget(
     throw new AuxiliaryModelCallConfigurationError('Runtime Host model provider is not executable');
   }
   const model = header.model.trim();
-  const discovered = resolved.connection.models.find((candidate) => candidate.id === model);
-  const staticallyKnown = modelMetadataIdsForProvider(resolved.connection.providerType).includes(
-    model,
-  );
-  if (
-    !model ||
-    !resolved.connection.enabledModelIds.includes(model) ||
-    (!discovered && !staticallyKnown)
-  ) {
+  const discovered = resolved.connection.models.some((candidate) => candidate.id === model);
+  const modelInfo = resolveAdmittedConnectionModel(resolved.connection, model);
+  if (!model || !modelInfo) {
     throw new AuxiliaryModelCallConfigurationError(
       'Runtime Host Session model is not enabled by its canonical connection',
     );
   }
-  const modelInfo = discovered ?? { id: model };
   if (isModelExplicitlyUnsupportedForChat(modelInfo)) {
     throw new AuxiliaryModelCallConfigurationError(
       'Runtime Host Session model is not chat-capable',
