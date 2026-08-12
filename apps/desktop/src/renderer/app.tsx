@@ -1,10 +1,12 @@
 import { StrictMode, useEffect, useState } from 'react';
 import { Theme } from '@astryxdesign/core/theme';
+import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
 import { makaTheme } from './astryx-theme/maka';
 import { AppShell } from './app-shell';
 import { useAstryxThemeMode } from './astryx-theme-mode';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
+import { readSystemUiLocale } from './use-system-ui-locale';
 
 export function App({
   initialOnboardingSnapshot = null,
@@ -63,7 +65,11 @@ export function App({
         {runtimeHostReady ? (
           <AppShell initialOnboardingSnapshot={initialOnboardingSnapshot} />
         ) : (
-          <RuntimeHostSshTerminalDialog />
+          <LocaleProvider locale={readSystemUiLocale()}>
+            <AstryxLocaleProvider>
+              <RuntimeHostSshTerminalDialog />
+            </AstryxLocaleProvider>
+          </LocaleProvider>
         )}
       </Theme>
     </StrictMode>
