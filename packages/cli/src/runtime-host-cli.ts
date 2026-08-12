@@ -36,7 +36,7 @@ export type RuntimeHostCliCommand =
       kind: 'runtime-host-profile-set';
       id: string;
       name: string;
-      url: string;
+      tlsUrl: string;
       expectedRootId: string;
       credentialEnv?: string;
     }
@@ -81,7 +81,7 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
   }
   let id: string | undefined;
   let name: string | undefined;
-  let url: string | undefined;
+  let tlsUrl: string | undefined;
   let expectedRootId: string | undefined;
   let credentialEnv: string | undefined;
   for (let index = 1; index < argv.length; index += 1) {
@@ -89,7 +89,7 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
     if (
       argument !== '--id' &&
       argument !== '--name' &&
-      argument !== '--url' &&
+      argument !== '--tls-url' &&
       argument !== '--expected-root' &&
       argument !== '--credential-env'
     ) {
@@ -99,20 +99,20 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
     if (typeof parsed !== 'string') return parsed;
     if (argument === '--id') id = parsed;
     if (argument === '--name') name = parsed;
-    if (argument === '--url') url = parsed;
+    if (argument === '--tls-url') tlsUrl = parsed;
     if (argument === '--expected-root') expectedRootId = parsed;
     if (argument === '--credential-env') credentialEnv = parsed;
     index += 1;
   }
   if (!id) return error('--id is required');
   if (!name) return error('--name is required');
-  if (!url) return error('--url is required');
+  if (!tlsUrl) return error('--tls-url is required');
   if (!expectedRootId) return error('--expected-root is required');
   return {
     kind: 'runtime-host-profile-set',
     id,
     name,
-    url,
+    tlsUrl,
     expectedRootId,
     ...(credentialEnv ? { credentialEnv } : {}),
   };

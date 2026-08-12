@@ -13,7 +13,7 @@ export type RuntimeHostProfileCommand =
       readonly kind: 'set';
       readonly id: string;
       readonly name: string;
-      readonly url: string;
+      readonly tlsUrl: string;
       readonly expectedRootId: string;
       readonly credentialEnv?: string;
     }
@@ -47,7 +47,7 @@ export async function runRuntimeHostProfileCommand(
       id: command.id,
       name: command.name,
       kind: 'remote',
-      url: command.url,
+      transport: { kind: 'tls', url: command.tlsUrl },
       rootId: command.expectedRootId,
     },
     suppliedCredential,

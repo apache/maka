@@ -76,7 +76,7 @@ export function RuntimeHostProfilesSection(props: {
           id: draft.id,
           name: draft.name,
           kind: "remote",
-          url: draft.url,
+          transport: { kind: "tls", url: draft.url },
           rootId: draft.rootId,
         },
         credential: draft.credential,
@@ -161,7 +161,7 @@ export function RuntimeHostProfilesSection(props: {
               <ListItem
                 key={profile.id}
                 label={profile.name}
-                description={profile.url}
+                description={profile.transport.url}
                 startContent={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
                 endContent={
                   <HStack gap={2} align="center">

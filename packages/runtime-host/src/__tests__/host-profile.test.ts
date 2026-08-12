@@ -45,17 +45,17 @@ describe('Runtime Host profiles', () => {
           id: 'office',
           name: ' Office Host ',
           kind: 'remote',
-          url: 'wss://runtime.example.com',
+          transport: { kind: 'tls', url: 'wss://runtime.example.com' },
           rootId: ROOT_A,
         },
         'office-token',
       ),
       catalog.save(
         {
-          id: 'loopback',
-          name: 'Loopback',
+          id: 'backup',
+          name: 'Backup',
           kind: 'remote',
-          url: 'ws://127.0.0.1:4000/runtime-host',
+          transport: { kind: 'tls', url: 'wss://backup.example.com/runtime-host' },
           rootId: ROOT_B,
         },
         'loopback-token',
@@ -66,7 +66,7 @@ describe('Runtime Host profiles', () => {
         id: 'office',
         name: 'Office',
         kind: 'remote',
-        url: 'wss://new.example.com/runtime-host',
+        transport: { kind: 'tls', url: 'wss://new.example.com/runtime-host' },
         rootId: ROOT_A,
       },
       'new-office-token',
@@ -79,14 +79,14 @@ describe('Runtime Host profiles', () => {
           id: 'office',
           name: 'Office',
           kind: 'remote',
-          url: 'wss://new.example.com/runtime-host',
+          transport: { kind: 'tls', url: 'wss://new.example.com/runtime-host' },
           rootId: ROOT_A,
         },
         {
-          id: 'loopback',
-          name: 'Loopback',
+          id: 'backup',
+          name: 'Backup',
           kind: 'remote',
-          url: 'ws://127.0.0.1:4000/runtime-host',
+          transport: { kind: 'tls', url: 'wss://backup.example.com/runtime-host' },
           rootId: ROOT_B,
         },
       ],
@@ -99,10 +99,10 @@ describe('Runtime Host profiles', () => {
       schemaVersion: 1,
       profiles: [
         {
-          id: 'loopback',
-          name: 'Loopback',
+          id: 'backup',
+          name: 'Backup',
           kind: 'remote',
-          url: 'ws://127.0.0.1:4000/runtime-host',
+          transport: { kind: 'tls', url: 'wss://backup.example.com/runtime-host' },
           rootId: ROOT_B,
         },
       ],
@@ -120,7 +120,7 @@ describe('Runtime Host profiles', () => {
           id: 'first',
           name: 'First',
           kind: 'remote',
-          url: 'wss://first.example.com',
+          transport: { kind: 'tls', url: 'wss://first.example.com' },
           rootId: ROOT_A,
         },
         'first-token',
@@ -130,7 +130,7 @@ describe('Runtime Host profiles', () => {
           id: 'second',
           name: 'Second',
           kind: 'remote',
-          url: 'wss://second.example.com',
+          transport: { kind: 'tls', url: 'wss://second.example.com' },
           rootId: ROOT_B,
         },
         'second-token',
@@ -150,7 +150,7 @@ describe('Runtime Host profiles', () => {
           id: 'office',
           name: 'Office',
           kind: 'remote',
-          url: 'wss://runtime.example.com/runtime-host',
+          transport: { kind: 'tls', url: 'wss://runtime.example.com/runtime-host' },
           rootId: ROOT_A,
         },
       ],
@@ -167,9 +167,14 @@ describe('Runtime Host profiles', () => {
       () =>
         decodeRuntimeHostProfileDocument({
           ...valid,
-          profiles: [{ ...valid.profiles[0], url: 'ws://runtime.example.com/runtime-host' }],
+          profiles: [
+            {
+              ...valid.profiles[0],
+              transport: { kind: 'tls', url: 'ws://runtime.example.com/runtime-host' },
+            },
+          ],
         }),
-      /must use loopback/,
+      /must use wss/,
     );
     assert.throws(
       () =>
@@ -213,7 +218,7 @@ describe('Runtime Host profiles', () => {
     assert.equal(resolved.profile.kind, 'remote');
     assert.equal(
       [`wss://a.example.com/|token-a`, `wss://b.example.com/|token-b`].includes(
-        `${resolved.profile.kind === 'remote' ? resolved.profile.url : ''}|${resolved.credential}`,
+        `${resolved.profile.kind === 'remote' ? resolved.profile.transport.url : ''}|${resolved.credential}`,
       ),
       true,
     );
@@ -265,7 +270,7 @@ describe('Runtime Host profiles', () => {
             id: 'office',
             name: 'Office',
             kind: 'remote',
-            url: 'wss://runtime.example.com/',
+            transport: { kind: 'tls', url: 'wss://runtime.example.com/' },
             rootId: ROOT_A,
           },
           credential: 'opaque-token',
@@ -298,7 +303,7 @@ describe('Runtime Host profiles', () => {
               id: 'office',
               name: 'Office',
               kind: 'remote',
-              url: 'wss://runtime.example.com/',
+              transport: { kind: 'tls', url: 'wss://runtime.example.com/' },
               rootId: ROOT_A,
             },
             credential: 'opaque-token',
@@ -321,13 +326,13 @@ async function profilePath(): Promise<string> {
 }
 
 function remoteProfile(id: string, url: string, rootId: string): RemoteRuntimeHostProfile {
-  return { id, name: id, kind: 'remote', url, rootId };
+  return { id, name: id, kind: 'remote', transport: { kind: 'tls', url }, rootId };
 }
 
 function memoryCredentials(): RuntimeHostProfileCredentialStore {
   const values = new Map<string, string>();
   const key = (profile: RemoteRuntimeHostProfile) =>
-    `${profile.id}\0${profile.url}\0${profile.rootId}`;
+    `${profile.id}\0${profile.transport.kind}\0${profile.transport.url}\0${profile.rootId}`;
   return {
     get: async (profile) => values.get(key(profile)) ?? null,
     set: async (profile, credential) => {

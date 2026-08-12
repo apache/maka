@@ -23,6 +23,7 @@ export {
   connectRemoteRuntimeHostProfile,
   decodeRuntimeHostProfileDocument,
   type RemoteRuntimeHostProfile,
+  type RuntimeHostRemoteTransport,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfile,
   type RuntimeHostProfileCatalog,

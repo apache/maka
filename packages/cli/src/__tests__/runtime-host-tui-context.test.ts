@@ -7,7 +7,7 @@ const REMOTE_PROFILE: RuntimeHostProfile = {
   id: 'office',
   name: 'Office',
   kind: 'remote',
-  url: 'wss://runtime.example.com/runtime-host',
+  transport: { kind: 'tls', url: 'wss://runtime.example.com/runtime-host' },
   rootId: 'a'.repeat(64),
 };
 

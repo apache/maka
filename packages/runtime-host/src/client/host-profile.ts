@@ -35,9 +35,14 @@ export interface RemoteRuntimeHostProfile {
   readonly id: string;
   readonly name: string;
   readonly kind: 'remote';
-  readonly url: string;
+  readonly transport: RuntimeHostRemoteTransport;
   readonly rootId: string;
 }
+
+export type RuntimeHostRemoteTransport = {
+  readonly kind: 'tls';
+  readonly url: string;
+};
 
 export interface RuntimeHostProfileDocument {
   readonly schemaVersion: typeof PROFILE_SCHEMA_VERSION;
@@ -118,7 +123,7 @@ export async function connectRemoteRuntimeHostProfile(
 ): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
   const connected = await (overrides.connect ?? connectRemoteRuntimeHost)({
-    url: input.profile.url,
+    url: input.profile.transport.url,
     credential: input.credential,
     expectedRootId: input.profile.rootId,
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -337,7 +342,7 @@ function decodeRemoteRuntimeHostProfile(value: unknown): RemoteRuntimeHostProfil
     'id',
     'name',
     'kind',
-    'url',
+    'transport',
     'rootId',
   ]);
   if (record.kind !== 'remote') throw new Error('Runtime Host profile kind must be remote');
@@ -345,11 +350,20 @@ function decodeRemoteRuntimeHostProfile(value: unknown): RemoteRuntimeHostProfil
     id: requireProfileId(record.id),
     name: requireProfileName(record.name),
     kind: 'remote',
-    url: normalizeRemoteRuntimeHostUrl(
-      requireString(record.url, 'Runtime Host profile URL'),
-    ).toString(),
+    transport: decodeRuntimeHostTlsTransport(record.transport),
     rootId: requireHostRootId(record.rootId),
   });
+}
+
+function decodeRuntimeHostTlsTransport(value: unknown): RuntimeHostRemoteTransport {
+  const record = requireExactRecord(value, 'Runtime Host TLS transport', ['kind', 'url']);
+  if (record.kind !== 'tls') throw new Error('Runtime Host transport kind must be tls');
+  const rawUrl = requireString(record.url, 'Runtime Host TLS URL');
+  if (new URL(rawUrl).protocol !== 'wss:') {
+    throw new Error('Runtime Host TLS URL must use wss');
+  }
+  const url = normalizeRemoteRuntimeHostUrl(rawUrl);
+  return Object.freeze({ kind: 'tls', url: url.toString() });
 }
 
 function requireProfileId(value: unknown): string {
@@ -365,7 +379,9 @@ function profileCredentialSlug(profile: RemoteRuntimeHostProfile): string {
   const binding = createHash('sha256')
     .update(normalized.id)
     .update('\0')
-    .update(normalized.url)
+    .update(normalized.transport.kind)
+    .update('\0')
+    .update(normalized.transport.url)
     .update('\0')
     .update(normalized.rootId)
     .digest('hex');

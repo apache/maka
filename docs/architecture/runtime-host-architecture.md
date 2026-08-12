@@ -191,7 +191,7 @@ Publishing or invoking a capability does not transfer Session, Run, or execution
 
 ### Host profiles select a connection target
 
-A Host profile is Client-owned connection configuration, not Host state. The built-in `local` profile keeps the existing zero-configuration Local IPC and candidate-spawn path. A remote profile contains a display name, WebSocket endpoint, and required State Root identity; its access credential is stored separately and bound to that exact profile target. Changing the endpoint or root therefore requires a new credential.
+A Host profile is Client-owned connection configuration, not Host state. The built-in `local` profile keeps the existing zero-configuration Local IPC and candidate-spawn path. A remote profile contains a display name, an explicit connection method, and a required State Root identity; its access credential is stored separately and bound to that exact profile target. The current connection method is direct TLS (`wss`). Changing the connection method, endpoint, or root therefore requires a new credential.
 
 Selecting a profile chooses which Host a Client connects to. It does not move a Project or Session, change the Host Epoch, or mutate the selected Host. A remote profile uses only the authenticated WebSocket connector and never falls back to local discovery or candidate spawning. Every remote connection pins the profile's State Root identity and fails if the endpoint presents a different root.
 

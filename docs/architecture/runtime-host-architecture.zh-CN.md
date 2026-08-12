@@ -191,7 +191,7 @@ Authenticated Client 可以发布带大小限制、带版本的 tool 或 service
 
 ### Host profile 选择连接目标
 
-Host profile 是 Client-owned connection configuration，不是 Host state。内置 `local` profile 保留现有的零配置 Local IPC 与 candidate spawn 路径。Remote profile 包含显示名称、WebSocket endpoint 和必填的 State Root identity；access credential 会单独保存，并绑定到这个 profile 的确切 target。因此改变 endpoint 或 root 时必须提供新 credential。
+Host profile 是 Client-owned connection configuration，不是 Host state。内置 `local` profile 保留现有的零配置 Local IPC 与 candidate spawn 路径。Remote profile 包含显示名称、明确的连接方式和必填的 State Root identity；access credential 会单独保存，并绑定到这个 profile 的确切 target。当前连接方式是 direct TLS（`wss`）。因此改变连接方式、endpoint 或 root 时必须提供新 credential。
 
 选择 profile 只决定 Client 连接哪个 Host，不会移动 Project 或 Session、改变 Host Epoch，也不会修改所选 Host。Remote profile 只使用 authenticated WebSocket connector，绝不 fallback 到本地 discovery 或 candidate spawn。每次远程连接都固定 profile 中的 State Root identity；endpoint 给出不同 root 时必须失败。
 

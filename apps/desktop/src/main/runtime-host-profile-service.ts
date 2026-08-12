@@ -189,7 +189,8 @@ function sameRuntimeHostTarget(
   if (left.profile.kind === "local" || right.profile.kind === "local") return true;
   return (
     left.profile.id === right.profile.id &&
-    left.profile.url === right.profile.url &&
+    left.profile.transport.kind === right.profile.transport.kind &&
+    left.profile.transport.url === right.profile.transport.url &&
     left.profile.rootId === right.profile.rootId &&
     left.credential === right.credential
   );

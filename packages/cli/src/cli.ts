@@ -89,7 +89,7 @@ function helpText(): string {
     '  maka runtime-host access issue --kind capability-provider --principal <id>',
     '  maka runtime-host access revoke --credential <id>',
     '  maka runtime-host profile list',
-    '  maka runtime-host profile set --id <id> --name <name> --url <ws-url> --expected-root <root-id> [--credential-env <name>]',
+    '  maka runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]',
     '  maka runtime-host profile remove --id <id>',
     '  maka runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>',
     '',
@@ -200,7 +200,7 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
         kind: 'set',
         id: command.id,
         name: command.name,
-        url: command.url,
+        tlsUrl: command.tlsUrl,
         expectedRootId: command.expectedRootId,
         ...(command.credentialEnv ? { credentialEnv: command.credentialEnv } : {}),
       });

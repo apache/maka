@@ -518,7 +518,7 @@ function remoteTarget(
       id,
       name: id,
       kind: 'remote',
-      url: `wss://${target}.example.com/`,
+      transport: { kind: 'tls', url: `wss://${target}.example.com/` },
       rootId: 'a'.repeat(64),
     },
     credential: `credential-${target}`,
