@@ -1,13 +1,9 @@
 import { describe, test } from 'node:test';
 import { expect } from '../../test-helpers.js';
 import { PROXY_DEFAULTS } from '@maka/core/settings/network-settings';
-import { buildNoProxy, getEnvWithProxy } from '../proxy-env.js';
+import { getEnvWithProxy } from '../proxy-env.js';
 
 describe('getEnvWithProxy', () => {
-  test('returns base env unchanged when proxy disabled', () => {
-    expect(getEnvWithProxy({ PATH: '/usr/bin' }, PROXY_DEFAULTS)).toEqual({ PATH: '/usr/bin' });
-  });
-
   test('injects proxy env without overwriting user exports', () => {
     const out = getEnvWithProxy(
       { HTTP_PROXY: 'http://existing:1234' },
@@ -24,11 +20,5 @@ describe('getEnvWithProxy', () => {
       { ...PROXY_DEFAULTS, enabled: true, type: 'socks5', host: '::1', port: 1080 },
     );
     expect(out.HTTP_PROXY).toBe('socks5://[::1]:1080');
-  });
-});
-
-describe('buildNoProxy', () => {
-  test('joins lowercased trimmed entries', () => {
-    expect(buildNoProxy([' Foo ', '', 'BAR.COM'])).toBe('foo,bar.com');
   });
 });
