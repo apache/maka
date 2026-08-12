@@ -20,7 +20,7 @@ Use `--cell <cell-id>` to replace one failed or indeterminate cell. The attempt 
 
 The built-in Harbor and Pier executors use one relay Agent. The framework prepares the task environment, the relay invokes exactly one Eval subject from `Agent.run()`, and the framework runs its native verifier and finalizer. Harbor and Pier use separate, explicitly versioned Python environments because their Agent and task contracts differ.
 
-Maka subjects ask the Runtime Host client to run one owned execution in a dedicated Host root. Session, Turn, Goal and continuation semantics remain inside Runtime Host. External subjects declare only a command and arguments; cohort-specific wrappers may configure the external product, but do not gain Runtime authority.
+Maka subjects ask the Runtime Host client to run one owned execution in a dedicated Host root. Session, Turn, Goal and continuation semantics remain inside Runtime Host. External subjects declare a command and arguments, and may add non-secret environment values, target-to-source bindings for declared credentials, and an explicit result contract. Omitted credential bindings use declared names unchanged. The `exit-code` result contract discards unstructured stdout and records null usage and cost; cohort-specific wrappers remain responsible only for configuration that cannot be expressed through this generic seam and do not gain Runtime authority.
 
 The result kernel contains only score, normalized usage, attributable cost, duration, status, and artifacts. Specs carry every semantic setting; environment variables are reserved for credentials and machine-local paths.
 
