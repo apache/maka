@@ -667,6 +667,37 @@ describe('active current-turn tool-result pruning', () => {
     assert.match(prompt, /OLD_WRITE/);
   });
 
+  test('test and build runs keep distinct warnings and failures visible', async () => {
+    const messages = [
+      largeToolMessage('Bash', 'build-warning', 'BUILD_DEPRECATION_WARNING'.repeat(100)),
+      largeToolMessage('Bash', 'build-clean', 'BUILD_FROM_INCREMENTAL_CACHE'.repeat(100)),
+      errorToolMessage('Bash', 'test-failure', 'FLAKY_TEST_FAILURE'.repeat(100)),
+      largeToolMessage('Bash', 'test-success', 'TESTS_PASSED'.repeat(100)),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 4,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Bash', 'build-warning', { command: 'npm run build' }, 0),
+        completedCall('Bash', 'build-clean', { command: 'npm run build' }, 1),
+        completedCall('Bash', 'test-failure', { command: 'cargo test' }, 2),
+        completedCall('Bash', 'test-success', { command: 'cargo test' }, 3),
+      ],
+      eligibleToolCallIds: new Set(['build-warning', 'test-failure']),
+      archiveToolResult: () => ({ artifactId: 'unused' }),
+    });
+
+    assert.equal(rewritten.rewritten, 0);
+    assert.deepEqual(rewritten.messages, messages);
+  });
+
   test('foreground Bash output is not superseded by background or PTY handles', async () => {
     const messages = [
       largeToolMessage('Bash', 'test-foreground', 'FOREGROUND_TEST_OUTPUT'),

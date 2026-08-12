@@ -197,27 +197,17 @@ function describeBash(input: unknown): SnapshotDescriptor | undefined {
   // visible; exact input-and-output deduplication still handles true repeats.
   if (record.run_in_background === true || record.pty === true) return undefined;
   const command = record.command.trim();
-  if (!isSupportedSnapshotCommand(command)) return undefined;
+  if (!isSupportedGitSnapshotCommand(command)) return undefined;
   return { kind: 'snapshot', key: `Bash\u0000${command}` };
 }
 
-function isSupportedSnapshotCommand(command: string): boolean {
+function isSupportedGitSnapshotCommand(command: string): boolean {
   if (command.length === 0 || /[;&|<>`\n\r]/.test(command) || command.includes('$(')) return false;
-  return (
-    /^git(?:\s+-C\s+\S+)?\s+(?:status|diff|log|show|branch|rev-parse)(?:\s|$)/.test(command) ||
-    /^(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+(?:test(?::[\w.-]+)?|typecheck|lint|build))(?:\s|$)/.test(
-      command,
-    ) ||
-    /^npm\s+--workspace\s+\S+\s+(?:test|run\s+(?:test(?::[\w.-]+)?|typecheck|lint|build))(?:\s|$)/.test(
-      command,
-    ) ||
-    /^pnpm\s+--filter\s+\S+\s+(?:test|run\s+(?:test(?::[\w.-]+)?|typecheck|lint|build))(?:\s|$)/.test(
-      command,
-    ) ||
-    /^(?:cargo\s+(?:test|check)|go\s+test|pytest|python3?\s+-m\s+pytest|node\s+--test)(?:\s|$)/.test(
-      command,
-    )
-  );
+  // Executable test/build output is evidence from a particular run, not a
+  // snapshot of current state: an incremental rerun can omit an earlier
+  // warning, and a passing rerun must not erase a flaky failure. Those calls
+  // remain eligible for exact input-and-output deduplication only.
+  return /^git(?:\s+-C\s+\S+)?\s+(?:status|diff|log|show|branch|rev-parse)(?:\s|$)/.test(command);
 }
 
 function readCovers(candidate: ReadDescriptor, original: ReadDescriptor): boolean {
