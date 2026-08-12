@@ -58,7 +58,7 @@ npm --workspace maka-agent exec -- maka runtime-host serve \
 
 The Profile stores the SSH destination, optional SSH port, remote WebSocket port, and path. Maka runs the system `ssh` executable without a shell and forwards a temporary Client-loopback port to `127.0.0.1:7443` on the Host.
 
-Maka reads normal OpenSSH configuration but never edits SSH config, keys, agents, or `known_hosts`. OpenSSH may add a host key after the user confirms it. Removing a Maka Profile removes only that Profile and its Runtime Host credential; shared OpenSSH state remains under the user's control.
+Maka reads normal OpenSSH configuration but refuses Host entries that add their own local, remote, or dynamic forwarding, so the connection owns only its single loopback tunnel. Maka never edits SSH config, keys, agents, or `known_hosts`. OpenSSH may add a host key after the user confirms it. Removing a Maka Profile removes only that Profile and its Runtime Host credential; shared OpenSSH state remains under the user's control.
 
 Desktop opens an embedded terminal during a user-initiated first connection, so OpenSSH can ask for host-key confirmation, a password, or a key passphrase. TUI exposes the same prompt in its terminal. Background reconnects and non-interactive CLI commands use OpenSSH batch mode; configure a key or SSH agent for those paths.
 

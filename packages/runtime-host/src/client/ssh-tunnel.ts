@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -37,6 +37,13 @@ export type RuntimeHostSshProcessFactory = (input: {
   readonly interaction: RuntimeHostSshInteraction;
 }) => RuntimeHostSshProcess;
 
+type RuntimeHostSshConfigurationReader = (input: {
+  readonly destination: string;
+  readonly sshPort?: number;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs: number;
+}) => Promise<string>;
+
 export interface RuntimeHostSshTunnel {
   readonly url: string;
   readonly resource: RuntimeHostConnectionResource;
@@ -44,7 +51,10 @@ export interface RuntimeHostSshTunnel {
 
 export async function openRuntimeHostSshTunnel(
   input: RuntimeHostSshTunnelInput,
-  overrides: { readonly spawnProcess?: RuntimeHostSshProcessFactory } = {},
+  overrides: {
+    readonly spawnProcess?: RuntimeHostSshProcessFactory;
+    readonly readConfiguration?: RuntimeHostSshConfigurationReader;
+  } = {},
 ): Promise<RuntimeHostSshTunnel> {
   input.signal?.throwIfAborted();
   const destination = requireSshDestination(input.destination);
@@ -54,6 +64,13 @@ export async function openRuntimeHostSshTunnel(
   const startTimeoutMs =
     input.startTimeoutMs ??
     (input.interaction === 'batch' ? SSH_BATCH_START_TIMEOUT_MS : SSH_INTERACTIVE_START_TIMEOUT_MS);
+  const configuration = await (overrides.readConfiguration ?? readSshConfiguration)({
+    destination,
+    ...(sshPort === undefined ? {} : { sshPort }),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+    timeoutMs: Math.min(startTimeoutMs, SSH_BATCH_START_TIMEOUT_MS),
+  });
+  assertNoConfiguredForwarding(configuration);
   for (let attempt = 1; attempt <= SSH_LOCAL_BIND_ATTEMPTS; attempt += 1) {
     input.signal?.throwIfAborted();
     const localPort = await allocateLoopbackPort();
@@ -119,6 +136,7 @@ class SshTunnelResource implements RuntimeHostConnectionResource {
   readonly #signal: AbortSignal | undefined;
   readonly #onAbort: () => void;
   readonly #closeReadiness: () => Promise<void>;
+  #hasExited = false;
   #closeTask: Promise<void> | undefined;
 
   constructor(
@@ -128,15 +146,11 @@ class SshTunnelResource implements RuntimeHostConnectionResource {
   ) {
     this.#child = child;
     this.#signal = signal;
-    this.exited = child.exited;
+    this.exited = child.exited.finally(() => {
+      this.#hasExited = true;
+    });
     this.#closeReadiness = closeReadiness;
-    this.closed = this.exited.then(
-      () => this.#closeReadiness(),
-      async (error) => {
-        await this.#closeReadiness();
-        throw error;
-      },
-    );
+    this.closed = this.exited.then(() => undefined);
     // `closed` is also an observation signal for the connection. Keep its
     // rejection observable to consumers without letting an SSH spawn failure
     // become an unhandled rejection before the connection attaches.
@@ -152,17 +166,24 @@ class SshTunnelResource implements RuntimeHostConnectionResource {
 
   async #close(): Promise<void> {
     this.#signal?.removeEventListener('abort', this.#onAbort);
-    if (await settlesWithin(this.exited, 0)) {
-      await this.closed.catch(() => undefined);
-      return;
+    try {
+      if (!this.#hasExited) {
+        if (process.platform === 'win32' && this.#child.pid !== undefined) {
+          await terminateWindowsProcessTree(this.#child.pid);
+        } else {
+          this.#child.kill('SIGTERM');
+          const killTimer = setTimeout(() => this.#child.kill('SIGKILL'), SSH_STOP_TIMEOUT_MS);
+          try {
+            await this.exited.catch(() => undefined);
+          } finally {
+            clearTimeout(killTimer);
+          }
+        }
+      }
+      await this.exited.catch(() => undefined);
+    } finally {
+      await this.#closeReadiness();
     }
-    if (process.platform === 'win32' && this.#child.pid !== undefined) {
-      await terminateWindowsProcessTree(this.#child.pid);
-    } else {
-      this.#child.kill('SIGTERM');
-      if (!(await settlesWithin(this.exited, SSH_STOP_TIMEOUT_MS))) this.#child.kill('SIGKILL');
-    }
-    await this.closed.catch(() => undefined);
   }
 }
 
@@ -233,11 +254,7 @@ async function createSshForwardReadiness(port: number): Promise<SshForwardReadin
       try {
         const log = await readFile(logPath, 'utf8');
         if (log.includes(marker)) return 'ready';
-        if (
-          log.includes('Address already in use') ||
-          log.includes('Only one usage of each socket address') ||
-          log.includes('WSAEADDRINUSE')
-        ) {
+        if (hasLocalBindConflict(log, port)) {
           return 'local_bind_conflict';
         }
         return 'pending';
@@ -248,6 +265,67 @@ async function createSshForwardReadiness(port: number): Promise<SshForwardReadin
     },
     close: () => rm(directory, { recursive: true, force: true }),
   };
+}
+
+function readSshConfiguration(input: {
+  readonly destination: string;
+  readonly sshPort?: number;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs: number;
+}): Promise<string> {
+  const args = [
+    '-G',
+    '-o',
+    'ControlMaster=no',
+    '-o',
+    'ControlPath=none',
+    ...(input.sshPort === undefined ? [] : ['-p', String(input.sshPort)]),
+    input.destination,
+  ];
+  return new Promise((resolve, reject) => {
+    execFile(
+      'ssh',
+      args,
+      {
+        encoding: 'utf8',
+        maxBuffer: 1024 * 1024,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        timeout: input.timeoutMs,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(new Error('Unable to inspect the OpenSSH configuration', { cause: error }));
+        } else {
+          resolve(stdout);
+        }
+      },
+    );
+  });
+}
+
+function assertNoConfiguredForwarding(configuration: string): void {
+  for (const line of configuration.split(/\r?\n/u)) {
+    const option = line.trimStart().split(/\s/u, 1)[0]?.toLowerCase();
+    if (option === 'localforward' || option === 'remoteforward' || option === 'dynamicforward') {
+      throw new Error(
+        'The selected OpenSSH destination configures additional port forwarding. Remove that forwarding or use a dedicated SSH Host entry.',
+      );
+    }
+  }
+}
+
+function hasLocalBindConflict(log: string, port: number): boolean {
+  const portMarker = `:${port}:`;
+  return log
+    .split(/\r?\n/u)
+    .some(
+      (line) =>
+        line.includes(portMarker) &&
+        (line.includes('Address already in use') ||
+          line.includes('Only one usage of each socket address') ||
+          line.includes('WSAEADDRINUSE')),
+    );
 }
 
 async function waitForForward(
@@ -306,16 +384,6 @@ function sshStartupError(
       ? `${detail}. Configure OpenSSH host verification and key or agent authentication, or connect once from Desktop or TUI.`
       : detail,
   );
-}
-
-function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
-  return Promise.race([
-    promise.then(
-      () => true,
-      () => true,
-    ),
-    new Promise<false>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
-  ]);
 }
 
 function isMissingFileError(error: unknown): boolean {

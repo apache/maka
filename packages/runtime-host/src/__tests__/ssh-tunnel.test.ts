@@ -40,7 +40,7 @@ test('opens an exact loopback forward and owns the SSH process lifetime', async 
       websocketPath: '/runtime-host',
       interaction: 'batch',
     },
-    { spawnProcess },
+    { spawnProcess, readConfiguration: async () => '' },
   );
   assert.equal(launch?.executable, 'ssh');
   assert.equal(launch?.interaction, 'batch');
@@ -71,6 +71,7 @@ test('retries a confirmed local forwarding bind conflict', async () => {
       interaction: 'batch',
     },
     {
+      readConfiguration: async () => '',
       spawnProcess: (input) => {
         attempts += 1;
         const forwarding = input.args[input.args.indexOf('-L') + 1];
@@ -114,10 +115,19 @@ test('explains how a non-interactive SSH connection can be prepared', async () =
         interaction: 'batch',
       },
       {
-        spawnProcess: () => {
+        readConfiguration: async () => '',
+        spawnProcess: (input) => {
           attempts += 1;
+          const forwarding = input.args[input.args.indexOf('-L') + 1];
+          const localPort = Number(forwarding?.split(':')[1]);
+          const unrelatedPort = localPort === 65_535 ? localPort - 1 : localPort + 1;
+          const logPath = input.args[input.args.indexOf('-E') + 1];
+          assert.ok(logPath);
           return {
-            exited: Promise.resolve({ code: 255, signal: null }),
+            exited: writeFile(
+              logPath,
+              `bind [127.0.0.1]:${unrelatedPort}: Address already in use\n`,
+            ).then(() => ({ code: 255, signal: null })),
             kill: () => undefined,
           };
         },
@@ -126,4 +136,28 @@ test('explains how a non-interactive SSH connection can be prepared', async () =
     /Configure OpenSSH host verification and key or agent authentication/u,
   );
   assert.equal(attempts, 1);
+});
+
+test('rejects inherited OpenSSH forwarding before starting a tunnel', async () => {
+  let spawned = false;
+  await assert.rejects(
+    openRuntimeHostSshTunnel(
+      {
+        destination: 'operator@example.com',
+        remotePort: 7443,
+        websocketPath: '/runtime-host',
+        interaction: 'batch',
+      },
+      {
+        readConfiguration: async () =>
+          'hostname example.com\nlocalforward [0.0.0.0]:43002 [127.0.0.1]:22\n',
+        spawnProcess: () => {
+          spawned = true;
+          throw new Error('unreachable');
+        },
+      },
+    ),
+    /configures additional port forwarding/u,
+  );
+  assert.equal(spawned, false);
 });
