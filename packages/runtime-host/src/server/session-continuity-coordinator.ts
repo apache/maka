@@ -1134,6 +1134,17 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         continue;
       }
       if (
+        this.#retainedTranscriptOverlayBytes + MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES >
+        MAX_RETAINED_TRANSCRIPT_OVERLAY_BYTES
+      ) {
+        this.#transcriptOverlayPreparationWaiters.shift();
+        waiter.cancelled = true;
+        waiter.reject(
+          new TranscriptOverlayCapacityError('Runtime Host transcript overlay capacity reached'),
+        );
+        continue;
+      }
+      if (
         this.#retainedTranscriptOverlayBytes +
           this.#preparingTranscriptOverlayBytes +
           MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES >

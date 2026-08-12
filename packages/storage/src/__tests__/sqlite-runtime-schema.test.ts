@@ -84,7 +84,7 @@ describe('SQLite runtime schema migration', () => {
     }
   });
 
-  it('folds legacy partial segments once when upgrading from version 12', () => {
+  it('coalesces legacy partial segments without materializing a complete stream', () => {
     const db = new DatabaseSync(':memory:');
     try {
       migrateSqliteRuntimeDatabase(db);
@@ -102,21 +102,24 @@ describe('SQLite runtime schema migration', () => {
 
       migrateSqliteRuntimeDatabase(db);
 
+      assert.deepEqual(
+        db
+          .prepare(`
+            SELECT segment_seq, text_content, updated_at
+            FROM runtime_partial_segments
+            ORDER BY segment_seq
+          `)
+          .all()
+          .map((row) => ({ ...row })),
+        [{ segment_seq: 1, text_content: 'first-second', updated_at: 2 }],
+      );
       assert.equal(
         (
           db.prepare('SELECT text_content FROM runtime_partial_snapshots').get() as {
             text_content: string;
           }
         ).text_content,
-        'prefix-first-second',
-      );
-      assert.equal(
-        (
-          db.prepare('SELECT count(*) AS count FROM runtime_partial_segments').get() as {
-            count: number;
-          }
-        ).count,
-        0,
+        'prefix-',
       );
       assert.equal(
         (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,

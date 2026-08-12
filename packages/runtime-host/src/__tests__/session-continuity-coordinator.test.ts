@@ -835,7 +835,7 @@ test('cancels a queued overlay preparation when its connection closes', async ()
   coordinator.close();
 });
 
-test('bounds retained active overlay generations across Host connections', async () => {
+test('fails fast when retained active overlays leave no preparation capacity', async () => {
   let generation = 0;
   const baseReader = transcriptReader([]);
   const reader: SessionTranscriptReader = {
@@ -866,19 +866,27 @@ test('bounds retained active overlay generations across Host connections', async
     await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(index + 1));
   }
 
-  coordinator.attachConnection('connection-overlay-budget-waiting', new RecordingSink());
-  let settled = false;
-  const waiting = open(coordinator, 'connection-overlay-budget-waiting', {
-    kind: 'tail',
-    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
-  }).finally(() => {
-    settled = true;
+  coordinator.attachConnection('connection-overlay-budget-full', new RecordingSink());
+  const unavailable = await coordinator.handlers['subscription.open'](
+    {
+      sessionId: SESSION_ID,
+      transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+    },
+    connectionContext('connection-overlay-budget-full'),
+  );
+  assert.deepEqual(unavailable, {
+    ok: false,
+    error: {
+      code: 'operation_unavailable',
+      message: 'Runtime Host transcript overlay capacity reached',
+    },
   });
-  await delayImmediate();
-  assert.equal(settled, false);
 
   opened[0]!.abort(opened[0]!.subscriptionId);
-  const recovered = await waiting;
+  const recovered = await open(coordinator, 'connection-overlay-budget-full', {
+    kind: 'tail',
+    maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  });
   assert.ok(recovered.transcript);
   coordinator.close();
 });

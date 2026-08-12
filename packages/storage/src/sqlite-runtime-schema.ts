@@ -304,18 +304,7 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
     13,
     `
-    UPDATE runtime_partial_snapshots
-    SET text_content = text_content || coalesce((
-      SELECT group_concat(ordered.text_content, '')
-      FROM (
-        SELECT segment.text_content
-        FROM runtime_partial_segments AS segment
-        WHERE segment.stream_key = runtime_partial_snapshots.stream_key
-        ORDER BY segment.segment_seq ASC
-      ) AS ordered
-    ), '');
-
-    DELETE FROM runtime_partial_segments;
+    SELECT 1;
   `,
   ],
 ]);
@@ -360,6 +349,7 @@ export function migrateSqliteRuntimeDatabase(db: DatabaseSync): void {
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite runtime migration ${version}`);
       db.exec(sql);
+      if (version === 13) compactLegacyRuntimePartialSegments(db);
       db.exec(`PRAGMA user_version = ${version}`);
     }
     db.exec('COMMIT');
@@ -367,6 +357,97 @@ export function migrateSqliteRuntimeDatabase(db: DatabaseSync): void {
     rollback(db);
     throw error;
   }
+}
+
+function compactLegacyRuntimePartialSegments(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TEMP TABLE runtime_partial_segments_v13 (
+      stream_key TEXT NOT NULL,
+      segment_seq INTEGER NOT NULL,
+      text_content TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (stream_key, segment_seq)
+    ) WITHOUT ROWID;
+  `);
+  const nextStream = db.prepare(`
+    SELECT stream_key
+    FROM runtime_partial_snapshots
+    WHERE stream_key > ?
+    ORDER BY stream_key ASC
+    LIMIT 1
+  `);
+  const nextSegment = db.prepare(`
+    SELECT segment_seq, text_content, updated_at
+    FROM runtime_partial_segments
+    WHERE stream_key = ? AND segment_seq > ?
+    ORDER BY segment_seq ASC
+    LIMIT 1
+  `);
+  const insertSegment = db.prepare(`
+    INSERT INTO runtime_partial_segments_v13(
+      stream_key, segment_seq, text_content, updated_at
+    ) VALUES (?, ?, ?, ?)
+  `);
+  let afterStreamKey = '';
+  while (true) {
+    const stream = nextStream.get(afterStreamKey) as { stream_key?: unknown } | undefined;
+    if (!stream) break;
+    if (typeof stream.stream_key !== 'string' || stream.stream_key.length === 0) {
+      throw new Error('Invalid legacy RuntimeEvent partial stream');
+    }
+    afterStreamKey = stream.stream_key;
+    let afterSegmentSequence = 0;
+    let outputSequence = 0;
+    let tail = '';
+    let tailBytes = 0;
+    let tailUpdatedAt = 0;
+    const flushTail = () => {
+      if (tail.length === 0) return;
+      outputSequence += 1;
+      insertSegment.run(afterStreamKey, outputSequence, tail, tailUpdatedAt);
+      tail = '';
+      tailBytes = 0;
+    };
+    while (true) {
+      const segment = nextSegment.get(afterStreamKey, afterSegmentSequence) as
+        | { segment_seq?: unknown; text_content?: unknown; updated_at?: unknown }
+        | undefined;
+      if (!segment) break;
+      if (
+        !Number.isSafeInteger(segment.segment_seq) ||
+        (segment.segment_seq as number) <= afterSegmentSequence ||
+        typeof segment.text_content !== 'string' ||
+        !Number.isSafeInteger(segment.updated_at)
+      ) {
+        throw new Error('Invalid legacy RuntimeEvent partial segment');
+      }
+      afterSegmentSequence = segment.segment_seq as number;
+      const segmentBytes = Buffer.byteLength(segment.text_content, 'utf8');
+      if (tailBytes > 0 && tailBytes + segmentBytes > 64 * 1024) flushTail();
+      if (segmentBytes > 64 * 1024) {
+        outputSequence += 1;
+        insertSegment.run(
+          afterStreamKey,
+          outputSequence,
+          segment.text_content,
+          segment.updated_at as number,
+        );
+        continue;
+      }
+      tail += segment.text_content;
+      tailBytes += segmentBytes;
+      tailUpdatedAt = segment.updated_at as number;
+    }
+    flushTail();
+  }
+  db.exec(`
+    DELETE FROM runtime_partial_segments;
+    INSERT INTO runtime_partial_segments(stream_key, segment_seq, text_content, updated_at)
+    SELECT stream_key, segment_seq, text_content, updated_at
+    FROM runtime_partial_segments_v13
+    ORDER BY stream_key, segment_seq;
+    DROP TABLE runtime_partial_segments_v13;
+  `);
 }
 
 export function readUserVersion(db: DatabaseSync): number {
