@@ -481,12 +481,13 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     );
   });
   test('deepseek uses its own raw namespace on the chat wire, the OpenAI one on Responses', () => {
-    assert.deepEqual(
-      buildProviderOptions(conn('deepseek', 'deepseek'), 'deepseek-v4-pro', 'high'),
-      {
-        deepseek: { reasoningEffort: 'high' },
-      },
-    );
+    const chatConnection: LlmConnection = {
+      ...conn('deepseek', 'deepseek'),
+      models: [{ id: 'deepseek-v4-pro', apiProtocol: 'openai-chat' }],
+    };
+    assert.deepEqual(buildProviderOptions(chatConnection, 'deepseek-v4-pro', 'high'), {
+      deepseek: { reasoningEffort: 'high' },
+    });
     assert.deepEqual(
       buildProviderOptions(conn('deepseek', 'deepseek'), 'deepseek-v4-flash', 'high'),
       { openai: { store: false, forceReasoning: true, reasoningEffort: 'high' } },
