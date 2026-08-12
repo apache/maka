@@ -86,7 +86,7 @@ const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 
 describe('non-serving Runtime Host kernel', () => {
-  test('reports a recovery failure instead of returning a draining Host', async () => {
+  test('reports a recovery failure when the election produces no ready Host', async () => {
     await withHostPaths(async (paths) => {
       const result = await connectOrSpawnRuntimeHostWithDependencies(
         {
@@ -110,6 +110,38 @@ describe('non-serving Runtime Host kernel', () => {
       );
 
       assert.deepEqual(result, { kind: 'failed', reason: 'stored_data_incompatible' });
+    });
+  });
+
+  test('accepts a ready successor after an earlier Candidate fails', async () => {
+    await withHostPaths(async (paths) => {
+      let launches = 0;
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 5_000,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: (input) => {
+            launches += 1;
+            return launchTestRuntimeHostCandidate(paths, {
+              ...input,
+              ...(launches === 1
+                ? { env: { MAKA_TEST_STARTUP_ERROR_CODE: 'transient_startup_failure' } }
+                : {}),
+            });
+          },
+        },
+      );
+
+      assert.equal(result.kind, 'connected');
+      assert.ok(launches >= 2);
+      if (result.kind === 'connected') await result.connection.close();
     });
   });
 

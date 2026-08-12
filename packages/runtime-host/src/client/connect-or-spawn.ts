@@ -178,13 +178,8 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   let backoffMs = DEFAULT_BACKOFF_MIN_MS;
   let sawUnresponsiveEndpoint = false;
   let startupFailure: CandidateStartupFailure | undefined;
-  let reportStartupFailure!: (failure: CandidateStartupFailure) => void;
-  const startupFailureReported = new Promise<CandidateStartupFailure>((resolve) => {
-    reportStartupFailure = resolve;
-  });
 
   while (performance.now() < deadline) {
-    if (startupFailure) return { kind: 'failed', reason: startupFailure.reason };
     input.signal?.throwIfAborted();
     const result = await connectResolvedRuntimeHost({
       capability,
@@ -211,22 +206,15 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         await result.connection.close().catch(() => undefined);
         break;
       }
-      const ready = waitForRuntimeHostReady(
-        result.connection,
-        Math.max(1, Math.ceil(remaining)),
-        input.signal,
-      ).then(
-        () => ({ kind: 'ready' as const }),
-        (error: unknown) => ({ kind: 'not_ready' as const, error }),
-      );
-      const outcome = await Promise.race([
-        ready,
-        startupFailureReported.then((failure) => ({ kind: 'startup_failure' as const, failure })),
-      ]);
-      if (outcome.kind === 'ready') return result;
-      await result.connection.close().catch(() => undefined);
-      if (outcome.kind === 'startup_failure') {
-        return { kind: 'failed', reason: outcome.failure.reason };
+      try {
+        await waitForRuntimeHostReady(
+          result.connection,
+          Math.max(1, Math.ceil(remaining)),
+          input.signal,
+        );
+        return result;
+      } catch {
+        await result.connection.close().catch(() => undefined);
       }
       input.signal?.throwIfAborted();
       sawUnresponsiveEndpoint = true;
@@ -240,7 +228,11 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
     }
 
     const now = performance.now();
-    if (shouldLaunchCandidate(result) && now >= nextCandidateAt) {
+    if (
+      shouldLaunchCandidate(result) &&
+      (!startupFailure || startupFailure.reason === 'internal_startup_failure') &&
+      now >= nextCandidateAt
+    ) {
       try {
         const remaining = deadline - performance.now();
         if (remaining <= 0) break;
@@ -253,9 +245,14 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         });
         const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
         void attempt.startupFailure?.then((failure) => {
-          if (!failure || startupFailure) return;
-          startupFailure = failure;
-          reportStartupFailure(failure);
+          if (
+            failure &&
+            (!startupFailure ||
+              startupFailure.reason === 'internal_startup_failure' ||
+              failure.reason === 'stored_data_incompatible')
+          ) {
+            startupFailure = failure;
+          }
         });
       } catch {
         // A failed Candidate attempt is ordinary election evidence; discovery continues.

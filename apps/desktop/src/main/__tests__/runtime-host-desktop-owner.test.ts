@@ -260,7 +260,7 @@ test('reconnects when the same profile id resolves to a different target', async
   await owner.close();
 });
 
-test('keeps reconnecting with bounded backoff until the Desktop adapter is restored', async () => {
+test('keeps reconnecting through transient startup failures until the Desktop adapter is restored', async () => {
   const first = candidateHarness();
   const replacement = candidateHarness();
   let starts = 0;
@@ -273,6 +273,7 @@ test('keeps reconnecting with bounded backoff until the Desktop adapter is resto
     startCandidate: async (): Promise<DesktopRuntimeHostCandidateStartResult> => {
       starts += 1;
       if (starts === 1) return ready(first.candidate);
+      if (starts === 2) return { kind: 'failed', reason: 'internal_startup_failure' };
       if (starts < 4) return { kind: 'failed', reason: 'host_unresponsive' };
       resolveRestored();
       return ready(replacement.candidate);

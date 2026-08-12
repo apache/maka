@@ -24,6 +24,26 @@ test('preserves the primary startup classification through cleanup aggregation',
   );
 });
 
+test('does not classify cleanup errors as the primary startup failure', () => {
+  const primary = new Error('primary recovery failure');
+  const cleanup = Object.assign(new Error('secondary cleanup failure'), { errcode: 10 });
+  const aggregated = new AggregateError([primary, cleanup], 'startup and cleanup failed', {
+    cause: primary,
+  });
+
+  assert.deepEqual(classifyCandidateStartupFailure(aggregated), {
+    reason: 'internal_startup_failure',
+  });
+});
+
+test('classifies filesystem access and health failures as unavailable storage', () => {
+  for (const code of ['EACCES', 'EIO', 'ENOSPC', 'EPERM', 'EROFS']) {
+    assert.deepEqual(classifyCandidateStartupFailure(Object.assign(new Error(code), { code })), {
+      reason: 'storage_unavailable',
+    });
+  }
+});
+
 test('classifies unknown startup failures without serializing their message', () => {
   const failure = classifyCandidateStartupFailure(new Error('private provider or workspace data'));
   assert.deepEqual(failure, { reason: 'internal_startup_failure' });

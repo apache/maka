@@ -11,7 +11,7 @@ export class RuntimeHostStartupError extends RuntimeHostPermanentReconnectError 
   readonly name = 'RuntimeHostStartupError';
 
   constructor(
-    readonly reason: CandidateStartupFailureReason | 'composition_mismatch',
+    readonly reason: 'stored_data_incompatible' | 'composition_mismatch',
     message: string,
   ) {
     super(message);
@@ -25,20 +25,13 @@ export function runtimeHostStartupError(reason: RuntimeHostStartupFailureReason)
         reason,
         'Maka cannot read part of this workspace’s stored data. The workspace was left in place. Update Maka or report diagnostic code STORED_DATA_INCOMPATIBLE.',
       );
-    case 'migration_blocked':
-      return new RuntimeHostStartupError(
-        reason,
-        'Maka cannot migrate this workspace safely. Open it with the Maka version that last used it, then repair or export the workspace. Diagnostic code: MIGRATION_BLOCKED.',
-      );
     case 'storage_unavailable':
-      return new RuntimeHostStartupError(
-        reason,
+      return new Error(
         'Maka cannot access this workspace storage. Check disk space, filesystem permissions, and storage health. Diagnostic code: STORAGE_UNAVAILABLE.',
       );
     case 'internal_startup_failure':
-      return new RuntimeHostStartupError(
-        reason,
-        'Runtime Host failed while recovering this workspace. Restarting it automatically is unlikely to help. Report diagnostic code INTERNAL_STARTUP_FAILURE.',
+      return new Error(
+        'Runtime Host failed while recovering this workspace. Try again; if the problem persists, report diagnostic code INTERNAL_STARTUP_FAILURE.',
       );
     case 'composition_mismatch':
       return new RuntimeHostStartupError(
