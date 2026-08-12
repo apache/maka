@@ -19,7 +19,7 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@earendil-works/pi-tui": "0.83.0",
+    "@earendil-works/pi-tui": "0.84.1",
     "@maka/core": "0.1.0",
     "@maka/eval": "0.1.0",
     "@maka/mcp": "0.1.0",
