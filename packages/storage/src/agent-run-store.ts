@@ -1095,13 +1095,17 @@ function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmissi
     input.skillInvocation === undefined
       ? undefined
       : decodeSkillInvocationResult(input.skillInvocation);
+  const execution = normalizeRootExecutionDescriptor(input.execution);
+  if (execution.kind === 'legacy_automation') {
+    throw new Error('New root admission cannot use removed Automation authority');
+  }
   const admission: RootTurnAdmission = {
     schemaVersion: ROOT_TURN_ADMISSION_SCHEMA_VERSION,
     sessionId: input.sessionId,
     turnId: input.turnId,
     runId: input.proposedRunId,
     userMessageId: input.proposedUserMessageId,
-    execution: normalizeRootExecutionDescriptor(input.execution),
+    execution,
     previousRootTurnId: input.previousRootTurnId,
     normalizedInput,
     ...(turnOrchestration ? { turnOrchestration } : {}),
