@@ -5,9 +5,9 @@ import type { SubjectAdapter } from './runner.js';
 export function createExternalSubjectAdapter(): SubjectAdapter {
   return {
     kind: 'external',
-    validate: (cell) => decodeConfig(cell.subject.config),
+    validate: (cell) => decodeConfig(cell.subject.config, cell.subject.credentials),
     async execute({ cell, context }) {
-      const config = decodeConfig(cell.subject.config);
+      const config = decodeConfig(cell.subject.config, cell.subject.credentials);
       const startedAt = Date.now();
       try {
         const execution = await context.execute({
@@ -18,6 +18,13 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
               .replaceAll('{{task.id}}', cell.task.id),
           ),
           credentialNames: cell.subject.credentials,
+          ...(Object.keys(config.environment).length === 0
+            ? {}
+            : { environment: config.environment }),
+          ...(Object.keys(config.credentialEnvironment).length === 0
+            ? {}
+            : { credentialEnvironment: config.credentialEnvironment }),
+          ...(config.result === 'exit-code' ? { captureStdout: false } : {}),
         });
         if (execution.termination === 'cancelled') {
           return {
@@ -49,6 +56,16 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
             artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
           };
         }
+        if (config.result === 'exit-code') {
+          return {
+            usage: null,
+            costUsd: null,
+            durationMs: Date.now() - startedAt,
+            status: 'completed' as const,
+            failureReason: null,
+            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
+          };
+        }
         const result = decodeResult(execution.stdout);
         return {
           ...(result.output === undefined ? {} : { output: result.output }),
@@ -75,15 +92,64 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
   };
 }
 
-function decodeConfig(value: JsonObject): { command: string; args: readonly string[] } {
-  const config = exact(value, ['command', 'args'], 'external subject config');
+interface ExternalSubjectConfig {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly environment: Readonly<Record<string, string>>;
+  readonly credentialEnvironment: Readonly<Record<string, string>>;
+  readonly result: 'protocol-v1' | 'exit-code';
+}
+
+function decodeConfig(
+  value: JsonObject,
+  declaredCredentials: readonly string[],
+): ExternalSubjectConfig {
+  const fields = ['command', 'args'];
+  for (const optional of ['environment', 'credentialEnvironment', 'result']) {
+    if (Object.hasOwn(value, optional)) fields.push(optional);
+  }
+  const config = exact(value, fields, 'external subject config');
   if (
     !Array.isArray(config.args) ||
     !config.args.every((argument) => typeof argument === 'string')
   ) {
     throw new Error('external subject args are invalid');
   }
-  return { command: text(config.command, 'external subject command'), args: config.args };
+  const environment = stringMap(config.environment, 'environment');
+  const credentialEnvironment = stringMap(config.credentialEnvironment, 'credentialEnvironment');
+  for (const [target, source] of Object.entries(credentialEnvironment)) {
+    if (!declaredCredentials.includes(source)) {
+      throw new Error(`credentialEnvironment.${target} must reference a declared credential`);
+    }
+    if (Object.hasOwn(environment, target)) {
+      throw new Error(`environment and credentialEnvironment overlap at ${target}`);
+    }
+  }
+  const result = config.result ?? 'protocol-v1';
+  if (result !== 'protocol-v1' && result !== 'exit-code') {
+    throw new Error('external subject result is invalid');
+  }
+  return {
+    command: text(config.command, 'external subject command'),
+    args: config.args,
+    environment,
+    credentialEnvironment,
+    result,
+  };
+}
+
+function stringMap(value: unknown, where: string): Readonly<Record<string, string>> {
+  if (value === undefined) return Object.freeze({});
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${where} must be an object`);
+  }
+  const entries = Object.entries(value);
+  for (const [name, item] of entries) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) || typeof item !== 'string') {
+      throw new Error(`${where}.${name} is invalid`);
+    }
+  }
+  return Object.freeze(Object.fromEntries(entries));
 }
 
 function decodeResult(stdout: string): {

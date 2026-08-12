@@ -152,11 +152,14 @@ function relayContext(
     execute: async (input) => {
       if (state.used) throw new Error('Trial already executed its subject');
       state.used = true;
+      const credentialEnvironment =
+        input.credentialEnvironment ??
+        Object.fromEntries(input.credentialNames.map((name) => [name, name]));
       const credentials = Object.fromEntries(
-        input.credentialNames.map((name) => {
-          const value = state.credentials[name];
-          if (value === undefined) throw new Error(`credential ${name} was not admitted`);
-          return [name, value];
+        Object.entries(credentialEnvironment).map(([target, source]) => {
+          const value = state.credentials[source];
+          if (value === undefined) throw new Error(`credential ${source} was not admitted`);
+          return [target, value];
         }),
       );
       state.socket.write(
@@ -166,7 +169,9 @@ function relayContext(
           command: input.command,
           args: input.args,
           cwd: state.containerCwd,
+          environment: input.environment ?? {},
           credentials,
+          captureStdout: input.captureStdout ?? true,
           ...(input.cancel ? { cancel: input.cancel } : {}),
         })}\n`,
       );
