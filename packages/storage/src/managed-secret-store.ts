@@ -15,8 +15,9 @@ export type ManagedSecretStatus = 'active' | 'revoked' | 'deleted';
 
 /**
  * Public metadata deliberately omits the secret value and encrypted envelope.
- * `revision` changes on rotate, revoke, and delete while the reference remains
- * stable, so portable Session state never needs rewriting for those changes.
+ * `revision` changes on rotate and revoke while the reference remains stable,
+ * so portable Session state never needs rewriting for those changes. A
+ * successful delete returns terminal metadata but does not persist a tombstone.
  */
 export interface ManagedSecretMetadata {
   readonly reference: ManagedSecretReference;
@@ -187,7 +188,7 @@ export class InMemoryManagedSecretStore implements ManagedSecretStore {
     const principal = managedSecretIdentifier(input.principalId, 'principalId');
     const normalized = decodeManagedSecretReference(input.reference);
     const record = this.#records.get(normalized.secretId);
-    if (!record || record.status === 'deleted') return null;
+    if (!record) return null;
     assertOwner(record, principal);
     return publicMetadata(record);
   }
@@ -231,7 +232,7 @@ export class InMemoryManagedSecretStore implements ManagedSecretStore {
       updatedAt: mutationTimestamp(prepared.record, this.#now()),
       value: undefined,
     };
-    this.#records.set(record.reference.secretId, record);
+    this.#records.delete(record.reference.secretId);
     for (const grant of this.#grants) {
       if (grant.startsWith(`${record.reference.secretId}\0`)) this.#grants.delete(grant);
     }
@@ -390,7 +391,7 @@ function requiredRecord(
   reference: ManagedSecretReference,
 ): InMemorySecretRecord {
   const record = records.get(reference.secretId);
-  if (!record || record.status === 'deleted') {
+  if (!record) {
     throw new ManagedSecretError('secret_not_found', 'Managed Secret was not found');
   }
   return record;

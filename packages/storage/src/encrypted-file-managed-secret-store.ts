@@ -32,28 +32,31 @@ export const MANAGED_SECRET_DOCUMENT_SCHEMA_VERSION = 1 as const;
 export const MANAGED_SECRET_DOCUMENT_FILE = 'managed-secrets.json';
 
 const DOCUMENT_MAX_BYTES = 16 * 1024 * 1024;
-const MAX_LIVE_SECRET_RECORDS = 2_048;
-const MAX_SECRET_TOMBSTONES = 2_048;
-const MAX_SECRET_RECORDS = MAX_LIVE_SECRET_RECORDS + MAX_SECRET_TOMBSTONES;
+const MAX_SECRET_RECORDS = 2_048;
 const MAX_GRANTS = 8_192;
 const LOCK_POLL_MS = 25;
 const LOCK_TIMEOUT_MS = 10_000;
 
-export interface ManagedSecretEncryptionKey {
+/**
+ * Raw AES material used only by the encrypted-file reference backend. This is
+ * deliberately not a general KMS/HSM interface; production providers may keep
+ * master keys non-exportable behind opaque envelope operations.
+ */
+export interface EncryptedFileManagedSecretKey {
   readonly keyId: string;
   /** Exactly 32 bytes. The provider, not the persisted store, owns this key. */
   readonly key: Uint8Array;
 }
 
-export interface ManagedSecretEncryptionKeyProvider {
-  activeKey(): Promise<ManagedSecretEncryptionKey>;
-  keyById(keyId: string): Promise<ManagedSecretEncryptionKey | null>;
+export interface EncryptedFileManagedSecretKeyProvider {
+  activeKey(): Promise<EncryptedFileManagedSecretKey>;
+  keyById(keyId: string): Promise<EncryptedFileManagedSecretKey | null>;
 }
 
 export interface EncryptedFileManagedSecretStoreOptions {
   /** A control-plane/config root that is outside Session-owned portable state. */
   readonly controlPlaneRoot: string;
-  readonly keyProvider: ManagedSecretEncryptionKeyProvider;
+  readonly keyProvider: EncryptedFileManagedSecretKeyProvider;
   readonly now?: () => number;
   readonly newSecretId?: () => string;
 }
@@ -70,7 +73,7 @@ interface StoredSecretRecord {
   readonly secretId: string;
   readonly ownerPrincipalId: string;
   readonly revision: number;
-  readonly status: ManagedSecretStatus;
+  readonly status: Exclude<ManagedSecretStatus, 'deleted'>;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly envelope?: EncryptedSecretEnvelope;
@@ -109,7 +112,7 @@ export function createEncryptedFileManagedSecretStore(
  */
 class EncryptedFileManagedSecretStore implements ManagedSecretStore {
   readonly #path: string;
-  readonly #keyProvider: ManagedSecretEncryptionKeyProvider;
+  readonly #keyProvider: EncryptedFileManagedSecretKeyProvider;
   readonly #now: () => number;
   readonly #newSecretId: () => string;
 
@@ -124,10 +127,7 @@ class EncryptedFileManagedSecretStore implements ManagedSecretStore {
     const principalId = managedSecretIdentifier(input.principalId, 'principalId');
     const value = managedSecretValue(input.value);
     return this.#locked(async (document) => {
-      if (
-        document.secrets.filter((record) => record.status !== 'deleted').length >=
-        MAX_LIVE_SECRET_RECORDS
-      ) {
+      if (document.secrets.length >= MAX_SECRET_RECORDS) {
         throw new ManagedSecretError('storage_failure', 'Managed Secret record limit reached');
       }
       const reference = decodeManagedSecretReference(managedSecretReference(this.#newSecretId()));
@@ -164,7 +164,7 @@ class EncryptedFileManagedSecretStore implements ManagedSecretStore {
     const normalized = decodeManagedSecretReference(input.reference);
     return this.#locked(async (document) => {
       const record = document.secrets.find((item) => item.secretId === normalized.secretId);
-      if (!record || record.status === 'deleted') return null;
+      if (!record) return null;
       assertOwner(record, principal);
       return metadata(record);
     });
@@ -218,25 +218,21 @@ class EncryptedFileManagedSecretStore implements ManagedSecretStore {
     return this.#locked(async (document) => {
       const prepared = prepareMutation(document, normalized);
       if (prepared.kind === 'revision_conflict') return prepared;
-      const next: StoredSecretRecord = {
-        secretId: prepared.record.secretId,
+      const deleted = publicManagedSecretMetadata({
+        reference: managedSecretReference(prepared.record.secretId),
         ownerPrincipalId: prepared.record.ownerPrincipalId,
         revision: prepared.record.revision + 1,
         status: 'deleted',
         createdAt: prepared.record.createdAt,
         updatedAt: mutationTimestamp(prepared.record, this.#now()),
-      };
-      // Array order is the durable deletion order. Do not use wall-clock
-      // timestamps for retention because clocks may move backwards.
-      const secrets = document.secrets.filter((_, index) => index !== prepared.index);
-      secrets.push(next);
+      });
       await this.#write({
         ...document,
         revision: document.revision + 1,
-        secrets: compactSecretTombstones(secrets, next.secretId),
-        grants: document.grants.filter((grant) => grant.secretId !== next.secretId),
+        secrets: document.secrets.filter((_, index) => index !== prepared.index),
+        grants: document.grants.filter((grant) => grant.secretId !== deleted.reference.secretId),
       });
-      return { kind: 'committed', secret: metadata(next) };
+      return { kind: 'committed', secret: deleted };
     });
   }
 
@@ -342,7 +338,7 @@ class EncryptedFileManagedSecretStore implements ManagedSecretStore {
 }
 
 async function sealSecret(
-  provider: ManagedSecretEncryptionKeyProvider,
+  provider: EncryptedFileManagedSecretKeyProvider,
   input: {
     reference: ManagedSecretReference;
     ownerPrincipalId: string;
@@ -350,7 +346,7 @@ async function sealSecret(
     value: string;
   },
 ): Promise<EncryptedSecretEnvelope> {
-  let material: ManagedSecretEncryptionKey;
+  let material: EncryptedFileManagedSecretKey;
   try {
     material = await provider.activeKey();
   } catch {
@@ -381,14 +377,14 @@ async function sealSecret(
 }
 
 async function openSecret(
-  provider: ManagedSecretEncryptionKeyProvider,
+  provider: EncryptedFileManagedSecretKeyProvider,
   record: StoredSecretRecord,
 ): Promise<string> {
   const envelope = record.envelope;
   if (!envelope) {
     throw new ManagedSecretError('integrity_failure', 'Managed Secret envelope is unavailable');
   }
-  let material: ManagedSecretEncryptionKey | null;
+  let material: EncryptedFileManagedSecretKey | null;
   try {
     material = await provider.keyById(envelope.keyId);
   } catch {
@@ -426,7 +422,7 @@ async function openSecret(
   }
 }
 
-function encryptionKey(material: ManagedSecretEncryptionKey): Buffer {
+function encryptionKey(material: EncryptedFileManagedSecretKey): Buffer {
   managedSecretIdentifier(material.keyId, 'keyId');
   if (!(material.key instanceof Uint8Array) || material.key.byteLength !== 32) {
     throw new ManagedSecretError(
@@ -496,7 +492,7 @@ function prepareMutation(
     (record) => record.secretId === input.reference.secretId,
   );
   const record = index < 0 ? undefined : document.secrets[index];
-  if (!record || record.status === 'deleted') {
+  if (!record) {
     throw new ManagedSecretError('secret_not_found', 'Managed Secret was not found');
   }
   assertOwner(record, input.principalId);
@@ -511,7 +507,7 @@ function requiredRecord(
   reference: ManagedSecretReference,
 ): StoredSecretRecord {
   const record = document.secrets.find((item) => item.secretId === reference.secretId);
-  if (!record || record.status === 'deleted') {
+  if (!record) {
     throw new ManagedSecretError('secret_not_found', 'Managed Secret was not found');
   }
   return record;
@@ -557,22 +553,6 @@ function sameGrant(grant: StoredSecretGrant, input: NormalizedAuthorization): bo
 
 function mutationTimestamp(record: Pick<StoredSecretRecord, 'updatedAt'>, now: number): number {
   return Math.max(record.updatedAt, managedSecretTimestamp(now));
-}
-
-function compactSecretTombstones(
-  records: readonly StoredSecretRecord[],
-  retainedSecretId: string,
-): StoredSecretRecord[] {
-  const tombstones = records.filter((record) => record.status === 'deleted');
-  const overflow = tombstones.length - MAX_SECRET_TOMBSTONES;
-  if (overflow <= 0) return [...records];
-  const removed = new Set(
-    tombstones
-      .filter((record) => record.secretId !== retainedSecretId)
-      .slice(0, overflow)
-      .map((record) => record.secretId),
-  );
-  return records.filter((record) => !removed.has(record.secretId));
 }
 
 async function readDocument(path: string): Promise<ManagedSecretDocument> {
@@ -741,11 +721,6 @@ function decodeDocument(value: unknown): ManagedSecretDocument {
   }
   const secrets = document.secrets.map(decodeStoredSecret);
   const grants = document.grants.map(decodeStoredGrant);
-  const liveSecretCount = secrets.filter((record) => record.status !== 'deleted').length;
-  const tombstoneCount = secrets.length - liveSecretCount;
-  if (liveSecretCount > MAX_LIVE_SECRET_RECORDS || tombstoneCount > MAX_SECRET_TOMBSTONES) {
-    throw invalidDocument();
-  }
   if (new Set(secrets.map((record) => record.secretId)).size !== secrets.length) {
     throw invalidDocument();
   }
@@ -753,11 +728,7 @@ function decodeDocument(value: unknown): ManagedSecretDocument {
   const grantKeys = new Set<string>();
   for (const grant of grants) {
     const record = secretById.get(grant.secretId);
-    if (
-      !record ||
-      record.status === 'deleted' ||
-      record.ownerPrincipalId !== grant.ownerPrincipalId
-    ) {
+    if (!record || record.ownerPrincipalId !== grant.ownerPrincipalId) {
       throw invalidDocument();
     }
     const key = `${grant.secretId}\0${grant.ownerPrincipalId}\0${grant.cloudSessionId}`;
@@ -784,7 +755,7 @@ function decodeStoredSecret(value: unknown): StoredSecretRecord {
   const createdAt = managedSecretTimestamp(record.createdAt);
   const updatedAt = managedSecretTimestamp(record.updatedAt);
   if (updatedAt < createdAt) throw invalidDocument();
-  if (record.status !== 'active' && record.status !== 'revoked' && record.status !== 'deleted') {
+  if (record.status !== 'active' && record.status !== 'revoked') {
     throw invalidDocument();
   }
   const envelope = record.envelope === undefined ? undefined : decodeEnvelope(record.envelope);

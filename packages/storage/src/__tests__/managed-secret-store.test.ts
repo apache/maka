@@ -5,10 +5,10 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   createEncryptedFileManagedSecretStore,
+  type EncryptedFileManagedSecretKey,
+  type EncryptedFileManagedSecretKeyProvider,
   MANAGED_SECRET_DOCUMENT_FILE,
   MANAGED_SECRET_DOCUMENT_SCHEMA_VERSION,
-  type ManagedSecretEncryptionKey,
-  type ManagedSecretEncryptionKeyProvider,
 } from '../encrypted-file-managed-secret-store.js';
 import {
   InMemoryManagedSecretStore,
@@ -186,7 +186,7 @@ for (const [name, createHarness] of harnesses) {
       });
     });
 
-    test('deletion removes material and target grants while retaining an identity tombstone', async () => {
+    test('deletion removes material and target grants without retaining a tombstone', async () => {
       await withHarness(createHarness, async ({ store }) => {
         const first = await store.createSecret({ principalId: PRINCIPAL, value: 'delete-me' });
         await store.authorizeSession({
@@ -307,70 +307,37 @@ describe('encrypted file ManagedSecretStore security boundary', () => {
     });
   });
 
-  test('bounds tombstones separately so deleted records do not exhaust live capacity', async () => {
+  test('physically removes deleted records and grants so capacity is reusable', async () => {
     await withTempRoot(async (root) => {
-      const tombstones = Array.from({ length: 2_048 }, (_, index) => ({
-        secretId: generatedSecretId(index),
-        ownerPrincipalId: PRINCIPAL,
-        revision: 2,
-        status: 'deleted',
-        createdAt: 1,
-        // These old tombstones appear newer than the next deletions after a
-        // wall-clock rollback. Retention must follow deletion order instead.
-        updatedAt: 10_000,
-      }));
+      const ids = [SECRET_ONE, SECRET_TWO];
       const path = join(root, MANAGED_SECRET_DOCUMENT_FILE);
-      await writeFile(
-        path,
-        `${JSON.stringify({
-          schemaVersion: MANAGED_SECRET_DOCUMENT_SCHEMA_VERSION,
-          revision: 2_048,
-          secrets: tombstones,
-          grants: [],
-        })}\n`,
-        'utf8',
-      );
-      const createdIds = [generatedSecretId(4_096), generatedSecretId(4_097)];
       const store = createEncryptedFileManagedSecretStore({
         controlPlaneRoot: root,
         keyProvider: new TestKeyProvider(),
-        now: () => 1,
-        newSecretId: () => createdIds.shift()!,
+        newSecretId: () => ids.shift()!,
       });
 
-      const first = await store.createSecret({ principalId: PRINCIPAL, value: 'reclaimed-one' });
-      const second = await store.createSecret({ principalId: PRINCIPAL, value: 'reclaimed-two' });
-      let document = JSON.parse(await readFile(path, 'utf8')) as {
-        secrets: Array<{ secretId: string; status: string }>;
-      };
-      assert.equal(document.secrets.filter((record) => record.status !== 'deleted').length, 2);
-      assert.equal(document.secrets.filter((record) => record.status === 'deleted').length, 2_048);
-
+      const first = await store.createSecret({ principalId: PRINCIPAL, value: 'first' });
+      await store.authorizeSession({
+        principalId: PRINCIPAL,
+        reference: first.reference,
+        cloudSessionId: SOURCE_SESSION,
+      });
       await store.deleteSecret({
         principalId: PRINCIPAL,
         reference: first.reference,
         expectedRevision: first.revision,
       });
-      await store.deleteSecret({
-        principalId: PRINCIPAL,
-        reference: second.reference,
-        expectedRevision: second.revision,
-      });
-      document = JSON.parse(await readFile(path, 'utf8')) as {
-        secrets: Array<{ secretId: string; status: string }>;
+      const second = await store.createSecret({ principalId: PRINCIPAL, value: 'second' });
+      const document = JSON.parse(await readFile(path, 'utf8')) as {
+        secrets: Array<{ secretId: string }>;
+        grants: Array<{ secretId: string }>;
       };
-      assert.equal(document.secrets.length, 2_048);
-      assert.ok(document.secrets.every((record) => record.status === 'deleted'));
-      assert.ok(document.secrets.some((record) => record.secretId === first.reference.secretId));
-      assert.ok(document.secrets.some((record) => record.secretId === second.reference.secretId));
-      assert.equal(
-        document.secrets.some((record) => record.secretId === generatedSecretId(0)),
-        false,
+      assert.deepEqual(
+        document.secrets.map((record) => record.secretId),
+        [second.reference.secretId],
       );
-      assert.equal(
-        document.secrets.some((record) => record.secretId === generatedSecretId(1)),
-        false,
-      );
+      assert.deepEqual(document.grants, []);
     });
   });
 
@@ -574,17 +541,17 @@ describe('encrypted file ManagedSecretStore security boundary', () => {
   });
 });
 
-class TestKeyProvider implements ManagedSecretEncryptionKeyProvider {
+class TestKeyProvider implements EncryptedFileManagedSecretKeyProvider {
   activeKeyId = 'test-key-1';
   readonly keys = new Map<string, Uint8Array>([['test-key-1', Buffer.alloc(32, 7)]]);
 
-  async activeKey(): Promise<ManagedSecretEncryptionKey> {
+  async activeKey(): Promise<EncryptedFileManagedSecretKey> {
     const key = this.keys.get(this.activeKeyId);
     if (!key) throw new Error('missing test key');
     return { keyId: this.activeKeyId, key };
   }
 
-  async keyById(keyId: string): Promise<ManagedSecretEncryptionKey | null> {
+  async keyById(keyId: string): Promise<EncryptedFileManagedSecretKey | null> {
     const key = this.keys.get(keyId);
     return key ? { keyId, key } : null;
   }

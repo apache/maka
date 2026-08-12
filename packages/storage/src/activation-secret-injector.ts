@@ -23,16 +23,19 @@ export interface ActivationSecretInjectionLease {
   release(): Promise<void>;
 }
 
+export interface ActivationSecretEnvironmentEntry {
+  readonly name: string;
+  readonly value: string;
+}
+
 /**
- * Implemented by the sandbox/control-plane boundary. The returned lease owns
- * removal of exactly the material injected by this call, including restoration
- * of any previous value when the provider supports overlays.
+ * Implemented by the sandbox/control-plane boundary. One call owns the complete
+ * environment effect for an Activation: it must either return one lease for the
+ * whole batch or reject without applying any entry.
  */
 export interface ActivationSecretSink {
-  /** Must either return a lease that owns the effect or reject with no effect. */
-  injectEnvironmentVariable(input: {
-    readonly name: string;
-    readonly value: string;
+  injectEnvironmentVariables(input: {
+    readonly entries: readonly ActivationSecretEnvironmentEntry[];
   }): Promise<ActivationSecretInjectionLease>;
 }
 
@@ -44,20 +47,30 @@ export interface ActivationSecretSink {
 export class ActivationEnvironmentSecretSink implements ActivationSecretSink {
   constructor(private readonly environment: NodeJS.ProcessEnv) {}
 
-  async injectEnvironmentVariable(input: {
-    readonly name: string;
-    readonly value: string;
+  async injectEnvironmentVariables(input: {
+    readonly entries: readonly ActivationSecretEnvironmentEntry[];
   }): Promise<ActivationSecretInjectionLease> {
-    const name = decodeManagedSecretEnvironmentName(input.name);
-    const hadPrevious = Object.hasOwn(this.environment, name);
-    const previous = this.environment[name];
-    this.environment[name] = input.value;
+    const entries = normalizeEnvironmentEntries(input.entries);
+    const previous = entries.map(({ name }) => ({
+      name,
+      hadPrevious: Object.hasOwn(this.environment, name),
+      value: this.environment[name],
+    }));
+    let applied = 0;
+    try {
+      for (const entry of entries) {
+        this.environment[entry.name] = entry.value;
+        applied += 1;
+      }
+    } catch (error) {
+      restoreEnvironment(this.environment, previous.slice(0, applied));
+      throw error;
+    }
     let released = false;
     return {
       release: async () => {
         if (released) return;
-        if (hadPrevious) this.environment[name] = previous;
-        else delete this.environment[name];
+        restoreEnvironment(this.environment, previous);
         released = true;
       },
     };
@@ -78,49 +91,13 @@ export interface PreparedActivationSecretInjection {
    * this lease is active. Callers must drain those surfaces before `release`.
    */
   redact(value: string): string;
-  /** Releases injected material in reverse order. */
+  /** Releases the complete batch effect. */
   release(): Promise<void>;
 }
 
 /**
- * Injection failed before a handle could be returned. If sink rollback also
- * failed, this error retains only the failed cleanup leases so the caller can
- * retry cleanup in `finally`; it never exposes resolved secret material.
- */
-export class ActivationSecretInjectionError extends ManagedSecretError {
-  readonly #leases: ActivationSecretInjectionLease[];
-  readonly #values: string[];
-
-  constructor(
-    message: string,
-    leases: ActivationSecretInjectionLease[],
-    values: readonly string[],
-  ) {
-    super('injection_failed', message);
-    this.name = 'ActivationSecretInjectionError';
-    this.#leases = leases;
-    this.#values = leases.length === 0 ? [] : uniqueLongestFirst(values);
-  }
-
-  get cleanupRequired(): boolean {
-    return this.#leases.length > 0;
-  }
-
-  redact(value: string): string {
-    return redactLiteralSecrets(value, this.#values);
-  }
-
-  async release(): Promise<void> {
-    if (await releaseLeases(this.#leases)) {
-      throw new ManagedSecretError('cleanup_failed', 'Managed Secret cleanup failed');
-    }
-    this.#values.length = 0;
-  }
-}
-
-/**
- * Resolves every reference before the first injection, then rolls back partial
- * sink effects on failure. No secret value is included in public errors or in
+ * Resolves and validates every reference before handing one complete batch to
+ * the effect-owning sink. No secret value is included in public errors or in
  * the returned handle.
  */
 export class ActivationSecretInjector {
@@ -153,31 +130,26 @@ export class ActivationSecretInjector {
       );
     }
 
-    const leases: ActivationSecretInjectionLease[] = [];
+    let lease: ActivationSecretInjectionLease | undefined;
     try {
-      for (let index = 0; index < bindings.length; index += 1) {
-        const binding = bindings[index]!;
-        const secret = material[index]!;
-        leases.push(
-          await input.sink.injectEnvironmentVariable({
-            name: binding.target.name,
-            value: secret.value,
-          }),
-        );
+      if (bindings.length > 0) {
+        lease = await input.sink.injectEnvironmentVariables({
+          entries: Object.freeze(
+            bindings.map((binding, index) =>
+              Object.freeze({
+                name: binding.target.name,
+                value: material[index]!.value,
+              }),
+            ),
+          ),
+        });
       }
     } catch {
-      const cleanupFailed = await releaseLeases(leases);
-      throw new ActivationSecretInjectionError(
-        cleanupFailed
-          ? 'Managed Secret injection failed and rollback was incomplete'
-          : 'Managed Secret injection failed',
-        leases,
-        cleanupFailed ? material.map((item) => item.value) : [],
-      );
+      throw new ManagedSecretError('injection_failed', 'Managed Secret injection failed');
     }
 
     const handle = new PreparedInjectionHandle(
-      leases,
+      lease,
       bindings.map((item) => item.reference),
       material.map((item) => item.value),
     );
@@ -224,15 +196,15 @@ function sameReference(
 
 class PreparedInjectionHandle implements PreparedActivationSecretInjection {
   readonly references: readonly ManagedSecretReference[];
-  readonly #leases: ActivationSecretInjectionLease[];
+  #lease: ActivationSecretInjectionLease | undefined;
   readonly #values: string[];
 
   constructor(
-    leases: ActivationSecretInjectionLease[],
+    lease: ActivationSecretInjectionLease | undefined,
     references: readonly ManagedSecretReference[],
     values: readonly string[],
   ) {
-    this.#leases = leases;
+    this.#lease = lease;
     this.references = references.map((reference) => ({ ...reference }));
     this.#values = uniqueLongestFirst(values);
   }
@@ -242,11 +214,50 @@ class PreparedInjectionHandle implements PreparedActivationSecretInjection {
   }
 
   async release(): Promise<void> {
-    const failed = await releaseLeases(this.#leases);
-    if (failed) {
+    if (!this.#lease) return;
+    try {
+      await this.#lease.release();
+    } catch {
       throw new ManagedSecretError('cleanup_failed', 'Managed Secret cleanup failed');
     }
+    this.#lease = undefined;
     this.#values.length = 0;
+  }
+}
+
+function normalizeEnvironmentEntries(
+  value: readonly ActivationSecretEnvironmentEntry[],
+): readonly ActivationSecretEnvironmentEntry[] {
+  if (!Array.isArray(value) || value.length > 128) {
+    throw new ManagedSecretError('invalid_input', 'Managed Secret environment batch is invalid');
+  }
+  const names = new Set<string>();
+  return value.map((candidate) => {
+    const name = decodeManagedSecretEnvironmentName(candidate?.name);
+    const portableName = name.toUpperCase();
+    if (names.has(portableName)) {
+      throw new ManagedSecretError(
+        'invalid_input',
+        'Managed Secret environment targets must be unique',
+      );
+    }
+    names.add(portableName);
+    return { name, value: managedSecretValue(candidate?.value) };
+  });
+}
+
+function restoreEnvironment(
+  environment: NodeJS.ProcessEnv,
+  previous: readonly {
+    readonly name: string;
+    readonly hadPrevious: boolean;
+    readonly value?: string;
+  }[],
+): void {
+  for (let index = previous.length - 1; index >= 0; index -= 1) {
+    const entry = previous[index]!;
+    if (entry.hadPrevious) environment[entry.name] = entry.value;
+    else delete environment[entry.name];
   }
 }
 
@@ -273,19 +284,6 @@ function normalizeBindings(
     names.add(portableName);
     return { reference, target: { kind: 'environment' as const, name } };
   });
-}
-
-async function releaseLeases(leases: ActivationSecretInjectionLease[]): Promise<boolean> {
-  let failed = false;
-  for (let index = leases.length - 1; index >= 0; index -= 1) {
-    try {
-      await leases[index]!.release();
-      leases.splice(index, 1);
-    } catch {
-      failed = true;
-    }
-  }
-  return failed;
 }
 
 function uniqueLongestFirst(values: readonly string[]): string[] {

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   ActivationEnvironmentSecretSink,
-  ActivationSecretInjectionError,
   ActivationSecretInjector,
   type ActivationSecretInjectionLease,
   type ActivationSecretSink,
@@ -63,7 +62,7 @@ describe('ActivationSecretInjector', () => {
     await handle.release();
   });
 
-  test('resolves before injection and releases sink leases in reverse order', async () => {
+  test('resolves before injection and gives the sink one complete batch effect', async () => {
     const { store, first, second } = await preparedStore();
     const events: string[] = [];
     const sink = recordingSink(events);
@@ -91,9 +90,29 @@ describe('ActivationSecretInjector', () => {
     assert.deepEqual(events, [
       'inject:FIRST_TOKEN:first-value',
       'inject:SECOND_TOKEN:second-value',
-      'release:SECOND_TOKEN',
-      'release:FIRST_TOKEN',
+      'release:batch',
     ]);
+  });
+
+  test('the environment sink restores the complete batch if applying an entry fails', async () => {
+    const target = { FIRST_TOKEN: 'previous', UNRELATED: 'kept' } as NodeJS.ProcessEnv;
+    const environment = new Proxy(target, {
+      set(object, property, value) {
+        if (property === 'SECOND_TOKEN') throw new Error('setter failed');
+        return Reflect.set(object, property, value);
+      },
+    });
+
+    await assert.rejects(
+      new ActivationEnvironmentSecretSink(environment).injectEnvironmentVariables({
+        entries: [
+          { name: 'FIRST_TOKEN', value: 'first-value' },
+          { name: 'SECOND_TOKEN', value: 'second-value' },
+        ],
+      }),
+      /setter failed/u,
+    );
+    assert.deepEqual(target, { FIRST_TOKEN: 'previous', UNRELATED: 'kept' });
   });
 
   test('injects nothing when any reference is missing authorization', async () => {
@@ -158,10 +177,10 @@ describe('ActivationSecretInjector', () => {
       context: CONTEXT,
       bindings: [binding(first, 'FIRST_TOKEN'), binding(second, 'SECOND_TOKEN')],
       sink: {
-        async injectEnvironmentVariable({ name, value }) {
-          events.push(`inject:${name}:${value}`);
-          if (name === 'FIRST_TOKEN') store.replaceSecondMaterialWithFirst();
-          return oneShotLease(() => events.push(`release:${name}`));
+        async injectEnvironmentVariables({ entries }) {
+          store.replaceSecondMaterialWithFirst();
+          events.push(...entries.map(({ name, value }) => `inject:${name}:${value}`));
+          return oneShotLease(() => events.push('release:batch'));
         },
       },
     });
@@ -173,15 +192,14 @@ describe('ActivationSecretInjector', () => {
     await handle.release();
   });
 
-  test('rolls back earlier injections and redacts a sink failure', async () => {
+  test('wraps a batch sink failure without exposing resolved material', async () => {
     const { store, first, second } = await preparedStore();
     const events: string[] = [];
     const leaked = 'second-value';
     const sink: ActivationSecretSink = {
-      async injectEnvironmentVariable({ name, value }) {
-        events.push(`inject:${name}:${value}`);
-        if (name === 'SECOND_TOKEN') throw new Error(`sink exposed ${leaked}`);
-        return oneShotLease(() => events.push(`release:${name}`));
+      async injectEnvironmentVariables({ entries }) {
+        events.push(...entries.map(({ name, value }) => `inject:${name}:${value}`));
+        throw new Error(`sink exposed ${leaked}`);
       },
     };
 
@@ -192,9 +210,8 @@ describe('ActivationSecretInjector', () => {
         sink,
       }),
       (error: unknown) => {
-        assert.ok(error instanceof ActivationSecretInjectionError);
+        assert.ok(error instanceof ManagedSecretError);
         assert.equal(error.code, 'injection_failed');
-        assert.equal(error.cleanupRequired, false);
         assert.equal(error.message.includes(leaked), false);
         assert.equal(JSON.stringify(error).includes(leaked), false);
         return true;
@@ -203,43 +220,7 @@ describe('ActivationSecretInjector', () => {
     assert.deepEqual(events, [
       'inject:FIRST_TOKEN:first-value',
       'inject:SECOND_TOKEN:second-value',
-      'release:FIRST_TOKEN',
     ]);
-  });
-
-  test('retains failed rollback ownership on the thrown injection error', async () => {
-    const { store, first, second } = await preparedStore();
-    let releaseAttempts = 0;
-    const sink: ActivationSecretSink = {
-      async injectEnvironmentVariable({ name }) {
-        if (name === 'SECOND_TOKEN') throw new Error('injection failed');
-        return {
-          async release() {
-            releaseAttempts += 1;
-            if (releaseAttempts === 1) throw new Error('transient cleanup failure');
-          },
-        };
-      },
-    };
-
-    let failure: ActivationSecretInjectionError | undefined;
-    try {
-      await new ActivationSecretInjector(store).prepare({
-        context: CONTEXT,
-        bindings: [binding(first, 'FIRST_TOKEN'), binding(second, 'SECOND_TOKEN')],
-        sink,
-      });
-    } catch (error) {
-      assert.ok(error instanceof ActivationSecretInjectionError);
-      failure = error;
-    }
-    assert.ok(failure);
-    assert.equal(failure.cleanupRequired, true);
-    assert.equal(failure.redact('first-value remains injected'), '[redacted] remains injected');
-    await failure.release();
-    assert.equal(failure.cleanupRequired, false);
-    assert.equal(failure.redact('first-value'), 'first-value');
-    assert.equal(releaseAttempts, 2);
   });
 
   test('keeps successful-handle cleanup failures retryable', async () => {
@@ -249,7 +230,7 @@ describe('ActivationSecretInjector', () => {
       context: CONTEXT,
       bindings: [binding(first, 'FIRST_TOKEN')],
       sink: {
-        async injectEnvironmentVariable() {
+        async injectEnvironmentVariables() {
           return {
             async release() {
               attempts += 1;
@@ -343,9 +324,9 @@ function binding(secret: ManagedSecretMetadata, name: string) {
 
 function recordingSink(events: string[]): ActivationSecretSink {
   return {
-    async injectEnvironmentVariable({ name, value }) {
-      events.push(`inject:${name}:${value}`);
-      return oneShotLease(() => events.push(`release:${name}`));
+    async injectEnvironmentVariables({ entries }) {
+      events.push(...entries.map(({ name, value }) => `inject:${name}:${value}`));
+      return oneShotLease(() => events.push('release:batch'));
     },
   };
 }
