@@ -74,7 +74,7 @@ export function ProjectsSettingsPage(props: {
     void reload();
     const unsubscribe = window.maka.projects.subscribeChanges(() => void reload());
     const unsubscribeRuntimeHost = window.maka.runtimeHostProfiles.subscribeChanges((event) => {
-      if (event.readiness === 'ready') return;
+      if (!event.targetChanged) return;
       reloadGeneration.current += 1;
       setProjects([]);
       setCapabilities(NO_PROJECT_CAPABILITIES);

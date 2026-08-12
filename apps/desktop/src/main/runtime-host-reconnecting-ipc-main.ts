@@ -39,8 +39,8 @@ export class RuntimeHostTargetChangedError extends Error {
 
 /**
  * Keeps Electron IPC registration stable across reconnects while fencing each
- * cross-Host target generation. A candidate may be replaced within one epoch;
- * an invocation may never cross into another epoch.
+ * target generation. Reconnectable reads may move to a replacement candidate,
+ * but a late result from the replaced candidate is never returned.
  */
 export class RuntimeHostReconnectingIpcMain {
   readonly #ipcMain: Pick<IpcMain, "handle" | "removeHandler">;
@@ -148,6 +148,10 @@ export class RuntimeHostReconnectingIpcMain {
       try {
         const result = await handler.listener(event, ...args);
         this.#assertActive(epoch);
+        if (slot.reconnectableRead && slot.handler !== handler) {
+          handler = await this.#waitForHandler(slot, epoch, handler);
+          continue;
+        }
         return result;
       } catch (error) {
         this.#assertActive(epoch);

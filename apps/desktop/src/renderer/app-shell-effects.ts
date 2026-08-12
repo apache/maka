@@ -250,7 +250,7 @@ export function useAppShellBootstrapSubscriptions(options: {
     options.handleConnectionEvent(event);
   });
   const handleRuntimeHostChange = useEffectEvent((event: DesktopRuntimeHostProfileChangedEvent) => {
-    options.clearRuntimeHostRendererState();
+    if (event.targetChanged) options.clearRuntimeHostRendererState();
     if (event.readiness !== 'ready') return;
     void options.refreshProjects();
     void options.refreshSessions();

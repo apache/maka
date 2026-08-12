@@ -66,6 +66,28 @@ test("holds an invocation across a Runtime Host candidate replacement", async ()
   assert.equal(ipc.size, 0);
 });
 
+test("does not return a late read from a replaced Runtime Host candidate", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const firstTarget = router.createTarget("target-a");
+  const oldRead = deferred<string>();
+  firstTarget.handleReconnectableRead?.("sessions:list", () => oldRead.promise);
+  router.activate("target-a");
+
+  const reading = ipc.invoke("sessions:list");
+  firstTarget.removeHandler("sessions:list");
+  const replacementTarget = router.createTarget("target-a");
+  replacementTarget.handleReconnectableRead?.(
+    "sessions:list",
+    async () => "replacement",
+  );
+  assert.equal(await ipc.invoke("sessions:list"), "replacement");
+  oldRead.resolve("stale");
+
+  assert.equal(await reading, "replacement");
+  router.close();
+});
+
 test("does not replay a command IPC handler after a draining rejection", async () => {
   const ipc = ipcHarness();
   const router = new RuntimeHostReconnectingIpcMain(ipc);

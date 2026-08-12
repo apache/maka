@@ -2469,6 +2469,7 @@ function AppShellContent({
     activeId,
     activePermissionMode,
     canSetPermissionMode: activeBoundarySurface.localInteractionAvailable,
+    clientPathsAccessible: projectCapabilities.viewClientPath,
     connections,
     defaultConnection,
     dailyReviewBridge,
@@ -2584,7 +2585,12 @@ function AppShellContent({
                 }}
                 project={
                   titlebarProjectName
-                    ? { name: titlebarProjectName, onOpenFolder: () => void openProjectFolder() }
+                    ? {
+                        name: titlebarProjectName,
+                        ...(projectCapabilities.viewClientPath
+                          ? { onOpenFolder: () => void openProjectFolder() }
+                          : {}),
+                      }
                     : undefined
                 }
                 parentSession={titlebarParentSession}
@@ -2665,11 +2671,17 @@ function AppShellContent({
                   scheduledTasks={scheduledTasks}
                   onRefreshSkills={() => refreshSkills()}
                   onRefreshManagedSkillSources={() => refreshManagedSkillSources()}
-                  onOpenSkill={(skillId) => openSkill(skillId)}
+                  onOpenSkill={projectCapabilities.viewClientPath
+                    ? (skillId) => openSkill(skillId)
+                    : undefined}
                   onUseSkill={useSkillInChat}
-                  onOpenSkillsFolder={() => openSkillsFolder()}
+                  onOpenSkillsFolder={projectCapabilities.viewClientPath
+                    ? () => openSkillsFolder()
+                    : undefined}
                   managedSkillSources={managedSkillSources}
-                  onImportManagedSkillSource={() => importManagedSkillSource()}
+                  onImportManagedSkillSource={projectCapabilities.viewClientPath
+                    ? () => importManagedSkillSource()
+                    : undefined}
                   onInstallManagedSkill={(sourceId) => installManagedSkill(sourceId)}
                   bundledSkillCatalog={bundledSkillCatalog}
                   onRefreshBundledSkillCatalog={() => refreshBundledSkillCatalog()}

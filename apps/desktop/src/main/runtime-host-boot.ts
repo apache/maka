@@ -186,6 +186,7 @@ if (runtimeHostStartupSelection.kind === "unavailable") {
 const startupRuntimeHostProfileId = runtimeHostStartupSelection.selectedProfileId;
 let startupRuntimeHost = runtimeHostStartupSelection.target;
 let lastRuntimeHostTarget = startupRuntimeHost;
+let lastPublishedRuntimeHostTargetEpoch: string | undefined;
 let owner: RuntimeHostDesktopOwner | undefined;
 const currentRuntimeHost = (): ResolvedRuntimeHostProfile | undefined =>
   owner ? owner.current()?.target : startupRuntimeHost;
@@ -566,10 +567,13 @@ owner = await startRuntimeHostDesktopOwner(
   {
     upgradePrompts: runtimeHostUpgradePrompts,
     onTargetStateChanged: ({ epoch, target, readiness }) => {
+      const targetChanged = lastPublishedRuntimeHostTargetEpoch !== epoch;
+      lastPublishedRuntimeHostTargetEpoch = epoch;
       lastRuntimeHostTarget = target;
       mainWindowController.send("runtime-host-profiles:changed", {
         epoch,
         profileId: target.profile.id,
+        targetChanged,
         readiness,
       });
       if (readiness === "ready") {
