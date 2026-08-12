@@ -17,11 +17,16 @@ import {
 import type { EvalResult } from './result.js';
 
 type Framework = 'harbor' | 'pier';
-type RelayTransportStage = 'ready' | 'execute' | 'receive' | 'cancel' | 'decision' | 'close';
+type RelayTransportStage = 'ready' | 'execute' | 'receive' | 'decision';
 
 interface RelayTransportFailure {
   readonly stage: RelayTransportStage;
-  readonly category: 'broken-pipe' | 'connection-reset' | 'peer-closed' | 'transport-error';
+  readonly category:
+    | 'broken-pipe'
+    | 'connection-reset'
+    | 'peer-closed'
+    | 'protocol-error'
+    | 'transport-error';
   readonly delivery: 'not-delivered' | 'unknown';
 }
 
@@ -43,7 +48,12 @@ interface RelayState {
   readonly credentials: Readonly<Record<string, string>>;
   readonly cwd: string;
   used: boolean;
+  diagnostic?: SubjectProcessDiagnostic;
 }
+
+type SubjectProcessDiagnostic = NonNullable<
+  Awaited<ReturnType<SubjectExecutionContext['execute']>>['diagnostic']
+>;
 
 export function createHarborExecutor(config: JsonObject, specPath: string): ExperimentExecutor {
   return createHarnessExecutor('harbor', config, specPath);
@@ -103,20 +113,45 @@ async function runHarnessAttempt(
   let clean = true;
   let cleanupAction: 'abort' | 'terminate-unused' | undefined;
   let cleanupEvidence: TrialWaitEvidence | undefined;
-  const decide = (kind: 'verify' | 'abort') => {
-    if (decision) return;
+  let cleanup: Promise<TrialWaitEvidence> | undefined;
+  const terminate = () => {
+    cleanupAction ??= state.used ? 'abort' : 'terminate-unused';
+    cleanup ??= (async () => {
+      const evidence = await waitForTrial(state.child, {
+        phase: state.used ? 'abort' : 'unused',
+        deadlineMs: state.used ? RELAY_SETTLEMENT_DEADLINE_MS : TERM_SETTLEMENT_DEADLINE_MS,
+      });
+      if (evidence.outcome === 'unsettled') await state.closeRelay();
+      return evidence;
+    })();
+    return cleanup;
+  };
+  const onAbort = () => void terminate();
+  signal?.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  const decide = () => {
+    if (decision) return true;
+    if (
+      !sendRelayMessage(state.transport, 'decision', { token: state.token, kind: 'verify' }, true)
+    ) {
+      void terminate();
+      return false;
+    }
     decision = true;
-    sendRelayMessage(state.transport, 'decision', { token: state.token, kind }, true);
+    return true;
   };
   try {
     value = await operation({
-      context: relayContext(state, cell, signal),
+      context: relayContext(state, signal),
       verify: async () => {
-        decide('verify');
-        const completed = await waitForTrial(state.child, {
-          phase: 'completion',
-          ...(signal ? { signal } : {}),
-        });
+        if (!decide()) {
+          cleanupEvidence = await terminate();
+          clean = cleanupEvidence.clean;
+          throw new Error('relay verify decision was not delivered');
+        }
+        const completed = cleanup
+          ? await cleanup
+          : await waitForTrial(state.child, { phase: 'completion' });
         clean = completed.clean;
         if (!clean) throw new Error('Trial did not finalize cleanly');
         return readVerification(state, cell);
@@ -124,26 +159,17 @@ async function runHarnessAttempt(
     });
     hasValue = true;
   } finally {
-    if (!decision) {
-      if (state.used) {
-        cleanupAction = 'abort';
-        decide('abort');
-        cleanupEvidence = await waitForTrial(state.child, {
-          phase: 'abort',
-          deadlineMs: RELAY_SETTLEMENT_DEADLINE_MS,
-        });
-      } else {
-        cleanupAction = 'terminate-unused';
-        cleanupEvidence = await waitForTrial(state.child, {
-          phase: 'unused',
-          deadlineMs: TERM_SETTLEMENT_DEADLINE_MS,
-        });
-      }
+    signal?.removeEventListener('abort', onAbort);
+    if (!decision || cleanup) {
+      cleanupEvidence = await terminate();
       clean = cleanupEvidence.clean;
     }
     await state.closeRelay();
   }
-  if (hasValue && (state.transport.failure || cleanupAction)) {
+  if (
+    hasValue &&
+    (state.transport.failure || cleanupAction || state.diagnostic?.category !== 'none')
+  ) {
     value = {
       ...value!,
       artifacts: [
@@ -163,6 +189,9 @@ async function runHarnessAttempt(
               },
             ]
           : []),
+        ...(state.diagnostic && state.diagnostic.category !== 'none'
+          ? [{ kind: 'executor-relay-result', ...state.diagnostic }]
+          : []),
       ],
     };
   }
@@ -173,17 +202,14 @@ async function runHarnessAttempt(
   return { kind: 'settled', value };
 }
 
-function relayContext(
-  state: RelayState,
-  cell: ExperimentCell,
-  signal?: AbortSignal,
-): SubjectExecutionContext {
+function relayContext(state: RelayState, signal?: AbortSignal): SubjectExecutionContext {
   return {
     cwd: state.cwd,
     taskInput: state.taskInput,
     metadata: { trialName: state.trialName },
     ...(signal ? { signal } : {}),
     execute: async (input) => {
+      signal?.throwIfAborted();
       if (state.used) throw new Error('Trial already executed its subject');
       state.used = true;
       const credentials = Object.fromEntries(
@@ -193,6 +219,7 @@ function relayContext(
           return [target, value];
         }),
       );
+      const resultToken = randomBytes(16).toString('hex');
       if (
         !sendRelayMessage(state.transport, 'execute', {
           token: state.token,
@@ -201,59 +228,79 @@ function relayContext(
           args: input.args,
           environment: input.environment ?? {},
           credentials,
+          resultToken,
           captureStdout: input.captureStdout ?? true,
-          ...(input.cancel ? { cancel: input.cancel } : {}),
         })
       ) {
         throw new Error('relay transport is unavailable');
       }
-      const cancel = () => {
-        sendRelayMessage(state.transport, 'cancel', { token: state.token, kind: 'cancel' });
-      };
-      signal?.addEventListener('abort', cancel, { once: true });
-      if (signal?.aborted) cancel();
+      state.transport.stage = 'receive';
+      let executed: Record<string, unknown>;
       try {
-        state.transport.stage = 'receive';
-        const executed = await readLine(state.lines);
-        if (
-          executed.token !== state.token ||
-          executed.kind !== 'executed' ||
-          (executed.termination !== 'exited' &&
-            executed.termination !== 'framework_timeout' &&
-            executed.termination !== 'cancelled') ||
-          typeof executed.exitCode !== 'number' ||
-          typeof executed.stdout !== 'string' ||
-          !validProcessDiagnostic(executed.diagnostic)
-        ) {
-          throw new Error('relay returned an invalid execution result');
-        }
-        return {
-          termination: executed.termination,
-          exitCode: executed.exitCode,
-          stdout: executed.stdout,
-          diagnostic: executed.diagnostic,
+        executed = await readLine(state.lines);
+      } catch {
+        state.transport.failure ??= {
+          stage: 'receive',
+          category: 'protocol-error',
+          delivery: 'unknown',
         };
-      } finally {
-        signal?.removeEventListener('abort', cancel);
+        throw new Error('relay execution result was unavailable');
       }
+      if (
+        executed.token !== state.token ||
+        executed.kind !== 'executed' ||
+        (executed.termination !== 'exited' && executed.termination !== 'framework_timeout') ||
+        typeof executed.exitCode !== 'number' ||
+        typeof executed.stdout !== 'string' ||
+        !validProcessDiagnostic(executed.diagnostic)
+      ) {
+        state.transport.failure ??= {
+          stage: 'receive',
+          category: 'protocol-error',
+          delivery: 'unknown',
+        };
+        throw new Error('relay returned an invalid execution result');
+      }
+      state.diagnostic = executed.diagnostic;
+      return {
+        termination: executed.termination,
+        exitCode: executed.exitCode,
+        stdout: executed.stdout,
+        diagnostic: executed.diagnostic,
+      };
     },
   };
 }
 
 function validProcessDiagnostic(value: unknown): value is {
-  category: 'none' | 'process-stderr';
-  stderrBytes: number;
-  stderrSha256: string;
+  category:
+    | 'none'
+    | 'unstructured-output'
+    | 'result-frame-missing'
+    | 'result-frame-invalid'
+    | 'result-frame-ambiguous'
+    | 'result-frame-oversize';
+  bytes?: number;
+  sha256?: string;
 } {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const diagnostic = value as Record<string, unknown>;
+  const fields = Object.keys(diagnostic);
   return (
-    (diagnostic.category === 'none' || diagnostic.category === 'process-stderr') &&
-    typeof diagnostic.stderrBytes === 'number' &&
-    Number.isSafeInteger(diagnostic.stderrBytes) &&
-    diagnostic.stderrBytes >= 0 &&
-    typeof diagnostic.stderrSha256 === 'string' &&
-    /^[0-9a-f]{64}$/u.test(diagnostic.stderrSha256)
+    (diagnostic.category === 'none' && fields.length === 1) ||
+    ([
+      'unstructured-output',
+      'result-frame-missing',
+      'result-frame-invalid',
+      'result-frame-ambiguous',
+      'result-frame-oversize',
+    ].includes(String(diagnostic.category)) &&
+      fields.length === 3 &&
+      typeof diagnostic.bytes === 'number' &&
+      Number.isSafeInteger(diagnostic.bytes) &&
+      diagnostic.bytes >= 0 &&
+      typeof diagnostic.sha256 === 'string' &&
+      /^[0-9a-f]{64}$/u.test(diagnostic.sha256))
   );
 }
 
@@ -317,7 +364,12 @@ async function startTrial(
         timeout_multiplier: timeoutMultiplier,
         agent: {
           import_path: 'relay_agent:RelayAgent',
-          kwargs: { relay_host: '127.0.0.1', relay_port: address.port, relay_token: token },
+          kwargs: {
+            relay_host: '127.0.0.1',
+            relay_port: address.port,
+            relay_token: token,
+            teardown_timeout_ms: PYTHON_TEARDOWN_DEADLINE_MS,
+          },
         },
         environment: environmentConfig,
       })}\n`,
@@ -709,7 +761,7 @@ async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promis
 }
 
 type TrialWait =
-  | { readonly phase: 'completion'; readonly signal?: AbortSignal }
+  | { readonly phase: 'completion' }
   | { readonly phase: 'abort'; readonly deadlineMs: number }
   | { readonly phase: 'unused'; readonly deadlineMs: number };
 
@@ -722,6 +774,7 @@ interface TrialWaitEvidence {
 }
 
 const RELAY_SETTLEMENT_DEADLINE_MS = 120_000;
+const PYTHON_TEARDOWN_DEADLINE_MS = 110_000;
 const TERM_SETTLEMENT_DEADLINE_MS = 20_000;
 const KILL_SETTLEMENT_DEADLINE_MS = 5_000;
 
@@ -731,45 +784,24 @@ async function waitForTrial(child: ChildProcess, wait: TrialWait): Promise<Trial
       ? Promise.resolve({ code: child.exitCode, signal: child.signalCode })
       : once(child, 'exit').then(([code, childSignal]) => ({ code, signal: childSignal }));
   if (wait.phase === 'completion') {
-    try {
-      const completed = await abortable(exit, wait.signal);
-      return trialExitEvidence(wait.phase, null, 'none', 'completed', completed);
-    } catch (error) {
-      if (!wait.signal?.aborted) throw error;
-    }
-  } else if (wait.phase === 'abort') {
-    const completed = await within(exit, wait.deadlineMs);
-    if (completed) {
-      return trialExitEvidence(wait.phase, wait.deadlineMs, 'none', 'completed', completed);
-    }
+    const completed = await exit;
+    return trialExitEvidence(wait.phase, null, 'none', 'completed', completed);
   }
 
   child.kill('SIGTERM');
-  const terminated = await within(exit, TERM_SETTLEMENT_DEADLINE_MS);
+  const terminated = await within(exit, wait.deadlineMs);
   if (terminated) {
-    return trialExitEvidence(
-      wait.phase,
-      wait.phase === 'completion' ? 0 : wait.deadlineMs,
-      'term',
-      'terminated',
-      terminated,
-    );
+    return trialExitEvidence(wait.phase, wait.deadlineMs, 'term', 'terminated', terminated);
   }
   child.kill('SIGKILL');
   const killed = await within(exit, KILL_SETTLEMENT_DEADLINE_MS);
   if (killed) {
-    return trialExitEvidence(
-      wait.phase,
-      wait.phase === 'completion' ? 0 : wait.deadlineMs,
-      'kill',
-      'killed',
-      killed,
-    );
+    return trialExitEvidence(wait.phase, wait.deadlineMs, 'kill', 'killed', killed);
   }
   child.unref();
   return {
     phase: wait.phase,
-    deadlineMs: wait.phase === 'completion' ? 0 : wait.deadlineMs,
+    deadlineMs: wait.deadlineMs,
     escalation: 'detached',
     outcome: 'unsettled',
     clean: false,
@@ -788,7 +820,7 @@ function trialExitEvidence(
     deadlineMs,
     escalation,
     outcome,
-    clean: exit.code === 0 && exit.signal === null,
+    clean: phase === 'completion' ? exit.code === 0 && exit.signal === null : true,
   };
 }
 

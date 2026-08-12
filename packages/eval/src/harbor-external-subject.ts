@@ -1,20 +1,20 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, rmSync, statSync } from 'node:fs';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { basename, dirname, join } from 'node:path';
+import type { Readable } from 'node:stream';
 import {
   decodePreverifiedToolchain,
   type ExternalProfile as Profile,
 } from './toolchain-verification.js';
 import { isInferenceAdmissionEvent } from './provider-admission.js';
-import { captureBoundedStream, type BoundedCapture } from './bounded-log.js';
+import { takeRelayResultToken, writeRelayResult } from './relay-result-frame.js';
+
+const resultToken = takeRelayResultToken();
 
 type SubjectStatus = 'completed' | 'failed' | 'infra_failed' | 'indeterminate';
-const TRAJECTORY_LIMIT_BYTES = 16 * 1024 * 1024;
-const STDERR_LIMIT_BYTES = 4 * 1024 * 1024;
-const LOG_TAIL_BYTES = 1024 * 1024;
 
 interface Usage {
   inputTokens: number;
@@ -46,8 +46,6 @@ process.once('SIGTERM', terminate);
 process.once('SIGINT', interrupt);
 
 const logsRoot = rooted(systemRoot, '/logs/agent');
-const trajectoryPath = join(logsRoot, `${profile}.jsonl`);
-const stderrPath = join(logsRoot, `${profile}.stderr.txt`);
 const statePath = join(logsRoot, `${profile}.wrapper-state.json`);
 const artifacts: Record<string, unknown>[] = [];
 let usage: Usage | null = null;
@@ -74,28 +72,19 @@ try {
     const prepared = await prepareProfile(profile, proxy.baseUrl, systemRoot, command, args);
     credentialPath = prepared.credentialPath;
     if (profile === 'claude-code') prepareClaudeWorkspace(systemRoot, prepared.home);
-    const result = await runChild(
-      prepared.command,
-      prepared.args,
-      prepared.env,
-      trajectoryPath,
-      stderrPath,
-    );
+    const result = await runChild(prepared.command, prepared.args, prepared.env, profile);
     child = undefined;
     await writeState('child_exited', { exitCode: result.exitCode });
     usage = proxy.usage();
     costUsd = usage && proxy.usageComplete() ? estimateCost(usage) : null;
-    const output = await readFile(trajectoryPath, 'utf8').catch(() => '');
     const classified = classifyExecution(
       profile,
       result.exitCode,
-      output,
+      result.stdout,
       proxy.admittedRequestCount(),
     );
     status = stopped ? 'indeterminate' : classified.status;
     failureReason = stopped ? 'external subject cancelled' : classified.failureReason;
-    const profileArtifacts =
-      profile === 'zcode' ? await collectZCodeArtifacts(prepared.home, logsRoot) : [];
     await writeState('result_ready', {
       status,
       requests: proxy.requestCount(),
@@ -104,8 +93,8 @@ try {
     });
     artifacts.push(
       { kind: 'external-process', profile, exitCode: result.exitCode },
-      fileArtifact('trajectory', trajectoryPath, profile, result.trajectory),
-      fileArtifact('stderr', stderrPath, profile, result.stderr),
+      streamArtifact('stdout', profile, result.stdout),
+      streamArtifact('stderr', profile, result.stderr),
       {
         kind: 'provider-metering',
         profile,
@@ -115,7 +104,6 @@ try {
         usageComplete: proxy.usageComplete(),
       },
       fileArtifact('wrapper-state', statePath, profile),
-      ...profileArtifacts,
     );
   } finally {
     await proxy.close();
@@ -125,7 +113,6 @@ try {
   failureReason = stopped
     ? 'external subject cancelled'
     : safeFailure(error, 'external subject setup failed');
-  if (exists(stderrPath)) artifacts.push(fileArtifact('stderr', stderrPath, profile));
   await writeState('setup_failed', { failureReason }).catch(() => undefined);
 } finally {
   process.removeListener('SIGTERM', terminate);
@@ -133,16 +120,14 @@ try {
   removeCredential();
 }
 
-process.stdout.write(
-  `${JSON.stringify({
-    schemaVersion: 'maka.external_subject_result.v2',
-    status,
-    failureReason,
-    usage,
-    costUsd,
-    artifacts,
-  })}\n`,
-);
+writeRelayResult(resultToken, {
+  schemaVersion: 'maka.external_subject_result.v2',
+  status,
+  failureReason,
+  usage,
+  costUsd,
+  artifacts,
+});
 
 async function prepareProfile(
   selected: Profile,
@@ -406,32 +391,90 @@ async function runChild(
   executable: string,
   executableArgs: string[],
   env: NodeJS.ProcessEnv,
-  stdoutPath: string,
-  childStderrPath: string,
-): Promise<{ exitCode: number; trajectory: BoundedCapture; stderr: BoundedCapture }> {
+  selected: Profile,
+): Promise<{ exitCode: number; stdout: ClassifiedStream; stderr: StreamDiagnostic }> {
   const running = spawn(executable, executableArgs, {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child = running;
-  const trajectory = captureBoundedStream(
-    running.stdout,
-    stdoutPath,
-    TRAJECTORY_LIMIT_BYTES,
-    LOG_TAIL_BYTES,
-  );
-  const stderr = captureBoundedStream(
-    running.stderr,
-    childStderrPath,
-    STDERR_LIMIT_BYTES,
-    LOG_TAIL_BYTES,
-  );
+  const stdout = classifyStream(running.stdout, selected);
+  const stderr = captureStreamDiagnostic(running.stderr);
   const exitCode = await new Promise<number>((resolveExit, reject) => {
     running.once('error', reject);
     running.once('exit', (code) => resolveExit(code ?? 1));
   });
-  const [trajectoryResult, stderrResult] = await Promise.all([trajectory, stderr]);
-  return { exitCode, trajectory: trajectoryResult, stderr: stderrResult };
+  const [stdoutResult, stderrResult] = await Promise.all([stdout, stderr]);
+  return { exitCode, stdout: stdoutResult, stderr: stderrResult };
+}
+
+interface StreamDiagnostic {
+  readonly observedBytes: number;
+  readonly sha256: string;
+}
+
+interface ClassifiedStream extends StreamDiagnostic {
+  readonly completed: boolean;
+  readonly reportedError: boolean;
+  readonly nonempty: boolean;
+}
+
+async function classifyStream(input: Readable, selected: Profile): Promise<ClassifiedStream> {
+  const digest = createHash('sha256');
+  const decoder = new TextDecoder();
+  let observedBytes = 0;
+  let buffered = '';
+  let completed = false;
+  let reportedError = false;
+  let nonempty = false;
+  const consume = (line: string) => {
+    nonempty ||= line.trim().length > 0;
+    const signal = classifyLine(selected, line);
+    completed ||= signal.completed;
+    reportedError ||= signal.reportedError;
+  };
+  for await (const chunk of input) {
+    const bytes = Buffer.from(chunk);
+    observedBytes += bytes.byteLength;
+    digest.update(bytes);
+    buffered += decoder.decode(bytes, { stream: true });
+    let newline = buffered.indexOf('\n');
+    while (newline >= 0) {
+      consume(buffered.slice(0, newline));
+      buffered = buffered.slice(newline + 1);
+      newline = buffered.indexOf('\n');
+    }
+    if (buffered.length > 1024 * 1024) buffered = '';
+  }
+  buffered += decoder.decode();
+  if (buffered) consume(buffered);
+  return {
+    observedBytes,
+    sha256: digest.digest('hex'),
+    completed,
+    reportedError,
+    nonempty,
+  };
+}
+
+async function captureStreamDiagnostic(input: Readable): Promise<StreamDiagnostic> {
+  const digest = createHash('sha256');
+  let observedBytes = 0;
+  for await (const chunk of input) {
+    const bytes = Buffer.from(chunk);
+    observedBytes += bytes.byteLength;
+    digest.update(bytes);
+  }
+  return { observedBytes, sha256: digest.digest('hex') };
+}
+
+function streamArtifact(kind: string, profile: Profile, capture: StreamDiagnostic) {
+  return {
+    kind,
+    profile,
+    bytes: capture.observedBytes,
+    sha256: capture.sha256,
+  };
 }
 
 function prepareClaudeWorkspace(root: string, home: string): void {
@@ -448,43 +491,11 @@ function prepareClaudeWorkspace(root: string, home: string): void {
 function classifyExecution(
   selected: Profile,
   exitCode: number,
-  output: string,
+  output: ClassifiedStream,
   admittedRequests: number,
 ): { status: SubjectStatus; failureReason: string | null } {
-  let completed = selected === 'zcode' && exitCode === 0 && output.trim().length > 0;
-  let reportedError = false;
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const event = JSON.parse(line) as Record<string, unknown>;
-      if (selected === 'codex') {
-        completed ||= event.type === 'turn.completed';
-        reportedError ||= event.type === 'turn.failed';
-      } else if (selected === 'claude-code') {
-        if (event.type === 'result') {
-          completed ||= event.is_error === false;
-          reportedError ||= event.is_error === true;
-        }
-      } else if (selected === 'reasonix') {
-        completed ||= event.type === 'result' && event.is_error !== true;
-        reportedError ||= event.type === 'result' && event.is_error === true;
-      } else if (selected === 'opencode') {
-        completed ||= event.type === 'step_finish';
-        reportedError ||= event.type === 'error';
-      } else if (selected === 'kimi-code') {
-        completed ||= event.role === 'assistant';
-        reportedError ||= event.role === 'error' || event.type === 'error';
-      } else if (selected === 'pi') {
-        completed ||= event.type === 'agent_end';
-        const message = isRecord(event.message) ? event.message : undefined;
-        if (message?.role === 'assistant') {
-          reportedError ||= message.stopReason === 'error' || message.stopReason === 'aborted';
-        }
-      }
-    } catch {
-      continue;
-    }
-  }
+  const completed = output.completed || (selected === 'zcode' && exitCode === 0 && output.nonempty);
+  const reportedError = output.reportedError;
   if (admittedRequests === 0) {
     return { status: 'infra_failed', failureReason: `${selected} failed before model admission` };
   }
@@ -492,6 +503,45 @@ function classifyExecution(
     return { status: 'completed', failureReason: null };
   }
   return { status: 'failed', failureReason: `${selected} execution failed` };
+}
+
+function classifyLine(
+  selected: Profile,
+  line: string,
+): { completed: boolean; reportedError: boolean } {
+  if (!line.trim()) return { completed: false, reportedError: false };
+  let completed = false;
+  let reportedError = false;
+  try {
+    const event = JSON.parse(line) as Record<string, unknown>;
+    if (selected === 'codex') {
+      completed ||= event.type === 'turn.completed';
+      reportedError ||= event.type === 'turn.failed';
+    } else if (selected === 'claude-code') {
+      if (event.type === 'result') {
+        completed ||= event.is_error === false;
+        reportedError ||= event.is_error === true;
+      }
+    } else if (selected === 'reasonix') {
+      completed ||= event.type === 'result' && event.is_error !== true;
+      reportedError ||= event.type === 'result' && event.is_error === true;
+    } else if (selected === 'opencode') {
+      completed ||= event.type === 'step_finish';
+      reportedError ||= event.type === 'error';
+    } else if (selected === 'kimi-code') {
+      completed ||= event.role === 'assistant';
+      reportedError ||= event.role === 'error' || event.type === 'error';
+    } else if (selected === 'pi') {
+      completed ||= event.type === 'agent_end';
+      const message = isRecord(event.message) ? event.message : undefined;
+      if (message?.role === 'assistant') {
+        reportedError ||= message.stopReason === 'error' || message.stopReason === 'aborted';
+      }
+    }
+  } catch {
+    return { completed: false, reportedError: false };
+  }
+  return { completed, reportedError };
 }
 
 async function startMeteringProxy(
@@ -732,12 +782,7 @@ function joinUpstream(baseUrl: string, requestUrl: string): string {
   return base.toString();
 }
 
-function fileArtifact(
-  kind: string,
-  path: string,
-  selected: Profile,
-  capture?: BoundedCapture,
-): Record<string, unknown> {
+function fileArtifact(kind: string, path: string, selected: Profile): Record<string, unknown> {
   const bytes = statSync(path).size;
   return {
     kind,
@@ -745,12 +790,6 @@ function fileArtifact(
     path: `/logs/agent/${basename(path)}`,
     bytes,
     sha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
-    ...(capture
-      ? {
-          observedBytes: capture.observedBytes,
-          truncatedBytes: capture.truncatedBytes,
-        }
-      : {}),
   };
 }
 
@@ -773,15 +812,6 @@ function safeFailure(error: unknown, fallback: string): string {
   if (/credential is missing/u.test(error.message)) return error.message;
   if (/workspace ownership/u.test(error.message)) return error.message;
   return fallback;
-}
-
-function exists(path: string): boolean {
-  try {
-    statSync(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function isProfile(value: string | undefined): value is Profile {
@@ -810,28 +840,4 @@ async function writeState(phase: string, detail: Record<string, unknown> = {}): 
     `${JSON.stringify({ schemaVersion: 1, profile, phase, ...detail })}\n`,
     { mode: 0o600 },
   );
-}
-
-async function collectZCodeArtifacts(
-  home: string,
-  logsRoot: string,
-): Promise<Record<string, unknown>[]> {
-  const artifacts: Record<string, unknown>[] = [];
-  for (const [sourceDirectory, targetName, kind] of [
-    [join(home, '.zcode/cli/rollout'), 'zcode-model-io.jsonl', 'model-io'],
-    [join(home, '.zcode/cli/log'), 'zcode-runtime.jsonl', 'runtime-events'],
-  ] as const) {
-    const names = await readdir(sourceDirectory).catch(() => []);
-    const contents = await Promise.all(
-      names
-        .filter((name) => name.endsWith('.jsonl'))
-        .sort()
-        .map((name) => readFile(join(sourceDirectory, name), 'utf8')),
-    );
-    if (contents.length === 0) continue;
-    const target = join(logsRoot, targetName);
-    await writeFile(target, contents.join(''), { mode: 0o600 });
-    artifacts.push(fileArtifact(kind, target, 'zcode'));
-  }
-  return artifacts;
 }

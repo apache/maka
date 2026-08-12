@@ -44,38 +44,14 @@ test('passes declared environment and credential bindings to one external comman
   assert.equal(result.costUsd, null);
 });
 
-test('keeps protocol-v1 as the default result contract', async () => {
-  const cell = externalCell({ command: '/opt/tool', args: [] });
-  let request: unknown;
-
-  const result = await createExternalSubjectAdapter().execute({
-    cell,
-    context: {
-      cwd: '/app',
-      taskInput: 'solve the task',
-      metadata: {},
-      execute: async (input) => {
-        request = input;
-        return {
-          termination: 'exited',
-          exitCode: 0,
-          stdout: JSON.stringify({
-            schemaVersion: 'maka.external_subject_result.v1',
-            usage: null,
-            costUsd: null,
-            artifacts: [],
-          }),
-        };
-      },
-    },
-  });
-
-  assert.deepEqual(request, {
-    command: '/opt/tool',
-    args: [],
-    credentialEnvironment: { PROVIDER_KEY: 'PROVIDER_KEY' },
-  });
-  assert.equal(result.status, 'completed');
+test('requires the bundled wrapper for the structured result contract', () => {
+  for (const args of [[], ['/tmp/harbor-external-subject.js', 'codex']]) {
+    const cell = externalCell({ command: '/opt/tool', args });
+    assert.throws(
+      () => createExternalSubjectAdapter().validate?.(cell),
+      /protocol-v1 requires the bundled result wrapper/u,
+    );
+  }
 });
 
 test('rejects credential bindings that the subject did not declare', () => {

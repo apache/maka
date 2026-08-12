@@ -60,14 +60,8 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
             ? (settled.costUsd ?? estimateDeepSeekCost(settled.usage, config.model))
             : null,
           durationMs: Date.now() - startedAt,
-          status:
-            process.termination === 'framework_timeout'
-              ? ('failed' as const)
-              : ('indeterminate' as const),
-          failureReason:
-            process.termination === 'framework_timeout'
-              ? 'Maka subject exceeded the framework timeout'
-              : 'Maka subject cancelled',
+          status: 'failed' as const,
+          failureReason: 'Maka subject exceeded the framework timeout',
           artifacts: [],
         };
       }
@@ -229,19 +223,19 @@ function decodeConfig(value: JsonObject): MakaConfig {
     'permissionMode',
     'collaborationMode',
     'orchestrationMode',
+    'hostSettlementTimeoutMs',
   ];
   if (Object.hasOwn(value, 'webTools')) fields.push('webTools');
-  if (Object.hasOwn(value, 'hostSettlementTimeoutMs')) fields.push('hostSettlementTimeoutMs');
   const config = exact(value, fields);
   if (!URL.canParse(String(config.baseUrl))) throw new Error('Maka baseUrl is invalid');
   const webTools = config.webTools ?? 'enabled';
   if (webTools !== 'enabled' && webTools !== 'disabled') {
     throw new Error('Maka config.webTools is invalid');
   }
-  const hostSettlementTimeoutMs =
-    config.hostSettlementTimeoutMs === undefined
-      ? 15_000
-      : positiveInteger(config.hostSettlementTimeoutMs, 'Maka config.hostSettlementTimeoutMs');
+  const hostSettlementTimeoutMs = positiveInteger(
+    config.hostSettlementTimeoutMs,
+    'Maka config.hostSettlementTimeoutMs',
+  );
   return { ...config, webTools, hostSettlementTimeoutMs } as unknown as MakaConfig;
 }
 

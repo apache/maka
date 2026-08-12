@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+const RESULT_TOKEN = '0123456789abcdef0123456789abcdef';
 
 test('provider failures remain infrastructure failures until inference admission', async () => {
   for (const [
@@ -45,7 +46,7 @@ test('provider failures remain infrastructure failures until inference admission
     const child = join(root, 'child.mjs');
     await writeFile(
       child,
-      "if(process.env.OPENAI_API_KEY||process.env.ANTHROPIC_API_KEY||process.env.DEEPSEEK_API_KEY!=='maka-eval-local')process.exit(9);await fetch(`${process.env.DEEPSEEK_BASE_URL}/responses`,{method:'POST',body:'{}'});console.log(JSON.stringify({type:'error'}));process.exit(1);\n",
+      "if(process.env.OPENAI_API_KEY||process.env.ANTHROPIC_API_KEY||process.env.DEEPSEEK_API_KEY!=='maka-eval-local'||process.env.MAKA_EVAL_RESULT_TOKEN)process.exit(9);await fetch(`${process.env.DEEPSEEK_BASE_URL}/responses`,{method:'POST',body:'{}'});console.error('stderr-sentinel-must-not-persist');console.log('stdout-sentinel-must-not-persist');console.log(JSON.stringify({type:'error'}));process.exit(1);\n",
     );
     try {
       const wrapper = new URL('../harbor-external-subject.js', import.meta.url);
@@ -59,9 +60,15 @@ test('provider failures remain infrastructure failures until inference admission
           process.execPath,
           child,
         ],
-        { env: { ...process.env, OPENAI_API_KEY: 'test-key' } },
+        {
+          env: {
+            ...process.env,
+            OPENAI_API_KEY: 'credential-sentinel-must-not-persist',
+            MAKA_EVAL_RESULT_TOKEN: RESULT_TOKEN,
+          },
+        },
       );
-      const result = JSON.parse(stdout) as {
+      const result = decodeResultFrame(stdout) as {
         status: string;
         costUsd: number | null;
         usage: { cacheWriteTokens: number } | null;
@@ -77,6 +84,22 @@ test('provider failures remain infrastructure failures until inference admission
       assert.equal(metering?.usageComplete, usageComplete);
       assert.equal(result.usage?.cacheWriteTokens ?? null, expectedCacheWrite);
       assert.equal(result.costUsd === null, !usageComplete);
+      assert.doesNotMatch(
+        JSON.stringify(result),
+        /(?:credential|stdout|stderr)-sentinel-must-not-persist/u,
+      );
+      assert.equal(
+        (await readdir(join(root, 'logs/agent')).catch(() => [])).some((name) =>
+          name.endsWith('.stderr.txt'),
+        ),
+        false,
+      );
+      for (const name of await readdir(join(root, 'logs/agent'))) {
+        assert.doesNotMatch(
+          await readFile(join(root, 'logs/agent', name), 'utf8'),
+          /(?:credential|stdout|stderr)-sentinel-must-not-persist|0123456789abcdef0123456789abcdef/u,
+        );
+      }
     } finally {
       server.close();
       await rm(root, { recursive: true, force: true });
@@ -117,9 +140,15 @@ test('canonical Pi settlement remains completed when the CLI exits nonzero', asy
     const { stdout } = await execFileAsync(
       process.execPath,
       [wrapper.pathname, 'pi', `http://127.0.0.1:${address.port}`, root, process.execPath, child],
-      { env: { ...process.env, OPENAI_API_KEY: 'upstream-test-key' } },
+      {
+        env: {
+          ...process.env,
+          OPENAI_API_KEY: 'upstream-test-key',
+          MAKA_EVAL_RESULT_TOKEN: RESULT_TOKEN,
+        },
+      },
     );
-    const result = JSON.parse(stdout) as {
+    const result = decodeResultFrame(stdout) as {
       status: string;
       artifacts: Array<{ kind: string; exitCode?: number }>;
     };
@@ -130,3 +159,12 @@ test('canonical Pi settlement remains completed when the CLI exits nonzero', asy
     await rm(root, { recursive: true, force: true });
   }
 });
+
+function decodeResultFrame(stdout: string): unknown {
+  const [prefix, token, length, _digest, encoded] = stdout.trim().split(' ');
+  assert.equal(prefix, 'MAKA-EVAL-RESULT-V1');
+  assert.equal(token, RESULT_TOKEN);
+  const payload = Buffer.from(encoded ?? '', 'base64url');
+  assert.equal(payload.byteLength, Number(length));
+  return JSON.parse(payload.toString()) as unknown;
+}

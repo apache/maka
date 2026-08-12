@@ -1,4 +1,7 @@
 import asyncio
+import base64
+import contextlib
+import hashlib
 import importlib
 import os
 import shutil
@@ -40,6 +43,8 @@ class LocalEnvironment:
 class SimultaneousEnvironment:
     def __init__(self):
         self.release = asyncio.Event()
+        self.started = asyncio.Event()
+        self.finished = asyncio.Event()
 
     async def upload_file(self, source, target):
         shutil.copyfile(source, target)
@@ -48,12 +53,23 @@ class SimultaneousEnvironment:
         shutil.copyfile(source, target)
 
     async def exec(self, command, cwd=None, timeout_sec=None):
-        if command == "pwd":
-            return SimpleNamespace(return_code=0, stdout="/workspace\n", stderr="")
+        if command.startswith("printf ") and "MAKA-EVAL-CWD-V1" in command:
+            prefix = command.split("'", 2)[1]
+            return SimpleNamespace(
+                return_code=0, stdout=f"docker warning\n{prefix}/workspace\n", stderr=None
+            )
         if command.startswith("setsid"):
+            self.started.set()
             await self.release.wait()
-            return SimpleNamespace(return_code=0, stdout="", stderr="")
-        if command.startswith("test -r"):
+            payload = b'{"kind":"settled"}'
+            encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+            frame = (
+                f"MAKA-EVAL-RESULT-V1 {'0' * 32} {len(payload)} "
+                f"{hashlib.sha256(payload).hexdigest()} {encoded}\n"
+            )
+            self.finished.set()
+            return SimpleNamespace(return_code=0, stdout=frame, stderr=None)
+        if command.startswith("test -r") or command.startswith("pgid="):
             return SimpleNamespace(return_code=1, stdout="", stderr="")
         return SimpleNamespace(return_code=0, stdout="", stderr="")
 
@@ -67,6 +83,42 @@ class ClosedWriter:
 
     async def drain(self):
         raise AssertionError("drain must not run after a failed write")
+
+
+class HangingStopEnvironment:
+    async def stop(self, delete=False):
+        await asyncio.Future()
+
+
+class FrameworkTimeoutEnvironment(SimultaneousEnvironment):
+    def __init__(self):
+        super().__init__()
+        self.stopped = False
+
+    async def exec(self, command, cwd=None, timeout_sec=None):
+        if command.startswith("setsid"):
+            self.started.set()
+            await asyncio.Future()
+        return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
+
+    async def stop(self, delete=False):
+        self.stopped = delete
+
+
+class TransportLossEnvironment(SimultaneousEnvironment):
+    async def exec(self, command, cwd=None, timeout_sec=None):
+        if "kill -TERM" in command:
+            self.release.set()
+            return SimpleNamespace(return_code=0, stdout="", stderr=None)
+        return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
+
+
+class SettleCompletionEnvironment(SimultaneousEnvironment):
+    async def exec(self, command, cwd=None, timeout_sec=None):
+        if "kill -TERM" in command:
+            self.release.set()
+            return SimpleNamespace(return_code=0, stdout="", stderr=None)
+        return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
 
 
 def load_relay():
@@ -88,7 +140,68 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
         delivered = await relay._send(ClosedWriter(), {"kind": "verify"})
         self.assertFalse(delivered)
 
-    async def test_terminal_execution_wins_when_cancel_completes_simultaneously(self):
+    async def test_destroy_fallback_obeys_the_teardown_deadline(self):
+        relay = load_relay()
+        execution = asyncio.create_task(asyncio.sleep(60))
+        try:
+            await asyncio.wait_for(
+                relay._settle_or_destroy(
+                    HangingStopEnvironment(), "/", "/tmp/missing", execution, 0.01
+                ),
+                timeout=0.1,
+            )
+        finally:
+            execution.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await execution
+
+    async def test_peer_close_during_execution_triggers_bounded_settlement(self):
+        relay = load_relay()
+        environment = TransportLossEnvironment()
+        token = f"transport-loss-{os.getpid()}"
+        connected = asyncio.get_running_loop().create_future()
+
+        async def accept(reader, writer):
+            connected.set_result((reader, writer))
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        agent = relay.RelayAgent(
+            logs_dir=Path(tempfile.gettempdir()),
+            relay_host="127.0.0.1",
+            relay_port=port,
+            relay_token=token,
+            teardown_timeout_ms=1_000,
+        )
+        running = asyncio.create_task(agent.run("solve", environment, None))
+        reader, writer = await connected
+        try:
+            await reader.readline()
+            writer.write(
+                (
+                    __import__("json").dumps(
+                        {
+                            "token": token,
+                            "kind": "execute",
+                            "command": "/bin/true",
+                            "args": [],
+                            "credentials": {},
+                            "resultToken": "0" * 32,
+                        }
+                    )
+                    + "\n"
+                ).encode()
+            )
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+            await asyncio.wait_for(running, timeout=0.5)
+            self.assertTrue(environment.release.is_set())
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_terminal_execution_wins_when_framework_cancellation_is_observed(self):
         relay = load_relay()
         environment = SimultaneousEnvironment()
         token = f"simultaneous-{os.getpid()}"
@@ -104,6 +217,7 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
             relay_host="127.0.0.1",
             relay_port=port,
             relay_token=token,
+            teardown_timeout_ms=110_000,
         )
         running = asyncio.create_task(agent.run("solve", environment, None))
         reader, writer = await connected
@@ -120,30 +234,105 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
                             "command": "/bin/true",
                             "args": [],
                             "credentials": {},
+                            "resultToken": "0" * 32,
                         }
                     )
-                    + "\n"
-                    + __import__("json").dumps({"token": token, "kind": "cancel"})
                     + "\n"
                 ).encode()
             )
             await writer.drain()
             environment.release.set()
+            await environment.finished.wait()
+            relay.request_host_teardown()
+            running.cancel()
             executed = __import__("json").loads(await reader.readline())
             self.assertEqual(executed["termination"], "exited")
             self.assertEqual(executed["exitCode"], 0)
-            writer.write(
-                (__import__("json").dumps({"token": token, "kind": "verify"}) + "\n").encode()
-            )
-            await writer.drain()
-            await running
+            with self.assertRaises(asyncio.CancelledError):
+                await running
         finally:
             writer.close()
-            await writer.wait_closed()
+            with contextlib.suppress(ConnectionError, asyncio.CancelledError):
+                await writer.wait_closed()
             server.close()
             await server.wait_closed()
             Path(f"/tmp/maka-eval-{token}.env").unlink(missing_ok=True)
 
+    async def test_framework_cancellation_remains_timeout_when_settlement_induces_exit(self):
+        relay = load_relay()
+        environment = SettleCompletionEnvironment()
+        token = f"host-terminal-{os.getpid()}"
+        connected = asyncio.get_running_loop().create_future()
+
+        async def accept(reader, writer):
+            connected.set_result((reader, writer))
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        agent = relay.RelayAgent(
+            logs_dir=Path(tempfile.gettempdir()), relay_host="127.0.0.1",
+            relay_port=port, relay_token=token, teardown_timeout_ms=1_000,
+        )
+        running = asyncio.create_task(agent.run("solve", environment, None))
+        reader, writer = await connected
+        try:
+            await reader.readline()
+            writer.write((__import__("json").dumps({
+                "token": token, "kind": "execute", "command": "/bin/true", "args": [],
+                "credentials": {}, "resultToken": "0" * 32,
+            }) + "\n").encode())
+            await writer.drain()
+            await environment.started.wait()
+            running.cancel()
+            executed = __import__("json").loads(await asyncio.wait_for(reader.readline(), 0.5))
+            self.assertEqual(executed["termination"], "framework_timeout")
+            self.assertEqual(executed["exitCode"], 124)
+            with self.assertRaises(asyncio.CancelledError):
+                await running
+        finally:
+            writer.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_framework_timeout_survives_destroy_fallback(self):
+        relay = load_relay()
+        environment = FrameworkTimeoutEnvironment()
+        token = f"framework-destroy-{os.getpid()}"
+        connected = asyncio.get_running_loop().create_future()
+
+        async def accept(reader, writer):
+            connected.set_result((reader, writer))
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        agent = relay.RelayAgent(
+            logs_dir=Path(tempfile.gettempdir()), relay_host="127.0.0.1",
+            relay_port=port, relay_token=token, teardown_timeout_ms=50,
+        )
+        running = asyncio.create_task(agent.run("solve", environment, None))
+        reader, writer = await connected
+        try:
+            await reader.readline()
+            writer.write((__import__("json").dumps({
+                "token": token, "kind": "execute", "command": "/bin/true", "args": [],
+                "credentials": {}, "resultToken": "0" * 32,
+            }) + "\n").encode())
+            await writer.drain()
+            await environment.started.wait()
+            running.cancel()
+            executed = __import__("json").loads(await asyncio.wait_for(reader.readline(), 0.5))
+            self.assertEqual(executed["termination"], "framework_timeout")
+            self.assertEqual(executed["exitCode"], 124)
+            self.assertEqual(executed["diagnostic"]["category"], "result-frame-missing")
+            self.assertTrue(environment.stopped)
+            with self.assertRaises(asyncio.CancelledError):
+                await running
+        finally:
+            writer.close()
+            server.close()
+            await server.wait_closed()
+
+    @unittest.skipUnless(shutil.which("setsid"), "requires GNU setsid")
     async def test_scope_waits_for_child_and_publishes_bounded_stdout(self):
         relay = load_relay()
         environment = LocalEnvironment()
@@ -153,6 +342,7 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
             "command": "/bin/sh",
             "args": ["-c", "sleep 0.1; printf result-json"],
             "credentials": {},
+            "resultToken": "0" * 32,
         }
         try:
             command = await relay._prepare_command(environment, request, token, scope_path)
@@ -172,6 +362,7 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
         finally:
             Path(scope_path).unlink(missing_ok=True)
 
+    @unittest.skipUnless(shutil.which("setsid"), "requires GNU setsid")
     async def test_settle_kills_descendants_before_verification_boundary(self):
         relay = load_relay()
         environment = LocalEnvironment()
@@ -191,6 +382,7 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
                     ),
                 ],
                 "credentials": {},
+                "resultToken": "0" * 32,
                 "cwd": directory,
             }
             try:
@@ -216,9 +408,7 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(0.01)
                 completed = await execution
                 self.assertEqual(completed.returncode, 0)
-                result = await relay._settle(
-                    environment, request, directory, scope_path, execution
-                )
+                result = await relay._settle(environment, directory, scope_path, execution)
                 self.assertEqual(result.returncode, 0)
                 await asyncio.sleep(0.4)
                 self.assertFalse(late_write.exists())

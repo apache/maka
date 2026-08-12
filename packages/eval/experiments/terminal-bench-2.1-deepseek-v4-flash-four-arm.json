@@ -73,7 +73,8 @@
         "thinkingLevel": "max",
         "permissionMode": "bypass",
         "collaborationMode": "agent",
-        "orchestrationMode": "default"
+        "orchestrationMode": "default",
+        "hostSettlementTimeoutMs": 120000
       }
     },
     {

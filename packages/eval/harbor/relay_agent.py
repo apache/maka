@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import json
@@ -26,12 +27,35 @@ class RelayTransportClosed(RuntimeError):
     pass
 
 
+RESULT_FRAME_PREFIX = "MAKA-EVAL-RESULT-V1"
+RESULT_PAYLOAD_LIMIT_BYTES = 2 * 1024
+RESULT_CARRIER_LIMIT_BYTES = 64 * 1024
+
+_host_teardown_requested = False
+
+
+def request_host_teardown() -> None:
+    global _host_teardown_requested
+    _host_teardown_requested = True
+
+
 class RelayAgent(BaseAgent):
-    def __init__(self, *args: Any, relay_host: str, relay_port: int, relay_token: str, **kwargs: Any):
+    def __init__(
+        self,
+        *args: Any,
+        relay_host: str,
+        relay_port: int,
+        relay_token: str,
+        teardown_timeout_ms: int,
+        **kwargs: Any,
+    ):
         super().__init__(*args, **kwargs)
         self._host = relay_host
         self._port = relay_port
         self._token = relay_token
+        if not isinstance(teardown_timeout_ms, int) or teardown_timeout_ms <= 0:
+            raise RuntimeError("Maka Eval teardown timeout is invalid")
+        self._teardown_timeout = teardown_timeout_ms / 1000
 
     @staticmethod
     def name() -> str:
@@ -46,13 +70,23 @@ class RelayAgent(BaseAgent):
     async def run(self, instruction: str, environment: Any, context: Any) -> None:
         reader, writer = await asyncio.open_connection(self._host, self._port)
         execution: asyncio.Task[Any] | None = None
-        control: asyncio.Task[bytes] | None = None
+        decision: asyncio.Task[dict[str, Any]] | None = None
         request: dict[str, Any] | None = None
+        execution_reported = False
         scope_path = f"/logs/agent/.maka-eval-{self._token}.pid"
+        environment_path = f"/tmp/maka-eval-{self._token}.env"
         try:
-            working_directory = await environment.exec("pwd")
-            cwd = str(working_directory.stdout or "").strip()
-            if working_directory.return_code != 0 or not cwd.startswith("/"):
+            cwd_prefix = f"MAKA-EVAL-CWD-V1 {self._token} "
+            working_directory = await environment.exec(
+                f"printf {shlex.quote(cwd_prefix)}; pwd 2>/dev/null"
+            )
+            cwd_lines = [
+                line[len(cwd_prefix) :]
+                for line in str(working_directory.stdout or "").splitlines()
+                if line.startswith(cwd_prefix)
+            ]
+            cwd = cwd_lines[0] if len(cwd_lines) == 1 else ""
+            if working_directory.return_code != 0 or not cwd.startswith("/") or "\x00" in cwd:
                 raise RuntimeError("Maka Eval could not resolve the task working directory")
             if not await _send(
                 writer,
@@ -64,73 +98,103 @@ class RelayAgent(BaseAgent):
                 },
             ):
                 raise RelayTransportClosed("Maka Eval relay transport closed before ready")
-            request = json.loads(await reader.readline())
+            request = await _receive(reader)
             _require_message(request, self._token, "execute")
             command = await _prepare_command(environment, request, self._token, scope_path)
             execution = asyncio.create_task(environment.exec(command, cwd=cwd))
-            control = asyncio.create_task(reader.readline())
-            done, _ = await asyncio.wait({execution, control}, return_when=asyncio.FIRST_COMPLETED)
-            execution_terminal = execution in done
-            cancelled = control in done and not execution_terminal
-            if control in done:
-                _require_message(json.loads(control.result()), self._token, "cancel")
-                control = None
-            result = await _settle(environment, request, cwd, scope_path, execution)
-            stdout = str(getattr(result, "stdout", "") or "")
+            decision = asyncio.create_task(_receive(reader))
+            done, _ = await asyncio.wait({execution, decision}, return_when=asyncio.FIRST_COMPLETED)
+            if decision in done and execution not in done:
+                decision.result()
+                raise RelayTransportClosed("Maka Eval relay received control before execution")
+            result = execution.result()
+            await _quiesce_scope(environment, cwd, scope_path)
+            stdout, diagnostic = _project_result(result, request)
             if not await _send(
                 writer,
                 {
                     "token": self._token,
                     "kind": "executed",
-                    "termination": "cancelled" if cancelled else "exited",
-                    "exitCode": 130 if cancelled else result.return_code,
+                    "termination": "exited",
+                    "exitCode": result.return_code,
                     "stdout": stdout,
-                    "diagnostic": _process_diagnostic(result),
+                    "diagnostic": diagnostic,
                 },
             ):
                 raise RelayTransportClosed("Maka Eval relay transport closed before result")
-            decision = json.loads(await (control if control is not None else reader.readline()))
-            if execution_terminal and decision.get("kind") == "cancel":
-                _require_message(decision, self._token, "cancel")
-                decision = json.loads(await reader.readline())
-            if decision.get("token") != self._token or decision.get("kind") != "verify":
-                raise RuntimeError("Maka Eval aborted the Trial before verification")
+            execution_reported = True
+            _require_message(
+                decision.result() if decision.done() else await decision,
+                self._token,
+                "verify",
+            )
         except asyncio.CancelledError:
             if request is not None and execution is not None:
-                result = await _settle(environment, request, cwd, scope_path, execution)
-                stdout = str(getattr(result, "stdout", "") or "")
-                with contextlib.suppress(BaseException):
-                    await _send(
-                        writer,
-                        {
-                            "token": self._token,
-                            "kind": "executed",
-                            "termination": "framework_timeout",
-                            "exitCode": 124,
-                            "stdout": stdout,
-                            "diagnostic": _process_diagnostic(result),
-                        },
-                    )
+                execution_terminal = execution.done() and not execution.cancelled()
+                result = await _settle_or_destroy(
+                    environment, cwd, scope_path, execution, self._teardown_timeout
+                )
+                if (
+                    result is not None
+                    and not execution_reported
+                    and (execution_terminal or not _host_teardown_requested)
+                ):
+                    stdout, diagnostic = _project_result(result, request)
+                    with contextlib.suppress(Exception):
+                        await _send(
+                            writer,
+                            {
+                                "token": self._token,
+                                "kind": "executed",
+                                "termination": "exited" if execution_terminal else "framework_timeout",
+                                "exitCode": result.return_code if execution_terminal else 124,
+                                "stdout": stdout,
+                                "diagnostic": diagnostic,
+                            },
+                        )
+                elif not execution_reported and not _host_teardown_requested:
+                    with contextlib.suppress(Exception):
+                        await _send(
+                            writer,
+                            {
+                                "token": self._token,
+                                "kind": "executed",
+                                "termination": "framework_timeout",
+                                "exitCode": 124,
+                                "stdout": "",
+                                "diagnostic": (
+                                    _carrier_diagnostic("result-frame-missing", b"")
+                                    if request.get("captureStdout", True)
+                                    else {"category": "none"}
+                                ),
+                            },
+                        )
             raise
+        except RelayTransportClosed:
+            if request is not None and execution is not None:
+                await _settle_or_destroy(environment, cwd, scope_path, execution, self._teardown_timeout)
         except BaseException:
             if request is not None and execution is not None:
-                await _settle_or_destroy(environment, request, cwd, scope_path, execution)
+                await _settle_or_destroy(environment, cwd, scope_path, execution, self._teardown_timeout)
             raise
         finally:
-            if control is not None:
-                control.cancel()
+            if decision is not None and not decision.done():
+                decision.cancel()
                 with contextlib.suppress(BaseException):
-                    await control
+                    await decision
             if request is not None:
-                with contextlib.suppress(BaseException):
-                    await environment.exec(
-                        f"rm -f -- {shlex.quote(scope_path)}",
-                        cwd=cwd,
-                        timeout_sec=10,
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        environment.exec(
+                            f"rm -f -- {shlex.quote(scope_path)} {shlex.quote(environment_path)}",
+                            cwd=cwd,
+                            timeout_sec=1,
+                        ),
+                        timeout=1,
                     )
-            with contextlib.suppress(BrokenPipeError, ConnectionError, RuntimeError):
+            with contextlib.suppress(BrokenPipeError, ConnectionError, RuntimeError, TimeoutError):
                 writer.close()
-                await writer.wait_closed()
+                await asyncio.wait_for(writer.wait_closed(), timeout=1)
 
 
 async def _prepare_command(
@@ -155,6 +219,11 @@ async def _prepare_command(
     capture_stdout = request.get("captureStdout", True)
     if not isinstance(capture_stdout, bool):
         raise RuntimeError("invalid Maka Eval stdout policy")
+    result_token = request.get("resultToken")
+    if not isinstance(result_token, str) or re.fullmatch(r"[0-9a-f]{32}", result_token) is None:
+        raise RuntimeError("invalid Maka Eval result token")
+    if "MAKA_EVAL_RESULT_TOKEN" in credentials or "MAKA_EVAL_RESULT_TOKEN" in public_environment:
+        raise RuntimeError("Maka Eval environment contains a reserved name")
     for label, values in (("environment", public_environment), ("credential", credentials)):
         if any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None for key in values):
             raise RuntimeError(f"invalid Maka Eval {label} name")
@@ -165,7 +234,11 @@ async def _prepare_command(
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as secret:
             secret_path = Path(secret.name)
             os.chmod(secret_path, 0o600)
-            for key, value in {**public_environment, **credentials}.items():
+            for key, value in {
+                **public_environment,
+                **credentials,
+                "MAKA_EVAL_RESULT_TOKEN": result_token,
+            }.items():
                 secret.write(f"export {key}={shlex.quote(value)}\n")
         await environment.upload_file(secret_path, container_path)
     finally:
@@ -177,48 +250,86 @@ async def _prepare_command(
         "umask 077; "
         f"echo $$ > {shlex.quote(scope_path)}; "
         f". {shlex.quote(container_path)}; command -p rm -f {shlex.quote(container_path)}; "
-        f"exec {subject}{output_redirect}"
+        f"exec {subject}{output_redirect} 2>/dev/null"
     )
     return f"setsid --wait sh -c {shlex.quote(inner)}"
 
 
-def _process_diagnostic(result: Any) -> dict[str, Any]:
-    stderr = str(getattr(result, "stderr", "") or "").encode("utf-8", errors="replace")
+def _decode_result_carrier(carrier: str, token: str) -> tuple[str, dict[str, Any]]:
+    raw = carrier.encode("utf-8", errors="replace")
+    if len(raw) > RESULT_CARRIER_LIMIT_BYTES:
+        return "", _carrier_diagnostic("result-frame-oversize", raw)
+    prefix = f"{RESULT_FRAME_PREFIX} {token} "
+    candidates = [line for line in carrier.splitlines(keepends=True) if line.startswith(prefix)]
+    if len(candidates) != 1:
+        category = "result-frame-missing" if not candidates else "result-frame-ambiguous"
+        return "", _carrier_diagnostic(category, raw)
+    frame = candidates[0]
+    fields = frame.rstrip("\r\n").split(" ", 4)
+    if len(fields) != 5:
+        return "", _carrier_diagnostic("result-frame-invalid", raw)
+    _, framed_token, length_text, digest, encoded = fields
+    try:
+        length = int(length_text)
+        padding = "=" * (-len(encoded) % 4)
+        payload = base64.b64decode(encoded + padding, altchars=b"-_", validate=True)
+    except (ValueError, base64.binascii.Error):
+        return "", _carrier_diagnostic("result-frame-invalid", raw)
+    if (
+        framed_token != token
+        or length < 0
+        or length > RESULT_PAYLOAD_LIMIT_BYTES
+        or len(payload) != length
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        or hashlib.sha256(payload).hexdigest() != digest
+    ):
+        return "", _carrier_diagnostic("result-frame-invalid", raw)
+    noise = carrier.replace(frame, "", 1).encode("utf-8", errors="replace")
+    diagnostic = (
+        {"category": "none"}
+        if not noise
+        else _carrier_diagnostic("unstructured-output", noise)
+    )
+    try:
+        decoded = payload.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return "", _carrier_diagnostic("result-frame-invalid", raw)
+    return decoded, diagnostic
+
+
+def _project_result(result: Any, request: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    if not request.get("captureStdout", True):
+        return "", {"category": "none"}
+    return _decode_result_carrier(
+        str(getattr(result, "stdout", "") or ""), request["resultToken"]
+    )
+
+
+def _carrier_diagnostic(category: str, value: bytes) -> dict[str, Any]:
     return {
-        "category": "process-stderr" if stderr else "none",
-        "stderrBytes": len(stderr),
-        "stderrSha256": hashlib.sha256(stderr).hexdigest(),
+        "category": category,
+        "bytes": len(value),
+        "sha256": hashlib.sha256(value).hexdigest(),
     }
 
 
-async def _settle(
-    environment: Any, request: dict[str, Any], cwd: str, scope_path: str, execution: Any
-) -> Any:
+async def _settle(environment: Any, cwd: str, scope_path: str, execution: Any) -> Any:
+    if execution.cancelled():
+        raise RuntimeError("Maka Eval subject execution was cancelled")
     if execution.done():
         result = execution.result()
     else:
         result = None
-        cancel = request.get("cancel")
-        if isinstance(cancel, dict):
-            with contextlib.suppress(BaseException):
-                cancelled = await asyncio.wait_for(
-                    environment.exec(
-                        shlex.join([cancel["command"], *cancel["args"]]),
-                        cwd=cwd,
-                    ),
-                    timeout=10,
-                )
-                if cancelled.return_code == 0:
-                    try:
-                        result = await asyncio.wait_for(asyncio.shield(execution), timeout=30)
-                    except TimeoutError:
-                        pass
         if result is None:
             for signal, timeout in (("TERM", 20), ("KILL", 10)):
                 await _signal(environment, cwd, scope_path, signal)
                 try:
                     result = await asyncio.wait_for(asyncio.shield(execution), timeout=timeout)
                     break
+                except asyncio.CancelledError:
+                    if execution.cancelled():
+                        raise RuntimeError("Maka Eval subject execution was cancelled") from None
+                    raise
                 except TimeoutError:
                     pass
         if result is None:
@@ -228,21 +339,46 @@ async def _settle(
 
 
 async def _settle_or_destroy(
-    environment: Any, request: dict[str, Any], cwd: str, scope_path: str, execution: Any
-) -> None:
+    environment: Any,
+    cwd: str,
+    scope_path: str,
+    execution: Any,
+    timeout: float,
+) -> Any | None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    stop_reserve = min(20.0, timeout * 0.2)
     try:
-        await _settle(environment, request, cwd, scope_path, execution)
-    except BaseException:
-        with contextlib.suppress(BaseException):
-            await environment.stop(delete=True)
+        return await asyncio.wait_for(
+            _settle(environment, cwd, scope_path, execution),
+            timeout=max(0.001, deadline - loop.time() - stop_reserve),
+        )
+    except Exception:
+        try:
+            remaining = max(0.001, deadline - loop.time())
+            await asyncio.wait_for(environment.stop(delete=True), timeout=remaining)
+        except Exception:
+            pass
+        finally:
+            if not execution.done():
+                execution.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                remaining = max(0.001, deadline - loop.time())
+                await asyncio.wait_for(execution, timeout=remaining)
+        return None
 
 
 async def _signal(environment: Any, cwd: str, scope_path: str, signal: str) -> None:
-    with contextlib.suppress(BaseException):
+    command = (
+        f"pgid=$(cat {shlex.quote(scope_path)} 2>/dev/null) || exit 0; "
+        "case $pgid in ''|0|*[!0-9]*) exit 0;; esac; "
+        f"kill -{signal} -- \"-$pgid\""
+    )
+    with contextlib.suppress(Exception):
         await environment.exec(
-            f"kill -{signal} -- -$(cat {shlex.quote(scope_path)})",
+            command,
             cwd=cwd,
-            timeout_sec=10,
+            timeout_sec=5,
         )
 
 
@@ -261,8 +397,9 @@ async def _quiesce_scope(environment: Any, cwd: str, scope_path: str) -> None:
 
 async def _scope_active(environment: Any, cwd: str, scope_path: str) -> bool:
     result = await environment.exec(
-        f"test -r {shlex.quote(scope_path)} && "
-        f"kill -0 -- -$(cat {shlex.quote(scope_path)}) 2>/dev/null",
+        f"pgid=$(cat {shlex.quote(scope_path)} 2>/dev/null) || exit 1; "
+        "case $pgid in ''|0|*[!0-9]*) exit 1;; esac; "
+        "kill -0 -- \"-$pgid\" 2>/dev/null",
         cwd=cwd,
         timeout_sec=5,
     )
@@ -272,6 +409,19 @@ async def _scope_active(environment: Any, cwd: str, scope_path: str) -> bool:
 def _require_message(value: dict[str, Any], token: str, kind: str) -> None:
     if value.get("token") != token or value.get("kind") != kind:
         raise RuntimeError("invalid Maka Eval relay message")
+
+
+async def _receive(reader: asyncio.StreamReader) -> dict[str, Any]:
+    try:
+        raw = await reader.readline()
+        if not raw:
+            raise RelayTransportClosed("Maka Eval relay peer closed")
+        value = json.loads(raw)
+    except (ConnectionError, json.JSONDecodeError, ValueError) as error:
+        raise RelayTransportClosed("Maka Eval relay message was unavailable") from error
+    if not isinstance(value, dict):
+        raise RelayTransportClosed("Maka Eval relay message was invalid")
+    return value
 
 
 async def _send(writer: asyncio.StreamWriter, value: object) -> bool:
