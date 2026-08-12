@@ -89,6 +89,7 @@ async function runHarnessAttempt(
   let hasValue = false;
   let clean = true;
   let cleanupAction: 'abort' | 'terminate-unused' | undefined;
+  let cleanupEvidence: TrialWaitEvidence | undefined;
   const decide = (kind: 'verify' | 'abort') => {
     if (decision) return;
     decision = true;
@@ -100,7 +101,11 @@ async function runHarnessAttempt(
       context: relayContext(state, cell, signal),
       verify: async () => {
         decide('verify');
-        clean = await waitForTrial(state.child, signal);
+        const completed = await waitForTrial(state.child, {
+          phase: 'completion',
+          ...(signal ? { signal } : {}),
+        });
+        clean = completed.clean;
         if (!clean) throw new Error('Trial did not finalize cleanly');
         return readVerification(state, cell);
       },
@@ -111,11 +116,18 @@ async function runHarnessAttempt(
       if (state.used) {
         cleanupAction = 'abort';
         decide('abort');
+        cleanupEvidence = await waitForTrial(state.child, {
+          phase: 'abort',
+          deadlineMs: RELAY_SETTLEMENT_DEADLINE_MS,
+        });
       } else {
         cleanupAction = 'terminate-unused';
-        state.child.kill('SIGTERM');
+        cleanupEvidence = await waitForTrial(state.child, {
+          phase: 'unused',
+          deadlineMs: TERM_SETTLEMENT_DEADLINE_MS,
+        });
       }
-      clean = await waitForTrial(state.child);
+      clean = cleanupEvidence.clean;
     }
     await state.closeRelay();
   }
@@ -127,7 +139,10 @@ async function runHarnessAttempt(
         {
           kind: 'executor-cleanup',
           action: cleanupAction,
-          outcome: clean ? 'completed' : 'unsettled',
+          phase: cleanupEvidence!.phase,
+          deadlineMs: cleanupEvidence!.deadlineMs,
+          escalation: cleanupEvidence!.escalation,
+          outcome: cleanupEvidence!.outcome,
         },
       ],
     };
@@ -323,7 +338,10 @@ async function startTrial(
   } catch (error) {
     const relayClosed = stopServer(true);
     if (child?.pid !== undefined) {
-      await waitForTrial(child, signal, true);
+      await waitForTrial(child, {
+        phase: 'unused',
+        deadlineMs: TERM_SETTLEMENT_DEADLINE_MS,
+      });
     }
     await relayClosed;
     await unlink(configPath).catch(() => undefined);
@@ -585,36 +603,88 @@ async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promis
   });
 }
 
-async function waitForTrial(
-  child: ChildProcess,
-  signal?: AbortSignal,
-  terminate = false,
-): Promise<boolean> {
+type TrialWait =
+  | { readonly phase: 'completion'; readonly signal?: AbortSignal }
+  | { readonly phase: 'abort'; readonly deadlineMs: number }
+  | { readonly phase: 'unused'; readonly deadlineMs: number };
+
+interface TrialWaitEvidence {
+  readonly phase: TrialWait['phase'];
+  readonly deadlineMs: number | null;
+  readonly escalation: 'none' | 'term' | 'kill' | 'detached';
+  readonly outcome: 'completed' | 'terminated' | 'killed' | 'unsettled';
+  readonly clean: boolean;
+}
+
+const RELAY_SETTLEMENT_DEADLINE_MS = 120_000;
+const TERM_SETTLEMENT_DEADLINE_MS = 20_000;
+const KILL_SETTLEMENT_DEADLINE_MS = 5_000;
+
+async function waitForTrial(child: ChildProcess, wait: TrialWait): Promise<TrialWaitEvidence> {
   const exit =
     child.exitCode !== null || child.signalCode !== null
       ? Promise.resolve({ code: child.exitCode, signal: child.signalCode })
       : once(child, 'exit').then(([code, childSignal]) => ({ code, signal: childSignal }));
-  let terminating = terminate;
-  const cancel = () => {
-    terminating = true;
-    child.kill('SIGTERM');
-  };
-  signal?.addEventListener('abort', cancel, { once: true });
-  if (terminate || signal?.aborted) cancel();
-  try {
-    const first = await within(exit, 20_000);
-    if (first) return first.code === 0 && first.signal === null;
-    if (!terminating) {
-      child.kill('SIGTERM');
-      const second = await within(exit, 20_000);
-      if (second) return second.code === 0 && second.signal === null;
+  if (wait.phase === 'completion') {
+    try {
+      const completed = await abortable(exit, wait.signal);
+      return trialExitEvidence(wait.phase, null, 'none', 'completed', completed);
+    } catch (error) {
+      if (!wait.signal?.aborted) throw error;
     }
-    child.kill('SIGKILL');
-    if (!(await within(exit, 5_000))) child.unref();
-    return false;
-  } finally {
-    signal?.removeEventListener('abort', cancel);
+  } else if (wait.phase === 'abort') {
+    const completed = await within(exit, wait.deadlineMs);
+    if (completed) {
+      return trialExitEvidence(wait.phase, wait.deadlineMs, 'none', 'completed', completed);
+    }
   }
+
+  child.kill('SIGTERM');
+  const terminated = await within(exit, TERM_SETTLEMENT_DEADLINE_MS);
+  if (terminated) {
+    return trialExitEvidence(
+      wait.phase,
+      wait.phase === 'completion' ? 0 : wait.deadlineMs,
+      'term',
+      'terminated',
+      terminated,
+    );
+  }
+  child.kill('SIGKILL');
+  const killed = await within(exit, KILL_SETTLEMENT_DEADLINE_MS);
+  if (killed) {
+    return trialExitEvidence(
+      wait.phase,
+      wait.phase === 'completion' ? 0 : wait.deadlineMs,
+      'kill',
+      'killed',
+      killed,
+    );
+  }
+  child.unref();
+  return {
+    phase: wait.phase,
+    deadlineMs: wait.phase === 'completion' ? 0 : wait.deadlineMs,
+    escalation: 'detached',
+    outcome: 'unsettled',
+    clean: false,
+  };
+}
+
+function trialExitEvidence(
+  phase: TrialWait['phase'],
+  deadlineMs: number | null,
+  escalation: TrialWaitEvidence['escalation'],
+  outcome: TrialWaitEvidence['outcome'],
+  exit: { readonly code: number | null; readonly signal: NodeJS.Signals | null },
+): TrialWaitEvidence {
+  return {
+    phase,
+    deadlineMs,
+    escalation,
+    outcome,
+    clean: exit.code === 0 && exit.signal === null,
+  };
 }
 
 async function within<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined> {

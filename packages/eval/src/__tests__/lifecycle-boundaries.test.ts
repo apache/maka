@@ -33,6 +33,208 @@ test('cancellation while waiting for ready line enters bounded cleanup', {
   await verifyPreparationCancellation('ready', false);
 });
 
+test('normal verification outlives the former Eval completion deadline', {
+  timeout: 5_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-verifier-deadline-'));
+  const executable = join(root, 'fake-python.mjs');
+  const verifying = join(root, 'verifying');
+  const release = join(root, 'release');
+  const pidPath = join(root, 'pid');
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+import { connect } from 'node:net';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+const config = JSON.parse(await readFile(process.argv.at(-1), 'utf8'));
+const socket = connect(config.agent.kwargs.relay_port, config.agent.kwargs.relay_host);
+socket.setEncoding('utf8');
+let buffered = '';
+const message = () => new Promise((resolve) => {
+  const read = (chunk) => {
+    buffered += chunk;
+    const boundary = buffered.indexOf('\\n');
+    if (boundary < 0) return;
+    socket.off('data', read);
+    const line = buffered.slice(0, boundary);
+    buffered = buffered.slice(boundary + 1);
+    resolve(JSON.parse(line));
+  };
+  socket.on('data', read);
+});
+await new Promise((resolve, reject) => {
+  socket.once('connect', resolve);
+  socket.once('error', reject);
+});
+await writeFile(process.env.MAKA_TEST_PID, String(process.pid));
+socket.write(JSON.stringify({ token: config.agent.kwargs.relay_token, kind: 'ready', instruction: 'solve' }) + '\\n');
+await message();
+socket.write(JSON.stringify({ token: config.agent.kwargs.relay_token, kind: 'executed', termination: 'exited', exitCode: 0, stdout: '' }) + '\\n');
+await message();
+await writeFile(process.env.MAKA_TEST_VERIFYING, '');
+while (true) {
+  try { await readFile(process.env.MAKA_TEST_RELEASE); break; }
+  catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
+}
+const trialPath = new URL('./' + config.trial_name + '/', new URL('file://' + config.trials_dir + '/'));
+await mkdir(trialPath, { recursive: true });
+await writeFile(new URL('result.json', trialPath), JSON.stringify({ verifier_result: { rewards: { reward: 1 } } }));
+socket.end();
+`,
+  );
+  await chmod(executable, 0o755);
+  const restoreEnvironment = setEnvironment({
+    MAKA_TEST_PYTHON: executable,
+    MAKA_TEST_TRIALS: root,
+    MAKA_TEST_PID: pidPath,
+    MAKA_TEST_VERIFYING: verifying,
+    MAKA_TEST_RELEASE: release,
+  });
+  const nativeSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((
+    callback: (...args: unknown[]) => void,
+    delay?: number,
+    ...args: unknown[]
+  ) => nativeSetTimeout(callback, delay === 20_000 ? 0 : delay, ...args)) as typeof setTimeout;
+  try {
+    const running = runExperiment({
+      spec: experiment(),
+      store: new FileAttemptStore(join(root, 'attempts')),
+      executor: createHarborExecutor(
+        {
+          ...executorConfig(),
+          preparationEnvironment: ['MAKA_TEST_PID', 'MAKA_TEST_VERIFYING', 'MAKA_TEST_RELEASE'],
+        },
+        join(root, 'experiment.json'),
+      ),
+      subjects: [
+        {
+          kind: 'external',
+          execute: async ({ context }) => {
+            await context.execute({ command: '/bin/true', args: [], credentialEnvironment: {} });
+            return {
+              usage: null,
+              costUsd: null,
+              durationMs: 1,
+              status: 'completed',
+              failureReason: null,
+              artifacts: [],
+            };
+          },
+        },
+      ],
+    });
+    await waitForFile(verifying);
+    const pid = Number(await readFile(pidPath, 'utf8'));
+    assert.doesNotThrow(() => process.kill(pid, 0));
+    await writeFile(release, '');
+    const results = await running;
+    assert.equal(results.get('task::1::external')?.result.status, 'completed');
+  } finally {
+    await writeFile(release, '').catch(() => undefined);
+    globalThis.setTimeout = nativeSetTimeout;
+    restoreEnvironment();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('used trial abort has a bounded relay grace and TERM/KILL teardown', {
+  timeout: 5_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-used-abort-'));
+  const executable = join(root, 'fake-python.mjs');
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+import { connect } from 'node:net';
+import { readFile } from 'node:fs/promises';
+process.on('SIGTERM', () => {});
+const config = JSON.parse(await readFile(process.argv.at(-1), 'utf8'));
+const socket = connect(config.agent.kwargs.relay_port, config.agent.kwargs.relay_host);
+socket.setEncoding('utf8');
+let buffered = '';
+const message = () => new Promise((resolve) => {
+  const read = (chunk) => {
+    buffered += chunk;
+    const boundary = buffered.indexOf('\\n');
+    if (boundary < 0) return;
+    socket.off('data', read);
+    const line = buffered.slice(0, boundary);
+    buffered = buffered.slice(boundary + 1);
+    resolve(JSON.parse(line));
+  };
+  socket.on('data', read);
+});
+await new Promise((resolve, reject) => {
+  socket.once('connect', resolve);
+  socket.once('error', reject);
+});
+socket.write(JSON.stringify({ token: config.agent.kwargs.relay_token, kind: 'ready', instruction: 'solve' }) + '\\n');
+await message();
+socket.write(JSON.stringify({ token: config.agent.kwargs.relay_token, kind: 'executed', termination: 'exited', exitCode: 0, stdout: '' }) + '\\n');
+await message();
+setInterval(() => {}, 1_000);
+await new Promise(() => {});
+`,
+  );
+  await chmod(executable, 0o755);
+  const restoreEnvironment = setEnvironment({
+    MAKA_TEST_PYTHON: executable,
+    MAKA_TEST_TRIALS: root,
+  });
+  const nativeSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((
+    callback: (...args: unknown[]) => void,
+    delay?: number,
+    ...args: unknown[]
+  ) =>
+    nativeSetTimeout(
+      callback,
+      delay === 5_000 ? 100 : [120_000, 20_000].includes(delay ?? -1) ? 0 : delay,
+      ...args,
+    )) as typeof setTimeout;
+  try {
+    const store = new FileAttemptStore(join(root, 'attempts'));
+    await runExperiment({
+      spec: experiment(),
+      store,
+      executor: createHarborExecutor(executorConfig(), join(root, 'experiment.json')),
+      subjects: [
+        {
+          kind: 'external',
+          execute: async ({ context }) => {
+            await context.execute({ command: '/bin/true', args: [], credentialEnvironment: {} });
+            return {
+              usage: null,
+              costUsd: null,
+              durationMs: 1,
+              status: 'infra_failed',
+              failureReason: 'subject transport failed',
+              artifacts: [],
+            };
+          },
+        },
+      ],
+    });
+    const result = (await store.list('task::1::external'))[0]!.result;
+    assert.equal(result.status, 'indeterminate');
+    assert.deepEqual(result.artifacts, [
+      {
+        kind: 'executor-cleanup',
+        action: 'abort',
+        phase: 'abort',
+        deadlineMs: 120_000,
+        escalation: 'kill',
+        outcome: 'killed',
+      },
+    ]);
+  } finally {
+    globalThis.setTimeout = nativeSetTimeout;
+    restoreEnvironment();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Maka framework termination is authoritative before stdout decoding', async () => {
   for (const stdout of ['', '{']) {
     const result = await executeMaka('framework_timeout', () => stdout);
@@ -417,6 +619,17 @@ await new Promise(() => {});
     MAKA_TEST_STAGE: stage,
     MAKA_TEST_IGNORE_FIRST: ignoreFirstTermination ? '1' : '0',
   });
+  const nativeSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((
+    callback: (...args: unknown[]) => void,
+    delay?: number,
+    ...args: unknown[]
+  ) =>
+    nativeSetTimeout(
+      callback,
+      delay === 20_000 ? 0 : delay === 5_000 ? 100 : delay,
+      ...args,
+    )) as typeof setTimeout;
   try {
     const controller = new AbortController();
     const store = new FileAttemptStore(join(root, 'attempts'));
@@ -443,6 +656,7 @@ await new Promise(() => {});
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
     await store.runExclusive(async () => undefined);
   } finally {
+    globalThis.setTimeout = nativeSetTimeout;
     restore();
     await rm(root, { recursive: true, force: true });
   }
