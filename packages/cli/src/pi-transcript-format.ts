@@ -5,7 +5,9 @@ import {
   type MarkdownTheme,
 } from '@earendil-works/pi-tui';
 import type { ToolResultContent } from '@maka/core/events';
-import { projectAgentSwarmResult, ptyHumanTerminalText, type ShellOutput } from '@maka/core';
+import { projectAgentSwarmResult } from '@maka/core/agent-swarm';
+import { ptyHumanTerminalText } from '@maka/core/pty-output-view';
+import { type ShellOutput } from '@maka/core/shell-run';
 import { ansi } from './tui-ansi.js';
 
 export function renderIndented(text: string, width: number, indent: number): string[] {

@@ -9,22 +9,24 @@ import {
 import { userFacingText, type StoredMessage } from '@maka/core/session';
 import {
   GoalContinuationCoordinator,
-  GoalManager,
-  GOAL_REASON_TEXT_LIMIT,
-  TERMINAL_GOAL_STATUSES,
-  buildGoalTools,
-  truncateGoalText,
-  type GoalEvaluatorResource,
   type GoalSessionCloseOperation,
-  type GoalCheckpoint,
-  type GoalControlLease,
   type GoalObservedTurnStart,
-  type GoalState,
   type GoalTaskGateTrace,
   type GoalTurnAdmission,
   type GoalTurnOutcome,
-  type MakaTool,
-} from '@maka/runtime';
+} from '@maka/runtime/goal-continuation';
+import {
+  GoalManager,
+  GOAL_REASON_TEXT_LIMIT,
+  TERMINAL_GOAL_STATUSES,
+  truncateGoalText,
+  type GoalCheckpoint,
+  type GoalControlLease,
+  type GoalState,
+} from '@maka/runtime/goal-state';
+import { buildGoalTools } from '@maka/runtime/goal-tools';
+import { type GoalEvaluatorResource } from '@maka/runtime/goal-evaluator';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { isSessionNotFoundError, type ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import {
   authenticateInteractiveGoalAuthorityWriter,

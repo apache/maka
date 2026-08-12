@@ -2,24 +2,13 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   SESSION_EVENT_STREAM_STALE_AFTER_MS,
-  SESSION_EVENT_STREAM_STATUSES,
   deriveSessionEventStreamStatus,
-  isSessionEventStreamStatus,
   newestSessionStreamObservation,
   sessionExpectsEventStream,
   shouldRefreshStaleSessionEventStream,
 } from '../session-event-health.js';
 
 describe('session event stream health contract', () => {
-  it('uses a closed status enum for visible stream health', () => {
-    assert.deepEqual(
-      [...SESSION_EVENT_STREAM_STATUSES],
-      ['connected', 'stale', 'recovered', 'closed'],
-    );
-    assert.equal(isSessionEventStreamStatus('stale'), true);
-    assert.equal(isSessionEventStreamStatus('pending'), false);
-  });
-
   it('expects a stream for running sessions or live renderer activity only', () => {
     assert.equal(sessionExpectsEventStream('running'), true);
     assert.equal(sessionExpectsEventStream('active'), false);

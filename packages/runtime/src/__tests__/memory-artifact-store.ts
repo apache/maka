@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import type { ArtifactRecord } from '@maka/core';
+import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { HistoryCompactArtifactStore } from '../history-compact-artifacts.js';
 
 // Shared in-memory HistoryCompactArtifactStore for tests. Not a test file

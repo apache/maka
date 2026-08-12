@@ -1,4 +1,4 @@
-import type { AgentRunHeader } from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
 import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
 import type {
   SessionBlockedReason,

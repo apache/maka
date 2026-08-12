@@ -3,15 +3,15 @@ import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
+import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
+import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/explore-agent';
+import { type RelayModelProfile } from '@maka/core/model-thinking';
+import { type SessionHeader } from '@maka/core/session';
 import {
-  createDefaultRuntimePolicy,
-  createGenesisExecutionBoundary,
-  DEEP_RESEARCH_SESSION_LABEL,
-  DEEP_RESEARCH_SESSION_NAME,
-  type RelayModelProfile,
-  type SessionHeader,
-} from '@maka/core';
-import { SessionConfigurationTransitionError, headerToSummary } from '@maka/runtime';
+  SessionConfigurationTransitionError,
+  headerToSummary,
+} from '@maka/runtime/session-manager';
 import { type ProjectCatalog, ProjectUnavailableError } from '@maka/storage';
 import {
   SessionMetadataVersionConflictError,
@@ -281,6 +281,75 @@ test('creation on a relay connection honours declared levels via the catalog pro
   assert.equal(outcome.ok, true);
   assert.equal(createAttempts, 1);
   assert.equal(persistedThinkingLevel, 'low');
+});
+
+test('creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
+  const modelId = 'deepseek-v4-flash';
+  let createAttempts = 0;
+  const fixture = createFixture({
+    connection: {
+      providerType: 'deepseek',
+      enabledModelIds: [modelId],
+      models: [],
+    },
+    stores: {
+      createStableSession: async (args) => {
+        createAttempts += 1;
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(
+            { ...sessionHeader(args.sessionId, ['user-label']), model: modelId },
+            1,
+          ),
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: modelId },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(createAttempts, 1);
+});
+
+test('creation does not bypass a non-empty DeepSeek inventory', async () => {
+  const modelId = 'deepseek-v4-flash';
+  let createAttempts = 0;
+  const fixture = createFixture({
+    connection: {
+      providerType: 'deepseek',
+      enabledModelIds: [modelId],
+      models: [{ id: 'deepseek-chat' }],
+    },
+    stores: {
+      createStableSession: async () => {
+        createAttempts += 1;
+        assert.fail('A model missing from a non-empty inventory must not be persisted');
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: modelId },
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: { code: 'invalid_request', message: 'Session model is not enabled' },
+  });
+  assert.equal(createAttempts, 0);
 });
 
 test('creation on a relay connection without declarations still fails closed on any thinkingLevel', async () => {
@@ -827,7 +896,7 @@ function createFixture(
 }
 
 type FixtureConnection = {
-  readonly providerType?: 'openai' | 'openai-compatible';
+  readonly providerType?: 'deepseek' | 'openai' | 'openai-compatible';
   readonly enabledModelIds?: readonly string[];
   readonly models?: readonly { id: string }[];
   readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;

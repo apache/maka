@@ -295,7 +295,6 @@ Claims re-checked on disk at review time:
 | Module kit | `primitives/module-page.tsx` | pass |
 | Inventory after debt fix | regen | `blocker=0 polish=0 aligned=183` |
 
-Inventory unit tests: `node --test scripts/check-astryx-surface-inventory.test.mjs scripts/check-astryx-alignment.test.mjs` → **5/5 pass**.
 
 ---
 

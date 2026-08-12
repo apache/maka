@@ -119,7 +119,7 @@ overlay design, but it is not the source of the exact values listed above.
   sub-stepping;
 - target-window ordering, semantic element-center presentation, cancellation,
   completion, and presentation fences;
-- Maka palette, click pulse, shadow, and host integration.
+- Maka brand palette, click pulse, shadow, and host integration.
 
 These changes mean the current renderer is neither a straight port of
 `trycua/cua` nor an instruction-for-instruction translation of

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
-import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core';
+import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core/agent-graph-supervisor-wake';
 import {
   createSqliteSessionMetadataStore,
   SQLITE_SESSION_METADATA_SCHEMA_VERSION,
@@ -198,63 +198,6 @@ describe('SQLite Agent Graph supervisor wakes', () => {
       assert.deepEqual(await store.listRetryableAgentGraphSupervisorWakes(), []);
     } finally {
       store.close();
-    }
-  });
-
-  test('migrates version 11 wake attempts without losing correlation', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-supervisor-wake-v11-'));
-    const path = join(root, 'sessions.sqlite');
-    try {
-      const initial = createSqliteSessionMetadataStore(path);
-      await initial.claimAgentGraphSupervisorWake({
-        schemaVersion: AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
-        graphId: 'graph-1',
-        wakeId: 'wake-1',
-        snapshotVersion: 'snapshot-1',
-        rootSessionId: 'session-1',
-      });
-      await initial.beginAgentGraphSupervisorWakeAttempt({
-        graphId: 'graph-1',
-        wakeId: 'wake-1',
-        attemptId: 'attempt-1',
-        turnId: 'turn-1',
-      });
-      initial.close();
-
-      const v11 = new DatabaseSync(path);
-      v11.exec(`
-        DROP INDEX session_metadata_tombstones_by_retirement_unit;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
-        DROP TABLE session_create_claims;
-        DROP TABLE sandbox_boundary_log;
-        DROP TABLE project_aliases;
-        DROP TABLE project_locations;
-        DROP TABLE projects;
-        DROP TABLE session_messages;
-      `);
-      v11
-        .prepare(`UPDATE session_metadata_schema SET version = 11 WHERE scope = 'session_metadata'`)
-        .run();
-      v11.close();
-
-      const migrated = createSqliteSessionMetadataStore(path);
-      assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
-      assert.equal(
-        (await migrated.readAgentGraphSupervisorWake('graph-1', 'wake-1'))?.status,
-        'running',
-      );
-      assert.equal(
-        (await migrated.listAgentGraphSupervisorWakeAttempts('graph-1', 'wake-1'))[0]?.attemptId,
-        'attempt-1',
-      );
-      migrated.close();
-
-      const verified = new DatabaseSync(path);
-      assert.deepEqual(verified.prepare('PRAGMA foreign_key_check').all(), []);
-      verified.close();
-    } finally {
-      await rm(root, { recursive: true, force: true });
     }
   });
 });

@@ -1,4 +1,4 @@
-import type { ActiveInteractionRequestEvent } from '@maka/core';
+import type { ActiveInteractionRequestEvent } from '@maka/core/events';
 
 export type ComposerInteraction = ActiveInteractionRequestEvent;
 export type InteractionQueues = Record<string, ComposerInteraction[]>;

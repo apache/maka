@@ -1,12 +1,7 @@
 import type { StatusSemantic } from '@maka/ui';
-import type {
-  HealthSignal,
-  HealthSignalLayer,
-  HealthSignalSource,
-  HealthSignalStatus,
-  UiCatalog,
-  UiLocale,
-} from '@maka/core';
+import type { HealthSignal, HealthSignalLayer, HealthSignalSource, HealthSignalStatus } from '@maka/core/health';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 /**
  * Health signals carry their own severity ladder — error > warning > info > ok

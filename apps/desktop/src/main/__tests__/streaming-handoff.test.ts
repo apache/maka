@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { SessionEvent } from '@maka/core';
+import type { SessionEvent } from '@maka/core/events';
 import {
   armLiveTurn,
   ChatSurfaceLayout,
@@ -53,6 +53,7 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): string {
       permissionMode: 'ask',
     },
     messages: [{ type: 'user', id: 'user-1', turnId: liveTurn.turnId, ts: 1, text: 'go' }],
+    scrollBehavior: 'smooth',
     liveTurn,
     onNew() {},
   } satisfies Parameters<typeof ChatView>[0]));
@@ -100,6 +101,7 @@ describe('single live-turn handoff', () => {
         { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'go' },
         { type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 2, text: finalText, modelId: 'model' },
       ],
+      scrollBehavior: 'smooth',
       liveTurn: {
         turnId: 'turn-1',
         phase: 'streamed',
@@ -121,7 +123,7 @@ describe('single live-turn handoff', () => {
     const text = 'persisted before a slow tool finishes';
     const markup = renderWithLocale(createElement(ChatView, {
       activeSession: {
-        id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'running', backend: 'pi-agent',
+        id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
         llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
       },
@@ -129,6 +131,7 @@ describe('single live-turn handoff', () => {
         { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'go' },
         { type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 2, text, modelId: 'model' },
       ],
+      scrollBehavior: 'smooth',
       liveTurn: {
         turnId: 'turn-1',
         phase: 'streamed',
@@ -308,6 +311,9 @@ describe('single live-turn handoff', () => {
     const ref = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
     let diagnosticDetails: string | undefined;
+    let diagnosticTarget:
+      | { sessionId: string; turnId: string; eventId: string }
+      | undefined;
     const handlers = createAppShellSessionEventHandlers({
       uiLocale: 'zh',
       activeIdRef: { current: 'session-1' },
@@ -321,8 +327,9 @@ describe('single live-turn handoff', () => {
       setInteractionBySession: interactions.set,
       showModelSetupToast: () => {},
       toastApi: {
-        error: (_title, _description, details) => {
+        error: (_title, _description, details, target) => {
           diagnosticDetails = details;
+          diagnosticTarget = target;
         },
       },
     });
@@ -340,6 +347,11 @@ describe('single live-turn handoff', () => {
     assert.match(diagnosticDetails ?? '', /Turn: turn-1/u);
     assert.match(diagnosticDetails ?? '', /Reason: tool_failed/u);
     assert.match(diagnosticDetails ?? '', /Code: TOOL_FAILED/u);
+    assert.deepEqual(diagnosticTarget, {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      eventId: 'event-1',
+    });
 
     handlers.reconcilePersistedMessages('session-1', [
       { type: 'tool_call', id: 'tool-1', turnId: 'turn-1', stepId: 'step-1', ts: 3, toolName: 'Bash', args: {} },

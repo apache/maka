@@ -1,4 +1,4 @@
-import type { RuntimeEvent } from '@maka/core';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { applyRuntimeEventContextBudget } from './context-budget.js';
 import {

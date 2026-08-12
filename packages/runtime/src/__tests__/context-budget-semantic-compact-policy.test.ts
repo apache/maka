@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 
 describe('semantic compaction policy env plumbing (issue #882 PR 3)', () => {
@@ -34,13 +34,6 @@ describe('semantic compaction policy env plumbing (issue #882 PR 3)', () => {
   test('an explicit mode of off keeps it disabled', () => {
     const policy = buildDefaultContextBudgetPolicy(connection(), {
       env: { MAKA_CONTEXT_SEMANTIC_COMPACT_MODE: 'off' },
-    });
-    assert.equal(policy?.semanticCompact, undefined);
-  });
-
-  test('an explicit MAKA_CONTEXT_SEMANTIC_COMPACT=off keeps it disabled', () => {
-    const policy = buildDefaultContextBudgetPolicy(connection(), {
-      env: { MAKA_CONTEXT_SEMANTIC_COMPACT: 'off' },
     });
     assert.equal(policy?.semanticCompact, undefined);
   });

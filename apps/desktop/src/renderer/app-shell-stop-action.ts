@@ -1,4 +1,4 @@
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 

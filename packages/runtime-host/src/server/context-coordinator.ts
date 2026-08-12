@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { SessionHeader } from '@maka/core/session';
+import { RuntimeContextCompactError } from '@maka/runtime/runtime-kernel';
 import {
-  RuntimeContextCompactError,
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
-  type SessionManager,
-} from '@maka/runtime';
+} from '@maka/runtime/message-authority';
+import { type SessionManager } from '@maka/runtime/session-manager';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import type {
   ContextCompactInput,

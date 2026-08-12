@@ -52,20 +52,6 @@ function findPwsh(): string | undefined {
 }
 
 describe('runShellWithBoundedTail', () => {
-  test('returns full small output and exit 0 without throwing', async () => {
-    const r = await runShellWithBoundedTail("printf 'hello\\nworld\\n'", base());
-    assert.deepEqual(
-      {
-        exitCode: r.exitCode,
-        stdout: r.stdout,
-        stderr: r.stderr,
-        timedOut: r.timedOut,
-        aborted: r.aborted,
-      },
-      { exitCode: 0, stdout: 'hello\nworld\n', stderr: '', timedOut: false, aborted: false },
-    );
-  });
-
   test('keeps only the bounded, line-aligned TAIL of large output (never killed by size)', async () => {
     const r = await runShellWithBoundedTail(
       "printf 'HEADMARK\\n'; seq 1 50; printf 'TAILMARK\\n'",

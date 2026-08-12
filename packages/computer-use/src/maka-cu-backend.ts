@@ -30,7 +30,7 @@ import type {
   ComputerUseErrorCode,
   ComputerUseRect,
   CuAction,
-} from '@maka/core';
+} from '@maka/core/computer-use';
 import type {
   CuAppSummary,
   CuDispatchBackend,
@@ -41,7 +41,7 @@ import type {
   CuRunResult,
   CuScreenshot,
   CuSemanticAction,
-} from '@maka/runtime';
+} from '@maka/runtime/computer-use-types';
 import { abortableDelay } from './abortable-delay.js';
 import { exceedsFrameCap, FRAME_COMPRESS_THRESHOLD_BYTES } from './frame-budget.js';
 import {

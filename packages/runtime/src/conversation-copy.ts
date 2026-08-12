@@ -3,17 +3,13 @@ import type {
   AgentRunHeader,
   AgentRunStore,
   EmittedAgentRunEvent,
-  RuntimeEvent,
-  RuntimeEventStore,
-  StorageRef,
-  StoredMessage,
-  ToolResultContent,
-} from '@maka/core';
-import {
-  decodeCanonicalToolResultContent,
-  isEmittedAgentRunEventType,
-  isSessionInlineRun,
-} from '@maka/core';
+} from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { StorageRef, ToolResultContent } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
+import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { isEmittedAgentRunEventType, isSessionInlineRun } from '@maka/core/agent-run';
 import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
 import {
   buildHistoryCompactCheckpoint,

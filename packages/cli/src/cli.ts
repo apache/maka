@@ -7,7 +7,13 @@ import { resolveMakaWorkspaceRoot } from './workspace-root.js';
 import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
 
 export type MakaCliCommand =
-  | { kind: 'tui'; resumeSessionId?: string; resumeCwd?: string }
+  | {
+      kind: 'tui';
+      resumeSessionId?: string;
+      resumeCwd?: string;
+      hostProfileId?: string;
+      projectId?: string;
+    }
   | { kind: 'run'; args: string[] }
   | { kind: 'activate'; args: string[] }
   | { kind: 'eval'; args: string[] }
@@ -21,25 +27,7 @@ export function parseMakaCliArgs(argv: string[], version: string): MakaCliComman
   const [first] = argv;
   if (first === '--help' || first === '-h') return { kind: 'help', text: helpText() };
   if (first === '--version' || first === '-v') return { kind: 'version', text: version };
-  if (first === '--resume') {
-    const sessionId = argv[1];
-    if (!sessionId || sessionId.startsWith('-')) {
-      return { kind: 'error', message: '--resume requires a session id', exitCode: 2 };
-    }
-    if (argv[2] === undefined) return { kind: 'tui', resumeSessionId: sessionId };
-    if (argv[2] !== '--cwd') {
-      return { kind: 'error', message: `Unexpected argument: ${argv[2]}`, exitCode: 2 };
-    }
-    const resumeCwd = argv[3];
-    if (!resumeCwd || resumeCwd.startsWith('-')) {
-      return { kind: 'error', message: '--cwd requires a directory', exitCode: 2 };
-    }
-    const extra = argv[4];
-    if (extra !== undefined) {
-      return { kind: 'error', message: `Unexpected argument: ${extra}`, exitCode: 2 };
-    }
-    return { kind: 'tui', resumeSessionId: sessionId, resumeCwd };
-  }
+  if (first?.startsWith('--')) return parseTuiArgs(argv);
   if (first === 'run' || first === '-p') return { kind: 'run', args: argv.slice(1) };
   if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
   if (first === 'eval') return { kind: 'eval', args: argv.slice(1) };
@@ -100,6 +88,9 @@ function helpText(): string {
     '  maka runtime-host access issue --principal <id> --grant <operation>',
     '  maka runtime-host access issue --kind capability-provider --principal <id>',
     '  maka runtime-host access revoke --credential <id>',
+    '  maka runtime-host profile list',
+    '  maka runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]',
+    '  maka runtime-host profile remove --id <id>',
     '  maka runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>',
     '',
     'Options:',
@@ -107,6 +98,9 @@ function helpText(): string {
     '  -v, --version     Show version',
     '  --resume <session-id>  Reopen a previous session in the TUI',
     '  --resume <id> --cwd <path>  Reopen a session after its directory moved',
+    '  --host <profile-id>     Connect the TUI to a saved Runtime Host profile',
+    '  --project <project-id>  Select an existing Project on a remote Host',
+    '  MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL  Access credential used by runtime-host profile set',
     '',
     'Runtime Host service options:',
     '  --root <path>                 Select the canonical data root',
@@ -192,6 +186,25 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
         ...(command.clientIdentityPath ? { clientIdentityPath: command.clientIdentityPath } : {}),
       });
     }
+    case 'runtime-host-profile-list':
+    case 'runtime-host-profile-set':
+    case 'runtime-host-profile-remove': {
+      const { runRuntimeHostProfileCommand } = await import('./runtime-host-profile-command.js');
+      if (command.kind === 'runtime-host-profile-list') {
+        return runRuntimeHostProfileCommand({ kind: 'list' });
+      }
+      if (command.kind === 'runtime-host-profile-remove') {
+        return runRuntimeHostProfileCommand({ kind: 'remove', id: command.id });
+      }
+      return runRuntimeHostProfileCommand({
+        kind: 'set',
+        id: command.id,
+        name: command.name,
+        tlsUrl: command.tlsUrl,
+        expectedRootId: command.expectedRootId,
+        ...(command.credentialEnv ? { credentialEnv: command.credentialEnv } : {}),
+      });
+    }
     case 'help':
       process.stdout.write(`${command.text}\n`);
       return 0;
@@ -210,9 +223,53 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
         onProcessExit: handleMakaCliProcessExit,
         ...(command.resumeSessionId ? { resumeSessionId: command.resumeSessionId } : {}),
         ...(command.resumeCwd ? { resumeCwd: command.resumeCwd } : {}),
+        ...(command.hostProfileId ? { hostProfileId: command.hostProfileId } : {}),
+        ...(command.projectId ? { projectId: command.projectId } : {}),
       });
     }
   }
+}
+
+function parseTuiArgs(argv: string[]): MakaCliCommand {
+  const values = new Map<string, string>();
+  const supported = new Set(['--resume', '--cwd', '--host', '--project']);
+  for (let index = 0; index < argv.length; index += 1) {
+    const option = argv[index];
+    if (!option || !supported.has(option)) {
+      return { kind: 'error', message: `Unexpected argument: ${option ?? ''}`, exitCode: 2 };
+    }
+    if (values.has(option)) {
+      return { kind: 'error', message: `Option repeated: ${option}`, exitCode: 2 };
+    }
+    const value = argv[index + 1];
+    if (!value || value.startsWith('-')) {
+      const expected =
+        option === '--resume' ? 'a session id' : option === '--cwd' ? 'a directory' : 'a value';
+      return { kind: 'error', message: `${option} requires ${expected}`, exitCode: 2 };
+    }
+    values.set(option, value);
+    index += 1;
+  }
+  if (values.has('--cwd') && !values.has('--resume')) {
+    return { kind: 'error', message: '--cwd requires --resume', exitCode: 2 };
+  }
+  if (values.has('--project') && values.has('--resume')) {
+    return { kind: 'error', message: '--project cannot be used with --resume', exitCode: 2 };
+  }
+  if (values.has('--cwd') && values.has('--host') && values.get('--host') !== 'local') {
+    return {
+      kind: 'error',
+      message: '--cwd cannot be used with a remote Runtime Host',
+      exitCode: 2,
+    };
+  }
+  return {
+    kind: 'tui',
+    ...(values.has('--resume') ? { resumeSessionId: values.get('--resume') } : {}),
+    ...(values.has('--cwd') ? { resumeCwd: values.get('--cwd') } : {}),
+    ...(values.has('--host') ? { hostProfileId: values.get('--host') } : {}),
+    ...(values.has('--project') ? { projectId: values.get('--project') } : {}),
+  };
 }
 
 async function readPackageVersion(): Promise<string> {

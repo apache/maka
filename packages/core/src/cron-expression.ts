@@ -74,7 +74,7 @@ const FIELD_SPECS = Object.freeze({
 
 /**
  * Compile the one canonical five-field cron grammar used by ScheduledTask and
- * session heartbeat Automation. Fields are numeric and support lists, ranges,
+ * ScheduledTask cron schedules. Fields are numeric and support lists, ranges,
  * and steps. Sunday may be 0 or 7.
  */
 export function compileCronExpression(expression: string): CompileCronExpressionResult {

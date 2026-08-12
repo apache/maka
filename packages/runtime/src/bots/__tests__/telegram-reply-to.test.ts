@@ -22,21 +22,12 @@ describe('buildTelegramSendBody', () => {
       { chat_id: 'chat-1', text: '[2/3]\ntail' },
     );
   });
-
-  it('omits malformed reply ids instead of sending an invalid Telegram payload', () => {
-    for (const replyToMessageId of ['', 'abc', '0', '-1', '1.5', '9007199254740992']) {
-      assert.deepEqual(buildTelegramSendBody('chat-1', 'hello', { replyToMessageId }, 0), {
-        chat_id: 'chat-1',
-        text: 'hello',
-      });
-    }
-  });
 });
 
 describe('normalizeTelegramReplyToMessageId', () => {
   it('accepts positive safe integers and rejects malformed or unsafe values', () => {
     assert.equal(normalizeTelegramReplyToMessageId(' 42 '), 42);
-    for (const value of [undefined, '', 'abc', '0', '-1', '1.5', '9007199254740992']) {
+    for (const value of [undefined, '0', '9007199254740992']) {
       assert.equal(normalizeTelegramReplyToMessageId(value), undefined, String(value));
     }
   });

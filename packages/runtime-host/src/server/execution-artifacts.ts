@@ -4,15 +4,17 @@ import { isAbsolute, resolve } from 'node:path';
 import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
 import {
   createToolResultArchiveCapability,
-  isPathInside,
-  stableToolResultArchiveArtifactId,
   type ToolResultArchiveCapability,
-  type ToolArtifactRecorderInput,
+  type ToolResultArchiveRecorderInput,
+} from '@maka/runtime/tool-result-archive-capability';
+import { isPathInside } from '@maka/runtime/path-containment';
+import { stableToolResultArchiveArtifactId } from '@maka/runtime/tool-result-archive';
+import { type ToolArtifactRecorderInput } from '@maka/runtime/tool-artifacts';
+import {
   type ToolResultArchiveReaderInput,
   type ToolResultArchiveReadResult,
-  type ToolResultArchiveRecorderInput,
-  type ToolResultArchiveResourceReadInput,
-} from '@maka/runtime';
+} from '@maka/runtime/context-budget';
+import { type ToolResultArchiveResourceReadInput } from '@maka/runtime/tool-result-archive-resource';
 import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
 
 export interface HostExecutionArtifactServices {

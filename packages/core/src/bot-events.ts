@@ -119,23 +119,7 @@ export function botSourceEventKey(
   return `${message.platform}:${message.chatId}:${sourceMessageId}`;
 }
 
-/**
- * PR-BOT-PLAINTEXT-RESET-COMMAND-0 (external bot research): DM-only plain-text
- * "restart this conversation" affordance. Maka has no slash command
- * runtime; users on mobile cannot easily type `/restart` either, so we
- * coerce a handful of natural phrases into a reset action.
- *
- * Why DM-only: the bot conversation key is `${platform}:${chatId}`, NOT
- * keyed by userId. In a group chat any member typing "restart" would
- * wipe the conversation everyone else is in. Until a userId-scoped key
- * lands, plain-text reset is silently ignored in groups so the cost of
- * a misfire stays bounded to the sender's own DM.
- *
- * Match policy: NFC-normalize + lowercase + trim, then exact membership.
- * No substring matching — the word "restart" inside a sentence is NOT
- * a reset request; matching only the bare command avoids surprising
- * users who intended to send a message ABOUT restart.
- */
+/** DM-only commands; a group shares one conversation key, so reset must not affect every member. */
 export const BOT_PLAINTEXT_RESET_COMMANDS: ReadonlyArray<string> = Object.freeze([
   'restart',
   'reset',
@@ -154,23 +138,9 @@ export const BOT_PLAINTEXT_RESET_COMMANDS: ReadonlyArray<string> = Object.freeze
 export function isPlaintextResetCommand(
   message: Pick<BotMessageEvent, 'text' | 'isGroup'>,
 ): boolean {
-  if (message.isGroup) return false;
-  const trimmed = message.text.normalize('NFC').trim().toLowerCase();
-  if (trimmed.length === 0) return false;
-  return BOT_PLAINTEXT_RESET_COMMANDS.includes(trimmed);
+  return isPlaintextCommand(message, BOT_PLAINTEXT_RESET_COMMANDS);
 }
 
-/**
- * PR-BOT-PLAINTEXT-HELP-COMMAND-0 (external bot research): DM-only help
- * affordance so a new user can discover what the bot supports
- * without leaving Telegram. Same match policy as
- * {@link isPlaintextResetCommand} — DM-only, NFC + lowercase + trim,
- * exact membership, no substring match.
- *
- * The fixed reply text is deliberately short and product-scoped:
- * how to chat, how to reset, and the threading behavior. No
- * marketing copy or roadmap language.
- */
 export const BOT_PLAINTEXT_HELP_COMMANDS: ReadonlyArray<string> = Object.freeze([
   'help',
   '/help',
@@ -183,10 +153,17 @@ export const BOT_PLAINTEXT_HELP_COMMANDS: ReadonlyArray<string> = Object.freeze(
 export function isPlaintextHelpCommand(
   message: Pick<BotMessageEvent, 'text' | 'isGroup'>,
 ): boolean {
+  return isPlaintextCommand(message, BOT_PLAINTEXT_HELP_COMMANDS);
+}
+
+function isPlaintextCommand(
+  message: Pick<BotMessageEvent, 'text' | 'isGroup'>,
+  commands: ReadonlyArray<string>,
+): boolean {
   if (message.isGroup) return false;
   const trimmed = message.text.normalize('NFC').trim().toLowerCase();
   if (trimmed.length === 0) return false;
-  return BOT_PLAINTEXT_HELP_COMMANDS.includes(trimmed);
+  return commands.includes(trimmed);
 }
 
 export function plaintextHelpReply(): string {

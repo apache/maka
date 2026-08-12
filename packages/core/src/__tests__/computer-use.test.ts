@@ -1,49 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
-import { ACTION_APPROVAL_STATES } from '../capabilities.js';
 import {
-  COMPUTER_USE_DISPATCH_TIERS,
-  COMPUTER_USE_ERROR_CODES,
   computerUseApprovalScopeKey,
   computerUseApprovalSummary,
   computerUseModelCallArgs,
-  isComputerUseErrorCode,
 } from '../computer-use.js';
 
 describe('Computer Use foundation contract', () => {
-  test('capability vocabulary can describe scoped approval leases', () => {
-    expect(ACTION_APPROVAL_STATES.includes('required_scoped_lease')).toBe(true);
-  });
-
-  test('has no foreground dispatch tier', () => {
-    expect(COMPUTER_USE_DISPATCH_TIERS).toEqual([
-      'ax',
-      'semantic-background',
-      'coordinate-background',
-    ]);
-  });
-
-  test('includes lifecycle and unknown-outcome errors', () => {
-    for (const code of [
-      'reobserve_required',
-      'permission_pending',
-      'policy_denied',
-      'policy_forbidden',
-      'no_active_session',
-      'ambiguous_target',
-      'screen_locked',
-      'blocked_url',
-      'user_stopped',
-      'service_unavailable',
-      'service_mismatch',
-      'outcome_unknown',
-    ]) {
-      expect(isComputerUseErrorCode(code)).toBe(true);
-      expect(COMPUTER_USE_ERROR_CODES.includes(code as never)).toBe(true);
-    }
-  });
-
   test('classifies read, screenshot, pointer, keyboard, and semantic approval', () => {
     expect(computerUseApprovalSummary({ action: 'list_apps' }).approvalClass).toBe('metadata_read');
     expect(

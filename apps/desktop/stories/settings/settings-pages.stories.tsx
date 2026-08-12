@@ -4,30 +4,25 @@ import { userEvent } from 'storybook/test';
 import { ToastProvider } from '@maka/ui';
 import type {
   AppSettings,
-  CapabilitySnapshot,
-  CapabilitySnapshotCollection,
-  HealthSignal,
-  HealthSnapshot,
-  LlmConnection,
-  LocalMemoryBackupInfo,
-  LocalMemoryEntryPreview,
-  LocalMemoryState,
-  OsPermissionSnapshot,
-  OsPermissionState,
-  PermissionSnapshot,
-  ProviderType,
   SettingsSection,
   ThemePalette,
   ThemePreference,
   UpdateAppSettingsResult,
   UsageStats,
-} from '@maka/core';
-import {
-  buildHealthSnapshot,
-  createDefaultSettings,
-  DEFAULT_DAILY_REVIEW_CONFIG,
-  mergeSettings,
-} from '@maka/core';
+} from '@maka/core/settings';
+import type {
+  CapabilitySnapshot,
+  CapabilitySnapshotCollection,
+  OsPermissionSnapshot,
+  OsPermissionState,
+  PermissionSnapshot,
+} from '@maka/core/capabilities';
+import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
+import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
+import { buildHealthSnapshot } from '@maka/core/health';
+import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
+import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
 import type { ConnectionsBridge } from '../../src/renderer/settings/providers-panel';

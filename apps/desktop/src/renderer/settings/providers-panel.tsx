@@ -17,7 +17,7 @@ import { ICON_SIZE, ChevronRight, Cpu } from '@maka/ui/icons';
 import {
   type LlmConnection,
   type ProviderType,
-} from '@maka/core';
+} from '@maka/core/llm-connections';
 import { useMountedRef, useUiLocale, useToast , dotForStatus } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { connectionChipStatus } from './provider-connection-status';
@@ -241,7 +241,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
         // tabIndex -1 so a route change can land focus on the level itself —
         // the standard SPA answer to "where does focus go when the page
         // swaps", and it draws no ring.
-        <VStack gap={5} tabIndex={-1} role="region" aria-labelledby={detailTitleId} className="settingsRouteLevel" data-maka-contract="connection-detail">
+        (<VStack gap={5} tabIndex={-1} role="region" aria-labelledby={detailTitleId} className="settingsRouteLevel" data-maka-contract="connection-detail">
           <SettingsRouteHeader
             onBack={goToList}
             backLabel={copy.backToList}
@@ -299,7 +299,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               goToList();
             }}
           />
-        </VStack>
+        </VStack>)
       ) : level === 'catalog' ? (
         <VStack gap={5}>
           <SettingsRouteHeader

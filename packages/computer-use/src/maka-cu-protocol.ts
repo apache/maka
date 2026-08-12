@@ -13,7 +13,7 @@ import {
   type ComputerUseEffect,
   type ComputerUseErrorCode,
   type ComputerUseRect,
-} from '@maka/core';
+} from '@maka/core/computer-use';
 
 export const MAKA_CU_PROTOCOL_VERSION = 'maka.cu/2';
 

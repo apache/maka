@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { BotIncomingMessage } from '@maka/runtime';
+import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -29,6 +29,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   const secondReleased = new Promise<void>((resolve) => {
     releaseSecond = resolve;
   });
+  const readiness: string[] = [];
   const owner = await startRuntimeHostDesktopOwner({} as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async () => {
       starts += 1;
@@ -40,6 +41,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
       assert.ok(result);
       return result;
     },
+    onTargetStateChanged: (state) => readiness.push(state.readiness),
   });
 
   first.disconnect();
@@ -59,6 +61,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   assert.equal(first.botMessages, 0);
   assert.equal(second.botMessages, 1);
   assert.deepEqual(second.stoppedSessions, ['session-1']);
+  assert.deepEqual(readiness, ['connecting', 'ready', 'reconnecting', 'ready']);
   await owner.close();
   assert.equal(second.closeCalls, 1);
 });
@@ -109,19 +112,151 @@ test('keeps the current Host when update preparation reports active tasks', asyn
   await owner.close();
 });
 
-test('leaves a service Host running while the Desktop update is attempted', async () => {
-  const current = candidateHarness({ lifecycleMode: 'service' });
-  const owner = await startRuntimeHostDesktopOwner({} as DesktopRuntimeHostCandidateStartInput, {
-    startCandidate: async () => ready(current.candidate),
-    waitForHostExit: async () => assert.fail('service Host exit must not be awaited'),
-  });
+for (const lifecycleMode of ['service', 'remote'] as const) {
+  test(`does not retire a ${lifecycleMode} Host for a Desktop update`, async () => {
+    const current = candidateHarness({ lifecycleMode });
+    const owner = await startRuntimeHostDesktopOwner({} as DesktopRuntimeHostCandidateStartInput, {
+      startCandidate: async () => ready(current.candidate),
+      waitForHostExit: async () => assert.fail(`${lifecycleMode} Host exit must not be awaited`),
+    });
 
-  const preparation = await owner.prepareForUpdate(false);
-  assert.equal(preparation.kind, 'prepared');
-  assert.equal(current.prepareUpgradeCalls, 0);
-  if (preparation.kind === 'prepared') preparation.rollback();
-  await owner.handleBotIncomingMessage({ text: 'still connected' } as BotIncomingMessage);
-  assert.equal(current.botMessages, 1);
+    const preparation = await owner.prepareForUpdate(false);
+    assert.equal(preparation.kind, 'prepared');
+    assert.equal(current.prepareUpgradeCalls, 0);
+    if (preparation.kind === 'prepared') preparation.rollback();
+    await owner.handleBotIncomingMessage({ text: 'still connected' } as BotIncomingMessage);
+    assert.equal(current.botMessages, 1);
+    await owner.close();
+  });
+}
+
+test('switches Runtime Host targets without replacing the Desktop owner', async () => {
+  const local = candidateHarness();
+  const remote = candidateHarness({ lifecycleMode: 'remote' });
+  const starts: DesktopRuntimeHostCandidateStartInput[] = [];
+  const activations: Array<{ epoch: string; profileId: string }> = [];
+  const owner = await startRuntimeHostDesktopOwner(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) => {
+        starts.push(input);
+        return ready(starts.length === 1 ? local.candidate : remote.candidate);
+      },
+      onTargetStateChanged: ({ epoch, target, readiness }) => {
+        if (readiness === 'ready') activations.push({ epoch, profileId: target.profile.id });
+      },
+    },
+  );
+
+  await owner.switchTarget(remoteTarget('office'));
+  await owner.handleBotIncomingMessage({ text: 'remote' } as BotIncomingMessage);
+
+  assert.equal(local.closeCalls, 1);
+  assert.equal(remote.botMessages, 1);
+  assert.equal(starts[1]?.remote?.profile.id, 'office');
+  assert.equal(starts[0]?.isTargetActive?.(), false);
+  assert.equal(starts[1]?.isTargetActive?.(), true);
+  assert.deepEqual(activations.map(({ profileId }) => profileId), ["local", "office"]);
+  assert.notEqual(activations[0]?.epoch, activations[1]?.epoch);
+  await owner.close();
+});
+
+test('restores the previous Runtime Host when a target switch fails', async () => {
+  const first = candidateHarness();
+  const restored = candidateHarness();
+  const starts: DesktopRuntimeHostCandidateStartInput[] = [];
+  const fatalErrors: Error[] = [];
+  const activations: Array<{ epoch: string; profileId: string }> = [];
+  const owner = await startRuntimeHostDesktopOwner(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) => {
+        starts.push(input);
+        if (starts.length === 2) {
+          return { kind: 'failed', reason: 'host_unresponsive' };
+        }
+        return ready(starts.length === 1 ? first.candidate : restored.candidate);
+      },
+      onFatalError: (error) => fatalErrors.push(error),
+      onTargetStateChanged: ({ epoch, target, readiness }) => {
+        if (readiness === 'ready') activations.push({ epoch, profileId: target.profile.id });
+      },
+    },
+  );
+
+  await assert.rejects(owner.switchTarget(remoteTarget('offline')), /startup failed/);
+  await owner.handleBotIncomingMessage({ text: 'restored' } as BotIncomingMessage);
+
+  assert.equal(first.closeCalls, 1);
+  assert.equal(restored.botMessages, 1);
+  assert.equal(starts[1]?.remote?.profile.id, 'offline');
+  assert.equal(starts[2]?.remote, undefined);
+  assert.equal(starts[0]?.isTargetActive?.(), false);
+  assert.equal(starts[1]?.isTargetActive?.(), false);
+  assert.equal(starts[2]?.isTargetActive?.(), true);
+  assert.deepEqual(activations.map(({ profileId }) => profileId), ["local", "local"]);
+  assert.notEqual(activations[0]?.epoch, activations[1]?.epoch);
+  assert.deepEqual(fatalErrors, []);
+  await owner.close();
+});
+
+test('reports no active Host when both target switch and restoration fail', async () => {
+  const first = candidateHarness();
+  const recovered = candidateHarness();
+  const fatalErrors: Error[] = [];
+  const readiness: string[] = [];
+  let starts = 0;
+  const owner = await startRuntimeHostDesktopOwner(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        if (starts === 1) return ready(first.candidate);
+        if (starts === 4) return ready(recovered.candidate);
+        return { kind: 'failed', reason: 'host_unresponsive' };
+      },
+      onFatalError: (error) => fatalErrors.push(error),
+      onTargetStateChanged: (state) => readiness.push(state.readiness),
+    },
+  );
+
+  await assert.rejects(
+    owner.switchTarget(remoteTarget('offline')),
+    /previous Host could not be restored/,
+  );
+
+  assert.equal(owner.current(), undefined);
+  assert.deepEqual(fatalErrors, []);
+  assert.deepEqual(readiness, [
+    'connecting',
+    'ready',
+    'connecting',
+    'connecting',
+    'unavailable',
+  ]);
+  await owner.switchTarget(undefined);
+  assert.equal(owner.current()?.target.profile.id, 'local');
+  assert.deepEqual(readiness.slice(-2), ['connecting', 'ready']);
+  await owner.close();
+});
+
+test('reconnects when the same profile id resolves to a different target', async () => {
+  const first = candidateHarness({ lifecycleMode: 'remote' });
+  const second = candidateHarness({ lifecycleMode: 'remote' });
+  let starts = 0;
+  const owner = await startRuntimeHostDesktopOwner(
+    { remote: remoteTarget('office', 'a') } as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => ready(starts++ === 0 ? first.candidate : second.candidate),
+    },
+  );
+
+  await owner.switchTarget(remoteTarget('office', 'b'));
+  await owner.handleBotIncomingMessage({ text: 'new target' } as BotIncomingMessage);
+
+  assert.equal(first.closeCalls, 1);
+  assert.equal(second.botMessages, 1);
+  assert.equal(starts, 2);
   await owner.close();
 });
 
@@ -339,7 +474,7 @@ function candidateHarness(
     delayDisconnect?: boolean;
     disconnectOnPrepare?: boolean;
     activeTasks?: boolean;
-    lifecycleMode?: 'ephemeral' | 'service';
+    lifecycleMode?: 'ephemeral' | 'service' | 'remote';
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -413,4 +548,20 @@ function candidateHarness(
 
 function ready(candidate: DesktopRuntimeHostCandidate): DesktopRuntimeHostCandidateStartResult {
   return { kind: 'ready', candidate };
+}
+
+function remoteTarget(
+  id: string,
+  target = 'default',
+): NonNullable<DesktopRuntimeHostCandidateStartInput['remote']> {
+  return {
+    profile: {
+      id,
+      name: id,
+      kind: 'remote',
+      transport: { kind: 'tls', url: `wss://${target}.example.com/` },
+      rootId: 'a'.repeat(64),
+    },
+    credential: `credential-${target}`,
+  };
 }

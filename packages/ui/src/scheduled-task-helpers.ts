@@ -16,20 +16,20 @@
  * between "what to render" and "how to compute display state".
  */
 
+import type { BotProvider } from '@maka/core/bot-chat-settings';
+
 import type {
-  BotProvider,
   ScheduledTask,
   ScheduledTaskEffect,
   ScheduledTaskSchedule,
   ScheduledTaskStatus,
-  UiLocale,
-} from '@maka/core';
-import {
-  BOT_DELIVERY_PROVIDERS,
-  botDisplayLabel,
-  compileCronExpression,
-  uiLocaleToIntlLocale,
-} from '@maka/core';
+} from '@maka/core/scheduled-task';
+
+import type { UiLocale } from '@maka/core/ui-locale';
+import { BOT_DELIVERY_PROVIDERS } from '@maka/core/bot-chat-settings';
+import { botDisplayLabel } from '@maka/core/bot-events';
+import { compileCronExpression } from '@maka/core/cron-expression';
+import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import {
   getScheduledTaskCopy,
   type ScheduledTaskExampleTemplate,
@@ -243,7 +243,7 @@ export function runStatusLabel(status: ScheduledTask['runs'][number]['outcome'],
 
 export function formatScheduledTaskDeliveryTargetLabel(effect: ScheduledTaskEffect, locale: UiLocale): string {
   const copy = getScheduledTaskCopy(locale).delivery;
-  if (effect.kind === 'agent_run') return getScheduledTaskCopy(locale).detail.agentDelivery;
+  if (effect.kind !== 'notify') return getScheduledTaskCopy(locale).detail.agentDelivery;
   if (effect.channel === 'local') return copy.local;
   return copy.bot(botDisplayLabel(effect.platform), effect.chatId);
 }
@@ -268,7 +268,7 @@ export interface ScheduledTaskFormSeed {
   /** UI does not expose interval cadence editing; preserve it instead of coercing to once. */
   lockedSchedule?: Extract<ScheduledTaskSchedule, { kind: 'interval' }>;
   /** Agent execution is frozen at creation and must never be rewritten as notification delivery. */
-  lockedEffect?: Extract<ScheduledTaskEffect, { kind: 'agent_run' }>;
+  lockedEffect?: Exclude<ScheduledTaskEffect, { kind: 'notify' }>;
 }
 
 /**
@@ -339,7 +339,7 @@ function scheduledTaskFormSeedFromTask(task: ScheduledTask): ScheduledTaskFormSe
       ? { deliveryPlatform: task.effect.platform, deliveryChatId: task.effect.chatId }
       : { deliveryPlatform: 'telegram' as BotProvider, deliveryChatId: '' }),
     ...(task.schedule.kind === 'interval' ? { lockedSchedule: task.schedule } : {}),
-    ...(task.effect.kind === 'agent_run' ? { lockedEffect: task.effect } : {}),
+    ...(task.effect.kind !== 'notify' ? { lockedEffect: task.effect } : {}),
   };
 }
 

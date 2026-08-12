@@ -91,7 +91,7 @@ function formatRuntimeHostUpgradeActivity(conflict: RuntimeHostUpgradeConflict):
 function runtimeHostActivityLabel(label: string): string {
   const names: Record<string, string> = {
     goal: 'Goal',
-    automation: 'Automation',
+    'scheduled-task': 'Scheduled Task',
     'daily-review': 'Daily Review',
     'hosted-execution': 'Active execution',
     'runtime-resource': 'Runtime resource',

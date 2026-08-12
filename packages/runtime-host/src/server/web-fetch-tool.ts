@@ -1,11 +1,11 @@
+import { buildWebFetchTool } from '@maka/runtime/web-fetch-tool';
+import { createLocalWebFetchExecutor } from '@maka/runtime/local-web-fetch';
 import {
-  buildWebFetchTool,
-  createLocalWebFetchExecutor,
   createProxiedFetchTransport,
-  type MakaTool,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
-} from '@maka/runtime';
+} from '@maka/runtime/network/scoped-fetch-transport';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
 import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-policy-stores';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 

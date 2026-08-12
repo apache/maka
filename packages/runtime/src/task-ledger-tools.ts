@@ -18,35 +18,13 @@ export const TASK_UPDATE_TOOL_NAME = 'task_update';
 export const TASK_LIST_TOOL_NAME = 'task_list';
 export const TASK_GET_TOOL_NAME = 'task_get';
 
-export const LEGACY_TASK_CREATE_TOOL_NAME = 'TaskCreate';
-export const LEGACY_TASK_UPDATE_TOOL_NAME = 'TaskUpdate';
-
-export interface BuildTaskLedgerToolsOptions {
-  includeLegacyAliases?: boolean;
-}
-
-export function isTaskLedgerToolsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const value = env.MAKA_TASK_LEDGER_TOOLS;
-  return value === undefined || !/^(0|false|off)$/i.test(value.trim());
-}
-
-export function buildTaskLedgerTools(
-  deps: { store: TaskLedgerStore },
-  options: BuildTaskLedgerToolsOptions = {},
-): MakaTool[] {
-  const tools = [
+export function buildTaskLedgerTools(deps: { store: TaskLedgerStore }): MakaTool[] {
+  return [
     buildTaskCreateTool(deps.store, TASK_CREATE_TOOL_NAME, 'task_update'),
     buildTaskUpdateTool(deps.store, TASK_UPDATE_TOOL_NAME),
     buildTaskListTool(deps.store),
     buildTaskGetTool(deps.store),
   ];
-  if (options.includeLegacyAliases === true) {
-    tools.push(
-      buildTaskCreateTool(deps.store, LEGACY_TASK_CREATE_TOOL_NAME, 'TaskUpdate'),
-      buildTaskUpdateTool(deps.store, LEGACY_TASK_UPDATE_TOOL_NAME),
-    );
-  }
-  return tools;
 }
 
 function buildTaskCreateTool(

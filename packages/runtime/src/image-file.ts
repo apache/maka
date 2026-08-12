@@ -5,7 +5,7 @@ import {
   MAX_MODEL_IMAGE_EDGE,
   MAX_READ_IMAGE_BYTES,
   READ_IMAGE_TOO_LARGE_MESSAGE,
-} from '@maka/core';
+} from '@maka/core/attachments';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 const PNG_SIGNATURE = Buffer.from('\x89PNG\r\n\x1a\n', 'latin1');

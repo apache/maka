@@ -223,5 +223,5 @@ This interactive task ledger remains separate from:
 
 - Eval experiments, cells, and attempts;
 - Goal state, which owns bounded autonomous continuation;
-- ScheduledTask and session-scoped Automation, which own scheduled execution;
+- ScheduledTask, which owns scheduled execution;
 - `AgentRun` / `RuntimeEvent`, which own actual runtime and evidence history.

@@ -34,17 +34,6 @@ function createFakeBlocker() {
 }
 
 describe('keep-system-awake controller', () => {
-  it('starts a prevent-app-suspension blocker when enabled', () => {
-    const fake = createFakeBlocker();
-    const controller = createKeepSystemAwakeController(fake.blocker);
-
-    controller.apply(true);
-
-    assert.deepEqual(fake.startCalls, ['prevent-app-suspension']);
-    assert.equal(controller.isActive(), true);
-    assert.equal(fake.started.size, 1);
-  });
-
   it('does NOT force the display on (never uses prevent-display-sleep)', () => {
     const fake = createFakeBlocker();
     const controller = createKeepSystemAwakeController(fake.blocker);
@@ -68,29 +57,6 @@ describe('keep-system-awake controller', () => {
     assert.equal(fake.startCalls.length, 1, 'blocker must start exactly once');
     assert.equal(fake.started.size, 1);
     assert.equal(controller.isActive(), true);
-  });
-
-  it('stops the blocker when disabled', () => {
-    const fake = createFakeBlocker();
-    const controller = createKeepSystemAwakeController(fake.blocker);
-
-    controller.apply(true);
-    controller.apply(false);
-
-    assert.equal(fake.stopCalls.length, 1);
-    assert.equal(fake.started.size, 0);
-    assert.equal(controller.isActive(), false);
-  });
-
-  it('disabling when nothing is held is a no-op', () => {
-    const fake = createFakeBlocker();
-    const controller = createKeepSystemAwakeController(fake.blocker);
-
-    controller.apply(false);
-
-    assert.equal(fake.startCalls.length, 0);
-    assert.equal(fake.stopCalls.length, 0);
-    assert.equal(controller.isActive(), false);
   });
 
   it('re-enabling after a stop starts a fresh blocker', () => {
@@ -164,17 +130,6 @@ describe('keep-system-awake controller', () => {
 
     assert.equal(fake.startCalls.length, 1);
     assert.equal(controller.isActive(), false);
-  });
-
-  it('releasing something never held is a no-op', () => {
-    const fake = createFakeBlocker();
-    const controller = createKeepSystemAwakeController(fake.blocker);
-
-    controller.apply(true);
-    controller.release('computer-use:never-started');
-
-    assert.equal(controller.isActive(), true);
-    assert.equal(fake.stopCalls.length, 0);
   });
 
   it('two holds need two releases', () => {

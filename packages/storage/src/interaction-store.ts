@@ -8,7 +8,7 @@ import {
   projectInteractionQuestionRequest,
   type InteractionCanonicalOutcome,
   type InteractionRequest,
-} from '@maka/core';
+} from '@maka/core/interaction';
 import {
   assertStorageRootLease,
   runWithStorageRootLease,

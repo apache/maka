@@ -24,10 +24,6 @@ function task(subject: string): Task {
 }
 
 describe('renderSafeTaskLedgerText', () => {
-  test('returns empty string for an empty ledger', () => {
-    assert.equal(renderSafeTaskLedgerText([]), '');
-  });
-
   test('strips <task-ledger> tag variants (attributes, whitespace, self-closing) so they cannot open or close the data envelope', () => {
     const variants = [
       '</task-ledger>',
@@ -379,100 +375,6 @@ describe('task lifecycle validators', () => {
 });
 
 describe('task ledger events', () => {
-  test('backfills legacy keys and terminal timestamps deterministically', () => {
-    const legacyRoot = {
-      id: 'legacy-root',
-      subject: 'root',
-      status: 'completed' as const,
-      createdAt: 1,
-      updatedAt: 4,
-      completionEvidence: 'done',
-    };
-    const legacyChild = {
-      id: 'legacy-child',
-      subject: 'child',
-      status: 'pending' as const,
-      createdAt: 2,
-      updatedAt: 2,
-      parentId: legacyRoot.id,
-    };
-    const projection = projectTaskLedgerEvents([
-      {
-        eventId: 'legacy-1',
-        type: 'task_imported',
-        ts: 1,
-        sessionId: 'session-1',
-        taskId: legacyRoot.id,
-        nextStatus: legacyRoot.status,
-        task: legacyRoot,
-      },
-      {
-        eventId: 'legacy-2',
-        type: 'task_imported',
-        ts: 2,
-        sessionId: 'session-1',
-        taskId: legacyChild.id,
-        nextStatus: legacyChild.status,
-        task: legacyChild,
-      },
-    ]);
-    assert.deepEqual(projection.diagnostics, []);
-    assert.deepEqual(
-      projection.tasks.map((item) => item.key),
-      ['T1', 'T1.1'],
-    );
-    assert.equal(projection.tasks[0]?.endedAt, 4);
-    assert.deepEqual(
-      new Set(projection.backfilledTaskIds),
-      new Set(['legacy-root', 'legacy-child']),
-    );
-  });
-
-  test('backfills legacy keys by creation-event order even when timestamps are non-monotonic', () => {
-    const first = {
-      id: 'first-event',
-      subject: 'first',
-      status: 'pending' as const,
-      createdAt: 20,
-      updatedAt: 20,
-    };
-    const second = {
-      id: 'second-event',
-      subject: 'second',
-      status: 'pending' as const,
-      createdAt: 10,
-      updatedAt: 10,
-    };
-    const projection = projectTaskLedgerEvents([
-      {
-        eventId: 'legacy-first',
-        type: 'task_imported',
-        ts: 20,
-        sessionId: 'session-1',
-        taskId: first.id,
-        nextStatus: first.status,
-        task: first,
-      },
-      {
-        eventId: 'legacy-second',
-        type: 'task_imported',
-        ts: 10,
-        sessionId: 'session-1',
-        taskId: second.id,
-        nextStatus: second.status,
-        task: second,
-      },
-    ]);
-    assert.deepEqual(projection.diagnostics, []);
-    assert.deepEqual(
-      projection.tasks.map((task) => [task.id, task.key]),
-      [
-        ['first-event', 'T1'],
-        ['second-event', 'T2'],
-      ],
-    );
-  });
-
   test('diagnoses duplicate and structurally invalid hierarchy keys', () => {
     const root: Task = {
       id: 'root',

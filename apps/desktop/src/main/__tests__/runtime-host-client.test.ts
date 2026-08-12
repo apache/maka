@@ -51,6 +51,7 @@ function subscription(
   return {
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
+    activeAssistantStreams: [],
     snapshot: {
       schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: {

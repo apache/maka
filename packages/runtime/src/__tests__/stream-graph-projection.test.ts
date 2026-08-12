@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentRunHeader, RuntimeEvent, RuntimeEventStore } from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import {
   projectAgentGraphRecords,
   readCommittedAgentGraphProjection,
@@ -608,67 +610,6 @@ describe('committed stream graph projection', () => {
     const state = replayAgentGraphRecords(records);
     assert.deepEqual(Object.keys(state.operators.research?.activations ?? {}), ['run-1', 'run-2']);
     assert.equal(state.operators.research?.currentActivationId, 'run-2');
-  });
-
-  test('reads only session-inline activations while legacy child runs remain compatible', async () => {
-    const inline = runHeader({
-      sessionId: 'child-a',
-      runId: 'inline-run',
-      turnId: 'inline-turn',
-      status: 'completed',
-      createdAt: baseTs,
-    });
-    const legacy = {
-      ...runHeader({
-        sessionId: 'child-a',
-        runId: 'legacy-child-run',
-        turnId: 'legacy-turn',
-        status: 'completed',
-        createdAt: baseTs + 1,
-      }),
-      parentRunId: 'legacy-parent-run',
-    };
-    const reads: string[] = [];
-    const projection = await readCommittedAgentGraphProjection({
-      graphId: 'graph-inline-only',
-      operators: [{ operatorId: 'research', sessionId: inline.sessionId }],
-      runStore: {
-        async listSessionRuns() {
-          return [legacy, inline];
-        },
-      },
-      runtimeEventStore: {
-        async readImmutableRuntimeEvents(_sessionId, runId) {
-          reads.push(runId);
-          return [
-            runtimeEvent(inline, {
-              id: 'inline-complete',
-              ts: baseTs + 2,
-              status: 'completed',
-            }),
-          ];
-        },
-      },
-    });
-
-    assert.deepEqual(reads, ['inline-run']);
-    assert.deepEqual(Object.keys(projection.state.operators.research?.activations ?? {}), [
-      'inline-run',
-    ]);
-    assert.throws(
-      () =>
-        projectAgentGraphRecords({
-          graphId: 'graph-reject-legacy',
-          streams: [
-            {
-              operator: { operatorId: 'research', sessionId: legacy.sessionId },
-              run: legacy,
-              events: [],
-            },
-          ],
-        }),
-      /must be a session-inline AgentRun/,
-    );
   });
 
   test('fails closed on ambiguous authority or impossible replay order', async () => {

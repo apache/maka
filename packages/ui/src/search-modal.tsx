@@ -1,14 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type {
-  SearchErrorReason,
-  SearchRequest,
-  SearchResult,
-  UiLocale,
-} from '@maka/core';
-import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-} from '@maka/core';
+import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 import {
   CommandPalette as AstryxCommandPalette,
   CommandPaletteFooter,

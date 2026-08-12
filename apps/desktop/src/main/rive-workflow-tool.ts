@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { MakaTool } from '@maka/runtime';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   buildRiveCommand,
   redactRiveText,

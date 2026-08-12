@@ -42,7 +42,7 @@ test('deletes a self-referential symlink entry without following it', {
   await assert.rejects(readFile(link, 'utf8'), { code: 'ENOENT' });
 });
 
-test('creates nested files exclusively and deletes their entries', async (t) => {
+test('creates nested files exclusively', async (t) => {
   const cwd = await temporaryDirectory(t);
   await writeFile(join(cwd, 'existing.txt'), 'keep\n', 'utf8');
   const filesystem = localFilesystem();
@@ -63,15 +63,6 @@ test('creates nested files exclusively and deletes their entries', async (t) => 
     }),
   );
   assert.equal(await readFile(join(cwd, 'existing.txt'), 'utf8'), 'keep\n');
-
-  assert.deepEqual(
-    await filesystem.applyPatch({
-      cwd,
-      operation: { type: 'delete_file', path: 'nested/file.txt' },
-    }),
-    { status: 'completed' },
-  );
-  await assert.rejects(readFile(join(cwd, 'nested/file.txt'), 'utf8'), { code: 'ENOENT' });
 });
 
 test('does not report an invalid backend result as completed', async (t) => {

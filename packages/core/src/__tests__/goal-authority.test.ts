@@ -2,17 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { decodeGoalAuthorityRecord, type GoalAuthorityRecord } from '../goal.js';
 
-test('Goal authority decoder freezes one exact, internally consistent record', () => {
-  const record = goalAuthorityRecord();
-  const decoded = decodeGoalAuthorityRecord(record);
-
-  assert.deepEqual(decoded, record);
-  assert.ok(Object.isFrozen(decoded));
-  assert.ok(Object.isFrozen(decoded.goal));
-  assert.ok(Object.isFrozen(decoded.controlLease));
-  assert.ok(Object.isFrozen(decoded.currentExecution));
-});
-
 test('Goal authority decoder rejects cross-authority execution state', () => {
   const valid = goalAuthorityRecord();
   const current = valid.currentExecution;

@@ -17,7 +17,6 @@ on:
       - 'apps/desktop/package.json'
       - 'scripts/package-windows-x64.mjs'
       - 'scripts/prepare-bundled-git.mjs'
-      - 'scripts/prepare-bundled-git.test.mjs'
       - 'scripts/verify-windows-x64.mjs'
       - 'scripts/verify-windows-installer-lifecycle.mjs'
       - 'scripts/verify-packaged-app.mjs'

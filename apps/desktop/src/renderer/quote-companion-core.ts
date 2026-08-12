@@ -6,14 +6,10 @@ import {
   type InteractionQueues,
   type LiveTurnProjection,
 } from '@maka/ui';
-import type {
-  PermissionMode,
-  QuoteRef,
-  SessionEvent,
-  SessionSummary,
-  TurnRecord,
-  UiLocale,
-} from '@maka/core';
+import type { PermissionMode } from '@maka/core/permission';
+import type { QuoteRef, SessionEvent } from '@maka/core/events';
+import type { SessionSummary, TurnRecord } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { RendererIngestInput } from '../preload/bridge-contract.js';
 import {
   acquireSessionCopyAttempt,

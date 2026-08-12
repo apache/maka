@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core';
-import {
-  modelMetadataIdsForProvider,
-  PROVIDER_REGISTRY,
-  thinkingVariantsForModel,
-} from '@maka/core';
-import { buildProviderOptions, getAIModel } from '@maka/runtime';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import { modelMetadataIdsForProvider } from '@maka/core/model-metadata';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import { thinkingVariantsForModel } from '@maka/core/model-thinking';
+import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
 import { z } from 'zod';
 import { routeApplyPatchTools } from '../apply-patch-profile.js';
 import { resolveModelRuntime } from '../model-runtime.js';

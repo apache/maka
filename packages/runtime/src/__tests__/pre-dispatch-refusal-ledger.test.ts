@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import {
-  type LlmConnection,
-  type RuntimeEvent,
-  type SessionEvent,
-  type SessionHeader,
-} from '@maka/core';
+import { type LlmConnection } from '@maka/core/llm-connections';
+
+import { type RuntimeEvent } from '@maka/core/runtime-event';
+
+import { type SessionEvent } from '@maka/core/events';
+
+import { type SessionHeader } from '@maka/core/session';
 import { scanToolLedger } from '@maka/core/tool-ledger-scanner';
 import { z } from 'zod';
 

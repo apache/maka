@@ -13,14 +13,11 @@ import {
   type TaskOwner,
 } from '@maka/core/task-ledger';
 import {
-  LEGACY_TASK_CREATE_TOOL_NAME,
-  LEGACY_TASK_UPDATE_TOOL_NAME,
   TASK_CREATE_TOOL_NAME,
   TASK_GET_TOOL_NAME,
   TASK_LIST_TOOL_NAME,
   TASK_UPDATE_TOOL_NAME,
   buildTaskLedgerTools,
-  isTaskLedgerToolsEnabled,
 } from '../task-ledger-tools.js';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
 
@@ -167,42 +164,6 @@ function findTool(tools: MakaTool[], name: string): MakaTool {
 }
 
 describe('task ledger tools', () => {
-  test('builds snake_case task tools by default, all local (no permission gate)', () => {
-    const tools = buildTaskLedgerTools({ store: new FakeTaskLedgerStore() });
-    assert.deepEqual(
-      tools.map((t) => t.name),
-      [TASK_CREATE_TOOL_NAME, TASK_UPDATE_TOOL_NAME, TASK_LIST_TOOL_NAME, TASK_GET_TOOL_NAME],
-    );
-    for (const tool of tools) {
-    }
-  });
-
-  test('can include PascalCase legacy aliases behind an explicit option', () => {
-    const tools = buildTaskLedgerTools(
-      { store: new FakeTaskLedgerStore() },
-      { includeLegacyAliases: true },
-    );
-    assert.deepEqual(
-      tools.map((t) => t.name),
-      [
-        TASK_CREATE_TOOL_NAME,
-        TASK_UPDATE_TOOL_NAME,
-        TASK_LIST_TOOL_NAME,
-        TASK_GET_TOOL_NAME,
-        LEGACY_TASK_CREATE_TOOL_NAME,
-        LEGACY_TASK_UPDATE_TOOL_NAME,
-      ],
-    );
-  });
-
-  test('task tool feature flag defaults on and can be disabled explicitly', () => {
-    assert.equal(isTaskLedgerToolsEnabled({}), true);
-    assert.equal(isTaskLedgerToolsEnabled({ MAKA_TASK_LEDGER_TOOLS: 'false' }), false);
-    assert.equal(isTaskLedgerToolsEnabled({ MAKA_TASK_LEDGER_TOOLS: '0' }), false);
-    assert.equal(isTaskLedgerToolsEnabled({ MAKA_TASK_LEDGER_TOOLS: 'off' }), false);
-    assert.equal(isTaskLedgerToolsEnabled({ MAKA_TASK_LEDGER_TOOLS: 'true' }), true);
-  });
-
   test('task_create schema rejects a batch larger than the ledger cap and accepts the cap boundary', () => {
     const create = findTool(
       buildTaskLedgerTools({ store: new FakeTaskLedgerStore() }),
@@ -258,46 +219,6 @@ describe('task ledger tools', () => {
         `id ${id} must pass`,
       );
     }
-  });
-
-  test('task_create forwards drafts to the store using ctx.sessionId and renders the returned ledger', async () => {
-    const store = new FakeTaskLedgerStore();
-    const create = findTool(buildTaskLedgerTools({ store }), TASK_CREATE_TOOL_NAME);
-    const result = await create.impl(
-      { tasks: [{ subject: '写测试' }, { subject: '实现' }] },
-      fakeContext(SESSION_ID, 'run-1'),
-    );
-    assert.equal(store.createCalls.length, 1);
-    assert.equal(store.createCalls[0]?.sessionId, SESSION_ID);
-    assert.deepEqual(store.createCalls[0], {
-      sessionId: SESSION_ID,
-      drafts: [{ subject: '写测试' }, { subject: '实现' }],
-      context: {
-        runId: 'run-1',
-        turnId: 'turn-1',
-        toolCallId: 'call-1',
-        source: 'tool',
-        actor: 'main_agent',
-      },
-    });
-    assert.match(String(result), /写测试/);
-    assert.match(String(result), /实现/);
-    assert.match(String(result), /pending/);
-  });
-
-  test('task_update forwards only provided fields and renders the returned ledger', async () => {
-    const store = new FakeTaskLedgerStore();
-    const tools = buildTaskLedgerTools({ store });
-    const create = findTool(tools, TASK_CREATE_TOOL_NAME);
-    const update = findTool(tools, TASK_UPDATE_TOOL_NAME);
-    await create.impl({ tasks: [{ subject: '原始' }] }, fakeContext(SESSION_ID));
-
-    const result = await update.impl(
-      { id: 'id-0', status: 'in_progress' },
-      fakeContext(SESSION_ID),
-    );
-    assert.deepEqual(store.updateCalls[0]?.patch, { status: 'in_progress' });
-    assert.match(String(result), /in_progress/);
   });
 
   test('task_create result shows only the created tasks (with ids) and total, not the pre-existing ledger', async () => {

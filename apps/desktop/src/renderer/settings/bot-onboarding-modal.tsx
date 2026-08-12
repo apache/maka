@@ -3,7 +3,7 @@ import type {
   BotOnboardingBrand,
   BotOnboardingProvider,
   BotOnboardingSnapshot,
-} from '@maka/core';
+} from '@maka/core/bot-onboarding';
 import { Spinner } from '@astryxdesign/core';
 import {
   Button,

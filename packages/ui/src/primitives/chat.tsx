@@ -29,7 +29,7 @@ import { cn } from "../utils.js";
  */
 export type MarkerVariant =
   | "aborted"
-  | "automation-origin"
+  | "host-origin"
   | "failed-banner"
   | "failed-icon"
   | "failed-recovery"
@@ -41,7 +41,7 @@ export type MarkerVariant =
 
 const MARKER_CLASSES: Record<MarkerVariant, string> = {
   aborted: "maka-turn-aborted-marker",
-  "automation-origin": "maka-turn-automation-origin",
+  "host-origin": "maka-turn-host-origin",
   "failed-banner": "maka-turn-failed-banner",
   "failed-icon": "maka-turn-failed-icon",
   "failed-recovery": "maka-turn-failed-recovery",

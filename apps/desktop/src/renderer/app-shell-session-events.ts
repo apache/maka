@@ -1,4 +1,6 @@
-import type { SessionEvent, StoredMessage, UiLocale } from '@maka/core';
+import type { SessionEvent } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   applyLiveTurnEvent,
   clearInteractions,
@@ -23,7 +25,12 @@ type RefBox<T> = { current: T };
 type StateUpdater<T> = (updater: (current: T) => T) => void;
 
 type ToastApi = {
-  error(title: string, description?: string, diagnosticDetails?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string; turnId: string; eventId: string },
+  ): void;
 };
 
 export interface AppShellSessionEventHandlers {
@@ -164,6 +171,7 @@ export function createAppShellSessionEventHandlers(options: {
               copy.conversationErrorTitle,
               sessionEventErrorMessage(event, uiLocale),
               sessionEventDiagnosticDetails(sessionId, event),
+              { sessionId, turnId: event.turnId, eventId: event.id },
             );
           }
         }

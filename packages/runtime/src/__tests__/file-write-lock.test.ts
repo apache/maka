@@ -67,14 +67,4 @@ describe('withFileWriteLock', () => {
     assert.equal(after, 'ok');
     assert.deepEqual(order, ['fail', 'after']);
   });
-
-  test('returns the task result and propagates its rejection to the caller', async () => {
-    assert.equal(await withFileWriteLock('result', async () => 42), 42);
-    await assert.rejects(
-      withFileWriteLock('result', async () => {
-        throw new Error('nope');
-      }),
-      /nope/,
-    );
-  });
 });

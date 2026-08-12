@@ -15,7 +15,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ICON_SIZE, ChevronLeft, ChevronRight, Globe, RotateCw, X } from '@maka/ui/icons';
-import { normalizeBrowserAddressInput, type BrowserState } from '@maka/core';
+import { normalizeBrowserAddressInput, type BrowserState } from '@maka/core/browser';
 import {
   IconButton,
   TextInput,

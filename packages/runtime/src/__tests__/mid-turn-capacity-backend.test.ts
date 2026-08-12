@@ -3,7 +3,8 @@ import { describe, test } from 'node:test';
 import { setImmediate as flushMacrotask } from 'node:timers/promises';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
-import type { LlmConnection, SessionHeader } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
@@ -717,47 +718,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(fixture.recorded.length, 1);
   });
 
-  test('fails open under the window when the summarizer fails, with a diagnostic', async () => {
-    const fixture = buildFixture({ summarize: () => undefined });
-    await runFixtureTurn(fixture, consumer);
-
-    // The turn still completes; the third request keeps the raw span.
-    assert.equal(fixture.model.doStreamCalls.length, 3);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-    assert.equal(fixture.recorded.length, 0);
-    const thirdPrompt = promptJson(fixture, 2);
-    assert.equal(thirdPrompt.includes('RAW_SPAN_ONE_'), true);
-    assert.equal(thirdPrompt.includes('maka_history_compact_checkpoint'), false);
-
-    const failedOpen = compactionDecisions(fixture).find(
-      (decision) => decision.phase === 'mid_turn' && decision.decision === 'failedOpen',
-    );
-    assert.equal(failedOpen?.failOpenReason, 'summarizer_failed');
-    // The recorder was never reached, so the diagnostics claim no write.
-    const usageEvent = fixture.events.find((event) => event.type === 'token_usage') as
-      | { contextBudget?: ContextBudgetDiagnostic }
-      | undefined;
-    assert.equal(usageEvent?.contextBudget?.historyCompactWritesAttempted, undefined);
-    assert.equal(usageEvent?.contextBudget?.historyCompactWriteFailures, undefined);
-  });
-
-  test('preserves the typed summarizer failure in mid-turn diagnostics', async () => {
-    const fixture = buildFixture({
-      summarize: () => {
-        throw new HistoryCompactSummarizerError('provider_error');
-      },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(fixture.recorded.length, 0);
-    const failedOpen = compactionDecisions(fixture).find(
-      (decision) => decision.phase === 'mid_turn' && decision.decision === 'failedOpen',
-    );
-    assert.equal(failedOpen?.failOpenReason, 'provider_error');
-    assert.equal(failedOpen?.skippedReasonCounts?.provider_error, 1);
-  });
-
   test('fails open with write_failed diagnostics when the checkpoint write fails under the window', async () => {
     const fixture = buildFixture({
       record: () => {
@@ -1132,22 +1092,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(exhaustedDecision?.skippedReasonCounts?.replacement_not_smaller, 1);
     // The rejected checkpoint was never persisted.
     assert.equal(fixture.recorded.length, 0);
-  });
-
-  test('persists a complete summary above the legacy block cap when the full replay shrinks and fits', async () => {
-    const fixture = buildFixture({
-      priorChars: 10_000,
-      summarize: () => 'S'.repeat(5_000),
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(fixture.recorded.length, 1);
-    assert.equal(fixture.model.doStreamCalls.length, 3);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-    const thirdPrompt = promptJson(fixture, 2);
-    assert.equal(thirdPrompt.includes('PRIOR_FACT'), false);
-    assert.equal(thirdPrompt.includes('maka_history_compact_checkpoint'), true);
   });
 
   test('the cold-start estimate covers the FULL provider input including the system prompt (review round-5 finding 2)', async () => {

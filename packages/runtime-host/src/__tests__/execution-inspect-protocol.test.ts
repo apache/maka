@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentRunInspectDocument, SessionInspectDocument } from '@maka/runtime';
+import type { AgentRunInspectDocument, SessionInspectDocument } from '@maka/core/execution-inspect';
 import {
   decodeClientFrame,
   decodeHostFrame,
@@ -37,6 +37,18 @@ describe('execution inspect protocol', () => {
       },
     );
     assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-turn-trace',
+        operation: 'execution.inspect.query',
+        input: { kind: 'turn_trace', sessionId: 'session-1', turnId: 'turn-1' },
+      }),
+      {
+        requestId: 'request-turn-trace',
+        operation: 'execution.inspect.query',
+        input: { kind: 'turn_trace', sessionId: 'session-1', turnId: 'turn-1' },
+      },
+    );
+    assert.deepEqual(
       decodeHostFrame({
         requestId: 'request-query',
         operation: 'execution.inspect.query',
@@ -48,6 +60,20 @@ describe('execution inspect protocol', () => {
         operation: 'execution.inspect.query',
         ok: true,
         result: { kind: 'agent_run', document: agentRunDocument() },
+      },
+    );
+    assert.deepEqual(
+      decodeHostFrame({
+        requestId: 'request-turn-trace',
+        operation: 'execution.inspect.query',
+        ok: true,
+        result: { kind: 'turn_trace', sessionId: 'session-1', turn: turnTrace() },
+      }),
+      {
+        requestId: 'request-turn-trace',
+        operation: 'execution.inspect.query',
+        ok: true,
+        result: { kind: 'turn_trace', sessionId: 'session-1', turn: turnTrace() },
       },
     );
   });
@@ -142,6 +168,14 @@ describe('execution inspect protocol', () => {
     assert.throws(
       () =>
         HOST_OPERATION_SPECS['execution.inspect.query'].assertOutputForInput?.(
+          { kind: 'turn_trace', sessionId: 'session-1', turnId: 'turn-1' },
+          { kind: 'turn_trace', sessionId: 'session-1', turn: turnTrace('turn-2') },
+        ),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        HOST_OPERATION_SPECS['execution.inspect.query'].assertOutputForInput?.(
           { kind: 'session', sessionId: 'session-1' },
           { kind: 'session', document: sessionDocument('different-session') },
         ),
@@ -202,6 +236,26 @@ function tracePage() {
       turnsWithFewerModelCallsThanSteps: [],
     },
     nextOffset: null,
+  };
+}
+
+function turnTrace(turnId = 'turn-1') {
+  return {
+    turnId,
+    runId: 'run-1',
+    startedAt: 1,
+    endedAt: 2,
+    durationMs: 1,
+    steps: [],
+    totals: {
+      durationMs: 1,
+      modelAttempts: 0,
+      retries: 0,
+      compactions: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      unpricedAttempts: 0,
+    },
   };
 }
 

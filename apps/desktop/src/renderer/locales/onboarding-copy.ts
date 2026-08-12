@@ -1,4 +1,5 @@
-import type { OnboardingState, UiCatalog, UiLocale } from '@maka/core';
+import type { OnboardingState } from '@maka/core/onboarding';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type { OnboardingHeroCopy } from '../onboarding-hero-copy.js';
 
 type VisibleOnboardingKind = Exclude<OnboardingState['kind'], 'ready_with_history' | 'ready_empty'>;

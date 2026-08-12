@@ -1,12 +1,8 @@
 import { z } from 'zod';
-import {
-  TASK_ID_MAX_CHARS,
-  decodeCanonicalToolResultContent,
-  isSafeTaskId,
-  isSafeSubagentPresetId,
-  type TaskLedgerStore,
-  type ToolResultContent,
-} from '@maka/core';
+import { TASK_ID_MAX_CHARS, isSafeTaskId, type TaskLedgerStore } from '@maka/core/task-ledger';
+import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { isSafeSubagentPresetId } from '@maka/core/subagent-settings';
+import { type ToolResultContent } from '@maka/core/events';
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 import {
   AGENT_WORKSPACE_SAME_WORKSPACE,

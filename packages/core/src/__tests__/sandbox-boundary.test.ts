@@ -308,20 +308,6 @@ describe('SandboxBoundaryExpansion', () => {
 });
 
 describe('ExecutionBoundary', () => {
-  test('migrates every legacy permission mode to a deterministic revision-zero boundary', () => {
-    for (const mode of ['ask', 'execute'] as const) {
-      const boundary = createGenesisExecutionBoundary(mode);
-      expect(boundary.kind).toBe('managed');
-      expect(boundary.revision).toBe(0);
-      if (boundary.kind === 'managed') expect(boundary.profile.name).toBe('workspace-write');
-    }
-
-    const explore = createGenesisExecutionBoundary('explore');
-    expect(explore.kind).toBe('managed');
-    if (explore.kind === 'managed') expect(explore.profile.name).toBe('read-only');
-    expect(createGenesisExecutionBoundary('bypass')).toEqual({ kind: 'bypass', revision: 0 });
-  });
-
   test('decodes only a complete full boundary snapshot', () => {
     const managed = createGenesisExecutionBoundary('ask');
     expect(decodeExecutionBoundary(JSON.parse(JSON.stringify(managed)))).toEqual(managed);

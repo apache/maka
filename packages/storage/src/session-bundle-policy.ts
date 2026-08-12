@@ -279,7 +279,6 @@ const PORTABLE_GLOBAL_TABLES = new Set([
   'session_metadata_schema',
   'runtime_capabilities',
   'session_catalog_state',
-  'automation_authority_state',
 ]);
 
 const PORTABLE_DERIVED_TABLES = new Set([

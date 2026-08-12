@@ -216,24 +216,7 @@ export function healthSignalFromConnectionRuntime(
     checkedAt: latestRuntimeProbe.ts,
     message: runtimeProbeMessage(latestRuntimeProbe.status),
     detail: runtimeProbeDetail(latestRuntimeProbe),
-    // PR-HEALTH-1 (xuan msg `e4887ffd` + kenji msg `bd8ee4c1`, I2 — demote):
-    // runtime_probe is a HISTORICAL observation, not a current send gate.
-    // The previous behavior (`blocksSend: latestRuntimeProbe.status === 'error'`)
-    // conflated "last send failed" with "next send will fail" — a one-off
-    // network blip became a hard UI block until a fresh probe overwrote
-    // it. The authoritative send gate lives at `requireReadyConnection`
-    // (chat-readiness.ts) backed by `isConnectionReady` (connection-readiness.ts);
-    // health snapshot is for surfacing observations, not gating future
-    // sends.
-    //
-    // After demote: runtime_probe still reports `status: 'warning'` on
-    // historical error so the user sees the past failure in the Health
-    // Center; the signal just no longer claims `blocksSend`. The
-    // HealthCenter "N 条 signal 会阻塞发送" pill correctly excludes it.
-    //
-    // No recency window is introduced — that would require a product
-    // threshold ("how recent is recent enough?") which is out of scope
-    // for PR-HEALTH-1.
+    // Historical probe failures inform health UI but never gate the next send.
     blocksSend: false,
   };
 }

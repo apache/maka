@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { UserQuestionRequestEvent } from '@maka/core';
+import type { UserQuestionRequestEvent } from '@maka/core/events';
 import { UserQuestionPrompt } from '@maka/ui';
 
 // Fidelity convention (#1433): every story below names the real app path

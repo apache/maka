@@ -1,14 +1,8 @@
 import { lazy, Suspense } from 'react';
-import type {
-  ChatDefaultPermissionMode,
-  LlmConnection,
-  ProviderType,
-  SessionSummary,
-  SettingsSection,
-  ThemePalette,
-  ThemePreference,
-  UiLocalePreference,
-} from '@maka/core';
+import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
+import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { SessionSummary } from '@maka/core/session';
+import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { SearchModal, useUiLocale } from '@maka/ui';
 import { KeyboardHelpModal } from './keyboard-help';

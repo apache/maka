@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { formatAbsoluteTimestamp } from './chat-display-helpers.js';
-import { formatRelativeTimestamp, nextRelativeRefreshDelay } from '@maka/core';
+import { formatRelativeTimestamp, nextRelativeRefreshDelay } from '@maka/core/relative-time';
 import { cn } from './utils.js';
 import { useUiLocale } from './locale-context.js';
 

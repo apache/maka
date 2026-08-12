@@ -1,4 +1,4 @@
-import type { ScheduledTaskRunOutcome, ScheduledTaskStatus } from '@maka/core';
+import type { ScheduledTaskRunOutcome, ScheduledTaskStatus } from '@maka/core/scheduled-task';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 
 /**

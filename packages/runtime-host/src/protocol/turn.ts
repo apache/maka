@@ -26,6 +26,8 @@ import {
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
 
+export const TURN_FAILURE_MESSAGE_MAX_BYTES = 256;
+
 export interface TurnStartInput {
   sessionId: string;
   turnId: string;
@@ -147,6 +149,7 @@ export type TurnSnapshot =
       status: 'failed';
       terminalEventId: string;
       failureClass: string;
+      failureMessage?: string;
     })
   | (TurnSnapshotBase & {
       status: 'cancelled';
@@ -604,19 +607,27 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
     };
   }
   if (status === 'failed') {
-    assertExactKeys(record, 'failed Turn snapshot', [
-      'sessionId',
-      'turnId',
-      'runId',
-      'status',
-      'terminalEventId',
-      'failureClass',
-    ]);
+    requireShapedRecord(
+      record,
+      'failed Turn snapshot',
+      ['sessionId', 'turnId', 'runId', 'status', 'terminalEventId', 'failureClass'],
+      ['failureMessage'],
+    );
     return {
       ...base,
       status,
       terminalEventId: requireId(record.terminalEventId, 'terminalEventId'),
       failureClass: requireString(record.failureClass, 'failureClass', 128),
+      ...(record.failureMessage !== undefined
+        ? {
+            failureMessage: requireUtf8String(
+              record.failureMessage,
+              'failureMessage',
+              TURN_FAILURE_MESSAGE_MAX_BYTES,
+              false,
+            ),
+          }
+        : {}),
     };
   }
   if (status === 'cancelled') {

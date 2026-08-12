@@ -4,9 +4,9 @@ import type {
   CapabilitySnapshot,
   OsPermissionId,
   OsPermissionState,
-  UiCatalog,
-  UiLocale,
-} from '@maka/core';
+} from '@maka/core/capabilities';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type Tone = StatusSemantic;
 type StatusCopy = { label: string; tone: Tone };

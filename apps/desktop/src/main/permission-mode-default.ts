@@ -1,4 +1,4 @@
-import type { AppSettings, ChatDefaultPermissionMode } from '@maka/core';
+import type { AppSettings, ChatDefaultPermissionMode } from '@maka/core/settings';
 
 /** Read the configured chat-default permission mode; fall back to 'ask' if
  *  settings cannot be read (so session creation never fails on a corrupted

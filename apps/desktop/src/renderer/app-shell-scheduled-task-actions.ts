@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
-import type { CreateScheduledTaskInput, ScheduledTask, UiLocale, UpdateScheduledTaskInput } from "@maka/core";
+import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellRemainingCopy } from "./locales/shell-remaining-copy.js";
 import { localizedShellErrorMessage } from "./locales/shell-copy.js";
 

@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { AgentRunHeader, RuntimeEvent } from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionEvent } from '@maka/core/events';
 import {
   createSessionStore,

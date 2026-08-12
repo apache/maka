@@ -7,10 +7,12 @@ import { test } from 'node:test';
 import {
   agentGraphIdForRootSession,
   type AgentGraphClientChangedListener,
-  type AgentGraphClientSnapshot,
   type AgentGraphCoordinator,
+} from '@maka/runtime/stream-graph-coordinator';
+import {
+  type AgentGraphClientSnapshot,
   type AgentGraphOperatorInspection,
-} from '@maka/runtime';
+} from '@maka/runtime/stream-graph-read-model';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   connectRuntimeHost,

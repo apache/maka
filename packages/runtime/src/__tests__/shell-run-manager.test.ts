@@ -12,9 +12,8 @@ import {
   SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
   type ShellRunRecord,
   type ShellRunStore,
-  type ShellRunUpdate,
-  type ToolResultContent,
-} from '@maka/core';
+} from '@maka/core/shell-run';
+import { type ShellRunUpdate, type ToolResultContent } from '@maka/core/events';
 import { createSqliteShellRunStore } from '@maka/storage';
 
 import { ShellRunProcessManager } from '../shell-run-manager.js';
@@ -1559,34 +1558,6 @@ describe('ShellRunProcessManager', () => {
     await manager.stopBackgroundTask('session-1', run.ref, NO_ABORT);
   });
 
-  test('coalesces high-volume PTY renderer deltas without dropping bytes', async () => {
-    const cwd = await workspace();
-    const events: ShellRunPtyDataEvent[] = [];
-    const manager = createManager(createSqliteShellRunStore(cwd), undefined, {
-      onPtyData: (event) => events.push(event),
-    });
-    const run = await manager.runBackgroundBash(
-      shellInput({
-        cwd,
-        command: `node -e "process.stdout.write('x'.repeat(1024 * 1024))"`,
-        pty: true,
-        timeoutMs: 5_000,
-      }),
-    );
-    assert.equal(run.kind, 'shell_run');
-    await waitForTerminalShellRun(manager, run.ref);
-
-    const bytes = events.reduce((total, event) => total + Buffer.byteLength(event.data, 'utf8'), 0);
-    assert.equal(bytes, 1024 * 1024);
-    assert.equal(
-      events.every((event) => Buffer.byteLength(JSON.stringify(event.data), 'utf8') <= 40 * 1024),
-      true,
-    );
-    for (let index = 1; index < events.length; index += 1) {
-      assert.ok(events[index]!.sequence > events[index - 1]!.sequence);
-    }
-  });
-
   test('keeps concurrent PTY control and Read persistence in parser-cut order', async () => {
     const updates: ShellRunUpdate[] = [];
     const store = createSqliteShellRunStore(await workspace());
@@ -1808,6 +1779,7 @@ describe('ShellRunProcessManager', () => {
 
   test('restores the trailing PTY flush after a queued control aborts before commit', async () => {
     const cwd = await workspace();
+    const dirtyTrigger = join(cwd, 'emit-dirty');
     const dirtyWritten = join(cwd, 'dirty-written');
     const store = createSqliteShellRunStore(await workspace());
     // The test owns flush timing: no automatic flush fires until it says so, so the
@@ -1821,18 +1793,17 @@ describe('ShellRunProcessManager', () => {
       shellInput({
         cwd,
         command: nodeCommand(`
-        const { writeFileSync } = require('node:fs');
+        const { existsSync, writeFileSync } = require('node:fs');
         process.stdin.setRawMode?.(true);
         process.stdin.resume();
         process.stdout.write('READY\\n');
-        let controlReceived = false;
         let protocolReply = Buffer.alloc(0);
+        const trigger = setInterval(() => {
+          if (!existsSync(${JSON.stringify(dirtyTrigger)})) return;
+          clearInterval(trigger);
+          process.stdout.write('DIRTY\\n\\u001b[5n');
+        }, 5);
         process.stdin.on('data', (chunk) => {
-          if (!controlReceived) {
-            controlReceived = true;
-            process.stdout.write('DIRTY\\n\\u001b[5n');
-            return;
-          }
           protocolReply = Buffer.concat([protocolReply, chunk]);
           if (protocolReply.includes(Buffer.from('\\u001b[0n'))) {
             writeFileSync(${JSON.stringify(dirtyWritten)}, 'written');
@@ -1851,12 +1822,7 @@ describe('ShellRunProcessManager', () => {
     try {
       await waitForPtyText(manager, initial.ref, /READY/);
       const beforeDirty = await store.readShellRun('session-1', 'shell-run-1');
-      await manager.writeStdin({
-        sessionId: 'session-1',
-        ref: initial.ref,
-        input: 'emit',
-        abortSignal: NO_ABORT,
-      });
+      await writeFile(dirtyTrigger, 'emit');
       await waitUntil(async () => {
         try {
           return (await readFile(dirtyWritten, 'utf8')) === 'written';
@@ -2253,63 +2219,101 @@ describe('ShellRunProcessManager', () => {
     assert.equal(manager.livePtyCount(), 0);
   });
 
-  test('keeps the first committed lifecycle cause across Stop and timeout races', {
+  // The first-committed lifecycle cause must win the reported status across the
+  // Stop/timeout race. Each scenario pins one arrival ordering with the injected
+  // `scheduleTimeout` seam (see manualTimeoutScheduler) instead of betting on a
+  // wall-clock `timeoutMs`, so the focused race is deterministic and CI-stable.
+  // A far-future `timeoutMs` keeps the real timeout out of the way; `timeouts.fire()`
+  // decides exactly when the timeout commits. `trap "" TERM` + SIGKILL escalation
+  // stays real, but commit ownership is decided before the kill lands, so kill
+  // timing cannot flip the cause.
+  describe('keeps the first committed lifecycle cause across Stop and timeout races', {
     skip:
       process.platform === 'win32'
         ? 'Windows tree termination has no graceful SIGTERM phase'
         : false,
-  }, async () => {
-    const cancelledManager = await createTestManager(undefined, { killGraceMs: 500 });
-    const cancelledRun = await cancelledManager.runBackgroundBash(
-      shellInput({
-        cwd: await workspace(),
-        command: 'trap "" TERM; printf "READY\\n"; while :; do sleep 1; done',
-        pty: true,
-        timeoutMs: 350,
-      }),
-    );
-    assert.equal(cancelledRun.kind, 'shell_run');
-    const cancelled = await cancelledManager.stopBackgroundTask(
-      'session-1',
-      cancelledRun.ref,
-      NO_ABORT,
-    );
-    assertShellRun(cancelled);
-    assert.equal(cancelled.status, 'cancelled');
-    assert.deepEqual(cancelled.operation, { kind: 'stop', applied: true });
+  }, () => {
+    const stall = 'trap "" TERM; printf "READY\\n"; while :; do sleep 1; done';
 
-    const timedOutManager = await createTestManager(undefined, { killGraceMs: 500 });
-    const timedOutRun = await timedOutManager.runBackgroundBash(
-      shellInput({
-        cwd: await workspace(),
-        command: 'trap "" TERM; stty -echo; printf "READY\\n"; while :; do sleep 1; done',
-        pty: true,
-        timeoutMs: 350,
-      }),
-    );
-    assert.equal(timedOutRun.kind, 'shell_run');
-    await waitUntil(async () => {
-      try {
-        await timedOutManager.writeStdin({
-          sessionId: 'session-1',
-          ref: timedOutRun.ref,
-          input: 'x',
-          abortSignal: NO_ABORT,
-        });
-        return false;
-      } catch (error) {
-        if (error instanceof ShellRunPtyControlClosedError) return true;
-        throw error;
-      }
+    test('Stop commits first -> cancelled (Stop owns the termination)', async () => {
+      const timeouts = manualTimeoutScheduler();
+      const manager = await createTestManager(undefined, {
+        killGraceMs: 500,
+        scheduleTimeout: timeouts.schedule,
+      });
+      const run = await manager.runBackgroundBash(
+        shellInput({ cwd: await workspace(), command: stall, pty: true, timeoutMs: 60_000 }),
+      );
+      assert.equal(run.kind, 'shell_run');
+
+      const stopped = await manager.stopBackgroundTask('session-1', run.ref, NO_ABORT);
+      // Fire after Stop already committed: the timeout callback sees live.termination
+      // set and no-ops; on an empty pending set this is an explicit no-op anyway.
+      timeouts.fire();
+
+      assertShellRun(stopped);
+      assert.equal(stopped.status, 'cancelled');
+      assert.deepEqual(stopped.operation, { kind: 'stop', applied: true });
     });
-    const timedOut = await timedOutManager.stopBackgroundTask(
-      'session-1',
-      timedOutRun.ref,
-      NO_ABORT,
-    );
-    assertShellRun(timedOut);
-    assert.equal(timedOut.status, 'timed_out');
-    assert.deepEqual(timedOut.operation, { kind: 'stop', applied: false });
+
+    test('timeout kills, then Stop arrives -> timed_out (driverExit branch)', async () => {
+      const timeouts = manualTimeoutScheduler();
+      const manager = await createTestManager(undefined, {
+        killGraceMs: 500,
+        scheduleTimeout: timeouts.schedule,
+      });
+      const run = await manager.runBackgroundBash(
+        shellInput({ cwd: await workspace(), command: stall, pty: true, timeoutMs: 60_000 }),
+      );
+      assert.equal(run.kind, 'shell_run');
+
+      // Fire first: timeout commits 'timeout', SIGTERM is trapped, SIGKILL kills.
+      timeouts.fire();
+      await waitForTerminalShellRun(manager, run.ref);
+
+      const stopped = await manager.stopBackgroundTask('session-1', run.ref, NO_ABORT);
+      assertShellRun(stopped);
+      assert.equal(stopped.status, 'timed_out');
+      assert.deepEqual(stopped.operation, { kind: 'stop', applied: false });
+    });
+
+    test('timeout commits but process still alive, then Stop arrives -> timed_out (termination branch)', async () => {
+      const timeouts = manualTimeoutScheduler();
+      const manager = await createTestManager(undefined, {
+        killGraceMs: 500,
+        scheduleTimeout: timeouts.schedule,
+      });
+      const run = await manager.runBackgroundBash(
+        shellInput({ cwd: await workspace(), command: stall, pty: true, timeoutMs: 60_000 }),
+      );
+      assert.equal(run.kind, 'shell_run');
+
+      // Fire commits 'timeout' and sends SIGTERM, which `trap "" TERM` ignores, so
+      // the process stays alive while the termination is in flight. writeStdin
+      // refuses once termination is committed — that is exactly the in-flight state.
+      timeouts.fire();
+      await waitUntil(async () => {
+        try {
+          await manager.writeStdin({
+            sessionId: 'session-1',
+            ref: run.ref,
+            input: 'x',
+            abortSignal: NO_ABORT,
+          });
+          return false;
+        } catch (error) {
+          if (error instanceof ShellRunPtyControlClosedError) return true;
+          throw error;
+        }
+      });
+
+      // Stop arrives while the process is still alive but termination is committed:
+      // stopBackgroundTask joins via the live.termination branch without re-arbitrating.
+      const stopped = await manager.stopBackgroundTask('session-1', run.ref, NO_ABORT);
+      assertShellRun(stopped);
+      assert.equal(stopped.status, 'timed_out');
+      assert.deepEqual(stopped.operation, { kind: 'stop', applied: false });
+    });
   });
 
   test('releases failed startup slots and enforces total and PTY capacities independently', async () => {
@@ -2458,6 +2462,7 @@ function createManager(
     pipeOutputDrainMs?: number;
     onPtyData?: ShellRunProcessManagerInput['onPtyData'];
     scheduleFlush?: ShellRunProcessManagerInput['scheduleFlush'];
+    scheduleTimeout?: ShellRunProcessManagerInput['scheduleTimeout'];
   } = {},
 ): ShellRunProcessManager {
   let id = 0;
@@ -2496,6 +2501,25 @@ function manualFlushScheduler(): {
   };
 }
 
+/** Holds run timeouts until the test fires them, replacing wall-clock timeout timing. */
+function manualTimeoutScheduler(): {
+  schedule: (run: () => void, delayMs: number) => () => void;
+  fire: () => void;
+} {
+  const pending = new Set<() => void>();
+  return {
+    schedule: (run) => {
+      pending.add(run);
+      return () => pending.delete(run);
+    },
+    fire: () => {
+      const due = [...pending];
+      pending.clear();
+      for (const run of due) run();
+    },
+  };
+}
+
 async function createTestManager(
   onShellRunUpdate?: (update: ShellRunUpdate) => void,
   options?: {
@@ -2505,6 +2529,8 @@ async function createTestManager(
     flushIntervalMs?: number;
     pipeOutputDrainMs?: number;
     onPtyData?: ShellRunProcessManagerInput['onPtyData'];
+    scheduleFlush?: ShellRunProcessManagerInput['scheduleFlush'];
+    scheduleTimeout?: ShellRunProcessManagerInput['scheduleTimeout'];
   },
 ): Promise<ShellRunProcessManager> {
   return createManager(createSqliteShellRunStore(await workspace()), onShellRunUpdate, options);

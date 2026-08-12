@@ -1,29 +1,18 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { E2eFixtureScenario, E2eFixtureState, UiLocale } from '@maka/core';
-import {
-  backfillSessionProjects,
-  createFileCredentialStore,
-  createProjectCatalog,
-  createSessionStore,
-} from '@maka/storage';
+import type { E2eFixtureScenario, E2eFixtureState } from '@maka/core/e2e-fixture';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { createFileCredentialStore, createProjectCatalog } from '@maka/storage';
 import type { CredentialStore } from '@maka/storage';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
-  ARTIFACT_SESSION_ID,
   E2E_FIXTURE_NOW,
   LONG_SIDEBAR_PROJECT_ID,
   LONG_SIDEBAR_PROJECT_NAME,
   LONG_SIDEBAR_SESSION_PREFIX,
   TURN_SESSION_ID,
-  writeJson,
   writeSession,
 } from './e2e-fixture/seed-helpers.js';
-import {
-  artifactMessages,
-  artifactSession,
-  writeArtifacts,
-} from './e2e-fixture/scenarios-artifacts.js';
 import { turnMessages, turnSession } from './e2e-fixture/scenarios-chat.js';
 import { seedMcpFixture, seedSkillsMarketFixture } from './e2e-fixture/scenarios-modules.js';
 import { longSidebarSessions } from './e2e-fixture/scenarios-sessions.js';
@@ -38,7 +27,6 @@ import { usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
 const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'fetched-empty',
   'turn-narrative',
-  'artifact-pane',
   'settings-data',
   'settings-bots-onboarding',
   'settings-general',
@@ -137,14 +125,6 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'models' };
     case 'turn-narrative':
       return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'tasks' };
-    case 'artifact-pane':
-      return {
-        ...state,
-        activeSessionId: ARTIFACT_SESSION_ID,
-        workbarCollapsed: false,
-        workbarTab: 'files',
-        workbarPreview: true,
-      };
     case 'settings-data':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'data' };
     case 'settings-bots-onboarding':
@@ -200,24 +180,20 @@ export async function seedE2eFixture(input: {
   }
   await writeSession(input.workspaceRoot, turnSession(now), turnMessages(now));
 
-  if (scenario === 'artifact-pane') {
-    await writeSession(input.workspaceRoot, artifactSession(now), artifactMessages(now));
-    await writeArtifacts(input.workspaceRoot, now);
-  }
   if (scenario === 'sidebar-search-modal-open') {
     for (const seed of longSidebarSessions(now)) {
       await writeSession(input.workspaceRoot, seed.header, seed.messages);
     }
-    await writeJson(join(input.workspaceRoot, 'projects.json'), {
-      schemaVersion: 1,
-      projects: [{
-        id: LONG_SIDEBAR_PROJECT_ID,
-        name: LONG_SIDEBAR_PROJECT_NAME,
-        identity: `folder:${input.workspaceRoot}`,
-        locations: [{ path: input.workspaceRoot, isWorktree: false, lastUsedAt: now }],
-        lastUsedAt: now,
-      }],
+    const catalog = createProjectCatalog(input.workspaceRoot, {
+      now: () => now,
+      createId: () => LONG_SIDEBAR_PROJECT_ID,
     });
+    try {
+      const project = await catalog.register(input.workspaceRoot);
+      await catalog.rename(project.id, LONG_SIDEBAR_PROJECT_NAME);
+    } finally {
+      catalog.close();
+    }
   }
   if (scenario === 'scheduled-tasks') await writeScheduledTasks(input.workspaceRoot, now);
   if (scenario === 'module-daily-review') await writeDailyReviewArchives(input.workspaceRoot, now);
@@ -227,17 +203,5 @@ export async function seedE2eFixture(input: {
     for (const seed of usageStatsSessions(now)) {
       await writeSession(input.workspaceRoot, seed.header, seed.messages);
     }
-  }
-  await seedSessionProjects(input.workspaceRoot);
-}
-
-async function seedSessionProjects(workspaceRoot: string): Promise<void> {
-  const sessions = createSessionStore(workspaceRoot);
-  const catalog = createProjectCatalog(workspaceRoot);
-  try {
-    await backfillSessionProjects({ sessions, catalog });
-  } finally {
-    await sessions.close?.();
-    catalog.close();
   }
 }

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import type { SessionEvent, StoredMessage } from "@maka/core";
+import type { SessionEvent } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
 import type {
   SessionContinuitySnapshot,
   SubscriptionFrame,
@@ -21,6 +22,7 @@ test("joins an active Turn without losing or replaying assistant text", async ()
   let closeCount = 0;
   const handle: DesktopRuntimeHostSession = {
     snapshot: continuitySnapshot(),
+    activeAssistantStreams: [activeText('message-1')],
     transcript: transcript.promise,
     events,
     async close() {
@@ -112,6 +114,7 @@ test("restores renderer observation after the Host connection is replaced", asyn
     client: {
       openSession: async () => ({
         snapshot: continuitySnapshot(),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events: firstEvents,
         async close() {
@@ -125,6 +128,7 @@ test("restores renderer observation after the Host connection is replaced", asyn
     client: {
       openSession: async () => ({
         snapshot: continuitySnapshot(),
+        activeAssistantStreams: [activeText('message-1')],
         transcript: Promise.resolve([
           {
             type: "assistant",
@@ -206,6 +210,7 @@ test("does not publish a terminal error while an owner-managed connection is rep
     client: {
       openSession: async () => ({
         snapshot: continuitySnapshot(),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,
         async close() {
@@ -233,6 +238,7 @@ test("keeps a native Turn watched without a renderer and releases it at terminal
     client: {
       openSession: async () => ({
         snapshot: continuitySnapshot(),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,
         async close() {
@@ -277,6 +283,7 @@ test("does not let an older terminal projection finish a newer watched Turn", as
     client: {
       openSession: async () => ({
         snapshot: continuitySnapshot(),
+        activeAssistantStreams: [],
         transcript: transcript.promise,
         events,
         async close() {
@@ -365,6 +372,7 @@ test("invalidates the transcript when another client starts a Turn", async () =>
             terminalEventId: "terminal-1",
           },
         }),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,
         async close() {
@@ -431,6 +439,7 @@ test("abandons a watched Turn when the Session is removed", async () => {
     client: {
       openSession: async () => ({
         snapshot: continuitySnapshot(),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,
         async close() {
@@ -471,6 +480,8 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
         const events = openCount === 1 ? firstEvents : secondEvents;
         return {
           snapshot: continuitySnapshot(),
+          activeAssistantStreams:
+            openCount === 1 ? [] : [activeText('message-1')],
           transcript: Promise.resolve(
             openCount === 1
               ? []
@@ -549,6 +560,7 @@ test("retries an initial subscription closed before commit and resyncs once", as
         const first = openCount === 1;
         return {
           snapshot: continuitySnapshot(),
+          activeAssistantStreams: [],
           transcript: first ? firstTranscript.promise : secondTranscript.promise,
           events: first ? firstEvents : secondEvents,
           async close() {
@@ -610,6 +622,7 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
         if (openCount === 1) {
           return {
             snapshot: continuitySnapshot(),
+            activeAssistantStreams: [],
             transcript: firstTranscript.promise,
             events: firstEvents,
             async close() {
@@ -627,6 +640,7 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
               status: "running",
             },
           }),
+          activeAssistantStreams: [],
           transcript: Promise.resolve([
             {
               type: "turn_state" as const,
@@ -680,6 +694,7 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
         if (openCount === 1) {
           return {
             snapshot: continuitySnapshot(),
+            activeAssistantStreams: [],
             transcript: Promise.resolve([]),
             events: firstEvents,
             async close() {
@@ -690,6 +705,7 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
         if (openCount === 2) {
           return {
             snapshot: continuitySnapshot(),
+            activeAssistantStreams: [],
             transcript: deferred<StoredMessage[]>().promise,
             events: replacementEvents,
             async close() {
@@ -699,6 +715,7 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
         }
         return {
           snapshot: continuitySnapshot(),
+          activeAssistantStreams: [activeText('message-1')],
           transcript: finalTranscript.promise,
           events: finalEvents,
           async close() {
@@ -788,6 +805,7 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
             snapshot: continuitySnapshot({
               interactions: { pending: [firstInteraction] },
             }),
+            activeAssistantStreams: [],
             transcript: Promise.resolve([]),
             events: firstEvents,
             async close() {
@@ -807,6 +825,7 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
             },
             interactions: { pending: [secondInteraction] },
           }),
+          activeAssistantStreams: [activeText('message-2', 'turn-2')],
           transcript: Promise.resolve([
             {
               type: "assistant" as const,
@@ -906,6 +925,7 @@ test("shares one Host subscription and one delivery per renderer target", async 
         openCount += 1;
         return {
           snapshot: continuitySnapshot(),
+          activeAssistantStreams: [],
           transcript: Promise.resolve([]),
           events,
           async close() {
@@ -941,6 +961,7 @@ test("releases the renderer destroyed listener when its last observer leaves", a
     client: {
       openSession: async () => ({
         snapshot: continuitySnapshot(),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,
         async close() {
@@ -975,6 +996,7 @@ test("closes a Host handle that arrives after the observer is closed", async () 
   await observer.close();
   opened.resolve({
     snapshot: continuitySnapshot(),
+    activeAssistantStreams: [],
     transcript: Promise.resolve([]),
     events: new AsyncFrameQueue(),
     async close() {
@@ -998,6 +1020,7 @@ test("drains live frames while refreshing the canonical transcript", async () =>
         if (openCount === 1) {
           return {
             snapshot: continuitySnapshot(),
+            activeAssistantStreams: [],
             transcript: Promise.resolve([]),
             events: initialEvents,
             async close() {
@@ -1007,6 +1030,7 @@ test("drains live frames while refreshing the canonical transcript", async () =>
         }
         return {
           snapshot: continuitySnapshot(),
+          activeAssistantStreams: [],
           transcript: refreshTranscript.promise,
           events: refreshEvents,
           async close() {
@@ -1059,6 +1083,7 @@ test("rehydrates pending interactions and publishes answer acknowledgements", as
     client: {
       openSession: async () => ({
         snapshot: continuitySnapshot({ interactions: { pending: [pending] } }),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,
         async close() {
@@ -1096,6 +1121,7 @@ test("projects Host queue revisions and newly delivered steering messages", asyn
     client: {
       openSession: async () => ({
         snapshot: continuitySnapshot(),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,
         async close() {
@@ -1174,6 +1200,7 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
     client: {
       openSession: async () => ({
         snapshot: continuitySnapshot(),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,
         async close() {
@@ -1298,6 +1325,10 @@ function continuitySnapshot(
     interactions: { pending: [] },
     ...overrides,
   };
+}
+
+function activeText(messageId: string, turnId = 'turn-1') {
+  return { kind: 'text' as const, turnId, messageId };
 }
 
 function activeGoal() {

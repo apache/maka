@@ -1,4 +1,4 @@
-import type { InlineReference } from '@maka/core';
+import type { InlineReference } from '@maka/core/events';
 import { ChatTokenizedText, type ChatComposerToken } from '@astryxdesign/core';
 import type { ReactNode } from 'react';
 import { ICON_SIZE, Sparkles } from './icons.js';

@@ -9,8 +9,10 @@ import {
   type Ref,
 } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import type { ProjectRecord, SessionSummary, UiLocale } from '@maka/core';
-import { formatCompactTimestamp } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
+import type { SessionSummary } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { formatCompactTimestamp } from '@maka/core/relative-time';
 import {
   ICON_SIZE,
   AlertTriangle,
@@ -58,7 +60,7 @@ export interface ProjectRowActions {
   onRename(projectId: string, name: string): void | Promise<void>;
   onArchive(projectId: string): void | Promise<void>;
   onRestore(projectId: string): void | Promise<void>;
-  onRelink(projectId: string): void | Promise<void>;
+  onRelink?(projectId: string): void | Promise<void>;
 }
 
 export interface SessionHistoryGroup {
@@ -522,13 +524,15 @@ function ProjectItemEndContent(props: {
                   onClick: () => runProjectAction('new', () => actions.onNew(project.id)),
                 },
               ]
-            : [
+            : actions.onRelink
+              ? [
                 {
                   label: copy.projectRelink,
                   icon: Plug,
-                  onClick: () => runProjectAction('relink', () => actions.onRelink(project.id)),
+                  onClick: () => runProjectAction('relink', () => actions.onRelink!(project.id)),
                 },
-              ]),
+              ]
+              : []),
           {
             label: copy.projectRename,
             icon: Pencil,

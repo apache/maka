@@ -1,15 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import {
-  isCollaborationMode,
-  isOrchestrationMode,
-  isPermissionMode,
-  isThinkingLevel,
-  type CreateSessionRequestInput,
-  type SessionChangedEvent,
-  type SessionChangedReason,
-  type SessionListFilter,
-  type SessionSummary,
-} from '@maka/core';
+import { isCollaborationMode } from '@maka/core/collaboration';
+import { isOrchestrationMode } from '@maka/core/orchestration';
+import { isPermissionMode } from '@maka/core/permission';
+import { isThinkingLevel } from '@maka/core/model-thinking';
+import { type CreateSessionRequestInput, type SessionListFilter } from '@maka/core/runtime-inputs';
+import { type SessionChangedEvent, type SessionChangedReason, type SessionSummary } from '@maka/core/session';
 import type {
   SessionCatalogFilter,
   SessionCatalogProjection,

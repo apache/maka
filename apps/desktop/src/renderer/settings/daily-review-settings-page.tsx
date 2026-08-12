@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Banner } from '@astryxdesign/core';
-import type { DailyReviewConfig, LlmConnection } from '@maka/core';
+import type { DailyReviewConfig } from '@maka/core/daily-review';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import { Selector, Switch, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
 import { getDailyReviewSettingsCopy, type DailyReviewSettingsCopy } from '../locales/settings-daily-review-copy';
@@ -105,7 +106,6 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
     <SettingsPage aria-label={copy.aria}>
       {!hasConfigIpc ? <Banner status="info" title={copy.unavailable} /> : null}
       {loadError ? <Banner status="error" title={copy.loadFailed(loadError)} /> : null}
-
       <SettingsSection title={copy.scheduleTitle} description={copy.scheduleDescription}>
         <SettingsRow
           label={copy.enabled}
@@ -145,7 +145,6 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           />}
         />
       </SettingsSection>
-
       <SettingsSection title={copy.analysisTitle} description={copy.analysisDescription}>
         <SettingsRow
           label={copy.model}

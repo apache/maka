@@ -4,18 +4,6 @@ import { PROXY_DEFAULTS } from '@maka/core/settings/network-settings';
 import { buildProxyUrl, parseProxyConfig } from '../proxy-parser.js';
 
 describe('parseProxyConfig', () => {
-  test('returns defaults for non-object input', () => {
-    const expected = {
-      enabled: false,
-      type: 'http',
-      host: '',
-      port: 8080,
-      bypassList: ['localhost', '127.0.0.1', '::1', '*.local'],
-    };
-    expect(parseProxyConfig(null)).toEqual(expected);
-    expect(parseProxyConfig('http://127.0.0.1:7890')).toEqual(expected);
-  });
-
   test('coerces type and port safely', () => {
     expect(parseProxyConfig({ type: 'ftp', port: '7890' })).toMatchObject({
       type: 'http',

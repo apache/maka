@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   deriveTurnLineageMap,
   formatTurnDuration,

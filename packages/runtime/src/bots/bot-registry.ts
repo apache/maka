@@ -1,10 +1,9 @@
 import { EventEmitter } from 'node:events';
 import {
-  hasBotChannelCredentials,
   type BotChannelSettings,
   type BotChatSettings,
   type BotProvider,
-} from '@maka/core';
+} from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BOT_PROVIDERS } from '@maka/core/settings';
 import { DingTalkBotBridge } from './dingtalk-bridge.js';
@@ -117,13 +116,6 @@ export class BotRegistry extends EventEmitter {
       return;
     }
 
-    if (!isImplemented(platform)) {
-      const status = scaffoldStatus(platform, settings);
-      this.statuses.set(platform, status);
-      this.deps.onStatusChange(status);
-      return;
-    }
-
     if (existing) {
       const update = (
         existing as { updateSettings?: (next: BotChannelSettings) => { needsRestart: boolean } }
@@ -177,19 +169,6 @@ export class BotRegistry extends EventEmitter {
   }
 }
 
-function isImplemented(platform: BotPlatform): boolean {
-  return (
-    platform === 'telegram' ||
-    platform === 'feishu' ||
-    platform === 'wecom' ||
-    platform === 'wechat' ||
-    platform === 'discord' ||
-    platform === 'dingtalk' ||
-    platform === 'qq' ||
-    platform === 'slack'
-  );
-}
-
 function defaultStatus(platform: BotPlatform): BotStatus {
   return {
     platform,
@@ -198,39 +177,4 @@ function defaultStatus(platform: BotPlatform): BotStatus {
     reason: 'disabled',
     connection: 'none',
   };
-}
-
-function scaffoldStatus(platform: BotPlatform, settings: BotChannelSettings): BotStatus {
-  // PR-HEALTH-1 (xuan msg `e4887ffd`, I1 — bot readiness single-authority,
-  // read path): the previous behavior inherited `settings.readiness ===
-  // 'credentials_valid'` blindly, which leaked stale persisted state into
-  // `BotStatus.readiness` for unimplemented platforms (everything except
-  // telegram in V0.2). The settings write path (settings.ts
-  // `coerceReadinessForCurrentState`) already downgrades implausible
-  // persisted states; this read path drops the special-case to make the
-  // gate doubly safe.
-  //
-  // Authoritative readiness sources, post-PR-HEALTH-1:
-  //   1. Live bridge (`SimpleBotBridge` for telegram) — writes its own
-  //      `readiness` field during lifecycle; surfaced via `BotBridge.getStatus()`.
-  //   2. Settings-derived for unimplemented platforms — computed FRESH
-  //      from current `channel.{enabled, token, appId, appSecret}` via
-  //      `readinessFromSettings`. Persisted `settings.readiness` is no
-  //      longer trusted at the read boundary.
-  return {
-    platform,
-    running: false,
-    readiness: readinessFromSettings(settings),
-    reason:
-      settings.token.trim() || settings.appId || settings.appSecret
-        ? 'scaffold-only'
-        : 'unimplemented',
-    connection: 'none',
-  };
-}
-
-function readinessFromSettings(settings: BotChannelSettings): BotStatus['readiness'] {
-  if (!settings.enabled) return 'scaffolded';
-  if (!hasBotChannelCredentials(settings)) return 'scaffolded';
-  return 'configured';
 }

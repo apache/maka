@@ -20,9 +20,13 @@
  * harness (URI-encoded delimiters, malformed input fall-through).
  */
 
-import type { ChatModelChoice, ProviderType, UiLocale } from '@maka/core';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+
+import type { ProviderType } from '@maka/core/llm-connections';
+
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getSharedUiCopy } from './shared-ui-copy.js';
-export type { ChatModelChoice } from '@maka/core';
+export type { ChatModelChoice } from '@maka/core/chat-model-choice';
 
 export function modelChoiceDescription(
   choice: Pick<ChatModelChoice, 'description' | 'knowledgeCutoff'>,

@@ -9,7 +9,6 @@ import {
   SessionMetadataVersionConflictError,
   type SqliteSessionMetadataStore,
   type StableSessionCreateProbe,
-  type UnresolvedProjectSession,
   type VersionedSessionIdentity,
 } from './sqlite-session-metadata-store.js';
 import { isDiscardableConversationCopy } from './session-conversation-copy.js';
@@ -17,41 +16,46 @@ import {
   acquireOperationalStateDatabase,
   OPERATIONAL_STATE_DATABASE_NAME,
 } from './operational-state-store.js';
+import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
 import {
-  DEFAULT_SESSION_NAME,
-  decodeStoredMessageForRecovery,
+  decodeStoredMessage,
   deriveTurnRecords,
-  isCollaborationMode,
-  isOrchestrationMode,
-  isPermissionMode,
   isSessionBlockedReason,
   isSessionConversationCopy,
   isSubagentSessionParent,
   isSubagentSessionRuntime,
   isSubagentSessionSpawn,
-  isSubagentWorkspaceBinding,
   isSessionStatus,
-  normalizeUserSessionName,
   subagentSessionRuntimeSummary,
-  WORKSPACE_AUTHORITY_SESSION_ID,
-} from '@maka/core';
+} from '@maka/core/session';
+import { isCollaborationMode } from '@maka/core/collaboration';
+import { isOrchestrationMode } from '@maka/core/orchestration';
+import { isPermissionMode } from '@maka/core/permission';
+import { isSubagentWorkspaceBinding } from '@maka/core/subagent-workspace';
+import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core/workspace-version-authority';
 import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
+} from '@maka/core/agent-graph-topology';
+
+import type {
   CreateSandboxBoundaryRequest,
-  CreateSessionInput,
   ExecutionBoundary,
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
+  SettleSandboxBoundaryRequest,
+} from '@maka/core/sandbox-boundary';
+
+import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
+
+import type {
   SessionHeader,
   SessionConversationCopy,
-  SessionListFilter,
   SessionSummary,
   StoredMessage,
-  SettleSandboxBoundaryRequest,
   TurnRecord,
   UserMessage,
-} from '@maka/core';
+} from '@maka/core/session';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -153,8 +157,6 @@ export interface SessionStore {
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
   /** Enumerate durable metadata without reading transcript bodies. */
   listHeaders(): Promise<SessionHeader[]>;
-  /** Sessions whose project membership was never decided, newest activity last. */
-  listSessionsWithUnresolvedProject(): Promise<UnresolvedProjectSession[]>;
   listForRecovery(): Promise<SessionHeader[]>;
   /** Read only the durable header without triggering connection-lock self-healing. */
   readHeaderSnapshot(sessionId: string): Promise<SessionHeader>;
@@ -261,20 +263,8 @@ export interface SessionAuthorityStore extends SessionStore {
   completeSessionRetirementCleanup(sessionId: string): Promise<void>;
 }
 
-interface SessionAuthorityStoreTestDependencies {
-  readonly beforeTranscriptRemoval?: (sessionId: string) => Promise<void>;
-}
-
 export function createSessionStore(workspaceRoot: string): SessionAuthorityStore {
-  return new SqliteSessionStore(workspaceRoot, {});
-}
-
-/** @internal Test-only dependency injection; not exported from the package root. */
-export function createSessionStoreWithTestDependencies(
-  workspaceRoot: string,
-  dependencies: SessionAuthorityStoreTestDependencies,
-): SessionAuthorityStore {
-  return new SqliteSessionStore(workspaceRoot, dependencies);
+  return new SqliteSessionStore(workspaceRoot);
 }
 
 class SqliteSessionStore implements SessionAuthorityStore {
@@ -282,7 +272,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
   private readonly workspaceRoot: string;
   private closePromise: Promise<void> | null = null;
 
-  constructor(workspaceRoot: string, _dependencies: SessionAuthorityStoreTestDependencies) {
+  constructor(workspaceRoot: string) {
     this.workspaceRoot = workspaceRoot;
     const databaseLease = acquireOperationalStateDatabase(workspaceRoot);
     this.metadata = createSqliteSessionMetadataStore(
@@ -323,7 +313,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       throw new Error('Subagent spawn metadata requires createSubagent()');
     }
     const canonicalMessages = messages.map((message) =>
-      decodeStoredMessageForRecovery(JSON.parse(JSON.stringify(message)) as unknown),
+      decodeStoredMessage(JSON.parse(JSON.stringify(message)) as unknown),
     );
     const header: SessionHeader = {
       ...buildSessionHeader(this.workspaceRoot, input),
@@ -575,11 +565,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return (await this.metadata.list())
       .map((record) => record.header)
       .sort((a, b) => a.id.localeCompare(b.id));
-  }
-
-  async listSessionsWithUnresolvedProject(): Promise<UnresolvedProjectSession[]> {
-    await this.ensureReady();
-    return this.metadata.listSessionsWithUnresolvedProject();
   }
 
   async readHeaderSnapshot(sessionId: string): Promise<SessionHeader> {
@@ -1042,7 +1027,7 @@ function isValidSubagentSessionLineage(header: SessionHeader): boolean {
 }
 
 function isBackendKind(value: unknown): value is SessionHeader['backend'] {
-  return value === 'ai-sdk' || value === 'fake' || value === 'pi-agent';
+  return value === 'ai-sdk' || value === 'fake';
 }
 
 function isFiniteNumber(value: unknown): value is number {

@@ -6,7 +6,7 @@ export interface DetachedCandidateInput {
   rootPath: string;
   expectedRootId: string;
   generation?: string;
-  legacyConfigurationRoot?: string;
+  initialConnectionTimeoutMs?: number;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   executable?: string;
@@ -73,10 +73,10 @@ function spawnCandidate(input: DetachedCandidateInput, detached: boolean) {
     '--expected-root-id',
     input.expectedRootId,
   ];
+  appendArgument(args, '--initial-connection-timeout-ms', input.initialConnectionTimeoutMs);
   appendArgument(args, '--idle-grace-ms', input.idleGraceMs);
   appendArgument(args, '--handshake-timeout-ms', input.handshakeTimeoutMs);
   appendArgument(args, '--generation', input.generation);
-  appendArgument(args, '--legacy-configuration-root', input.legacyConfigurationRoot);
 
   // spawn() commits the side effect synchronously; spawned only reports that commit's outcome.
   const child = spawn(executable, args, {

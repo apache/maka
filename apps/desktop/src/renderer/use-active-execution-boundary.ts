@@ -1,4 +1,4 @@
-import type { ExecutionBoundaryReadModel } from '@maka/core';
+import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**

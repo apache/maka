@@ -1,9 +1,9 @@
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   AgentGraphClientOperator,
   AgentGraphClientSnapshot,
-} from '@maka/runtime';
+} from '@maka/runtime/stream-graph-read-model';
 import { IconButton } from '@maka/ui';
 import { ICON_SIZE, ChevronDown } from '@maka/ui/icons';
 import { Banner } from '@astryxdesign/core/Banner';

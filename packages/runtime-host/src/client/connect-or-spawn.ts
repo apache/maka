@@ -24,7 +24,7 @@ import {
   type CandidateLauncher,
   type OwnedCandidateAttempt,
 } from './launcher.js';
-import { waitForRuntimeHostReady } from './wait-for-ready.js';
+import { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
 
 const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
 const DEFAULT_BACKOFF_MIN_MS = 20;
@@ -43,7 +43,6 @@ export interface ConnectOrSpawnRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   candidateEntrypoint: string | URL;
-  legacyConfigurationRoot?: string;
   signal?: AbortSignal;
 }
 
@@ -83,8 +82,23 @@ export type ConnectOwnedRuntimeHostResult =
   | Exclude<ConnectOrSpawnRuntimeHostResult, { kind: 'connected' }>
   | { kind: 'failed'; reason: 'existing_host' };
 
+interface ConnectOwnedRuntimeHostDependencies {
+  launchCandidate: typeof launchOwnedRuntimeHostCandidate;
+}
+
+const defaultOwnedDependencies: ConnectOwnedRuntimeHostDependencies = {
+  launchCandidate: launchOwnedRuntimeHostCandidate,
+};
+
 export async function connectOwnedRuntimeHost(
   input: Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'>,
+): Promise<ConnectOwnedRuntimeHostResult> {
+  return connectOwnedRuntimeHostWithDependencies(input, defaultOwnedDependencies);
+}
+
+export async function connectOwnedRuntimeHostWithDependencies(
+  input: Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'>,
+  dependencies: ConnectOwnedRuntimeHostDependencies,
 ): Promise<ConnectOwnedRuntimeHostResult> {
   let launch: ReturnType<typeof launchOwnedRuntimeHostCandidate> | undefined;
   let connection: RuntimeHostConnection | undefined;
@@ -96,7 +110,10 @@ export async function connectOwnedRuntimeHost(
       },
       {
         launchCandidate(candidate) {
-          launch ??= launchOwnedRuntimeHostCandidate({ ...candidate, idleGraceMs: 0 });
+          launch ??= dependencies.launchCandidate({
+            ...candidate,
+            idleGraceMs: 0,
+          });
           return launch;
         },
         random: Math.random,
@@ -108,16 +125,17 @@ export async function connectOwnedRuntimeHost(
       await host?.settle(1_000);
       return result.kind === 'connected' ? { kind: 'failed', reason: 'existing_host' } : result;
     }
-    connection = result.connection;
-    const diagnostics = await connection.queryHostDiagnostics();
+    const ownedConnection = result.connection;
+    connection = ownedConnection;
+    const diagnostics = await abortable(() => ownedConnection.queryHostDiagnostics(), input.signal);
     if (diagnostics.pid !== host.pid) {
       await connection.close();
       connection = undefined;
       await host.settle(1_000);
       return { kind: 'failed', reason: 'existing_host' };
     }
-    await waitForRuntimeHostReady(connection, input.electionDeadlineMs);
-    return { kind: 'connected', connection, host };
+    await waitForRuntimeHostReady(ownedConnection, input.electionDeadlineMs, input.signal);
+    return { kind: 'connected', connection: ownedConnection, host };
   } catch {
     await connection?.close().catch(() => undefined);
     const host = await launch?.spawned.catch(() => undefined);
@@ -196,10 +214,8 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           rootPath: capability.canonicalPath,
           expectedRootId: capability.rootId,
           entrypoint: input.candidateEntrypoint,
+          initialConnectionTimeoutMs: Math.ceil(remaining),
           ...(input.generation === undefined ? {} : { generation: input.generation }),
-          ...(input.legacyConfigurationRoot === undefined
-            ? {}
-            : { legacyConfigurationRoot: input.legacyConfigurationRoot }),
         });
         await settleBeforeDeadline(launch.spawned, deadline, input.signal);
       } catch {

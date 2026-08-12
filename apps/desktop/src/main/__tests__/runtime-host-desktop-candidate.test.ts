@@ -2,12 +2,9 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
-import type {
-  BotIncomingMessage,
-  BotRegistry,
-  ComputerUseToolSet,
-  MakaTool,
-} from '@maka/runtime';
+import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
+import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import type { ClientCapabilityProvider, RuntimeHostConnection } from '@maka/runtime-host/client';
 import type {
   ClientCapabilityCallFrame,

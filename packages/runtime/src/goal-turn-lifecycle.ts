@@ -1,4 +1,4 @@
-import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core';
+import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
 
 export type GoalTurnOutcome =
   | { kind: 'completed'; turnId: string }

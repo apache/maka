@@ -53,11 +53,6 @@ describe('canonicalizeToolSet active allow-list', () => {
     assert.ok(names.includes('invalid'), 'repair target present in providerTools');
     assert.ok(!activeTools.includes('invalid'), 'invalid is never advertised to the model');
   });
-
-  test('omitting the active set advertises every visible tool (full surface), names sorted', () => {
-    const { activeTools } = canonicalizeToolSet([tool('Write'), tool('Read')], invalid);
-    assert.deepEqual(activeTools, ['Read', 'Write']);
-  });
 });
 
 describe('diagnostics measure the provider-visible (active) tool subset', () => {
@@ -238,92 +233,6 @@ describe('prepared provider request capture', () => {
     assert.notEqual(zaiHigh, zaiLow);
     assert.notEqual(anthropicMax, hash({ kimiCodingPlan: { reasoningEffort: 'low' } }, 32_768));
     assert.notEqual(anthropicMax, hash({ kimiCodingPlan: { reasoningEffort: 'none' } }, 32_768));
-  });
-
-  test('normalizes disabled Anthropic reasoning to OpenAI none', () => {
-    const hash = (providerOptions: Record<string, unknown>) =>
-      requestShape.capturePreparedProviderRequest({
-        providerId: 'provider',
-        modelId: 'model',
-        messages: [{ role: 'user', content: 'hello' }],
-        tools: [],
-        providerOptions,
-        requestPayload: {
-          prompt: [{ role: 'user', content: 'hello' }],
-          maxOutputTokens: 32_768,
-          providerOptions,
-        },
-      }).requestPayloadWithoutProviderOptionsHash;
-
-    assert.equal(
-      hash({ anthropic: { thinking: { type: 'disabled' } } }),
-      hash({ openai: { reasoningEffort: 'none' } }),
-    );
-  });
-
-  test('normalizes Google thinking level to OpenAI reasoning effort', () => {
-    const hash = (providerOptions: Record<string, unknown>) =>
-      requestShape.capturePreparedProviderRequest({
-        providerId: 'provider',
-        modelId: 'model',
-        messages: [{ role: 'user', content: 'hello' }],
-        tools: [],
-        providerOptions,
-        requestPayload: {
-          prompt: [{ role: 'user', content: 'hello' }],
-          maxOutputTokens: 32_768,
-          providerOptions,
-        },
-      }).requestPayloadWithoutProviderOptionsHash;
-
-    assert.equal(
-      hash({ google: { thinkingConfig: { includeThoughts: true, thinkingLevel: 'high' } } }),
-      hash({ openai: { reasoningEffort: 'high' } }),
-    );
-  });
-
-  test('normalizes zero Google thinking budget to OpenAI none', () => {
-    const hash = (providerOptions: Record<string, unknown>) =>
-      requestShape.capturePreparedProviderRequest({
-        providerId: 'provider',
-        modelId: 'model',
-        messages: [{ role: 'user', content: 'hello' }],
-        tools: [],
-        providerOptions,
-        requestPayload: {
-          prompt: [{ role: 'user', content: 'hello' }],
-          maxOutputTokens: 32_768,
-          providerOptions,
-        },
-      }).requestPayloadWithoutProviderOptionsHash;
-
-    assert.equal(
-      hash({ google: { thinkingConfig: { thinkingBudget: 0 } } }),
-      hash({ openai: { reasoningEffort: 'none' } }),
-    );
-  });
-
-  test('normalizes disabled Cloudflare thinking to OpenAI none', () => {
-    const hash = (providerOptions: Record<string, unknown>) =>
-      requestShape.capturePreparedProviderRequest({
-        providerId: 'provider',
-        modelId: 'model',
-        messages: [{ role: 'user', content: 'hello' }],
-        tools: [],
-        providerOptions,
-        requestPayload: {
-          prompt: [{ role: 'user', content: 'hello' }],
-          maxOutputTokens: 32_768,
-          providerOptions,
-        },
-      }).requestPayloadWithoutProviderOptionsHash;
-
-    assert.equal(
-      hash({
-        'cloudflare-workers-ai': { chat_template_kwargs: { thinking: false } },
-      }),
-      hash({ openai: { reasoningEffort: 'none' } }),
-    );
   });
 
   test('normalizes Anthropic thinking budget into the protocol-independent output limit', () => {

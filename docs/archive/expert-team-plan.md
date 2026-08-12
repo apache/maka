@@ -152,7 +152,7 @@ members:
 |---|---|---|
 | **P0 单专家 MVP** | `EXPERT.md` 格式 + 内置目录 + `mode:expert:` 注入 + 专家中心 UI + 召唤即聊 | Deep Research 注入路径、技能目录/UI、agent-catalog |
 | **P1 专家团** | team schema + lead orchestrator 人格 + member 子代理派发（非隔离）+ 团队卡片 | `spawnChildAgent`/`agent_spawn`、subagent runtime |
-| **P2 数字同事** | 持久化助理外壳（自建昵称/头像/雇佣专家/配置仓库·资料库·模型）+ 定时调度 | 会话标签、automation-store |
+| **P2 数字同事** | 持久化助理外壳（自建昵称/头像/雇佣专家/配置仓库·资料库·模型）+ 定时调度 | 会话标签、scheduled-task-store |
 | **P3 远程专家中心 + 分享** | `sourceType:'remote'` 拉 COS 式 manifest + 缓存校验 + 自建专家导出/导入（安全扫描） | managed-skill-sources 远程化、lock/sha256 |
 | **P4（可选）IM 绑定 / 云端 / @ 协作** | 绑 IM 渠道、云端运行、@ 数字同事 | 需新连接层，评估 |
 

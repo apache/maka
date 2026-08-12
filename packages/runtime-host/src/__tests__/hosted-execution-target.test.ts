@@ -66,6 +66,33 @@ test('explicit hosted target preserves the default target and proves the request
   });
 });
 
+test('explicit hosted target stops waiting when cancelled', { timeout: 1_000 }, async () => {
+  const abort = new AbortController();
+  let started!: () => void;
+  const requestStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const connection = {
+    request: async () => {
+      started();
+      return await new Promise<never>(() => {});
+    },
+  } as unknown as Pick<RuntimeHostConnection, 'request'>;
+  const configuring = configureHostedExecutionTarget(
+    connection,
+    {
+      connectionSlug: 'env-openai',
+      model: 'deepseek-v4-flash',
+      baseUrl: 'https://api.deepseek.com',
+    },
+    abort.signal,
+  );
+  await requestStarted;
+  abort.abort(new Error('cancelled'));
+
+  await assert.rejects(configuring, /cancelled/u);
+});
+
 const CONNECTION_ID = '00000000-0000-4000-8000-000000000001';
 
 function catalogPage(

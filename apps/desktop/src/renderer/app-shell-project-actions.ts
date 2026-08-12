@@ -1,5 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react';
-import type { ProjectRecord, UiLocale } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type { DesktopProjectCapabilities } from '../preload/bridge-contract.js';
 import { openPathActionErrorMessage } from './app-shell-copy';
 import { openPathActionLabel, openPathFailureCopy } from './open-path';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -48,9 +50,11 @@ export function createAppShellProjectActions(deps: {
   setSessionProjectInfo: Dispatch<SetStateAction<SessionProjectInfoState | null>>;
   setProjectPickerPending: Dispatch<SetStateAction<boolean>>;
   setProjects: Dispatch<SetStateAction<ProjectRecord[]>>;
+  setProjectCapabilities: Dispatch<SetStateAction<DesktopProjectCapabilities>>;
   setSelectedProjectId: Dispatch<SetStateAction<string | null | undefined>>;
   selectedProjectId: string | null | undefined;
   projects: readonly ProjectRecord[];
+  projectCapabilities: DesktopProjectCapabilities;
   projectInfo: RendererAppInfo | null;
   sessionId?: string;
   onProjectSelected(ownerSessionId?: string): void;
@@ -65,9 +69,11 @@ export function createAppShellProjectActions(deps: {
     setSessionProjectInfo,
     setProjectPickerPending,
     setProjects,
+    setProjectCapabilities,
     setSelectedProjectId,
     selectedProjectId,
     projects,
+    projectCapabilities,
     projectInfo,
     sessionId,
     onProjectSelected,
@@ -93,18 +99,19 @@ export function createAppShellProjectActions(deps: {
   }
 
   async function refreshProjects(): Promise<ProjectRecord[]> {
-    const [projects, info] = await Promise.all([
-      window.maka.projects.list(),
+    const [snapshot, info] = await Promise.all([
+      window.maka.projects.getSnapshot(),
       window.maka.app.info(),
     ]);
-    setProjects(projects);
+    setProjects([...snapshot.projects]);
+    setProjectCapabilities(snapshot.capabilities);
     setAppInfo({
       projectId: info.projectId,
       projectPath: info.projectPath,
       projectGit: info.projectGit,
     });
     setSelectedProjectId(info.projectId);
-    return projects;
+    return [...snapshot.projects];
   }
 
   async function applySelectedProject(
@@ -112,13 +119,21 @@ export function createAppShellProjectActions(deps: {
     path: string,
     notify: boolean,
   ): Promise<boolean> {
-    const info = await window.maka.app.resolveProjectGitInfo(path);
-    if (!info.ok) throw new Error(copy.selectedPathUnreadable);
-    setAppInfo({
-      projectId: project.id,
-      projectPath: info.projectPath,
-      projectGit: info.projectGit,
-    });
+    if (project.preferredPath) {
+      const info = await window.maka.app.resolveProjectGitInfo(path);
+      if (!info.ok) throw new Error(copy.selectedPathUnreadable);
+      setAppInfo({
+        projectId: project.id,
+        projectPath: info.projectPath,
+        projectGit: info.projectGit,
+      });
+    } else {
+      setAppInfo({
+        projectId: project.id,
+        projectPath: '',
+        projectGit: { isGitRepo: false },
+      });
+    }
     setSelectedProjectId(project.id);
     await refreshProjects();
     if (notify) {
@@ -136,6 +151,7 @@ export function createAppShellProjectActions(deps: {
   }
 
   async function addProject(): Promise<ProjectRecord | null> {
+    if (!projectCapabilities.chooseClientDirectory) return null;
     if (projectPickerPendingRef.current) return null;
     const requestId = projectPickerRequestRef.current + 1;
     projectPickerRequestRef.current = requestId;
@@ -177,6 +193,7 @@ export function createAppShellProjectActions(deps: {
   }
 
   async function selectNoProject(): Promise<void> {
+    if (!projectCapabilities.selectNoProject) return;
     try {
       const selection = await window.maka.projects.select(null);
       setSelectedProjectId(null);
@@ -206,12 +223,13 @@ export function createAppShellProjectActions(deps: {
 
   async function prepareDefaultProject(): Promise<boolean> {
     try {
-      if (selectedProjectId === null) return true;
+      if (selectedProjectId === null && projectCapabilities.selectNoProject) return true;
       const candidates = projects.length > 0 ? projects : await refreshProjects();
       const project = candidates.find(
         (candidate) => candidate.archivedAt === undefined && candidate.available,
       );
       if (!project) {
+        if (!projectCapabilities.selectNoProject) return false;
         await selectNoProject();
         return true;
       }
@@ -226,6 +244,7 @@ export function createAppShellProjectActions(deps: {
   }
 
   async function relinkProject(projectId: string, selectAfter = false): Promise<ProjectRecord | null> {
+    if (!projectCapabilities.chooseClientDirectory) return null;
     try {
       const result = await window.maka.projects.relink(projectId);
       if (!result.ok) return null;

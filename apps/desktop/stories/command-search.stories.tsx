@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useEffect, useState } from 'react';
-import type { SearchErrorReason, SearchResult } from '@maka/core';
+import type { SearchErrorReason, SearchResult } from '@maka/core/search';
 import { SearchModal } from '@maka/ui';
 import {
   Download,

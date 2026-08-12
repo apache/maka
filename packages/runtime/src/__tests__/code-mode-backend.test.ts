@@ -4,12 +4,12 @@ import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from '@ai-sdk/pr
 import {
   createExternalExecutionBoundary,
   createManagedExecutionBoundary,
-  createWorkspaceWritePermissionProfile,
-  type LlmConnection,
   type SandboxBoundaryRequest,
-  type SessionEvent,
-  type SessionHeader,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
+import { type LlmConnection } from '@maka/core/llm-connections';
+import { type SessionEvent } from '@maka/core/events';
+import { type SessionHeader } from '@maka/core/session';
 import type { McpToolBinding } from '@maka/core/mcp';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import { z } from 'zod';

@@ -1,4 +1,4 @@
-import type { BotProvider } from '@maka/core';
+import type { BotProvider } from '@maka/core/bot-chat-settings';
 
 export interface BotBrand {
   /** Hex color used as the brand tint behind the logo tile. */

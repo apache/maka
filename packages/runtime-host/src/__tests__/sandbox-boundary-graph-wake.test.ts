@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { agentGraphIdForRootSession } from '@maka/runtime';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import {
   notifySandboxBoundaryGraphWake,
   sandboxBoundaryGraphWakeRoot,

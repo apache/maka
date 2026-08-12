@@ -46,20 +46,6 @@ export {
   parseAllowedUserIdsFromText,
 } from './bot-chat-settings.js';
 
-/**
- * PR-SETTINGS-IA-CONSOLIDATE-0 + PR-SETTINGS-REVIEW-0 (WAWQAQ msg
- * `886f6406`): the memory+review merge had too much density and got
- * split back out. Other merges (network→general, personalization+
- * theme→appearance) held.
- *
- * Final mapping:
- *   - `network`                       → `general`
- *   - `personalization` + `theme`     → `appearance`
- *   - `daily-review` is its own section again
- *   - `memory` is its own section again
- *
- * See docs/archive/reference-settings.md §7 for historical provenance.
- */
 export const SETTINGS_SECTIONS = [
   'general',
   'appearance',
@@ -101,9 +87,6 @@ export interface AppNetworkSettings {
   proxy: NetworkProxySettings;
 }
 
-/** @deprecated Use AppNetworkSettings for the persisted application settings shape. */
-export type NetworkSettings = AppNetworkSettings;
-
 export type UsageRange = '24h' | '7d' | '30d' | 'all';
 export type UsageStatus = 'all' | 'success' | 'error';
 export type UsageTab = 'requests' | 'providers' | 'models' | 'tools' | 'pricing';
@@ -118,16 +101,7 @@ export interface UsageSettings {
 
 export type ThemePreference = 'light' | 'dark' | 'auto';
 
-/**
- * PR-UI-2 (@yuejing 2026-05-22): base46 palette catalog. Each value
- * maps to a CSS `[data-maka-theme="..."]` selector in maka-tokens.css
- * that overrides the 6 base color tokens (background / foreground /
- * accent / info / success / destructive). `default` keeps the
- * current Maka palette unchanged.
- *
- * Adding a new palette = add `<id>` here + add the matching
- * `[data-maka-theme="<id>"]` block (light + dark) in maka-tokens.css.
- */
+/** Palette ids shared with `[data-maka-theme]` CSS selectors. */
 export const THEME_PALETTES = [
   'default',
   'onedark',
@@ -153,50 +127,22 @@ export function isThemePalette(value: unknown): value is ThemePalette {
 
 export interface AppearanceSettings {
   theme: ThemePreference;
-  /**
-   * PR-UI-2: optional base46 palette override. When omitted or `default`,
-   * Maka renders the original purple-accent palette. Older settings.json
-   * files without this field continue to work — `normalizeSettings()`
-   * defaults missing values to `default`.
-   */
+  /** Optional palette override; missing values normalize to `default`. */
   palette?: ThemePalette;
 }
 
-/**
- * PR-LANG-PREF-0 (WAWQAQ msg `edc9cb41` + xuan `b4f4f2a8`/`54b56858`
- * + kenji `7e532892`): closed UI-locale preference.
- *
- * `'auto'` — temporarily resolve to Chinese-first UI copy.
- * `'zh'` / `'en'` — user explicit override; takes precedence over
- *   the temporary fallback but is itself overridden by the e2e-fixture
- *   fixture locale (fixtures stay deterministic regardless of the
- *   persisted user preference).
- *
- * Closed union so adding a third locale is a deliberate
- * contract-level decision.
- */
 export interface PersonalizationSettings {
   /** How the assistant addresses the user. Empty falls back to "你". */
   displayName: string;
   /** Inline tone preference shown to the model in its system prompt. */
   assistantTone: string;
-  /**
-   * PR-LANG-PREF-0: UI locale preference (kenji `7e532892` acceptance):
-   * user explicit choice > temporary auto-to-Chinese fallback; e2e-fixture override
-   * stays for fixture tests. Defaults to `'auto'`.
-   */
+  /** UI locale preference; defaults to `auto`. */
   uiLocale: UiLocalePreference;
   /** User-selected custom PetPack. `null` keeps the pet surface disabled. */
   selectedPetId: string | null;
 }
 
-/**
- * PR110b: persisted onboarding state. Only `milestones` lives in
- * settings.json — `OnboardingState` is a runtime projection and is
- * never persisted. The milestone list is sanitized via
- * `sanitizeOnboardingMilestones()` (closed enum + at-most-one
- * terminal + strict field set) on every read and write.
- */
+/** Persisted onboarding milestones; derived onboarding state is not stored. */
 export interface OnboardingSettings {
   milestones: OnboardingMilestone[];
 }
@@ -205,19 +151,7 @@ export interface WorkspaceInstructionsSettings {
   enabled: boolean;
 }
 
-/**
- * Which project a new conversation opens in.
- *
- * `defaultProjectId` absent means "no preference", and the app keeps its
- * existing behaviour of reopening whatever project was used last. Set, it wins
- * every time — a default that only applied when nothing else was remembered
- * would be a default in name only, and the composer picker is what overrides
- * it for a single conversation.
- *
- * A project id rather than a path: the catalog owns identity (a project can be
- * relinked to a new location and keep its id), so storing the path would make
- * this preference silently point at the wrong project after a move.
- */
+/** Default project identity for new conversations. */
 export interface ProjectPreferencesSettings {
   defaultProjectId?: string;
 }

@@ -6,7 +6,7 @@ import {
   encodedTerminalInputActionsByteLength,
   formatTerminalInputActions,
   type TerminalInputNamedKey,
-} from '../index.js';
+} from '../terminal-input.js';
 
 const NORMAL_NAMED_KEYS = {
   enter: '\r',

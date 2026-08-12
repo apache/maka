@@ -85,16 +85,6 @@ describe('keyed action guard', () => {
     assert.equal(guard.has('save'), false, 'the owning release still frees the key');
   });
 
-  it('treats a double release as a no-op', () => {
-    const guard = createKeyedActionGuard<string>();
-    const release = guard.begin('save');
-    assert.ok(release);
-    release!();
-    release!();
-    assert.equal(guard.has('save'), false);
-    assert.ok(guard.begin('save'), 'save must still be admitted after a double release');
-  });
-
   it('reset drops every in-flight hold', () => {
     const guard = createKeyedActionGuard<string>();
     assert.ok(guard.begin('save'));

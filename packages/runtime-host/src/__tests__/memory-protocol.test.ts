@@ -4,7 +4,6 @@ import {
   decodeClientFrame,
   decodeHostFrame,
   encodeProtocolMessage,
-  HOST_OPERATION_SPECS,
   MEMORY_DOCUMENT_CHUNK_MAX_BYTES,
   MEMORY_ENTRY_PAGE_MAX_ITEMS,
   MEMORY_RESULT_MAX_BYTES,
@@ -15,10 +14,7 @@ import {
 const revision = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Memory protocol', () => {
-  test('registers only the closed query and mutation operations', () => {
-    assert.deepEqual(metadata('memory.query'), { mode: 'query', availability: 'ready' });
-    assert.deepEqual(metadata('memory.mutate'), { mode: 'command', availability: 'ready' });
-
+  test('accepts closed Memory operations and rejects open shapes', () => {
     assert.doesNotThrow(() =>
       request('memory.query', {
         kind: 'document_continue',
@@ -171,11 +167,6 @@ describe('Memory protocol', () => {
     assert.throws(() => failure('memory.query', 'commit_outcome_unknown'), isInvalidFrame);
   });
 });
-
-function metadata(operation: 'memory.query' | 'memory.mutate') {
-  const { mode, availability } = HOST_OPERATION_SPECS[operation];
-  return { mode, availability };
-}
 
 function request(operation: 'memory.query' | 'memory.mutate', input: unknown): void {
   decodeClientFrame({ requestId: 'request', operation, input });

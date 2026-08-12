@@ -1,4 +1,4 @@
-import type { SessionHeader, StoredMessage } from '@maka/core';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   header,
   LONG_SIDEBAR_PROJECT_ID,

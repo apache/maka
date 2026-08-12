@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { createManagedExecutionBoundary, createWorkspaceWritePermissionProfile } from '@maka/core';
+import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type { McpCallResult } from '@maka/core/mcp';
 import type { ClientCapabilityReplaceInput } from '../protocol/index.js';
@@ -1086,53 +1087,6 @@ describe('Host Client Capability coordinator', () => {
         assert.equal(outcome[0]?.status, 'rejected', malformed.name);
       }
     }
-  });
-
-  test('restores frozen Automation requirements only from the same provider contract', async () => {
-    const coordinator = createCoordinator();
-    const identity = (connectionId: string) =>
-      clientCapabilityConnectionIdentity(connectionId, 'stable-provider');
-    const first = coordinator.attachConnection(identity('connection-a'), { send: async () => {} });
-    await replace(coordinator, 'connection-a', 'registration-a', 'inspect');
-    assert.deepEqual(await coordinator.bindSession('creator-session', 'connection-a'), {
-      ok: true,
-    });
-    const creatorSnapshot = coordinator.snapshotForSession('creator-session');
-    assert.ok(creatorSnapshot);
-    const contractId = creatorSnapshot?.groups[0]?.id ?? assert.fail('Expected capability group');
-    creatorSnapshot.release();
-    const resolved = await coordinator.requirementsForAutomation('creator-session', [contractId]);
-    assert.equal(resolved.ok, true);
-    if (!resolved.ok) return;
-    const requirements = resolved.requirements;
-    assert.equal(requirements.length, 1);
-    assert.equal(requirements[0]?.clientInstanceId, 'stable-provider');
-    assert.deepEqual(await coordinator.requirementsForAutomation('creator-session', []), {
-      ok: true,
-      requirements: [],
-    });
-    assert.equal(
-      (await coordinator.requirementsForAutomation('creator-session', ['client_missing'])).ok,
-      false,
-    );
-
-    await first.close();
-    assert.equal((await coordinator.checkAutomationRequirements(requirements)).ok, false);
-
-    const second = coordinator.attachConnection(identity('connection-b'), { send: async () => {} });
-    await replace(coordinator, 'connection-b', 'registration-b', 'inspect');
-    assert.deepEqual(await coordinator.checkAutomationRequirements(requirements), { ok: true });
-    assert.deepEqual(await coordinator.bindAutomationSession('automation-session', requirements), {
-      ok: true,
-    });
-    const restored = coordinator.snapshotForSession('automation-session');
-    assert.deepEqual(restored?.registrationIds, ['registration-b']);
-    restored?.release();
-
-    await replace(coordinator, 'connection-b', 'registration-c', 'inspect', '1');
-    assert.equal((await coordinator.checkAutomationRequirements(requirements)).ok, false);
-    await second.close();
-    await coordinator.close();
   });
 });
 

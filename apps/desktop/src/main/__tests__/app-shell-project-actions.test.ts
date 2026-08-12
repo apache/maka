@@ -3,7 +3,7 @@ import { mkdir, mkdtemp } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
-import type { ProjectRecord } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
 import { build } from 'esbuild';
 import type * as ProjectActions from '../../renderer/app-shell-project-actions.js';
 
@@ -16,9 +16,24 @@ test('relink adopts the surviving project when the selected duplicate is merged'
   const previousWindow = globalThis.window;
   globalThis.window = {
     maka: {
+      app: {
+        info: async () => ({
+          projectId: original.id,
+          projectPath: '/workspace/new',
+          projectGit: { isGitRepo: false },
+        }),
+      },
       projects: {
         relink: async () => ({ ok: true, project: original }),
-        list: async () => [original],
+        getSnapshot: async () => ({
+          projects: [original],
+          capabilities: {
+            chooseClientDirectory: true,
+            selectNoProject: true,
+            setLocalDefault: true,
+            viewClientPath: true,
+          },
+        }),
       },
     },
   } as unknown as Window & typeof globalThis;
@@ -33,6 +48,7 @@ test('relink adopts the surviving project when the selected duplicate is merged'
       setSessionProjectInfo: () => {},
       setProjectPickerPending: () => {},
       setProjects: () => {},
+      setProjectCapabilities: () => {},
       setSelectedProjectId: (value) => {
         selectedProjectIds.push(
           typeof value === 'function' ? value('project-duplicate') : value,
@@ -40,6 +56,12 @@ test('relink adopts the surviving project when the selected duplicate is merged'
       },
       selectedProjectId: 'project-duplicate',
       projects: [original, makeProject('project-duplicate', '/workspace/new')],
+      projectCapabilities: {
+        chooseClientDirectory: true,
+        selectNoProject: true,
+        setLocalDefault: true,
+        viewClientPath: true,
+      },
       projectInfo: {
         projectPath: '/workspace/new',
         projectGit: { isGitRepo: false },
@@ -59,33 +81,32 @@ test('relink adopts the surviving project when the selected duplicate is merged'
   }
 });
 
-test('preparing a default task preserves an explicit no-project selection', async () => {
+test('remote Project capabilities do not dispatch Client-local actions', async () => {
   const actionsModule = await importProjectActions();
-  const project = makeProject('project-1', '/workspace/project');
-  let selectCalls = 0;
+  let clientActionCalls = 0;
   const previousWindow = globalThis.window;
   globalThis.window = {
     maka: {
       projects: {
-        list: async () => [project],
-        select: async () => {
-          selectCalls += 1;
-          return { project, path: project.preferredPath };
+        add: async () => {
+          clientActionCalls += 1;
+          return { ok: false, reason: 'cancelled' };
         },
-      },
-      app: {
-        resolveProjectGitInfo: async () => ({
-          ok: true,
-          projectPath: project.preferredPath,
-          projectGit: { isGitRepo: false },
-        }),
+        select: async () => {
+          clientActionCalls += 1;
+          return { project: null, path: '' };
+        },
+        relink: async () => {
+          clientActionCalls += 1;
+          return { ok: false, reason: 'cancelled' };
+        },
       },
     },
   } as unknown as Window & typeof globalThis;
 
   try {
     const actions = actionsModule.createAppShellProjectActions({
-      uiLocale: 'zh',
+      uiLocale: 'en',
       projectPickerPendingRef: { current: false },
       projectPickerRequestRef: { current: 0 },
       rendererMountedRef: { current: true },
@@ -93,69 +114,25 @@ test('preparing a default task preserves an explicit no-project selection', asyn
       setSessionProjectInfo: () => {},
       setProjectPickerPending: () => {},
       setProjects: () => {},
+      setProjectCapabilities: () => {},
       setSelectedProjectId: () => {},
       selectedProjectId: null,
-      projects: [project],
-      projectInfo: null,
-      onProjectSelected: () => {},
-      toastApi: {
-        success: () => {},
-        error: () => {},
-      },
-    });
-
-    assert.equal(await actions.prepareDefaultProject(), true);
-    assert.equal(selectCalls, 0);
-  } finally {
-    globalThis.window = previousWindow;
-  }
-});
-
-test('selecting no project updates the main-owned selection', async () => {
-  const actionsModule = await importProjectActions();
-  const previousWindow = globalThis.window;
-  const selectedProjectIds: Array<string | null> = [];
-  const renderedSelections: Array<string | null | undefined> = [];
-  globalThis.window = {
-    maka: {
-      projects: {
-        select: async (projectId: string | null) => {
-          selectedProjectIds.push(projectId);
-          return { project: null, path: '/workspace/current' };
-        },
-      },
-    },
-  } as unknown as Window & typeof globalThis;
-
-  try {
-    const actions = actionsModule.createAppShellProjectActions({
-      uiLocale: 'zh',
-      projectPickerPendingRef: { current: false },
-      projectPickerRequestRef: { current: 0 },
-      rendererMountedRef: { current: true },
-      setAppInfo: () => {},
-      setSessionProjectInfo: () => {},
-      setProjectPickerPending: () => {},
-      setProjects: () => {},
-      setSelectedProjectId: (value) => {
-        renderedSelections.push(
-          typeof value === 'function' ? value('project-1') : value,
-        );
-      },
-      selectedProjectId: 'project-1',
       projects: [],
+      projectCapabilities: {
+        chooseClientDirectory: false,
+        selectNoProject: false,
+        setLocalDefault: false,
+        viewClientPath: false,
+      },
       projectInfo: null,
       onProjectSelected: () => {},
-      toastApi: {
-        success: () => {},
-        error: () => {},
-      },
+      toastApi: { success: () => {}, error: () => {} },
     });
 
+    assert.equal(await actions.addProject(), null);
     await actions.selectNoProject();
-
-    assert.deepEqual(selectedProjectIds, [null]);
-    assert.equal(renderedSelections.at(-1), null);
+    assert.equal(await actions.relinkProject('remote'), null);
+    assert.equal(clientActionCalls, 0);
   } finally {
     globalThis.window = previousWindow;
   }

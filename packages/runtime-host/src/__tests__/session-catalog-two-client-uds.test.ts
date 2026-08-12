@@ -6,7 +6,7 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core';
+import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/explore-agent';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
@@ -505,16 +505,18 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       });
       const retirementIterator = retirementSubscription[Symbol.asyncIterator]();
       const beforeArchive = await querySession(desktop, created.id);
-      const heartbeat = await desktop.request('automation.mutate', {
+      const heartbeat = await desktop.request('scheduled-task.mutate', {
         kind: 'create',
-        sessionId: created.id,
-        name: 'Retirement blocker',
-        prompt: 'Remain attached to this Session.',
-        schedule: { type: 'interval', seconds: 3_600 },
+        input: {
+          title: 'Retirement blocker',
+          intentBody: 'Remain attached to this Session.',
+          schedule: { kind: 'interval', everySeconds: 3_600, startAt: Date.now() },
+          effect: { kind: 'session_resume', sessionId: created.id },
+        },
       });
-      assert.equal(heartbeat.kind, 'committed');
-      if (heartbeat.kind !== 'committed' || !heartbeat.automation) {
-        assert.fail('Heartbeat creation must commit');
+      assert.equal(heartbeat.kind, 'task');
+      if (heartbeat.kind !== 'task') {
+        assert.fail('ScheduledTask creation must commit');
       }
       await assert.rejects(
         tui.request('session.lifecycle.set', {
@@ -523,12 +525,11 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         }),
         operationError('session_busy'),
       );
-      const deletedHeartbeat = await tui.request('automation.mutate', {
+      const deletedHeartbeat = await tui.request('scheduled-task.mutate', {
         kind: 'delete',
-        sessionId: created.id,
-        automationId: heartbeat.automation.id,
+        taskId: heartbeat.task.id,
       });
-      assert.equal(deletedHeartbeat.kind, 'committed');
+      assert.equal(deletedHeartbeat.kind, 'deleted');
       const archived = requireSessionProjection(
         await desktop.request('session.lifecycle.set', {
           sessionId: created.id,
@@ -578,13 +579,6 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       );
       await assert.rejects(
         desktop.request('runtime.resource.query', {
-          kind: 'list_start',
-          sessionId: created.id,
-        }),
-        operationError('not_found'),
-      );
-      await assert.rejects(
-        tui.request('automation.query', {
           kind: 'list_start',
           sessionId: created.id,
         }),

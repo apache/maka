@@ -1,14 +1,8 @@
 import { useRef } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
-import type {
-  ChatDefaultPermissionMode,
-  LlmConnection,
-  ProviderType,
-  SettingsSection,
-  ThemePalette,
-  ThemePreference,
-  UiLocalePreference,
-} from '@maka/core';
+import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
+import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { useUiLocale } from '@maka/ui';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy';
 import { SettingsSurface } from './settings-surface';

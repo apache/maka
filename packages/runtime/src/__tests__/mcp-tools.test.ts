@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createManagedExecutionBoundary, createWorkspaceWritePermissionProfile } from '@maka/core';
+import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import type {
   McpBoundTool,
   McpCallResult,

@@ -226,6 +226,8 @@ implemented yet; ambiguous tool outcomes remain parked rather than retried.
 
 ## Development and verification
 
+Before sending a change, read [CONTRIBUTING.md](./CONTRIBUTING.md).
+
 Common repository-level commands:
 
 ```sh
@@ -247,7 +249,6 @@ Use the following commands to update `packages/core/src/model-metadata.generated
 
 ```sh
 npm run sync:model-metadata
-npm run test:scripts
 npm --workspace @maka/core test
 ```
 

@@ -2,6 +2,7 @@ export {
   connectRuntimeHost,
   connectExistingRuntimeHost,
   connectRemoteRuntimeHost,
+  normalizeRemoteRuntimeHostUrl,
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
   type ConnectRuntimeHostInput,
@@ -14,6 +15,22 @@ export {
   type RuntimeHostUnavailableReason,
   type DirectRequestOperationKey,
 } from './connection.js';
+export {
+  LOCAL_RUNTIME_HOST_PROFILE,
+  RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
+  createClientRuntimeHostProfileCatalog,
+  createFileRuntimeHostProfileCatalog,
+  createRuntimeHostProfileCredentialStore,
+  connectRemoteRuntimeHostProfile,
+  decodeRuntimeHostProfileDocument,
+  type RemoteRuntimeHostProfile,
+  type RuntimeHostRemoteTransport,
+  type ResolvedRuntimeHostProfile,
+  type RuntimeHostProfile,
+  type RuntimeHostProfileCatalog,
+  type RuntimeHostProfileCredentialStore,
+  type RuntimeHostProfileDocument,
+} from './host-profile.js';
 export {
   createRuntimeHostReconnectingConnection,
   isRuntimeHostReconnectingConnection,

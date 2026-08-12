@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { arch as osArch, homedir, release as osRelease } from 'node:os';
 import { app, ipcMain, shell } from 'electron';
 import { resolveOperationalStateDatabasePath } from '@maka/storage';
-import { resolveProjectGitInfo } from '@maka/runtime';
+import { resolveProjectGitInfo } from '@maka/runtime/system-prompt/project-context';
 import type { createMainWindowController } from './main-window.js';
 import type { ProjectRootController } from './project-root-controller.js';
 import { resolveOpenPath, type OpenPathResult } from './open-path-guard.js';
@@ -33,6 +33,7 @@ export interface AppIpcDeps {
   e2eFixture: E2eFixture;
   projectManagement: ProjectManagementService;
   updateService: AppUpdateService;
+  allowLocalProjectPaths?: boolean;
 }
 
 export function registerAppIpc(
@@ -40,6 +41,7 @@ export function registerAppIpc(
   targetIpc: ReconnectableReadIpcMain = ipcMain,
 ): void {
   const { mainWindowController, projectRoot, workspaceRoot, buildInfo, e2eFixture, updateService } = deps;
+  const allowLocalProjectPaths = deps.allowLocalProjectPaths !== false;
   // Call-time read of the shared project-root authority: every handler must
   // observe the latest selection, not a snapshot taken at registration.
   const currentProjectRoot = (): Promise<string> => projectRoot.current();
@@ -63,7 +65,7 @@ export function registerAppIpc(
   });
   targetIpc.handle('app:info', async () => {
     const selection = await deps.projectManagement.current();
-    const projectPath = selection.path;
+    const projectPath = allowLocalProjectPaths ? selection.path : '';
     return {
       appVersion: app.getVersion(),
       electronVersion: process.versions.electron ?? '',
@@ -87,7 +89,9 @@ export function registerAppIpc(
       operationalStateDatabasePath: resolveOperationalStateDatabasePath(workspaceRoot),
       projectId: selection.projectId,
       projectPath,
-      projectGit: await resolveProjectGitInfo(projectPath),
+      projectGit: allowLocalProjectPaths
+        ? await resolveProjectGitInfo(projectPath)
+        : { isGitRepo: false },
       buildMode: buildInfo.mode,
       buildCommit: buildInfo.commit,
     };
@@ -99,7 +103,9 @@ export function registerAppIpc(
     if (!isAppUpdateInstallRequest(input)) throw new TypeError('Invalid app update install request');
     return updateService.installUpdate(input);
   });
-  handleReconnectableRead(targetIpc, 'projects:list', () => deps.projectManagement.list());
+  handleReconnectableRead(targetIpc, 'projects:getSnapshot', () =>
+    deps.projectManagement.getSnapshot(),
+  );
   targetIpc.handle('projects:add', () => deps.projectManagement.add());
   targetIpc.handle('projects:select', (_event, projectId: unknown) =>
     deps.projectManagement.select(projectId));
@@ -125,6 +131,9 @@ export function registerAppIpc(
   targetIpc.handle('projects:restore', (_event, projectId: unknown) =>
     deps.projectManagement.restore(projectId));
   handleReconnectableRead(targetIpc, 'app:sessionProjectInfo', async (_event, sessionId: unknown) => {
+    if (!allowLocalProjectPaths) {
+      throw new Error('Local project information is unavailable for a remote Runtime Host');
+    }
     if (typeof sessionId !== 'string' || !sessionId) {
       throw new Error('Invalid project-context session id.');
     }
@@ -135,6 +144,9 @@ export function registerAppIpc(
     };
   });
   targetIpc.handle('app:openPath', async (_event, key: string, sessionId: unknown): Promise<OpenPathResult> => {
+    if (!allowLocalProjectPaths && key !== 'workspace') {
+      return { ok: false, reason: 'not-allowed' };
+    }
     const projectPath = key === 'project'
       ? await deps.getProjectRoot(sessionId)
       : await currentProjectRoot();
@@ -153,6 +165,7 @@ export function registerAppIpc(
       | { ok: true; projectPath: string; projectGit: Awaited<ReturnType<typeof resolveProjectGitInfo>> }
       | { ok: false; reason: 'invalid-path' | 'not-found' }
     > => {
+      if (!allowLocalProjectPaths) return { ok: false, reason: 'not-found' };
       if (projectPath !== undefined) {
         const explicitRoot = await projectRoot.resolveExplicit(projectPath);
         if (!explicitRoot.ok) return explicitRoot;

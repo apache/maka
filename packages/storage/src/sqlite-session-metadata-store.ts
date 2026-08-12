@@ -8,62 +8,75 @@ import {
   AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
   AgentGraphClientProjectionConflictError,
   AgentGraphClientTerminalCursorError,
-  assessSandboxBoundaryExpansion,
-  assertExecutionBoundaryCapacity,
-  assertAgentGraphScheduleUpdateRequest,
-  AgentGraphScheduleClosedError,
-  AgentGraphScheduleRevisionConflictError,
-  assertAgentGraphOperatorProvisionRequest,
-  assertAgentGraphIntentClaimRequest,
-  decodeAgentGraphOperatorProvision,
-  decodeAgentGraphScheduleUpdate,
-  decodeAgentGraphIntentClaim,
-  decodeExecutionBoundary,
-  createGenesisExecutionBoundary,
-  SANDBOX_BOUNDARY_CLOSURE_REASONS,
-  SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON,
-  validateSandboxBoundaryExpansion,
-  isSubagentSessionParent,
-  isSubagentSessionRuntime,
-  isSubagentSessionSpawn,
-  type AgentGraphScheduleUpdate,
-  type AgentGraphScheduleUpdateRequest,
-  type AgentGraphScheduleUpdateResult,
-  type AgentGraphIntentAdmissionState,
-  type AgentGraphIntentAdmissionTransition,
-  type AgentGraphIntentAdmissionSnapshot,
-  type AgentGraphIntentClaim,
-  type AgentGraphIntentClaimRequest,
-  type AgentGraphIntentClaimResult,
-  type AgentGraphOperatorProvision,
-  type AgentGraphOperatorProvisionRequest,
-  type AgentGraphOperatorProvisionResult,
   type AgentGraphClientClaimAdmission,
   type AgentGraphClientProjectionRecord,
   type AgentGraphClientProjectionWithOperator,
   type AgentGraphClientOperatorProjectionRecord,
   type AgentGraphClientTerminalActivityPage,
-  AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
-  type AgentGraphSupervisorWakeAttemptRecord,
-  type AgentGraphSupervisorWakeRecord,
-  type AgentGraphTimelineMetadataSnapshot,
-  type BeginAgentGraphSupervisorWakeAttemptRequest,
-  type ClaimAgentGraphSupervisorWakeRequest,
-  type CompleteAgentGraphSupervisorWakeAttemptRequest,
   type CommitAgentGraphClientProjectionRequest,
+} from '@maka/core/agent-graph-client-projection';
+import {
+  assessSandboxBoundaryExpansion,
+  assertExecutionBoundaryCapacity,
+  decodeExecutionBoundary,
+  createGenesisExecutionBoundary,
+  SANDBOX_BOUNDARY_CLOSURE_REASONS,
+  SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON,
+  validateSandboxBoundaryExpansion,
   type CreateSandboxBoundaryRequest,
   type ExecutionBoundary,
   type SandboxBoundaryRequest,
   type SandboxBoundarySettlement,
   type SettleSandboxBoundaryRequest,
+} from '@maka/core/sandbox-boundary';
+import {
+  assertAgentGraphScheduleUpdateRequest,
+  AgentGraphScheduleClosedError,
+  AgentGraphScheduleRevisionConflictError,
+  decodeAgentGraphScheduleUpdate,
+  type AgentGraphScheduleUpdate,
+  type AgentGraphScheduleUpdateRequest,
+  type AgentGraphScheduleUpdateResult,
+  type AgentGraphIntentAdmissionState,
+  type AgentGraphIntentAdmissionTransition,
+} from '@maka/core/agent-graph-schedule';
+import {
+  assertAgentGraphOperatorProvisionRequest,
+  decodeAgentGraphOperatorProvision,
+  type AgentGraphOperatorProvision,
+  type AgentGraphOperatorProvisionRequest,
+  type AgentGraphOperatorProvisionResult,
+} from '@maka/core/agent-graph-topology';
+import {
+  assertAgentGraphIntentClaimRequest,
+  decodeAgentGraphIntentClaim,
+  type AgentGraphIntentClaim,
+  type AgentGraphIntentClaimRequest,
+  type AgentGraphIntentClaimResult,
+} from '@maka/core/agent-graph-control';
+import {
+  isSubagentSessionParent,
+  isSubagentSessionRuntime,
+  isSubagentSessionSpawn,
   type SessionHeader,
-  type SessionListFilter,
   type StoredMessage,
   type SubagentSessionParent,
+  decodeStoredMessage,
+} from '@maka/core/session';
+import {
+  type AgentGraphIntentAdmissionSnapshot,
+  type AgentGraphTimelineMetadataSnapshot,
+} from '@maka/core/agent-graph-timeline';
+import {
+  AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
+  type AgentGraphSupervisorWakeAttemptRecord,
+  type AgentGraphSupervisorWakeRecord,
+  type BeginAgentGraphSupervisorWakeAttemptRequest,
+  type ClaimAgentGraphSupervisorWakeRequest,
+  type CompleteAgentGraphSupervisorWakeAttemptRequest,
   type SupersedeAgentGraphSupervisorWakesRequest,
-  decodeStoredMessageForRead,
-  decodeStoredMessageForRecovery,
-} from '@maka/core';
+} from '@maka/core/agent-graph-supervisor-wake';
+import { type SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   assertSafeSessionId,
   normalizeSessionHeader,
@@ -160,22 +173,6 @@ export interface SessionAuthoritySnapshot {
 export interface VersionedSessionIdentity {
   readonly sessionId: string;
   readonly expectedVersion: number;
-}
-
-/**
- * A session whose project membership was never decided.
- *
- * `usedAt` is the moment it was last active, so resolving it later rebuilds the
- * catalog's real recency order instead of collapsing every project to "now".
- * `revision` is the metadata version this row was read at, so the write that
- * assigns a project can fence itself against anything that touched the session
- * in between — including a user detaching it while resolution is still running.
- */
-export interface UnresolvedProjectSession {
-  readonly id: string;
-  readonly cwd: string;
-  readonly usedAt: number;
-  readonly revision: number;
 }
 
 export type SessionRemovalProbe =
@@ -1216,61 +1213,6 @@ export class SqliteSessionMetadataStore {
     return rows.map(decodeRecord);
   }
 
-  /**
-   * Sessions whose project membership was never resolved.
-   *
-   * `projectId` is deliberately three-valued: a project id means resolved,
-   * `null` means the user chose no project, and an absent key means nobody has
-   * decided yet. Only the third state may be backfilled, and SQL can tell them
-   * apart through `json_type` — `null` reports `'null'` while an absent key
-   * reports SQL NULL. Scoping the query this way keeps startup proportional to
-   * the sessions that still need work rather than to the whole catalog.
-   */
-  async listSessionsWithUnresolvedProject(): Promise<UnresolvedProjectSession[]> {
-    this.assertOpen();
-    // `json_type` distinguishes an absent `projectId` (never decided) from an
-    // explicit JSON `null` (detached on purpose); only the former is pending.
-    // Subagent sessions are excluded: they inherit their parent's project when
-    // spawned, and their working directory is often a throwaway worktree that
-    // must never become one of the user's project locations.
-    const rows = this.db
-      .prepare(
-        `
-        SELECT
-          session_id AS id,
-          json_extract(payload_json, '$.cwd') AS cwd,
-          COALESCE(last_message_at, last_used_at) AS used_at,
-          metadata_version AS revision
-        FROM session_metadata
-        WHERE json_type(payload_json, '$.projectId') IS NULL
-          AND subagent_parent_session_id IS NULL
-        ORDER BY used_at, session_id
-      `,
-      )
-      .all() as Array<{
-      id?: unknown;
-      cwd?: unknown;
-      used_at?: unknown;
-      revision?: unknown;
-    }>;
-    return rows.flatMap((row) =>
-      typeof row.id === 'string' &&
-      typeof row.cwd === 'string' &&
-      row.cwd.length > 0 &&
-      typeof row.used_at === 'number' &&
-      typeof row.revision === 'number'
-        ? [
-            {
-              id: row.id,
-              cwd: row.cwd,
-              usedAt: row.used_at,
-              revision: row.revision,
-            },
-          ]
-        : [],
-    );
-  }
-
   async listCatalogPage(
     filter: SessionListFilter,
     cursor: SessionMetadataCatalogCursor | undefined,
@@ -1334,7 +1276,7 @@ export class SqliteSessionMetadataStore {
     // through JSON so the stored form matches what the recovery path reads.
     const encoded = messages.map((message) => {
       const json = JSON.stringify(message);
-      const canonical = decodeStoredMessageForRecovery(JSON.parse(json) as unknown);
+      const canonical = decodeStoredMessage(JSON.parse(json) as unknown);
       return { message: canonical, json };
     });
     return this.transaction(() => {
@@ -1394,7 +1336,7 @@ export class SqliteSessionMetadataStore {
     if (messages.length === 0) return;
     const encoded = messages.map((message) => {
       const json = JSON.stringify(message);
-      const canonical = decodeStoredMessageForRecovery(JSON.parse(json) as unknown);
+      const canonical = decodeStoredMessage(JSON.parse(json) as unknown);
       return { message: canonical, json };
     });
     this.transaction(() => {
@@ -1436,11 +1378,11 @@ export class SqliteSessionMetadataStore {
   }
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
-    return this.readMessagesWith(sessionId, decodeStoredMessageForRead);
+    return this.readMessagesWith(sessionId, decodeStoredMessage);
   }
 
   async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
-    return this.readMessagesWith(sessionId, decodeStoredMessageForRecovery);
+    return this.readMessagesWith(sessionId, decodeStoredMessage);
   }
 
   async readPreviewMessages(sessionId: string, limit = 10): Promise<StoredMessage[]> {
@@ -1463,7 +1405,7 @@ export class SqliteSessionMetadataStore {
       .all(sessionId, limit) as Array<{ record_json?: unknown }>;
     return rows
       .reverse()
-      .map((row, index) => decodeStoredMessageRow(row.record_json, sessionId, index, false));
+      .map((row, index) => decodeStoredMessageRow(row.record_json, sessionId, index));
   }
 
   async beginCatalogProjectionWrite(): Promise<void> {
@@ -4627,18 +4569,13 @@ function assertGraphIntentId(value: string): void {
   }
 }
 
-function decodeStoredMessageRow(
-  value: unknown,
-  sessionId: string,
-  index: number,
-  recovery: boolean,
-): StoredMessage {
+function decodeStoredMessageRow(value: unknown, sessionId: string, index: number): StoredMessage {
   if (typeof value !== 'string') {
     throw new Error(`Invalid Session message row ${index} for ${sessionId}`);
   }
   try {
     const parsed = JSON.parse(value) as unknown;
-    return recovery ? decodeStoredMessageForRecovery(parsed) : decodeStoredMessageForRead(parsed);
+    return decodeStoredMessage(parsed);
   } catch (error) {
     throw new Error(`Invalid Session message row ${index} for ${sessionId}`, {
       cause: error,

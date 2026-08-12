@@ -4,12 +4,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import {
-  LOAD_TOOLS_NAME,
-  type MakaTool,
-  mcpProxyToolName,
-  ToolAvailabilityRuntime,
-} from '@maka/runtime';
+import { LOAD_TOOLS_NAME, ToolAvailabilityRuntime } from '@maka/runtime/tool-availability';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { mcpProxyToolName } from '@maka/runtime/mcp-tools';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   connectRuntimeHost,

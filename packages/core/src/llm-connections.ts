@@ -21,7 +21,6 @@ import {
   READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
   isWiredOAuthProvider,
-  normalizeProviderType,
   type ApplyPatchProtocol,
   type ProviderCatalogGroup,
   type ProviderCategory,
@@ -40,7 +39,6 @@ export {
   READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
   isWiredOAuthProvider,
-  normalizeProviderType,
 };
 export type {
   ApplyPatchProtocol,
@@ -609,53 +607,16 @@ export interface UpdateConnectionInput {
 
 export type { RequestHeaderUpdate, SavedRequestHeaders } from './request-customization.js';
 
-export function migrateConnectionV1ToV2(old: unknown): LlmConnection {
-  const value = old as Partial<LlmConnection> & {
-    backend?: string;
-    authType?: string;
-    slug?: string;
-    name?: string;
-    defaultModel?: string;
-    baseUrl?: string;
-    createdAt?: number;
-  };
-  if (value.providerType) {
-    return {
-      ...value,
-      providerType: normalizeProviderType(value.providerType),
-      enabledModelIds: connectionEnabledModelIds(value),
-    } as LlmConnection;
+export function normalizePersistedConnection(input: unknown): LlmConnection {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Invalid connection: expected an object');
   }
-  if (!value.slug) throw new Error('Cannot migrate connection without slug');
-
-  const now = Date.now();
-  if (value.backend === 'claude' && value.authType === 'oauth_token') {
-    return {
-      slug: value.slug,
-      name: value.name ?? value.slug,
-      providerType: 'claude-subscription',
-      ...(value.baseUrl ? { baseUrl: value.baseUrl } : {}),
-      defaultModel: value.defaultModel || 'claude-sonnet-4-5-20250929',
-      enabled: false,
-      enabledModelIds: [value.defaultModel || 'claude-sonnet-4-5-20250929'],
-      createdAt: value.createdAt ?? now,
-      updatedAt: now,
-    };
+  const value = input as Partial<LlmConnection>;
+  if (typeof value.providerType !== 'string' || !value.providerType) {
+    throw new Error('Invalid connection: providerType is required');
   }
-
-  if (value.backend === 'claude' || value.backend === undefined) {
-    return {
-      slug: value.slug,
-      name: value.name ?? value.slug,
-      providerType: 'anthropic',
-      ...(value.baseUrl ? { baseUrl: value.baseUrl } : {}),
-      defaultModel: value.defaultModel || 'claude-sonnet-4-5-20250929',
-      enabled: true,
-      enabledModelIds: [value.defaultModel || 'claude-sonnet-4-5-20250929'],
-      createdAt: value.createdAt ?? now,
-      updatedAt: now,
-    };
-  }
-
-  throw new Error(`Cannot migrate connection ${value.slug} with backend=${value.backend}`);
+  return {
+    ...value,
+    enabledModelIds: connectionEnabledModelIds(value),
+  } as LlmConnection;
 }

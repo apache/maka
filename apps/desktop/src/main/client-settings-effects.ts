@@ -1,4 +1,4 @@
-import type { AppSettings } from '@maka/core';
+import type { AppSettings } from '@maka/core/settings';
 import type { SettingsStore } from '@maka/storage';
 
 export interface ClientSettingsEffects {

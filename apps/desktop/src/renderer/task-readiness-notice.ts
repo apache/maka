@@ -1,9 +1,8 @@
-import type {
-  SessionSendProjection,
-  TaskSubmissionReadinessDimension,
-  TaskSubmissionReadinessSnapshot,
-  UiLocale,
-} from '@maka/core';
+import type { SessionSendProjection } from '@maka/core/session-send-projection';
+
+import type { TaskSubmissionReadinessDimension, TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
+
+import type { UiLocale } from '@maka/core/ui-locale';
 
 export function resolveTaskReadinessModelTarget(
   session: { llmConnectionSlug: string; model: string } | undefined,

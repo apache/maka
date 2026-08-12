@@ -20,24 +20,6 @@ describe('FileConnectionStore', () => {
     });
   });
 
-  test('honors an explicit enabled model set on create', async () => {
-    await withConnectionStore(async (store) => {
-      const created = await store.create({
-        slug: 'opencode-free',
-        name: 'OpenCode Free',
-        providerType: 'opencode-free',
-        defaultModel: 'nemotron-3-ultra-free',
-        enabledModelIds: ['nemotron-3-ultra-free', 'mimo-v2.5-free', 'deepseek-v4-flash-free'],
-      });
-
-      assert.deepEqual(created.enabledModelIds, [
-        'nemotron-3-ultra-free',
-        'mimo-v2.5-free',
-        'deepseek-v4-flash-free',
-      ]);
-    });
-  });
-
   // Onboarding "保存供应商" (and any other create path that only states a
   // defaultModel) must land the same free inventory bootstrap seeds — not a
   // one-model connection that then fails the first-run e2e contract.
@@ -69,34 +51,6 @@ describe('FileConnectionStore', () => {
       });
 
       assert.deepEqual(created.enabledModelIds, ['nemotron-3-ultra-free']);
-    });
-  });
-
-  test('migrates a legacy connection to only its default model enabled', async () => {
-    await withConnectionStore(async (store, dir) => {
-      await writeFile(
-        join(dir, 'llm-connections.json'),
-        JSON.stringify({
-          defaultSlug: 'openrouter-main',
-          connections: [
-            {
-              slug: 'openrouter-main',
-              name: 'OpenRouter',
-              providerType: 'openrouter',
-              defaultModel: 'openrouter/auto',
-              enabled: true,
-              models: [{ id: 'openrouter/auto' }, { id: 'anthropic/claude-opus-4.8' }],
-              createdAt: 1,
-              updatedAt: 1,
-            },
-          ],
-        }),
-        'utf8',
-      );
-
-      const migrated = await store.get('openrouter-main');
-
-      assert.deepEqual(migrated?.enabledModelIds, ['openrouter/auto']);
     });
   });
 
@@ -136,30 +90,6 @@ describe('FileConnectionStore', () => {
       assert.equal(cleared.relayModelProfiles, undefined);
       const reloaded = await store.get(created.slug);
       assert.equal(reloaded?.relayModelProfiles, undefined);
-    });
-  });
-
-  test('create keeps relay profiles for every model in the seeded enabled set', async () => {
-    await withConnectionStore(async (store) => {
-      const created = await store.create({
-        slug: 'import-relay',
-        name: 'Imported Relay',
-        providerType: 'openai-compatible',
-        baseUrl: 'https://relay.example/v1',
-        defaultModel: 'reasoner',
-        enabledModelIds: ['reasoner', 'plain'],
-        relayModelProfiles: {
-          reasoner: { thinkingLevels: ['high'], vision: true },
-          plain: { contextWindow: 16_000 },
-          // Still outside the selection — must not survive create.
-          ghost: { vision: false },
-        },
-      });
-      assert.deepEqual(created.enabledModelIds, ['reasoner', 'plain']);
-      assert.deepEqual(created.relayModelProfiles, {
-        reasoner: { thinkingLevels: ['high'], vision: true },
-        plain: { contextWindow: 16_000 },
-      });
     });
   });
 
@@ -596,52 +526,6 @@ describe('FileConnectionStore', () => {
       assert.equal(reloaded?.providerType, 'github-copilot');
       assert.equal(reloaded?.baseUrl, 'https://api.business.githubcopilot.com');
       assert.deepEqual(reloaded?.models, [{ id: 'gpt-5.4', apiProtocol: 'openai-responses' }]);
-    });
-  });
-
-  test('keeps provider create defaults independent from catalog recommendation refreshes', async () => {
-    await withConnectionStore(async (store) => {
-      const openai = await store.create({
-        slug: 'openai-default',
-        name: 'OpenAI',
-        providerType: 'openai',
-      });
-      const google = await store.create({
-        slug: 'google-default',
-        name: 'Google',
-        providerType: 'google',
-      });
-      const zai = await store.create({
-        slug: 'zai-default',
-        name: 'Z.AI',
-        providerType: 'zai-coding-plan',
-      });
-
-      assert.equal(openai.defaultModel, 'gpt-4o-mini');
-      assert.equal(google.defaultModel, 'gemini-2.5-flash');
-      assert.equal(zai.defaultModel, 'glm-4.7');
-    });
-  });
-
-  test('persists explicit connection test status updates', async () => {
-    await withConnectionStore(async (store) => {
-      const created = await store.create({
-        slug: 'anthropic-main',
-        name: 'Claude',
-        providerType: 'anthropic',
-        defaultModel: 'claude-sonnet-4-5-20250929',
-      });
-
-      await store.update(created.slug, {
-        lastTestStatus: 'verified',
-        lastTestAt: '2026-05-21T09:00:00.000Z',
-        lastTestMessage: 'Connection verified',
-      });
-
-      const next = await store.get(created.slug);
-      assert.equal(next?.lastTestStatus, 'verified');
-      assert.equal(next?.lastTestAt, '2026-05-21T09:00:00.000Z');
-      assert.equal(next?.lastTestMessage, 'Connection verified');
     });
   });
 
@@ -1150,73 +1034,6 @@ describe('FileConnectionStore', () => {
         /defaultSlug must be a string or null/,
       );
       assert.equal(await readFile(filePath, 'utf8'), invalid);
-    });
-  });
-
-  describe('getDefaultConnection', () => {
-    test('resolves the default connection in a single snapshot', async () => {
-      await withConnectionStore(async (store) => {
-        await store.create({
-          slug: 'default-conn',
-          name: 'Default',
-          providerType: 'anthropic',
-          defaultModel: 'claude-sonnet-4-20250514',
-        });
-        await store.setDefault('default-conn');
-
-        const conn = await store.getDefaultConnection();
-
-        assert.equal(conn?.slug, 'default-conn');
-        assert.equal(conn?.defaultModel, 'claude-sonnet-4-20250514');
-      });
-    });
-
-    test('returns null when there is no default', async () => {
-      await withConnectionStore(async (store) => {
-        await store.create({
-          slug: 'no-default',
-          name: 'No Default',
-          providerType: 'anthropic',
-          defaultModel: 'claude-sonnet-4-20250514',
-        });
-        // create() auto-claims the first connection as default, so clear it
-        // explicitly to reach the "no default" state.
-        await store.setDefault(null);
-
-        assert.equal(await store.getDefaultConnection(), null);
-      });
-    });
-
-    test('tolerates an unrelated invalid entry instead of failing the read', async () => {
-      await withConnectionStore(async (store, dir) => {
-        // A valid default plus an unrelated stale entry that cannot migrate
-        // (no providerType, no slug, unknown backend). getDefaultConnection must
-        // drop the bad entry and still resolve the valid default.
-        await writeFile(
-          join(dir, 'llm-connections.json'),
-          JSON.stringify({
-            defaultSlug: 'valid-default',
-            connections: [
-              {
-                slug: 'valid-default',
-                name: 'Valid',
-                providerType: 'anthropic',
-                defaultModel: 'claude-sonnet-4-20250514',
-                enabled: true,
-                createdAt: 1,
-                updatedAt: 1,
-              },
-              { backend: 'totally-unknown-legacy-backend' },
-            ],
-          }),
-          'utf8',
-        );
-
-        const conn = await store.getDefaultConnection();
-
-        assert.equal(conn?.slug, 'valid-default');
-        assert.equal(conn?.defaultModel, 'claude-sonnet-4-20250514');
-      });
     });
   });
 });

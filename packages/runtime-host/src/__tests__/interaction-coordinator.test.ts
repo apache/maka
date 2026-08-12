@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { SandboxBoundaryRequest } from '@maka/core';
+import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
 import type { SandboxBoundaryRequestEvent, UserQuestionRequestEvent } from '@maka/core/events';
 import {
   bindRuntimeInteractionRun,
@@ -12,7 +12,7 @@ import {
   type RuntimeInteractionRunIdentity,
   type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
-} from '@maka/runtime';
+} from '@maka/runtime/interaction-authority';
 import {
   openInteractiveExecutionStoresForWrite,
   type ExecutionStoresWriter,
@@ -535,49 +535,6 @@ describe('HostInteractionCoordinator', () => {
     });
   });
 
-  test('closes pending legacy permission requests after upgrade without rewriting settled history', async () => {
-    await withStore(async ({ store }) => {
-      const pendingAdditional = storedLegacyAdditionalPermission(
-        'legacy_additional_pending',
-        RUN,
-        10,
-      );
-      const pendingEscalation = storedLegacySandboxEscalation('legacy_escalation_pending', RUN, 20);
-      const settled = storedLegacyAdditionalPermission('legacy_additional_settled', RUN, 30);
-      for (const request of [pendingAdditional, pendingEscalation, settled]) {
-        assert.equal((await store.establishRequest(request)).status, 'stable');
-      }
-      const settledOutcome = {
-        kind: 'permission_answer',
-        decision: 'deny',
-        rememberForTurn: false,
-        reviewer: 'user',
-        committedAt: 90,
-      } as const;
-      assert.equal((await store.commitOutcome(settled.requestId, settledOutcome)).status, 'stable');
-
-      const coordinator = createCoordinator(store);
-      await coordinator.recoverPendingAfterHostRestart();
-
-      for (const [requestId, committedAt] of [
-        [pendingAdditional.requestId, 101],
-        [pendingEscalation.requestId, 102],
-      ] as const) {
-        assert.deepEqual((await store.readInteraction(requestId))?.outcome?.outcome, {
-          kind: 'closure',
-          reason: 'host_restarted',
-          committedAt,
-        });
-      }
-      assert.deepEqual(
-        (await store.readInteraction(settled.requestId))?.outcome?.outcome,
-        settledOutcome,
-      );
-      assert.deepEqual(await store.listPending(), []);
-      await coordinator.close();
-    });
-  });
-
   test('drain permits only an exact Run preclaimed by its stop closure to bind', async () => {
     await withStore(async ({ store }) => {
       const gate = new SessionAdmissionGate();
@@ -828,77 +785,6 @@ function storedQuestion(
           options: [{ label: 'Yes' }, { label: 'No' }],
         },
       ],
-    },
-  };
-}
-
-function storedLegacyAdditionalPermission(
-  requestId: string,
-  identity: RuntimeInteractionRunIdentity,
-  createdAt: number,
-): StoredInteractionRequest {
-  return {
-    ...identity,
-    requestId,
-    createdAt,
-    request: {
-      kind: 'permission',
-      toolUseId: `tool_${requestId}`,
-      prompt: {
-        kind: 'additional_permissions',
-        toolName: 'Write',
-        category: 'file_write',
-        reason: 'additional_permissions',
-        review: {
-          kind: 'additional_permissions',
-          cwd: '/repo',
-          paths: [{ path: '/outside/file', access: 'write', scope: 'exact' }],
-          networkEnabled: true,
-        },
-        risk: {
-          outsideWorkspace: true,
-          protectedMetadata: false,
-          networkEnabled: true,
-        },
-        alsoApprovesToolExecution: true,
-        availableDecisions: ['allow_once', 'deny'],
-      },
-    },
-  };
-}
-
-function storedLegacySandboxEscalation(
-  requestId: string,
-  identity: RuntimeInteractionRunIdentity,
-  createdAt: number,
-): StoredInteractionRequest {
-  return {
-    ...identity,
-    requestId,
-    createdAt,
-    request: {
-      kind: 'permission',
-      toolUseId: `tool_${requestId}`,
-      prompt: {
-        kind: 'sandbox_escalation',
-        toolName: 'Bash',
-        category: 'privileged',
-        reason: 'sandbox_escalation',
-        review: {
-          kind: 'command',
-          command: 'sudo true',
-          cwd: '/repo',
-        },
-        trigger: 'proactive',
-        risk: {
-          unsandboxedExecution: true,
-          unrestrictedFileSystem: true,
-          unrestrictedNetwork: true,
-          protectedMetadataExposed: true,
-        },
-        alsoApprovesToolExecution: true,
-        availableDecisions: ['allow_once', 'deny'],
-      },
     },
   };
 }

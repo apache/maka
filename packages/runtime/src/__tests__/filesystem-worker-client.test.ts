@@ -4,11 +4,9 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
-import {
-  createManagedExecutionBoundary,
-  createWorkspaceWritePermissionProfile,
-  MAX_READ_IMAGE_BYTES,
-} from '@maka/core';
+import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
+import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import {
   canWritePath,
   createReadOnlyPermissionProfile,

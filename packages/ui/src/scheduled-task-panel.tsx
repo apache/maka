@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { useToast } from './toast.js';
 import { ICON_SIZE, Clock, MoreHorizontal, Plus, RefreshCcw } from './icons.js';
-import type { ScheduledTask, ScheduledTaskStatus } from '@maka/core';
+import type { ScheduledTask, ScheduledTaskStatus } from '@maka/core/scheduled-task';
 import {
   generalizedErrorMessage,
   generalizedErrorMessageChinese,
-} from '@maka/core';
+} from '@maka/core/redaction';
 import {
   type ScheduledTaskFormSeed,
   compareScheduledTaskBySort,
@@ -457,19 +457,19 @@ export function ScheduledTaskPanel(props: {
             ) : sortedTasks.length === 0 ? (
               /* Filter empty (DESIGN.md §10): the clear action resets both
                  dimensions the reader may have narrowed — query and state. */
-              <EmptyState
+              (<EmptyState
                 icon={<Clock size={ICON_SIZE.empty} />}
                 title={normalizedListQuery ? copy.page.noSearchTitle : copy.page.noFilterTitle}
                 description={normalizedListQuery ? copy.page.noSearchBody : copy.page.noFilterBody}
                 actions={<UiButton variant="ghost" size="sm" label={copy.page.clearSearch} onClick={() => { setListQuery(''); setListFilter('all'); }} />}
-              />
+              />)
             ) : (
               /* Selectable, otherwise inert rows: every control that used to
                  ride the row now lives in the inspector, which is what Astryx
                  asks for — no interactive elements inside an interactive
                  list item. The leading StatusDot also fixes the alignment the
                  old hand-held 40px switch placeholder kept getting wrong. */
-              <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.listAriaLabel}>
+              (<List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.listAriaLabel}>
                 {sortedTasks.map((task) => {
                   // `triggered` is a plain "it ran" record, not a health
                   // signal — only blocked and failed earn the row's attention.
@@ -498,7 +498,7 @@ export function ScheduledTaskPanel(props: {
                        task and a healthy one identical on the row, so the
                        page could only be read by opening every entry. */
                     description={[
-                      task.effect.kind === 'agent_run' ? copy.detail.agentSource : null,
+                      task.effect.kind !== 'notify' ? copy.detail.agentSource : null,
                       runException
                         ? runStatusLabel(runException.outcome, locale)
                         : task.status === 'active'
@@ -533,7 +533,7 @@ export function ScheduledTaskPanel(props: {
                   />
                   );
                 })}
-              </List>
+              </List>)
             )}
           </div>
         ) : (
@@ -541,14 +541,14 @@ export function ScheduledTaskPanel(props: {
             {visibleRunEntries.length === 0 ? (
               /* A narrowed range that matches nothing carries the widen action
                  (DESIGN.md §10) — the reader caused this state and must exit. */
-              <EmptyState
+              (<EmptyState
                 icon={<Clock size={ICON_SIZE.empty} />}
                 title={copy.page.noRunsTitle}
                 description={copy.page.noRunsBody}
                 actions={runRange !== 'all' ? (
                   <UiButton variant="ghost" size="sm" label={copy.page.showAllTime} onClick={() => setRunRange('all')} />
                 ) : undefined}
-              />
+              />)
             ) : (
               <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.runsAriaLabel}>
                 {visibleRunEntries.map(({ task, run }) => (
@@ -574,7 +574,6 @@ export function ScheduledTaskPanel(props: {
           </div>
         )}
       </ModulePage>
-
       <ScheduledTaskFormDialog
         key={formNonce}
         open={formDialogOpen}

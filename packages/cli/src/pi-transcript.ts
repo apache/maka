@@ -14,14 +14,16 @@ import {
 } from '@maka/core/session';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import {
-  isActiveShellRunStatus,
-  mergeShellRunStateWithDiagnostics,
-  projectToolActivityArgs,
-  type ShellRunUpdate,
-} from '@maka/core';
+import { isActiveShellRunStatus } from '@maka/core/shell-run';
+import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
+import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
+import { type ShellRunUpdate } from '@maka/core/events';
 import { homedir } from 'node:os';
-import { materializeSession, type ChatItem, type ToolActivityItem } from '@maka/runtime';
+import {
+  materializeSession,
+  type ChatItem,
+  type ToolActivityItem,
+} from '@maka/runtime/materializer';
 import type { MakaSessionDriver } from './session-driver.js';
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
@@ -48,7 +50,6 @@ export interface MakaPiUsageSummary {
 
 export interface MakaPiTranscriptState {
   entries: MakaPiTranscriptEntry[];
-  sawTextDeltaMessageIds: Set<string>;
   pendingInteraction?: MakaPiPendingInteraction;
   queuedInteractions: MakaPiPendingInteraction[];
   /**
@@ -193,7 +194,6 @@ export interface MakaPiTranscriptMetadata {
 export function createMakaPiTranscriptState(): MakaPiTranscriptState {
   return {
     entries: [],
-    sawTextDeltaMessageIds: new Set(),
     queuedInteractions: [],
     expandAllTools: false,
     expandAllThinking: false,
@@ -310,14 +310,6 @@ export function replaceTranscriptWithStoredMessages(
 ): void {
   const view = materializeSession(messages);
   state.entries = foldStoredShellRunChildren(view.items.flatMap(chatItemToTranscriptEntries));
-  state.sawTextDeltaMessageIds = new Set(
-    state.entries
-      .filter(
-        (entry): entry is Extract<MakaPiTranscriptEntry, { kind: 'assistant' }> =>
-          entry.kind === 'assistant',
-      )
-      .map((entry) => entry.messageId),
-  );
   clearPendingInteractions(state);
   state.pendingShellRunPolls.clear();
   state.expandAllTools = false;
@@ -529,12 +521,11 @@ export function applyMakaSessionEventToTranscript(
   }
   switch (event.type) {
     case 'text_delta':
-      state.sawTextDeltaMessageIds.add(event.messageId);
       appendAssistantText(state, event.messageId, event.text);
       break;
 
     case 'text_complete':
-      if (!state.sawTextDeltaMessageIds.has(event.messageId) && event.text) {
+      if (!setAssistantText(state, event.messageId, event.text) && event.text) {
         appendAssistantText(state, event.messageId, event.text);
       }
       break;
@@ -1253,14 +1244,13 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
 
 function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): string {
   switch (entry.kind) {
-    // user and assistant text is append-only (user is immutable; assistant only
-    // grows via appendAssistantText, and text_complete is guarded from replacing
-    // it), so length is a safe change key. If a path ever replaces their text in
-    // place, switch these to full-text keys like thinking below.
+    // User text is immutable, so length is a safe change key.
     case 'user':
       return `user|${width}|${entry.text.length}`;
     case 'assistant':
-      return `assistant|${width}|${entry.text.length}`;
+      // text_complete authoritatively replaces streamed text, including with a
+      // same-length final, so the full value must participate in the cache key.
+      return `assistant|${width}|${entry.text}`;
     case 'thinking':
       // Not just the length: `thinking_complete` can replace the streamed text
       // in place with a same-length final, which a length-only key would miss and
@@ -1476,6 +1466,17 @@ function appendAssistantText(state: MakaPiTranscriptState, messageId: string, te
     return;
   }
   state.entries.push({ kind: 'assistant', messageId, text });
+}
+
+function setAssistantText(state: MakaPiTranscriptState, messageId: string, text: string): boolean {
+  for (let index = state.entries.length - 1; index >= 0; index -= 1) {
+    const entry = state.entries[index];
+    if (entry?.kind === 'assistant' && entry.messageId === messageId) {
+      entry.text = text;
+      return true;
+    }
+  }
+  return false;
 }
 
 function appendThinking(state: MakaPiTranscriptState, messageId: string, text: string): void {

@@ -3,11 +3,11 @@ import {
   healthSignalFromCapability,
   healthSignalFromConnection,
   healthSignalFromConnectionRuntime,
-  type AppSettings,
-  type LlmConnection,
-} from "@maka/core";
+} from '@maka/core/health';
+import { type AppSettings } from '@maka/core/settings';
+import { type LlmConnection } from '@maka/core/llm-connections';
 import type { UsageLogRow } from "@maka/core/usage-stats/types";
-import type { BotRegistry } from "@maka/runtime";
+import type { BotRegistry } from '@maka/runtime/bots';
 import {
   buildCapabilitySnapshotCollection,
   buildPermissionSnapshot,

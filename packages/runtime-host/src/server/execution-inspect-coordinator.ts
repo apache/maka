@@ -6,13 +6,12 @@ import {
 } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionTrace } from '@maka/core/session-trace';
+import { inspectAgentRunDocument, inspectSessionDocument } from '@maka/runtime/execution-inspect';
+import { projectSessionTrace } from '@maka/runtime/session-trace-projection';
 import {
-  inspectAgentRunDocument,
-  inspectSessionDocument,
-  projectSessionTrace,
   type AgentRunInspectDocument,
   type SessionInspectDocument,
-} from '@maka/runtime';
+} from '@maka/core/execution-inspect';
 import {
   isSessionNotFoundError,
   type BoundedEvidenceReadResult,
@@ -45,6 +44,7 @@ interface InspectStores {
     | 'listSessionRunsBounded'
     | 'readEventsBounded'
     | 'readEventsByTypeBounded'
+    | 'readRootTurnAdmission'
   >;
   readonly runtimeEventStore: Pick<ExecutionRuntimeEventReader, 'readRuntimeEventsBounded'>;
 }
@@ -115,7 +115,9 @@ export class HostExecutionInspectCoordinator {
           ? await this.#inspectAgentRun(input.sessionId, input.agentRunId)
           : input.kind === 'session'
             ? await this.#inspectSession(input.sessionId)
-            : await this.#inspectSessionTracePage(input);
+            : input.kind === 'turn_trace'
+              ? await this.#inspectTurnTrace(input.sessionId, input.turnId)
+              : await this.#inspectSessionTracePage(input);
       if (result === undefined) {
         return failure('execution.inspect.query', 'not_found', 'Execution evidence was not found');
       }
@@ -125,7 +127,9 @@ export class HostExecutionInspectCoordinator {
           'invalid_request',
           input.kind === 'session'
             ? 'Session inspection exceeds the live Host result limit; inspect one AgentRun instead'
-            : 'AgentRun inspection exceeds the live Host result limit',
+            : input.kind === 'turn_trace'
+              ? 'Turn trace exceeds the live Host result limit'
+              : 'AgentRun inspection exceeds the live Host result limit',
         );
       }
       return { ok: true, result };
@@ -248,6 +252,43 @@ export class HostExecutionInspectCoordinator {
     return createTracePage(trace, revision, offset);
   }
 
+  async #inspectTurnTrace(
+    sessionId: string,
+    turnId: string,
+  ): Promise<ExecutionInspectQueryResult | undefined> {
+    try {
+      await this.#stores.sessionStore.readHeaderSnapshot(sessionId);
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+    const admission = await this.#stores.agentRunStore.readRootTurnAdmission(sessionId, turnId);
+    if (!admission) return undefined;
+    try {
+      const run = await this.#stores.agentRunStore.readRun(sessionId, admission.runId);
+      if (run.turnId !== turnId) {
+        throw new InspectQueryInvalidError('Turn trace admission does not match its AgentRun');
+      }
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+    const evidence = await this.#readRunTraceEvidence(
+      sessionId,
+      admission.runId,
+      new InspectEvidenceBudget('Turn'),
+    );
+    const turn = projectSessionTrace({
+      sessionId,
+      runtimeEvents: evidence.runtimeEvents,
+      modelCallAttempts: evidence.modelCallAttempts,
+      ...(evidence.unreadableRecords > 0 ? { unreadableRecords: evidence.unreadableRecords } : {}),
+    }).turns.find(
+      (candidate) => candidate.turnId === turnId && candidate.runId === admission.runId,
+    );
+    return turn ? { kind: 'turn_trace', sessionId, turn } : undefined;
+  }
+
   async #readSessionTrace(sessionId: string): Promise<SessionTrace | undefined> {
     try {
       await this.#stores.sessionStore.readHeaderSnapshot(sessionId);
@@ -267,33 +308,10 @@ export class HostExecutionInspectCoordinator {
     const modelCallAttempts: ModelCallAttempt[] = [];
     let unreadableRecords = 0;
     for (const run of runPage.runs) {
-      const runEvents = await budget
-        .read((remaining) =>
-          this.#stores.agentRunStore.readEventsByTypeBounded(
-            sessionId,
-            run.runId,
-            MODEL_CALL_ATTEMPT_EVENT_TYPE,
-            remaining,
-          ),
-        )
-        .catch((error) => {
-          if (isInspectQueryTooLargeError(error)) throw error;
-          unreadableRecords += 1;
-          return [];
-        });
-      for (const event of runEvents) {
-        if (event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE) continue;
-        try {
-          modelCallAttempts.push(decodeModelCallAttempt(event.data));
-        } catch {
-          unreadableRecords += 1;
-        }
-      }
-      runtimeEvents.push(
-        ...(await budget.read((remaining) =>
-          this.#stores.runtimeEventStore.readRuntimeEventsBounded(sessionId, run.runId, remaining),
-        )),
-      );
+      const evidence = await this.#readRunTraceEvidence(sessionId, run.runId, budget);
+      runtimeEvents.push(...evidence.runtimeEvents);
+      modelCallAttempts.push(...evidence.modelCallAttempts);
+      unreadableRecords += evidence.unreadableRecords;
     }
     return projectSessionTrace({
       sessionId,
@@ -301,6 +319,45 @@ export class HostExecutionInspectCoordinator {
       modelCallAttempts,
       ...(unreadableRecords > 0 ? { unreadableRecords } : {}),
     });
+  }
+
+  async #readRunTraceEvidence(
+    sessionId: string,
+    runId: string,
+    budget: InspectEvidenceBudget,
+  ): Promise<{
+    readonly runtimeEvents: RuntimeEvent[];
+    readonly modelCallAttempts: ModelCallAttempt[];
+    readonly unreadableRecords: number;
+  }> {
+    let unreadableRecords = 0;
+    const runEvents = await budget
+      .read((remaining) =>
+        this.#stores.agentRunStore.readEventsByTypeBounded(
+          sessionId,
+          runId,
+          MODEL_CALL_ATTEMPT_EVENT_TYPE,
+          remaining,
+        ),
+      )
+      .catch((error) => {
+        if (isInspectQueryTooLargeError(error)) throw error;
+        unreadableRecords += 1;
+        return [];
+      });
+    const modelCallAttempts: ModelCallAttempt[] = [];
+    for (const event of runEvents) {
+      if (event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE) continue;
+      try {
+        modelCallAttempts.push(decodeModelCallAttempt(event.data));
+      } catch {
+        unreadableRecords += 1;
+      }
+    }
+    const runtimeEvents = await budget.read((remaining) =>
+      this.#stores.runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, remaining),
+    );
+    return { runtimeEvents, modelCallAttempts, unreadableRecords };
   }
 
   #budgetedReaders(label: 'AgentRun' | 'Session') {
@@ -336,7 +393,7 @@ class InspectEvidenceBudget {
   #remainingRecords = EXECUTION_INSPECT_EVIDENCE_MAX_RECORDS;
   #remainingBytes = EXECUTION_INSPECT_EVIDENCE_MAX_BYTES;
 
-  constructor(private readonly label: 'AgentRun' | 'Session') {}
+  constructor(private readonly label: 'AgentRun' | 'Session' | 'Turn') {}
 
   async read<T>(
     operation: (budget: EvidenceReadBudget) => Promise<BoundedEvidenceReadResult<T>>,

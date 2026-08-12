@@ -32,46 +32,5 @@
       }
     }
   ],
-  "unresolvedGroups": [
-    {
-      "status": "awaiting-contributor-declaration",
-      "introducedBy": {
-        "pullRequest": 842,
-        "commit": "68e99e23ec09f08e1666d8fed30b79653d325c65",
-        "contributor": "jackwener"
-      },
-      "skillIds": [
-        "brand-guidelines",
-        "changelog-generator",
-        "competitive-ads-extractor",
-        "content-research-writer",
-        "copywriting",
-        "create-plan",
-        "data-analysis",
-        "deep-research",
-        "domain-name-brainstormer",
-        "drafter-diagram",
-        "file-organizer",
-        "frontend-design",
-        "html-poster",
-        "html-slides",
-        "internal-comms",
-        "invoice-organizer",
-        "lead-research-assistant",
-        "maka-skill-creator",
-        "manim-composer",
-        "market-research-reports",
-        "notion-infographic",
-        "pdf-toolkit",
-        "responsive-design",
-        "seo-audit",
-        "static-site-deploy",
-        "summarization",
-        "tailored-resume-generator",
-        "theme-factory",
-        "xhs-card-designer"
-      ],
-      "nextAction": "The introducing contributor must declare independent authorship or generation inputs, identify fixed third-party sources and licenses, or approve clean rewrite/removal."
-    }
-  ]
+  "unresolvedGroups": []
 }

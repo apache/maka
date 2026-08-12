@@ -1,10 +1,6 @@
-import type {
-  ThemePalette,
-  ThemePreference,
-  UiCatalog,
-  UiLocale,
-  UiLocalePreference,
-} from '@maka/core';
+import type { ThemePalette, ThemePreference } from '@maka/core/settings';
+
+import type { UiCatalog, UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 
 type OptionCopy = { label: string; help: string };
 

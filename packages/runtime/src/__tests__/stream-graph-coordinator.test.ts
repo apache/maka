@@ -7,13 +7,15 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   AGENT_GRAPH_INTENT_CLAIM_SCHEMA_VERSION,
-  AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
   type AgentGraphIntentClaim,
+} from '@maka/core/agent-graph-control';
+import {
+  AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
   type AgentGraphOperatorProvision,
-  type AgentGraphScheduleUpdate,
-  type AgentRunHeader,
-  type RuntimeEvent,
-} from '@maka/core';
+} from '@maka/core/agent-graph-topology';
+import { type AgentGraphScheduleUpdate } from '@maka/core/agent-graph-schedule';
+import { type AgentRunHeader } from '@maka/core/agent-run';
+import { type RuntimeEvent } from '@maka/core/runtime-event';
 import {
   createSessionStore,
   createSqliteSessionMetadataStore,
@@ -777,7 +779,11 @@ describe('host-managed agent graph coordinator', () => {
       sessionStore: {
         listForRecovery: async () => [],
         readHeader: async (sessionId: string) =>
-          ({ id: sessionId, status: 'active', isArchived: false }) as never,
+          ({
+            id: sessionId,
+            status: 'active',
+            isArchived: false,
+          }) as never,
       },
       runStore: { listSessionRuns: async () => runs },
       runtimeEventStore: { readImmutableRuntimeEvents: async () => runtimeEvents },
@@ -998,7 +1004,11 @@ describe('host-managed agent graph coordinator', () => {
       sessionStore: {
         listForRecovery: async () => [],
         readHeader: async (sessionId: string) =>
-          ({ id: sessionId, status: 'active', isArchived: false }) as never,
+          ({
+            id: sessionId,
+            status: 'active',
+            isArchived: false,
+          }) as never,
       },
       runStore: { listSessionRuns: async () => [] },
       runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },

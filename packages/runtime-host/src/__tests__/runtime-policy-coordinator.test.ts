@@ -10,7 +10,8 @@ import type {
   CredentialLocator,
 } from '@maka/core/runtime-policy';
 import { REQUEST_BODY_OVERLAY_MAX_BYTES } from '@maka/core/runtime-policy';
-import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend, type MakaToolContext } from '@maka/runtime';
+import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '@maka/runtime/fake-backend';
+import { type MakaToolContext } from '@maka/runtime/tool-runtime';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';

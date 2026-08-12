@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import type { RuntimeEvent, ToolRecoveryMode } from '@maka/core';
+import type { RuntimeEvent, ToolRecoveryMode } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash as canonicalToolArgsHashCore } from '@maka/core/tool-args-identity';
 
-export type { ToolRecoveryMode } from '@maka/core';
+export type { ToolRecoveryMode } from '@maka/core/runtime-event';
 
 export interface ToolPreparedCommit {
   operationId: string;

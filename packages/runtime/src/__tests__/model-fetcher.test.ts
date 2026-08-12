@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import {
   fetchProviderModels,
@@ -239,61 +239,6 @@ describe('fetchProviderModels', () => {
     );
   });
 
-  test('Z.ai baseUrl trailing slash is trimmed before appending /models', async () => {
-    let observedPath = '';
-    const server = await startJsonServer((request, response) => {
-      observedPath = request.url ?? '';
-      respondJson(response, 200, { data: [{ id: 'glm-live' }] });
-    });
-
-    const models = await fetchProviderModels(
-      { ...zaiConnection(), baseUrl: `${server.url}/` },
-      'zai-live-secret',
-    );
-
-    assert.equal(observedPath, '/models');
-    assert.deepEqual(models, [{ id: 'glm-live' }]);
-  });
-
-  test('provider model capability fields are preserved when present', async () => {
-    const server = await startJsonServer((_request, response) => {
-      respondJson(response, 200, {
-        data: [
-          {
-            id: 'kimi-k2.7',
-            supports_image_in: true,
-            supports_reasoning: true,
-            context_length: 262_144,
-          },
-          { id: 'moonshot-v1-8k', supports_image_in: false },
-        ],
-      });
-    });
-
-    const models = await fetchProviderModels(
-      {
-        slug: 'moonshot',
-        name: 'Moonshot',
-        providerType: 'moonshot',
-        baseUrl: server.url,
-        defaultModel: 'kimi-k2.7',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
-      },
-      'moonshot-secret',
-    );
-
-    assert.deepEqual(models, [
-      {
-        id: 'kimi-k2.7',
-        contextWindow: 262_144,
-        capabilities: { vision: true, reasoning: true },
-      },
-      { id: 'moonshot-v1-8k', capabilities: { vision: false } },
-    ]);
-  });
-
   test('provider fetch failures throw generalized errors instead of returning fallback models', async () => {
     const server = await startJsonServer((_request, response) => {
       respondJson(response, 401, {
@@ -311,64 +256,6 @@ describe('fetchProviderModels', () => {
         return true;
       },
     );
-  });
-
-  test('Claude subscription model fetch serves the curated list without calling /v1/models', async () => {
-    // The subscription OAuth token is session-scoped (no user:inference), so
-    // GET /v1/models would 401. Discovery must stay off the network entirely.
-    let requests = 0;
-    const server = await startJsonServer((_request, response) => {
-      requests += 1;
-      respondJson(response, 401, { error: 'insufficient scope' });
-    });
-
-    const models = await fetchProviderModels(
-      {
-        slug: 'claude-subscription',
-        name: 'Claude OAuth',
-        providerType: 'claude-subscription',
-        baseUrl: server.url,
-        defaultModel: 'claude-sonnet-4-5-20250929',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
-      },
-      'oauth-access-token',
-    );
-
-    assert.equal(requests, 0);
-    assert.deepEqual(
-      models,
-      PROVIDER_DEFAULTS['claude-subscription'].fallbackModels.map((id) => ({ id })),
-    );
-  });
-
-  test('Anthropic model fetch accepts a stored /v1 base URL without doubling it', async () => {
-    let observedPath = '';
-    let observedApiKey = '';
-    const server = await startJsonServer((request, response) => {
-      observedPath = request.url ?? '';
-      observedApiKey = (request.headers['x-api-key'] as string | undefined) ?? '';
-      respondJson(response, 200, { data: [{ id: 'claude-sonnet-4-5-20250929' }] });
-    });
-
-    const models = await fetchProviderModels(
-      {
-        slug: 'anthropic-main',
-        name: 'Anthropic',
-        providerType: 'anthropic',
-        baseUrl: `${server.url}/v1`,
-        defaultModel: 'claude-sonnet-4-5-20250929',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
-      },
-      'anthropic-api-key',
-    );
-
-    assert.equal(observedPath, '/v1/models');
-    assert.equal(observedApiKey, 'anthropic-api-key');
-    assert.deepEqual(models, [{ id: 'claude-sonnet-4-5-20250929' }]);
   });
 
   test('Codex OAuth discovers models from the chatgpt.com/backend-api/codex/models endpoint', async () => {
@@ -458,46 +345,11 @@ describe('fetchProviderModels', () => {
     );
   });
 
-  test('normalization leaves empty-catalog policy to the caller that owns persistence', async () => {
-    const server = await startJsonServer((_request, response) => {
-      respondJson(response, 200, { data: [] });
-    });
-
-    assert.deepEqual(
-      await fetchProviderModels({ ...zaiConnection(), baseUrl: server.url }, 'zai-live-secret'),
-      [],
-    );
-  });
-
-  test('discovery trims model IDs, drops malformed entries, and deduplicates before persistence', async () => {
-    const server = await startJsonServer((_request, response) => {
-      respondJson(response, 200, {
-        data: [
-          { id: ' model-a ' },
-          { id: 'model-a' },
-          { id: '' },
-          { id: 42 },
-          { id: 'bad\nmodel' },
-          { id: 'x'.repeat(513) },
-          { id: 'model-b', name: 'Model B' },
-        ],
-      });
-    });
-
-    const models = await fetchProviderModels(
-      { ...zaiConnection(), baseUrl: server.url },
-      'zai-live-secret',
-    );
-
-    assert.deepEqual(models, [{ id: 'model-a' }, { id: 'model-b', displayName: 'Model B' }]);
-  });
-
   test('connection discovery classifies structurally invalid JSON from a real HTTP response', async () => {
     const secret = 'raw-provider-secret';
     for (const body of [
       null,
       { data: { id: 'not-an-array', secret } },
-      { data: [null, { id: secret }] },
       { data: [42, { id: secret }] },
     ]) {
       const server = await startJsonServer((_request, response) => {

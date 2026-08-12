@@ -1,5 +1,6 @@
-import type { ExecutionBoundaryReadModel, PermissionMode } from '@maka/core';
-import { executionBoundaryDisplayMode } from '@maka/core';
+import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
+import type { PermissionMode } from '@maka/core/permission';
+import { executionBoundaryDisplayMode } from '@maka/core/sandbox-boundary';
 
 export interface DesktopExecutionBoundarySurface {
   permissionMode: PermissionMode | undefined;

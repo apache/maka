@@ -7,7 +7,7 @@ import type {
   ComputerUseWindowIdentity,
   CuAction,
   CuPoint,
-} from '@maka/core';
+} from '@maka/core/computer-use';
 
 export type CuaFrameIdentity = ComputerUseFrameIdentity;
 export type CuaObservation = ComputerUseObservationIdentity;

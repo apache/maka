@@ -27,6 +27,10 @@ import {
   type SessionCatalogChangedFrame,
 } from './session-catalog-change.js';
 import {
+  decodeScheduledTaskChangedFrame,
+  type ScheduledTaskChangedFrame,
+} from './scheduled-task-change.js';
+import {
   decodeProjectCatalogChangedFrame,
   type ProjectCatalogChangedFrame,
 } from './project-catalog-change.js';
@@ -42,7 +46,6 @@ export { RuntimeHostProtocolError } from './errors.js';
 export * from './access-authority.js';
 export * from './agent-graph.js';
 export * from './interaction.js';
-export * from './automation.js';
 export * from './daily-review.js';
 export * from './client-capability.js';
 export * from './configuration-change.js';
@@ -58,6 +61,7 @@ export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
 export * from './session-catalog-change.js';
+export * from './scheduled-task-change.js';
 export * from './session-retirement.js';
 export * from './session-transcript.js';
 export * from './task-ledger.js';
@@ -67,7 +71,7 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 15 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 17 as const;
 // A legal sandbox-boundary expansion can consume 64 KiB before its Interaction
 // envelope and independently bounded justification are added. Keep transport
 // capacity large enough to represent that domain value; narrower surfaces such
@@ -151,7 +155,8 @@ export type HostFrame =
   | ClientCapabilityHostFrame
   | ConfigurationChangedFrame
   | ProjectCatalogChangedFrame
-  | SessionCatalogChangedFrame;
+  | SessionCatalogChangedFrame
+  | ScheduledTaskChangedFrame;
 
 export interface HostRegistration {
   kind: 'maka-runtime-host';
@@ -279,6 +284,7 @@ export function decodeHostFrame(value: unknown): HostFrame {
   if (frame.kind === 'configuration.changed') return decodeConfigurationChangedFrame(frame);
   if (frame.kind === 'project.catalog.changed') return decodeProjectCatalogChangedFrame(frame);
   if (frame.kind === 'session.catalog.changed') return decodeSessionCatalogChangedFrame(frame);
+  if (frame.kind === 'scheduled-task.changed') return decodeScheduledTaskChangedFrame(frame);
   return decodeResponseFrame(frame);
 }
 

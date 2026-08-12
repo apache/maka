@@ -1,12 +1,11 @@
 import { createHash } from 'node:crypto';
-import { deriveTurnRecords, isSessionInlineRun, isTerminalRuntimeEvent } from '@maka/core';
-import type {
-  AgentRunHeader,
-  AgentRunStore,
-  RuntimeEvent,
-  RuntimeEventStore,
-  SessionHeader,
-} from '@maka/core';
+import { deriveTurnRecords } from '@maka/core/session';
+import { isSessionInlineRun } from '@maka/core/agent-run';
+import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
+import type { AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { SessionHeader } from '@maka/core/session';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type { AgentRunLineage } from './agent-run.js';
 import { backfillRuntimeEventsFromStoredMessages } from './runtime-event-backfill.js';

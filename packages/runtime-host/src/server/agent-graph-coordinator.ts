@@ -1,13 +1,15 @@
 import {
   AgentGraphClientOperationError,
   agentGraphIdForRootSession,
-  encodeAgentGraphTerminalCursor,
   type AgentGraphClientChangedEvent,
+  type AgentGraphCoordinator,
+} from '@maka/runtime/stream-graph-coordinator';
+import {
+  encodeAgentGraphTerminalCursor,
   type AgentGraphClientOperator as RuntimeAgentGraphClientOperator,
   type AgentGraphClientSnapshot as RuntimeAgentGraphClientSnapshot,
-  type AgentGraphCoordinator,
   type AgentGraphOperatorInspection as RuntimeAgentGraphOperatorInspection,
-} from '@maka/runtime';
+} from '@maka/runtime/stream-graph-read-model';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import {
   AGENT_GRAPH_MAX_ACTIVITY,

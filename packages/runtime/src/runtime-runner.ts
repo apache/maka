@@ -90,15 +90,6 @@ export function runtimeGateFromCallback(
 }
 
 // ============================================================================
-// AgentFlowLike — compatibility alias
-// ============================================================================
-
-/**
- * @deprecated Use `RunnableAgentFlow` from `./agent-flow.js`.
- */
-export type AgentFlowLike = RunnableAgentFlow;
-
-// ============================================================================
 // RuntimeRunnerDeps
 // ============================================================================
 

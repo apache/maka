@@ -258,6 +258,7 @@ function connectionHarness(
     subscribeConfigurationChanges: () => () => {},
     subscribeProjectCatalogChanges: () => () => {},
     subscribeSessionCatalogChanges: () => () => {},
+    subscribeScheduledTaskChanges: () => () => {},
     close: async () => resolveClosed(),
   } as unknown as RuntimeHostConnection;
   return {

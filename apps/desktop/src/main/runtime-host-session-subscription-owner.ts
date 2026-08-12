@@ -1,7 +1,8 @@
-import type { StoredMessage } from "@maka/core";
+import type { StoredMessage } from '@maka/core/session';
 import { RuntimeHostSessionProjector } from "@maka/runtime-host/adapter";
 import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 import type {
+  SessionAssistantStreamIdentity,
   SessionContinuitySnapshot,
   SubscriptionFrame,
 } from "@maka/runtime-host/protocol";
@@ -16,6 +17,7 @@ type SessionSubscriptionClient = Pick<DesktopRuntimeHostClient, "openSession">;
 
 export interface PreparedSessionSubscription {
   readonly snapshot: SessionContinuitySnapshot;
+  readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcript: StoredMessage[];
 }
 
@@ -172,6 +174,7 @@ export class RuntimeHostSessionSubscriptionOwner {
       if (this.#closed || this.#attempt !== attempt) throw ownerClosed();
       validatePendingFrames(
         handle.snapshot,
+        handle.activeAssistantStreams,
         loaded.transcript,
         attempt.pendingFrames,
         this.#deps.now,
@@ -180,6 +183,7 @@ export class RuntimeHostSessionSubscriptionOwner {
         attempt,
         prepared: {
           snapshot: structuredClone(handle.snapshot),
+          activeAssistantStreams: structuredClone(handle.activeAssistantStreams),
           transcript: loaded.transcript,
         },
       };
@@ -240,11 +244,17 @@ export class RuntimeHostSessionSubscriptionOwner {
 
 function validatePendingFrames(
   snapshot: SessionContinuitySnapshot,
+  activeAssistantStreams: readonly SessionAssistantStreamIdentity[],
   transcript: readonly StoredMessage[],
   frames: readonly SubscriptionFrame[],
   now: () => number,
 ): void {
-  const projector = new RuntimeHostSessionProjector(snapshot, transcript, now);
+  const projector = new RuntimeHostSessionProjector(
+    snapshot,
+    transcript,
+    now,
+    activeAssistantStreams,
+  );
   for (const frame of frames) projector.accept(frame);
 }
 

@@ -1,28 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { LlmConnection } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import {
   createDesktopTaskSubmissionReadinessService,
   resolveStoredModelTarget,
 } from '../task-submission-readiness-main.js';
-
-test('resolves defaults and projects authoritative model and workspace readiness', async () => {
-  const service = createDesktopTaskSubmissionReadinessService({
-    workspaceRoot: '/workspace',
-    runtimeState: () => ({ state: 'ready', checkedAt: 90 }),
-    resolveModelTarget: async () => ({ kind: 'resolved', connection: connection(), hasSecret: true }),
-    inspectWorkspace: async () => 'ready',
-    now: () => 100,
-  });
-
-  const snapshot = await service.getSnapshot(undefined);
-  assert.equal(snapshot.state, 'ready');
-  assert.deepEqual(snapshot.dimensions.map(({ id }) => id), [
-    'runtime',
-    'model_target',
-    'workspace',
-  ]);
-});
 
 test('keeps credential lookup failure unknown instead of inventing a repair failure', async () => {
   const service = createDesktopTaskSubmissionReadinessService({

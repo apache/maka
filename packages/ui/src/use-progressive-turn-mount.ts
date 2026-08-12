@@ -33,6 +33,7 @@ export function useProgressiveTurnMount(input: {
   sessionId: string | undefined;
   turnIds: readonly string[];
   scrollRef: RefObject<HTMLElement | null>;
+  scrollBehavior: ScrollBehavior;
   /** Search navigation target; mounted before use-chat-scroll queries it. */
   targetTurnId?: string;
   /**
@@ -118,10 +119,10 @@ export function useProgressiveTurnMount(input: {
     const root = input.scrollRef.current;
     const element = root?.querySelector(`[data-turn-id="${CSS.escape(pendingReveal)}"]`);
     if (element && 'scrollIntoView' in element) {
-      (element as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      (element as HTMLElement).scrollIntoView({ behavior: input.scrollBehavior, block: 'start' });
       setPendingReveal(undefined);
     }
-  }, [pendingReveal, reconciled.start, input.scrollRef]);
+  }, [pendingReveal, reconciled.start, input.scrollBehavior, input.scrollRef]);
 
   const revealTurn = useCallback((turnId: string) => {
     setPendingReveal(turnId);

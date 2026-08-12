@@ -1,4 +1,6 @@
-import { WORKSPACE_AUTHORITY_SESSION_ID, type RuntimeEvent } from '@maka/core';
+import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core/workspace-version-authority';
+
+import { type RuntimeEvent } from '@maka/core/runtime-event';
 
 /**
  * Generic and non-workspace writers must never create workspace authority

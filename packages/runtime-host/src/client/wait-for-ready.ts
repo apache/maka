@@ -11,7 +11,10 @@ export async function waitForRuntimeHostReady(
   const deadline = Date.now() + timeoutMs;
   while (true) {
     signal?.throwIfAborted();
-    const status = await abortable(connection.status(Math.max(1, deadline - Date.now())), signal);
+    const status = await abortable(
+      () => connection.status(Math.max(1, deadline - Date.now())),
+      signal,
+    );
     if (status.state === 'ready') return;
     if (status.state === 'draining') {
       throw new Error('Runtime Host drained before becoming ready');
@@ -20,13 +23,17 @@ export async function waitForRuntimeHostReady(
     if (remaining <= 0) {
       throw new Error('Runtime Host did not become ready before the deadline');
     }
-    await abortable(new Promise((resolve) => setTimeout(resolve, Math.min(25, remaining))), signal);
+    await abortable(
+      () => new Promise((resolve) => setTimeout(resolve, Math.min(25, remaining))),
+      signal,
+    );
   }
 }
 
-function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return operation;
+export function abortable<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation();
   if (signal.aborted) return Promise.reject(signal.reason);
+  const running = operation();
   return new Promise((resolve, reject) => {
     let settled = false;
     const settle = (callback: () => void) => {
@@ -37,7 +44,7 @@ function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
     };
     const onAbort = () => settle(() => reject(signal.reason));
     signal.addEventListener('abort', onAbort, { once: true });
-    void operation.then(
+    void running.then(
       (value) => settle(() => resolve(value)),
       (error: unknown) => settle(() => reject(error)),
     );

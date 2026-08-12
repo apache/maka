@@ -21,27 +21,28 @@ import {
 } from './bounded-evidence.js';
 import {
   decodeSkillInvocationResult,
-  DurableStoreWriteError,
+  type SkillInvocationResult,
+} from '@maka/core/skill-invocation';
+import { DurableStoreWriteError, type RuntimeEventStore } from '@maka/core/runtime-event-store';
+import {
   aggregateMessageContents,
-  decodeAgentGraphIntentClaim,
   decodeMessageContent,
   isCanonicalAttachmentRef,
-  isTerminalRuntimeEvent,
-  MAX_ATTACHMENT_BYTES,
-  MAX_ATTACHMENT_COUNT,
   messageContentsEqual,
+  type AttachmentRef,
+  type MessageContent,
+} from '@maka/core/events';
+import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
+import { isTerminalRuntimeEvent, type RuntimeEvent } from '@maka/core/runtime-event';
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import {
   type AgentRunEvent,
   type AgentRunEventType,
   type AgentRunHeader,
   type AgentRunStore,
   type EmittedAgentRunEvent,
-  type AttachmentRef,
-  type MessageContent,
   type RootExecutionDescriptor,
-  type RuntimeEvent,
-  type RuntimeEventStore,
-  type SkillInvocationResult,
-} from '@maka/core';
+} from '@maka/core/agent-run';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
   isOrchestrationMode,
@@ -1669,15 +1670,15 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     if (!hasExactKeys(value, ['kind'])) throw new Error('Invalid root execution descriptor');
     return Object.freeze({ kind: 'context_compact' });
   }
-  if (value.kind === 'automation') {
+  if (value.kind === 'scheduled_task') {
     if (
-      !hasExactKeys(value, ['kind', 'automationId']) ||
-      typeof value.automationId !== 'string' ||
-      !isSafeId(value.automationId)
+      !hasExactKeys(value, ['kind', 'scheduledTaskId']) ||
+      typeof value.scheduledTaskId !== 'string' ||
+      !isSafeId(value.scheduledTaskId)
     ) {
       throw new Error('Invalid root execution descriptor');
     }
-    return Object.freeze({ kind: 'automation', automationId: value.automationId });
+    return Object.freeze({ kind: 'scheduled_task', scheduledTaskId: value.scheduledTaskId });
   }
   if (value.kind === 'goal') {
     if (

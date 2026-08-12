@@ -2,8 +2,8 @@
  * Goal tools — GoalSet / GoalClear / GoalStatus / GoalPause / GoalResume.
  *
  * Model-facing autonomous-execution controls. The agent can arm its own stop
- * condition (GoalSet), and pause/resume/clear the loop. PascalCase names match
- * the builtin tool family (Bash/Read/TaskCreate/Automation).
+ * condition (GoalSet), and pause/resume/clear the loop. Names follow their
+ * canonical registered tool identities.
  */
 
 import { z } from 'zod';

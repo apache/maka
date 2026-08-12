@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { SessionHeader, StoredMessage } from '@maka/core';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   acquireOperationalStateDatabase,
   createSqliteSessionMetadataStore,
@@ -14,7 +14,6 @@ import {
 export const E2E_FIXTURE_NOW = Date.UTC(2026, 4, 22, 3, 0, 0);
 
 export const TURN_SESSION_ID = 'e2e-fixture-turn';
-export const ARTIFACT_SESSION_ID = 'e2e-fixture-artifact';
 export const LONG_SIDEBAR_SESSION_PREFIX = 'e2e-fixture-sidebar-long-';
 export const LONG_SIDEBAR_SESSION_COUNT = 60;
 export const LONG_SIDEBAR_PROJECT_ID = 'e2e-fixture-project';

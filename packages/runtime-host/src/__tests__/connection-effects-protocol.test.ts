@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import {
-  CONNECTION_EFFECT_OPERATION_SPECS,
-  decodeClientFrame,
-  decodeHostFrame,
-} from '../protocol/index.js';
+import { decodeClientFrame, decodeHostFrame } from '../protocol/index.js';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 
 const EXPECTED = {
@@ -13,39 +9,6 @@ const EXPECTED = {
 };
 
 describe('Runtime Host connection effects protocol', () => {
-  test('declares ready commands with bounded mutation errors', () => {
-    assert.deepEqual(Object.keys(CONNECTION_EFFECT_OPERATION_SPECS).sort(), [
-      'connection.models.fetch',
-      'connection.onboarding.save',
-      'connection.onboarding.verify',
-      'connection.test.run',
-    ]);
-    for (const operation of Object.keys(CONNECTION_EFFECT_OPERATION_SPECS) as Array<
-      keyof typeof CONNECTION_EFFECT_OPERATION_SPECS
-    >) {
-      assert.deepEqual(
-        {
-          mode: CONNECTION_EFFECT_OPERATION_SPECS[operation].mode,
-          availability: CONNECTION_EFFECT_OPERATION_SPECS[operation].availability,
-          errors: CONNECTION_EFFECT_OPERATION_SPECS[operation].errors,
-        },
-        {
-          mode: 'command',
-          availability: 'ready',
-          errors: [
-            'host_not_ready',
-            'host_draining',
-            'operation_unavailable',
-            'invalid_request',
-            'internal_failure',
-            'persistence_failed',
-            'commit_outcome_unknown',
-          ],
-        },
-      );
-    }
-  });
-
   test('bounds transient onboarding secrets, models, and save selections', () => {
     const verify = request('connection.onboarding.verify', {
       providerType: 'openrouter',

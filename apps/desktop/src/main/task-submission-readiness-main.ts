@@ -1,9 +1,6 @@
 import { stat } from 'node:fs/promises';
-import {
-  deriveTaskSubmissionReadiness,
-  type LlmConnection,
-  type TaskSubmissionReadinessSnapshot,
-} from '@maka/core';
+import { deriveTaskSubmissionReadiness, type TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
+import { type LlmConnection } from '@maka/core/llm-connections';
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,

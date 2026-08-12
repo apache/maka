@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import type { ScheduledTask, UiLocale } from '@maka/core';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, SkillEntry } from '@maka/ui';
 import {
   createAppShellScheduledTaskActions,
@@ -39,6 +40,7 @@ export function useAppShellModuleData(options: {
   managedSkillSources: ManagedSkillSourceEntry[];
   bundledSkillCatalog: BundledSkillCatalogEntry[];
   scheduledTasks: ScheduledTask[];
+  clearRuntimeHostModuleData(): void;
 } {
   const { uiLocale, isSkillsSurfaceActive, isScheduledTasksSurfaceActive, toastApi } = options;
   const [skills, setSkills] = useState<SkillEntry[]>([]);
@@ -63,11 +65,19 @@ export function useAppShellModuleData(options: {
     toastApi,
   });
 
+  function clearRuntimeHostModuleData(): void {
+    setSkills([]);
+    setManagedSkillSources([]);
+    setBundledSkillCatalog([]);
+    setScheduledTasks([]);
+  }
+
   return {
     skills,
     managedSkillSources,
     bundledSkillCatalog,
     scheduledTasks,
+    clearRuntimeHostModuleData,
     ...scheduledTaskActions,
     ...skillActions,
   };

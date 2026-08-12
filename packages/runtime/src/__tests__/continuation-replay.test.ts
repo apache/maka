@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { type RuntimeEvent } from '@maka/core';
+import { type RuntimeEvent } from '@maka/core/runtime-event';
 import {
   buildImmutableRuntimePrefix,
   type RuntimePrefixIdentityV1,

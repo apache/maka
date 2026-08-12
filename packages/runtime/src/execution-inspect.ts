@@ -1,4 +1,6 @@
-import type { AgentRunHeader, RuntimeEvent, SessionHeader } from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { SessionHeader } from '@maka/core/session';
 import {
   AGENT_RUN_INSPECT_DOCUMENT_VERSION,
   SESSION_INSPECT_DOCUMENT_VERSION,

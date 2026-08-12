@@ -1,5 +1,7 @@
-import type { AgentRunStore, RuntimeEvent, RuntimeEventStore } from '@maka/core';
-import { isSessionInlineRun } from '@maka/core';
+import type { AgentRunStore } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import { isSessionInlineRun } from '@maka/core/agent-run';
 import { loadLatestHistoryCompactCheckpointFromRunLedger } from './history-compact-ledger.js';
 import {
   canReplaceHistoryCompactCheckpoint,

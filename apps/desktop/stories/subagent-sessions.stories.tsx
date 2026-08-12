@@ -25,7 +25,8 @@ import {
   ChatMessageMetadata,
 } from '@astryxdesign/core/Chat';
 import { Text } from '@astryxdesign/core/Text';
-import type { SessionSummary, ToolResultContent } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
+import type { ToolResultContent } from '@maka/core/events';
 import {
   SessionListPanel,
   TitlebarSessionIdentity,

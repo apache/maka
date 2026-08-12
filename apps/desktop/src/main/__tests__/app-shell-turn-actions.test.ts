@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
 import { createAppShellTurnActions } from '../../renderer/app-shell-turn-actions.js';
 
 test('preserves a Branch copy identity after an ambiguous failure and completes it on success', async () => {

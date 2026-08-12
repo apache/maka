@@ -1,4 +1,4 @@
-import type { UiLocalePreference } from '@maka/core';
+import type { UiLocalePreference } from '@maka/core/ui-locale';
 
 export interface UiLocaleUpdateGate {
   begin(hasLocalePreference: boolean): number | null;

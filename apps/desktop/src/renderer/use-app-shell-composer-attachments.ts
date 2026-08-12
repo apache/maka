@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { attachmentKindFromMimeType, guessMimeFromName } from '@maka/core';
+import { attachmentKindFromMimeType, guessMimeFromName } from '@maka/core/attachments';
 import { useUiLocale } from '@maka/ui';
 import { pendingAttachmentSourceKey, type PendingAttachment } from './app-shell-chat-actions';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
@@ -184,11 +184,16 @@ export function useAppShellComposerAttachments(options: {
     );
   }
 
+  function clearAllAttachments(): void {
+    setPendingByKey({});
+  }
+
   return {
     pendingAttachments,
     pickAttachments,
     attachFilePaths,
     removeAttachment,
     clearSubmittedAttachments,
+    clearAllAttachments,
   };
 }

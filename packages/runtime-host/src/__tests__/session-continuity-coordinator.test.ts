@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict';
 import { setImmediate as delayImmediate } from 'node:timers/promises';
 import test from 'node:test';
-import type { SessionEvent, SessionHeader, ShellRunUpdate, StoredMessage } from '@maka/core';
-import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
-import { PiAgentBackend, type PiAgentTransport } from '@maka/runtime';
+import type { SessionEvent, ShellRunUpdate } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
 import {
   decodeHostFrame,
   encodeProtocolMessage,
-  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   type SessionTranscriptCursor,
   type SubscriptionFrame,
 } from '../protocol/index.js';
@@ -76,6 +74,178 @@ test('open snapshot includes pending Interactions from the canonical projection'
   assert.deepEqual(opened.snapshot.interactions, { pending: [pending] });
 
   connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
+test('open identifies every assistant stream that is still active and round-trips its result', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  coordinator.attachConnection('connection-1', new RecordingSink());
+  await open(coordinator, 'connection-1');
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_delta', 'message-2', 'reasoning'),
+  );
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textEvent(2),
+    messageId: 'message-3',
+  });
+
+  coordinator.attachConnection('connection-2', new RecordingSink());
+  const active = await open(coordinator, 'connection-2');
+  assert.deepEqual(active.activeAssistantStreams, [
+    { kind: 'text', turnId: 'turn-1', messageId: 'message-1' },
+    { kind: 'thinking', turnId: 'turn-1', messageId: 'message-2' },
+    { kind: 'text', turnId: 'turn-1', messageId: 'message-3' },
+  ]);
+
+  const decoded = decodeHostFrame(
+    JSON.parse(
+      encodeProtocolMessage({
+        requestId: 'open-round-trip',
+        operation: 'subscription.open',
+        ok: true,
+        result: active,
+      }).toString('utf8'),
+    ),
+  );
+  assert.ok('ok' in decoded && decoded.ok);
+  if (!('ok' in decoded) || !decoded.ok || decoded.operation !== 'subscription.open') return;
+  assert.deepEqual(decoded.result.activeAssistantStreams, active.activeAssistantStreams);
+
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', 'chunk-1'),
+  );
+  coordinator.attachConnection('connection-3', new RecordingSink());
+  const remaining = await open(coordinator, 'connection-3');
+  assert.deepEqual(remaining.activeAssistantStreams, [
+    { kind: 'thinking', turnId: 'turn-1', messageId: 'message-2' },
+    { kind: 'text', turnId: 'turn-1', messageId: 'message-3' },
+  ]);
+
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_complete', 'message-2', 'reasoning'),
+  );
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textCompleteEvent('message-2', ''));
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-3', 'chunk-2'),
+  );
+  coordinator.attachConnection('connection-4', new RecordingSink());
+  const completed = await open(coordinator, 'connection-4');
+  assert.deepEqual(completed.activeAssistantStreams, []);
+  coordinator.close();
+});
+
+test('publishes a non-prefix final value as an authoritative replacement', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textEvent(1),
+    text: 'draft',
+  });
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', 'final'),
+  );
+  await waitFor(() => sink.frames.length === 3);
+
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.session_delta'
+        ? {
+            startOffset: frame.delta.startOffset,
+            text: frame.delta.text,
+            reset: frame.delta.reset === true,
+            complete: frame.delta.complete === true,
+          }
+        : frame.kind,
+    ),
+    [
+      { startOffset: 0, text: 'draft', reset: false, complete: false },
+      { startOffset: 0, text: 'final', reset: true, complete: false },
+      { startOffset: 5, text: '', reset: false, complete: true },
+    ],
+  );
+  coordinator.close();
+});
+
+test('coalesces reasoning parts and completes the step before later steps continue', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_delta', 'step-1', 'first'),
+  );
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_delta', 'step-1', 'second'),
+  );
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_complete', 'step-1', 'first'),
+  );
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_complete', 'step-1', 'second'),
+  );
+  assert.equal(sink.frames.length, 2);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textCompleteEvent('step-1', ''));
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_delta', 'step-2', 'second'),
+  );
+  await waitFor(() => sink.frames.length === 4);
+
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.session_delta'
+        ? {
+            messageId: frame.delta.messageId,
+            text: frame.delta.text,
+            complete: frame.delta.complete === true,
+          }
+        : frame.kind,
+    ),
+    [
+      { messageId: 'step-1', text: 'first', complete: false },
+      { messageId: 'step-1', text: 'second', complete: false },
+      { messageId: 'step-1', text: '', complete: true },
+      { messageId: 'step-2', text: 'second', complete: false },
+    ],
+  );
   coordinator.close();
 });
 
@@ -186,70 +356,6 @@ test('in-flight canonical refresh observes an invalidation after its first read'
     ),
     [2, 3],
   );
-  coordinator.close();
-});
-
-test('tool output preserves one domain event and one wire frame', async () => {
-  const coordinator = new SessionContinuityCoordinator(
-    HOST_EPOCH,
-    async () => canonical(),
-    new SessionAdmissionGate(),
-  );
-  const sink = new RecordingSink();
-  const connection = coordinator.attachConnection('connection-1', sink);
-  const opened = await open(coordinator, 'connection-1');
-  connection.activate(opened.subscriptionId);
-  let nextId = 0;
-  let now = 1;
-  const source = '界'.repeat(TOOL_OUTPUT_DELTA_MAX_CHARS + 1);
-  const transport = {
-    async *send() {
-      yield {
-        type: 'tool_output_delta' as const,
-        toolUseId: 'tool-1',
-        stream: 'stdout' as const,
-        chunk: source,
-      };
-      yield { type: 'complete' as const };
-    },
-  } satisfies PiAgentTransport;
-  const backend = new PiAgentBackend({
-    sessionId: SESSION_ID,
-    header: piSessionHeader(),
-    appendMessage: async () => undefined,
-    transport,
-    newId: () => `event-${++nextId}`,
-    now: () => now++,
-  });
-  const produced: SessionEvent[] = [];
-  for await (const event of backend.send({ turnId: 'turn-1', text: 'inspect', context: [] })) {
-    produced.push(event);
-  }
-  const outputs = produced.filter(
-    (event): event is Extract<SessionEvent, { type: 'tool_output_delta' }> =>
-      event.type === 'tool_output_delta',
-  );
-  assert.equal(outputs.length, 1);
-  const output = outputs[0];
-  assert.ok(output);
-  assert.ok(output.chunk.length <= TOOL_OUTPUT_DELTA_MAX_CHARS);
-  assert.match(output.chunk, /\n\[内容已截断\]$/);
-
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', output);
-  await waitFor(() => sink.frames.length === 1);
-
-  const encoded = encodeProtocolMessage(sink.frames[0]!);
-  assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES);
-  const decoded = decodeHostFrame(JSON.parse(encoded.toString('utf8')));
-  assert.ok('kind' in decoded);
-  if (!('kind' in decoded)) return;
-  assert.equal(decoded.kind, 'subscription.session_event');
-  if (decoded.kind !== 'subscription.session_event') return;
-  assert.equal(decoded.event.type, 'tool_output_delta');
-  if (decoded.event.type !== 'tool_output_delta') return;
-  assert.equal(decoded.event.id, output.id);
-  assert.equal(decoded.event.seq, output.seq);
-  assert.equal(decoded.event.chunk, output.chunk);
   coordinator.close();
 });
 
@@ -581,6 +687,42 @@ test('a joining Client receives live assistant text that has not reached durable
   coordinator.close();
 });
 
+test('a durable final replaces a non-prefix live draft during transcript catch-up', async () => {
+  const transcript = deferred<readonly StoredMessage[]>();
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    () => transcript.promise,
+  );
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textEvent(1),
+    text: 'draft',
+  });
+  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  const catchUp = coordinator.handlers['session.transcript.query'](
+    { kind: 'start', subscriptionId: opened.subscriptionId },
+    connectionContext('connection-1'),
+  );
+  transcript.resolve([assistantMessage('authoritative final')]);
+
+  const snapshot = await catchUp;
+  assert.equal(snapshot.ok, true);
+  if (!snapshot.ok) assert.fail('expected the transcript snapshot');
+  assert.equal(snapshot.result.kind, 'chunk');
+  if (snapshot.result.kind !== 'chunk') assert.fail('expected a transcript chunk');
+  assert.deepEqual(
+    JSON.parse(Buffer.from(snapshot.result.data, 'base64').toString('utf8')),
+    assistantMessage('authoritative final'),
+  );
+  coordinator.close();
+});
+
 test('transcript snapshots chunk one large message and remain subscription-owned', async () => {
   const message = assistantMessage('界'.repeat(20_000));
   const coordinator = new SessionContinuityCoordinator(
@@ -771,6 +913,17 @@ class RecordingSink implements SessionContinuityFrameSink {
   }
 }
 
+function textCompleteEvent(messageId: string, text: string) {
+  return {
+    type: 'text_complete' as const,
+    id: `text_complete-${messageId}`,
+    turnId: 'turn-1',
+    ts: 1,
+    messageId,
+    text,
+  };
+}
+
 async function open(coordinator: SessionContinuityCoordinator, connectionId: string) {
   const outcome = await coordinator.handlers['subscription.open'](
     { sessionId: SESSION_ID },
@@ -886,29 +1039,6 @@ function pendingInteraction() {
   };
 }
 
-function piSessionHeader(): SessionHeader {
-  return {
-    id: SESSION_ID,
-    workspaceRoot: '/tmp/maka',
-    cwd: '/tmp/maka',
-    createdAt: 1,
-    lastUsedAt: 1,
-    name: 'Pi continuity test',
-    titleIsManual: true,
-    isFlagged: false,
-    labels: [],
-    isArchived: false,
-    status: 'active',
-    hasUnread: false,
-    backend: 'pi-agent',
-    llmConnectionSlug: 'pi-agent',
-    connectionLocked: true,
-    model: 'pi-test',
-    permissionMode: 'execute',
-    schemaVersion: 1,
-  };
-}
-
 function textEvent(index: number) {
   return {
     type: 'text_delta' as const,
@@ -917,6 +1047,21 @@ function textEvent(index: number) {
     ts: index,
     messageId: 'message-1',
     text: `chunk-${index}`,
+  };
+}
+
+function thinkingEvent(
+  type: 'thinking_delta' | 'thinking_complete',
+  messageId: string,
+  text: string,
+) {
+  return {
+    type,
+    id: `${type}-${messageId}`,
+    turnId: 'turn-1',
+    ts: 1,
+    messageId,
+    text,
   };
 }
 

@@ -1,11 +1,3 @@
-/**
- * Session disk format: JSONL with SessionHeader as line 1 + append-only
- * StoredMessage lines.
- * Storage layer enforces append-only for messages and read-rewrite-write
- * (atomic temp + rename) for header. Per-session write queue invariant
- * is enforced by the storage implementation.
- */
-
 import {
   decodeMessageContent,
   TOOL_ACTIVITY_KINDS,
@@ -31,10 +23,7 @@ import {
 } from './record-schema.js';
 import { isPermissionDecisionFields } from './interaction-record-schema.js';
 import { isTokenUsageFields, type TokenUsageFields } from './usage-record-schema.js';
-import {
-  decodePersistedToolResultContentForRecovery,
-  normalizeToolResultContentForRead,
-} from './tool-result-record-schema.js';
+import { decodeCanonicalToolResultContent } from './tool-result-record-schema.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 
 export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './explore-agent.js';
@@ -259,7 +248,7 @@ export interface SessionHeader {
   schemaVersion: 1;
 }
 
-export type BackendKind = 'ai-sdk' | 'fake' | 'pi-agent';
+export type BackendKind = 'ai-sdk' | 'fake';
 
 export interface SessionSummary {
   id: string;
@@ -670,7 +659,7 @@ export interface UserMessage extends MessageContent {
   /** Non-user trigger source. Lets the chat mark turns the user did not
    * hand-type. Mirrors TurnOrigin in runtime-inputs. */
   origin?:
-    | { kind: 'automation'; automationId: string }
+    | { kind: 'scheduled_task'; scheduledTaskId: string }
     | { kind: 'goal'; goalId: string }
     | { kind: 'agent_graph'; graphId: string; wakeId: string; attemptId: string };
 }
@@ -946,10 +935,13 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
   ['signature', 'providerOptions', 'parts'],
 );
 type MessageOrigin = NonNullable<UserMessage['origin']>;
-type AutomationOrigin = Extract<MessageOrigin, { kind: 'automation' }>;
+type ScheduledTaskOrigin = Extract<MessageOrigin, { kind: 'scheduled_task' }>;
 type GoalOrigin = Extract<MessageOrigin, { kind: 'goal' }>;
 type AgentGraphOrigin = Extract<MessageOrigin, { kind: 'agent_graph' }>;
-const AUTOMATION_ORIGIN_SHAPE = defineObjectShape<AutomationOrigin>()(['kind', 'automationId'], []);
+const SCHEDULED_TASK_ORIGIN_SHAPE = defineObjectShape<ScheduledTaskOrigin>()(
+  ['kind', 'scheduledTaskId'],
+  [],
+);
 const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], []);
 const AGENT_GRAPH_ORIGIN_SHAPE = defineObjectShape<AgentGraphOrigin>()(
   ['kind', 'graphId', 'wakeId', 'attemptId'],
@@ -968,19 +960,8 @@ const SYSTEM_NOTE_KINDS = new Set([
   'abort',
 ]);
 
-export function decodeStoredMessageForRead(value: unknown): StoredMessage {
-  return decodeStoredMessage(value, normalizeToolResultContentForRead);
-}
-
-export function decodeStoredMessageForRecovery(value: unknown): StoredMessage {
-  return decodeStoredMessage(value, decodePersistedToolResultContentForRecovery);
-}
-
-function decodeStoredMessage(
-  value: unknown,
-  decodeToolResultContent: (content: unknown) => ToolResultContent,
-): StoredMessage {
-  const message = decodeStoredMessageContent(value, decodeToolResultContent);
+export function decodeStoredMessage(value: unknown): StoredMessage {
+  const message = decodeStoredMessageContent(value, decodeCanonicalToolResultContent);
   if (!isRecord(message)) throw new Error('Invalid stored message schema');
   switch (message.type) {
     case 'user':
@@ -1144,15 +1125,6 @@ function isAssistantThinking(value: unknown): value is AssistantThinking {
   );
 }
 
-function isAutomationOrigin(value: unknown): value is AutomationOrigin {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, AUTOMATION_ORIGIN_SHAPE) &&
-    value.kind === 'automation' &&
-    typeof value.automationId === 'string'
-  );
-}
-
 function isGoalOrigin(value: unknown): value is GoalOrigin {
   return (
     isRecord(value) &&
@@ -1173,8 +1145,17 @@ function isAgentGraphOrigin(value: unknown): value is AgentGraphOrigin {
   );
 }
 
+function isScheduledTaskOrigin(value: unknown): value is ScheduledTaskOrigin {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, SCHEDULED_TASK_ORIGIN_SHAPE) &&
+    value.kind === 'scheduled_task' &&
+    typeof value.scheduledTaskId === 'string'
+  );
+}
+
 function isMessageOrigin(value: unknown): value is MessageOrigin {
-  return isAutomationOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value);
+  return isScheduledTaskOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value);
 }
 
 function isOptionalFiniteDuration(value: unknown): boolean {

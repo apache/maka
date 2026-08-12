@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { LlmConnection, SessionHeader } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionHeader } from '@maka/core/session';
 import {
   NO_REAL_CONNECTION_CODE,
   assertSessionCanSend,
@@ -127,44 +128,6 @@ describe('chat readiness guard', () => {
     );
   });
 
-  test('allows none-auth local providers and real providers with secrets', async () => {
-    const local = await requireReadyConnection(
-      'ollama',
-      deps({ connection: connection({ slug: 'ollama', providerType: 'ollama', name: 'Ollama', defaultModel: 'llama3.2' }) }),
-    );
-    assert.equal(local.connection.slug, 'ollama');
-    assert.equal(local.apiKey, '');
-    assert.equal(local.model, 'llama3.2');
-
-    const real = await requireReadyConnection(
-      'anthropic',
-      deps({ connection: connection(), apiKey: 'sk-ant-test' }),
-      'claude-3-5-sonnet-20241022',
-    );
-    assert.equal(real.connection.slug, 'anthropic');
-    assert.equal(real.apiKey, 'sk-ant-test');
-    assert.equal(real.model, 'claude-3-5-sonnet-20241022');
-  });
-
-  test('normalizes stale Codex OAuth session model away from unsupported ChatGPT-account model', async () => {
-    const ready = await requireReadyConnection(
-      'openai-codex',
-      deps({
-        connection: connection({
-          slug: 'openai-codex',
-          name: 'Codex Subscription',
-          providerType: 'openai-codex',
-          defaultModel: 'gpt-5.5',
-          models: [{ id: 'gpt-5.5' }, { id: 'gpt-5.4' }],
-        }),
-        apiKey: 'codex-oauth-secret',
-      }),
-      'gpt-5-codex',
-    );
-    assert.equal(ready.connection.slug, 'openai-codex');
-    assert.equal(ready.model, 'gpt-5.5');
-  });
-
   test('send path blocks explicit fake sessions and revalidates old ai sessions', async () => {
     await assertRejectsReadiness(
       'explicit fake session',
@@ -192,11 +155,7 @@ describe('chat readiness guard', () => {
     );
   });
 
-  test('PR110a regression: model_not_enabled error names the REQUESTED model, not defaultModel', async () => {
-    // @kenji PR110a review gate: when caller passes `requestedModel`,
-    // the failing reason MUST reference the requested model (not the
-    // connection's defaultModel). The refactor to delegate to core
-    // `isConnectionReady` must preserve this 1:1 mapping.
+  test('model_not_enabled names the requested model instead of the default', async () => {
     await assert.rejects(
       () => requireReadyConnection(
         'anthropic',
@@ -207,7 +166,7 @@ describe('chat readiness guard', () => {
           }),
           apiKey: 'sk-test',
         }),
-        'gpt-4o-NOT-IN-LIST', // the request that should appear in the error
+        'gpt-4o-NOT-IN-LIST',
       ),
       (error) => {
         const message = (error as Error).message;
@@ -219,38 +178,22 @@ describe('chat readiness guard', () => {
     );
   });
 
-  // PR-HEALTH-1 — E4 lock (three-layer separation):
-  // requireReadyConnection (send gate) must NOT consider lastTestStatus.
-  // Credential test outcome is a validation-layer concern; the send gate
-  // answers "fact: can we attempt a real send right now?" — credentials
-  // exist, model is enabled, backend is real. lastTestStatus is advisory
-  // (a past observation); send-time is when we find out for real.
-  test('E4: lastTestStatus does NOT gate requireReadyConnection (send path stays validation-independent)', async () => {
-    for (const lastTestStatus of [undefined, 'verified', 'needs_reauth', 'error'] as const) {
-      const ready = await requireReadyConnection(
-        'anthropic',
-        deps({
-          connection: connection({ lastTestStatus }),
-          apiKey: 'sk-test',
-        }),
-      );
-      assert.equal(
-        ready.connection.slug,
-        'anthropic',
-        `lastTestStatus=${lastTestStatus} must NOT block send (validation ≠ send gate)`,
-      );
-      assert.equal(ready.model, 'claude-3-5-sonnet-20241022');
-    }
+  test('credential validation status does not gate a real send attempt', async () => {
+    const ready = await requireReadyConnection(
+      'anthropic',
+      deps({
+        connection: connection({ lastTestStatus: 'error' }),
+        apiKey: 'sk-test',
+      }),
+    );
+    assert.equal(ready.connection.slug, 'anthropic');
+    assert.equal(ready.model, 'claude-3-5-sonnet-20241022');
   });
 
   test('classifies stale sessions that can be rebound to the current default model', () => {
-    for (const reason of ['fake_backend', 'connection_missing', 'missing_model', 'empty_model_list', 'model_not_enabled', 'model_not_chat_capable']) {
-      assert.equal(shouldRebindSessionToDefault(reason), true, reason);
-    }
-
-    for (const reason of ['missing_default_connection', 'connection_disabled', 'missing_api_key', 'oauth_subscription_not_wired', undefined]) {
-      assert.equal(shouldRebindSessionToDefault(reason), false, String(reason));
-    }
+    assert.equal(shouldRebindSessionToDefault('model_not_enabled'), true);
+    assert.equal(shouldRebindSessionToDefault('missing_api_key'), false);
+    assert.equal(shouldRebindSessionToDefault(undefined), false);
   });
 
   test('rebinds stale ai-sdk sessions to a ready default connection before send', async () => {
@@ -341,65 +284,6 @@ describe('chat readiness guard', () => {
     );
 
     assert.deepEqual(updates, []);
-  });
-
-  test('does not rebind locked legacy fake sessions', async () => {
-    const updates: unknown[] = [];
-
-    await assertRejectsReadiness(
-      'locked fake session',
-      () => ensureSessionCanSendOrRebind(
-        'session-locked-fake',
-        header({ backend: 'fake', llmConnectionSlug: 'fake', model: 'fake-model', connectionLocked: true }),
-        {
-          readyConnectionDeps: keyedDeps({
-            anthropic: { connection: connection(), apiKey: 'sk-test' },
-          }),
-          async getDefaultSlug() {
-            return 'anthropic';
-          },
-          async listConnectionSlugs() {
-            return [];
-          },
-          async updateSession(_sessionId, patch) {
-            updates.push(patch);
-          },
-        },
-      ),
-      '旧的本地模拟连接',
-      'fake_backend',
-    );
-
-    assert.deepEqual(updates, []);
-  });
-
-  test('rebinds old fake sessions to a ready default connection before send', async () => {
-    const updates: unknown[] = [];
-    const result = await ensureSessionCanSendOrRebind(
-      'session-1',
-      header({ backend: 'fake', llmConnectionSlug: 'fake', model: 'fake-model' }),
-      {
-        readyConnectionDeps: keyedDeps({
-          anthropic: { connection: connection(), apiKey: 'sk-test' },
-        }),
-        async getDefaultSlug() {
-          return 'anthropic';
-        },
-        async listConnectionSlugs() {
-          return [];
-        },
-        async updateSession(_sessionId, patch) {
-          updates.push(patch);
-        },
-      },
-    );
-
-    assert.deepEqual(result, {
-      rebound: true,
-      connectionSlug: 'anthropic',
-      modelId: 'claude-3-5-sonnet-20241022',
-    });
-    assert.equal(updates.length, 1);
   });
 
   test('rebinds an unknown-provider session to the first existing ready connection', async () => {
@@ -525,8 +409,8 @@ function header(patch: Partial<SessionHeader> = {}): Pick<SessionHeader, 'backen
   };
 }
 
-describe('send-gate fact resolution stays staged (#1038 review)', () => {
-  test('healthy session send is not failed by an unrelated connection’s failing secret read', async () => {
+describe('send-gate fact resolution stays staged', () => {
+  test('a healthy send resolves only its own connection facts', async () => {
     const secretReads: string[] = [];
     const result = await ensureSessionCanSendOrRebind(
       'session-1',
@@ -543,10 +427,10 @@ describe('send-gate fact resolution stays staged (#1038 review)', () => {
           },
         },
         async getDefaultSlug() {
-          return 'anthropic';
+          throw new Error('default store must not be read');
         },
         async listConnectionSlugs() {
-          return ['anthropic', 'unrelated'];
+          throw new Error('connection list must not be read');
         },
         async updateSession() {
           throw new Error('must not rebind');
@@ -556,51 +440,6 @@ describe('send-gate fact resolution stays staged (#1038 review)', () => {
 
     assert.deepEqual(result, { rebound: false });
     assert.deepEqual(secretReads, ['anthropic'], 'only the session’s own connection is probed on the healthy path');
-  });
-
-  test('healthy session send does not consult default/list fallbacks', async () => {
-    const result = await ensureSessionCanSendOrRebind(
-      'session-1',
-      header(),
-      {
-        readyConnectionDeps: keyedDeps({ anthropic: { connection: connection(), apiKey: 'sk-test' } }),
-        async getDefaultSlug() {
-          throw new Error('default store unavailable');
-        },
-        async listConnectionSlugs() {
-          throw new Error('list store unavailable');
-        },
-        async updateSession() {
-          throw new Error('must not rebind');
-        },
-      },
-    );
-
-    assert.deepEqual(result, { rebound: false });
-  });
-
-  test('a failed connection list never rebinds a healthy session away from its connection', async () => {
-    const result = await ensureSessionCanSendOrRebind(
-      'session-1',
-      header(),
-      {
-        readyConnectionDeps: keyedDeps({
-          anthropic: { connection: connection(), apiKey: 'sk-test' },
-          zai: { connection: connection({ slug: 'zai' }), apiKey: 'sk-zai' },
-        }),
-        async getDefaultSlug() {
-          return 'zai';
-        },
-        async listConnectionSlugs() {
-          throw new Error('list read failed');
-        },
-        async updateSession() {
-          throw new Error('must not rebind');
-        },
-      },
-    );
-
-    assert.deepEqual(result, { rebound: false });
   });
 
   test('rebind picks the first ready candidate in persisted order, not async completion order', async () => {

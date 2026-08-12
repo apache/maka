@@ -3,9 +3,11 @@ import type { StoredMessage } from '@maka/core/session';
 import {
   isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventsToStoredMessages,
+} from '@maka/runtime/runtime-event-read-model';
+import {
   type CanonicalPermissionOutcomeReader,
   type CanonicalPermissionOutcomeRecord,
-} from '@maka/runtime';
+} from '@maka/runtime/interaction-authority';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import type { TurnSnapshot } from '../protocol/index.js';
 import type { ReadSessionTranscript } from './session-continuity-coordinator.js';

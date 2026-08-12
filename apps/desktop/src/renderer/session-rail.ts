@@ -1,5 +1,5 @@
-import type { SessionSummary } from '@maka/core';
-import { projectRevisionLinkedSessionTree } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
+import { projectRevisionLinkedSessionTree } from '@maka/core/session-revisions';
 
 export type SessionRailProjection = {
   sessions: SessionSummary[];

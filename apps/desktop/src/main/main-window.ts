@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, nativeTheme, screen, shell } from 'electron
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { AppSettings } from '@maka/core';
+import type { AppSettings } from '@maka/core/settings';
 import { isExternalUrl } from './external-link-guard.js';
 import { errorMessage } from './chat-readiness.js';
 import { readSavedBounds, writeSavedBounds, SAFE_MIN_HEIGHT, SAFE_MIN_WIDTH, type SavedBounds } from './window-state.js';
@@ -532,11 +532,8 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
 function isTitleBarOverlayTheme(value: unknown): value is { isDark: boolean; backgroundColor: string } {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as { isDark?: unknown; backgroundColor?: unknown };
-  return (
-    typeof candidate.isDark === 'boolean' &&
-    typeof candidate.backgroundColor === 'string' &&
-    /^#[0-9a-f]{6}$/i.test(candidate.backgroundColor)
-  );
+  return (typeof candidate.isDark === 'boolean' &&
+  typeof candidate.backgroundColor === 'string' && /^#[0-9a-f]{6}$/i.test(candidate.backgroundColor));
 }
 
 /**

@@ -1,9 +1,8 @@
 /**
  * ScheduledTask — the single product noun for "定时任务".
  *
- * One catalog, one scheduler authority (the initiating Desktop), multiple effects
- * (local/bot notify vs agent session run). Heartbeats are intentionally
- * out of scope: they remain session-scoped Automation.
+ * One catalog, one scheduler authority (the Runtime Host), multiple effects:
+ * native delivery, a fresh Agent session, or resuming the creating session.
  */
 
 import { compileCronExpression } from './cron-expression.js';
@@ -18,7 +17,9 @@ export const SCHEDULED_TASK_TITLE_MAX_CHARS = 120;
 export const SCHEDULED_TASK_INTENT_MAX_CHARS = 8_000;
 export const SCHEDULED_TASK_CRON_MAX_CHARS = 80;
 export const SCHEDULED_TASK_CHAT_ID_MAX_CHARS = 160;
+export const SCHEDULED_TASK_SESSION_ID_MAX_CHARS = 160;
 export const SCHEDULED_TASK_RUN_HISTORY_LIMIT = 20;
+export const SCHEDULED_TASK_RUN_MESSAGE_MAX_CHARS = 1_024;
 export const SCHEDULED_TASK_MAX_DELAY_MS = 366 * 24 * 60 * 60 * 1000;
 export const SCHEDULED_TASK_MIN_INTERVAL_SECONDS = 10;
 export const SCHEDULED_TASK_MAX_INTERVAL_SECONDS = 366 * 86_400;
@@ -44,6 +45,7 @@ export type ScheduledTaskSchedule =
 export type ScheduledTaskEffect =
   | { kind: 'notify'; channel: 'local' }
   | { kind: 'notify'; channel: 'bot'; platform: BotProvider; chatId: string }
+  | { kind: 'session_resume'; sessionId: string }
   | { kind: 'agent_run'; execution: ScheduledTaskExecutionTemplate };
 
 /** Frozen at create time so later settings changes do not rewrite past jobs. */
@@ -134,7 +136,7 @@ export function normalizeCreateScheduledTaskInput(
   const effect = normalizeEffect(input.effect);
   if (!effect.ok) return effect;
   const intentBody = normalizeIntent(input.intentBody ?? input.intent?.body, {
-    required: effect.value.kind === 'agent_run',
+    required: effect.value.kind !== 'notify',
   });
   if (!intentBody.ok) return intentBody;
   const createdBy = normalizeCreatedBy(input.createdBy);
@@ -468,6 +470,16 @@ function normalizeEffect(value: unknown): ScheduledTaskNormalizeResult<Scheduled
     if (!execution.ok) return execution;
     return { ok: true, value: { kind: 'agent_run', execution: execution.value } };
   }
+  if (value.kind === 'session_resume') {
+    if (typeof value.sessionId !== 'string' || !value.sessionId.trim()) {
+      return fail('session_resume requires sessionId');
+    }
+    const sessionId = value.sessionId.trim();
+    if ([...sessionId].length > SCHEDULED_TASK_SESSION_ID_MAX_CHARS) {
+      return fail(`sessionId must be ${SCHEDULED_TASK_SESSION_ID_MAX_CHARS} characters or fewer`);
+    }
+    return { ok: true, value: { kind: 'session_resume', sessionId } };
+  }
   return fail('Unknown effect kind');
 }
 
@@ -477,7 +489,7 @@ function normalizeExecution(
   if (!isObject(value)) return fail('agent_run requires execution template');
   if (typeof value.cwd !== 'string' || !value.cwd.trim()) return fail('execution.cwd is required');
   if (typeof value.backend !== 'string') return fail('execution.backend is required');
-  if (value.backend !== 'ai-sdk' && value.backend !== 'fake' && value.backend !== 'pi-agent') {
+  if (value.backend !== 'ai-sdk' && value.backend !== 'fake') {
     return fail('execution.backend is invalid');
   }
   if (typeof value.llmConnectionSlug !== 'string' || !value.llmConnectionSlug.trim()) {

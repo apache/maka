@@ -1,4 +1,4 @@
-import type { ArtifactRecord, ArtifactSource } from '@maka/core';
+import type { ArtifactRecord, ArtifactSource } from '@maka/core/artifacts';
 import { estimateTokens } from './context-budget-helpers.js';
 import {
   buildSynthesisCacheBlocksFromHydratedArchives,

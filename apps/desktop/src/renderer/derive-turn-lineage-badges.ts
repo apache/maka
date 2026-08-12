@@ -14,7 +14,7 @@
  */
 
 import type { TurnLineageBadge } from '@maka/ui';
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
 export interface TurnLineageBadgeInput {

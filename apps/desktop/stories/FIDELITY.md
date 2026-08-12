@@ -15,7 +15,7 @@ So each story carries a `// Real path:` comment directly above it, naming how a 
 export const Populated: Story = { … }
 ```
 
-The annotation is prose on purpose. Its value is that someone traced the path and wrote it down; a machine-checkable schema would be satisfied by a plausible-looking lie just as easily. So the convention splits along what a machine can decide. `scripts/check-story-annotations.mjs` checks that the sentence *exists*, and fails on any export it cannot classify rather than skipping it — write stories as `export const Name: Story = …` and nothing else. **It cannot tell you the sentence is true.** Only a reviewer following the call chain can, and reviewing that sentence is the point of writing it. The script's header explains why it stops there.
+The annotation is prose on purpose. Its value is that someone traced the path and wrote it down; a mechanical presence check would be satisfied by a plausible-looking lie just as easily. Only a reviewer following the call chain can determine whether it is true.
 
 Two of the first batch of annotations were wrong, and both were caught by reading rather than by running anything: one named a path through a builder that cannot produce the state (`CommandPaletteDisabledCommand`), and one named two hosts for a frame that is only one of them. Write the sentence narrow enough to be falsifiable — the host, the builder, the gate — because a sentence vague enough to always be true buys nothing.
 

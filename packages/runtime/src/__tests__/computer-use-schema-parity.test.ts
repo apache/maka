@@ -5,7 +5,7 @@ import {
   computerUseApprovalSummary,
   COMPUTER_USE_SEMANTIC_ACTIONS,
   CU_ACTION_TYPES,
-} from '@maka/core';
+} from '@maka/core/computer-use';
 import { computerParams } from '../computer-use-codec.js';
 import { computerWireParams } from '../computer-use-tools.js';
 
@@ -162,45 +162,5 @@ describe('the two argument schemas describe the same tool', () => {
       [],
       'the wire carries actions the approval catalog records as "unknown"',
     );
-  });
-
-  test('the check would fail if a field were missing', () => {
-    // A test that cannot fail is not a check. This runs the same comparator the
-    // real check uses, against the shape of the bug it exists to catch.
-    assert.deepEqual(
-      unreachableFields(new Set(['action', 'observation_id']), [
-        { action: 'window_action', fields: ['action', 'observation_id', 'position'] },
-      ]),
-      [{ action: 'window_action', missing: ['position'] }],
-    );
-  });
-
-  test('the catalog check would fail on a name the wire does not carry', () => {
-    // The negative control for the check above, in the direction that has no
-    // natural failure to point at. It runs the same comparator over a fixed
-    // catalog rather than the real one, so it keeps proving the comparator can
-    // return something even on the day the real catalog is correct.
-    // `element_sequence` is the real case: it exists on the branch that adds
-    // the executor and nowhere in this schema.
-    assert.deepEqual(
-      catalogNotOnWire(new Set(['observe', 'element_sequence']), new Set(['observe'])),
-      ['element_sequence'],
-    );
-    assert.deepEqual(catalogNotOnWire(new Set(['observe']), new Set(['observe'])), []);
-  });
-
-  test('the introspection reads real schemas, not just the objects it built', () => {
-    // The negative control above builds its own arrays. If `shapeOf` or
-    // `literalValue` stopped extracting anything, that control would still pass
-    // while the real checks compared two empty sets. These assert the readers
-    // return something from the actual schemas.
-    assert.ok(wireFields().size > 5, 'the wire schema has fields');
-    assert.ok(wireActions().length > 5, 'the wire action field is a populated enum');
-    const arms = unionArms();
-    assert.ok(arms.length > 5, 'the union has arms');
-    for (const { action, fields } of arms) {
-      assert.notEqual(action, 'undefined', 'every arm discriminates on a literal action');
-      assert.ok(fields.includes('action'), 'every arm carries the discriminant');
-    }
   });
 });

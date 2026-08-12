@@ -6,7 +6,7 @@ import type { MakaTool } from './tool-runtime.js';
 
 const PLAN_CONTROL_TOOLS = new Set(['SubmitPlan', 'update_plan', 'cancel_plan']);
 const PLAN_AUTONOMOUS_WORKFLOW_TOOLS = new Set([
-  'Automation',
+  'ScheduledTask',
   'GoalSet',
   'GoalClear',
   'GoalStatus',
@@ -56,7 +56,7 @@ export function renderPlanModePrompt(input: { fullAccess?: boolean } = {}): stri
       'You are planning. Inspect the repository, discuss tradeoffs, and prepare a concrete plan for approval.',
       'Full access is active. Do not impose Plan Mode read-only restrictions; mutating tools are available when the user explicitly requests side effects during planning.',
       'Full access does not approve implementation by itself. Keep the planning workflow active until the user approves a submitted plan or explicitly asks you to act now.',
-      'Use AskUserQuestion only when a bounded answer is required. Subagents and automations are unavailable in this mode.',
+      'Use AskUserQuestion only when a bounded answer is required. Subagents and scheduled tasks are unavailable in this mode.',
       'When the plan is ready for approval, call SubmitPlan exactly once with a concise title, overview, ordered steps, and material risks.',
       'Every step must have a short title (30 characters or fewer) and a detailed description. Both fields must be plain text without Markdown formatting.',
       'Do not claim that implementation has started or completed unless the user explicitly asked for those side effects.',

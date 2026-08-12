@@ -85,8 +85,6 @@ export type {
 } from './artifact-store.js';
 export * from './artifact-attachments.js';
 export * from './provider-request-capture-artifact.js';
-export { createSqliteScheduledTaskStore } from './scheduled-task-store.js';
-export type { ScheduledTaskFireClaim, ScheduledTaskStore } from './scheduled-task-store.js';
 export { applyPlanEvent, createSqlitePlanStore } from './plan-store.js';
 export type {
   CreatePlanStoreOptions,
@@ -115,9 +113,7 @@ export {
 } from './deep-research-authority.js';
 export type { InteractiveDeepResearchStoreWriter } from './deep-research-authority.js';
 export * from './config-transfer.js';
-export * from './automation-store.js';
 export * from './daily-review-authority.js';
-export * from './automation-authority.js';
 export * from './sqlite-runtime-store.js';
 export * from './runtime-event-persistence.js';
 export * from './operational-state-store.js';
@@ -128,7 +124,6 @@ export * from './memory-bundle-store.js';
 export * from './long-term-memory-store.js';
 export * from './project-catalog.js';
 export * from './project-catalog-authority.js';
-export * from './project-session-backfill.js';
 export * from './git-worktree-child-executor.js';
 export * from './managed-workspace-owner.js';
 export * from './pet-pack-store.js';

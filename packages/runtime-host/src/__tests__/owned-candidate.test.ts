@@ -3,8 +3,71 @@ import { mkdtemp, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+} from '../protocol/index.js';
+import { connectOwnedRuntimeHostWithDependencies } from '../client/connect-or-spawn.js';
 import { runHostedExecution } from '../client/hosted-execution.js';
 import { launchOwnedRuntimeHostCandidate } from '../client/launcher.js';
+
+test('owned connection keeps a fresh Host alive for its full election window', async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-first-connection-'));
+  const result = await connectOwnedRuntimeHostWithDependencies(
+    {
+      rootPath,
+      surface: 'run',
+      protocol: {
+        min: RUNTIME_HOST_PROTOCOL_VERSION,
+        max: RUNTIME_HOST_PROTOCOL_VERSION,
+      },
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      electionDeadlineMs: 6_000,
+    },
+    {
+      launchCandidate(input) {
+        const launch = launchOwnedRuntimeHostCandidate(input);
+        return {
+          spawned: Promise.all([
+            launch.spawned,
+            new Promise((resolve) => setTimeout(resolve, 3_000)),
+          ]).then(([candidate]) => candidate),
+        };
+      },
+    },
+  );
+
+  try {
+    assert.equal(result.kind, 'connected');
+  } finally {
+    if (result.kind === 'connected') {
+      await result.connection.close();
+      await result.host.settle(3_000);
+    }
+  }
+});
+
+test('owned Host exits promptly after its first connection closes', async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-first-disconnect-'));
+  const result = await connectOwnedRuntimeHostWithDependencies(
+    {
+      rootPath,
+      surface: 'run',
+      protocol: {
+        min: RUNTIME_HOST_PROTOCOL_VERSION,
+        max: RUNTIME_HOST_PROTOCOL_VERSION,
+      },
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      electionDeadlineMs: 2_000,
+    },
+    { launchCandidate: launchOwnedRuntimeHostCandidate },
+  );
+
+  assert.equal(result.kind, 'connected');
+  if (result.kind !== 'connected') return;
+  await result.connection.close();
+  assert.equal(await result.host.settle(500), true);
+});
 
 test('owned candidate settlement requires a clean process exit', async () => {
   const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-candidate-'));

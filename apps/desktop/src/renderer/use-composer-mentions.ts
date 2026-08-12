@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { ChatDefaultPermissionMode } from '@maka/core';
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { SkillEntry } from '@maka/ui';
-import type { InvocableSkillEntry } from '@maka/runtime';
+import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 
 /**
  * Owns the composer mention popup wiring so app-shell.tsx keeps no inline

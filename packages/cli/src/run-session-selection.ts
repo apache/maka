@@ -21,6 +21,7 @@ export type MakaRunSessionSelection =
 
 export interface MakaRunSessionSelectionDeps {
   canonicalizeDirectory(path: string): Promise<string>;
+  canonicalizeStoredDirectory?(path: string): Promise<string>;
 }
 
 export async function selectMakaRunSession(
@@ -128,7 +129,7 @@ async function canonicalSessionCwd(
 ): Promise<string> {
   if (!session.cwd) throw new Error(`session ${session.id} has no stored cwd`);
   try {
-    return await deps.canonicalizeDirectory(session.cwd);
+    return await (deps.canonicalizeStoredDirectory ?? deps.canonicalizeDirectory)(session.cwd);
   } catch {
     throw new Error(`session ${session.id} cwd is missing or inaccessible: ${session.cwd}`);
   }

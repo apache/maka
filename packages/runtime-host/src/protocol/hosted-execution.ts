@@ -1,4 +1,4 @@
-import type { MessageContent } from '@maka/core';
+import type { MessageContent } from '@maka/core/events';
 import {
   requireCount,
   requireEntityId,

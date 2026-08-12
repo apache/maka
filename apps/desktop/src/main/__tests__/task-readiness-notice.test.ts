@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { TaskSubmissionReadinessSnapshot } from '@maka/core';
+import type { TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
 import {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,
@@ -29,16 +29,6 @@ test('confirmed repair and unavailable states block, while loading uncertainty d
   );
   assert.equal(isTaskSubmissionHardBlocked(snapshot('unknown', 'runtime')), false);
   assert.equal(isTaskSubmissionHardBlocked(undefined), false);
-});
-
-test('runtime and workspace blockers produce actionable localized notices', () => {
-  const runtime = deriveTaskReadinessNotice(snapshot('unavailable', 'runtime'), 'en');
-  assert.equal(runtime?.action, 'retry');
-  assert.match(runtime?.title ?? '', /runtime/i);
-
-  const workspace = deriveTaskReadinessNotice(snapshot('unavailable', 'workspace'), 'zh');
-  assert.equal(workspace?.action, 'workspace_picker');
-  assert.match(workspace?.title ?? '', /工作区/);
 });
 
 test('model blockers stay owned by existing connection recovery surfaces', () => {

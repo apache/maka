@@ -1,23 +1,18 @@
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
+import { isPathInside, isSafeSkillId } from '@maka/runtime/path-containment';
+
 import {
-  isPathInside,
-  isSafeSkillId,
   normalizeManagedSkillCategory,
   resolveManagedSkillSourcesRoot,
   validateSkillMetadata,
   type ManagedSkillSourceRecord,
   type SkillValidationIssue,
-} from '@maka/runtime';
+} from '@maka/runtime/skills';
 
-export {
-  listManagedSkillSources,
-  readManagedSkillSource,
-  resolveManagedSkillSourcesRoot,
-  toManagedSkillSourceEntry,
-} from '@maka/runtime';
-export type { ManagedSkillSourceRecord } from '@maka/runtime';
+export { listManagedSkillSources, readManagedSkillSource, resolveManagedSkillSourcesRoot, toManagedSkillSourceEntry } from '@maka/runtime/skills';
+export type { ManagedSkillSourceRecord } from '@maka/runtime/skills';
 
 export type ImportManagedSkillSourceResult =
   | { ok: true; source: ManagedSkillSourceRecord }
@@ -73,7 +68,7 @@ export async function importManagedSkillSource(input: {
     await mkdir(sourceDir, { mode: 0o700 });
     const sourceDirReal = await resolveContainedDirectory(sourceRoot.rootReal, sourceDir);
     if (!sourceDirReal.ok) return { ok: false, reason: 'blocked_path' };
-    if (!await writeContainedBufferFile(sourceDirReal.path, managedSkillPath, bytes, { failIfExists: true })) {
+    if (!(await writeContainedBufferFile(sourceDirReal.path, managedSkillPath, bytes, { failIfExists: true }))) {
       return { ok: false, reason: 'write_failed' };
     }
 

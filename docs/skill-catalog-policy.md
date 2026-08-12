@@ -71,6 +71,15 @@ shows every affected copy as `Needs review`; toggling or pinning acts on its
 exact ref, and the marker clears only after every ambiguous copy has an explicit
 preference.
 
+Bundled provenance is not an execution authority over local workspace content.
+Removing an entry from `BUNDLED_SKILL_CATALOG` stops Maka from distributing or
+installing that source and makes an older bundled lock fail validation with
+`metadata_error`. An upgrade does not delete, rewrite, or silently disable the
+already-installed `skills/<id>` directory. If that local copy is otherwise
+valid and enabled, Runtime continues to treat it as user-provided content and it
+remains invocable under the ordinary permission and host-capability rules. The
+user can disable or delete the local copy explicitly.
+
 Configured discovery roots are also part of the diagnostic contract. A missing
 optional root is normal and produces no warning. A symlink/non-directory root,
 containment escape, or unreadable root produces a bounded

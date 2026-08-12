@@ -12,37 +12,7 @@ import {
 } from '../protocol/index.js';
 
 describe('Session catalog protocol', () => {
-  test('declares closed ready-only query and mutation operations', () => {
-    assert.deepEqual(
-      Object.fromEntries(
-        (
-          [
-            'session.catalog.query',
-            'session.create',
-            'session.metadata.update',
-            'session.configuration.update',
-            'session.workspace.relocate',
-            'session.read_marker.set',
-            'session.execution_boundary.query',
-          ] as const
-        ).map((operation) => [
-          operation,
-          {
-            mode: HOST_OPERATION_SPECS[operation].mode,
-            availability: HOST_OPERATION_SPECS[operation].availability,
-          },
-        ]),
-      ),
-      {
-        'session.catalog.query': { mode: 'query', availability: 'ready' },
-        'session.create': { mode: 'command', availability: 'ready' },
-        'session.metadata.update': { mode: 'command', availability: 'ready' },
-        'session.configuration.update': { mode: 'command', availability: 'ready' },
-        'session.workspace.relocate': { mode: 'command', availability: 'ready' },
-        'session.read_marker.set': { mode: 'command', availability: 'ready' },
-        'session.execution_boundary.query': { mode: 'query', availability: 'ready' },
-      },
-    );
+  test('identifies Session creation inputs that expose Host paths', () => {
     assert.equal(
       HOST_OPERATION_SPECS['session.create'].usesHostPaths?.({
         sessionId: 'project-session',
@@ -421,20 +391,6 @@ describe('Session catalog protocol', () => {
       actualRevision: `sha256:${'b'.repeat(64)}` as const,
     };
     assert.deepEqual(decodeSessionCatalogQueryResult(changed), changed);
-  });
-
-  test('decodes only the closed unsupported legacy record shape', () => {
-    const unsupported = {
-      kind: 'unsupported_legacy_record' as const,
-      id: 'session-1',
-      revision: 2,
-      reason: 'not_wire_representable' as const,
-    };
-    assert.deepEqual(decodeSessionCatalogItem(unsupported), unsupported);
-    assert.throws(
-      () => decodeSessionCatalogItem({ ...unsupported, projectId: 'hidden' }),
-      isProtocolError,
-    );
   });
 });
 

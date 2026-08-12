@@ -1,4 +1,4 @@
-import type { SessionChangedReason } from '@maka/core';
+import type { SessionChangedReason } from '@maka/core/session';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type {
   ExternalSessionCatalogQueryInput,

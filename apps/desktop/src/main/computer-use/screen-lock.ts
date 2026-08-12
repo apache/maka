@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import type { CuOverlayHook } from '@maka/runtime';
+import type { CuOverlayHook } from '@maka/runtime/computer-use-types';
 
 // Electron is CommonJS, and named imports from it fail outside a main process.
 // Deferring the require keeps this module loadable under plain `node --test`,

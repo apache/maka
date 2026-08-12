@@ -1,11 +1,8 @@
 import { useMemo, type ComponentProps, type ReactNode } from 'react';
-import {
-  isDeepResearchSession,
-  type LlmConnection,
-  type OnboardingState,
-  type ProviderType,
-  type SettingsSection,
-} from '@maka/core';
+import { isDeepResearchSession } from '@maka/core/explore-agent';
+import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
+import { type OnboardingState } from '@maka/core/onboarding';
+import { type SettingsSection } from '@maka/core/settings';
 import { Skeleton } from '@astryxdesign/core';
 import { Banner, Button, ChatView, useUiLocale } from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';
@@ -47,7 +44,7 @@ interface ChatMessageSurfaceProps extends Omit<
   sessionHealthNotice?: SessionHealthNoticeView;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
   taskReadinessNotice?: TaskReadinessNotice;
-  onTaskReadinessAction: () => void;
+  onTaskReadinessAction?: () => void;
   showOnboardingHero: boolean;
   onboardingState: OnboardingState | undefined;
   isOnboardingLoading: boolean;
@@ -164,12 +161,12 @@ export function ChatMessageSurface({
             role="status"
             title={taskReadinessNotice.title}
             description={taskReadinessNotice.description}
-            endContent={<Button
+            endContent={onTaskReadinessAction ? <Button
               label={taskReadinessNotice.actionLabel}
               variant="ghost"
               size="sm"
               onClick={onTaskReadinessAction}
-            />} />
+            /> : undefined} />
         </div>
       )}
       {workspaceReadinessRecovery && (

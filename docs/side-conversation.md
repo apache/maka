@@ -325,16 +325,6 @@ Session, but cannot yet choose a remote host, arbitrary launch command, or cwd.
 Review still lacks commit-source browsing, hunk-level actions, filesystem
 watching, and multi-repository aggregation.
 
-Desktop E2E launches `apps/desktop/dist/main/main.js`. During preview/pin
-verification, the source and emitted `dist/main/e2e-fixture.js` contained
-`workbarPreview: true`, while the startup-registered
-`e2eFixture:getState` handler still returned the older object shape. A direct
-same-process module probe proved the current function returned the field, and
-`npm --workspace @maka/desktop run clean:main` followed by `build:main`
-restored the IPC result. Treat this signature as contaminated incremental main
-output: clean `dist/main` plus `tsconfig.main.tsbuildinfo`, rebuild main and
-preload, and then rerun Electron E2E before changing product code.
-
 The visual shell is low-to-medium difficulty. Full controller parity is a
 separate medium-to-high effort because it changes ownership, persistence,
 focus, and cleanup behavior across every workbar surface.

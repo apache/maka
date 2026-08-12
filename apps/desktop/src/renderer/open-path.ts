@@ -7,7 +7,7 @@
  * into UI; use {@link openPathFailureCopy} for human-facing strings.
  */
 
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellCopy } from './locales/shell-copy.js';
 
 export type OpenPathKey = 'workspace' | 'skills' | 'memory' | 'project';

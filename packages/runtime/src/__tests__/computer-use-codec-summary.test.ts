@@ -45,15 +45,6 @@ test('a refusal that does not declare itself stays a bare code', () => {
   assert.doesNotMatch(text, /salary/);
 });
 
-test('a successful call is unchanged', () => {
-  const text = summarize(
-    { type: 'click_element' },
-    { outcome: { ok: true, tier: 'ax', verified: true } },
-  );
-  assert.match(text, /computer\.click_element/);
-  assert.doesNotMatch(text, /failed/);
-});
-
 test('a dispatch that changed nothing does not start with the word ok', () => {
   // Measured on a real run: `cmd+p` came back `ok ... suspected_noop` seven
   // times and the model sent it seven times, then switched to `key` and sent it

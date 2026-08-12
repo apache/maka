@@ -9,11 +9,9 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
-import {
-  uiLocaleToIntlLocale,
-  type ExternalSessionSummary,
-  type SessionSummary,
-} from '@maka/core';
+import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
+import { type ExternalSessionSummary } from '@maka/core/external-session';
+import { type SessionSummary } from '@maka/core/session';
 import { Spinner, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Upload } from '@maka/ui/icons';
 import { getExternalSessionImportCopy } from './locales/external-session-import-copy.js';

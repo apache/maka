@@ -1,4 +1,5 @@
-import type { SessionBlockedReason, SessionStatus, UiLocale } from '@maka/core';
+import type { SessionBlockedReason, SessionStatus } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getConversationCopy } from './conversation-copy.js';
 
 export type SessionStatusTone = 'accent' | 'warning' | 'destructive' | 'info' | 'success' | 'muted' | 'neutral';

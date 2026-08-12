@@ -1,4 +1,4 @@
-import { isSessionInlineRun, type AgentRunStore } from '@maka/core';
+import { isSessionInlineRun, type AgentRunStore } from '@maka/core/agent-run';
 import {
   validateHistoryCompactCheckpointShape,
   type HistoryCompactCheckpoint,

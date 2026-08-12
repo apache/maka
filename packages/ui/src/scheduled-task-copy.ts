@@ -1,10 +1,5 @@
-import type {
-  ScheduledTask,
-  ScheduledTaskRunOutcome,
-  ScheduledTaskStatus,
-  UiCatalog,
-  UiLocale,
-} from '@maka/core';
+import type { ScheduledTask, ScheduledTaskRunOutcome, ScheduledTaskStatus } from '@maka/core/scheduled-task';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type {
   ScheduledTaskDelivery,
   ScheduledTaskRecurrence,

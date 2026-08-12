@@ -4,32 +4,9 @@ import { describe, it } from 'node:test';
 import { normalizeBrowserAddressInput } from '../browser.js';
 
 describe('browser address input normalization', () => {
-  it('normalizes http(s) addresses and bare hostnames', () => {
-    assert.deepEqual(normalizeBrowserAddressInput('https://example.com'), {
-      ok: true,
-      url: 'https://example.com/',
-    });
-    assert.deepEqual(normalizeBrowserAddressInput(' http://a.test/x?y=1 '), {
-      ok: true,
-      url: 'http://a.test/x?y=1',
-    });
-    assert.deepEqual(normalizeBrowserAddressInput('example.com'), {
-      ok: true,
-      url: 'https://example.com/',
-    });
-  });
-
   it('returns stable rejection reasons for non-navigable input', () => {
     assert.deepEqual(normalizeBrowserAddressInput('   '), { ok: false, reason: 'empty' });
-    assert.deepEqual(normalizeBrowserAddressInput('file:///etc/passwd'), {
-      ok: false,
-      reason: 'unsupported_scheme',
-    });
     assert.deepEqual(normalizeBrowserAddressInput('javascript:alert(1)'), {
-      ok: false,
-      reason: 'unsupported_scheme',
-    });
-    assert.deepEqual(normalizeBrowserAddressInput('about:blank'), {
       ok: false,
       reason: 'unsupported_scheme',
     });

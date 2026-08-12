@@ -3,7 +3,7 @@
  *
  * The `AgentBackend` port interface and the request/response shapes that
  * cross the runtime boundary live here in @maka/core so that every backend
- * implementation (AiSdkBackend / PiAgentBackend / FakeBackend) and their
+ * implementation (AiSdkBackend / FakeBackend) and their
  * consumers depend on a small pure-type module, not on a concrete backend
  * implementation file.
  */

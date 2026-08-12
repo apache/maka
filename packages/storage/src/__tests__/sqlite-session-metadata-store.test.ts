@@ -5,15 +5,17 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import { Worker } from 'node:worker_threads';
+import { AgentGraphClientTerminalCursorError } from '@maka/core/agent-graph-client-projection';
 import {
-  AgentGraphClientTerminalCursorError,
   canReadPath,
   createReadOnlyPermissionProfile,
   createWorkspaceWritePermissionProfile,
+} from '@maka/core/permission-profile';
+import {
   MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES,
   type SandboxBoundarySettlement,
-  type SessionHeader,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
+import { type SessionHeader } from '@maka/core/session';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import {
   createSqliteSessionMetadataStore,
@@ -29,74 +31,6 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
-  test('migration locks only legacy sessions that already contain a user message', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-session-lock-migration-'));
-    const path = join(root, 'state.sqlite');
-    try {
-      const store = createSqliteSessionMetadataStore(path);
-      await store.create(fullHeader({ id: 'with-user', connectionLocked: false }));
-      await store.create(fullHeader({ id: 'assistant-only', connectionLocked: false }));
-      store.close();
-
-      const legacy = new DatabaseSync(path);
-      legacy
-        .prepare(`
-        INSERT INTO session_messages(
-          session_id, sequence, message_id, message_type, message_ts, record_json
-        ) VALUES (?, 0, ?, ?, 1, ?)
-      `)
-        .run(
-          'with-user',
-          'user-1',
-          'user',
-          JSON.stringify({
-            type: 'user',
-            id: 'user-1',
-            turnId: 'turn-1',
-            ts: 1,
-            text: 'hello',
-          }),
-        );
-      legacy
-        .prepare(`
-        INSERT INTO session_messages(
-          session_id, sequence, message_id, message_type, message_ts, record_json
-        ) VALUES (?, 0, ?, ?, 1, ?)
-      `)
-        .run(
-          'assistant-only',
-          'assistant-1',
-          'assistant',
-          JSON.stringify({
-            type: 'assistant',
-            id: 'assistant-1',
-            turnId: 'turn-1',
-            ts: 1,
-            text: 'preview',
-            modelId: 'fake-model',
-          }),
-        );
-      legacy
-        .prepare(`
-        UPDATE session_metadata_schema
-        SET version = ?
-        WHERE scope = 'session_metadata'
-      `)
-        .run(21);
-      legacy.close();
-
-      const migrated = createSqliteSessionMetadataStore(path);
-      try {
-        assert.equal((await migrated.read('with-user')).header.connectionLocked, true);
-        assert.equal((await migrated.read('assistant-only')).header.connectionLocked, false);
-      } finally {
-        migrated.close();
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   test('round-trips every SessionHeader field and reopens the same schema', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-'));
     const path = join(root, 'state.sqlite');
@@ -284,86 +218,6 @@ describe('SqliteSessionMetadataStore', () => {
       metadata.close();
       runtime.close();
       await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('migrates v12 sessions to durable revision-zero boundaries on first read', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-boundary-v12-'));
-    const path = join(root, 'sessions.sqlite');
-    try {
-      const initial = createSqliteSessionMetadataStore(path);
-      for (const permissionMode of ['ask', 'execute', 'explore', 'bypass'] as const) {
-        await initial.create(fullHeader({ id: `legacy-${permissionMode}`, permissionMode }));
-      }
-      initial.close();
-
-      const v12 = new DatabaseSync(path);
-      v12.exec(`
-        DROP INDEX session_metadata_tombstones_by_retirement_unit;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
-        DROP TABLE session_create_claims;
-        DROP TABLE sandbox_boundary_log;
-        DROP TABLE project_aliases;
-        DROP TABLE project_locations;
-        DROP TABLE projects;
-        DROP TABLE session_messages;
-        UPDATE session_metadata_schema
-        SET version = 12
-        WHERE scope = 'session_metadata';
-      `);
-      v12.close();
-
-      const migrated = createSqliteSessionMetadataStore(path);
-      for (const permissionMode of ['ask', 'execute', 'explore', 'bypass'] as const) {
-        const boundary = await migrated.readExecutionBoundary(`legacy-${permissionMode}`);
-        assert.equal(boundary.revision, 0);
-        assert.equal(boundary.kind, permissionMode === 'bypass' ? 'bypass' : 'managed');
-        if (boundary.kind === 'managed') {
-          assert.equal(
-            boundary.profile.name,
-            permissionMode === 'explore' ? 'read-only' : 'workspace-write',
-          );
-        }
-      }
-      migrated.close();
-
-      const reopened = createSqliteSessionMetadataStore(path);
-      try {
-        assert.deepEqual(await reopened.readExecutionBoundary('legacy-bypass'), {
-          kind: 'bypass',
-          revision: 0,
-        });
-        const readOnly = await reopened.readExecutionBoundary('legacy-explore');
-        assert.equal(readOnly.kind, 'managed');
-        if (readOnly.kind === 'managed') assert.equal(readOnly.profile.name, 'read-only');
-      } finally {
-        reopened.close();
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('creates a deterministic revision-zero execution boundary for every legacy mode', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      for (const mode of ['ask', 'execute', 'explore', 'bypass'] as const) {
-        const header = fullHeader({
-          id: `legacy-${mode}`,
-          permissionMode: mode as SessionHeader['permissionMode'],
-        });
-        await store.create(header);
-
-        const boundary = await store.readExecutionBoundary(header.id);
-        assert.equal(boundary.revision, 0);
-        assert.equal(boundary.kind, mode === 'bypass' ? 'bypass' : 'managed');
-        if (boundary.kind === 'managed') {
-          assert.equal(boundary.profile.name, mode === 'explore' ? 'read-only' : 'workspace-write');
-        }
-      }
-    } finally {
-      store.close();
     }
   });
 
@@ -781,27 +635,6 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('projects an explicit legacy mode in the same managed-boundary transition', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(250) });
-    try {
-      await store.create(fullHeader({ labels: ['deep-research', 'kept'] }));
-
-      const explore = await store.setExecutionBoundaryKind('session-1', 'managed', {
-        permissionMode: 'explore',
-        labels: ['kept'],
-      });
-
-      assert.equal(explore.kind, 'managed');
-      assert.equal(explore.revision, 1);
-      if (explore.kind === 'managed') assert.equal(explore.profile.name, 'read-only');
-      const projected = (await store.read('session-1')).header;
-      assert.equal(projected.permissionMode, 'explore');
-      assert.deepEqual(projected.labels, ['kept']);
-    } finally {
-      store.close();
-    }
-  });
-
   test('reads the header projection and execution boundary from one authority snapshot', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(275) });
     try {
@@ -1058,67 +891,6 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('migrates a v13 database and leaves legacy rows without provenance', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-boundary-v13-'));
-    const path = join(root, 'sessions.sqlite');
-    try {
-      const initial = createSqliteSessionMetadataStore(path);
-      await initial.create(fullHeader());
-      initial.close();
-
-      // Rewind to the pre-provenance shape a shipped database would have.
-      const v13 = new DatabaseSync(path);
-      v13.exec(`
-        DROP INDEX session_metadata_tombstones_by_retirement_unit;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
-        DROP TABLE session_create_claims;
-        DROP TABLE project_aliases;
-        DROP TABLE project_locations;
-        DROP TABLE projects;
-        DROP TABLE session_messages;
-        ALTER TABLE sandbox_boundary_log DROP COLUMN turn_id;
-        ALTER TABLE sandbox_boundary_log DROP COLUMN run_id;
-        DROP INDEX sandbox_boundary_log_settled_closures;
-        INSERT INTO sandbox_boundary_log(
-          session_id, entry_id, entry_kind, request_id, status, base_revision,
-          expansion_json, justification, outcome_reason, created_at, settled_at
-        ) VALUES (
-          'session-1', 'request:legacy-request', 'expansion_request', 'legacy-request',
-          'denied', 0, '{"network":{"enabled":true}}', 'Legacy request.',
-          'host_restarted', 10, 11
-        );
-        UPDATE session_metadata_schema SET version = 13 WHERE scope = 'session_metadata';
-      `);
-      v13.close();
-
-      const migrated = createSqliteSessionMetadataStore(path);
-      try {
-        const [legacy] = await migrated.listSandboxBoundaryRestartClosures('session-1');
-        assert.equal(legacy?.requestId, 'legacy-request');
-        assert.equal(legacy?.turnId, undefined);
-        assert.equal(legacy?.runId, undefined);
-
-        // New rows on the upgraded database carry provenance normally.
-        await migrated.createSandboxBoundaryRequest({
-          sessionId: 'session-1',
-          requestId: 'fresh-request',
-          turnId: 'turn-1',
-          runId: 'run-1',
-          expansion: { network: { enabled: true } },
-          justification: 'Fetch a dependency.',
-        });
-        const [fresh] = await migrated.listPendingSandboxBoundaryRequests('session-1');
-        assert.equal(fresh?.turnId, 'turn-1');
-        assert.equal(fresh?.runId, 'run-1');
-      } finally {
-        migrated.close();
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   test('lists only pending sandbox boundary requests for resume', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
@@ -1146,119 +918,6 @@ describe('SqliteSessionMetadataStore', () => {
       );
     } finally {
       store.close();
-    }
-  });
-
-  test('backfills the relation index when upgrading a populated v2 database', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-v2-'));
-    const path = join(root, 'sessions.sqlite');
-    const parentSessionId = 'parent-session';
-    const header = fullHeader({
-      id: 'child-session',
-      parentSessionId: undefined,
-      branchOfTurnId: undefined,
-      revisionRootSessionId: undefined,
-      revisionParentSessionId: undefined,
-      revisionOfTurnId: undefined,
-      revisionIndex: undefined,
-      revisionState: undefined,
-      subagentParent: {
-        kind: 'subagent',
-        parentSessionId,
-        spawnedBy: {
-          parentRunId: 'parent-run',
-          parentTurnId: 'parent-turn',
-          toolCallId: 'tool-call',
-        },
-        lifecycle: 'foreground',
-      },
-    });
-    const db = new DatabaseSync(path);
-    db.exec(`
-      CREATE TABLE session_metadata_schema (
-        scope TEXT PRIMARY KEY,
-        version INTEGER NOT NULL
-      );
-      INSERT INTO session_metadata_schema(scope, version) VALUES ('session_metadata', 2);
-      CREATE TABLE session_metadata (
-        session_id TEXT PRIMARY KEY,
-        payload_json TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        last_used_at INTEGER NOT NULL,
-        last_message_at INTEGER,
-        name TEXT NOT NULL,
-        is_flagged INTEGER NOT NULL,
-        is_archived INTEGER NOT NULL,
-        status TEXT NOT NULL,
-        status_updated_at INTEGER,
-        parent_session_id TEXT,
-        revision_root_session_id TEXT,
-        revision_index INTEGER,
-        has_unread INTEGER NOT NULL,
-        backend TEXT NOT NULL,
-        llm_connection_slug TEXT NOT NULL,
-        model TEXT NOT NULL,
-        metadata_version INTEGER NOT NULL,
-        committed_at INTEGER NOT NULL
-      );
-      CREATE TABLE session_metadata_labels (
-        session_id TEXT NOT NULL,
-        label_index INTEGER NOT NULL,
-        label TEXT NOT NULL,
-        PRIMARY KEY(session_id, label_index),
-        FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
-      );
-      CREATE INDEX session_metadata_labels_by_label
-        ON session_metadata_labels(label, session_id);
-      CREATE TABLE session_metadata_tombstones (
-        session_id TEXT PRIMARY KEY,
-        deleted_at INTEGER NOT NULL
-      );
-    `);
-    db.prepare(`
-      INSERT INTO session_metadata(
-        session_id, payload_json, created_at, last_used_at, last_message_at,
-        name, is_flagged, is_archived, status, status_updated_at,
-        parent_session_id, revision_root_session_id, revision_index, has_unread,
-        backend, llm_connection_slug, model, metadata_version, committed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      header.id,
-      JSON.stringify(header),
-      header.createdAt,
-      header.lastUsedAt,
-      header.lastMessageAt ?? null,
-      header.name,
-      0,
-      0,
-      header.status,
-      header.statusUpdatedAt ?? null,
-      null,
-      null,
-      null,
-      1,
-      header.backend,
-      header.llmConnectionSlug,
-      header.model,
-      1,
-      100,
-    );
-    db.close();
-
-    const store = createSqliteSessionMetadataStore(path);
-    try {
-      assert.equal(store.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
-      assert.deepEqual(
-        (
-          await store.list({
-            subagentParentSessionId: parentSessionId,
-          })
-        ).map((record) => record.header.id),
-        [header.id],
-      );
-    } finally {
-      store.close();
-      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -1530,105 +1189,6 @@ describe('SqliteSessionMetadataStore', () => {
       );
     } finally {
       store.close();
-    }
-  });
-
-  test('migrates v4 spawn identities into claims that survive child deletion', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-subagent-spawn-v4-'));
-    const path = join(root, 'sessions.sqlite');
-    const child = fullHeader({
-      id: 'migrated-child',
-      parentSessionId: undefined,
-      branchOfTurnId: undefined,
-      revisionRootSessionId: undefined,
-      revisionParentSessionId: undefined,
-      revisionOfTurnId: undefined,
-      revisionIndex: undefined,
-      revisionState: undefined,
-      subagentParent: {
-        kind: 'subagent',
-        parentSessionId: 'parent-session',
-        spawnedBy: {
-          parentRunId: 'parent-run',
-          parentTurnId: 'parent-turn',
-          toolCallId: 'tool-call',
-        },
-        lifecycle: 'foreground',
-      },
-      subagentRuntime: {
-        schemaVersion: 1,
-        definitionVersion: 1,
-        agentId: 'local-read',
-        agentName: 'Local Read',
-        profile: 'local_read',
-        systemPrompt: 'Original durable prompt.',
-        toolNames: ['Read'],
-        categoryPolicy: { read: 'allow' },
-        permissionCeiling: 'ask',
-      },
-      subagentSpawn: {
-        schemaVersion: 1,
-        requestFingerprint: 'd'.repeat(64),
-        initialTurnId: 'child-turn',
-        initialRunId: 'child-run',
-      },
-    });
-    try {
-      const initial = createSqliteSessionMetadataStore(path);
-      await initial.createSubagent(child);
-      initial.close();
-
-      const v4 = new DatabaseSync(path);
-      v4.exec(`
-        DROP INDEX session_metadata_tombstones_by_retirement_unit;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
-        DROP TABLE session_create_claims;
-        DROP TABLE sandbox_boundary_log;
-        DROP TABLE project_aliases;
-        DROP TABLE project_locations;
-        DROP TABLE projects;
-        DROP TABLE session_messages;
-        DROP TABLE agent_graph_supervisor_wake_attempts;
-        DROP TABLE agent_graph_supervisor_wakes;
-        DROP TABLE agent_graph_client_applied_records;
-        DROP TABLE agent_graph_client_terminal_activity;
-        DROP TABLE agent_graph_client_operator_projections;
-        DROP TABLE agent_graph_client_projections;
-        DROP TABLE agent_graph_operator_provisions;
-        DROP TABLE agent_graph_schedule_updates;
-        DROP TABLE agent_graph_intent_claims;
-        DROP TABLE subagent_spawns;
-        CREATE UNIQUE INDEX session_metadata_by_subagent_spawn
-          ON session_metadata(
-            subagent_parent_session_id,
-            subagent_parent_run_id,
-            subagent_tool_call_id,
-            COALESCE(subagent_swarm_id, ''),
-            COALESCE(subagent_item_id, '')
-          )
-          WHERE
-            subagent_parent_session_id IS NOT NULL
-            AND subagent_parent_run_id IS NOT NULL
-            AND subagent_tool_call_id IS NOT NULL
-            AND subagent_request_fingerprint IS NOT NULL;
-        UPDATE session_metadata_schema SET version = 4 WHERE scope = 'session_metadata';
-      `);
-      v4.close();
-
-      const migrated = createSqliteSessionMetadataStore(path);
-      try {
-        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
-        assert.equal(await migrated.remove(child.id), true);
-        await assert.rejects(
-          () => migrated.createSubagent({ ...child, id: 'retry-after-migration' }),
-          /belongs to deleted session: migrated-child/,
-        );
-      } finally {
-        migrated.close();
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -2210,94 +1770,6 @@ describe('SQLite agent graph operator provisions', () => {
       assert.equal((await store.listAgentGraphScheduleUpdates('graph-2')).length, 1);
     } finally {
       store.close();
-    }
-  });
-
-  test('reconciles graph operators orphaned by legacy root-only retirement', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-agent-graph-orphan-'));
-    const path = join(root, 'runtime.sqlite');
-    try {
-      const store = createSqliteSessionMetadataStore(path, { now: () => 900 });
-      const supervisor = await store.create(
-        fullHeader({
-          id: 'supervisor-session',
-          parentSessionId: undefined,
-          branchOfTurnId: undefined,
-          revisionRootSessionId: undefined,
-          revisionParentSessionId: undefined,
-          revisionOfTurnId: undefined,
-          revisionIndex: undefined,
-          revisionState: undefined,
-          status: 'active',
-          blockedReason: undefined,
-        }),
-      );
-      await store.commitAgentGraphScheduleUpdate({
-        schemaVersion: 1,
-        updateId: `graph_update_${'1'.repeat(32)}`,
-        updateFingerprint: `sha256:${'2'.repeat(64)}`,
-        graphId: 'graph-1',
-        source: {
-          sessionId: supervisor.header.id,
-          runId: 'supervisor-run',
-          turnId: 'supervisor-turn',
-          toolCallId: 'schedule-tool',
-        },
-        addWork: [
-          {
-            workId: graphProvisionRequest().workId,
-            target: { kind: 'agent', agentId: graphProvisionRequest().agentId },
-            instruction: 'Inspect the input.',
-            inputIds: [],
-          },
-        ],
-        stop: [],
-      });
-      await store.createAgentGraphOperator(graphChildHeader(), graphProvisionRequest(), 1);
-      store.close();
-
-      const legacy = new DatabaseSync(path);
-      try {
-        legacy.exec('BEGIN IMMEDIATE');
-        legacy
-          .prepare('DELETE FROM session_metadata WHERE session_id = ?')
-          .run(supervisor.header.id);
-        legacy
-          .prepare(`
-            INSERT INTO session_metadata_tombstones(
-              session_id,
-              deleted_at,
-              retirement_unit_id,
-              cleanup_pending
-            )
-            VALUES (?, ?, ?, 0)
-          `)
-          .run(supervisor.header.id, 901, supervisor.header.id);
-        legacy.exec('COMMIT');
-      } catch (error) {
-        legacy.exec('ROLLBACK');
-        throw error;
-      } finally {
-        legacy.close();
-      }
-
-      const reopened = createSqliteSessionMetadataStore(path, { now: () => 902 });
-      try {
-        assert.equal(await reopened.has('graph-child'), true);
-        assert.deepEqual(await reopened.listPendingSessionRetirementCleanupIds(), []);
-        assert.deepEqual(await reopened.reconcileOrphanedAgentGraphRetirements(), ['graph-child']);
-        assert.deepEqual(await reopened.probeRemoval('graph-child'), { kind: 'removed' });
-        assert.deepEqual(
-          await reopened.listPendingSessionRetirementCleanupIds(supervisor.header.id),
-          ['graph-child', supervisor.header.id],
-        );
-        assert.equal((await reopened.listAgentGraphOperatorProvisions('graph-1')).length, 1);
-        assert.deepEqual(await reopened.reconcileOrphanedAgentGraphRetirements(), []);
-      } finally {
-        reopened.close();
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true });
     }
   });
 

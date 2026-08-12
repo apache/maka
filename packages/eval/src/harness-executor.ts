@@ -1,15 +1,16 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experiment.js';
 import {
-  ExecutorPreparationFailure,
+  type ExecutorAttemptOutcome,
   type ExperimentExecutor,
+  type ExecutorPreparationCode,
   type ExecutorVerification,
   type SubjectExecutionContext,
 } from './runner.js';
@@ -17,13 +18,10 @@ import type { EvalResult } from './result.js';
 
 type Framework = 'harbor' | 'pier';
 
-const PREPARATION_STDERR_LIMIT = 64 * 1024;
-const PREPARATION_REDACTION_OVERLAP = 8 * 1024;
-
 interface RelayState {
   readonly child: ChildProcess;
-  readonly server: Server;
   readonly socket: Socket;
+  readonly closeRelay: () => Promise<void>;
   readonly lines: AsyncIterator<string>;
   readonly token: string;
   readonly trialName: string;
@@ -50,6 +48,9 @@ function createHarnessExecutor(
   const options = decodeOptions(config, framework);
   const executor: ExperimentExecutor = {
     kind: framework,
+    validate: (cell) => {
+      decodeTask(framework, options, cell);
+    },
     runAttempt: (input, operation) =>
       runHarnessAttempt(framework, options, specPath, input, operation),
   };
@@ -60,21 +61,34 @@ async function runHarnessAttempt(
   framework: Framework,
   options: HarnessOptions,
   specPath: string,
-  { cell, signal }: { readonly cell: ExperimentCell; readonly signal?: AbortSignal },
+  {
+    cell,
+    subjectCredentialNames,
+    signal,
+  }: {
+    readonly cell: ExperimentCell;
+    readonly subjectCredentialNames: readonly string[];
+    readonly signal?: AbortSignal;
+  },
   operation: (attempt: {
     readonly context: SubjectExecutionContext;
     verify(): Promise<ExecutorVerification>;
   }) => Promise<EvalResult>,
-): Promise<
-  | { readonly kind: 'settled'; readonly value: EvalResult }
-  | { readonly kind: 'indeterminate'; readonly value?: EvalResult }
-> {
-  if (signal?.aborted) return { kind: 'indeterminate' };
-  const state = await startTrial(framework, options, specPath, cell, signal);
+): Promise<ExecutorAttemptOutcome> {
+  if (signal?.aborted) return notStarted('cancelled');
+  let prepared: Awaited<ReturnType<typeof startTrial>>;
+  try {
+    prepared = await startTrial(framework, options, specPath, cell, subjectCredentialNames, signal);
+  } catch {
+    return notStarted('preparation-failed');
+  }
+  if (prepared.kind === 'not_started') return prepared;
+  const state = prepared.state;
   let decision = false;
   let value: EvalResult | undefined;
   let hasValue = false;
   let clean = true;
+  let cleanupAction: 'abort' | 'terminate-unused' | undefined;
   const decide = (kind: 'verify' | 'abort') => {
     if (decision) return;
     decision = true;
@@ -94,12 +108,29 @@ async function runHarnessAttempt(
     hasValue = true;
   } finally {
     if (!decision) {
-      if (state.used) decide('abort');
-      else state.child.kill('SIGTERM');
+      if (state.used) {
+        cleanupAction = 'abort';
+        decide('abort');
+      } else {
+        cleanupAction = 'terminate-unused';
+        state.child.kill('SIGTERM');
+      }
       clean = await waitForTrial(state.child);
     }
-    state.socket.destroy();
-    await closeServer(state.server);
+    await state.closeRelay();
+  }
+  if (hasValue && cleanupAction) {
+    value = {
+      ...value!,
+      artifacts: [
+        ...value!.artifacts,
+        {
+          kind: 'executor-cleanup',
+          action: cleanupAction,
+          outcome: clean ? 'completed' : 'unsettled',
+        },
+      ],
+    };
   }
   if (!clean) {
     return hasValue ? { kind: 'indeterminate', value } : { kind: 'indeterminate' };
@@ -174,8 +205,12 @@ async function startTrial(
   options: HarnessOptions,
   specPath: string,
   cell: ExperimentCell,
+  subjectCredentialNames: readonly string[],
   signal?: AbortSignal,
-): Promise<RelayState> {
+): Promise<
+  | { readonly kind: 'ready'; readonly state: RelayState }
+  | Extract<ExecutorAttemptOutcome, { readonly kind: 'not_started' }>
+> {
   const credentials = requireCredentials(cell.subject.credentials);
   const token = randomBytes(24).toString('hex');
   const trialsRoot = resolve(process.env[options.trialsRootEnv]!);
@@ -188,22 +223,28 @@ async function startTrial(
   const timeoutMultiplier = positive(cell.budget.timeoutMultiplier, 'budget.timeoutMultiplier');
   const environmentConfig = { ...options.environment, mounts: resolveMounts(options.mounts) };
   const relayPath = resolve(dirname(fileURLToPath(import.meta.url)), '../harbor');
-  const environment: NodeJS.ProcessEnv = { ...process.env, MAKA_EVAL_FRAMEWORK: framework };
-  for (const name of cell.subject.credentials) delete environment[name];
-  environment.PYTHONPATH = [relayPath, process.env.PYTHONPATH].filter(Boolean).join(sep);
-  const server = createServer();
-  let child: ChildProcess | undefined;
-  let connectedSocket: Socket | undefined;
-  let abort: (() => void) | undefined;
-  const exactSecrets = [token, ...Object.values(credentials)];
-  const stderr = new BoundedCapture(
-    PREPARATION_STDERR_LIMIT +
-      Math.max(
-        PREPARATION_REDACTION_OVERLAP,
-        ...exactSecrets.map((secret) => Buffer.byteLength(secret)),
-      ),
+  const environment = preparationEnvironment(
+    framework,
+    relayPath,
+    [...subjectCredentialNames, ...cell.subject.credentials],
+    options.preparationEnvironment,
   );
-  let stderrClosed: Promise<unknown> | undefined;
+  const server = createServer();
+  const connections = new Set<Socket>();
+  server.on('connection', (socket) => {
+    connections.add(socket);
+    socket.once('close', () => connections.delete(socket));
+  });
+  let child: ChildProcess | undefined;
+  let serverClosed: Promise<void> | undefined;
+  const stopServer = (destroyConnections = false) => {
+    serverClosed ??= closeServer(server);
+    if (destroyConnections) {
+      for (const socket of connections) socket.destroy();
+    }
+    return serverClosed;
+  };
+  let stage: 'spawn' | 'exit-before-ready' | 'ready-decode' = 'spawn';
   try {
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -227,116 +268,141 @@ async function startTrial(
     child = spawn(
       process.env[options.pythonPathEnv]!,
       [join(relayPath, 'run_trial.py'), framework, options.frameworkVersion, configPath],
-      { cwd: dirname(specPath), env: environment, stdio: ['ignore', 'ignore', 'pipe'] },
+      { cwd: dirname(specPath), env: environment, stdio: 'ignore' },
     );
-    child.stderr!.on('data', (chunk: Buffer) => stderr.append(chunk));
-    stderrClosed = once(child.stderr!, 'close');
-    abort = () => child?.kill('SIGTERM');
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) abort();
-    const socket = await Promise.race([
-      once(server, 'connection').then(([connected]) => connected as Socket),
-      once(child, 'exit').then(([code]) => {
-        throw new Error(`Trial exited before Agent.run (${code})`);
-      }),
-    ]);
-    connectedSocket = socket;
+    await once(child, 'spawn', signal ? { signal } : undefined);
+    stage = 'exit-before-ready';
+    const exitedBeforeReady = once(child, 'exit').then(([code]) => {
+      throw new Error(`Trial exited before Agent.run (${code})`);
+    });
+    const connectionWait = new AbortController();
+    const connectionSignal = signal
+      ? AbortSignal.any([signal, connectionWait.signal])
+      : connectionWait.signal;
+    let socket: Socket;
+    try {
+      socket = await Promise.race([
+        once(server, 'connection', { signal: connectionSignal }).then(
+          ([connected]) => connected as Socket,
+        ),
+        exitedBeforeReady,
+      ]);
+    } finally {
+      connectionWait.abort();
+    }
+    const relayClosed = stopServer();
+    stage = 'ready-decode';
     const lines = createInterface({ input: socket, crlfDelay: Number.POSITIVE_INFINITY })[
       Symbol.asyncIterator
     ]();
-    const ready = await readLine(lines);
+    const ready = await abortable(Promise.race([readLine(lines), exitedBeforeReady]), signal);
     if (ready.token !== token || ready.kind !== 'ready' || typeof ready.instruction !== 'string') {
       throw new Error('relay returned an invalid ready message');
     }
     return {
-      child,
-      server,
-      socket,
-      lines,
-      token,
-      trialName,
-      trialPath,
-      taskInput: ready.instruction,
-      credentials,
-      containerCwd: options.containerCwd,
-      used: false,
+      kind: 'ready',
+      state: {
+        child,
+        socket,
+        closeRelay: async () => {
+          for (const connection of connections) connection.destroy();
+          await relayClosed;
+        },
+        lines,
+        token,
+        trialName,
+        trialPath,
+        taskInput: ready.instruction,
+        credentials,
+        containerCwd: options.containerCwd,
+        used: false,
+      },
     };
   } catch (error) {
+    const relayClosed = stopServer(true);
     if (child?.pid !== undefined) {
-      child.kill('SIGTERM');
-      await waitForTrial(child);
+      await waitForTrial(child, signal, true);
     }
-    await stderrClosed?.catch(() => undefined);
-    connectedSocket?.destroy();
-    await closeServer(server);
+    await relayClosed;
+    await unlink(configPath).catch(() => undefined);
     await mkdir(trialPath, { recursive: true, mode: 0o700 });
     const diagnosticPath = 'preparation-error.json';
-    const diagnostic = sanitizeDiagnostic(stderr.text(), exactSecrets, PREPARATION_STDERR_LIMIT);
+    const code = preparationCode(stage, child?.exitCode ?? null, signal);
     await writeFile(
       join(trialPath, diagnosticPath),
       `${JSON.stringify({
-        stage: 'executor-preparation',
+        stage,
         framework,
+        code,
+        errorCode: safeErrorCode(error),
         exitCode: child?.exitCode ?? null,
         signal: child?.signalCode ?? null,
-        stderr: diagnostic.text,
-        truncated: stderr.truncated || diagnostic.truncated,
       })}\n`,
       { flag: 'wx', mode: 0o600 },
     );
-    throw new ExecutorPreparationFailure(
-      [{ kind: 'executor-preparation', framework, trialName, path: diagnosticPath }],
-      { cause: error },
-    );
-  } finally {
-    if (abort) signal?.removeEventListener('abort', abort);
+    return notStarted(code, [
+      { kind: 'executor-preparation', framework, trialName, path: diagnosticPath },
+    ]);
   }
 }
 
-class BoundedCapture {
-  #value = Buffer.alloc(0);
-  #total = 0;
-
-  constructor(readonly limit: number) {}
-
-  append(chunk: Buffer): void {
-    this.#total += chunk.length;
-    this.#value = Buffer.concat([this.#value, chunk]).subarray(-this.limit);
-  }
-
-  get truncated(): boolean {
-    return this.#total > this.limit;
-  }
-
-  text(): string {
-    return this.#value.toString('utf8');
-  }
+function notStarted(
+  code: ExecutorPreparationCode,
+  artifacts: readonly JsonObject[] = [],
+): Extract<ExecutorAttemptOutcome, { readonly kind: 'not_started' }> {
+  return { kind: 'not_started', code, artifacts };
 }
 
-function sanitizeDiagnostic(
-  value: string,
-  exactSecrets: readonly string[],
-  limit: number,
-): { readonly text: string; readonly truncated: boolean } {
-  let redacted = value;
-  for (const secret of exactSecrets) {
-    if (secret) redacted = redacted.replaceAll(secret, '[REDACTED]');
-  }
-  redacted = redacted
-    .replace(/(authorization\s*:\s*(?:bearer|basic)\s+)[^\s]+/giu, '$1[REDACTED]')
-    .replace(
-      /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password)\s*[:=]\s*)[^\s]+/giu,
-      '$1[REDACTED]',
-    )
-    .replace(
-      /(--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password)\s+)[^\s]+/giu,
-      '$1[REDACTED]',
-    )
-    .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/giu, '$1[REDACTED]@')
-    .replace(/\bcommand\b[^\r\n]*/giu, 'command [REDACTED]');
-  const bytes = Buffer.from(redacted);
-  if (bytes.length <= limit) return { text: redacted, truncated: false };
-  return { text: bytes.subarray(-limit).toString('utf8'), truncated: true };
+function preparationCode(
+  stage: 'spawn' | 'exit-before-ready' | 'ready-decode',
+  exitCode: number | null,
+  signal?: AbortSignal,
+): ExecutorPreparationCode {
+  if (signal?.aborted) return 'cancelled';
+  if (stage === 'exit-before-ready' && exitCode === 78) return 'framework-version-mismatch';
+  if (stage === 'spawn') return 'spawn-failed';
+  if (stage === 'ready-decode') return 'invalid-ready';
+  return 'exit-before-ready';
+}
+
+function preparationEnvironment(
+  framework: Framework,
+  relayPath: string,
+  subjectCredentialNames: readonly string[],
+  declared: readonly string[],
+): NodeJS.ProcessEnv {
+  const allowed = new Set([
+    'HOME',
+    'PATH',
+    'TMPDIR',
+    'TMP',
+    'TEMP',
+    'LANG',
+    'LC_ALL',
+    'SSL_CERT_FILE',
+    'SSL_CERT_DIR',
+    'REQUESTS_CA_BUNDLE',
+    'CURL_CA_BUNDLE',
+    'XDG_CACHE_HOME',
+    ...declared,
+  ]);
+  const credentials = new Set(subjectCredentialNames);
+  const inherited = Object.fromEntries(
+    [...allowed].flatMap((name) => {
+      const value = process.env[name];
+      return value === undefined || credentials.has(name) ? [] : [[name, value]];
+    }),
+  );
+  return {
+    ...inherited,
+    MAKA_EVAL_FRAMEWORK: framework,
+    PYTHONPATH: [relayPath, inherited.PYTHONPATH].filter(Boolean).join(delimiter),
+  };
+}
+
+function safeErrorCode(error: unknown): string | null {
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  return code && ['ENOENT', 'EACCES', 'EPERM'].includes(code) ? code : null;
 }
 
 async function closeServer(server: Server): Promise<void> {
@@ -376,6 +442,7 @@ interface HarnessOptions {
   readonly tasksRootEnv?: string;
   readonly containerCwd: string;
   readonly environment: JsonObject;
+  readonly preparationEnvironment: readonly string[];
   readonly mounts: readonly {
     readonly sourceEnv: string;
     readonly target: string;
@@ -384,22 +451,37 @@ interface HarnessOptions {
 }
 
 function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions {
+  if (!Object.hasOwn(value, 'preparationEnvironment')) {
+    throw new Error('executor.config.preparationEnvironment is required');
+  }
   const fields = [
     'frameworkVersion',
     'pythonPathEnv',
     'trialsRootEnv',
     'containerCwd',
     'environment',
+    'preparationEnvironment',
     'mounts',
   ];
   if (framework === 'pier') fields.push('tasksRootEnv');
   const options = exact(value, fields, 'executor.config');
+  const preparationEnvironment = array(
+    options.preparationEnvironment,
+    'preparationEnvironment',
+  ).map((name, index) => machinePathEnv(name, `preparationEnvironment[${index}]`));
+  if (new Set(preparationEnvironment).size !== preparationEnvironment.length) {
+    throw new Error('preparationEnvironment must contain unique names');
+  }
+  if (preparationEnvironment.includes('MAKA_EVAL_FRAMEWORK')) {
+    throw new Error('preparationEnvironment contains a reserved name');
+  }
   const decoded: HarnessOptions = {
     frameworkVersion: text(options.frameworkVersion, 'frameworkVersion'),
     pythonPathEnv: machinePathEnv(options.pythonPathEnv, 'pythonPathEnv'),
     trialsRootEnv: machinePathEnv(options.trialsRootEnv, 'trialsRootEnv'),
     containerCwd: absolute(options.containerCwd, 'containerCwd'),
     environment: decodeJsonObject(options.environment, 'environment'),
+    preparationEnvironment,
     mounts: array(options.mounts, 'mounts').map((mount, index) => decodeMount(mount, index)),
     ...(framework === 'pier'
       ? { tasksRootEnv: machinePathEnv(options.tasksRootEnv, 'tasksRootEnv') }
@@ -437,10 +519,14 @@ function decodeTask(framework: Framework, options: HarnessOptions, cell: Experim
     const benchmark = exact(cell.benchmark.config, ['repository'], 'benchmark.config');
     const task = exact(cell.task.config, ['harbor'], 'task.config');
     const harbor = exact(task.harbor, ['path'], 'task.config.harbor');
+    const revision = text(cell.benchmark.version, 'benchmark.version');
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(revision)) {
+      throw new Error('Harbor benchmark.version must be a complete Git commit');
+    }
     return {
       path: text(harbor.path, 'task.config.harbor.path'),
       git_url: text(benchmark.repository, 'benchmark.config.repository'),
-      git_commit_id: cell.benchmark.version,
+      git_commit_id: revision,
     };
   }
   const task = exact(cell.task.config, ['pier'], 'task.config');
@@ -477,22 +563,52 @@ async function readLine(lines: AsyncIterator<string>): Promise<Record<string, un
   return JSON.parse(line.value) as Record<string, unknown>;
 }
 
-async function waitForTrial(child: ChildProcess, signal?: AbortSignal): Promise<boolean> {
+async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  signal.throwIfAborted();
+  return new Promise<T>((resolveOperation, rejectOperation) => {
+    let settled = false;
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = () => settle(() => rejectOperation(signal.reason));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void operation.then(
+      (value) => settle(() => resolveOperation(value)),
+      (error: unknown) => settle(() => rejectOperation(error)),
+    );
+  });
+}
+
+async function waitForTrial(
+  child: ChildProcess,
+  signal?: AbortSignal,
+  terminate = false,
+): Promise<boolean> {
   const exit =
     child.exitCode !== null || child.signalCode !== null
       ? Promise.resolve({ code: child.exitCode, signal: child.signalCode })
       : once(child, 'exit').then(([code, childSignal]) => ({ code, signal: childSignal }));
-  const cancel = () => child.kill('SIGTERM');
+  let terminating = terminate;
+  const cancel = () => {
+    terminating = true;
+    child.kill('SIGTERM');
+  };
   signal?.addEventListener('abort', cancel, { once: true });
-  if (signal?.aborted) cancel();
+  if (terminate || signal?.aborted) cancel();
   try {
     const first = await within(exit, 20_000);
     if (first) return first.code === 0 && first.signal === null;
-    child.kill('SIGTERM');
-    const second = await within(exit, 20_000);
-    if (second) return second.code === 0 && second.signal === null;
+    if (!terminating) {
+      child.kill('SIGTERM');
+      const second = await within(exit, 20_000);
+      if (second) return second.code === 0 && second.signal === null;
+    }
     child.kill('SIGKILL');
-    await exit;
+    if (!(await within(exit, 5_000))) child.unref();
     return false;
   } finally {
     signal?.removeEventListener('abort', cancel);
@@ -518,8 +634,8 @@ function exact(value: unknown, fields: readonly string[], where: string): Record
     throw new Error(`${where} must be an object`);
   const record = value as Record<string, unknown>;
   if (
-    Object.keys(record).length !== fields.length ||
-    fields.some((field) => !Object.hasOwn(record, field))
+    fields.some((field) => !Object.hasOwn(record, field)) ||
+    Object.keys(record).some((field) => !fields.includes(field))
   ) {
     throw new Error(`${where} fields are invalid`);
   }

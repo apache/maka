@@ -2,7 +2,9 @@ import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { z } from 'zod';
-import type { SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
+import type { SessionEvent } from '@maka/core/events';
+
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 

@@ -1,10 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import {
-  collapseSessionRevisions,
-  revisionFamilySessionIds,
-  type SessionSummary,
-} from '@maka/core';
+import { collapseSessionRevisions, revisionFamilySessionIds } from '@maka/core/session-revisions';
+import { type SessionSummary } from '@maka/core/session';
 import { deriveSessionRevisionNavigation } from '../../renderer/session-revisions.js';
 
 function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {

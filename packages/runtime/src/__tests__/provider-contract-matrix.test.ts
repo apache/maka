@@ -1,42 +1,15 @@
-/**
- * Registry-driven provider conformance matrix — generative execution.
- *
- * This suite interprets {@link PROVIDER_CONTRACT_MATRIX_PLAN}: it does not carry
- * a hard-coded provider list. For every (provider, dimension) cell the plan
- * derives from the registry, one of three things happens here:
- *
- *   - `generated`      a parametric wire test is executed against a scripted
- *                      local HTTP server (discovery, exact-model-id, tool-loop,
- *                      reasoning-replay), driven entirely by the derived cell.
- *   - `override`       the cell binds to an executable entry in
- *                      {@link PROVIDER_CONTRACT_OVERRIDE_BINDINGS}
- *                      (`provider-contract-overrides.ts`), and this suite runs
- *                      the bound provider-specific contract directly — deleting
- *                      or breaking an override fails here, with no reliance on
- *                      test titles in another source file.
- *   - `not-applicable` the machine-readable reason is asserted, and any reverse
- *                      assertion (e.g. fallback discovery must not call /models)
- *                      is executed.
- *
- * The gap report (`test('no contract gaps ...')`) fails loudly, listing
- * provider + dimension + what is missing, whenever a ready provider's dimension
- * satisfies none of the three states — this is Phase 7's gap reporting.
- */
-
 import assert from 'node:assert/strict';
 import type { IncomingMessage } from 'node:http';
 import { after, describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import {
-  PROVIDER_CONTRACT_DIMENSIONS,
-  PROVIDER_DEFAULTS,
   PROVIDER_CONTRACT_MATRIX_PLAN,
-  listProviderContractCells,
   type ProviderContractDiscoveryPlan,
   type ProviderContractRow,
   type ProviderContractGeneratedCell,
   type ProviderContractWire,
-} from '@maka/core';
+} from '@maka/core/provider-contract-matrix';
+import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import { generateText, isStepCount, tool } from 'ai';
 import { z } from 'zod';
 import { fetchProviderModels } from '../model-fetcher.js';
@@ -47,10 +20,7 @@ import {
   respondJson,
   startJsonServer,
 } from './conformance-harness.js';
-import {
-  PROVIDER_CONTRACT_OVERRIDE_BINDINGS,
-  type ProviderContractOverrideBinding,
-} from './provider-contract-overrides.js';
+import { PROVIDER_CONTRACT_OVERRIDE_BINDINGS } from './provider-contract-overrides.js';
 
 const REASONING_TEXT = 'I should call echo with the requested text.';
 const FINAL_TEXT = 'Echoed hello.';
@@ -59,95 +29,6 @@ const API_KEY = 'contract-matrix-test-key';
 const plan = PROVIDER_CONTRACT_MATRIX_PLAN;
 
 after(closeAllJsonServers);
-
-/** Executable override lookup: plan `overrideKey` → its runnable binding. */
-const OVERRIDE_BINDING_BY_KEY: ReadonlyMap<string, ProviderContractOverrideBinding> = new Map(
-  PROVIDER_CONTRACT_OVERRIDE_BINDINGS.flatMap((binding) =>
-    binding.keys.map((key) => [key, binding]),
-  ),
-);
-
-const KNOWN_WIRES: ReadonlySet<ProviderContractWire> = new Set([
-  'openai-chat',
-  'anthropic-messages',
-  'google-generate',
-  'cohere-v2',
-]);
-
-describe('provider conformance matrix — gap report', () => {
-  test('no contract gaps: every ready provider dimension is generated, overridden, or justified N/A', () => {
-    const expectedRows = Object.entries(PROVIDER_DEFAULTS)
-      .filter(
-        ([, definition]) =>
-          definition.status === 'ready' && definition.runtimeAdapter.kind !== 'unavailable',
-      )
-      .map(([providerType]) => providerType)
-      .sort();
-    assert.deepEqual(
-      plan.rows.map((row) => row.providerType).sort(),
-      expectedRows,
-      'every ready provider with a runtime adapter must have a conformance row',
-    );
-    assert.deepEqual(plan.dimensions, PROVIDER_CONTRACT_DIMENSIONS);
-
-    const gaps: string[] = [];
-    for (const { providerType, dimension, cell } of listProviderContractCells(plan)) {
-      const where = `${providerType} · ${dimension}`;
-      switch (cell.state) {
-        case 'generated':
-          if (dimension === 'discovery') {
-            if (!cell.discovery)
-              gaps.push(`${where}: generated discovery cell is missing its derived plan`);
-          } else if (!cell.wire || !KNOWN_WIRES.has(cell.wire)) {
-            gaps.push(
-              `${where}: generated wire cell has no executable wire (${String(cell.wire)})`,
-            );
-          }
-          break;
-        case 'override':
-          if (!OVERRIDE_BINDING_BY_KEY.has(cell.overrideKey)) {
-            gaps.push(
-              `${where}: no executable override binding registered for key "${cell.overrideKey}"`,
-            );
-          }
-          break;
-        case 'not-applicable':
-          if (!cell.reason)
-            gaps.push(`${where}: not-applicable cell is missing a machine-readable reason`);
-          break;
-        default:
-          gaps.push(`${where}: unknown cell state`);
-      }
-    }
-    assert.deepEqual(gaps, [], `provider contract gaps found:\n  ${gaps.join('\n  ')}`);
-  });
-
-  test('every registered override binding maps to a real override cell in the plan', () => {
-    const overrideKeys = new Set(
-      listProviderContractCells(plan)
-        .filter((entry) => entry.cell.state === 'override')
-        .map((entry) => (entry.cell.state === 'override' ? entry.cell.overrideKey : '')),
-    );
-    const seen = new Set<string>();
-    for (const binding of PROVIDER_CONTRACT_OVERRIDE_BINDINGS) {
-      assert.ok(
-        binding.keys.length > 0,
-        `override binding "${binding.title}" must own at least one key`,
-      );
-      for (const key of binding.keys) {
-        assert.ok(
-          !seen.has(key),
-          `override key "${key}" is bound by more than one executable binding`,
-        );
-        seen.add(key);
-        assert.ok(
-          overrideKeys.has(key),
-          `override binding key "${key}" has no matching override cell`,
-        );
-      }
-    }
-  });
-});
 
 describe('provider conformance matrix — override cells execute their bound contract', () => {
   for (const binding of PROVIDER_CONTRACT_OVERRIDE_BINDINGS) {

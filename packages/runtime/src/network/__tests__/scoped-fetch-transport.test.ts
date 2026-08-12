@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import net from 'node:net';
-import { afterEach, describe, test } from 'node:test';
+import { describe, test } from 'node:test';
 import { PROXY_DEFAULTS, type ProxySettings } from '@maka/core/settings/network-settings';
 import {
   CONNECTION_EFFECT_ERROR_BODY_MAX_BYTES,
@@ -9,12 +9,9 @@ import {
   ConnectionEffectFetchError,
   fetchForConnectionEffect,
 } from '../../connection-effect-fetch.js';
-import { fetchProviderModels, runConnectionModelDiscoveryEffect } from '../../model-fetcher.js';
+import { runConnectionModelDiscoveryEffect } from '../../model-fetcher.js';
 import { runConnectionTestEffect, testConnection } from '../../test-connection.js';
-import { setActiveProxy } from '../active-proxy-state.js';
 import { createConnectionEffectFetchTransport } from '../scoped-fetch-transport.js';
-
-afterEach(() => setActiveProxy(null));
 
 describe('connection effect network transport', () => {
   test('concurrent discovery uses immutable per-effect proxy snapshots', async () => {
@@ -274,29 +271,6 @@ describe('connection effect network transport', () => {
     } finally {
       await transport.close();
       await closeServer(server);
-    }
-  });
-
-  test('legacy discovery fallback still resolves the Desktop active proxy', async () => {
-    const proxy = await startConnectProxy(() =>
-      jsonResponse(200, modelPayload('desktop-global-model')),
-    );
-    setActiveProxy({
-      ...PROXY_DEFAULTS,
-      enabled: true,
-      host: '127.0.0.1',
-      port: proxy.port,
-      bypassList: [],
-    });
-
-    try {
-      assert.deepEqual(await fetchProviderModels(openAiConnection('desktop'), 'provider-key'), [
-        { id: 'desktop-global-model' },
-      ]);
-      assert.equal(proxy.requestCount, 1);
-    } finally {
-      setActiveProxy(null);
-      await proxy.close();
     }
   });
 

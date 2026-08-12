@@ -1,4 +1,5 @@
-import { decodeStoredMessageForRead, type SessionEvent, type StoredMessage } from '@maka/core';
+import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
+import { type SessionEvent } from '@maka/core/events';
 import {
   RuntimeHostSessionProjector,
   isRuntimeHostTerminalTurn as isTerminalTurn,
@@ -119,7 +120,7 @@ export class RuntimeHostSessionChannel {
   async #hydrateInitial(subscription: RuntimeHostSessionSubscription): Promise<boolean> {
     let messages: StoredMessage[] | undefined;
     try {
-      messages = await subscription.loadTranscript(decodeStoredMessageForRead);
+      messages = await subscription.loadTranscript(decodeStoredMessage);
     } catch (error) {
       if (!this.#canRecover(error)) throw error;
       this.#failedSubscriptions.add(subscription);
@@ -132,7 +133,12 @@ export class RuntimeHostSessionChannel {
       return true;
     }
     this.messages.push(...(messages ?? []).map((message) => structuredClone(message)));
-    this.#projector = new RuntimeHostSessionProjector(this.snapshot, this.messages, this.#now);
+    this.#projector = new RuntimeHostSessionProjector(
+      this.snapshot,
+      this.messages,
+      this.#now,
+      subscription.activeAssistantStreams,
+    );
     for (const event of this.#projector.seedActive(false)) this.#emit(event);
     this.#ready = true;
     for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
@@ -307,7 +313,7 @@ export class RuntimeHostSessionChannel {
       this.#pendingFrames.length = 0;
       void this.#pump(replacement);
       try {
-        const messages = await replacement.loadTranscript(decodeStoredMessageForRead);
+        const messages = await replacement.loadTranscript(decodeStoredMessage);
         if (this.#failedSubscriptions.has(replacement)) {
           throw new RuntimeHostSubscriptionError(
             'connection_closed',
@@ -337,7 +343,12 @@ export class RuntimeHostSessionChannel {
       ...messages.map((message) => structuredClone(message)),
     );
     this.snapshot = nextSnapshot;
-    this.#projector = new RuntimeHostSessionProjector(nextSnapshot, this.messages, this.#now);
+    this.#projector = new RuntimeHostSessionProjector(
+      nextSnapshot,
+      this.messages,
+      this.#now,
+      this.#subscription.activeAssistantStreams,
+    );
     if (!replacedLiveState) {
       for (const event of this.#projector.seedActive(false)) this.#emit(event);
       return false;

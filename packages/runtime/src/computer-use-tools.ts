@@ -18,7 +18,7 @@ import {
   type CuPoint,
   type ComputerUseErrorCode,
   type ComputerUseWindowIdentity,
-} from '@maka/core';
+} from '@maka/core/computer-use';
 import { redactSecrets } from '@maka/core/redaction';
 import { renderObservationForModel } from './computer-use-observation-text.js';
 import type { MakaTool } from './tool-runtime.js';

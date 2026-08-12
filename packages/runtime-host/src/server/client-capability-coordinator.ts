@@ -1,13 +1,8 @@
 import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { AutomationClientCapabilityRequirement } from '@maka/core/automation';
-import {
-  buildMcpTools,
-  mcpProxyToolName,
-  type MakaTool,
-  type McpToolProvider,
-  type ToolGroup,
-} from '@maka/runtime';
+import { buildMcpTools, mcpProxyToolName, type McpToolProvider } from '@maka/runtime/mcp-tools';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { type ToolGroup } from '@maka/runtime/tool-availability';
 import {
   type ClientCapabilityOffer,
   type ClientCapabilityReplaceInput,
@@ -26,9 +21,6 @@ import type {
 } from './operation-dispatcher.js';
 import type { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import type {
-  AutomationClientCapabilityAuthority,
-  AutomationClientCapabilityAvailability,
-  AutomationClientCapabilityRequirements,
   ClientCapabilityConnectionIdentity,
   ClientCapabilityConnection,
   ClientCapabilityConnectionSender,
@@ -125,10 +117,6 @@ interface SelectedOfferBinding {
   readonly offer: FrozenOfferBinding;
 }
 
-interface RequiredOfferBinding extends SelectedOfferBinding {
-  readonly requirement: AutomationClientCapabilityRequirement;
-}
-
 interface SnapshotOfferBinding {
   readonly offer: FrozenOfferBinding;
   readonly registration?: CapabilityRegistration;
@@ -161,9 +149,7 @@ export interface SessionClientCapabilityServiceInvocationInput
  * Host-owned registry, selection authority, and reverse-call lifecycle for
  * open-world Client Capability providers.
  */
-export class HostClientCapabilityCoordinator
-  implements ClientCapabilityService, AutomationClientCapabilityAuthority
-{
+export class HostClientCapabilityCoordinator implements ClientCapabilityService {
   readonly handlers: ClientCapabilityOperationHandlerMap = {
     'client.capability.replace': (input, context) => this.#replace(input, context),
     'client.capability.unregister': (input, context) => this.#unregister(input, context),
@@ -234,90 +220,6 @@ export class HostClientCapabilityCoordinator
     if (!result.ok) {
       throw new Error(`Confirmed follow-up capability binding failed: ${result.message}`);
     }
-  }
-
-  requirementsForAutomation(
-    sessionId: string,
-    contractIds: readonly string[],
-  ): Promise<AutomationClientCapabilityRequirements> {
-    return this.#activation.runReadActivation(async () => {
-      if (contractIds.length === 0) return { ok: true, requirements: [] };
-      const state =
-        this.#previewSessions.getStore()?.get(sessionId) ?? this.#sessions.get(sessionId);
-      if (!state) {
-        return { ok: false, message: 'Required Client Capability groups are not loaded' };
-      }
-      const requirements: AutomationClientCapabilityRequirement[] = [];
-      for (const contractId of contractIds) {
-        const binding = state.sessionBindings.get(contractId);
-        if (!binding) {
-          return {
-            ok: false,
-            message: `Client Capability group ${contractId} is unavailable in this Session`,
-          };
-        }
-        const provider = this.#providers.get(binding.providerId);
-        if (!provider) {
-          throw new Error('Client Capability Session binding lost its provider identity');
-        }
-        requirements.push(
-          Object.freeze({
-            principalId: provider.principalId,
-            clientInstanceId: provider.clientInstanceId,
-            contractId,
-          }),
-        );
-      }
-      return { ok: true, requirements };
-    });
-  }
-
-  checkAutomationRequirements(
-    requirements: readonly AutomationClientCapabilityRequirement[],
-  ): Promise<AutomationClientCapabilityAvailability> {
-    return this.#activation.runReadActivation(async () => {
-      const resolved = this.#resolveAutomationRequirements(requirements);
-      return resolved.ok ? { ok: true } : resolved;
-    });
-  }
-
-  bindAutomationSession(
-    sessionId: string,
-    requirements: readonly AutomationClientCapabilityRequirement[],
-  ): Promise<AutomationClientCapabilityAvailability> {
-    return this.#activation.runMutation(async () => {
-      const resolved = this.#resolveAutomationRequirements(requirements);
-      if (!resolved.ok) return resolved;
-      const previous = this.#sessions.get(sessionId);
-      const previousBindings = previous?.sessionBindings ?? new Map();
-      const sessionBindings = new Map(previousBindings);
-      for (const binding of resolved.bindings) {
-        const current = sessionBindings.get(binding.requirement.contractId);
-        if (current && current.providerId !== binding.registration.providerId) {
-          return {
-            ok: false,
-            message:
-              'Automation Client Capability requirement conflicts with the target Session binding',
-          };
-        }
-        sessionBindings.set(binding.requirement.contractId, {
-          kind: 'bound',
-          providerId: binding.registration.providerId,
-        });
-      }
-      const next: SessionCapabilityState = {
-        ...(previous?.initiatingProviderId
-          ? { initiatingProviderId: previous.initiatingProviderId }
-          : {}),
-        ...(previous?.serviceProviderId ? { serviceProviderId: previous.serviceProviderId } : {}),
-        sessionBindings,
-        turnBindings: new Map(previous?.turnBindings ?? []),
-      };
-      const changed = !bindingMapsEqual(previousBindings, sessionBindings);
-      this.#storeSessionState(sessionId, next);
-      if (changed) this.#onModelToolsChanged();
-      return { ok: true };
-    });
   }
 
   async #bindSession(
@@ -712,6 +614,48 @@ export class HostClientCapabilityCoordinator
     });
   }
 
+  async callWorkspaceService(
+    input: Omit<ClientCapabilityServiceInvocationInput, 'connectionId'>,
+  ): Promise<Record<string, unknown>> {
+    const candidates = [...this.#providers.values()]
+      .filter((provider) => {
+        const connection = this.#activeConnection(provider);
+        return Boolean(
+          connection &&
+            provider.current?.servicesByContract.has(
+              serviceContract(input.serviceId, input.version),
+            ),
+        );
+      })
+      .sort((left, right) => left.providerId.localeCompare(right.providerId));
+    const provider = candidates[0];
+    const connection = provider ? this.#activeConnection(provider) : undefined;
+    if (!connection) {
+      throw new ClientCapabilityInvocationError(
+        'capability_lost',
+        'No Client Capability provider offers this workspace service',
+      );
+    }
+    return this.callService({
+      connectionId: connection.connectionId,
+      serviceId: input.serviceId,
+      version: input.version,
+      method: input.method,
+      input: input.input,
+      ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+    });
+  }
+
+  hasWorkspaceService(serviceId: string, version: string): boolean {
+    return [...this.#providers.values()].some((provider) => {
+      const connection = this.#activeConnection(provider);
+      return Boolean(
+        connection && provider.current?.servicesByContract.has(serviceContract(serviceId, version)),
+      );
+    });
+  }
+
   hasService(connectionId: string, serviceId: string, version: string): boolean {
     const connection = this.#connections.get(connectionId);
     const provider = connection?.provider;
@@ -1037,35 +981,6 @@ export class HostClientCapabilityCoordinator
       );
     }
     return eligible;
-  }
-
-  #resolveAutomationRequirements(
-    requirements: readonly AutomationClientCapabilityRequirement[],
-  ):
-    | { readonly ok: true; readonly bindings: readonly RequiredOfferBinding[] }
-    | { readonly ok: false; readonly message: string } {
-    const bindings: RequiredOfferBinding[] = [];
-    for (const requirement of requirements) {
-      const provider = this.#providers.get(
-        clientProviderId(requirement.principalId, requirement.clientInstanceId),
-      );
-      const registration = provider?.current;
-      const offer = registration?.offersByContract.get(requirement.contractId);
-      if (
-        !provider ||
-        !this.#activeConnection(provider) ||
-        !registration ||
-        !offer ||
-        offer.offer.affinity !== 'session'
-      ) {
-        return {
-          ok: false,
-          message: 'A required Client Capability provider is unavailable for this Automation',
-        };
-      }
-      bindings.push({ requirement, registration, offer });
-    }
-    return { ok: true, bindings };
   }
 
   #selectCallBinding(

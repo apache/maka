@@ -3,8 +3,8 @@ import type {
   HealthSignal,
   HealthSignalLayer,
   HealthSnapshot,
-} from '@maka/core';
-import { HEALTH_SIGNAL_LAYERS } from '@maka/core';
+} from '@maka/core/health';
+import { HEALTH_SIGNAL_LAYERS } from '@maka/core/health';
 import { Text, VStack } from '@astryxdesign/core';
 import { Button, RelativeTime, StatusDot, useUiLocale, Banner } from '@maka/ui';
 import { getHealthCenterCopy, type HealthCenterCopy } from '../locales/settings-health-copy';

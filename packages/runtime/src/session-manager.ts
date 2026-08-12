@@ -60,7 +60,7 @@ import type {
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
   SettleSandboxBoundaryRequest,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import {
@@ -72,47 +72,53 @@ import {
   type PlanSessionState,
   type PlanStore,
 } from '@maka/core/plan';
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
+import { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from '@maka/core/explore-agent';
+import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import {
-  DEFAULT_SESSION_NAME,
-  DEEP_RESEARCH_SESSION_LABEL,
-  SIDE_CONVERSATION_SESSION_LABEL,
   SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
   childSessionsForParent,
-  decodeAgentGraphIntentClaim,
-  executionBoundaryContains,
-  failureClassFromCompleteStopReason,
   deriveTurnRecords,
-  isActiveShellRunStatus,
-  isDeepResearchSession,
-  isSessionInlineRun,
-  isTerminalRuntimeEvent,
   subagentSessionRuntimeSummary,
-} from '@maka/core';
+} from '@maka/core/session';
+import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
+import { executionBoundaryContains } from '@maka/core/sandbox-boundary';
+import { failureClassFromCompleteStopReason } from '@maka/core/events';
+import { isActiveShellRunStatus } from '@maka/core/shell-run';
+import { isSessionInlineRun } from '@maka/core/agent-run';
+import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type {
   AgentGraphIntentClaim,
   AgentGraphIntentClaimStore,
+} from '@maka/core/agent-graph-control';
+import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
   AgentGraphProvisionedEdge,
-  AgentGraphScheduleUpdateSource,
+} from '@maka/core/agent-graph-topology';
+import type { AgentGraphScheduleUpdateSource } from '@maka/core/agent-graph-schedule';
+import type {
   AgentRunEvent,
   AgentRunHeader,
   AgentRunStore,
-  ArtifactRecord,
-  ContinuationClaimV1,
-  ContinuationClaimStateV1,
   RootExecutionDescriptor,
-  RuntimeEvent,
+} from '@maka/core/agent-run';
+import type { ArtifactRecord } from '@maka/core/artifacts';
+import type { ContinuationClaimV1 } from '@maka/core/runtime-boundary';
+import type {
+  ContinuationClaimStateV1,
   RuntimeEventStore,
-  RunCompositionSnapshot,
   RuntimeContinuationAuthorityStore,
-  ToolBoundaryProtocol,
+} from '@maka/core/runtime-event-store';
+import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
+import type { RunCompositionSnapshot } from '@maka/core/run-composition';
+import type {
   SubagentWorkspaceBinding,
   SubagentWorktreeExecutor,
-  SubagentPreset,
-} from '@maka/core';
-import { AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION } from '@maka/core';
+} from '@maka/core/subagent-workspace';
+import type { SubagentPreset } from '@maka/core/subagent-settings';
+import { AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION } from '@maka/core/agent-graph-topology';
 import {
   classifyRuntimeEventTerminalFact,
   type RuntimeEventTerminalFact,
@@ -4712,7 +4718,7 @@ export class SessionManager {
       RootExecutionDescriptor,
       | { kind: 'regenerate' }
       | { kind: 'context_compact' }
-      | { kind: 'automation' }
+      | { kind: 'scheduled_task' }
       | { kind: 'safe_boundary_continuation' }
     >;
   }): Promise<void> {
@@ -6139,10 +6145,7 @@ function assertClaimOwnsHostedLinkedChildAdmission(
     sessionId: string;
     turnId: string;
     runId: string;
-    execution: Exclude<
-      RootExecutionDescriptor,
-      { kind: 'external_message' } | { kind: 'automation' }
-    >;
+    execution: Exclude<RootExecutionDescriptor, { kind: 'external_message' }>;
   },
   claim: ContinuationClaimV1,
 ): void {

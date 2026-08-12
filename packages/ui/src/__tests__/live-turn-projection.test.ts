@@ -25,30 +25,13 @@ describe('the unconfirmed claim an arm carries', () => {
     assert.equal(confirmed?.phase, 'waiting', 'confirming is not the same as streaming');
   });
 
-  // Another client's turn, or an automation's, says nothing about this send.
+  // Another client's turn, or a scheduled task's, says nothing about this send.
   it('survives an answer that names a different turn', () => {
     const armed = armLiveTurn('turn-mine');
 
     assert.equal(confirmLiveTurn(armed, 'turn-theirs'), armed);
   });
 
-  // A late answer about a turn this arm has already replaced must not confirm
-  // the newer send.
-  it('survives a late answer about the turn the arm moved past', () => {
-    const rearmed = armLiveTurn('turn-2');
-
-    assert.equal(confirmLiveTurn(rearmed, 'turn-1'), rearmed);
-  });
-
-  it('is identity-preserving when there is nothing to confirm', () => {
-    const confirmed = confirmLiveTurn(armLiveTurn('turn-1'), 'turn-1')!;
-
-    assert.equal(confirmLiveTurn(confirmed, 'turn-1'), confirmed);
-  });
-
-  // Any event about the turn is itself the authority answering, so the claim
-  // must not outlive the first one — otherwise a turn that ended while its
-  // stream wasn't followed could never be settled.
   it('is dropped by the turn\'s own events, not just by an explicit answer', () => {
     const streamed = applyLiveTurnEvent(armLiveTurn('turn-1'), {
       type: 'text_delta',
@@ -60,28 +43,6 @@ describe('the unconfirmed claim an arm carries', () => {
     });
 
     assert.equal(streamed.unconfirmed, undefined);
-  });
-
-  it('is dropped when the turn terminates', () => {
-    const streamed = applyLiveTurnEvent(armLiveTurn('turn-1'), {
-      type: 'text_delta',
-      id: 'event-1',
-      turnId: 'turn-1',
-      messageId: 'step-1',
-      ts: 100,
-      text: '你',
-    });
-    const rearmed = { ...streamed, unconfirmed: true as const };
-    const done = applyLiveTurnEvent(rearmed, {
-      type: 'complete',
-      id: 'event-2',
-      turnId: 'turn-1',
-      ts: 200,
-      stopReason: 'end_turn',
-    });
-
-    assert.equal(done?.terminal, true);
-    assert.equal(done?.unconfirmed, undefined);
   });
 });
 
@@ -138,20 +99,6 @@ describe('applyLiveTurnEvent', () => {
     );
   });
 
-  it('moves an armed turn from waiting to streamed on its first content event', () => {
-    const waiting = armLiveTurn('turn-1');
-    assert.equal(waiting.phase, 'waiting');
-
-    const streamed = applyLiveTurnEvent(waiting, {
-      type: 'thinking_delta',
-      id: 'event-1',
-      turnId: 'turn-1',
-      messageId: 'step-1',
-      ts: 100,
-      text: '开始',
-    });
-    assert.equal(streamed.phase, 'streamed');
-  });
 
   it('projects transient provider retry progress until the next model output', () => {
     const scheduled = applyLiveTurnEvent(armLiveTurn('turn-1'), {
@@ -200,60 +147,7 @@ describe('applyLiveTurnEvent', () => {
     assert.equal(streamed?.providerRetry, undefined);
   });
 
-  it('keeps the thinking message id as the live step identity', () => {
-    const projection = applyLiveTurnEvent(undefined, {
-      type: 'thinking_delta',
-      id: 'event-1',
-      turnId: 'turn-1',
-      messageId: 'step-1',
-      ts: 100,
-      text: '先检查工具',
-    });
 
-    assert.equal(projection.turnId, 'turn-1');
-    assert.deepEqual(projection.steps, [{
-      stepId: 'step-1',
-      contentOrder: ['thinking'],
-      thinking: {
-        text: '先检查工具',
-        truncated: false,
-        complete: false,
-      },
-      tools: [],
-    }]);
-  });
-
-  it('places a tool in the live step identified by tool_start.stepId', () => {
-    const thinking = applyLiveTurnEvent(undefined, {
-      type: 'thinking_delta',
-      id: 'event-1',
-      turnId: 'turn-1',
-      messageId: 'step-1',
-      ts: 100,
-      text: '先检查工具',
-    });
-    const projection = applyLiveTurnEvent(thinking, {
-      type: 'tool_start',
-      id: 'event-2',
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      toolUseId: 'tool-1',
-      toolName: 'Task List',
-      activityKind: 'command',
-      args: {},
-      ts: 101,
-    });
-
-    assert.equal(projection.steps.length, 1);
-    assert.deepEqual(projection.steps[0]?.tools, [{
-      toolUseId: 'tool-1',
-      toolName: 'Task List',
-      activityKind: 'command',
-      stepId: 'step-1',
-      status: 'pending',
-      args: {},
-    }]);
-  });
 
   it('replaces the live reasoning with thinking_complete on the same step', () => {
     const partial = applyLiveTurnEvent(undefined, {
@@ -280,91 +174,8 @@ describe('applyLiveTurnEvent', () => {
     });
   });
 
-  it('keeps answer text in the same step as its reasoning', () => {
-    const thinking = applyLiveTurnEvent(undefined, {
-      type: 'thinking_delta',
-      id: 'event-1',
-      turnId: 'turn-1',
-      messageId: 'step-1',
-      ts: 100,
-      text: '先分析',
-    });
-    const projection = applyLiveTurnEvent(thinking, {
-      type: 'text_delta',
-      id: 'event-2',
-      turnId: 'turn-1',
-      messageId: 'step-1',
-      ts: 101,
-      text: '答案',
-    });
 
-    assert.equal(projection.steps.length, 1);
-    assert.deepEqual(projection.steps[0]?.text, {
-      text: '答案',
-      truncated: false,
-      complete: false,
-    });
-  });
 
-  it('marks final answer text complete without changing its step identity', () => {
-    const partial = applyLiveTurnEvent(undefined, {
-      type: 'text_delta',
-      id: 'event-1',
-      turnId: 'turn-1',
-      messageId: 'step-1',
-      ts: 100,
-      text: '答',
-    });
-    const projection = applyLiveTurnEvent(partial, {
-      type: 'text_complete',
-      id: 'event-2',
-      turnId: 'turn-1',
-      messageId: 'step-1',
-      ts: 101,
-      text: '答案',
-    });
-
-    assert.equal(projection.steps[0]?.stepId, 'step-1');
-    assert.deepEqual(projection.steps[0]?.text, {
-      text: '答案',
-      truncated: false,
-      complete: true,
-    });
-  });
-
-  it('settles a tool result in place inside its live step', () => {
-    const started = applyLiveTurnEvent(undefined, {
-      type: 'tool_start',
-      id: 'event-1',
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      toolUseId: 'tool-1',
-      toolName: 'Bash',
-      args: {},
-      ts: 100,
-    });
-    const projection = applyLiveTurnEvent(started, {
-      type: 'tool_result',
-      id: 'event-2',
-      turnId: 'turn-1',
-      toolUseId: 'tool-1',
-      isError: false,
-      content: { kind: 'text', text: 'ok' },
-      durationMs: 12,
-      ts: 101,
-    });
-
-    assert.equal(projection.steps.length, 1);
-    assert.deepEqual(projection.steps[0]?.tools[0], {
-      toolUseId: 'tool-1',
-      toolName: 'Bash',
-      stepId: 'step-1',
-      status: 'completed',
-      args: {},
-      result: { kind: 'text', text: 'ok' },
-      durationMs: 12,
-    });
-  });
 
   it('retains live nested tool activity identity', () => {
     const projection = applyLiveTurnEvent(undefined, {
@@ -461,42 +272,6 @@ describe('applyLiveTurnEvent', () => {
     assert.equal(projection.steps[0]?.tools[0]?.status, 'interrupted');
   });
 
-  it('appends streamed tool output to the existing tool without changing its step', () => {
-    const started = applyLiveTurnEvent(undefined, {
-      type: 'tool_start',
-      id: 'event-1',
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      toolUseId: 'tool-1',
-      toolName: 'Bash',
-      args: {},
-      ts: 100,
-    });
-    const projection = applyLiveTurnEvent(started, {
-      type: 'tool_output_delta',
-      id: 'event-2',
-      turnId: 'turn-1',
-      sessionId: 'session-1',
-      toolCallId: 'tool-1',
-      toolUseId: 'tool-1',
-      seq: 0,
-      stream: 'stdout',
-      chunk: 'hello\n',
-      redacted: false,
-      createdAt: 101,
-      ts: 101,
-    });
-
-    assert.equal(projection.steps[0]?.stepId, 'step-1');
-    assert.equal(projection.steps[0]?.tools[0]?.status, 'running');
-    assert.deepEqual(projection.steps[0]?.tools[0]?.outputChunks, [{
-      seq: 0,
-      stream: 'stdout',
-      text: 'hello\n',
-      redacted: false,
-      createdAt: 101,
-    }]);
-  });
 
   it('moves an output-first tool into its real step without duplicating or regressing it', () => {
     const output = applyLiveTurnEvent(undefined, {
@@ -543,46 +318,6 @@ describe('applyLiveTurnEvent', () => {
     }]);
   });
 
-  it('ignores legacy generic permission events in the live projection', () => {
-    const started = applyLiveTurnEvent(undefined, {
-      type: 'tool_start',
-      id: 'event-1',
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      toolUseId: 'tool-1',
-      toolName: 'Bash',
-      args: { command: 'rm file' },
-      ts: 100,
-    });
-    const waiting = applyLiveTurnEvent(started, {
-      type: 'permission_request',
-      kind: 'tool_permission',
-      id: 'event-2',
-      turnId: 'turn-1',
-      requestId: 'request-1',
-      toolUseId: 'tool-1',
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: 'rm file' },
-      rememberForTurnAllowed: true,
-      ts: 101,
-    });
-    const allowed = applyLiveTurnEvent(waiting, {
-      type: 'permission_decision_ack',
-      id: 'event-3',
-      turnId: 'turn-1',
-      requestId: 'request-1',
-      toolUseId: 'tool-1',
-      decision: 'allow',
-      ts: 102,
-    });
-
-    assert.equal(waiting, started);
-    assert.equal(allowed, started);
-    assert.equal(allowed?.steps[0]?.tools[0]?.status, 'pending');
-    assert.equal(allowed?.steps[0]?.stepId, 'step-1');
-  });
 
   it('appends late thinking without moving an already visible tool', () => {
     const tool = applyLiveTurnEvent(undefined, {

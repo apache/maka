@@ -1,34 +1,26 @@
+import { deriveTurnRecords, STEP_LIMIT_NOTICE_TEXT } from '@maka/core/session';
 import {
-  deriveTurnRecords,
   isInFlightToolStatus,
-  isActiveShellRunStatus,
-  mergeShellRunStateWithDiagnostics,
-  projectToolActivityArgs,
-  STEP_LIMIT_NOTICE_TEXT,
   toolResultActivityStatus,
   unfinishedToolActivityStatus,
-} from "@maka/core";
+} from '@maka/core/tool-result-status';
+import { isActiveShellRunStatus } from '@maka/core/shell-run';
+import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
+import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 import type {
   AttachmentRef,
-  ToolActivityStatus,
   InlineReference,
   QuoteRef,
-  ShellRunToolResult,
   ShellRunUpdate,
-  StoredMessage,
   ToolActivityKind,
   ToolResultContent,
-  TurnRecord,
-  TurnStatus,
-  UserMessage,
-} from "@maka/core";
+} from '@maka/core/events';
+import type { ToolActivityStatus } from '@maka/core/tool-result-status';
+import type { ShellRunToolResult } from '@maka/core/shell-run-result';
+import type { StoredMessage, TurnRecord, TurnStatus, UserMessage } from '@maka/core/session';
 import type { LiveTurnProjection } from "./live-turn-projection.js";
 
-export {
-  isCancelledToolResultContent,
-  isInFlightToolStatus,
-  toolResultActivityStatus,
-} from "@maka/core";
+export { isCancelledToolResultContent, isInFlightToolStatus, toolResultActivityStatus } from '@maka/core/tool-result-status';
 
 export interface ChatItem {
   id: string;

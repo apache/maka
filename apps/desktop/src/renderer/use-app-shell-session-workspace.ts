@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import type { StoredMessage } from '@maka/core';
+import type { StoredMessage } from '@maka/core/session';
 import { useAppShellSessionUiState } from './app-shell-session-ui-state';
 import { useAppShellSessionList } from './use-app-shell-session-list';
 import { createBootstrapSelectionLease } from './bootstrap-selection-lease';
@@ -61,6 +61,15 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     sessionUi.clearSessionUiState(sessionId);
   }
 
+  function clearRuntimeHostSessionState(): void {
+    setActiveId(undefined);
+    setMessages([]);
+    messageRetryPendingRef.current.clear();
+    stopPendingRef.current.clear();
+    sessionUi.clearAllSessionUiState();
+    sessionList.clearSessions();
+  }
+
   return {
     ...sessionList,
     activeId,
@@ -69,6 +78,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     setActiveId,
     startNewSession,
     clearOwnedSessionState,
+    clearRuntimeHostSessionState,
     messages,
     setMessages,
     messageLoadPending,

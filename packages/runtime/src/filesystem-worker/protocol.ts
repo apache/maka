@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { validateSandboxBoundaryExpansion } from '@maka/core';
+import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 
 // v5 adds the provider-native single-file ApplyPatch operation.
 export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 5 as const;

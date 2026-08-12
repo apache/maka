@@ -1,4 +1,7 @@
-import { validateSandboxBoundaryExpansion, type SandboxBoundaryExpansion } from '@maka/core';
+import {
+  validateSandboxBoundaryExpansion,
+  type SandboxBoundaryExpansion,
+} from '@maka/core/sandbox-boundary';
 
 import type { SandboxType } from './types.js';
 

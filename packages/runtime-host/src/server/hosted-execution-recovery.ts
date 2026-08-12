@@ -6,7 +6,8 @@ import {
   type MessageContent,
 } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
-import { RuntimeMessageAuthorityInvariantError, type SessionManager } from '@maka/runtime';
+import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-authority';
+import { type SessionManager } from '@maka/runtime/session-manager';
 import type { ExecutionStoresWriter, RootTurnAdmission } from '@maka/storage/execution-stores';
 import type { RootAdmissionOwner } from './root-admission-owner.js';
 import type { HostedExecutionProjectionReader } from './hosted-execution-projection.js';
@@ -22,7 +23,7 @@ export interface PrepareHostedExecutionRecoveryInput {
   readonly rootAdmissions: RootAdmissionOwner;
   readonly projection: HostedExecutionProjectionReader;
   readonly runtime: Pick<SessionManager, 'closePendingHostedAdmission'>;
-  readonly assertAutomationAdmission?: (admission: RootTurnAdmission) => void;
+  readonly assertScheduledTaskAdmission?: (admission: RootTurnAdmission) => Promise<void>;
 }
 
 /** Validates and repairs durable admission/message relationships before execution replay. */
@@ -54,13 +55,13 @@ export async function prepareHostedExecutionRecovery(
         ? (messageIndex.messagesById.get(admission.userMessageId) ?? [])
         : [];
       const executionContract = recoveryExecutionContract(admission.execution);
-      if (admission.execution.kind === 'automation' && (!run || !isTerminalRun(run.status))) {
-        if (!input.assertAutomationAdmission) {
+      if (admission.execution.kind === 'scheduled_task' && (!run || !isTerminalRun(run.status))) {
+        if (!input.assertScheduledTaskAdmission) {
           throw new RuntimeMessageAuthorityInvariantError(
-            'Automation recovery admission has no canonical authority validator',
+            'ScheduledTask recovery admission has no canonical authority validator',
           );
         }
-        input.assertAutomationAdmission(admission);
+        await input.assertScheduledTaskAdmission(admission);
       }
       if (!executionContract.allowsQueueSources && admission.sourceMessages.length !== 0) {
         throw new Error(
@@ -195,8 +196,11 @@ export function requireHostedExecutionMessageContent(admission: RootTurnAdmissio
 
 export function hostedExecutionMessageOrigin(execution: RootExecutionDescriptor) {
   switch (execution.kind) {
-    case 'automation':
-      return { kind: 'automation' as const, automationId: execution.automationId };
+    case 'scheduled_task':
+      return {
+        kind: 'scheduled_task' as const,
+        scheduledTaskId: execution.scheduledTaskId,
+      };
     case 'goal':
       return { kind: 'goal' as const, goalId: execution.goalId };
     case 'agent_graph_supervisor_wake':
@@ -293,7 +297,7 @@ function recoveryExecutionContract(execution: RootExecutionDescriptor): Recovery
       return contract(false, true, 'root_replay');
     case 'context_compact':
       return contract(false, false, 'root_replay');
-    case 'automation':
+    case 'scheduled_task':
       return contract(false, true, 'domain_replay');
     case 'goal':
       return contract(false, true, 'host_recovery_closure');

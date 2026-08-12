@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import type { SessionHeader } from '@maka/core';
+import type { SessionHeader } from '@maka/core/session';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import { SQLITE_RUNTIME_SCHEMA_VERSION } from '../sqlite-runtime-schema.js';
 import { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from '../sqlite-session-metadata-schema.js';
@@ -64,48 +64,6 @@ test('preserves operational state when every schema is current', async () => {
       'preserved',
     );
     reopened.close();
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('migrates older operational state without losing sessions or messages', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-operational-upgrade-'));
-  const databasePath = join(root, 'runtime.sqlite');
-  try {
-    const lease = acquireOperationalStateDatabase(root);
-    const metadata = createSqliteSessionMetadataStore(databasePath, { databaseLease: lease });
-    await metadata.importSession(
-      sessionHeader(),
-      [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 3, text: 'keep me' }],
-      { lastMessageAt: 3, lastMessagePreview: 'keep me' },
-    );
-    metadata.close();
-
-    const database = new DatabaseSync(databasePath);
-    rewindRuntimeSchema(database);
-    database
-      .prepare(`UPDATE operational_schema_migrations SET version = ? WHERE scope = 'runtime'`)
-      .run(SQLITE_RUNTIME_SCHEMA_VERSION - 1);
-    database.close();
-
-    const reopenedLease = acquireOperationalStateDatabase(root);
-    assert.equal(
-      (reopenedLease.database.prepare('PRAGMA user_version').get() as { user_version: number })
-        .user_version,
-      SQLITE_RUNTIME_SCHEMA_VERSION,
-    );
-    const reopened = createSqliteSessionMetadataStore(databasePath, {
-      databaseLease: reopenedLease,
-    });
-    try {
-      assert.equal((await reopened.read('session-1')).header.name, 'Session');
-      assert.deepEqual(await reopened.readMessages('session-1'), [
-        { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 3, text: 'keep me' },
-      ]);
-    } finally {
-      reopened.close();
-    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

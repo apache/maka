@@ -14,37 +14,6 @@ const pwshPlan: ShellPlan = {
   exe: 'C:\\pf\\pwsh.exe',
 };
 
-describe('Bash tool description declares the executing shell', () => {
-  test('foreground and background variants declare command activity', () => {
-    assert.equal(buildLocalForegroundBashTool().activityKind, 'command');
-    assert.equal(buildManagedBashTool(fakeShellRuns()).activityKind, 'command');
-  });
-
-  test('foreground tool tells the model commands run under PowerShell 7', () => {
-    const tool = buildLocalForegroundBashTool({ shell: pwshPlan });
-    assert.match(tool.description, /PowerShell 7 \(pwsh\)/);
-    assert.match(tool.description, /PowerShell syntax/);
-    assert.match(tool.description, /git ls-files/);
-    assert.match(tool.description, /node_modules/);
-    assert.match(tool.description, /Subject to permission policy\.$/);
-  });
-
-  test('foreground tool description is unchanged on POSIX', () => {
-    const tool = buildLocalForegroundBashTool({ shell: { kind: 'posix', displayName: '/bin/sh' } });
-    assert.equal(
-      tool.description,
-      'Run a shell command in the session cwd. Subject to permission policy.',
-    );
-  });
-
-  test('background tool tells the model commands run under PowerShell 7', () => {
-    const tool = buildManagedBashTool(fakeShellRuns(), { shell: pwshPlan });
-    assert.match(tool.description, /PowerShell 7 \(pwsh\)/);
-    assert.match(tool.description, /git ls-files/);
-    assert.match(tool.description, /run_in_background=true/);
-  });
-});
-
 describe('Bash tool shell is threaded through to execution, not just the description', () => {
   test('foreground tool executes with the same shell it declares', async () => {
     // /bin/echo stands in for pwsh.exe: if the tool's shell reaches the

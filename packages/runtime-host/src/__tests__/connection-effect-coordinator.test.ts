@@ -8,11 +8,9 @@ import type {
   ConnectionCatalogEntryDraft,
   CredentialStatus,
 } from '@maka/core/runtime-policy';
-import {
-  serializeOAuthSubscriptionTokens,
-  type ConnectionEffectFetchTransport,
-  type ConnectionTestEffectOutcome,
-} from '@maka/runtime';
+import { serializeOAuthSubscriptionTokens } from '@maka/runtime/subscription-credentials';
+import { type ConnectionEffectFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
+import { type ConnectionTestEffectOutcome } from '@maka/runtime/connection-effect-outcome';
 import {
   openInteractiveRuntimePolicyStoresForWrite,
   type RuntimePolicyStoresWriter,

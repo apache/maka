@@ -1,5 +1,5 @@
 import { FileCode, FileImage, FileText, FileType, Paperclip, type LucideIcon } from './icons.js';
-import type { AttachmentRef } from '@maka/core';
+import type { AttachmentRef } from '@maka/core/events';
 import { Icon } from '@astryxdesign/core/Icon';
 
 /** Per-kind lucide icon for attachment tokens. Replaces the

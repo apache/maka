@@ -1,5 +1,4 @@
 import type { InteractiveRuntimeHostCandidateOptions } from './server/candidate.js';
-import { isAbsolute } from 'node:path';
 
 export function parseInteractiveRuntimeHostCandidateArguments(
   args: readonly string[],
@@ -7,10 +6,10 @@ export function parseInteractiveRuntimeHostCandidateArguments(
   const allowedKeys = new Set([
     'root',
     'expected-root-id',
+    'initial-connection-timeout-ms',
     'idle-grace-ms',
     'handshake-timeout-ms',
     'generation',
-    'legacy-configuration-root',
   ]);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
@@ -34,11 +33,7 @@ export function parseInteractiveRuntimeHostCandidateArguments(
   return {
     rootPath,
     expectedRootId,
-    ...(values.has('legacy-configuration-root')
-      ? {
-          legacyConfigurationRoot: readOptionalAbsolutePath(values, 'legacy-configuration-root'),
-        }
-      : {}),
+    initialConnectionTimeoutMs: readOptionalInteger(values, 'initial-connection-timeout-ms'),
     idleGraceMs: readOptionalInteger(values, 'idle-grace-ms'),
     handshakeTimeoutMs: readOptionalInteger(values, 'handshake-timeout-ms'),
     ...(values.has('generation') ? { generation: readGeneration(values) } : {}),
@@ -48,13 +43,6 @@ export function parseInteractiveRuntimeHostCandidateArguments(
 function readGeneration(values: Map<string, string>): string {
   const value = values.get('generation');
   if (!value || value.length > 128) throw new Error('Invalid --generation');
-  return value;
-}
-
-function readOptionalAbsolutePath(values: Map<string, string>, key: string): string | undefined {
-  const value = values.get(key);
-  if (value === undefined) return undefined;
-  if (!isAbsolute(value)) throw new Error(`Invalid --${key}`);
   return value;
 }
 

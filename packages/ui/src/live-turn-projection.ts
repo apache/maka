@@ -1,8 +1,11 @@
-import type { ProviderRetryEvent, SessionEvent, StoredMessage, UiLocale } from '@maka/core';
+import type { ProviderRetryEvent, SessionEvent } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { materializeToolResultPreviewForActivity } from '@maka/core/tool-result-preview';
 import { applyAssistantComplete, applyAssistantDelta } from './assistant-stream.js';
-import { projectToolActivityArgs, toolResultActivityStatus } from '@maka/core';
-import { isInFlightToolStatus } from '@maka/core';
+import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
+import { toolResultActivityStatus } from '@maka/core/tool-result-status';
+import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import type { ToolActivityItem } from './materialize.js';
 import { applyThinkingComplete, applyThinkingDelta } from './thinking-stream.js';
 import { applyToolOutputChunk } from './tool-output-stream.js';

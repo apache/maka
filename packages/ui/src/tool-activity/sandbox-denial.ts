@@ -1,4 +1,4 @@
-import type { ToolResultContent } from '@maka/core';
+import type { ToolResultContent } from '@maka/core/events';
 import type { ToolActivityItem } from '../materialize.js';
 
 export function isSandboxDeniedToolResult(

@@ -3,7 +3,7 @@ import { Button } from '@astryxdesign/core/Button';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { TextQuote, X } from './icons.js';
 import { cn } from './utils.js';
-import type { QuoteRef } from '@maka/core';
+import type { QuoteRef } from '@maka/core/events';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 

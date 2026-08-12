@@ -1,4 +1,4 @@
-import type { PersonalizationSettings, PersonalizationSettingsWarning } from '@maka/core';
+import type { PersonalizationSettings, PersonalizationSettingsWarning } from '@maka/core/settings';
 
 /**
  * User personalization prompt fragment (display name + assistant tone).

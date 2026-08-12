@@ -11,7 +11,7 @@
 // so they inherit the containing product slot's foreground color and stay
 // legible in both light and dark themes; viewBox is the upstream 24×24.
 
-import type { ProviderType } from '@maka/core';
+import type { ProviderType } from '@maka/core/llm-connections';
 import type { ReactElement } from 'react';
 import { siMinimax } from 'simple-icons';
 import alibabaBrandMark from '../assets/provider-brands/alibabacloud.svg';

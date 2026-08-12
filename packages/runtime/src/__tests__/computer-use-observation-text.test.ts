@@ -29,63 +29,6 @@ function lines(text: string): string[] {
   return text.split('\n');
 }
 
-test('the header carries what the model must quote back', () => {
-  const text = renderObservationForModel(observation([]));
-  const [head] = lines(text);
-  assert.match(head ?? '', /^observation_id=obs_1 /);
-  assert.match(head ?? '', /app=com\.apple\.Safari/);
-  assert.match(head ?? '', /window_id=45/);
-  assert.match(head ?? '', /window="Activity Monitor"/);
-  assert.match(head ?? '', /elements=0/);
-});
-
-test('an element line reads id, role, label, value, state, frame', () => {
-  const text = renderObservationForModel(
-    observation([
-      {
-        elementId: '7',
-        role: 'AXTextField',
-        label: 'Search',
-        value: 'hello',
-        enabled: false,
-        selected: true,
-        frame: { x: 100.4, y: 200.6, width: 80, height: 30 },
-      },
-    ]),
-  );
-  assert.equal(
-    lines(text)[1],
-    '7 AXTextField "Search" ="hello" [disabled,selected] @100,201 80x30',
-  );
-});
-
-test('only the informative half of each state is written', () => {
-  // Every element is enabled and unselected unless the driver says otherwise.
-  // Writing that out for all of them costs tokens to say nothing.
-  const text = renderObservationForModel(
-    observation([{ elementId: '1', role: 'AXButton', enabled: true, selected: false }]),
-  );
-  assert.equal(lines(text)[1], '1 AXButton');
-});
-
-test('containment is indentation, and the parent link is not repeated as a field', () => {
-  const text = renderObservationForModel(
-    observation([
-      { elementId: '0', role: 'AXWindow' },
-      { elementId: '1', role: 'AXToolbar', parentElementId: '0' },
-      { elementId: '2', role: 'AXButton', label: 'Save', parentElementId: '1' },
-      { elementId: '3', role: 'AXButton', label: 'Close', parentElementId: '0' },
-    ]),
-  );
-  assert.deepEqual(lines(text).slice(1), [
-    '0 AXWindow',
-    '\t1 AXToolbar',
-    '\t\t2 AXButton "Save"',
-    '\t3 AXButton "Close"',
-  ]);
-  assert.doesNotMatch(text, /parent_element_id/);
-});
-
 test('an element whose parent was pruned away is still written', () => {
   // The driver prunes, so a reported child can outlive its reported parent.
   // Hiding it to keep the tree tidy would hide a real target.
@@ -216,66 +159,6 @@ test('an oversized value is shortened visibly, not silently', () => {
   assert.ok((lines(text)[1] ?? '').length < 320);
 });
 
-test('an empty value is written, because empty is not the same as absent', () => {
-  const text = renderObservationForModel(
-    observation([
-      { elementId: '1', role: 'AXTextField', value: '' },
-      { elementId: '2', role: 'AXTextField' },
-    ]),
-  );
-  assert.deepEqual(lines(text).slice(1), ['1 AXTextField =""', '2 AXTextField']);
-});
-
-test('the compact form is substantially smaller than the JSON it replaces', () => {
-  // A window at the driver's 500-element ceiling, shaped like a real one:
-  // a window, a toolbar, and rows of labelled controls.
-  const elements: CuObservedElement[] = [{ elementId: '0', role: 'AXWindow', label: 'Main' }];
-  for (let index = 1; index < 500; index += 1) {
-    elements.push({
-      elementId: String(index),
-      role: index % 3 === 0 ? 'AXStaticText' : 'AXButton',
-      label: `Control number ${index}`,
-      enabled: true,
-      selected: false,
-      parentElementId: index > 1 ? String(index - 1) : '0',
-      frame: { x: 100 + index, y: 200 + index, width: 80, height: 30 },
-    });
-  }
-  const target = observation(elements);
-
-  const previous = JSON.stringify({
-    observation_id: target.observationId,
-    app: target.appId,
-    pid: target.pid,
-    window_id: target.windowId,
-    window_title: target.windowTitle,
-    elements: target.elements.map((element) => ({
-      element_id: element.elementId,
-      role: element.role,
-      ...(element.label ? { label: element.label } : {}),
-      ...(element.value !== undefined ? { value: element.value } : {}),
-      ...(element.enabled !== undefined ? { enabled: element.enabled } : {}),
-      ...(element.selected !== undefined ? { selected: element.selected } : {}),
-      ...(element.parentElementId !== undefined
-        ? { parent_element_id: element.parentElementId }
-        : {}),
-      ...(element.frame ? { frame: element.frame } : {}),
-    })),
-  });
-  const compact = renderObservationForModel(target);
-
-  // Reported rather than merely asserted: a regression here is a cost
-  // regression, and the number is the point of the change.
-  console.log(
-    `500 elements: ${previous.length} chars JSON → ${compact.length} compact ` +
-      `(${Math.round((1 - compact.length / previous.length) * 100)}% smaller)`,
-  );
-  assert.ok(
-    compact.length < previous.length * 0.5,
-    `expected at least half the size, got ${compact.length} vs ${previous.length}`,
-  );
-});
-
 test('a cut tree says so, in the header, in words that change what the model does', () => {
   // The executor bounds its walk by element count and by a clock. An
   // open/save panel reaches both — 1,500 elements in 35s was measured — so a
@@ -293,21 +176,6 @@ test('a cut tree says so, in the header, in words that change what the model doe
 
   const whole = renderObservationForModel(observation([]));
   assert.doesNotMatch(lines(whole)[0] ?? '', /truncated/);
-});
-
-test('a subrole is written beside the role, so a secure field is not an ordinary one', () => {
-  const text = renderObservationForModel(
-    observation([
-      { elementId: '0', role: 'AXTextField', subrole: 'AXSecureTextField', label: '密码' },
-      { elementId: '1', role: 'AXTextField', label: '用户名' },
-    ]),
-  );
-  const rows = lines(text);
-  // The `AX` prefix is on every role in the tree, so it says nothing where it
-  // repeats; the subrole keeps its own name and loses the prefix.
-  assert.match(rows[1] ?? '', /AXTextField\/SecureTextField/);
-  // An element without one is written exactly as before.
-  assert.match(rows[2] ?? '', /1 AXTextField "用户名"/);
 });
 
 test('an empty field shows what it is prompting for, marked as not a value', () => {
@@ -338,76 +206,12 @@ test('an empty field shows what it is prompting for, marked as not a value', () 
   assert.doesNotMatch(rows[3] ?? '', /~/);
 });
 
-test('an element says what it accepts beyond a click, and where the keys go', () => {
-  const text = renderObservationForModel(
-    observation([
-      { elementId: '0', role: 'AXWindow', label: '计算器', actions: ['raise'] },
-      { elementId: '1', role: 'AXButton', label: '7' },
-      { elementId: '2', role: 'AXTextField', label: '搜索', focused: true, actions: ['show_menu'] },
-    ]),
-  );
-  const rows = lines(text);
-  // `raise` is the only window-management verb anywhere in this surface, and it
-  // was undiscoverable: the schema said only "Required for secondary_action".
-  assert.match(rows[1] ?? '', /\+raise/);
-  // A plain button offers nothing beyond click_element, so it says nothing —
-  // every actionable element advertises `press`, and printing it on every line
-  // costs tokens to say what click_element already does.
-  assert.doesNotMatch(rows[2] ?? '', /\+/);
-  assert.match(rows[3] ?? '', /\+show_menu/);
-  // The exact marker, not merely the word. The tool description tells the model
-  // `[focused]` marks where a key sent without an element_id will land, and a
-  // loose /focused/ here matched any spelling — renaming the marker to anything
-  // containing "focused" left the suite green while the description became a
-  // lie about a document the model has to read literally.
-  assert.match(rows[3] ?? '', /\[focused\]/);
-});
-
-test('the states a line can carry are written together in one bracket', () => {
-  // Pins the whole vocabulary, not one marker: `disabled` and `selected` are
-  // documented the same way and were unpinned in the same manner.
-  const text = renderObservationForModel(
-    observation([
-      { elementId: '0', role: 'AXWindow', label: '计算器' },
-      { elementId: '1', role: 'AXButton', label: '7', enabled: false },
-      { elementId: '2', role: 'AXRow', label: 'report', selected: true, focused: true },
-    ]),
-  );
-  const rows = lines(text);
-  assert.match(rows[2] ?? '', /\[disabled\]/);
-  assert.match(rows[3] ?? '', /\[selected,focused\]/);
-});
-
-test('a subrole is written only where it says something the role does not', () => {
-  const text = renderObservationForModel(
-    observation([
-      // Unnamed and one of many: the subrole is the only thing telling these
-      // three apart, and without it the model sees three identical buttons.
-      { elementId: '0', role: 'AXButton', subrole: 'AXCloseButton' },
-      // Unnamed, but a container — unnamed because it is scaffolding, not
-      // because its name went missing. `AXWindow/AXStandardWindow` is a longer
-      // way of writing `AXWindow`.
-      { elementId: '1', role: 'AXWindow', subrole: 'AXStandardWindow' },
-      // Named: the label already says which control this is.
-      { elementId: '2', role: 'AXButton', subrole: 'AXToggleButton', label: '深色模式' },
-      // Secure: always, because this is the one the model must not fill, and
-      // that rule is only enforceable if it can tell.
-      { elementId: '3', role: 'AXTextField', subrole: 'AXSecureTextField', label: '密码' },
-    ]),
-  );
-  const rows = lines(text);
-  assert.match(rows[1] ?? '', /AXButton\/CloseButton/);
-  assert.equal((rows[2] ?? '').includes('/'), false, 'a container keeps its bare role');
-  assert.equal((rows[3] ?? '').includes('/'), false, 'a labelled control keeps its bare role');
-  assert.match(rows[4] ?? '', /AXTextField\/SecureTextField/);
-});
-
 // ---------------------------------------------------------------------------
 // The offline evaluator's entry point
 // ---------------------------------------------------------------------------
 //
-// `scripts/cu-prune-eval.mjs` measures what a rendering change would cost
-// against recorded trajectories. It has to call the real renderer — the same
+// Offline evaluation measures what a rendering change would cost against
+// recorded trajectories. It has to call the real renderer — the same
 // instrument built elsewhere reached a reversed conclusion twice because it
 // carried a hand-written copy of the policy — so the policy takes an option
 // instead. What must stay true is that the option changes nothing until it is

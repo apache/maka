@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import {
-  decodeToolResultPreviewContent,
-  materializeToolResultPreviewForActivity,
-} from '../tool-result-preview.js';
+import { decodeToolResultPreviewContent } from '../tool-result-preview.js';
 
 describe('tool_result_preview open-facts', () => {
   it('rejects missing childSessionId, bulk fields, and non-running status', () => {
@@ -40,30 +37,5 @@ describe('tool_result_preview open-facts', () => {
     assert.throws(() =>
       decodeToolResultPreviewContent({ kind: 'agent_swarm', status: 'running', items: [] }),
     );
-  });
-
-  it('materializes open-facts with empty bulk', () => {
-    const preview = decodeToolResultPreviewContent({
-      kind: 'subagent',
-      childSessionId: 'child-1',
-      agentId: 'local_read',
-      agentName: 'Local Read',
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'running',
-      permissionMode: 'explore',
-    });
-    assert.deepEqual(materializeToolResultPreviewForActivity(preview), {
-      kind: 'subagent',
-      childSessionId: 'child-1',
-      agentId: 'local_read',
-      agentName: 'Local Read',
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'running',
-      permissionMode: 'explore',
-      summary: '',
-      artifactIds: [],
-    });
   });
 });

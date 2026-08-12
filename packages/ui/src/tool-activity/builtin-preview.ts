@@ -13,11 +13,11 @@
 import {
   formatQuietJsonValue as coreFormatQuietJsonValue,
   formatToolInvocationLine as coreFormatToolInvocationLine,
-  type UiLocale,
-} from '@maka/core';
+} from '@maka/core/tool-quiet-preview';
+import { type UiLocale } from '@maka/core/ui-locale';
 import type { ToolActivityItem } from '../materialize.js';
 
-export type { QuietPreview } from '@maka/core';
+export type { QuietPreview } from '@maka/core/tool-quiet-preview';
 
 /** Desktop-adapted wrapper with an explicit resolved locale. */
 export function formatToolInvocationLine(
@@ -34,6 +34,6 @@ export function formatToolInvocationLine(
 export function formatQuietJsonValue(
   value: unknown,
   locale: UiLocale,
-): import('@maka/core').QuietPreview {
+): import('@maka/core/tool-quiet-preview').QuietPreview {
   return coreFormatQuietJsonValue(value, locale);
 }

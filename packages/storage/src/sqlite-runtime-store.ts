@@ -6,25 +6,10 @@ import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
 import {
   buildWorkspaceBaselineAuthorityEvents,
-  decodeRuntimeEvent,
-  isPartialRuntimeEvent,
-  isTerminalRuntimeEvent,
-  RUNTIME_CONTINUATION_AUTHORITY_V1,
   scanWorkspaceBaselineAuthority,
-  TOOL_BOUNDARY_PROTOCOL_V1,
-  TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
   WORKSPACE_AUTHORITY_SESSION_ID,
   WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1,
-  type ContinuationClaimResult,
-  type ContinuationClaimStateV1,
-  type RuntimeEvent,
-  type RuntimeContinuationAuthorityStore,
-  type RuntimeRecoveryBundleCommit,
-  type RuntimeRecoveryBundleStore,
-  type RuntimeWorkspaceVersionAuthorityStore,
   type ScannedWorkspaceBaselineAuthority,
-  type ToolRecoveryDecisionFact,
-  type ToolRecoveryMode,
   type WorkspaceAuthorityLedgerRow,
   type WorkspaceBaselineAuthorityInput,
   type WorkspaceBaselineCommitResult,
@@ -32,7 +17,26 @@ import {
   type WorkspaceHeadRecordV1,
   type WorkspaceProjectionRebuildResult,
   type WorkspaceVersionRecordV1,
-} from '@maka/core';
+} from '@maka/core/workspace-version-authority';
+import {
+  decodeRuntimeEvent,
+  isPartialRuntimeEvent,
+  isTerminalRuntimeEvent,
+  TOOL_BOUNDARY_PROTOCOL_V1,
+  type RuntimeEvent,
+  type ToolRecoveryMode,
+} from '@maka/core/runtime-event';
+import {
+  RUNTIME_CONTINUATION_AUTHORITY_V1,
+  TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
+  type ContinuationClaimResult,
+  type ContinuationClaimStateV1,
+  type RuntimeContinuationAuthorityStore,
+  type RuntimeRecoveryBundleCommit,
+  type RuntimeRecoveryBundleStore,
+  type RuntimeWorkspaceVersionAuthorityStore,
+} from '@maka/core/runtime-event-store';
+import { type ToolRecoveryDecisionFact } from '@maka/core/tool-recovery-fact';
 import { canonicalToolArgsHash, stableJsonStringify } from '@maka/core/tool-args-identity';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
@@ -83,7 +87,7 @@ import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-author
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 
-export type { ToolRecoveryMode } from '@maka/core';
+export type { ToolRecoveryMode } from '@maka/core/runtime-event';
 
 const require = createRequire(import.meta.url);
 

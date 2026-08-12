@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { TaskSubmissionReadinessSnapshot } from '@maka/core';
+import type { TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
 import type { DesktopTaskSubmissionReadinessRequest } from '../preload/bridge-contract.js';
 
 export function useTaskSubmissionReadiness(

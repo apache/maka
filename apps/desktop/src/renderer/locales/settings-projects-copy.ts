@@ -1,6 +1,32 @@
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export type SettingsProjectsCopy = {
+  runtimeHost: {
+    title: string;
+    description: string;
+    selected: string;
+    selectedHelp: string;
+    remoteTitle: string;
+    remoteDescription: string;
+    add: string;
+    cancel: string;
+    id: string;
+    name: string;
+    url: string;
+    rootId: string;
+    credential: string;
+    save: string;
+    active: string;
+    connect: string;
+    unavailable: string;
+    remove: string;
+    empty: string;
+    loadFailed: string;
+    selectFailed: string;
+    saveFailed: string;
+    removeFailed: string;
+    moreActions(name: string): string;
+  };
   section: string;
   sectionHelp: string;
   addProject: string;
@@ -39,7 +65,33 @@ export type SettingsProjectsCopy = {
 
 const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
   zh: {
-    section: '项目',
+    runtimeHost: {
+      title: 'Runtime Host',
+      description: '选择运行会话、自动化和后台工作的 Host。Local 使用这台设备。',
+      selected: 'Host',
+      selectedHelp: '切换会立即生效；连接失败时继续使用当前 Host',
+      remoteTitle: '远程 Host',
+      remoteDescription: '凭据单独保存，不会写入 profile 文件',
+      add: '添加远程 Host',
+      cancel: '取消',
+      id: 'Profile ID',
+      name: '显示名称',
+      url: 'WSS 地址',
+      rootId: 'State Root ID',
+      credential: '访问凭据',
+      save: '保存',
+      active: '当前',
+      connect: '连接',
+      unavailable: '无法连接',
+      remove: '移除',
+      empty: '还没有远程 Host',
+      loadFailed: '无法读取 Runtime Host profiles',
+      selectFailed: '无法选择 Runtime Host',
+      saveFailed: '无法保存 Runtime Host profile',
+      removeFailed: '无法移除 Runtime Host profile',
+      moreActions: (name: string) => `更多操作：${name}`,
+    },
+    section: '工作区',
     // Says all three layers of the rule in one sentence, because a help line
     // that only mentions the default would leave the user guessing what
     // happens before they set one.
@@ -74,7 +126,33 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     moreActions: (projectName: string) => `更多操作：${projectName}`,
   },
   en: {
-    section: 'Projects',
+    runtimeHost: {
+      title: 'Runtime Host',
+      description: 'Choose the Host that runs sessions, automations, and background work. Local uses this device.',
+      selected: 'Host',
+      selectedHelp: 'Switches immediately; if connection fails, Desktop keeps using the current Host',
+      remoteTitle: 'Remote Hosts',
+      remoteDescription: 'Credentials are stored separately and never written to the profile file',
+      add: 'Add remote Host',
+      cancel: 'Cancel',
+      id: 'Profile ID',
+      name: 'Display name',
+      url: 'WSS URL',
+      rootId: 'State Root ID',
+      credential: 'Access credential',
+      save: 'Save',
+      active: 'Active',
+      connect: 'Connect',
+      unavailable: 'Unavailable',
+      remove: 'Remove',
+      empty: 'No remote Hosts yet',
+      loadFailed: 'Could not load Runtime Host profiles',
+      selectFailed: 'Could not select the Runtime Host',
+      saveFailed: 'Could not save the Runtime Host profile',
+      removeFailed: 'Could not remove the Runtime Host profile',
+      moreActions: (name: string) => `More actions for ${name}`,
+    },
+    section: 'Workspace',
     sectionHelp:
       'New conversations open in the default project; without one, they reuse the project you last used. Any conversation can switch next to the input box.',
     addProject: 'Add project',

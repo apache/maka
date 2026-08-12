@@ -8,8 +8,8 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import {
   serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
-  type ProxiedFetchTransport,
-} from '@maka/runtime';
+} from '@maka/runtime/subscription-credentials';
+import { type ProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
 import {
   openInteractiveRuntimePolicyStoresForWrite,
   type RuntimePolicyCredentialMaterial,

@@ -3,15 +3,15 @@ import { describe, it } from 'node:test';
 
 import {
   ShellRunUpdateBuffer,
+  decodeCanonicalShellToolResultContent,
   mergeShellRunState,
   mergeShellRunStateWithDiagnostics,
   mergeShellRunUpdate,
-  normalizeShellToolResultContent,
   projectShellRunUpdateForSession,
   type ShellRunMergeDiagnostic,
   type ShellRunToolResult,
-  type ShellRunUpdate,
-} from '../index.js';
+} from '../shell-run-result.js';
+import type { ShellRunUpdate } from '../events.js';
 
 describe('mergeShellRunState', () => {
   it('orders state by revision and strips child operations', () => {
@@ -170,56 +170,7 @@ describe('ShellRun view updates', () => {
   });
 });
 
-describe('normalizeShellToolResultContent', () => {
-  it('normalizes the exact pre-status terminal result and preserves its truncation marker', () => {
-    assert.deepEqual(
-      normalizeShellToolResultContent({
-        kind: 'terminal',
-        cwd: '/repo',
-        cmd: 'printf ok',
-        exitCode: 0,
-        stdout: '...12 bytes truncated. historical recovery guidance\n\nok',
-        stderr: '',
-      }),
-      {
-        state: 'valid',
-        content: {
-          kind: 'terminal',
-          cwd: '/repo',
-          cmd: 'printf ok',
-          status: 'completed',
-          exitCode: 0,
-          output: {
-            mode: 'pipes',
-            stdout: '...12 bytes truncated. historical recovery guidance\n\nok',
-            stderr: '',
-            stdoutTruncated: true,
-            stderrTruncated: false,
-            redacted: false,
-          },
-        },
-      },
-    );
-  });
-
-  it('rejects incomplete or contradictory pre-status terminal results', () => {
-    const historical = {
-      kind: 'terminal',
-      cwd: '/repo',
-      cmd: 'printf ok',
-      exitCode: 0,
-      stdout: 'ok',
-      stderr: '',
-    };
-    for (const value of [
-      { ...historical, exitCode: 1 },
-      { ...historical, status: 'completed' },
-      { kind: 'terminal', cwd: '/repo', cmd: 'printf ok', exitCode: 0, stdout: 'ok' },
-    ]) {
-      assert.equal(normalizeShellToolResultContent(value).state, 'invalid');
-    }
-  });
-
+describe('decodeCanonicalShellToolResultContent', () => {
   it('accepts canonical current terminal state and rejects contradictory exit status', () => {
     const current = {
       kind: 'terminal',
@@ -229,10 +180,13 @@ describe('normalizeShellToolResultContent', () => {
       exitCode: 0,
       output: pipeOutput('ok'),
     };
-    assert.equal(normalizeShellToolResultContent(current).state, 'valid');
-    assert.equal(normalizeShellToolResultContent({ ...current, exitCode: 1 }).state, 'invalid');
+    assert.equal(decodeCanonicalShellToolResultContent(current).state, 'valid');
     assert.equal(
-      normalizeShellToolResultContent({
+      decodeCanonicalShellToolResultContent({ ...current, exitCode: 1 }).state,
+      'invalid',
+    );
+    assert.equal(
+      decodeCanonicalShellToolResultContent({
         kind: 'terminal',
         cwd: '/repo',
         cmd: 'printf bad',
@@ -249,8 +203,11 @@ describe('normalizeShellToolResultContent', () => {
 
   it('rejects non-canonical nested output and contradictory current state', () => {
     const valid = shellRun();
-    assert.equal(normalizeShellToolResultContent(valid).state, 'valid');
-    assert.equal(normalizeShellToolResultContent({ ...valid, status: 'starting' }).state, 'valid');
+    assert.equal(decodeCanonicalShellToolResultContent(valid).state, 'valid');
+    assert.equal(
+      decodeCanonicalShellToolResultContent({ ...valid, status: 'starting' }).state,
+      'valid',
+    );
 
     const invalid = [
       {
@@ -269,7 +226,7 @@ describe('normalizeShellToolResultContent', () => {
       },
     ];
     for (const value of invalid) {
-      assert.equal(normalizeShellToolResultContent(value).state, 'invalid');
+      assert.equal(decodeCanonicalShellToolResultContent(value).state, 'invalid');
     }
   });
 
@@ -290,7 +247,7 @@ describe('normalizeShellToolResultContent', () => {
       },
     } as const;
     assert.equal(
-      normalizeShellToolResultContent({
+      decodeCanonicalShellToolResultContent({
         ...base,
         operation: {
           kind: 'pty_control',
@@ -301,7 +258,7 @@ describe('normalizeShellToolResultContent', () => {
       'valid',
     );
     assert.equal(
-      normalizeShellToolResultContent({
+      decodeCanonicalShellToolResultContent({
         ...base,
         operation: {
           kind: 'pty_control',

@@ -21,8 +21,9 @@
  *     vocabulary.
  */
 
-import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core';
-import type { SessionBlockedReason, SessionStatus, SessionSummary, UiLocale } from '@maka/core';
+import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core/sandbox-boundary';
+import type { SessionBlockedReason, SessionStatus, SessionSummary } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   describeBlockedReason,
   presentSessionStatus,
@@ -66,34 +67,6 @@ export function normalizeSessionSummaryForDisplay(session: SessionSummary): Sess
   const { blockedReason: _blockedReason, ...rest } = session;
   void _blockedReason;
   return { ...rest, status: 'active' };
-}
-
-/**
- * Status tone vocabulary — extends the session-health-notice tone set
- * (`info | warning | destructive`) with `accent` for active in-flight
- * work, `success` for completed work, and `muted` for terminal /
- * dormant buckets. Tones map to semantic color tokens in CSS
- * (`[data-status-tone="..."]`).
- */
-/**
- * Generalized phrasing for a blocked session. Surfaces a user-readable
- * cause without exposing the underlying enum identifier (per @kenji
- * review: UI must not leak `NO_REAL_CONNECTION` etc. directly).
- *
- * Returned text is suitable for `aria-label`, `title`, and inline
- * tooltip slots — short phrase, sentence-cased Chinese, no period.
- */
-/**
- * Compose a single-line aria-label / tooltip for a blocked session,
- * combining the status label and the cause. Example:
- *   "需要处理 · 等待配置可用模型连接"
- *
- * Non-blocked sessions return just the status label.
- */
-export function sessionStatusAriaLabel(status: SessionStatus, blockedReason?: SessionBlockedReason, locale: UiLocale = 'zh'): string {
-  const presentation = presentSessionStatus(status, locale);
-  if (status !== 'blocked') return presentation.label;
-  return `${presentation.label} · ${describeBlockedReason(blockedReason, locale)}`;
 }
 
 /**

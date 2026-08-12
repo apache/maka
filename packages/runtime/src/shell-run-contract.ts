@@ -1,14 +1,13 @@
 import {
   encodedTerminalInputActionsByteLength,
-  isShellRunId,
   isWellFormedTerminalInput,
   parseTerminalInputAction,
-  SHELL_RUN_ID_MAX_CHARS,
   type TerminalInputAction,
-  type ShellRunStore,
-  type ShellRunUpdate,
-  type ToolResultContent,
-} from '@maka/core';
+} from '@maka/core/terminal-input';
+
+import { isShellRunId, SHELL_RUN_ID_MAX_CHARS, type ShellRunStore } from '@maka/core/shell-run';
+
+import { type ShellRunUpdate, type ToolResultContent } from '@maka/core/events';
 
 import type { ShellPlan } from './shell-detect.js';
 import type { ChildFdInput } from './child-fd-input.js';
@@ -63,6 +62,8 @@ export interface ShellRunProcessManagerInput {
   pipeOutputDrainMs?: number;
   /** Schedules the automatic durable flush and returns its canceler; injected so tests can drive flush timing. */
   scheduleFlush?: (run: () => void, delayMs: number) => () => void;
+  /** Schedules the run timeout and returns its canceler; injected so tests can drive timeout timing. */
+  scheduleTimeout?: (run: () => void, delayMs: number) => () => void;
 }
 
 export interface ShellRunBashInput {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import type { BotChannelSettings } from '@maka/core';
-import type { WechatBridgeQrCodeResult } from '@maka/runtime';
+import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
+import type { WechatBridgeQrCodeResult } from '@maka/runtime/bots';
 import { Button, EmptyState, FormLayout, Spinner, TextInput, useUiLocale, Banner } from '@maka/ui';
 import { ICON_SIZE, MessageSquare } from '@maka/ui/icons';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
@@ -174,22 +174,22 @@ export function WechatQrLoginModal(props: {
           {loading ? (
             /* Loading is a wait, not an absence (§10): a page-centred spinner
                with one muted line, never a Spinner in an EmptyState icon slot. */
-            <>
+            (<>
               <Spinner size="lg" />
               <p className="settingsWechatQrCaption">{copy.generating}</p>
-            </>
+            </>)
           ) : loggedIn ? (
             <Banner status="success" title={copy.loggedIn} />
           ) : expired ? (
             /* First-run empties (DESIGN.md §10 tier 3) below; headingLevel 4 is
                derived from the dialog outline — DialogHeader owns the title level. */
-            <EmptyState
+            (<EmptyState
               headingLevel={4}
               icon={<MessageSquare size={ICON_SIZE.empty} />}
               title={copy.expired}
               description={copy.expiredHint}
               actions={<Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.refreshing : copy.refresh} />}
-            />
+            />)
           ) : qrDataUrl ? (
             <>
               <div className="settingsWechatQrFrame">

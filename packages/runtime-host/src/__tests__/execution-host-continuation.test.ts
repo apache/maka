@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mcpProxyToolName } from '@maka/runtime';
+import { mcpProxyToolName } from '@maka/runtime/mcp-tools';
 import { type ClientCapabilityProvider, RuntimeHostOperationError } from '../client/index.js';
 import {
   connectClient,

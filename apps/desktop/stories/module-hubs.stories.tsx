@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { DailyReviewArchive, DailyReviewSummary, ScheduledTask, ScheduledTaskRun } from '@maka/core';
+import type { DailyReviewArchive, DailyReviewSummary } from '@maka/core/daily-review';
+import type { ScheduledTask, ScheduledTaskRun } from '@maka/core/scheduled-task';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import {
   ScheduledTasksPage,

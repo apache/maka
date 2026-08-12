@@ -1,19 +1,18 @@
 import { constants as osConstants } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
+import { encodeTerminalInputActions } from '@maka/core/terminal-input';
 import {
-  encodeTerminalInputActions,
   isActiveShellRunStatus,
   isShellRunSourceToolCallId,
   isTerminalShellRunStatus,
   SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
-  TerminalMouseInputRejectedError,
   type ShellMode,
   type ShellOutput,
   type ShellRunPatch,
   type ShellRunRecord,
-  type ShellRunSnapshotResult,
-  type ShellRunUpdate,
-} from '@maka/core';
+} from '@maka/core/shell-run';
+import { TerminalMouseInputRejectedError } from '@maka/core/terminal-mouse-input';
+import { type ShellRunSnapshotResult, type ShellRunUpdate } from '@maka/core/events';
 import type { ToolResultContent } from '@maka/core/events';
 import { redactSecrets } from '@maka/core/redaction';
 
@@ -162,7 +161,7 @@ interface LiveShellRunBase {
   integrityFailure?: Error;
   termination?: TerminationLifecycle;
   pendingStops: Set<PendingStop>;
-  timeoutTimer?: NodeJS.Timeout;
+  cancelTimeout?: () => void;
   cancelFlush?: () => void;
   flushInFlight?: Promise<ShellRunRecord>;
   persistChain: Promise<void>;
@@ -242,6 +241,7 @@ export class ShellRunProcessManager
   private readonly exitAcknowledgementMs: number;
   private readonly pipeOutputDrainMs: number;
   private readonly scheduleFlush: (run: () => void, delayMs: number) => () => void;
+  private readonly scheduleTimeout: (run: () => void, delayMs: number) => () => void;
   private reservedShellRuns = 0;
   private reservedPtyRuns = 0;
   private shuttingDown = false;
@@ -259,6 +259,12 @@ export class ShellRunProcessManager
     this.pipeOutputDrainMs = input.pipeOutputDrainMs ?? DEFAULT_PIPE_OUTPUT_DRAIN_MS;
     this.scheduleFlush =
       input.scheduleFlush ??
+      ((run, delayMs) => {
+        const timer = setTimeout(run, delayMs);
+        return () => clearTimeout(timer);
+      });
+    this.scheduleTimeout =
+      input.scheduleTimeout ??
       ((run, delayMs) => {
         const timer = setTimeout(run, delayMs);
         return () => clearTimeout(timer);
@@ -1775,7 +1781,7 @@ export class ShellRunProcessManager
 
   private armTimeout(live: LiveShellRun): void {
     if (live.timeoutMs === undefined) return;
-    live.timeoutTimer = setTimeout(() => {
+    live.cancelTimeout = this.scheduleTimeout(() => {
       if (live.rootExited || live.finalizeOnce || live.termination) return;
       live.lifecycleCause ??= 'timeout';
       this.requestForcedTermination(live, 'timeout');
@@ -1783,12 +1789,12 @@ export class ShellRunProcessManager
   }
 
   private clearLiveTimers(live: LiveShellRun): void {
-    if (live.timeoutTimer) clearTimeout(live.timeoutTimer);
+    live.cancelTimeout?.();
     if (live.mode === 'pty' && live.rawPublishTimer) {
       clearTimeout(live.rawPublishTimer);
     }
     live.cancelFlush?.();
-    live.timeoutTimer = undefined;
+    live.cancelTimeout = undefined;
     if (live.mode === 'pty') live.rawPublishTimer = undefined;
     live.cancelFlush = undefined;
   }

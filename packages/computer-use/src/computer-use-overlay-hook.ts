@@ -1,5 +1,9 @@
-import type { CuAction, CuPoint } from '@maka/core';
-import type { CuOverlayHook, CuOverlayHookContext, CuPresentationFence } from '@maka/runtime';
+import type { CuAction, CuPoint } from '@maka/core/computer-use';
+import type {
+  CuOverlayHook,
+  CuOverlayHookContext,
+  CuPresentationFence,
+} from '@maka/runtime/computer-use-types';
 
 export type CursorActionKind = 'move' | 'click' | 'drag' | 'scroll';
 

@@ -1,11 +1,7 @@
-import type {
-  AgentRunEvent,
-  AgentRunHeader,
-  AgentRunStore,
-  RuntimeEvent,
-  RuntimeEventStore,
-  StoredMessage,
-} from '@maka/core';
+import type { AgentRunEvent, AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { StoredMessage } from '@maka/core/session';
 import {
   classifyRuntimeEventTerminalFact,
   projectRuntimeEventsToStoredMessages,

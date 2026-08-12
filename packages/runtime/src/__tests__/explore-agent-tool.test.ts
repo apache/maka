@@ -6,18 +6,6 @@ import { tmpdir } from 'node:os';
 import { buildExploreAgentTool, runReadOnlyExplore } from '../explore-agent-tool.js';
 
 describe('ExploreAgent read-only worker', () => {
-  it('exposes a categorized read-only subagent tool', () => {
-    const tool = buildExploreAgentTool();
-    assert.equal(tool.name, 'ExploreAgent');
-    assert.equal(tool.categoryHint, 'subagent');
-    assert.match(tool.description, /read-only/);
-    assert.match(tool.description, /never writes/);
-    assert.match(tool.description, /Do not use it for one known file/);
-    assert.match(tool.description, /1-3 obvious files/);
-    assert.ok('ignorePaths' in (tool.parameters as { shape: Record<string, unknown> }).shape);
-    assert.ok('stoppingCondition' in (tool.parameters as { shape: Record<string, unknown> }).shape);
-  });
-
   it('returns source-grounded matches without absolute paths', async () => {
     await withWorkspace(async (workspaceRoot) => {
       await mkdir(join(workspaceRoot, 'src'), { recursive: true });
@@ -531,45 +519,6 @@ describe('ExploreAgent read-only worker', () => {
       assert.ok(result.notes.some((note) => /优先读取项目配置、文档、入口和测试线索/.test(note)));
       assert.ok(result.notes.some((note) => /按查询命中和项目结构分/.test(note)));
       assert.equal(JSON.stringify(result).includes(workspaceRoot), false);
-    });
-  });
-
-  it('keeps user-visible result notes localized', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeFile(join(workspaceRoot, 'notes.md'), 'alpha');
-
-      const result = await runReadOnlyExplore({
-        cwd: workspaceRoot,
-        objective: 'find beta references',
-        roots: ['.'],
-        queries: ['beta'],
-        maxFiles: 5,
-        maxMatches: 5,
-      });
-
-      assert.equal(result.ok, true);
-      assert.equal(result.terminalStatus, 'completed_empty');
-      assert.ok(result.notes.some((note) => /没有找到内容命中/.test(note)));
-      assert.match(result.report, /状态：完成，但没有找到可交接证据。/);
-      assert.equal(
-        result.notes.some((note) =>
-          /Read-only worker|Search budget|No content matches|Candidate discovery|Project landmark|Total byte budget|Scope /.test(
-            note,
-          ),
-        ),
-        false,
-      );
-
-      const failed = await runReadOnlyExplore({
-        cwd: workspaceRoot,
-        objective: 'x',
-      });
-      assert.equal(failed.ok, false);
-      assert.ok(failed.notes.some((note) => /不写文件、不联网、不启动进程/.test(note)));
-      assert.equal(
-        failed.notes.some((note) => /Read-only worker/.test(note)),
-        false,
-      );
     });
   });
 

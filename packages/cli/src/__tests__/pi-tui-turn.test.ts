@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { SessionEvent } from '@maka/core';
-import { SessionActivityRegistry } from '@maka/runtime';
+import type { SessionEvent } from '@maka/core/events';
+import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { runMakaPiTuiTurn } from '../pi-tui-turn.js';
 
 describe('Maka Pi TUI turn', () => {

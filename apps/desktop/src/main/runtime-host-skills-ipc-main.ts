@@ -1,9 +1,6 @@
-import type { ChatDefaultPermissionMode } from "@maka/core";
-import {
-  resolveSkillDiscoveryPaths,
-  scanSkillsWithDiagnostics,
-  type InvocableSkillEntry,
-} from "@maka/runtime";
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import { resolveSkillDiscoveryPaths, scanSkillsWithDiagnostics } from '@maka/runtime/skills';
+import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import type {
   SkillCatalogGovernanceItem,
   SkillCatalogManagedUpdateMutation,
@@ -48,6 +45,7 @@ interface RuntimeHostSkillsIpcDeps {
   readonly getCurrentWorkspaceTarget: () => Promise<WorkspaceTarget>;
   readonly getDefaultPermissionMode: () => Promise<ChatDefaultPermissionMode>;
   readonly openPath: (path: string) => Promise<string>;
+  readonly allowLocalPaths?: boolean;
 }
 
 interface GovernanceProjection {
@@ -149,6 +147,9 @@ export function registerRuntimeHostSkillsIpc(
   });
 
   deps.ipcMain.handle("skills:sources:importLocalFile", async () => {
+    if (deps.allowLocalPaths === false) {
+      throw new Error("Local Skill import is unavailable for a remote Runtime Host");
+    }
     const result = await deps.mainWindowController.showOpenDialog({
       title: "Import Skill source",
       properties: ["openFile"],
@@ -212,11 +213,7 @@ export function registerRuntimeHostSkillsIpc(
         return projectPreviewResult(
           result,
           resolved.item,
-          await resolveProjectedPath(
-            deps.workspaceRoot,
-            workspace.hostCwd,
-            resolved.item.ref,
-          ),
+          await resolveProjectedPath(deps, workspace.hostCwd, resolved.item.ref),
         );
       }
       throw new Error(
@@ -296,11 +293,7 @@ export function registerRuntimeHostSkillsIpc(
       return { ok: false as const, reason: mapMutationReason(result.reason) };
     if (!result.entry)
       throw new Error("Runtime Host did not project the starter Skill");
-    const path = await resolveProjectedPath(
-      deps.workspaceRoot,
-      workspace.hostCwd,
-      result.entry.ref,
-    );
+    const path = await resolveProjectedPath(deps, workspace.hostCwd, result.entry.ref);
     return {
       ok: true as const,
       created: result.kind === "committed",
@@ -327,6 +320,9 @@ export function registerRuntimeHostSkillsIpc(
   deps.ipcMain.handle(
     "skills:open",
     async (_event, idOrRef: string, target: "file" | "directory" = "file") => {
+      if (deps.allowLocalPaths === false) {
+        throw new Error("Local Skill paths are unavailable for a remote Runtime Host");
+      }
       const projection = await loadGovernance(
         deps,
         await deps.getCurrentWorkspaceTarget(),
@@ -360,7 +356,10 @@ async function loadGovernance(
     workspace: snapshot.workspace,
     snapshot,
     items: snapshot.items.filter(isGovernanceItem),
-    paths: await loadSkillPaths(deps.workspaceRoot, snapshot.workspace.hostCwd),
+    paths:
+      deps.allowLocalPaths === false
+        ? new Map()
+        : await loadSkillPaths(deps.workspaceRoot, snapshot.workspace.hostCwd),
   };
 }
 
@@ -430,11 +429,7 @@ async function installSkill(
     ok: true as const,
     skill: toSkillEntry(
       result.entry,
-      await resolveProjectedPath(
-        deps.workspaceRoot,
-        workspace.hostCwd,
-        result.entry.ref,
-      ),
+      await resolveProjectedPath(deps, workspace.hostCwd, result.entry.ref),
     ),
   };
 }
@@ -457,11 +452,7 @@ async function mutateResolvedSkill(
     ok: true as const,
     skill: toSkillEntry(
       result.entry,
-      await resolveProjectedPath(
-        deps.workspaceRoot,
-        workspace.hostCwd,
-        result.entry.ref,
-      ),
+      await resolveProjectedPath(deps, workspace.hostCwd, result.entry.ref),
     ),
   };
 }
@@ -524,11 +515,12 @@ async function mutateSkill(
 }
 
 async function resolveProjectedPath(
-  workspaceRoot: string,
+  deps: Pick<RuntimeHostSkillsIpcDeps, "workspaceRoot" | "allowLocalPaths">,
   projectRoot: string,
   ref: string,
 ): Promise<string> {
-  const resolved = await resolveSkillOpenPath(workspaceRoot, ref, "file", projectRoot);
+  if (deps.allowLocalPaths === false) return "";
+  const resolved = await resolveSkillOpenPath(deps.workspaceRoot, ref, "file", projectRoot);
   return resolved.ok ? resolved.path : "";
 }
 

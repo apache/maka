@@ -1,4 +1,6 @@
-import type { UiCatalog, UiLocale, WebSearchCredentialStatus, WebSearchErrorReason } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+
+import type { WebSearchCredentialStatus, WebSearchErrorReason } from '@maka/core/web-search';
 
 export type WebSearchSettingsCopy = {
   saveFailed: string; saveStatusFailed: string; keySaved: string; keySavedDetail: string; credentialsCleared: string; credentialsClearedDetail: string;

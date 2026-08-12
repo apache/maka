@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import type { SessionEventStreamSnapshot } from '@maka/core';
+import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
 import { confirmLiveTurn, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
 import type { ShellRunUpdatesBySession } from './shell-run-update-state.js';
 
@@ -177,6 +177,10 @@ export function createAppShellSessionUiStateController(
       );
       replaceState(clearAppShellSessionUiStateForSession(currentState, sessionId));
     },
+    clearAllSessionUiState: () => {
+      sessionEventHealthBySessionRef.current = {};
+      replaceState(createInitialAppShellSessionUiState());
+    },
     clearTurnTransientState: (sessionId: string) => {
       replaceState(clearAppShellTurnTransientForSession(currentState, sessionId));
     },
@@ -215,6 +219,7 @@ export function useAppShellSessionUiState() {
     setPendingSessionModelBySession: controller.setPendingSessionModelBySession,
     confirmLiveTurn: controller.confirmLiveTurn,
     clearSessionUiState: controller.clearSessionUiState,
+    clearAllSessionUiState: controller.clearAllSessionUiState,
     clearTurnTransientState: controller.clearTurnTransientState,
   };
 }

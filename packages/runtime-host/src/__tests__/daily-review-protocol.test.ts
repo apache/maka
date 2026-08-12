@@ -1,45 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { DailyReviewArchive } from '@maka/core';
+import type { DailyReviewArchive } from '@maka/core/daily-review';
 import {
   DAILY_REVIEW_PAGE_MAX_ITEMS,
   decodeDailyReviewMutateInput,
   decodeDailyReviewQueryResult,
   decodeRequestFrame,
-  decodeResponseFrame,
-  HOST_OPERATION_SPECS,
 } from '../protocol/index.js';
-
-test('Daily Review protocol exposes closed query and command operations', () => {
-  assert.equal(HOST_OPERATION_SPECS['daily-review.query'].mode, 'query');
-  assert.equal(HOST_OPERATION_SPECS['daily-review.mutate'].mode, 'command');
-  assert.deepEqual(
-    decodeRequestFrame({
-      requestId: 'request-1',
-      operation: 'daily-review.query',
-      input: { kind: 'summary', daySpan: 14, offsetDays: -1 },
-    }),
-    {
-      requestId: 'request-1',
-      operation: 'daily-review.query',
-      input: { kind: 'summary', daySpan: 14, offsetDays: -1 },
-    },
-  );
-  assert.deepEqual(
-    decodeResponseFrame({
-      requestId: 'request-2',
-      operation: 'daily-review.mutate',
-      ok: true,
-      result: { kind: 'archive', archive: archive() },
-    }),
-    {
-      requestId: 'request-2',
-      operation: 'daily-review.mutate',
-      ok: true,
-      result: { kind: 'archive', archive: archive() },
-    },
-  );
-});
 
 test('Daily Review protocol rejects open and unbounded inputs', () => {
   assert.throws(() =>

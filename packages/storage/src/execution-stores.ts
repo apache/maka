@@ -1,16 +1,8 @@
-import type {
-  AgentRunEvent,
-  AgentRunEventType,
-  AgentRunHeader,
-  RuntimeEvent,
-  RuntimeContinuationAuthorityStore,
-  SessionHeader,
-  SessionListFilter,
-  SessionSummary,
-  StoredMessage,
-  ToolBoundaryProtocol,
-  TurnRecord,
-} from '@maka/core';
+import type { AgentRunEvent, AgentRunEventType, AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
+import type { RuntimeContinuationAuthorityStore } from '@maka/core/runtime-event-store';
+import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type { SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   createSqliteAgentRunStore,
   type AgentRunIdentitySearchResult,
@@ -348,8 +340,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       listCatalogPage: (filter, cursor, limit, expectedRevision) =>
         run(() => sessionStore.listCatalogPage(filter, cursor, limit, expectedRevision)),
       listHeaders: () => run(() => sessionStore.listHeaders()),
-      listSessionsWithUnresolvedProject: () =>
-        run(() => sessionStore.listSessionsWithUnresolvedProject()),
       listForRecovery: () => run(() => sessionStore.listForRecovery()),
       readHeaderSnapshot: (sessionId) => run(() => sessionStore.readHeaderSnapshot(sessionId)),
       readHeaderRecordSnapshot: (sessionId) =>

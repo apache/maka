@@ -4,14 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
-import type { AgentGraphOperatorProvisionRequest, CreateSessionInput } from '@maka/core';
-import { agentGraphIdForRootSession } from '@maka/runtime';
+import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
+import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { createSessionStore } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import {
-  HostAutomationSessionBusyError,
-  type HostAutomationSessionRetirement,
-} from '../server/automation-coordinator.js';
+  HostScheduledTaskSessionBusyError,
+  type HostScheduledTaskSessionRetirement,
+} from '../server/scheduled-task-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { MemoryExtractionSessionLane } from '../server/memory-extraction-session-lane.js';
@@ -307,7 +308,7 @@ describe('Host Session retirement coordinator', () => {
         harness.blockers.effect,
         harness.blockers.graph,
         harness.blockers.graphWake,
-        harness.blockers.automation,
+        harness.blockers.scheduledTasks,
       ];
       for (const blocker of blockers) {
         blocker.add(harness.rootId);
@@ -453,9 +454,9 @@ describe('Host Session retirement coordinator', () => {
       if (outcome.ok) return;
       assert.equal(outcome.error.code, 'persistence_failed');
       assert.equal(harness.actions.goalRollbacks, 1);
-      assert.equal(harness.actions.automationRollbacks, 1);
+      assert.equal(harness.actions.scheduledTaskRollbacks, 1);
       assert.equal(harness.actions.goalCommits, 0);
-      assert.equal(harness.actions.automationCommits, 0);
+      assert.equal(harness.actions.scheduledTaskCommits, 0);
       assert.deepEqual(harness.actions.retiredCapabilities, []);
       assert.deepEqual(harness.actions.retiredMessages, []);
       for (const sessionId of harness.familyIds) {
@@ -497,7 +498,7 @@ describe('Host Session retirement coordinator', () => {
       assert.equal(outcome.error.code, 'persistence_failed');
       assert.equal(harness.actions.drains, 1);
       assert.equal(harness.actions.goalRollbacks, 1);
-      assert.equal(harness.actions.automationRollbacks, 1);
+      assert.equal(harness.actions.scheduledTaskRollbacks, 1);
       assert.equal((await harness.store.probeSessionRemoval(harness.rootId)).kind, 'present');
     });
   });
@@ -692,7 +693,7 @@ describe('Host Session retirement coordinator', () => {
         },
       ]);
       assert.equal(harness.actions.goalCommits, 1);
-      assert.equal(harness.actions.automationCommits, 1);
+      assert.equal(harness.actions.scheduledTaskCommits, 1);
     });
   });
 
@@ -745,8 +746,8 @@ interface RetirementActions {
   readonly retiredGraphWakes: string[];
   goalCommits: number;
   goalRollbacks: number;
-  automationCommits: number;
-  automationRollbacks: number;
+  scheduledTaskCommits: number;
+  scheduledTaskRollbacks: number;
   drains: number;
 }
 
@@ -783,8 +784,8 @@ async function withHarness(
       retiredGraphWakes: [],
       goalCommits: 0,
       goalRollbacks: 0,
-      automationCommits: 0,
-      automationRollbacks: 0,
+      scheduledTaskCommits: 0,
+      scheduledTaskRollbacks: 0,
       drains: 0,
     };
     const blockers = {
@@ -796,7 +797,7 @@ async function withHarness(
       effect: new Set<string>(),
       graph: new Set<string>(),
       graphWake: new Set<string>(),
-      automation: new Set<string>(),
+      scheduledTasks: new Set<string>(),
     };
     const memoryExtractionLane = new MemoryExtractionSessionLane();
     const harness: RetirementHarness = {
@@ -871,12 +872,12 @@ async function withHarness(
         beginSessionRetirement: async () => retirementHandle(actions, 'goal'),
         unarchiveSessions: () => undefined,
       },
-      automation: {
+      scheduledTasks: {
         beginSessionRetirement: async (sessionIds) => {
-          if (sessionIds.some((sessionId) => blockers.automation.has(sessionId))) {
-            throw new HostAutomationSessionBusyError('Session has a live Automation');
+          if (sessionIds.some((sessionId) => blockers.scheduledTasks.has(sessionId))) {
+            throw new HostScheduledTaskSessionBusyError('Session has a bound ScheduledTask');
           }
-          return retirementHandle(actions, 'automation');
+          return retirementHandle(actions, 'scheduledTasks');
         },
       },
       resources: {
@@ -981,7 +982,7 @@ interface RetirementHarness {
     readonly effect: Set<string>;
     readonly graph: Set<string>;
     readonly graphWake: Set<string>;
-    readonly automation: Set<string>;
+    readonly scheduledTasks: Set<string>;
   };
   readonly memoryExtractionLane: MemoryExtractionSessionLane;
   coordinator: HostSessionRetirementCoordinator;
@@ -995,7 +996,7 @@ interface RetirementHarness {
   disposeBackend: ((sessionId: string) => Promise<void>) | undefined;
   finalizeWorkspacePatches: ((sessionId: string) => Promise<void>) | undefined;
   retireWorktree:
-    | ((binding: import('@maka/core').SubagentWorkspaceBinding) => Promise<void>)
+    | ((binding: import('@maka/core/subagent-workspace').SubagentWorkspaceBinding) => Promise<void>)
     | undefined;
 }
 
@@ -1012,21 +1013,21 @@ async function waitFor(
 
 function retirementHandle(
   actions: RetirementActions,
-  owner: 'goal' | 'automation',
-): HostAutomationSessionRetirement {
+  owner: 'goal' | 'scheduledTasks',
+): HostScheduledTaskSessionRetirement {
   let settled = false;
   return {
     commit: () => {
       if (settled) return;
       settled = true;
       if (owner === 'goal') actions.goalCommits += 1;
-      else actions.automationCommits += 1;
+      else actions.scheduledTaskCommits += 1;
     },
     rollback: () => {
       if (settled) return;
       settled = true;
       if (owner === 'goal') actions.goalRollbacks += 1;
-      else actions.automationRollbacks += 1;
+      else actions.scheduledTaskRollbacks += 1;
     },
   };
 }

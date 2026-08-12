@@ -1858,21 +1858,3 @@ export function isWiredOAuthProvider(providerType: ProviderType): boolean {
   const provider = PROVIDER_REGISTRY[providerType];
   return provider.authKind === 'oauth_token' && provider.runtimeAdapter.kind !== 'unavailable';
 }
-
-/**
- * Persisted providerType aliases renamed away in the current registry. Each
- * entry maps a legacy persisted id to its current id so connections stored
- * before a rename keep working without a destructive on-disk migration.
- *
- * The alias normalizes the `providerType` field only. Persisted connection
- * slugs and credential-store keys (e.g. the `codex-subscription` slug used by
- * the OpenAI Codex OAuth service) are intentionally left untouched so existing
- * OAuth tokens remain reachable.
- */
-const PROVIDER_TYPE_ALIASES: Readonly<Record<string, ProviderType>> = {
-  'codex-subscription': 'openai-codex',
-};
-
-export function normalizeProviderType(type: string): ProviderType {
-  return PROVIDER_TYPE_ALIASES[type] ?? (type as ProviderType);
-}

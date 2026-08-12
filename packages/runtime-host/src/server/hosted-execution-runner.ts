@@ -64,8 +64,12 @@ export class HostHostedExecutionRunner {
         ? this.input.waitForAllResidencies()
         : this.input.waitForExecutionResidencies());
       const usage = await this.#readUsage(startedAt, (this.input.now ?? Date.now)());
-      if (!usageComplete(usage)) {
-        return indeterminate(input.executionId, 'Runtime Host usage did not settle completely');
+      const incompleteUsage = incompleteUsageReason(usage);
+      if (incompleteUsage) {
+        return indeterminate(
+          input.executionId,
+          `Runtime Host usage did not settle: ${incompleteUsage}`,
+        );
       }
       return {
         executionId: input.executionId,
@@ -135,14 +139,15 @@ export class HostHostedExecutionRunner {
   }
 }
 
-function usageComplete(result: Extract<UsageQueryResult, { kind: 'summary' }>): boolean {
+function incompleteUsageReason(
+  result: Extract<UsageQueryResult, { kind: 'summary' }>,
+): string | undefined {
   const { coverage, unreadableRecords, pendingRepairs } = result.provenance;
-  return (
-    unreadableRecords === 0 &&
-    pendingRepairs === 0 &&
-    coverage.usagePartialAttempts === 0 &&
-    coverage.usageMissingAttempts === 0
-  );
+  if (unreadableRecords > 0) return 'unreadable_usage_record';
+  if (pendingRepairs > 0) return 'pending_usage_repair';
+  if (coverage.usagePartialAttempts > 0) return 'partial_attempt_usage';
+  if (coverage.usageMissingAttempts > 0) return 'missing_attempt_usage';
+  return undefined;
 }
 
 function isTerminal(

@@ -1,16 +1,18 @@
 import {
   INLINE_REFERENCE_LABEL_MAX_LENGTH,
   INLINE_REFERENCE_MAX_COUNT,
+  type InlineReference,
+} from '@maka/core/events';
+import {
   SKILL_INVOCATION_ID_MAX_BYTES,
   SKILL_INVOCATION_NAME_MAX_BYTES,
   SKILL_INVOCATION_REF_MAX_BYTES,
   SKILL_INVOCATION_REQUEST_MAX_BYTES,
-  SKILL_INVOCATION_TOKEN_SOURCE,
-  type InlineReference,
   type PerRequestSkillInvocationFailureReason,
   type SkillInvocationMode,
   type SkillInvocationReceipt,
-} from '@maka/core';
+} from '@maka/core/skill-invocation';
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import type { LoadedSkillInstructions } from './skills.js';
 
 export type {
@@ -18,7 +20,7 @@ export type {
   SkillInvocationFailureReason,
   SkillInvocationMode,
   SkillInvocationReceipt,
-} from '@maka/core';
+} from '@maka/core/skill-invocation';
 
 export function loadedSkillInvocationReceipt(
   invocation: SkillInvocationMode,

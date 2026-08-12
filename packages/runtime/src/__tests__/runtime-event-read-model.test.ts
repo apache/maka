@@ -1,16 +1,9 @@
 import { describe, test } from 'node:test';
-import type {
-  AgentRunHeader,
-  CreateSessionInput,
-  RuntimeEvent,
-  RuntimeEventActions,
-  SessionHeader,
-  SessionListFilter,
-  SessionSummary,
-  StoredMessage,
-  TurnRecord,
-} from '@maka/core';
-import { deriveTurnRecords } from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
+import type { RuntimeEvent, RuntimeEventActions } from '@maka/core/runtime-event';
+import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import { deriveTurnRecords } from '@maka/core/session';
 import { expect } from '../test-helpers.js';
 import {
   compareRuntimeReadModelMessages,
@@ -508,130 +501,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
-  test('restores legacy Plan tool results and consumes proposal state events', () => {
-    const output = projectRuntimeEventsToStoredMessages(
-      [
-        ev({
-          id: 'evt-plan-call',
-          ts: ts + 1,
-          role: 'model',
-          author: 'agent',
-          content: {
-            kind: 'function_call',
-            id: 'plan-tool-1',
-            name: 'SubmitPlan',
-            args: {
-              title: 'Plan',
-              steps: [{ id: 'one', title: 'First step', description: 'One' }],
-            },
-          },
-          refs: { toolCallId: 'plan-tool-1' },
-        }),
-        ev({
-          id: 'evt-plan-result',
-          ts: ts + 2,
-          role: 'tool',
-          author: 'tool',
-          content: {
-            kind: 'function_response',
-            id: 'plan-tool-1',
-            name: 'SubmitPlan',
-            result: {
-              kind: 'plan_submitted',
-              proposal: { proposalId: 'proposal-1' },
-              storeVersion: 1,
-            } as never,
-          },
-          refs: { toolCallId: 'plan-tool-1' },
-        }),
-        ev({
-          id: 'evt-plan-submitted',
-          ts: ts + 3,
-          role: 'system',
-          author: 'agent',
-          actions: {
-            stateDelta: {
-              planId: 'plan-1',
-              proposalId: 'proposal-1',
-              title: 'Plan',
-              steps: [
-                {
-                  id: 'one',
-                  title: 'First step',
-                  description: 'One',
-                  status: 'pending',
-                },
-              ],
-            },
-          },
-        }),
-        ev({
-          id: 'evt-plan-complete',
-          ts: ts + 4,
-          status: 'completed',
-          actions: { endInvocation: true },
-        }),
-      ],
-      { runHeaders: [header] },
-    );
-
-    expect(output.diagnostics).toEqual([]);
-    expect(output.messages.map((message) => message.type)).toEqual([
-      'tool_call',
-      'tool_result',
-      'turn_state',
-    ]);
-    const result = output.messages.find((message) => message.type === 'tool_result');
-    expect(result?.type === 'tool_result' ? result.content.kind : undefined).toBe('json');
-  });
-
-  test('normalizes an exact legacy terminal result at RuntimeEvent restore', () => {
-    const out = projectRuntimeEventsToStoredMessages(
-      [
-        ev({
-          id: 'evt-legacy-terminal',
-          role: 'tool',
-          author: 'tool',
-          content: {
-            kind: 'function_response',
-            id: 'tool-legacy-terminal',
-            name: 'Bash',
-            result: {
-              kind: 'terminal',
-              cwd: '/tmp/work',
-              cmd: 'printf ok',
-              status: 'completed',
-              exitCode: 0,
-              stdout: 'ok',
-              stderr: '',
-              stdoutTruncated: false,
-              stderrTruncated: false,
-            },
-          },
-          refs: { toolCallId: 'tool-legacy-terminal' },
-        }),
-      ],
-      { runHeaders: [header] },
-    );
-
-    const result = out.messages.find((message) => message.type === 'tool_result');
-    expect(result?.type === 'tool_result' ? result.content : undefined).toEqual({
-      kind: 'terminal',
-      cwd: '/tmp/work',
-      cmd: 'printf ok',
-      status: 'completed',
-      exitCode: 0,
-      output: {
-        mode: 'pipes',
-        stdout: 'ok',
-        stderr: '',
-        stdoutTruncated: false,
-        stderrTruncated: false,
-        redacted: false,
-      },
-    });
-  });
-
   test('replays generic provider tool results without Maka result decoding', () => {
     const events = [
       ev({
@@ -779,47 +648,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
-  test('diagnoses a mixed legacy/current shell result instead of restoring it', () => {
-    const out = projectRuntimeEventsToStoredMessages(
-      [
-        ev({
-          id: 'evt-mixed-terminal',
-          role: 'tool',
-          author: 'tool',
-          content: {
-            kind: 'function_response',
-            id: 'tool-mixed-terminal',
-            name: 'Bash',
-            result: {
-              kind: 'terminal',
-              cwd: '/tmp/work',
-              cmd: 'printf bad',
-              status: 'completed',
-              exitCode: 0,
-              stdout: 'bad',
-              stderr: '',
-              stdoutTruncated: false,
-              stderrTruncated: false,
-              output: {
-                mode: 'pipes',
-                stdout: 'bad',
-                stderr: '',
-                stdoutTruncated: false,
-                stderrTruncated: false,
-                redacted: false,
-              },
-            },
-          },
-          refs: { toolCallId: 'tool-mixed-terminal' },
-        }),
-      ],
-      { runHeaders: [header] },
-    );
-
-    expect(out.messages.some((message) => message.type === 'tool_result')).toBe(false);
-    expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toContain('incomplete_event');
-  });
-
   test('projects first-observed step content order for stable live handoff', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [
@@ -933,14 +761,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     const corruptProjected = corruptOut.messages.find((message) => message.type === 'tool_result');
     expect(corruptProjected).toMatchObject({ type: 'tool_result' });
     expect(archivedStatus(corruptProjected)).toBe('corrupt');
-  });
-
-  test('projected rows materialize to the same runtime view model as equivalent legacy rows', () => {
-    const out = projectRuntimeEventsToStoredMessages(baseEvents(), { runHeaders: [header] });
-    const projected = materializeSession(out.messages);
-    const legacy = materializeSession(equivalentLegacyMessages());
-
-    expect(projected).toEqual(legacy);
   });
 
   test('partial RuntimeEvents are excluded', () => {
@@ -1885,18 +1705,6 @@ describe('RuntimeEventActions projection coverage', () => {
 });
 
 describe('compareRuntimeReadModelMessages', () => {
-  test('accepts semantically equivalent projected and legacy messages despite id differences', () => {
-    const projected = projectRuntimeEventsToStoredMessages(baseEvents(), { runHeaders: [header] });
-    const legacyWithDifferentIds = equivalentLegacyMessages().map((message) => {
-      if (message.type === 'tool_call' || message.type === 'permission_decision') return message;
-      return { ...message, id: `different-${message.id}` } as StoredMessage;
-    });
-    const result = compareRuntimeReadModelMessages(projected.messages, legacyWithDifferentIds);
-
-    expect(result.compatible).toBe(true);
-    expect(result.diagnostics).toEqual([]);
-  });
-
   test('treats nested JSON with different property order as compatible', () => {
     const projected = projectRuntimeEventsToStoredMessages(
       [

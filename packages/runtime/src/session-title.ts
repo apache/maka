@@ -1,5 +1,5 @@
 import { generateText as aiGenerateText, type LanguageModel } from 'ai';
-import { normalizeUserSessionName } from '@maka/core';
+import { normalizeUserSessionName } from '@maka/core/session-name';
 
 const MAX_SOURCE_BYTES = 8 * 1024;
 const MAX_FALLBACK_CODE_POINTS = 42;

@@ -1,4 +1,6 @@
-import type { LocalMemoryState, UiCatalog, UiLocale } from '@maka/core';
+import type { LocalMemoryState } from '@maka/core/local-memory';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type MemoryTextKey =
   | 'localFile' | 'localFileHelp' | 'enableLocalFile' | 'agentReadable' | 'agentReadableHelp' | 'enableAgentRead'

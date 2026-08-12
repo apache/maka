@@ -5,7 +5,7 @@
 // is `auto`, the helper subscribes to the system `prefers-color-scheme` media
 // query so the app follows OS-level Light/Dark switches in real time.
 //
-import type { ThemePalette, ThemePreference } from '@maka/core';
+import type { ThemePalette, ThemePreference } from '@maka/core/settings';
 import { safeLocalStorageSet } from './browser-storage';
 
 const DARK_CLASS = 'dark';

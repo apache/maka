@@ -1,7 +1,9 @@
 import { useRef, useState } from 'react';
 import { Banner, EmptyState, Link } from '@astryxdesign/core';
-import type { AppSettings, UpdateAppSettingsResult, WebSearchCredentialStatus } from '@maka/core';
-import { normalizeSearchUrl, webSearchCredentialStatusFromResponse } from '@maka/core';
+import type { AppSettings, UpdateAppSettingsResult } from '@maka/core/settings';
+import type { WebSearchCredentialStatus } from '@maka/core/web-search';
+import { normalizeSearchUrl } from '@maka/core/search';
+import { webSearchCredentialStatusFromResponse } from '@maka/core/web-search';
 import { Button, Selector, StatusDot, TextInput, RelativeTime, Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getWebSearchSettingsCopy, type WebSearchSettingsCopy } from '../locales/settings-web-search-copy';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
@@ -20,7 +22,7 @@ import { useKeyedActionGuard } from './use-action-guard';
  * `MASKED_TOKEN_SENTINEL`). Re-submitting the sentinel is treated as
  * "keep current" in `mergeWebSearchSettings`.
  *
- * The test button calls `web-search:test` (main-process Tavily call)
+ * The test button calls Runtime Host `web-search.execute` (a Tavily request)
  * and surfaces ok/fail via toast. The live-query verifier runs a real query
  * and renders 3-5 plain-text rows.
  */

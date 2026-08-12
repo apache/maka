@@ -7,7 +7,7 @@ import type {
   WorkspaceProjection,
 } from '../protocol/index.js';
 import type { ConnectionContext, SkillCatalogOperationHandlerMap } from './operation-dispatcher.js';
-import type { HostCapabilities } from '@maka/runtime';
+import type { HostCapabilities } from '@maka/runtime/skills';
 import {
   SkillCatalogRepository,
   SkillCatalogRepositoryError,

@@ -1,13 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import { NO_REAL_CONNECTION_CODE } from '@maka/core';
+import { join } from 'node:path';
+import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
   connectOrSpawnRuntimeHost,
+  connectRemoteRuntimeHostProfile,
+  createClientRuntimeHostProfileCatalog,
   createRuntimeHostReconnectingConnection,
+  loadOrCreateRuntimeHostClientInstanceId,
+  LOCAL_RUNTIME_HOST_PROFILE,
   readRuntimeHostConnectionCatalog,
   RuntimeHostPermanentReconnectError,
   waitForRuntimeHostReady,
   type RuntimeHostConnection,
+  type RuntimeHostProfile,
+  type ResolvedRuntimeHostProfile,
+  type RuntimeHostProfileCatalog,
 } from '@maka/runtime-host/client';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -16,6 +24,7 @@ import {
   type ClientSurface,
   type HostIncompatible,
 } from '@maka/runtime-host/protocol';
+import { resolveMakaClientDataRoot } from '@maka/storage';
 
 export class RuntimeHostCliConflictError extends RuntimeHostPermanentReconnectError {
   readonly code = 'RUNTIME_HOST_RESTART_REQUIRED';
@@ -29,6 +38,7 @@ export class RuntimeHostCliConflictError extends RuntimeHostPermanentReconnectEr
 export interface RuntimeHostCliConnectionContext {
   readonly connection: RuntimeHostConnection;
   readonly catalog: ConnectionCatalogSnapshot;
+  readonly profile: RuntimeHostProfile;
   close(): Promise<void>;
 }
 
@@ -39,27 +49,40 @@ export interface RuntimeHostCliTarget {
 
 interface RuntimeHostCliContextDeps {
   readonly connectOrSpawn: typeof connectOrSpawnRuntimeHost;
+  readonly connectRemoteProfile: typeof connectRemoteRuntimeHostProfile;
   readonly readConnectionCatalog: typeof readRuntimeHostConnectionCatalog;
+  readonly loadClientInstanceId: typeof loadOrCreateRuntimeHostClientInstanceId;
   readonly executionCandidateEntrypoint: URL;
+  readonly profileCatalog?: RuntimeHostProfileCatalog;
 }
 
 export async function connectRuntimeHostCli(
   input: {
     readonly rootPath: string;
     readonly surface: ClientSurface;
-    readonly legacyConfigurationRoot?: string;
+    readonly profileId?: string;
+    readonly clientDataRoot?: string;
   },
   overrides: Partial<RuntimeHostCliContextDeps> = {},
 ): Promise<RuntimeHostCliConnectionContext> {
   const deps: RuntimeHostCliContextDeps = {
     connectOrSpawn: connectOrSpawnRuntimeHost,
+    connectRemoteProfile: connectRemoteRuntimeHostProfile,
     readConnectionCatalog: readRuntimeHostConnectionCatalog,
+    loadClientInstanceId: loadOrCreateRuntimeHostClientInstanceId,
     executionCandidateEntrypoint: new URL(
       import.meta.resolve('@maka/runtime-host/execution-candidate-main'),
     ),
     ...overrides,
   };
-  const clientInstanceId = randomUUID();
+  const resolvedProfile = await resolveHostProfile(input, deps);
+  const profile = resolvedProfile.profile;
+  const clientInstanceId =
+    profile.kind === 'local'
+      ? randomUUID()
+      : await deps.loadClientInstanceId(
+          join(input.clientDataRoot ?? resolveMakaClientDataRoot(), 'runtime-host-client.json'),
+        );
   const connectInput = {
     rootPath: input.rootPath,
     surface: input.surface,
@@ -67,12 +90,21 @@ export async function connectRuntimeHostCli(
     clientInstanceId,
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
     candidateEntrypoint: deps.executionCandidateEntrypoint,
-    ...(input.legacyConfigurationRoot
-      ? { legacyConfigurationRoot: input.legacyConfigurationRoot }
-      : {}),
   } as const;
   const connect = async (signal?: AbortSignal): Promise<RuntimeHostConnection> => {
-    const connected = await deps.connectOrSpawn({ ...connectInput, ...(signal ? { signal } : {}) });
+    if (profile.kind === 'remote') {
+      return deps.connectRemoteProfile({
+        profile,
+        credential: resolvedProfile.credential!,
+        surface: input.surface,
+        clientInstanceId,
+        ...(signal ? { signal } : {}),
+      });
+    }
+    const connected = await deps.connectOrSpawn({
+      ...connectInput,
+      ...(signal ? { signal } : {}),
+    });
     if (connected.kind === 'incompatible') {
       throw new RuntimeHostCliConflictError(connected.handshake);
     }
@@ -101,12 +133,25 @@ export async function connectRuntimeHostCli(
     return {
       connection,
       catalog: await deps.readConnectionCatalog(connection),
+      profile,
       close: () => connection.close(),
     };
   } catch (error) {
     await connection.close().catch(() => undefined);
     throw error;
   }
+}
+
+async function resolveHostProfile(
+  input: { readonly profileId?: string; readonly clientDataRoot?: string },
+  deps: RuntimeHostCliContextDeps,
+): Promise<ResolvedRuntimeHostProfile> {
+  if (input.profileId === undefined || input.profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
+    return { profile: LOCAL_RUNTIME_HOST_PROFILE };
+  }
+  const root = input.clientDataRoot ?? resolveMakaClientDataRoot();
+  const catalog = deps.profileCatalog ?? createClientRuntimeHostProfileCatalog(root);
+  return catalog.resolve(input.profileId);
 }
 
 function formatRuntimeHostCliConflict(handshake: HostIncompatible): string {

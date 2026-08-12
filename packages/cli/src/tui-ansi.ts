@@ -8,19 +8,9 @@ const MUTED_RGB = [128, 132, 140] as const;
 
 // #1064: detect terminal color capability at module load so truecolor is
 // downgraded on basic terminals and disabled entirely under NO_COLOR.
-let colorLevel = detectColorLevel();
+const colorLevel = detectColorLevel();
 
-/**
- * Override the detected color level — for tests that assert exact escape
- * sequences. Production code never calls this; the module-load detection
- * governs real terminal output.
- */
-export function _setColorLevelForTesting(level: 0 | 1 | 2 | 3): void {
-  colorLevel = level;
-  rebuildAnsi();
-}
-
-export let ansi = buildAnsi();
+export const ansi = buildAnsi();
 
 // #1053: status disc — a single `●` tinted by tone. The shared visual primitive
 // for the transcript's tool rows: ok = done, accent = running, danger = error,
@@ -60,10 +50,6 @@ export function selectListTheme(): SelectListTheme {
     scrollInfo: ansi.dim,
     noMatch: ansi.dim,
   };
-}
-
-function rebuildAnsi(): void {
-  ansi = buildAnsi();
 }
 
 function buildAnsi() {

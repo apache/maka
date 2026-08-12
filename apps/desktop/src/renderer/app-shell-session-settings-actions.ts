@@ -1,11 +1,9 @@
-import type {
-  ChatDefaultPermissionMode,
-  LlmConnection,
-  PermissionMode,
-  SessionSummary,
-  ThinkingLevel,
-  UiLocale,
-} from '@maka/core';
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { PermissionMode } from '@maka/core/permission';
+import type { SessionSummary } from '@maka/core/session';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
 type RefBox<T> = { current: T };

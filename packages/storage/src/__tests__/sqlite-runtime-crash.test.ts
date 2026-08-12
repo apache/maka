@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { type RuntimeEvent, type WorkspaceBaselineAuthorityInput } from '@maka/core';
+import { type RuntimeEvent } from '@maka/core/runtime-event';
+import { type WorkspaceBaselineAuthorityInput } from '@maka/core/workspace-version-authority';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   createSqliteRuntimeStore,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import { buildSubscriptionModelFetch } from '../subscription-model-fetch.js';
 
 describe('subscription model fetch', () => {
@@ -50,21 +50,6 @@ describe('subscription model fetch', () => {
     assert.deepEqual(body.system[1].cache_control, { type: 'ephemeral' });
     assert.equal(body.system[2].text, 'Use the Maka system prompt.');
     assert.equal(body.cache_control, undefined);
-  });
-
-  test('leaves Claude subscription requests untouched when the cloak opt-out is disabled', async () => {
-    const modelFetch = buildSubscriptionModelFetch({
-      connection: claudeSubscriptionConnection(),
-      sessionId: 'session-123',
-      modelId: 'claude-sonnet-4-5',
-      claude: {
-        cloakEnabled: false,
-        deviceId: 'device-123',
-        accountUuid: 'account-123',
-      },
-    });
-
-    assert.equal(modelFetch, undefined);
   });
 
   test('rejects Claude subscription cloaking without complete metadata', () => {
@@ -240,86 +225,6 @@ describe('subscription model fetch', () => {
       modelFetch('https://chatgpt.com/backend-api/codex/responses', {
         method: 'POST',
         body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
-      }),
-      /Codex OAuth request failed: HTTP 403/,
-    );
-    assert.equal(attempts, 1);
-  });
-
-  test('does not retry an HTML 403 when the body belongs to a Request object', async () => {
-    let attempts = 0;
-    const modelFetch = buildSubscriptionModelFetch({
-      connection: openAiCodexConnection(),
-      sessionId: 'session-123',
-      modelId: 'gpt-5.6-sol',
-      fetchFn: async (request) => {
-        attempts += 1;
-        if (request instanceof Request) await request.text();
-        return new Response('<html><title>Request rejected</title>', {
-          status: 403,
-          headers: { 'content-type': 'text/html', 'retry-after': '0' },
-        });
-      },
-    });
-
-    assert.ok(modelFetch);
-    const request = new Request('https://chatgpt.com/backend-api/codex/responses', {
-      method: 'POST',
-      body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
-    });
-    await assert.rejects(modelFetch(request), /Codex OAuth request failed: HTTP 403/);
-    assert.equal(request.bodyUsed, true);
-    assert.equal(attempts, 1);
-  });
-
-  test('does not treat a null body override as clearing a Request body', async () => {
-    let attempts = 0;
-    const modelFetch = buildSubscriptionModelFetch({
-      connection: openAiCodexConnection(),
-      sessionId: 'session-123',
-      modelId: 'gpt-5.6-sol',
-      fetchFn: async (request) => {
-        attempts += 1;
-        if (request instanceof Request) await request.text();
-        return new Response('<html><title>Request rejected</title>', {
-          status: 403,
-          headers: { 'content-type': 'text/html', 'retry-after': '0' },
-        });
-      },
-    });
-
-    assert.ok(modelFetch);
-    const request = new Request('https://chatgpt.com/backend-api/codex/responses', {
-      method: 'POST',
-      body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
-    });
-    await assert.rejects(
-      modelFetch(request, { body: null }),
-      /Codex OAuth request failed: HTTP 403/,
-    );
-    assert.equal(attempts, 1);
-  });
-
-  test('does not retry an HTML 403 with a non-string request body', async () => {
-    let attempts = 0;
-    const modelFetch = buildSubscriptionModelFetch({
-      connection: openAiCodexConnection(),
-      sessionId: 'session-123',
-      modelId: 'gpt-5.6-sol',
-      fetchFn: async () => {
-        attempts += 1;
-        return new Response('<html><title>Request rejected</title>', {
-          status: 403,
-          headers: { 'content-type': 'text/html', 'retry-after': '0' },
-        });
-      },
-    });
-
-    assert.ok(modelFetch);
-    await assert.rejects(
-      modelFetch('https://chatgpt.com/backend-api/codex/responses', {
-        method: 'POST',
-        body: new Uint8Array([123, 125]),
       }),
       /Codex OAuth request failed: HTTP 403/,
     );

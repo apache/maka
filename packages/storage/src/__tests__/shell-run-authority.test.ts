@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { ShellRunRecord } from '@maka/core';
+import type { ShellRunRecord } from '@maka/core/shell-run';
 import {
   authenticateInteractiveShellRunWriter,
   openInteractiveShellRunStoreForWrite,

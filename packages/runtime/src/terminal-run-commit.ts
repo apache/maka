@@ -1,12 +1,12 @@
-import { isPartialRuntimeEvent, isTerminalRuntimeEvent } from '@maka/core';
+import { isPartialRuntimeEvent, isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type {
   AgentRunEvent,
   AgentRunHeader,
   AgentRunEventType,
   AgentRunStore,
-  RuntimeEvent,
-  RuntimeEventStore,
-} from '@maka/core';
+} from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import {
   classifyRuntimeEventTerminalFact,
   type RuntimeEventTerminalFact,

@@ -1,121 +1,29 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import {
-  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
-  type ShellRunSnapshotResult,
-  type ShellRunUpdate,
-} from '@maka/core';
+import { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from '@maka/core/shell-run';
+import { type ShellRunSnapshotResult, type ShellRunUpdate } from '@maka/core/events';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import {
   decodeSubscriptionFrame,
   SESSION_RUNTIME_RESOURCE_CHANGES_MAX,
 } from '../protocol/session-continuity.js';
 import {
-  decodeRuntimeResourceControllerAcquireInput,
-  decodeRuntimeResourceControllerAcquireResult,
   decodeRuntimeResourceControllerControlInput,
-  decodeRuntimeResourceControllerControlResult,
-  decodeRuntimeResourceControllerReleaseInput,
-  decodeRuntimeResourceControllerReleaseResult,
   decodeRuntimeResourceQueryInput,
   decodeRuntimeResourceQueryResult,
-  decodeRuntimeResourceStartInput,
-  decodeRuntimeResourceStartResult,
-  decodeRuntimeResourceStopInput,
   decodeRuntimeResourceStopResult,
   RUNTIME_RESOURCE_CONTROL_INPUT_MAX_BYTES,
   RUNTIME_RESOURCE_MAX_CONTROL_SEQUENCE,
   RUNTIME_RESOURCE_CURSOR_MAX_BYTES,
-  RUNTIME_RESOURCE_OPERATION_SPECS,
   RUNTIME_RESOURCE_PAGE_MAX_ITEMS,
   RUNTIME_RESOURCE_RESULT_MAX_BYTES,
 } from '../protocol/runtime-resource.js';
 
 const revision = `sha256:${'a'.repeat(64)}` as const;
-const nextRevision = `sha256:${'b'.repeat(64)}` as const;
 const runtimeRef = 'maka://runtime/background-tasks/shell-1';
 type PipeShellSnapshot = Extract<ShellRunSnapshotResult, { mode: 'pipes' }>;
 
 describe('Runtime Resource protocol', () => {
-  test('declares the complete ready operation surface', () => {
-    assert.equal(RUNTIME_RESOURCE_OPERATION_SPECS['runtime.resource.query'].mode, 'query');
-    for (const [key, spec] of Object.entries(RUNTIME_RESOURCE_OPERATION_SPECS)) {
-      assert.equal(spec.availability, 'ready', key);
-      if (key === 'runtime.resource.start') assert.equal(spec.mode, 'command', key);
-      else if (key !== 'runtime.resource.query') assert.equal(spec.mode, 'control', key);
-    }
-  });
-
-  test('round-trips every query, controller, and stop branch', () => {
-    const update = resourceUpdate();
-    const unavailable = resourceUpdate({
-      ownership: { kind: 'source_unavailable', sourceSessionId: 'source-session' },
-      result: compactState(),
-    });
-    for (const input of [
-      { kind: 'list_start', sessionId: 'session-1' },
-      { kind: 'list_continue', sessionId: 'session-1', revision, cursor: '2' },
-      { kind: 'get', sessionId: 'session-1', ref: runtimeRef },
-    ] as const) {
-      assert.deepEqual(decodeRuntimeResourceQueryInput(input), input);
-    }
-    for (const result of [
-      {
-        kind: 'page',
-        sessionId: 'session-1',
-        revision,
-        resources: [update, unavailable],
-        nextCursor: '1',
-      },
-      { kind: 'revision_changed', expected: revision, actual: nextRevision },
-      { kind: 'resource', sessionId: 'session-1', revision, resource: update },
-      { kind: 'resource', sessionId: 'session-1', revision, resource: null },
-    ] as const) {
-      assert.deepEqual(decodeRuntimeResourceQueryResult(result), result);
-    }
-
-    const identity = { sessionId: 'session-1', ref: runtimeRef, controllerId: 'client-1' };
-    assert.deepEqual(decodeRuntimeResourceControllerAcquireInput(identity), identity);
-    assert.deepEqual(decodeRuntimeResourceControllerReleaseInput(identity), identity);
-    assert.deepEqual(
-      decodeRuntimeResourceControllerAcquireResult({
-        controllerId: 'client-1',
-        nextSequence: 1,
-        pty: ptySnapshot(),
-      }),
-      { controllerId: 'client-1', nextSequence: 1, pty: ptySnapshot() },
-    );
-    assert.deepEqual(
-      decodeRuntimeResourceStartInput({ sessionId: 'session-1', launchId: 'launch-1' }),
-      { sessionId: 'session-1', launchId: 'launch-1' },
-    );
-    assert.deepEqual(decodeRuntimeResourceStartResult({ resource: snapshot() }), {
-      resource: snapshot(),
-    });
-
-    for (const control of [
-      { kind: 'input', input: 'hello' },
-      { kind: 'resize', cols: 80, rows: 24 },
-      { kind: 'input_and_resize', input: 'hello', cols: 80, rows: 24 },
-    ] as const) {
-      const input = { ...identity, sequence: 1, control };
-      assert.deepEqual(decodeRuntimeResourceControllerControlInput(input), input);
-    }
-    const controlled = { controllerId: 'client-1', sequence: 1, resource: snapshot() };
-    assert.deepEqual(decodeRuntimeResourceControllerControlResult(controlled), controlled);
-    assert.deepEqual(
-      decodeRuntimeResourceControllerReleaseResult({ controllerId: 'client-1', released: true }),
-      { controllerId: 'client-1', released: true },
-    );
-    assert.deepEqual(decodeRuntimeResourceStopInput({ sessionId: 'session-1', ref: runtimeRef }), {
-      sessionId: 'session-1',
-      ref: runtimeRef,
-    });
-    assert.deepEqual(decodeRuntimeResourceStopResult({ resource: snapshot() }), {
-      resource: snapshot(),
-    });
-  });
-
   test('rejects unknown fields and non-canonical snapshots', () => {
     assertInvalid(() =>
       decodeRuntimeResourceQueryInput({
@@ -241,16 +149,6 @@ describe('Runtime Resource protocol', () => {
   });
 });
 
-function ptySnapshot() {
-  return {
-    sessionId: 'session-1',
-    ref: runtimeRef,
-    sequence: 2,
-    buffer: '\u001b[2Jready',
-    size: { cols: 80, rows: 24 },
-  };
-}
-
 test('Runtime Resource invalidations batch lightweight unique identities', () => {
   const resources = Array.from({ length: SESSION_RUNTIME_RESOURCE_CHANGES_MAX }, (_, index) => ({
     sourceSessionId: 'source-session',
@@ -313,11 +211,6 @@ function resourceUpdate(overrides: Partial<ShellRunUpdate> = {}): ShellRunUpdate
     result: snapshot(),
     ...overrides,
   };
-}
-
-function compactState(): ShellRunUpdate['result'] {
-  const { output: _output, ...compact } = snapshot();
-  return compact;
 }
 
 function snapshot(overrides: Partial<PipeShellSnapshot> = {}): PipeShellSnapshot {
