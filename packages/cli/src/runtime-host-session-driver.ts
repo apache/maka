@@ -504,17 +504,15 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   async listRewindTargets(): Promise<RewindTarget[]> {
     if (!this.#sessionId) return [];
     const messages = await loadCurrentMessages(this.#connection, this.#sessionId);
-    const prompts = new Map<string, string>();
-    const order: string[] = [];
+    const seenTurnIds = new Set<string>();
+    const targets: RewindTarget[] = [];
     for (const message of messages) {
-      if (message.type !== 'user' || prompts.has(message.turnId)) continue;
-      prompts.set(message.turnId, userFacingText(message));
-      order.push(message.turnId);
+      if (message.type !== 'user' || seenTurnIds.has(message.turnId)) continue;
+      seenTurnIds.add(message.turnId);
+      if (message.origin) continue;
+      targets.push({ turnId: message.turnId, label: firstLine(userFacingText(message)) });
     }
-    return order.reverse().map((turnId) => ({
-      turnId,
-      label: firstLine(prompts.get(turnId) ?? ''),
-    }));
+    return targets.reverse();
   }
 
   async rewindToTurn(turnId: string): Promise<MakaSessionRewindResult> {
@@ -525,6 +523,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         message.type === 'user' && message.turnId === turnId,
     );
     if (!promptMessage) throw new Error(`Cannot rewind to turn ${turnId}: no user prompt.`);
+    if (promptMessage.origin) {
+      throw new Error(`Cannot rewind to turn ${turnId}: Host-triggered prompts are read-only.`);
+    }
     const targetSessionId = this.#newId();
     for (let attempt = 0; attempt < MAX_CATALOG_ATTEMPTS; attempt += 1) {
       const current = await getRuntimeHostSession(this.#connection, sourceSessionId);
