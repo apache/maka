@@ -155,6 +155,10 @@ export class RuntimeHostReconnectingIpcMain {
         return result;
       } catch (error) {
         this.#assertActive(epoch);
+        if (slot.reconnectableRead && slot.handler !== handler) {
+          handler = await this.#waitForHandler(slot, epoch, handler);
+          continue;
+        }
         if (!slot.reconnectableRead || !isReconnectableReadFailure(error)) {
           throw error;
         }

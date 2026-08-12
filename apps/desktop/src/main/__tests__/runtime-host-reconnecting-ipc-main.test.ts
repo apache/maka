@@ -88,6 +88,27 @@ test("does not return a late read from a replaced Runtime Host candidate", async
   router.close();
 });
 
+test("does not return a late failure from a replaced Runtime Host candidate", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const firstTarget = router.createTarget("target-a");
+  const oldRead = deferred<string>();
+  firstTarget.handleReconnectableRead?.("sessions:list", () => oldRead.promise);
+  router.activate("target-a");
+
+  const reading = ipc.invoke("sessions:list");
+  firstTarget.removeHandler("sessions:list");
+  const replacementTarget = router.createTarget("target-a");
+  replacementTarget.handleReconnectableRead?.(
+    "sessions:list",
+    async () => "replacement",
+  );
+  oldRead.reject(new Error("stale ordinary failure"));
+
+  assert.equal(await reading, "replacement");
+  router.close();
+});
+
 test("does not replay a command IPC handler after a draining rejection", async () => {
   const ipc = ipcHarness();
   const router = new RuntimeHostReconnectingIpcMain(ipc);
@@ -225,8 +246,10 @@ function ipcHarness() {
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((settle, fail) => {
     resolve = settle;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
