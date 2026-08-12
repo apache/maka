@@ -46,24 +46,54 @@ test('shares one operational database and produces an online backup', async () =
   }
 });
 
-test('preserves operational state when every schema is current', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-operational-compatible-'));
+test('rolls back every scope when migration publication fails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-rollback-'));
+  const databasePath = join(root, 'runtime.sqlite');
   try {
-    const lease = acquireOperationalStateDatabase(root);
-    lease.database.exec('CREATE TABLE compatibility_sentinel (value TEXT NOT NULL)');
-    lease.database.exec("INSERT INTO compatibility_sentinel(value) VALUES ('preserved')");
-    lease.close();
+    await copyV016Database(databasePath);
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec('DELETE FROM automation_pending_fires; DELETE FROM automation_definitions');
+    const versions = legacy
+      .prepare(
+        'SELECT scope, version, applied_at FROM operational_schema_migrations ORDER BY scope',
+      )
+      .all();
+    const runtimeVersion = (legacy.prepare('PRAGMA user_version').get() as { user_version: number })
+      .user_version;
+    const reminder = legacy
+      .prepare('SELECT record_json FROM workflow_plan_reminders')
+      .get()?.record_json;
+    legacy.close();
 
-    const reopened = acquireOperationalStateDatabase(root);
-    assert.equal(
-      (
-        reopened.database.prepare('SELECT value FROM compatibility_sentinel').get() as {
-          value: string;
-        }
-      ).value,
-      'preserved',
+    assert.throws(
+      () => acquireOperationalStateDatabase(root, { now: () => -1 }),
+      /CHECK constraint failed/,
     );
-    reopened.close();
+
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.deepEqual(
+      preserved
+        .prepare(
+          'SELECT scope, version, applied_at FROM operational_schema_migrations ORDER BY scope',
+        )
+        .all(),
+      versions,
+    );
+    assert.equal(
+      (preserved.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+      runtimeVersion,
+    );
+    assert.equal(
+      preserved.prepare('SELECT record_json FROM workflow_plan_reminders').get()?.record_json,
+      reminder,
+    );
+    assert.equal(
+      preserved
+        .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_scheduled_tasks'")
+        .get(),
+      undefined,
+    );
+    preserved.close();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -361,7 +391,7 @@ test('does not classify a SQLite write failure as a migration blocker', {
   }
 });
 
-test('rolls back rather than dropping a contradictory legacy history fact', async () => {
+test('rejects a contradictory legacy history fact before migration', async () => {
   await assertReleasedReminderRejected(
     'contradictory-history',
     /lastRun contradicts runs/,
