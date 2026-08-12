@@ -44,6 +44,10 @@ export interface SubjectExecutionContext {
 export interface SubjectAdapter {
   readonly kind: ExperimentCell['subject']['kind'];
   validate?(cell: ExperimentCell): void;
+  prepare?(input: {
+    readonly spec: ExperimentSpec;
+    readonly cells: readonly ExperimentCell[];
+  }): Promise<void>;
   execute(input: {
     readonly cell: ExperimentCell;
     readonly context: SubjectExecutionContext;
@@ -119,6 +123,12 @@ export async function runExperiment(input: {
       const subject = subjects.get(cell.subject.kind);
       if (!subject) throw new Error(`missing subject adapter: ${cell.subject.kind}`);
       subject.validate?.(cell);
+    }
+    for (const subject of subjects.values()) {
+      const cellsForSubject = selected.filter((cell) => cell.subject.kind === subject.kind);
+      if (cellsForSubject.length > 0) {
+        await subject.prepare?.({ spec: input.spec, cells: cellsForSubject });
+      }
     }
     await runTaskGroups(
       groupTaskCells(selected),

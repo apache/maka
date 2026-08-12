@@ -1,13 +1,49 @@
 import type { JsonObject } from './experiment.js';
 import type { NormalizedUsage } from './result.js';
 import type { SubjectAdapter } from './runner.js';
+import {
+  TOOLCHAIN_IDENTITIES,
+  TOOLCHAIN_IDENTITY_ENV,
+  type ExternalProfile,
+  type ToolchainIdentity,
+  verifyToolchainDirectory,
+} from './toolchain-verification.js';
 
 export function createExternalSubjectAdapter(): SubjectAdapter {
+  const verifiedToolchains = new Map<string, ToolchainIdentity>();
   return {
     kind: 'external',
     validate: (cell) => decodeConfig(cell.subject.config, cell.subject.credentials),
+    prepare: async ({ cells }) => {
+      verifiedToolchains.clear();
+      for (const cell of uniqueSubjects(cells)) {
+        const config = decodeConfig(cell.subject.config, cell.subject.credentials);
+        const toolchain = wrapperToolchain(config, cell.executor.config);
+        if (!toolchain) continue;
+        const expected = TOOLCHAIN_IDENTITIES[toolchain.profile];
+        const mounts = executorMounts(cell.executor.config);
+        if (
+          !mounts.some(
+            (mount) => mount.sourceEnv === toolchain.sourceEnv && mount.target === expected.root,
+          )
+        ) {
+          throw new Error(`${cell.subject.id} toolchain mount is invalid`);
+        }
+        const root = process.env[toolchain.sourceEnv];
+        if (!root) throw new Error(`machine path ${toolchain.sourceEnv} is unavailable`);
+        verifiedToolchains.set(
+          cell.subject.id,
+          await verifyToolchainDirectory(toolchain.profile, root),
+        );
+      }
+    },
     async execute({ cell, context }) {
       const config = decodeConfig(cell.subject.config, cell.subject.credentials);
+      const toolchain = wrapperToolchain(config, cell.executor.config);
+      const identity = toolchain ? verifiedToolchains.get(cell.subject.id) : undefined;
+      if (toolchain && !identity) {
+        throw new Error(`${cell.subject.id} toolchain was not verified before execution`);
+      }
       const startedAt = Date.now();
       try {
         const execution = await context.execute({
@@ -18,39 +54,41 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
               .replaceAll('{{task.id}}', cell.task.id),
           ),
           credentialEnvironment: config.credentialEnvironment,
-          ...(Object.keys(config.environment).length === 0
+          ...(Object.keys(config.environment).length === 0 && !identity
             ? {}
-            : { environment: config.environment }),
+            : {
+                environment: {
+                  ...config.environment,
+                  ...(identity ? { [TOOLCHAIN_IDENTITY_ENV]: JSON.stringify(identity) } : {}),
+                },
+              }),
           ...(config.result === 'exit-code' ? { captureStdout: false } : {}),
         });
+        const decoded = execution.stdout.length === 0 ? undefined : decodeResult(execution.stdout);
         if (execution.termination === 'cancelled') {
           return {
-            usage: null,
-            costUsd: null,
+            usage: decoded?.usage ?? null,
+            costUsd: decoded?.costUsd ?? null,
             durationMs: Date.now() - startedAt,
             status: 'indeterminate' as const,
             failureReason: 'external subject cancelled',
-            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
+            artifacts: [
+              ...(decoded?.artifacts ?? []),
+              { kind: 'external_process', exitCode: execution.exitCode },
+            ],
           };
         }
         if (execution.termination === 'framework_timeout') {
           return {
-            usage: null,
-            costUsd: null,
+            usage: decoded?.usage ?? null,
+            costUsd: decoded?.costUsd ?? null,
             durationMs: Date.now() - startedAt,
             status: 'failed' as const,
             failureReason: 'external subject exceeded the framework timeout',
-            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
-          };
-        }
-        if (execution.exitCode !== 0) {
-          return {
-            usage: null,
-            costUsd: null,
-            durationMs: Date.now() - startedAt,
-            status: context.signal?.aborted ? ('indeterminate' as const) : ('failed' as const),
-            failureReason: `external subject exited ${execution.exitCode}`,
-            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
+            artifacts: [
+              ...(decoded?.artifacts ?? []),
+              { kind: 'external_process', exitCode: execution.exitCode },
+            ],
           };
         }
         if (config.result === 'exit-code') {
@@ -58,20 +96,41 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
             usage: null,
             costUsd: null,
             durationMs: Date.now() - startedAt,
-            status: 'completed' as const,
-            failureReason: null,
+            status:
+              execution.exitCode === 0
+                ? ('completed' as const)
+                : context.signal?.aborted
+                  ? ('indeterminate' as const)
+                  : ('failed' as const),
+            failureReason:
+              execution.exitCode === 0 ? null : `external subject exited ${execution.exitCode}`,
             artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
           };
         }
-        const result = decodeResult(execution.stdout);
+        if (!decoded) {
+          return {
+            usage: null,
+            costUsd: null,
+            durationMs: Date.now() - startedAt,
+            status: context.signal?.aborted
+              ? ('indeterminate' as const)
+              : ('infra_failed' as const),
+            failureReason: 'external subject returned no result',
+            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
+          };
+        }
         return {
-          ...(result.output === undefined ? {} : { output: result.output }),
-          usage: result.usage,
-          costUsd: result.costUsd,
+          ...(decoded.output === undefined ? {} : { output: decoded.output }),
+          usage: decoded.usage,
+          costUsd: decoded.costUsd,
           durationMs: Date.now() - startedAt,
-          status: 'completed' as const,
-          failureReason: null,
-          artifacts: result.artifacts,
+          status:
+            decoded.status ??
+            (execution.exitCode === 0 ? ('completed' as const) : ('failed' as const)),
+          failureReason:
+            decoded.failureReason ??
+            (execution.exitCode === 0 ? null : `external subject exited ${execution.exitCode}`),
+          artifacts: decoded.artifacts,
         };
       } catch {
         return {
@@ -113,6 +172,9 @@ function decodeConfig(
     throw new Error('external subject args are invalid');
   }
   const environment = stringMap(config.environment, 'environment');
+  if (Object.hasOwn(environment, TOOLCHAIN_IDENTITY_ENV)) {
+    throw new Error(`environment contains reserved ${TOOLCHAIN_IDENTITY_ENV}`);
+  }
   const credentialEnvironment = Object.hasOwn(config, 'credentialEnvironment')
     ? stringMap(config.credentialEnvironment, 'credentialEnvironment')
     : Object.freeze(Object.fromEntries(declaredCredentials.map((name) => [name, name])));
@@ -137,6 +199,49 @@ function decodeConfig(
   };
 }
 
+function wrapperToolchain(
+  config: ExternalSubjectConfig,
+  executorConfig: JsonObject,
+): { profile: ExternalProfile; sourceEnv: string } | undefined {
+  if (!config.args[0]?.endsWith('/harbor-external-subject.js')) return undefined;
+  const profile = config.args[1];
+  if (
+    profile !== 'codex' &&
+    profile !== 'claude-code' &&
+    profile !== 'reasonix' &&
+    profile !== 'opencode' &&
+    profile !== 'kimi-code' &&
+    profile !== 'zcode' &&
+    profile !== 'pi'
+  ) {
+    return undefined;
+  }
+  const target = TOOLCHAIN_IDENTITIES[profile].root;
+  const mount = executorMounts(executorConfig).find((candidate) => candidate.target === target);
+  if (!mount) throw new Error(`${profile} toolchain mount is missing`);
+  return { profile, sourceEnv: mount.sourceEnv };
+}
+
+function uniqueSubjects(cells: readonly import('./experiment.js').ExperimentCell[]) {
+  return [...new Map(cells.map((cell) => [cell.subject.id, cell] as const)).values()];
+}
+
+function executorMounts(value: JsonObject): Array<{ sourceEnv: string; target: string }> {
+  const raw = value.mounts;
+  if (!Array.isArray(raw)) throw new Error('executor.config.mounts must be an array');
+  return raw.map((item, index) => {
+    const mount = exact(item, ['sourceEnv', 'target', 'readOnly'], `executor mount ${index}`);
+    if (
+      typeof mount.sourceEnv !== 'string' ||
+      typeof mount.target !== 'string' ||
+      mount.readOnly !== true
+    ) {
+      throw new Error(`executor mount ${index} is invalid`);
+    }
+    return { sourceEnv: mount.sourceEnv, target: mount.target };
+  });
+}
+
 function stringMap(value: unknown, where: string): Readonly<Record<string, string>> {
   if (value === undefined) return Object.freeze({});
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -155,6 +260,8 @@ function decodeResult(stdout: string): {
   output?: string;
   usage: NormalizedUsage | null;
   costUsd: number | null;
+  status?: 'completed' | 'failed' | 'infra_failed' | 'indeterminate';
+  failureReason?: string | null;
   artifacts: readonly JsonObject[];
 } {
   const parsed = JSON.parse(stdout) as unknown;
@@ -163,11 +270,35 @@ function decodeResult(stdout: string): {
   }
   const fields = ['schemaVersion', 'usage', 'costUsd', 'artifacts'];
   if (Object.hasOwn(parsed, 'output')) fields.push('output');
+  if (Object.hasOwn(parsed, 'status')) fields.push('status');
+  if (Object.hasOwn(parsed, 'failureReason')) fields.push('failureReason');
   const result = exact(parsed, fields, 'external result');
-  if (result.schemaVersion !== 'maka.external_subject_result.v1')
+  if (
+    result.schemaVersion !== 'maka.external_subject_result.v1' &&
+    result.schemaVersion !== 'maka.external_subject_result.v2'
+  )
     throw new Error('external result schema is invalid');
+  if (
+    result.schemaVersion === 'maka.external_subject_result.v2' &&
+    (!Object.hasOwn(result, 'status') || !Object.hasOwn(result, 'failureReason'))
+  )
+    throw new Error('external result v2 fields are invalid');
   if (result.output !== undefined && typeof result.output !== 'string')
     throw new Error('external result output is invalid');
+  if (
+    result.status !== undefined &&
+    result.status !== 'completed' &&
+    result.status !== 'failed' &&
+    result.status !== 'infra_failed' &&
+    result.status !== 'indeterminate'
+  )
+    throw new Error('external result status is invalid');
+  if (
+    result.failureReason !== undefined &&
+    result.failureReason !== null &&
+    typeof result.failureReason !== 'string'
+  )
+    throw new Error('external result failureReason is invalid');
   if (
     !Array.isArray(result.artifacts) ||
     !result.artifacts.every(
@@ -180,6 +311,14 @@ function decodeResult(stdout: string): {
     ...(result.output === undefined ? {} : { output: result.output }),
     usage: result.usage === null ? null : decodeUsage(result.usage),
     costUsd: result.costUsd === null ? null : nonnegative(result.costUsd, 'external result cost'),
+    ...(result.status === undefined
+      ? {}
+      : {
+          status: result.status as 'completed' | 'failed' | 'infra_failed' | 'indeterminate',
+        }),
+    ...(result.failureReason === undefined
+      ? {}
+      : { failureReason: result.failureReason as string | null }),
     artifacts: result.artifacts as JsonObject[],
   };
 }

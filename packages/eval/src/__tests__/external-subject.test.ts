@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { createExternalSubjectAdapter } from '../external-subject.js';
-import type { ExperimentCell } from '../experiment.js';
+import type { ExperimentCell, ExperimentSpec } from '../experiment.js';
+import { TOOLCHAIN_IDENTITIES, TOOLCHAIN_IDENTITY_ENV } from '../toolchain-verification.js';
 
 test('passes declared environment and credential bindings to one external command', async () => {
   const cell = externalCell({
@@ -113,6 +118,82 @@ test('rejects overlap with identity credential targets', () => {
     () => createExternalSubjectAdapter().validate?.(cell),
     /environment and credentialEnvironment overlap at PROVIDER_KEY/u,
   );
+});
+
+test('verifies a mounted toolchain once before cell execution', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-toolchain-'));
+  const executable = join(root, 'bin/codex');
+  const sourceEnv = 'MAKA_TEST_CODEX_TOOLCHAIN';
+  const previous = process.env[sourceEnv];
+  process.env[sourceEnv] = root;
+  try {
+    await mkdir(join(root, 'bin'), { recursive: true });
+    await writeFile(executable, 'codex');
+    const digest = createHash('sha256').update('codex').digest('hex');
+    await writeFile(join(root, 'checksums.sha256'), `${digest}  bin/codex\n`);
+    await writeFile(
+      join(root, 'manifest.json'),
+      `${JSON.stringify({ fingerprint: TOOLCHAIN_IDENTITIES.codex.fingerprint })}\n`,
+    );
+    const cell = {
+      ...externalCell({
+        command: '/opt/maka-node-toolchain/bin/node',
+        args: [
+          '/opt/maka-agent/packages/eval/dist/harbor-external-subject.js',
+          'codex',
+          'https://api.deepseek.com',
+          '/',
+          '/opt/maka-codex-toolchain/bin/codex',
+        ],
+      }),
+      executor: {
+        kind: 'harbor',
+        config: {
+          mounts: [
+            {
+              sourceEnv,
+              target: TOOLCHAIN_IDENTITIES.codex.root,
+              readOnly: true,
+            },
+          ],
+        },
+      },
+    } satisfies ExperimentCell;
+    const adapter = createExternalSubjectAdapter();
+    await adapter.prepare?.({ spec: {} as ExperimentSpec, cells: [cell] });
+    await unlink(join(root, 'checksums.sha256'));
+    let environment: Readonly<Record<string, string>> | undefined;
+
+    await adapter.execute({
+      cell,
+      context: {
+        cwd: '/app',
+        taskInput: 'solve',
+        metadata: {},
+        execute: async (input) => {
+          environment = input.environment;
+          return {
+            termination: 'exited',
+            exitCode: 0,
+            stdout: JSON.stringify({
+              schemaVersion: 'maka.external_subject_result.v1',
+              usage: null,
+              costUsd: null,
+              artifacts: [],
+            }),
+          };
+        },
+      },
+    });
+
+    assert.deepEqual(JSON.parse(environment?.[TOOLCHAIN_IDENTITY_ENV] ?? ''), {
+      ...TOOLCHAIN_IDENTITIES.codex,
+    });
+  } finally {
+    if (previous === undefined) delete process.env[sourceEnv];
+    else process.env[sourceEnv] = previous;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 function externalCell(config: ExperimentCell['subject']['config']): ExperimentCell {

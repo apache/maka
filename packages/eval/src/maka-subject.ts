@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { HostedExecutionStartInput } from '@maka/runtime-host/protocol';
 import { decodeHostedExecutionProjection } from '@maka/runtime-host/protocol';
 import type { JsonObject } from './experiment.js';
+import type { NormalizedUsage } from './result.js';
 import type { SubjectAdapter, SubjectExecutionContext } from './runner.js';
 
 export function createMakaSubjectAdapter(): SubjectAdapter {
@@ -32,6 +33,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
         JSON.stringify({
           rootPath: `${config.runtimeHostsPath}/${executionId}`,
           baseUrl: config.baseUrl,
+          webTools: config.webTools,
           execution: input,
         }),
       ).toString('base64url');
@@ -53,7 +55,9 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
         const settled = projection?.kind === 'settled' ? projection : undefined;
         return {
           usage: settled?.usage ?? null,
-          costUsd: settled?.costUsd ?? null,
+          costUsd: settled
+            ? (settled.costUsd ?? estimateDeepSeekCost(settled.usage, config.model))
+            : null,
           durationMs: Date.now() - startedAt,
           status:
             process.termination === 'framework_timeout'
@@ -102,7 +106,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
         failureReason: string | null,
       ) => ({
         usage: projection.usage,
-        costUsd: projection.costUsd,
+        costUsd: projection.costUsd ?? estimateDeepSeekCost(projection.usage, config.model),
         durationMs: Date.now() - startedAt,
         status,
         failureReason,
@@ -201,6 +205,7 @@ interface MakaConfig {
   readonly shimPath: string;
   readonly runtimeHostsPath: string;
   readonly baseUrl: string;
+  readonly webTools: 'enabled' | 'disabled';
   readonly connectionSlug: string;
   readonly model: string;
   readonly thinkingLevel: HostedExecutionStartInput['session']['thinkingLevel'];
@@ -222,9 +227,14 @@ function decodeConfig(value: JsonObject): MakaConfig {
     'collaborationMode',
     'orchestrationMode',
   ];
+  if (Object.hasOwn(value, 'webTools')) fields.push('webTools');
   const config = exact(value, fields);
   if (!URL.canParse(String(config.baseUrl))) throw new Error('Maka baseUrl is invalid');
-  return config as unknown as MakaConfig;
+  const webTools = config.webTools ?? 'enabled';
+  if (webTools !== 'enabled' && webTools !== 'disabled') {
+    throw new Error('Maka config.webTools is invalid');
+  }
+  return { ...config, webTools } as unknown as MakaConfig;
 }
 
 function exact(value: unknown, fields: readonly string[]): Record<string, unknown> {
@@ -245,4 +255,12 @@ function exact(value: unknown, fields: readonly string[]): Record<string, unknow
 function positive(value: unknown, where: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`${where} is invalid`);
   return value as number;
+}
+
+function estimateDeepSeekCost(usage: NormalizedUsage, model: string): number | null {
+  if (model !== 'deepseek-v4-flash') return null;
+  const uncached = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens);
+  return (
+    (uncached * 0.145 + usage.cacheReadTokens * 0.0029 + usage.outputTokens * 0.29) / 1_000_000
+  );
 }
