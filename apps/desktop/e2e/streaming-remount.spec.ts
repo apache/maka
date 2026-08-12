@@ -1,4 +1,7 @@
-import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/fake-backend';
+import {
+  FAKE_HOLD_OPEN_PROMPT,
+  FAKE_HOLD_OPEN_REWRITE_PROMPT,
+} from '@maka/runtime/fake-backend';
 import { expect, COMPOSER_INPUT, test } from './fixtures';
 
 test('remounting a live surface leaves accumulated output settled', async ({
@@ -8,10 +11,10 @@ test('remounting a live surface leaves accumulated output settled', async ({
   expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(false);
 
   const composer = page.locator(COMPOSER_INPUT);
-  await composer.fill(FAKE_HOLD_OPEN_PROMPT);
+  await composer.fill(FAKE_HOLD_OPEN_REWRITE_PROMPT);
   await composer.press('Enter');
 
-  const accumulatedOutput = 'Fake backend waiting for the test to stop the Turn.';
+  const accumulatedOutput = 'prefix sk-123456789012345';
   const liveBubble = page.locator('.maka-bubble-streaming');
   await expect(liveBubble).toContainText(accumulatedOutput);
 
@@ -40,10 +43,10 @@ test('remounting a live surface leaves accumulated output settled', async ({
     }).observe(element, { childList: true, characterData: true, subtree: true });
   });
 
-  const steering = 'continue after returning to this conversation';
+  const steering = 'trigger rewrite after returning to this conversation';
   await composer.fill(steering);
   await composer.press('Enter');
-  await expect(liveBubble).toContainText(steering);
+  await expect(liveBubble).toContainText('<redacted> NEW');
 
   const observed = await page.evaluate(() => (
     window as typeof window & {
@@ -53,7 +56,7 @@ test('remounting a live surface leaves accumulated output settled', async ({
     }
   ).__makaStreamingRemountObserved);
   expect(observed?.texts.some((text) =>
-    text.includes('continue after') && !text.includes(steering)
+    text.includes('<redacted>') && !text.includes('NEW')
   )).toBe(true);
 });
 
