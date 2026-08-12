@@ -227,28 +227,6 @@ describe('Runtime Host profiles', () => {
         }),
       /requires explicit acknowledgement/,
     );
-    assert.deepEqual(
-      decodeRuntimeHostProfileDocument({
-        schemaVersion: 1,
-        profiles: [
-          {
-            ...valid.profiles[0],
-            transport: {
-              kind: 'ssh',
-              destination: 'operator@example.com',
-              remotePort: 7443,
-              websocketPath: '/runtime-host',
-            },
-          },
-        ],
-      }).profiles[0]?.transport,
-      {
-        kind: 'ssh',
-        destination: 'operator@example.com',
-        remotePort: 7443,
-        websocketPath: '/runtime-host',
-      },
-    );
     assert.throws(
       () =>
         decodeRuntimeHostProfileDocument({

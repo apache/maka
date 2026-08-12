@@ -219,9 +219,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       if (terminal.revealTimer !== undefined) clearTimeout(terminal.revealTimer);
       try {
         terminal.pty.kill();
-      } catch {
-        // Already exited.
-      }
+      } catch {}
       await terminal.exited.catch(() => undefined);
     },
   };
