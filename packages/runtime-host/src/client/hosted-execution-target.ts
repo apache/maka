@@ -1,3 +1,4 @@
+import { effectiveBaseUrl } from '@maka/core/llm-connections';
 import { readRuntimeHostConnectionCatalog } from './catalog-reader.js';
 import type { RuntimeHostConnection } from './connection.js';
 import { abortable } from './wait-for-ready.js';
@@ -14,14 +15,15 @@ export async function configureHostedExecutionTarget(
   connection: TargetConnection,
   input: HostedExecutionTargetInput,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<boolean> {
   const before = await abortable(() => readRuntimeHostConnectionCatalog(connection), signal);
   const target = before.connections.find((candidate) => candidate.slug === input.connectionSlug);
   if (!target) throw new Error('Runtime Host connection is unavailable');
 
   const baseUrl = new URL(input.baseUrl).toString();
   const enabledModelIds = [...new Set([...target.enabledModelIds, input.model])];
-  const endpointChanged = target.baseUrl !== baseUrl;
+  const endpointChanged = canonicalBaseUrl(effectiveBaseUrl(target)) !== baseUrl;
+  let changed = false;
   if (endpointChanged || !target.enabled || !target.enabledModelIds.includes(input.model)) {
     const updated = await abortable(
       () =>
@@ -39,6 +41,7 @@ export async function configureHostedExecutionTarget(
     if (updated.kind !== 'committed') {
       throw new Error(`Runtime Host connection update was not committed: ${updated.kind}`);
     }
+    changed = true;
   }
 
   if (endpointChanged || !target.models.some((model) => model.id === input.model)) {
@@ -52,6 +55,7 @@ export async function configureHostedExecutionTarget(
     if (fetched.kind !== 'committed') {
       throw new Error(`Runtime Host model discovery did not commit: ${fetched.kind}`);
     }
+    changed = true;
   }
 
   const after = await abortable(() => readRuntimeHostConnectionCatalog(connection), signal);
@@ -60,10 +64,19 @@ export async function configureHostedExecutionTarget(
   );
   if (
     !configured?.enabled ||
-    configured.baseUrl !== baseUrl ||
+    canonicalBaseUrl(effectiveBaseUrl(configured)) !== baseUrl ||
     !configured.enabledModelIds.includes(input.model) ||
     !configured.models.some((model) => model.id === input.model)
   ) {
     throw new Error('Runtime Host did not admit the requested model target');
+  }
+  return changed;
+}
+
+function canonicalBaseUrl(value: string): string | undefined {
+  try {
+    return new URL(value).toString();
+  } catch {
+    return undefined;
   }
 }
