@@ -146,6 +146,32 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('treats a rejected Candidate report as unavailable election evidence', async () => {
+    await withHostPaths(async (paths) => {
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 100,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: () => ({
+            spawned: Promise.resolve({
+              pid: process.pid,
+              startupFailure: Promise.reject(new Error('report failed')),
+            }),
+          }),
+        },
+      );
+
+      assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+    });
+  });
+
   test('accepts a ready successor launched before a migration blocker is observed', async () => {
     await withHostPaths(async (paths) => {
       let launches = 0;

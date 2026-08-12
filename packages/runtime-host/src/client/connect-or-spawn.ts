@@ -254,16 +254,19 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         if (attempt.startupFailure) {
           pendingCandidateReports += 1;
           void attempt.startupFailure
-            .then((failure) => {
-              if (
-                failure &&
-                (!startupFailure ||
-                  (!isPermanentCandidateStartupFailure(startupFailure) &&
-                    isPermanentCandidateStartupFailure(failure)))
-              ) {
-                startupFailure = failure;
-              }
-            })
+            .then(
+              (failure) => {
+                if (
+                  failure &&
+                  (!startupFailure ||
+                    (!isPermanentCandidateStartupFailure(startupFailure) &&
+                      isPermanentCandidateStartupFailure(failure)))
+                ) {
+                  startupFailure = failure;
+                }
+              },
+              () => undefined,
+            )
             .finally(() => {
               pendingCandidateReports -= 1;
             });
