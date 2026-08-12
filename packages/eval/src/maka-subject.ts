@@ -41,7 +41,9 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
         process = await context.execute({
           command: config.nodePath,
           args: [config.shimPath, payload],
-          credentialNames: cell.subject.credentials,
+          credentialEnvironment: Object.fromEntries(
+            cell.subject.credentials.map((name) => [name, name]),
+          ),
         });
       } catch {
         return subjectFailure('relay-execute', startedAt, context.signal);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createExternalSubjectAdapter } from './external-subject.js';
-import type { ExperimentCell } from './experiment.js';
+import { createExternalSubjectAdapter } from '../external-subject.js';
+import type { ExperimentCell } from '../experiment.js';
 
 test('passes declared environment and credential bindings to one external command', async () => {
   const cell = externalCell({
@@ -29,7 +29,6 @@ test('passes declared environment and credential bindings to one external comman
   assert.deepEqual(request, {
     command: '/opt/pi/bin/pi',
     args: ['--print', 'solve the task'],
-    credentialNames: ['PROVIDER_KEY'],
     environment: { PI_OFFLINE: '1' },
     credentialEnvironment: { DEEPSEEK_API_KEY: 'PROVIDER_KEY' },
     captureStdout: false,
@@ -68,7 +67,7 @@ test('keeps protocol-v1 as the default result contract', async () => {
   assert.deepEqual(request, {
     command: '/opt/tool',
     args: [],
-    credentialNames: ['PROVIDER_KEY'],
+    credentialEnvironment: { PROVIDER_KEY: 'PROVIDER_KEY' },
   });
   assert.equal(result.status, 'completed');
 });
@@ -99,6 +98,20 @@ test('rejects overlap between public environment and credential targets', () => 
   assert.throws(
     () => createExternalSubjectAdapter().validate?.(cell),
     /environment and credentialEnvironment overlap at API_KEY/u,
+  );
+});
+
+test('rejects overlap with identity credential targets', () => {
+  const cell = externalCell({
+    command: '/opt/tool',
+    args: [],
+    environment: { PROVIDER_KEY: 'not-a-secret' },
+    result: 'exit-code',
+  });
+
+  assert.throws(
+    () => createExternalSubjectAdapter().validate?.(cell),
+    /environment and credentialEnvironment overlap at PROVIDER_KEY/u,
   );
 });
 

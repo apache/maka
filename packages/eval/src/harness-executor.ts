@@ -152,11 +152,8 @@ function relayContext(
     execute: async (input) => {
       if (state.used) throw new Error('Trial already executed its subject');
       state.used = true;
-      const credentialEnvironment =
-        input.credentialEnvironment ??
-        Object.fromEntries(input.credentialNames.map((name) => [name, name]));
       const credentials = Object.fromEntries(
-        Object.entries(credentialEnvironment).map(([target, source]) => {
+        Object.entries(input.credentialEnvironment).map(([target, source]) => {
           const value = state.credentials[source];
           if (value === undefined) throw new Error(`credential ${source} was not admitted`);
           return [target, value];

@@ -17,13 +17,10 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
               .replaceAll('{{task.input}}', context.taskInput)
               .replaceAll('{{task.id}}', cell.task.id),
           ),
-          credentialNames: cell.subject.credentials,
+          credentialEnvironment: config.credentialEnvironment,
           ...(Object.keys(config.environment).length === 0
             ? {}
             : { environment: config.environment }),
-          ...(Object.keys(config.credentialEnvironment).length === 0
-            ? {}
-            : { credentialEnvironment: config.credentialEnvironment }),
           ...(config.result === 'exit-code' ? { captureStdout: false } : {}),
         });
         if (execution.termination === 'cancelled') {
@@ -116,7 +113,9 @@ function decodeConfig(
     throw new Error('external subject args are invalid');
   }
   const environment = stringMap(config.environment, 'environment');
-  const credentialEnvironment = stringMap(config.credentialEnvironment, 'credentialEnvironment');
+  const credentialEnvironment = Object.hasOwn(config, 'credentialEnvironment')
+    ? stringMap(config.credentialEnvironment, 'credentialEnvironment')
+    : Object.freeze(Object.fromEntries(declaredCredentials.map((name) => [name, name])));
   for (const [target, source] of Object.entries(credentialEnvironment)) {
     if (!declaredCredentials.includes(source)) {
       throw new Error(`credentialEnvironment.${target} must reference a declared credential`);

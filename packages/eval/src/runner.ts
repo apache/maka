@@ -30,9 +30,8 @@ export interface SubjectExecutionContext {
   readonly execute: (input: {
     readonly command: string;
     readonly args: readonly string[];
-    readonly credentialNames: readonly string[];
     readonly environment?: Readonly<Record<string, string>>;
-    readonly credentialEnvironment?: Readonly<Record<string, string>>;
+    readonly credentialEnvironment: Readonly<Record<string, string>>;
     readonly captureStdout?: boolean;
     readonly cancel?: { readonly command: string; readonly args: readonly string[] };
   }) => Promise<{
