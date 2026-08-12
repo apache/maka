@@ -113,6 +113,35 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('stops Candidate election after an operational migration blocker', async () => {
+    await withHostPaths(async (paths) => {
+      let launches = 0;
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 1_000,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: (input) => {
+            launches += 1;
+            return launchTestRuntimeHostCandidate(paths, {
+              ...input,
+              env: { MAKA_TEST_STARTUP_ERROR_CODE: 'operational_state_migration_blocked' },
+            });
+          },
+        },
+      );
+
+      assert.deepEqual(result, { kind: 'failed', reason: 'operational_state_migration_blocked' });
+      assert.equal(launches, 1);
+    });
+  });
+
   test('accepts a ready successor after an earlier Candidate fails', async () => {
     await withHostPaths(async (paths) => {
       let launches = 0;

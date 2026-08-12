@@ -10,6 +10,13 @@ test('presents stored-data startup failures as actionable and permanent', () => 
   assert.match(error.message, /STORED_DATA_INCOMPATIBLE/u);
 });
 
+test('presents migration blockers with a permanent previous-release recovery path', () => {
+  const error = runtimeHostStartupError('operational_state_migration_blocked');
+  assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+  assert.match(error.message, /previous Maka release/u);
+  assert.match(error.message, /OPERATIONAL_STATE_MIGRATION_BLOCKED/u);
+});
+
 test('keeps an unresponsive Host retryable', () => {
   const error = runtimeHostStartupError('host_unresponsive');
   assert.equal(error instanceof RuntimeHostPermanentReconnectError, false);

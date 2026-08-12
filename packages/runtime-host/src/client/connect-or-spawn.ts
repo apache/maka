@@ -24,7 +24,10 @@ import {
   type CandidateLauncher,
   type OwnedCandidateAttempt,
 } from './launcher.js';
-import type { CandidateStartupFailure } from '../candidate-startup-failure.js';
+import {
+  isPermanentCandidateStartupFailure,
+  type CandidateStartupFailure,
+} from '../candidate-startup-failure.js';
 import { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
 
 const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
@@ -181,6 +184,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
 
   while (performance.now() < deadline) {
     input.signal?.throwIfAborted();
+    if (isPermanentCandidateStartupFailure(startupFailure)) {
+      return { kind: 'failed', reason: startupFailure.reason };
+    }
     const result = await connectResolvedRuntimeHost({
       capability,
       controlDirectory,
@@ -230,7 +236,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
     const now = performance.now();
     if (
       shouldLaunchCandidate(result) &&
-      startupFailure?.reason !== 'stored_data_incompatible' &&
+      !isPermanentCandidateStartupFailure(startupFailure) &&
       now >= nextCandidateAt
     ) {
       try {
@@ -245,7 +251,12 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         });
         const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
         void attempt.startupFailure?.then((failure) => {
-          if (failure && (!startupFailure || failure.reason === 'stored_data_incompatible')) {
+          if (
+            failure &&
+            (!startupFailure ||
+              (!isPermanentCandidateStartupFailure(startupFailure) &&
+                isPermanentCandidateStartupFailure(failure)))
+          ) {
             startupFailure = failure;
           }
         });
