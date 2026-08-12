@@ -1,13 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Banner, HStack, Text, VStack } from '@astryxdesign/core';
 import { type ProviderType } from '@maka/core/llm-connections';
-import {
-  Badge,
-  Button,
-  useMountedRef,
-  useUiLocale,
-} from '@maka/ui';
+import { Badge, Button, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getProviderSettingsCopy, type ProviderSettingsCopy } from '../locales/settings-provider-copy';
+import type { ConnectionsBridge } from './provider-panel-shared';
 import { ClaudeSubscriptionCard } from './claude-subscription-card';
 import {
   useOAuthLoginFlow,
@@ -164,10 +160,86 @@ export function useOAuthCards(props: { query?: string }) {
  * this as its setup level; the header and the back affordance belong to that
  * level, the same ones the catalog and the connection detail use.
  */
-export function OAuthLoginPanel(props: { cardId: OAuthCardId; onLoginSuccess(): void | Promise<void> }) {
+export function OAuthLoginPanel(props: {
+  bridge: ConnectionsBridge;
+  cardId: OAuthCardId;
+  onLoginSuccess(): void | Promise<void>;
+}) {
   if (props.cardId === 'claude') return <ClaudeSubscriptionCard />;
   if (props.cardId === 'github-copilot') return <GitHubCopilotLoginPanel />;
+  if (props.cardId === 'codex') {
+    return (
+      <CodexAccountLoginPanel
+        bridge={props.bridge}
+        onLoginSuccess={props.onLoginSuccess}
+      />
+    );
+  }
   return <SubscriptionLoginPanel service={props.cardId} onLoginSuccess={props.onLoginSuccess} />;
+}
+
+function CodexAccountLoginPanel(props: {
+  bridge: ConnectionsBridge;
+  onLoginSuccess(): void | Promise<void>;
+}) {
+  const locale = useUiLocale();
+  const copy = getProviderSettingsCopy(locale).oauthSection;
+  const toast = useToast();
+  const [preparing, setPreparing] = useState(false);
+  const flow = useOAuthLoginFlow({
+    bridge: window.maka.openAiCodex as unknown as OAuthLoginFlowBridge,
+    display: { name: 'OpenAI OAuth (ChatGPT / Codex)', shortName: 'OpenAI' },
+    onLoginSuccess: props.onLoginSuccess,
+  });
+
+  async function addAccount() {
+    if (preparing || flow.actionBusy) return;
+    setPreparing(true);
+    try {
+      const connection = (await props.bridge.list()).find(
+        (candidate) => candidate.providerType === 'openai-codex',
+      );
+      if (!connection) {
+        await flow.startLogin();
+        return;
+      }
+      if (!props.bridge.profiles) throw new Error(copy.serviceUnavailable);
+      const before = await props.bridge.profiles.query(connection.slug);
+      await props.bridge.profiles.create(connection.slug, {
+        label: `${copy.codexDefaultAccount} ${before.profiles.length + 1}`,
+        weight: 1,
+      });
+      const after = await props.bridge.profiles.query(connection.slug);
+      const previousIds = new Set(before.profiles.map((profile) => profile.profileId));
+      const created = after.profiles.find((profile) => !previousIds.has(profile.profileId));
+      if (!created) throw new Error(copy.serviceUnavailable);
+      await flow.startLogin(created.profileId);
+    } catch (error) {
+      toast.error(copy.serviceUnavailable, subscriptionActionErrorMessage(error, locale));
+    } finally {
+      setPreparing(false);
+    }
+  }
+
+  return (
+    <VStack gap={3} data-status={flow.runtimeState}>
+      <Text type="body">{copy.codexAddAccountDetail}</Text>
+      {flow.stateHint && (
+        <Text type="supporting" color="secondary">
+          {copy.deviceCode} {flow.stateHint}
+        </Text>
+      )}
+      {flow.errorMessage && <Banner status="error" role="alert" title={flow.errorMessage} />}
+      <HStack gap={2} hAlign="end">
+        <Button
+          variant="primary"
+          onClick={() => void addAccount()}
+          isDisabled={preparing || flow.actionBusy}
+          label={preparing || flow.pendingAction === 'login' ? copy.openingBrowser : copy.codexAddAccount}
+        />
+      </HStack>
+    </VStack>
+  );
 }
 
 /** The subtitle the setup level's header shows above each login panel. */
@@ -186,7 +258,7 @@ function modelOAuthCards(copy: ProviderSettingsCopy['oauthSection']): ReadonlyAr
 }> {
   return [
     { id: 'claude', providerType: 'claude-subscription', name: 'Claude Code', description: copy.claudeDescription },
-    { id: 'codex', providerType: 'openai-codex', name: 'OpenAI Codex', description: copy.codexDescription },
+    { id: 'codex', providerType: 'openai-codex', name: 'OpenAI OAuth (ChatGPT / Codex)', description: copy.codexDescription },
     { id: 'github-copilot', providerType: 'github-copilot', name: 'GitHub Copilot', description: copy.copilotDescription },
     { id: 'xai', providerType: 'xai-oauth', name: 'xAI Grok', description: copy.xaiDescription },
   ];

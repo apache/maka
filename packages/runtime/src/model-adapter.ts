@@ -180,7 +180,7 @@ export class ModelAdapter {
     };
   }
 
-  resolveModel(apiKeyOverride?: string): unknown {
+  resolveModel(apiKeyOverride?: string, fetchOverride?: typeof globalThis.fetch): unknown {
     const apiKey = apiKeyOverride ?? this.input.apiKey;
     if (providerAuthRequiresSecret(this.input.connection.providerType) && !apiKey) {
       throw new Error(`No API key stored for connection "${this.input.connection.slug}"`);
@@ -189,6 +189,7 @@ export class ModelAdapter {
       connection: this.input.connection,
       apiKey,
       modelId: this.input.modelId,
+      ...(fetchOverride ? { fetch: fetchOverride } : {}),
       resolvedRuntime: this.runtime,
       ...(this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
         ? { openAiChatReasoningTransportState: this.openAiChatReasoningTransportState }

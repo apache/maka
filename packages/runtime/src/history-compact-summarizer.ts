@@ -24,7 +24,7 @@ export type AiSdkGenerateTextLike = (
 
 export interface BuildLlmHistorySummarizerOptions {
   /** Resolve the AI SDK model used for summarization. Reuses the session model. */
-  resolveModel: (apiKey?: string) => unknown;
+  resolveModel: (apiKey?: string, fetch?: typeof globalThis.fetch) => unknown;
   /** Session provider settings, including the selected reasoning level. */
   providerOptions?: Record<string, unknown>;
   /** Injectable `generateText` for tests; defaults to the real AI SDK export. */
@@ -38,6 +38,7 @@ export interface BuildLlmHistorySummarizerOptions {
    */
   acquireCredential?: () => Promise<{
     apiKey?: string;
+    fetch?: typeof globalThis.fetch;
     /**
      * Atomic, fail-closed attribution for the canonical record (Gate 2):
      * profileId + selectionReason ALWAYS travel together, and selectionReason
@@ -126,12 +127,12 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
         const generateText = options.generateText ?? ai!.generateText;
         const model = providerRequestTracker
           ? withProviderGenerateTracking({
-              model: options.resolveModel(credential?.apiKey),
+              model: options.resolveModel(credential?.apiKey, credential?.fetch),
               wrapLanguageModel: ai!.wrapLanguageModel,
               tracker: providerRequestTracker,
               ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
             })
-          : options.resolveModel(credential?.apiKey);
+          : options.resolveModel(credential?.apiKey, credential?.fetch);
         const result = await generateText({
           model,
           instructions: SUMMARIZATION_SYSTEM_PROMPT,

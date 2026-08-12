@@ -358,19 +358,23 @@ describe('buildLlmHistorySummarizer', () => {
     const settled: string[] = [];
     let released = 0;
     let capturedApiKey: string | undefined;
+    let capturedFetch: typeof globalThis.fetch | undefined;
     let modelCalls = 0;
+    const leasedFetch = async () => new Response(null, { status: 204 });
     const generateText: AiSdkGenerateTextLike = async () => {
       modelCalls += 1;
       return { text: '## Goal\nOK' };
     };
     const summarize = buildLlmHistorySummarizer({
-      resolveModel: (apiKey) => {
+      resolveModel: (apiKey, fetch) => {
         capturedApiKey = apiKey;
+        capturedFetch = fetch;
         return 'leased-model';
       },
       generateText,
       acquireCredential: async () => ({
         apiKey: 'sk-aux-leased',
+        fetch: leasedFetch,
         settle: async (outcome) => {
           settled.push(outcome);
         },
@@ -389,6 +393,7 @@ describe('buildLlmHistorySummarizer', () => {
     expect(result).toBe('## Goal\nOK');
     expect(modelCalls).toBe(1);
     expect(capturedApiKey).toBe('sk-aux-leased');
+    expect(capturedFetch).toBe(leasedFetch);
     expect(settled).toEqual(['success']);
     expect(released).toBe(1);
   });

@@ -22,10 +22,13 @@ interface ProviderState {
   settleCalls: Array<{ profileId: string; outcomeKind: string }>;
 }
 
-function routing(profiles: Array<{ id: string; weight: number }>): ConnectionCredentialRouting {
+function routing(
+  profiles: Array<{ id: string; weight: number }>,
+  strategy: ConnectionCredentialRouting['strategy'] = 'smooth_weighted_round_robin',
+): ConnectionCredentialRouting {
   return {
     mode: 'balanced',
-    strategy: 'smooth_weighted_round_robin',
+    strategy,
     profiles: profiles.map((profile) => ({
       profileId: profile.id,
       revision: 1,
@@ -129,10 +132,7 @@ describe('ProviderCredentialRouter', () => {
     // A legacy_primary connection dispatches the primary identity only; an
     // explicitly disabled primary must not keep the fast path usable, and a
     // configured secondary must never be used as a silent failover.
-    await assert.rejects(
-      router.acquireAttempt(context()),
-      /primary profile is disabled/,
-    );
+    await assert.rejects(router.acquireAttempt(context()), /primary profile is disabled/);
   });
 
   test('single eligible candidate in balanced mode uses single_eligible', async () => {
@@ -239,6 +239,55 @@ describe('ProviderCredentialRouter', () => {
     );
     assert.notEqual(failover.profileId, first.profileId);
     assert.equal(failover.selectionReason, 'account_failover');
+  });
+
+  test('priority failover follows the configured order and advances only after exclusion', async () => {
+    const provider = createProvider({
+      routing: routing(
+        [
+          { id: 'first', weight: 100 },
+          { id: 'second', weight: 99 },
+          { id: 'third', weight: 98 },
+        ],
+        'priority_failover',
+      ),
+    });
+    const router = new ProviderCredentialRouter(provider);
+    const first = await router.acquireAttempt(context());
+    assert.equal(first.profileId, 'first');
+
+    const second = await router.acquireAttempt(
+      context({
+        excludedProfileIds: new Set(['first']),
+        reason: 'account_failover',
+      }),
+    );
+    assert.equal(second.profileId, 'second');
+    assert.equal(second.selectionReason, 'account_failover');
+  });
+
+  test('OpenAI OAuth automatic routing is equal-weight even with legacy stored weights', async () => {
+    const provider = createProvider({
+      routing: routing([
+        { id: 'a', weight: 75 },
+        { id: 'b', weight: 25 },
+      ]),
+    });
+    const router = new ProviderCredentialRouter(provider);
+    const picked: string[] = [];
+    for (let index = 0; index < 20; index += 1) {
+      const lease = await router.acquireAttempt(
+        context({
+          connectionSlug: 'openai-codex',
+          providerId: 'openai-codex',
+          sessionId: `oauth-s-${index}`,
+          turnId: `oauth-t-${index}`,
+        }),
+      );
+      picked.push(lease.profileId);
+    }
+    assert.equal(picked.filter((id) => id === 'a').length, 10);
+    assert.equal(picked.filter((id) => id === 'b').length, 10);
   });
 
   test('binding_invalidated reselects without failover credit', async () => {
@@ -401,6 +450,53 @@ describe('ProviderCredentialRouter', () => {
     assert.equal(lease.selectionReason, 'half_open_probe', 'a claimed probe is admitted');
     const claims = (provider as RouterProfileProvider & { __probeClaims: string[] }).__probeClaims;
     assert.deepEqual(claims, ['a'], 'the probe was atomically claimed');
+  });
+
+  test('an expired circuit probes and rejoins while another Profile remains healthy', async () => {
+    const provider = createProvider({
+      routing: routing(
+        [
+          { id: 'preferred', weight: 100 },
+          { id: 'healthy', weight: 99 },
+        ],
+        'priority_failover',
+      ),
+      eligible: async () => new Set(['healthy']),
+    });
+    const probeEligible = (
+      provider as RouterProfileProvider & { __probeEligible: Map<string, string> }
+    ).__probeEligible;
+    probeEligible.set('preferred', 'gpt-5');
+    const router = new ProviderCredentialRouter(provider);
+
+    const probe = await router.acquireAttempt(context({ turnId: 'turn-recovery' }));
+    assert.equal(probe.profileId, 'preferred');
+    assert.equal(probe.selectionReason, 'half_open_probe');
+
+    const concurrent = await router.acquireAttempt(context({ turnId: 'turn-healthy' }));
+    assert.equal(concurrent.profileId, 'healthy');
+    assert.equal(concurrent.selectionReason, 'single_eligible');
+  });
+
+  test('an existing sticky turn never detours through a newly eligible recovery probe', async () => {
+    const provider = createProvider({
+      routing: routing([
+        { id: 'a', weight: 1 },
+        { id: 'b', weight: 1 },
+      ]),
+    });
+    const router = new ProviderCredentialRouter(provider);
+    const first = await router.acquireAttempt(context({ turnId: 'sticky-turn' }));
+    const probeEligible = (
+      provider as RouterProfileProvider & { __probeEligible: Map<string, string> }
+    ).__probeEligible;
+    probeEligible.set(first.profileId === 'a' ? 'b' : 'a', 'gpt-5');
+
+    const nextStep = await router.acquireAttempt(
+      context({ turnId: 'sticky-turn', logicalCallId: 'call-next-step' }),
+    );
+    assert.equal(nextStep.profileId, first.profileId);
+    assert.equal(nextStep.bindingId, first.bindingId);
   });
 
   test('a second concurrent half-open probe is refused for the same circuit', async () => {

@@ -201,7 +201,9 @@ import {
 import type {
   ProviderCredentialLease,
   ProviderCredentialOutcome,
+  ProviderCredentialRouteFailureReason,
   ProviderCredentialResolver,
+  ProviderFailureKind,
 } from '@maka/core/provider-credential-routing';
 import {
   ToolAvailabilityRuntime,
@@ -919,12 +921,16 @@ function freeformApplyPatchOutput(output: ToolResultOutput): ToolResultOutput {
     : { type: 'text', value: text };
 }
 
-const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
+const MAX_PROVIDER_ATTEMPTS_PER_STEP = 3;
 const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
 const MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP = 1;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
+
+function isCredentialAccountFailure(kind: ProviderFailureKind): boolean {
+  return kind === 'auth' || kind === 'provider_billing' || kind === 'rate_limit';
+}
 
 function providerRetryDelayMs(failedAttempt: number, retryAfterMs?: number): number {
   if (retryAfterMs !== undefined) return retryAfterMs;
@@ -1028,6 +1034,9 @@ class TurnScope {
    * concurrent runs and per-turn state must never live on the instance.
    */
   credentialLease: ProviderCredentialLease | undefined;
+  /** Profiles exhausted by a safe, output-free capacity failure in this turn. */
+  readonly excludedCredentialProfileIds = new Set<string>();
+  credentialRouteReason: ProviderCredentialRouteFailureReason = 'initial';
 
   constructor(
     readonly turnId: string,
@@ -2403,15 +2412,23 @@ export class AiSdkBackend implements AgentBackend {
             // The physical outcome is now decided. Settle the attempt lease
             // before retry/terminal handling so every dispatched request has
             // one matching routing outcome.
-            await this.settleAttemptLease(
+            const settledCredentialLease = scope.credentialLease;
+            const credentialOutcome = this.attemptCredentialOutcome(
               scope,
-              this.attemptCredentialOutcome(
-                scope,
-                providerOutcome.kind !== 'completed',
-                incompleteStreamTerminal,
-                attemptFailure,
-              ),
+              providerOutcome.kind !== 'completed',
+              incompleteStreamTerminal,
+              attemptFailure,
             );
+            await this.settleAttemptLease(scope, credentialOutcome);
+            if (
+              settledCredentialLease &&
+              credentialOutcome.kind === 'failure' &&
+              isCredentialAccountFailure(credentialOutcome.failure.kind) &&
+              attemptHasNoObservableOutput()
+            ) {
+              scope.excludedCredentialProfileIds.add(settledCredentialLease.profileId);
+              scope.credentialRouteReason = 'account_failover';
+            }
 
             if (attemptFailure && !scope.aborted && !midTurnState?.exhaustedDetail) {
               const failure =
@@ -2471,8 +2488,15 @@ export class AiSdkBackend implements AgentBackend {
                 incompleteStreamTerminal &&
                 incompleteStreamRetryCount < MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP &&
                 incompleteStreamHasNoObservableOutput;
+              const credentialAccountRecovery =
+                settledCredentialLease !== undefined &&
+                isCredentialAccountFailure(failure.kind) &&
+                attemptHasNoObservableOutput();
               if (
-                (failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery) &&
+                (failure.retryable ||
+                  idleWatchdogRecovery ||
+                  incompleteStreamRecovery ||
+                  credentialAccountRecovery) &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 stepBudgetRemains &&
                 (attemptHasNoObservableOutput() || idleWatchdogRecovery || incompleteStreamRecovery)
@@ -2488,7 +2512,10 @@ export class AiSdkBackend implements AgentBackend {
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
                 sawUnusableStepUsage = true;
-                const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
+                const delayMs =
+                  scope.credentialRouteReason === 'account_failover'
+                    ? 0
+                    : providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
                 const maxAttempts =
                   idleWatchdogRecovery || incompleteStreamRecovery
@@ -3231,8 +3258,8 @@ export class AiSdkBackend implements AgentBackend {
       turnId: scope.turnId,
       logicalCallId: scope.runId ?? scope.turnId,
       callKind: 'main',
-      excludedProfileIds: new Set(),
-      reason: 'initial',
+      excludedProfileIds: new Set(scope.excludedCredentialProfileIds),
+      reason: scope.credentialRouteReason,
       signal: scope.abortController.signal,
     });
     return lease;
@@ -3245,7 +3272,9 @@ export class AiSdkBackend implements AgentBackend {
    * byte-for-byte identical.
    */
   private resolveSendModel(lease: ProviderCredentialLease | undefined): unknown {
-    return lease ? this.modelAdapter.resolveModel(lease.apiKey) : this.modelAdapter.resolveModel();
+    return lease
+      ? this.modelAdapter.resolveModel(lease.apiKey, lease.fetch)
+      : this.modelAdapter.resolveModel();
   }
 
   /**
@@ -3283,7 +3312,11 @@ export class AiSdkBackend implements AgentBackend {
       return {
         kind: 'failure',
         failure: { kind: failure.kind, retryable: failure.retryable },
-        routingHint: { kind: failure.kind, scope: 'unknown', evidence: 'provider_adapter' },
+        routingHint: {
+          kind: failure.kind,
+          scope: isCredentialAccountFailure(failure.kind) ? 'credential' : 'unknown',
+          evidence: 'provider_adapter',
+        },
       };
     }
     return { kind: 'success' };

@@ -42,7 +42,7 @@ export interface SubscriptionSnapshot {
 }
 
 export interface OAuthLoginFlowBridge {
-  getAuthUrl(): Promise<
+  getAuthUrl(profileId?: string): Promise<
     { authRequestId: string; stateHint: string } | { ok: boolean; reason?: string; message: string }
   >;
   openAuthUrl(authRequestId: string): Promise<{ ok: true } | { ok: false; reason: string; message: string }>;
@@ -82,7 +82,7 @@ export interface OAuthLoginFlowController {
   stateHint: string | null;
   errorMessage: string | null;
   actionBusy: boolean;
-  startLogin(): Promise<void>;
+  startLogin(profileId?: string): Promise<void>;
   logout(): Promise<void>;
   refresh(): Promise<boolean>;
   // Direct account flows only (GitHub Copilot 重新验证); undefined for the
@@ -153,7 +153,7 @@ export function useOAuthLoginFlow(params: {
     if (oauthLoginFlowMountedRef.current) setPendingAction(null);
   }
 
-  async function startLogin() {
+  async function startLogin(profileId?: string) {
     if (!beginPendingAction('login')) return;
     setErrorMessage(null);
     // Direct-import flow (GitHub Copilot): one bridge call, no authRequestId
@@ -177,7 +177,7 @@ export function useOAuthLoginFlow(params: {
       return;
     }
     try {
-      const payload = await bridge.getAuthUrl();
+      const payload = await bridge.getAuthUrl(profileId);
       if ('ok' in payload) {
         if (!oauthLoginFlowMountedRef.current) return;
         const failureMessage = payload.ok ? copy.retry : subscriptionResultMessage(payload.message, copy.startFailedRetry, locale);
@@ -335,6 +335,11 @@ export function subscriptionResultMessage(message: string | undefined, fallback:
     return locale === 'zh'
       ? '上一轮浏览器登录仍在进行或已切换，请再点一次登录，或稍后再试。'
       : 'A previous browser login is still running or was superseded. Try logging in again shortly.';
+  }
+  if (/account_already_connected/i.test(raw)) {
+    return locale === 'zh'
+      ? '这个 OpenAI 账号已经添加过了，请登录另一个账号。'
+      : 'This OpenAI account is already connected. Sign in with a different account.';
   }
   if (/did not present OAuth|no matching OAuth presentation/i.test(raw)) {
     return locale === 'zh'

@@ -519,9 +519,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'credential.vault.query',
       'credential.profile.query',
     ] as const;
-    const primaryMaterialize = [
-      'credential.profile.materialize-primary',
-    ] as const;
+    const primaryMaterialize = ['credential.profile.materialize-primary'] as const;
     const mutations = [
       'runtime.policy.mutate',
       'connection.catalog.create',
@@ -668,6 +666,7 @@ describe('Runtime Host bootstrap protocol', () => {
       connectionId,
       connectionRevision: 4,
       routingMode: 'balanced',
+      routingStrategy: 'smooth_weighted_round_robin',
       readyCandidateCount: 1,
       profiles: [
         {
@@ -678,6 +677,7 @@ describe('Runtime Host bootstrap protocol', () => {
           weight: 2,
           primary: false,
           credentialConfigured: true,
+          accountHint: 'u***@example.com',
           lastTest: {
             status: 'verified',
             checkedAt: '2026-07-29T00:00:00.000Z',
@@ -688,6 +688,14 @@ describe('Runtime Host bootstrap protocol', () => {
       ],
     };
     assert.deepEqual(query.decodeOutput(found), found);
+    assert.throws(
+      () =>
+        query.decodeOutput({
+          ...found,
+          profiles: [{ ...found.profiles[0], accountHint: 'x'.repeat(257) }],
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         query.decodeOutput({

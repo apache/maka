@@ -7,6 +7,7 @@ import type {
   ProviderCredentialResolver,
   ProviderCredentialRouteContext,
   ProviderCredentialLease,
+  ProviderCredentialOutcome,
 } from '@maka/core/provider-credential-routing';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { APICallError, type LanguageModelV4StreamPart } from '@ai-sdk/provider';
@@ -13118,6 +13119,153 @@ test('credential routing settles a failed attempt as failure, never as success',
   assert.equal(settled.length, 2);
   assert.equal(settled[0]!.outcomeKind, 'failure', 'a failed attempt must settle as failure');
   assert.equal(settled[1]!.outcomeKind, 'success', 'the recovered attempt settles as success');
+});
+
+test('an output-free rate limit excludes the current account and retries the next account', async () => {
+  let calls = 0;
+  const model = new MockLanguageModelV4({
+    doStream: async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw Object.assign(new Error('rate limited'), {
+          name: 'APICallError',
+          statusCode: 429,
+          responseBody: undefined,
+        });
+      }
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: emptyUsage(),
+            },
+          ],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      };
+    },
+  });
+  const acquireCalls: ProviderCredentialRouteContext[] = [];
+  const resolver: ProviderCredentialResolver = {
+    acquireAttempt: async (context) => {
+      acquireCalls.push(context);
+      const profileId = context.excludedProfileIds.has('profile-a') ? 'profile-b' : 'profile-a';
+      return {
+        leaseId: `lease-${profileId}`,
+        bindingId: `binding-${profileId}`,
+        profileId,
+        credentialId: `cred-${profileId}`,
+        credentialRevision: 1,
+        selectionReason: context.reason === 'account_failover' ? 'account_failover' : 'weighted',
+        apiKey: `sk-${profileId}`,
+        modelId: 'gpt-5',
+      };
+    },
+    settle: async () => {},
+    releaseTurn: () => {},
+  };
+  const backend = createTestAiSdkBackend({
+    sessionId: 'session-1',
+    header: header(),
+    appendMessage: async () => {},
+    connection: { ...connection(), slug: 'openai', providerType: 'openai', defaultModel: 'gpt-5' },
+    apiKey: 'sk-fixed-key',
+    modelId: 'gpt-5',
+    modelFactory: () => model,
+    tools: [],
+    newId: idGenerator(),
+    now: monotonicClock(),
+    providerRetrySleep: async () => {},
+    credentialRouting: { resolver, connectionId: 'connection-1', providerId: 'openai' },
+  });
+
+  await drain(backend.send({ turnId: 'turn-1', runId: 'run-1', text: 'hi', context: [] }));
+
+  assert.equal(calls, 2);
+  assert.equal(acquireCalls.length, 2);
+  assert.equal(acquireCalls[0]!.reason, 'initial');
+  assert.equal(acquireCalls[1]!.reason, 'account_failover');
+  assert.deepEqual([...acquireCalls[1]!.excludedProfileIds], ['profile-a']);
+});
+
+test('an output-free authentication failure invalidates the current account and retries the next account', async () => {
+  let calls = 0;
+  const model = new MockLanguageModelV4({
+    doStream: async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw Object.assign(new Error('Codex OAuth request failed'), {
+          name: 'OpenAiCodexHttpError',
+          statusCode: 401,
+        });
+      }
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: emptyUsage(),
+            },
+          ],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      };
+    },
+  });
+  const acquireCalls: ProviderCredentialRouteContext[] = [];
+  const settled: ProviderCredentialOutcome[] = [];
+  const resolver: ProviderCredentialResolver = {
+    acquireAttempt: async (context) => {
+      acquireCalls.push(context);
+      const profileId = context.excludedProfileIds.has('profile-a') ? 'profile-b' : 'profile-a';
+      return {
+        leaseId: `lease-${profileId}`,
+        bindingId: `binding-${profileId}`,
+        profileId,
+        credentialId: `cred-${profileId}`,
+        credentialRevision: 1,
+        selectionReason: context.reason === 'account_failover' ? 'account_failover' : 'weighted',
+        apiKey: `sk-${profileId}`,
+        modelId: 'gpt-5',
+      };
+    },
+    settle: async (_lease, outcome) => {
+      settled.push(outcome);
+    },
+    releaseTurn: () => {},
+  };
+  const backend = createTestAiSdkBackend({
+    sessionId: 'session-1',
+    header: header(),
+    appendMessage: async () => {},
+    connection: { ...connection(), slug: 'openai', providerType: 'openai', defaultModel: 'gpt-5' },
+    apiKey: 'sk-fixed-key',
+    modelId: 'gpt-5',
+    modelFactory: () => model,
+    tools: [],
+    newId: idGenerator(),
+    now: monotonicClock(),
+    providerRetrySleep: async () => {},
+    credentialRouting: { resolver, connectionId: 'connection-1', providerId: 'openai' },
+  });
+
+  await drain(backend.send({ turnId: 'turn-1', runId: 'run-1', text: 'hi', context: [] }));
+
+  assert.equal(calls, 2);
+  assert.equal(acquireCalls[1]!.reason, 'account_failover');
+  assert.deepEqual([...acquireCalls[1]!.excludedProfileIds], ['profile-a']);
+  assert.deepEqual(settled[0], {
+    kind: 'failure',
+    failure: { kind: 'auth', retryable: false },
+    routingHint: { kind: 'auth', scope: 'credential', evidence: 'provider_adapter' },
+  });
 });
 
 function completionModel(): MockLanguageModelV4 {

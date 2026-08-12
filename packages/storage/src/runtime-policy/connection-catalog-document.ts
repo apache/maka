@@ -4,6 +4,7 @@ import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   CONNECTION_CREDENTIAL_PROFILE_MAX,
+  CONNECTION_CREDENTIAL_PROFILE_WEIGHT_MAX,
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionTarget,
   decodeConnectionTestSummary,
@@ -356,9 +357,10 @@ export class ConnectionCatalogDocumentOwner {
   /**
    * Create a secondary Credential Profile under a Connection. Fail-closed:
    * the new Profile is always created with `enabled=false`, and the routing
-   * mode stays `legacy_primary` until the user explicitly activates
-   * `balanced`. Creating the first Profile materializes the implicit primary
-   * (`profileId === connectionId`, revision 1, enabled, weight 1).
+   * mode starts as `legacy_primary` until OAuth enrollment finishes. Adding a
+   * Profile to an existing routed connection preserves its current routing
+   * mode and strategy. Creating the first Profile materializes the implicit
+   * primary (`profileId === connectionId`, revision 1, enabled, weight 1).
    */
   async createCredentialProfile(
     root: string,
@@ -385,9 +387,6 @@ export class ConnectionCatalogDocumentOwner {
         max: CONNECTION_CREDENTIAL_PROFILE_MAX,
       });
     }
-    if (profileLabelTaken(routing, input.label, null)) {
-      return deepFreeze({ kind: 'profile_label_conflict' as const, label: input.label });
-    }
     const profile: ConnectionCredentialProfileEntry = {
       profileId: randomUUID(),
       revision: 1,
@@ -396,8 +395,8 @@ export class ConnectionCatalogDocumentOwner {
       weight: input.weight,
     };
     const nextRouting: ConnectionCredentialRouting = {
-      mode: 'legacy_primary',
-      strategy: 'smooth_weighted_round_robin',
+      mode: routing.mode,
+      strategy: routing.strategy,
       profiles: [...routing.profiles, profile],
     };
     const connections = [...current.connections];
@@ -452,12 +451,6 @@ export class ConnectionCatalogDocumentOwner {
           profileRevision: previousProfile.revision,
         },
       });
-    }
-    if (
-      input.label !== undefined &&
-      profileLabelTaken(routing, input.label, previousProfile.profileId)
-    ) {
-      return deepFreeze({ kind: 'profile_label_conflict' as const, label: input.label });
     }
     const profiles = [...routing.profiles];
     profiles[profileIndex] = {
@@ -697,10 +690,39 @@ export class ConnectionCatalogDocumentOwner {
     }
     const connections = [...current.connections];
     const routing = previous.credentialRouting;
+    let orderedProfiles = routing?.profiles;
+    if (routing && input.orderedProfileIds) {
+      const byId = new Map(routing.profiles.map((profile) => [profile.profileId, profile]));
+      if (
+        input.orderedProfileIds.length !== routing.profiles.length ||
+        input.orderedProfileIds.some((profileId) => !byId.has(profileId))
+      ) {
+        return deepFreeze({
+          kind: 'balanced_activation_rejected' as const,
+          reason: 'credential profile order must contain every profile exactly once',
+        });
+      }
+      orderedProfiles = input.orderedProfileIds.map((profileId, index) => {
+        const profile = byId.get(profileId)!;
+        const weight = CONNECTION_CREDENTIAL_PROFILE_WEIGHT_MAX - index;
+        return profile.weight === weight
+          ? profile
+          : { ...profile, revision: nextRevision(profile.revision), weight };
+      });
+    }
     connections[index] = {
       ...previous,
       revision: nextRevision(previous.revision),
-      ...(routing ? { credentialRouting: { ...routing, mode: input.mode } } : {}),
+      ...(routing
+        ? {
+            credentialRouting: {
+              ...routing,
+              mode: input.mode,
+              strategy: input.strategy ?? routing.strategy,
+              profiles: orderedProfiles ?? routing.profiles,
+            },
+          }
+        : {}),
     };
     const next = {
       ...current,
@@ -801,12 +823,18 @@ export class ConnectionCatalogDocumentOwner {
   ): Promise<ConnectionCatalogSnapshot> {
     const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
     if (result.models.length === 0) {
-      throw codecError('invalid_connection_input', 'Profile model discovery result must not be empty');
+      throw codecError(
+        'invalid_connection_input',
+        'Profile model discovery result must not be empty',
+      );
     }
     const index = findConnectionIndex(current, expected);
     const previous = current.connections[index];
     if (!previous || previous.revision !== expected.revision) {
-      throw codecError('invalid_document', 'Coordinator admitted a stale profile model discovery result');
+      throw codecError(
+        'invalid_document',
+        'Coordinator admitted a stale profile model discovery result',
+      );
     }
     const known = new Set(previous.models.map((model) => model.id));
     const merged = [...previous.models];
@@ -1185,30 +1213,15 @@ function profileCapableAuthKind(authKind: ProviderAuthKind): boolean {
   return authKind === 'api_key' || authKind === 'optional_api_key' || authKind === 'oauth_token';
 }
 
-/**
- * Case-insensitive label uniqueness within a Connection, excluding the profile
- * being updated (`excludeProfileId`).
- */
-function profileLabelTaken(
-  routing: ConnectionCredentialRouting,
-  label: string,
-  excludeProfileId: string | null,
-): boolean {
-  const normalized = label.toLowerCase();
-  return routing.profiles.some(
-    (profile) =>
-      profile.profileId !== excludeProfileId && profile.label.toLowerCase() === normalized,
-  );
-}
-
 function profileNotFound(expected: CredentialProfileVersionBasis): CredentialProfileMutationResult {
   return deepFreeze({ kind: 'profile_not_found' as const, expected });
 }
 
 /**
  * Structural invariants for a document that carries `credentialRouting`:
- * the primary Profile identity is reserved, profile ids and labels are
- * unique, and the primary profile is always present.
+ * the primary Profile identity is reserved, profile ids are unique, and the
+ * primary profile is always present. Labels are user-editable nicknames and
+ * deliberately need not be unique.
  */
 function assertCanonicalCredentialRouting(
   connection: ConnectionCatalogEntry,
@@ -1227,13 +1240,6 @@ function assertCanonicalCredentialRouting(
     throw codecError(
       'invalid_document',
       `${context} credential routing profile ids must be unique`,
-    );
-  }
-  const labels = routing.profiles.map((profile) => profile.label.toLowerCase());
-  if (new Set(labels).size !== labels.length) {
-    throw codecError(
-      'invalid_document',
-      `${context} credential routing profile labels must be unique`,
     );
   }
 }

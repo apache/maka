@@ -131,6 +131,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     const { candidates, probeReason, probeCircuitModelId } = await this.#balancedCandidates(
       context,
       routing,
+      !this.#turnBindings.has(turnKey(context.sessionId, context.turnId)),
     );
     if (candidates.length === 0) {
       throw new RouterPoolExhaustedError(
@@ -196,8 +197,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
   ): Promise<ProviderCredentialLease> {
     const profileId =
       routing?.mode === 'legacy_primary'
-        ? routing.profiles.find((profile) => profile.profileId === context.connectionId)
-            ?.profileId
+        ? routing.profiles.find((profile) => profile.profileId === context.connectionId)?.profileId
         : context.connectionId;
     if (!profileId) {
       throw new RouterPoolExhaustedError('primary profile is missing', {});
@@ -232,6 +232,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
   async #balancedCandidates(
     context: ProviderCredentialRouteContext,
     routing: ConnectionCredentialRouting,
+    newTurn: boolean,
   ): Promise<{
     readonly candidates: string[];
     readonly probeReason: boolean;
@@ -256,6 +257,19 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     const normal = allProfileIds.filter(
       (profileId) => eligible.has(profileId) && !excluded.has(profileId),
     );
+    // A recovered circuit must be able to rejoin while other Profiles remain
+    // healthy. Probe at most one expired circuit on the first call of a new
+    // turn; the store claim is atomic, so concurrent turns continue through
+    // normal candidates while this one safe half-open request is in flight.
+    // Existing turn bindings stay sticky and account-failover retries never
+    // detour through an unrelated recovery probe.
+    if (newTurn && context.reason === 'initial') {
+      const recoveryProbe = await this.#claimProbeCandidate(
+        context,
+        allProfileIds.filter((profileId) => !excluded.has(profileId)),
+      );
+      if (recoveryProbe) return recoveryProbe;
+    }
     if (normal.length > 0) {
       return { candidates: normal, probeReason: false };
     }
@@ -264,9 +278,24 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     // acquires cannot all probe the same credential. The claimed profile is
     // dispatched regardless of the eligibility filter (it was excluded only
     // because its circuit is open — the probe exists to test it).
+    const exhaustedProbe = await this.#claimProbeCandidate(
+      context,
+      allProfileIds.filter((profileId) => !excluded.has(profileId)),
+    );
+    return exhaustedProbe ?? { candidates: [], probeReason: true };
+  }
+
+  async #claimProbeCandidate(
+    context: ProviderCredentialRouteContext,
+    profileIds: readonly string[],
+  ): Promise<{
+    readonly candidates: string[];
+    readonly probeReason: true;
+    readonly probeCircuitModelId?: string;
+  } | null> {
     const probeEligible = await this.#provider.probeEligibleProfiles(
       context.connectionId,
-      allProfileIds.filter((profileId) => !excluded.has(profileId)),
+      profileIds,
       context.modelId,
     );
     for (const [profileId, circuitModelId] of probeEligible) {
@@ -280,7 +309,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
         };
       }
     }
-    return { candidates: [], probeReason: true };
+    return null;
   }
 
   #selectBinding(
@@ -325,8 +354,29 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     candidates: readonly string[],
     reason: ProviderCredentialSelectionReason,
   ): TurnBindingRecord {
-    const selected = this.#swrrSelect(context.connectionId, routing, candidates);
+    const selected =
+      routing.strategy === 'priority_failover'
+        ? this.#prioritySelect(routing, candidates)
+        : this.#swrrSelect(
+            context.connectionId,
+            routing,
+            candidates,
+            context.providerId === 'openai-codex',
+          );
     return this.#bind(context, selected, reason);
+  }
+
+  /** Highest configured priority wins; ties retain the stable Profile order. */
+  #prioritySelect(routing: ConnectionCredentialRouting, candidates: readonly string[]): string {
+    const candidateSet = new Set(candidates);
+    const selected = routing.profiles
+      .filter((profile) => candidateSet.has(profile.profileId))
+      .reduce<ConnectionCredentialRouting['profiles'][number] | undefined>(
+        (best, profile) => (!best || profile.weight > best.weight ? profile : best),
+        undefined,
+      );
+    if (!selected) throw new RouterConfigurationError('No priority credential candidate');
+    return selected.profileId;
   }
 
   #bind(
@@ -361,12 +411,19 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     connectionId: string,
     routing: ConnectionCredentialRouting,
     candidates: readonly string[],
+    equalWeights = false,
   ): string {
+    const effectiveRouting = equalWeights
+      ? {
+          ...routing,
+          profiles: routing.profiles.map((profile) => ({ ...profile, weight: 1 })),
+        }
+      : routing;
     const current = this.#swrr.get(connectionId);
     const accumulator =
-      current && sameWeightShape(current, routing, candidates)
+      current && sameWeightShape(current, effectiveRouting, candidates)
         ? current
-        : normalizeSwrr(routing, candidates);
+        : normalizeSwrr(effectiveRouting, candidates);
     this.#swrr.set(connectionId, accumulator);
     let best: string | undefined;
     let bestScore = Number.NEGATIVE_INFINITY;

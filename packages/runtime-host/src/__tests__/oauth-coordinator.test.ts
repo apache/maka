@@ -8,6 +8,7 @@ import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provid
 import { OAuthTokenEndpointError } from '@maka/runtime/oauth-login';
 import {
   parseOAuthSubscriptionTokens,
+  serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
 } from '@maka/runtime/subscription-credentials';
 import {
@@ -646,6 +647,207 @@ test('Codex device login presents the one-time code and commits exchanged tokens
   });
 });
 
+test('Codex device login rejects the same account on a second Profile', async () => {
+  await withFixture('openai-codex', async (fixture) => {
+    const accessToken = jwtFixture({
+      'https://api.openai.com/auth': { chatgpt_account_id: 'acct-duplicate' },
+    });
+    const primaryLogin = await fixture.stores.operations.beginInteractiveOAuthLogin(
+      fixture.connection.connectionId,
+    );
+    assert.equal(primaryLogin.kind, 'ready');
+    if (primaryLogin.kind !== 'ready') return;
+    assert.equal(
+      (
+        await fixture.stores.operations.completeInteractiveOAuthLogin(
+          primaryLogin.ticket,
+          serializeOAuthSubscriptionTokens(tokenFixture(accessToken)),
+        )
+      ).kind,
+      'committed',
+    );
+    const created = await fixture.stores.operations.createCredentialProfile({
+      expected: {
+        connectionId: fixture.connection.connectionId,
+        revision: fixture.connection.revision,
+      },
+      label: 'duplicate',
+      weight: 1,
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections.find(
+      (candidate) => candidate.connectionId === fixture.connection.connectionId,
+    )!;
+    const secondary = connection.credentialRouting!.profiles.find(
+      (profile) => profile.profileId !== fixture.connection.connectionId,
+    )!;
+    const enabled = await fixture.stores.operations.setCredentialProfileEnabled({
+      expected: {
+        connectionId: connection.connectionId,
+        connectionRevision: connection.revision,
+        profileId: secondary.profileId,
+        profileRevision: secondary.revision,
+      },
+      enabled: true,
+    });
+    assert.equal(enabled.kind, 'committed');
+
+    const client = await attachPresentation(fixture.capabilities, 'client-codex-duplicate', []);
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startCodexAuthorization: async () => ({
+        deviceAuthId: 'deviceauth-duplicate',
+        userCode: 'CODE-DUPLICATE',
+        verificationUrl: 'https://auth.openai.com/codex/device',
+        expiresAt: NOW + 60_000,
+        intervalMs: 1_000,
+      }),
+      pollCodexAuthorization: async () => ({
+        authorizationCode: 'device-duplicate-code',
+        codeVerifier: 'device-duplicate-verifier',
+      }),
+      exchangeCodexCode: async () => tokenFixture(accessToken),
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      {
+        attemptId: 'attempt-codex-duplicate',
+        connectionId: fixture.connection.connectionId,
+        profileId: secondary.profileId,
+      },
+      operationContext('client-codex-duplicate', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const terminal = await waitForTerminal(coordinator, 'attempt-codex-duplicate');
+    assert.equal(terminal.phase, 'failed');
+    if (terminal.phase === 'failed') {
+      assert.equal(terminal.failure, 'account_already_connected');
+    }
+    const secondaryStatus = await fixture.stores.credentialVault.getStatus({
+      scope: 'connection_profile',
+      connectionId: fixture.connection.connectionId,
+      profileId: secondary.profileId,
+      kind: 'oauth_token',
+    });
+    assert.equal(secondaryStatus.kind, 'status');
+    if (secondaryStatus.kind === 'status') {
+      assert.equal(secondaryStatus.status.configured, false);
+    }
+    assert.equal(fixture.invalidations, 0);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('Codex account usage resolves the requested Profile credential', async () => {
+  await withFixture('openai-codex', async (fixture) => {
+    const primaryTokens = tokenFixture(jwtFixture({ sub: 'primary-account' }));
+    const primaryLogin = await fixture.stores.operations.beginInteractiveOAuthLogin(
+      fixture.connection.connectionId,
+    );
+    assert.equal(primaryLogin.kind, 'ready');
+    if (primaryLogin.kind !== 'ready') return;
+    assert.equal(
+      (
+        await fixture.stores.operations.completeInteractiveOAuthLogin(
+          primaryLogin.ticket,
+          serializeOAuthSubscriptionTokens(primaryTokens),
+        )
+      ).kind,
+      'committed',
+    );
+    const current = await fixture.stores.connectionCatalog.getSnapshot();
+    const connection = current.connections[0]!;
+    const created = await fixture.stores.operations.createCredentialProfile({
+      expected: { connectionId: connection.connectionId, revision: connection.revision },
+      label: 'second',
+      weight: 1,
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const updatedConnection = created.snapshot.connections[0]!;
+    const secondary = updatedConnection.credentialRouting!.profiles.find(
+      (profile) => profile.profileId !== updatedConnection.connectionId,
+    )!;
+    const secondaryTokens = tokenFixture(jwtFixture({ sub: 'secondary-account' }));
+    const secondaryLogin = await fixture.stores.operations.beginInteractiveOAuthLogin(
+      fixture.connection.connectionId,
+      secondary.profileId,
+    );
+    assert.equal(secondaryLogin.kind, 'ready');
+    if (secondaryLogin.kind !== 'ready') return;
+    assert.equal(
+      (
+        await fixture.stores.operations.completeInteractiveOAuthLogin(
+          secondaryLogin.ticket,
+          serializeOAuthSubscriptionTokens(secondaryTokens),
+        )
+      ).kind,
+      'committed',
+    );
+
+    let rejectUsage = false;
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
+      createFetchTransport: () => ({ fetch, close: async () => undefined }),
+      fetchCodexAccountUsage: async (input) => {
+        assert.equal(input.accessToken, secondaryTokens.access_token);
+        if (rejectUsage) throw new OAuthTokenEndpointError('provider_rejected', 401);
+        return {
+          sevenDay: { utilization: 27, resetsAt: '2026-08-19T00:00:00.000Z' },
+          fetchedAt: NOW,
+        };
+      },
+    });
+
+    const outcome = await coordinator.handlers['oauth.account.usage.fetch'](
+      { connectionId: fixture.connection.connectionId, profileId: secondary.profileId },
+      operationContext('client-codex-usage', fixture.acquireResidency),
+    );
+    assert.deepEqual(outcome, {
+      ok: true,
+      result: {
+        kind: 'available',
+        provider: 'openai-codex',
+        quota: {
+          sevenDay: { utilization: 27, resetsAt: '2026-08-19T00:00:00.000Z' },
+          fetchedAt: NOW,
+        },
+      },
+    });
+    rejectUsage = true;
+    assert.deepEqual(
+      await coordinator.handlers['oauth.account.usage.fetch'](
+        { connectionId: fixture.connection.connectionId, profileId: secondary.profileId },
+        operationContext('client-codex-usage-rejected', fixture.acquireResidency),
+      ),
+      { ok: true, result: { kind: 'unavailable', reason: 'provider_rejected' } },
+    );
+    assert.equal(fixture.activeResidencies, 0);
+    await coordinator.close();
+  });
+});
+
 test('OAuth login rejects an oversized authorization code at the Host boundary', async () => {
   await withFixture('claude-subscription', async (fixture) => {
     const client = await attachPresentation(fixture.capabilities, 'client-oversized', [], {
@@ -964,6 +1166,11 @@ function tokenFixture(
     expires_at: NOW + 3_600_000,
     ...extra,
   };
+}
+
+function jwtFixture(payload: Record<string, unknown>): string {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  return `${encode({ alg: 'none', typ: 'JWT' })}.${encode(payload)}.`;
 }
 
 function deferred(): { promise: Promise<void>; resolve(): void } {

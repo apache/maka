@@ -251,8 +251,8 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       setCredentialRoutingMode: (input) => coordinator.setCredentialRoutingMode(input),
       recordCredentialProfileVerification: (input) =>
         coordinator.recordCredentialProfileVerification(input),
-      beginInteractiveOAuthLogin: (connectionId) =>
-        coordinator.beginInteractiveOAuthLogin(connectionId),
+      beginInteractiveOAuthLogin: (connectionId, profileId) =>
+        coordinator.beginInteractiveOAuthLogin(connectionId, profileId),
       completeInteractiveOAuthLogin: (ticket, secret) =>
         coordinator.completeInteractiveOAuthLogin(ticket, secret),
       beginModelFetch: (connectionId) => coordinator.beginModelFetch(connectionId),

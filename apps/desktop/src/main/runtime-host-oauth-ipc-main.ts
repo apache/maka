@@ -83,8 +83,11 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
     if (provider !== 'xai-oauth') {
       deps.ipcMain.handle(channel('is-experimental-enabled'), () => providerEnabled(provider));
     }
-    deps.ipcMain.handle(channel('get-auth-url'), async () => {
+    deps.ipcMain.handle(channel('get-auth-url'), async (_event, rawProfileId?: unknown) => {
       if (!providerEnabled(provider)) return providerDisabled();
+      if (rawProfileId !== undefined && typeof rawProfileId !== 'string') {
+        return actionFailure('OAuth Profile identifier is invalid');
+      }
       // Drop any Desktop-tracked attempt for this provider so a re-click does
       // not race a stale completeAuthorization waiter against a new start.
       await cancelProviderAttempts(deps, activeAttempts, provider);
@@ -95,7 +98,11 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
       const attemptId = randomUUID();
       const expectation = deps.presentation.expect(attemptId);
       try {
-        const started = await deps.client.startOAuthLogin(attemptId, connection.connectionId);
+        const started = await deps.client.startOAuthLogin(
+          attemptId,
+          connection.connectionId,
+          rawProfileId,
+        );
         if (isTerminal(started)) throw new Error(describeTerminal(started));
         const presented = await waitForPresentation(deps.client, attemptId, expectation.presented);
         activeAttempts.set(attemptId, {

@@ -28,6 +28,7 @@ export const OAUTH_LOGIN_FAILURE_CODES = [
   'authorization_failed',
   'provider_rejected',
   'credential_changed',
+  'account_already_connected',
   'persistence_failed',
   'internal_failure',
 ] as const;
@@ -78,6 +79,7 @@ export type OAuthPresentationResultForMethod<Method extends OAuthPresentationMet
 export interface OAuthLoginProjection {
   readonly attemptId: string;
   readonly connectionId: string;
+  readonly profileId?: string;
   readonly provider: OAuthLoginProvider;
   readonly phase: OAuthLoginPhase;
   readonly failure?: OAuthLoginFailureCode;
@@ -86,6 +88,7 @@ export interface OAuthLoginProjection {
 export interface OAuthLoginStartInput {
   readonly attemptId: string;
   readonly connectionId: string;
+  readonly profileId?: string;
 }
 
 export interface OAuthLoginAttemptInput {
@@ -94,11 +97,13 @@ export interface OAuthLoginAttemptInput {
 
 export interface OAuthAccountUsageFetchInput {
   readonly connectionId: string;
+  readonly profileId?: string;
 }
 
 export type OAuthAccountUsageUnavailableReason =
   | 'unsupported_provider'
   | 'credential_unavailable'
+  | 'provider_rejected'
   | 'provider_unavailable'
   | 'invalid_response';
 
@@ -161,10 +166,18 @@ export const OAUTH_OPERATION_SPECS = {
 } as const;
 
 export function decodeOAuthLoginStartInput(value: unknown): OAuthLoginStartInput {
-  const input = requireExactRecord(value, 'OAuth login start input', ['attemptId', 'connectionId']);
+  const input = requireShapedRecord(
+    value,
+    'OAuth login start input',
+    ['attemptId', 'connectionId'],
+    ['profileId'],
+  );
   return {
     attemptId: requireEntityId(input.attemptId, 'attemptId'),
     connectionId: requireEntityId(input.connectionId, 'connectionId'),
+    ...(input.profileId === undefined
+      ? {}
+      : { profileId: requireEntityId(input.profileId, 'profileId') }),
   };
 }
 
@@ -174,8 +187,18 @@ export function decodeOAuthLoginAttemptInput(value: unknown): OAuthLoginAttemptI
 }
 
 export function decodeOAuthAccountUsageFetchInput(value: unknown): OAuthAccountUsageFetchInput {
-  const input = requireExactRecord(value, 'OAuth account usage input', ['connectionId']);
-  return { connectionId: requireEntityId(input.connectionId, 'connectionId') };
+  const input = requireShapedRecord(
+    value,
+    'OAuth account usage input',
+    ['connectionId'],
+    ['profileId'],
+  );
+  return {
+    connectionId: requireEntityId(input.connectionId, 'connectionId'),
+    ...(input.profileId === undefined
+      ? {}
+      : { profileId: requireEntityId(input.profileId, 'profileId') }),
+  };
 }
 
 export function decodeOAuthAccountUsageFetchResult(value: unknown): OAuthAccountUsageFetchResult {
@@ -202,16 +225,20 @@ export function decodeOAuthAccountUsageFetchResult(value: unknown): OAuthAccount
 export function decodeOAuthLoginProjection(value: unknown): OAuthLoginProjection {
   const projection = requireRecord(value, 'OAuth login projection');
   const phase = oauthLoginPhase(projection.phase);
-  const exact = requireExactRecord(
+  const exact = requireShapedRecord(
     projection,
     'OAuth login projection',
     phase === 'failed'
       ? ['attemptId', 'connectionId', 'provider', 'phase', 'failure']
       : ['attemptId', 'connectionId', 'provider', 'phase'],
+    ['profileId'],
   );
   return {
     attemptId: requireEntityId(exact.attemptId, 'attemptId'),
     connectionId: requireEntityId(exact.connectionId, 'connectionId'),
+    ...(exact.profileId === undefined
+      ? {}
+      : { profileId: requireEntityId(exact.profileId, 'profileId') }),
     provider: oauthLoginProvider(exact.provider),
     phase,
     ...(phase === 'failed' ? { failure: oauthLoginFailure(exact.failure) } : {}),
@@ -321,6 +348,7 @@ function accountUsageUnavailableReason(value: unknown): OAuthAccountUsageUnavail
   if (
     value !== 'unsupported_provider' &&
     value !== 'credential_unavailable' &&
+    value !== 'provider_rejected' &&
     value !== 'provider_unavailable' &&
     value !== 'invalid_response'
   ) {

@@ -11,11 +11,17 @@ import {
   type UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { type UiLocale } from '@maka/core/ui-locale';
-import type { CredentialProfileReadinessView } from '../../preload/bridge-contract.js';
+import type {
+  CredentialProfileReadinessView,
+  CredentialProfileUsageView,
+} from '../../preload/bridge-contract.js';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
 import { cleanErrorMessage } from '../model-connection-errors.js';
 
-export type { CredentialProfileReadinessView } from '../../preload/bridge-contract.js';
+export type {
+  CredentialProfileReadinessView,
+  CredentialProfileUsageView,
+} from '../../preload/bridge-contract.js';
 
 export interface ProfileCreateInput {
   readonly label: string;
@@ -37,6 +43,8 @@ export interface ProfileBasisInput {
 
 export interface ProfileRoutingModeInput {
   readonly mode: 'legacy_primary' | 'balanced';
+  readonly strategy?: 'smooth_weighted_round_robin' | 'priority_failover';
+  readonly orderedProfileIds?: readonly string[];
 }
 
 export interface ProfileCredentialInput {
@@ -67,6 +75,7 @@ export interface ConnectionsBridge {
   subscribeEvents?(handler: () => void): () => void;
   profiles?: {
     query(slug: string): Promise<CredentialProfileReadinessView>;
+    usage(slug: string, profileId: string): Promise<CredentialProfileUsageView>;
     create(slug: string, input: ProfileCreateInput): Promise<void>;
     update(slug: string, input: ProfileUpdateInput): Promise<void>;
     setEnabled(slug: string, input: ProfileBasisInput & { enabled: boolean }): Promise<void>;
@@ -89,6 +98,35 @@ export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale
   const cleaned = redactSecrets(cleanErrorMessage(error)).trim();
   const known = (shared.lastTest as Readonly<Record<string, string>>)[cleaned.toLowerCase()];
   if (known) return known;
+  const balancedActivationMessages: Readonly<Record<string, readonly [string, string]>> = {
+    'balanced routing requires at least two configured profiles': [
+      '至少需要两个已配置的账号才能启用路由。',
+      'At least two configured accounts are required to enable routing.',
+    ],
+    'balanced routing requires at least two enabled profiles': [
+      '至少需要启用两个账号才能启用路由。',
+      'At least two enabled accounts are required to enable routing.',
+    ],
+    'balanced routing requires every enabled profile to have a configured credential': [
+      '每个已启用账号都需要先完成登录或配置凭据。',
+      'Every enabled account must be signed in or have credentials configured.',
+    ],
+    'balanced routing requires the primary profile credential to be configured': [
+      '主账号需要先完成登录或配置凭据。',
+      'The primary account must be signed in or have credentials configured.',
+    ],
+    'balanced routing requires at least one enabled model with two or more verified profiles': [
+      '至少需要两个账号通过同一模型的连接测试，才能启用路由。',
+      'At least two accounts must pass a connection test for the same model.',
+    ],
+  };
+  const activationMessage = balancedActivationMessages[cleaned.toLowerCase()];
+  if (activationMessage) return activationMessage[locale === 'zh' ? 0 : 1];
+  if (/balanced routing requires enabled model .+ to have a verified profile/i.test(cleaned)) {
+    return locale === 'zh'
+      ? '每个已启用模型都需要至少一个通过连接测试的账号。'
+      : 'Every enabled model needs at least one account that passed its connection test.';
+  }
   // Main-process handlers throw display-ready Chinese copy; keep it instead
   // of flattening it into a coarser classification or the generic fallback.
   if (/[\u3400-\u9fff]/.test(cleaned)) return cleaned;

@@ -115,6 +115,7 @@ import {
   type InteractiveOAuthLoginCompletionResult,
   type InteractiveOAuthLoginProvider,
   type InteractiveOAuthLoginTicket,
+  type OAuthCredentialLocator,
   type ModelFetchTicket,
   type ProfileModelFetchTicket,
   type ProfileTestTicket,
@@ -223,6 +224,8 @@ interface InteractiveOAuthLoginTicketRecord {
   readonly kind: 'interactive_oauth_login';
   readonly connectionBasis: ConnectionVersionBasis;
   readonly providerType: InteractiveOAuthLoginProvider;
+  readonly profileBasis: CredentialProfileVersionBasis | null;
+  readonly locator: OAuthCredentialLocator;
   readonly credentialBasis: CredentialVersionBasis | null;
   state: TicketState;
 }
@@ -597,70 +600,9 @@ export class RuntimePolicyCoordinator {
           reason: 'balanced routing requires the primary profile credential to be configured',
         });
       }
-      // RFC 4.1 activation gate: every enabled model needs at least one
-      // enabled + configured + verified Profile, and at least one enabled
-      // model needs two or more enabled Profiles with current support
-      // evidence. A Profile with credentials but no verification evidence is
-      // not ready: activating would make the first dispatch fail closed with
-      // "no eligible credential profile". Transient cooldown is intentionally
-      // ignored here (the dispatch layer applies health), but missing
-      // verification is not.
-      const store = this.routingStoreFor(root);
-      const digests = new Map<string, string>();
-      for (const modelId of connection.enabledModelIds) {
-        digests.set(
-          modelId,
-          await this.connectionExecutionBasisDigest(root, vault, connection, modelId),
-        );
-      }
-      const verifiedProfileIdsByModel = new Map<string, string[]>();
-      for (const profile of enabledProfiles) {
-        const locator =
-          profile.profileId === connection.connectionId
-            ? connectionCredentialLocator(connection.connectionId, authKind)
-            : connectionProfileCredentialLocator(
-                connection.connectionId,
-                profile.profileId,
-                authKind,
-              );
-        const credential = locator ? findCredential(vault, locator) : undefined;
-        if (!credential) continue;
-        const verification = await store.readProfileVerification(
-          connection.connectionId,
-          profile.profileId,
-        );
-        for (const modelId of connection.enabledModelIds) {
-          const digest = digests.get(modelId)!;
-          const supported = verification.some(
-            (record) =>
-              record.credentialId === credential.credentialId &&
-              record.credentialRevision === credential.revision &&
-              record.executionBasisDigest === digest &&
-              record.modelId === modelId &&
-              record.status === 'supported',
-          );
-          if (supported) {
-            const list = verifiedProfileIdsByModel.get(modelId) ?? [];
-            list.push(profile.profileId);
-            verifiedProfileIdsByModel.set(modelId, list);
-          }
-        }
-      }
-      for (const modelId of connection.enabledModelIds) {
-        if ((verifiedProfileIdsByModel.get(modelId)?.length ?? 0) < 1) {
-          return deepFreeze({
-            kind: 'balanced_activation_rejected' as const,
-            reason: `balanced routing requires enabled model ${modelId} to have a verified profile`,
-          });
-        }
-      }
-      if (![...verifiedProfileIdsByModel.values()].some((profileIds) => profileIds.length >= 2)) {
-        return deepFreeze({
-          kind: 'balanced_activation_rejected' as const,
-          reason:
-            'balanced routing requires at least one enabled model with two or more verified profiles',
-        });
-      }
+      // Account routing is admitted by durable credentials, not by a billable
+      // model probe. Real requests populate health/circuit state and trigger
+      // failover when an account is rejected, rate-limited, or exhausted.
       return this.catalog.setCredentialRoutingMode(root, decoded);
     });
   }
@@ -701,9 +643,7 @@ export class RuntimePolicyCoordinator {
       });
     }
     const routing = connection.credentialRouting;
-    const profile = routing?.profiles.find(
-      (candidate) => candidate.profileId === input.profileId,
-    );
+    const profile = routing?.profiles.find((candidate) => candidate.profileId === input.profileId);
     if (!profile || profile.revision !== input.profileRevision) {
       return deepFreeze({ kind: 'profile_not_found' as const });
     }
@@ -858,7 +798,15 @@ export class RuntimePolicyCoordinator {
         );
       }
       const catalog = await this.catalog.read(root);
-      const connection = findConnection(catalog, input.locator);
+      let connection: ConnectionCatalogEntry | undefined;
+      try {
+        if (!this.validateConnectionCredentialLocator(catalog, input.locator)) {
+          return deepFreeze({ kind: 'superseded' as const });
+        }
+        connection = findConnection(catalog, input.locator);
+      } catch {
+        return deepFreeze({ kind: 'superseded' as const });
+      }
       if (!connection) return deepFreeze({ kind: 'superseded' as const });
       if (PROVIDER_DEFAULTS[connection.providerType].authKind !== 'oauth_token') {
         throw codecError(
@@ -877,10 +825,16 @@ export class RuntimePolicyCoordinator {
     });
   }
 
-  beginInteractiveOAuthLogin(rawConnectionId: string): Promise<BeginInteractiveOAuthLoginResult> {
+  beginInteractiveOAuthLogin(
+    rawConnectionId: string,
+    rawProfileId?: string,
+  ): Promise<BeginInteractiveOAuthLoginResult> {
     return this.inLane(async (root) => {
       const connectionId = decodeConnectionInput(() =>
         decodeRuntimePolicyEntityId(rawConnectionId),
+      );
+      const profileId = decodeConnectionInput(() =>
+        decodeRuntimePolicyEntityId(rawProfileId ?? connectionId),
       );
       const catalog = await this.catalog.read(root);
       const connection = findConnection(catalog, { connectionId });
@@ -904,19 +858,47 @@ export class RuntimePolicyCoordinator {
           availability: contract.actionAvailability.start_oauth,
         });
       }
-      const prepared = await this.prepareConnectionMaterial(root, connection, false);
-      if (prepared.kind !== 'ready') return prepared;
-      const locator = connectionCredentialLocator(connection.connectionId, 'oauth_token');
-      if (!locator || locator.kind !== 'oauth_token') {
-        throw codecError(
-          'invalid_document',
-          'OAuth login admission produced no OAuth credential locator',
-        );
+      const profile =
+        profileId === connection.connectionId
+          ? null
+          : (connection.credentialRouting?.profiles.find(
+              (candidate) => candidate.profileId === profileId,
+            ) ?? null);
+      if (profileId !== connection.connectionId && !profile) {
+        return deepFreeze({ kind: 'connection_not_found' as const });
       }
+      const prepared = await this.prepareConnectionMaterial(
+        root,
+        connection,
+        false,
+        profile ?? undefined,
+      );
+      if (prepared.kind !== 'ready') return prepared;
+      const locator: OAuthCredentialLocator = profile
+        ? {
+            scope: 'connection_profile',
+            connectionId: connection.connectionId,
+            profileId: profile.profileId,
+            kind: 'oauth_token',
+          }
+        : {
+            scope: 'connection',
+            connectionId: connection.connectionId,
+            kind: 'oauth_token',
+          };
       const existing = findCredential(await this.vault.read(root), locator);
       const ticket = this.issueInteractiveOAuthLoginTicket(
         connectionBasis(connection),
         connection.providerType,
+        profile
+          ? {
+              connectionId: connection.connectionId,
+              connectionRevision: connection.revision,
+              profileId: profile.profileId,
+              profileRevision: profile.revision,
+            }
+          : null,
+        locator,
         existing ? credentialBasis(existing) : null,
       );
       return deepFreeze({
@@ -925,6 +907,7 @@ export class RuntimePolicyCoordinator {
         connection: structuredClone(connection) as ConnectionCatalogEntry & {
           readonly providerType: InteractiveOAuthLoginProvider;
         },
+        profile: profile ? structuredClone(profile) : null,
         secretMaterial: prepared.secretMaterial.networkProxy
           ? { networkProxy: prepared.secretMaterial.networkProxy }
           : {},
@@ -952,11 +935,15 @@ export class RuntimePolicyCoordinator {
         ) {
           changed.push('connection');
         }
-        const locator = {
-          scope: 'connection',
-          connectionId: claimed.connectionBasis.connectionId,
-          kind: 'oauth_token',
-        } as const;
+        if (claimed.profileBasis) {
+          const currentProfile = connection?.credentialRouting?.profiles.find(
+            (candidate) => candidate.profileId === claimed.profileBasis?.profileId,
+          );
+          if (!currentProfile || currentProfile.revision !== claimed.profileBasis.profileRevision) {
+            changed.push('connection');
+          }
+        }
+        const locator = claimed.locator;
         const vault = await this.vault.read(root);
         const actual = findCredential(vault, locator);
         if (
@@ -990,16 +977,86 @@ export class RuntimePolicyCoordinator {
           catalog,
           locator.connectionId,
         );
+        let credentialCommitted = false;
         try {
           await this.vault.commitSet(root, prepared);
-        } catch (error) {
-          if (cleared) {
-            throw commitOutcomeUnknown(
-              'Connection verification was cleared before OAuth login completed',
-              error,
-            );
+          credentialCommitted = true;
+
+          // A newly enrolled OAuth Profile is created disabled so it cannot
+          // execute before the browser grant is durably stored. Successful
+          // completion is the point where it becomes usable. Re-login also
+          // repairs a previously disabled primary without touching any other
+          // account's credential.
+          let currentCatalog = await this.catalog.read(root);
+          let currentConnection = findConnection(currentCatalog, {
+            connectionId: locator.connectionId,
+          });
+          const targetProfile = currentConnection?.credentialRouting?.profiles.find(
+            (profile) =>
+              profile.profileId ===
+              (claimed.profileBasis?.profileId ?? currentConnection?.connectionId),
+          );
+          if (currentConnection && targetProfile && !targetProfile.enabled) {
+            const enabled = await this.catalog.setCredentialProfileEnabled(root, {
+              expected: {
+                connectionId: currentConnection.connectionId,
+                connectionRevision: currentConnection.revision,
+                profileId: targetProfile.profileId,
+                profileRevision: targetProfile.revision,
+              },
+              enabled: true,
+            });
+            if (enabled.kind !== 'committed') {
+              throw new Error('OAuth credential committed but its account could not be enabled');
+            }
+            currentCatalog = await this.catalog.read(root);
+            currentConnection = findConnection(currentCatalog, {
+              connectionId: locator.connectionId,
+            });
           }
-          throw error;
+
+          // With two signed-in accounts, the non-balancing default is ordered
+          // failover: use the first account until an actual request marks it
+          // unavailable, then advance. The UI switch only changes this to
+          // equal load balancing.
+          const committedVault = await this.vault.read(root);
+          const configuredEnabledProfiles = currentConnection?.credentialRouting?.profiles.filter(
+            (profile) => {
+              if (!profile.enabled || !currentConnection) return false;
+              const profileLocator =
+                profile.profileId === currentConnection.connectionId
+                  ? connectionCredentialLocator(currentConnection.connectionId, 'oauth_token')
+                  : connectionProfileCredentialLocator(
+                      currentConnection.connectionId,
+                      profile.profileId,
+                      'oauth_token',
+                    );
+              return profileLocator
+                ? findCredential(committedVault, profileLocator) !== undefined
+                : false;
+            },
+          );
+          if (
+            currentConnection?.credentialRouting?.mode === 'legacy_primary' &&
+            (configuredEnabledProfiles?.length ?? 0) >= 2
+          ) {
+            const routed = await this.catalog.setCredentialRoutingMode(root, {
+              expected: connectionBasis(currentConnection),
+              mode: 'balanced',
+              strategy: 'priority_failover',
+            });
+            if (routed.kind !== 'committed') {
+              throw new Error('OAuth accounts were enabled but ordered routing could not start');
+            }
+          }
+        } catch (error) {
+          if (!credentialCommitted && !cleared) throw error;
+          throw commitOutcomeUnknown(
+            cleared
+              ? 'Connection verification was cleared before OAuth login completed'
+              : 'OAuth credential commit outcome is unknown',
+            error,
+          );
         }
         return deepFreeze({
           kind: 'committed' as const,
@@ -1515,7 +1572,9 @@ export class RuntimePolicyCoordinator {
     rawModelId: string | null,
   ): Promise<BeginConnectionProfileTestResult> {
     return this.inLane(async (root) => {
-      const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
+      const connectionId = decodeConnectionInput(() =>
+        decodeRuntimePolicyEntityId(rawConnectionId),
+      );
       const profileId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawProfileId));
       const prepared = await this.prepareConnectionProfileOperation(
         root,
@@ -1624,7 +1683,9 @@ export class RuntimePolicyCoordinator {
     rawProfileId: string,
   ): Promise<BeginConnectionProfileModelFetchResult> {
     return this.inLane(async (root) => {
-      const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
+      const connectionId = decodeConnectionInput(() =>
+        decodeRuntimePolicyEntityId(rawConnectionId),
+      );
       const profileId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawProfileId));
       const prepared = await this.prepareConnectionProfileOperation(
         root,
@@ -1698,7 +1759,12 @@ export class RuntimePolicyCoordinator {
           // empty intersection still clears the previous basis rows.
           const modelIdsByDigest = new Map<string, string[]>();
           for (const modelId of connection.enabledModelIds) {
-            const digest = await this.connectionExecutionBasisDigest(root, vault, connection, modelId);
+            const digest = await this.connectionExecutionBasisDigest(
+              root,
+              vault,
+              connection,
+              modelId,
+            );
             const group = modelIdsByDigest.get(digest) ?? [];
             group.push(modelId);
             modelIdsByDigest.set(digest, group);
@@ -1732,7 +1798,12 @@ export class RuntimePolicyCoordinator {
           }
         } else {
           for (const modelId of supportedModelIds) {
-            const digest = await this.connectionExecutionBasisDigest(root, vault, connection, modelId);
+            const digest = await this.connectionExecutionBasisDigest(
+              root,
+              vault,
+              connection,
+              modelId,
+            );
             await store.upsertVerification({
               connectionId: connection.connectionId,
               profileId: claimed.basis.profileId,
@@ -1758,7 +1829,8 @@ export class RuntimePolicyCoordinator {
         );
         return deepFreeze({
           kind: 'committed' as const,
-          verification: supportedModelIds.length > 0 ? ('recorded' as const) : ('not_recorded' as const),
+          verification:
+            supportedModelIds.length > 0 ? ('recorded' as const) : ('not_recorded' as const),
           catalogRevision: snapshot.revision,
           snapshot,
         });
@@ -1769,16 +1841,16 @@ export class RuntimePolicyCoordinator {
   readCredentialProfileReadiness(
     rawConnectionId: string,
   ): Promise<CredentialProfileReadinessResult> {
-    return this.inLane((root) =>
-      this.readCredentialProfileReadinessInLane(root, rawConnectionId),
-    );
+    return this.inLane((root) => this.readCredentialProfileReadinessInLane(root, rawConnectionId));
   }
 
   materializePrimaryCredentialProfile(
     rawConnectionId: string,
   ): Promise<CredentialProfileMutationResult> {
     return this.inLane((root) => {
-      const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
+      const connectionId = decodeConnectionInput(() =>
+        decodeRuntimePolicyEntityId(rawConnectionId),
+      );
       return this.catalog.materializePrimaryRouting(root, connectionId);
     });
   }
@@ -1788,186 +1860,186 @@ export class RuntimePolicyCoordinator {
     rawConnectionId: string,
   ): Promise<CredentialProfileReadinessResult> {
     const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
-      const catalog = await this.catalog.read(root);
-      const connection = findConnection(catalog, { connectionId });
-      if (!connection) {
-        return deepFreeze({ kind: 'connection_not_found' as const });
-      }
-      const routing = connection.credentialRouting;
-      if (!routing) {
-        return deepFreeze({
-          kind: 'found' as const,
-          connectionId: connection.connectionId,
-          connectionRevision: connection.revision,
-          routingMode: 'legacy_primary' as const,
-          readyCandidateCount: 0,
-          profiles: [],
-        });
-      }
-      const vault = await this.vault.read(root);
-      const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
-      const store = this.routingStoreFor(root);
-      // Cache the current execution digest per enabled model: verification
-      // records are only "supported" while their digest matches the current
-      // endpoint/headers/overlay/protocol basis (RFC 8.4), exactly as the
-      // balanced activation gate and the Router read them.
-      const digestByModel = new Map<string, string>();
-      for (const modelId of connection.enabledModelIds) {
-        digestByModel.set(
-          modelId,
-          await this.connectionExecutionBasisDigest(root, vault, connection, modelId),
-        );
-      }
-      const entries: CredentialProfileReadinessEntry[] = [];
-      const readyProfileIdsByModel = new Map<string, string[]>();
-      for (const profile of routing.profiles) {
-        const locator =
-          profile.profileId === connection.connectionId
-            ? connectionCredentialLocator(connection.connectionId, authKind)
-            : connectionProfileCredentialLocator(connection.connectionId, profile.profileId, authKind);
-        const credential = locator ? findCredential(vault, locator) : undefined;
-        const verificationRecords = await store.readProfileVerification(
-          connection.connectionId,
-          profile.profileId,
-        );
-        const supportedModels: string[] = [];
-        let lastTest: CredentialProfileReadinessEntry['lastTest'] = null;
-        let circuit:
-          | CredentialProfileReadinessEntry['circuit']
-          | null = null;
-        if (credential) {
-          for (const record of verificationRecords) {
-            if (
-              record.credentialId !== credential.credentialId ||
-              record.credentialRevision !== credential.revision ||
-              record.status !== 'supported'
-            ) {
-              continue;
-            }
-            const currentDigest = digestByModel.get(record.modelId);
-            const currentBasis =
-              connection.enabledModelIds.includes(record.modelId) &&
-              currentDigest !== undefined &&
-              record.executionBasisDigest === currentDigest;
-            if (currentBasis) {
-              supportedModels.push(record.modelId);
-            }
-            // lastTest comes from the CURRENT basis only: a stale
-            // endpoint/headers/overlay result must not surface as the
-            // profile's last state (or its needs_reauth tone) once the basis
-            // changed.
-            if (
-              currentBasis &&
-              record.source === 'tested' &&
-              record.testSummary &&
-              (!lastTest || record.checkedAt > Date.parse(lastTest.checkedAt))
-            ) {
-              lastTest = record.testSummary;
-            }
-          }
-          const digestModels = new Map<string, string[]>();
-          for (const modelId of supportedModels) {
-            const digest = digestByModel.get(modelId);
-            if (digest === undefined) continue;
-            const group = digestModels.get(digest) ?? [];
-            group.push(modelId);
-            digestModels.set(digest, group);
-          }
-          // healthByDigest caches the rows read for the aggregate circuit so
-          // the per-model ready computation reuses the same authority data.
-          const healthByDigest = new Map<string, Awaited<ReturnType<typeof store.readHealth>>>();
-          for (const [digest, modelIds] of digestModels) {
-            const health = await store.readHealth(
-              connection.connectionId,
-              profile.profileId,
-              credential.credentialId,
-              credential.revision,
-              digest,
-            );
-            healthByDigest.set(digest, health);
-            for (const row of health) {
-              // The credential-global row (model_id='') applies to every
-              // model on this basis; per-model rows apply to their model.
-              if (row.modelId !== '' && !modelIds.includes(row.modelId)) continue;
-              if (row.circuitState === 'closed') continue;
-              const severity =
-                row.circuitState === 'invalid'
-                  ? 3
-                  : row.circuitState === 'open'
-                    ? 2
-                    : 1;
-              const current =
-                circuit?.state === 'invalid'
-                  ? 3
-                  : circuit?.state === 'open'
-                    ? 2
-                    : circuit?.state === 'half_open'
-                      ? 1
-                      : 0;
-              if (severity > current) {
-                circuit = {
-                  state: row.circuitState,
-                  blockedUntil: row.blockedUntil,
-                  nextProbeAt: row.nextProbeAt,
-                };
-              }
-            }
-          }
-          if (profile.enabled) {
-            for (const modelId of supportedModels) {
-              // Model-scoped health isolation: this Profile is a ready
-              // candidate for `modelId` unless the credential-global row or
-              // THIS model's row is blocked (open / half_open / invalid). A
-              // denied model must not remove the Profile from other models'
-              // ready sets.
-              const digest = digestByModel.get(modelId);
-              if (digest === undefined) continue;
-              const health = healthByDigest.get(digest) ?? [];
-              let blocked = false;
-              for (const row of health) {
-                if (row.modelId !== '' && row.modelId !== modelId) continue;
-                if (
-                  row.circuitState === 'open' ||
-                  row.circuitState === 'half_open' ||
-                  row.circuitState === 'invalid'
-                ) {
-                  blocked = true;
-                  break;
-                }
-              }
-              if (blocked) continue;
-              const list = readyProfileIdsByModel.get(modelId) ?? [];
-              if (!list.includes(profile.profileId)) list.push(profile.profileId);
-              readyProfileIdsByModel.set(modelId, list);
-            }
-          }
-        }
-        entries.push(
-          deepFreeze({
-            profileId: profile.profileId,
-            revision: profile.revision,
-            label: profile.label,
-            enabled: profile.enabled,
-            weight: profile.weight,
-            primary: profile.profileId === connection.connectionId,
-            credentialConfigured: credential !== undefined,
-            lastTest,
-            supportedModels,
-            circuit,
-          }),
-        );
-      }
-      const readyCandidateCount = [...readyProfileIdsByModel.values()].filter(
-        (profileIds) => profileIds.length >= 2,
-      ).length;
+    const catalog = await this.catalog.read(root);
+    const connection = findConnection(catalog, { connectionId });
+    if (!connection) {
+      return deepFreeze({ kind: 'connection_not_found' as const });
+    }
+    const routing = connection.credentialRouting;
+    if (!routing) {
       return deepFreeze({
         kind: 'found' as const,
         connectionId: connection.connectionId,
         connectionRevision: connection.revision,
-        routingMode: routing.mode,
-        readyCandidateCount,
-        profiles: entries,
+        routingMode: 'legacy_primary' as const,
+        routingStrategy: 'smooth_weighted_round_robin' as const,
+        readyCandidateCount: 0,
+        profiles: [],
       });
+    }
+    const vault = await this.vault.read(root);
+    const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+    const store = this.routingStoreFor(root);
+    // Cache the current execution digest per enabled model: verification
+    // records are only "supported" while their digest matches the current
+    // endpoint/headers/overlay/protocol basis (RFC 8.4), exactly as the
+    // balanced activation gate and the Router read them.
+    const digestByModel = new Map<string, string>();
+    for (const modelId of connection.enabledModelIds) {
+      digestByModel.set(
+        modelId,
+        await this.connectionExecutionBasisDigest(root, vault, connection, modelId),
+      );
+    }
+    const entries: CredentialProfileReadinessEntry[] = [];
+    const readyProfileIdsByModel = new Map<string, string[]>();
+    for (const profile of routing.profiles) {
+      const locator =
+        profile.profileId === connection.connectionId
+          ? connectionCredentialLocator(connection.connectionId, authKind)
+          : connectionProfileCredentialLocator(
+              connection.connectionId,
+              profile.profileId,
+              authKind,
+            );
+      const credential = locator ? findCredential(vault, locator) : undefined;
+      const verificationRecords = await store.readProfileVerification(
+        connection.connectionId,
+        profile.profileId,
+      );
+      const supportedModels: string[] = [];
+      let lastTest: CredentialProfileReadinessEntry['lastTest'] = null;
+      let circuit: CredentialProfileReadinessEntry['circuit'] | null = null;
+      if (credential) {
+        for (const record of verificationRecords) {
+          if (
+            record.credentialId !== credential.credentialId ||
+            record.credentialRevision !== credential.revision ||
+            record.status !== 'supported'
+          ) {
+            continue;
+          }
+          const currentDigest = digestByModel.get(record.modelId);
+          const currentBasis =
+            connection.enabledModelIds.includes(record.modelId) &&
+            currentDigest !== undefined &&
+            record.executionBasisDigest === currentDigest;
+          if (currentBasis) {
+            supportedModels.push(record.modelId);
+          }
+          // lastTest comes from the CURRENT basis only: a stale
+          // endpoint/headers/overlay result must not surface as the
+          // profile's last state (or its needs_reauth tone) once the basis
+          // changed.
+          if (
+            currentBasis &&
+            record.source === 'tested' &&
+            record.testSummary &&
+            (!lastTest || record.checkedAt > Date.parse(lastTest.checkedAt))
+          ) {
+            lastTest = record.testSummary;
+          }
+        }
+        const digestModels = new Map<string, string[]>();
+        for (const modelId of supportedModels) {
+          const digest = digestByModel.get(modelId);
+          if (digest === undefined) continue;
+          const group = digestModels.get(digest) ?? [];
+          group.push(modelId);
+          digestModels.set(digest, group);
+        }
+        // healthByDigest caches the rows read for the aggregate circuit so
+        // the per-model ready computation reuses the same authority data.
+        const healthByDigest = new Map<string, Awaited<ReturnType<typeof store.readHealth>>>();
+        for (const [digest, modelIds] of digestModels) {
+          const health = await store.readHealth(
+            connection.connectionId,
+            profile.profileId,
+            credential.credentialId,
+            credential.revision,
+            digest,
+          );
+          healthByDigest.set(digest, health);
+          for (const row of health) {
+            // The credential-global row (model_id='') applies to every
+            // model on this basis; per-model rows apply to their model.
+            if (row.modelId !== '' && !modelIds.includes(row.modelId)) continue;
+            if (row.circuitState === 'closed') continue;
+            const severity =
+              row.circuitState === 'invalid' ? 3 : row.circuitState === 'open' ? 2 : 1;
+            const current =
+              circuit?.state === 'invalid'
+                ? 3
+                : circuit?.state === 'open'
+                  ? 2
+                  : circuit?.state === 'half_open'
+                    ? 1
+                    : 0;
+            if (severity > current) {
+              circuit = {
+                state: row.circuitState,
+                blockedUntil: row.blockedUntil,
+                nextProbeAt: row.nextProbeAt,
+              };
+            }
+          }
+        }
+        if (profile.enabled) {
+          for (const modelId of supportedModels) {
+            // Model-scoped health isolation: this Profile is a ready
+            // candidate for `modelId` unless the credential-global row or
+            // THIS model's row is blocked (open / half_open / invalid). A
+            // denied model must not remove the Profile from other models'
+            // ready sets.
+            const digest = digestByModel.get(modelId);
+            if (digest === undefined) continue;
+            const health = healthByDigest.get(digest) ?? [];
+            let blocked = false;
+            for (const row of health) {
+              if (row.modelId !== '' && row.modelId !== modelId) continue;
+              if (
+                row.circuitState === 'open' ||
+                row.circuitState === 'half_open' ||
+                row.circuitState === 'invalid'
+              ) {
+                blocked = true;
+                break;
+              }
+            }
+            if (blocked) continue;
+            const list = readyProfileIdsByModel.get(modelId) ?? [];
+            if (!list.includes(profile.profileId)) list.push(profile.profileId);
+            readyProfileIdsByModel.set(modelId, list);
+          }
+        }
+      }
+      entries.push(
+        deepFreeze({
+          profileId: profile.profileId,
+          revision: profile.revision,
+          label: profile.label,
+          enabled: profile.enabled,
+          weight: profile.weight,
+          primary: profile.profileId === connection.connectionId,
+          credentialConfigured: credential !== undefined,
+          lastTest,
+          supportedModels,
+          circuit,
+        }),
+      );
+    }
+    const readyCandidateCount = [...readyProfileIdsByModel.values()].filter(
+      (profileIds) => profileIds.length >= 2,
+    ).length;
+    return deepFreeze({
+      kind: 'found' as const,
+      connectionId: connection.connectionId,
+      connectionRevision: connection.revision,
+      routingMode: routing.mode,
+      routingStrategy: routing.strategy,
+      readyCandidateCount,
+      profiles: entries,
+    });
   }
 
   private async prepareConnectionProfileOperation(
@@ -1977,7 +2049,10 @@ export class RuntimePolicyCoordinator {
     action: ProviderAuthAction,
   ): Promise<
     | PreparedConnectionMaterial
-    | Exclude<BeginConnectionProfileTestResult | BeginConnectionProfileModelFetchResult, { readonly kind: 'ready' }>
+    | Exclude<
+        BeginConnectionProfileTestResult | BeginConnectionProfileModelFetchResult,
+        { readonly kind: 'ready' }
+      >
   > {
     const catalog = await this.catalog.read(root);
     const connection = findConnection(catalog, { connectionId });
@@ -2261,6 +2336,8 @@ export class RuntimePolicyCoordinator {
   private issueInteractiveOAuthLoginTicket(
     connectionBasisValue: ConnectionVersionBasis,
     providerType: InteractiveOAuthLoginProvider,
+    profileBasis: CredentialProfileVersionBasis | null,
+    locator: OAuthCredentialLocator,
     credentialBasisValue: CredentialVersionBasis | null,
   ): InteractiveOAuthLoginTicket {
     const ticket = Object.freeze(Object.create(null)) as object;
@@ -2268,6 +2345,8 @@ export class RuntimePolicyCoordinator {
       kind: 'interactive_oauth_login',
       connectionBasis: connectionBasisValue,
       providerType,
+      profileBasis,
+      locator,
       credentialBasis: credentialBasisValue,
       state: 'available',
     });

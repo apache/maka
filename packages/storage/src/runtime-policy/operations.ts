@@ -133,12 +133,13 @@ export type ResolveWebFetchExecutionResult =
       readonly secretMaterial: Pick<RuntimePolicyOperationSecretMaterial, 'networkProxy'>;
     };
 
-export type OAuthCredentialLocator = Omit<
-  Extract<CredentialLocator, { scope: 'connection' }>,
-  'kind'
-> & {
-  readonly kind: 'oauth_token';
-};
+export type OAuthCredentialLocator =
+  | (Omit<Extract<CredentialLocator, { scope: 'connection' }>, 'kind'> & {
+      readonly kind: 'oauth_token';
+    })
+  | (Omit<Extract<CredentialLocator, { scope: 'connection_profile' }>, 'kind'> & {
+      readonly kind: 'oauth_token';
+    });
 
 export interface CompareAndSetOAuthCredentialInput {
   readonly locator: OAuthCredentialLocator;
@@ -197,6 +198,7 @@ export type BeginInteractiveOAuthLoginResult =
       readonly connection: ConnectionCatalogEntry & {
         readonly providerType: InteractiveOAuthLoginProvider;
       };
+      readonly profile: ConnectionCredentialProfileEntry | null;
       readonly secretMaterial: Pick<RuntimePolicyOperationSecretMaterial, 'networkProxy'>;
       readonly networkProxy: RuntimePolicy['networkProxy'];
     };
@@ -339,23 +341,19 @@ export interface CredentialProfileReadinessEntry {
   readonly weight: number;
   readonly primary: boolean;
   readonly credentialConfigured: boolean;
-  readonly lastTest:
-    | {
-        readonly status: ConnectionTestSummary['status'];
-        readonly checkedAt: string;
-        readonly errorClass?: ConnectionTestErrorClass;
-      }
-    | null;
+  readonly lastTest: {
+    readonly status: ConnectionTestSummary['status'];
+    readonly checkedAt: string;
+    readonly errorClass?: ConnectionTestErrorClass;
+  } | null;
   /** Enabled models with a current supported verification for this Profile. */
   readonly supportedModels: readonly string[];
   /** Most severe circuit across the Profile's current basis/health rows. */
-  readonly circuit:
-    | {
-        readonly state: 'closed' | 'open' | 'half_open' | 'invalid';
-        readonly blockedUntil: number | null;
-        readonly nextProbeAt: number | null;
-      }
-    | null;
+  readonly circuit: {
+    readonly state: 'closed' | 'open' | 'half_open' | 'invalid';
+    readonly blockedUntil: number | null;
+    readonly nextProbeAt: number | null;
+  } | null;
 }
 
 export type CredentialProfileReadinessResult =
@@ -364,6 +362,7 @@ export type CredentialProfileReadinessResult =
       readonly connectionId: string;
       readonly connectionRevision: number;
       readonly routingMode: 'legacy_primary' | 'balanced';
+      readonly routingStrategy: 'smooth_weighted_round_robin' | 'priority_failover';
       /**
        * Number of enabled models that currently have two or more ready
        * candidates (enabled + configured + verified + not circuit-blocked).
@@ -443,7 +442,10 @@ export interface RuntimePolicyOperationCoordinator {
   recordCredentialProfileVerification(
     input: RecordCredentialProfileVerificationInput,
   ): Promise<RecordCredentialProfileVerificationResult>;
-  beginInteractiveOAuthLogin(connectionId: string): Promise<BeginInteractiveOAuthLoginResult>;
+  beginInteractiveOAuthLogin(
+    connectionId: string,
+    profileId?: string,
+  ): Promise<BeginInteractiveOAuthLoginResult>;
   completeInteractiveOAuthLogin(
     ticket: InteractiveOAuthLoginTicket,
     secret: string,
@@ -482,9 +484,7 @@ export interface RuntimePolicyOperationCoordinator {
     result: ConnectionModelDiscoveryResult,
     evidence: 'positive_only' | 'authoritative',
   ): Promise<ConnectionProfileModelFetchCompletionResult>;
-  readCredentialProfileReadiness(
-    connectionId: string,
-  ): Promise<CredentialProfileReadinessResult>;
+  readCredentialProfileReadiness(connectionId: string): Promise<CredentialProfileReadinessResult>;
   /**
    * Materialize the implicit primary Profile into an explicit routing
    * declaration (RFC 4.2/5.1). Idempotent: a connection that already has a
@@ -493,7 +493,9 @@ export interface RuntimePolicyOperationCoordinator {
    * primary left — creating a secondary must never be the only way to
    * materialize the primary's enable state.
    */
-  materializePrimaryCredentialProfile(connectionId: string): Promise<CredentialProfileMutationResult>;
+  materializePrimaryCredentialProfile(
+    connectionId: string,
+  ): Promise<CredentialProfileMutationResult>;
 }
 
 export function connectionCredentialLocator(

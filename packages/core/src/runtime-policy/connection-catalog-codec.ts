@@ -159,15 +159,47 @@ export function normalizeRemoveCredentialProfileInput(
 export function normalizeSetCredentialRoutingModeInput(
   value: unknown,
 ): SetCredentialRoutingModeInput {
-  const input = exactRecord(value, 'set credential routing mode input', ['expected', 'mode']);
+  const input = exactRecord(
+    value,
+    'set credential routing mode input',
+    ['expected', 'mode', 'strategy', 'orderedProfileIds'],
+    ['expected', 'mode'],
+  );
   const mode = input.mode;
   if (mode !== 'legacy_primary' && mode !== 'balanced') {
     throw domainError('credential routing mode is invalid');
   }
+  const strategy = input.strategy;
+  if (
+    strategy !== undefined &&
+    strategy !== 'smooth_weighted_round_robin' &&
+    strategy !== 'priority_failover'
+  ) {
+    throw domainError('credential routing strategy is invalid');
+  }
   return {
     expected: decodeConnectionVersionBasis(input.expected),
     mode,
+    ...(strategy === undefined ? {} : { strategy }),
+    ...(input.orderedProfileIds === undefined
+      ? {}
+      : { orderedProfileIds: decodeCredentialProfileOrder(input.orderedProfileIds) }),
   };
+}
+
+function decodeCredentialProfileOrder(value: unknown): readonly string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > CONNECTION_CREDENTIAL_PROFILE_MAX
+  ) {
+    throw domainError('credential profile order must contain 1 to 32 profile ids');
+  }
+  const ids = value.map((profileId) => entityIdValue(profileId, 'profile id'));
+  if (new Set(ids).size !== ids.length) {
+    throw domainError('credential profile order must not contain duplicate profile ids');
+  }
+  return ids;
 }
 
 export function decodeCredentialProfileVersionBasis(value: unknown): CredentialProfileVersionBasis {
@@ -231,7 +263,7 @@ export function decodeConnectionCredentialRouting(value: unknown): ConnectionCre
   if (item.mode !== 'legacy_primary' && item.mode !== 'balanced') {
     throw domainError('credential routing mode is invalid');
   }
-  if (item.strategy !== 'smooth_weighted_round_robin') {
+  if (item.strategy !== 'smooth_weighted_round_robin' && item.strategy !== 'priority_failover') {
     throw domainError('credential routing strategy is invalid');
   }
   if (!Array.isArray(item.profiles) || item.profiles.length > CONNECTION_CREDENTIAL_PROFILE_MAX) {
@@ -241,10 +273,6 @@ export function decodeConnectionCredentialRouting(value: unknown): ConnectionCre
   const ids = profiles.map((profile) => profile.profileId);
   if (new Set(ids).size !== ids.length) {
     throw domainError('credential routing profile ids must be unique');
-  }
-  const labels = profiles.map((profile) => profile.label.toLowerCase());
-  if (new Set(labels).size !== labels.length) {
-    throw domainError('credential routing profile labels must be unique per connection');
   }
   return { mode: item.mode, strategy: item.strategy, profiles };
 }

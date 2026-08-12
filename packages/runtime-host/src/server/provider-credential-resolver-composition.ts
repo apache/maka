@@ -1,5 +1,5 @@
 import type { ConnectionCredentialRouting, CredentialLocator } from '@maka/core/runtime-policy';
-import type { ProviderType } from '@maka/core/llm-connections';
+import type { ProviderType, RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type {
   ProviderCredentialLease,
   ProviderCredentialOutcome,
@@ -11,10 +11,15 @@ import {
   type ProviderCredentialRoutingStore,
 } from '@maka/storage/provider-credential-routing-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
+import type { ProxiedFetchProxy, ProxiedFetchTransport } from '@maka/runtime';
 import {
   ProviderCredentialRouter,
   type RouterCredentialMaterial,
 } from './provider-credential-router.js';
+import {
+  createHostOAuthModelFetch,
+  type HostOAuthExecutionAuthority,
+} from './oauth-execution-authority.js';
 
 export interface CreateHostCredentialResolverInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
@@ -31,6 +36,12 @@ export interface CreateHostCredentialResolverInput {
   readonly requestBodyOverlayJson: string | null;
   readonly authKind: 'api_key' | 'oauth_token' | 'optional_api_key' | 'none';
   readonly routing: ConnectionCredentialRouting;
+  readonly oauthCredentials?: HostOAuthExecutionAuthority;
+  readonly connection?: RuntimeExecutionConnection;
+  readonly sessionId?: string;
+  readonly modelId?: string;
+  readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
+  readonly proxy?: ProxiedFetchProxy | null;
   readonly now?: () => number;
 }
 
@@ -57,6 +68,14 @@ export function createHostCredentialResolver(
   input: CreateHostCredentialResolverInput,
 ): HostCredentialResolver {
   const routingStore = createSqliteProviderCredentialRoutingStore(input.workspaceRoot);
+  let modelFetchTransport: ProxiedFetchTransport | undefined;
+  const getModelFetchTransport = (): ProxiedFetchTransport => {
+    if (!input.createFetchTransport) {
+      throw new Error('OAuth model fetch transport is unavailable');
+    }
+    modelFetchTransport ??= input.createFetchTransport(input.proxy ?? null);
+    return modelFetchTransport;
+  };
   const digest = executionBasisDigest({
     providerType: input.providerType,
     endpoint: input.endpoint,
@@ -85,6 +104,15 @@ export function createHostCredentialResolver(
           connectionId,
           profileId,
           authKind: input.authKind,
+          providerType: input.providerType,
+          connectionSlug: input.connectionSlug,
+          oauthCredentials: input.oauthCredentials,
+          connection: input.connection,
+          sessionId: input.sessionId,
+          modelId: input.modelId,
+          createFetchTransport: input.createFetchTransport,
+          getModelFetchTransport,
+          proxy: input.proxy,
         }),
       settleHealth: (lease, outcome) =>
         settleRoutingOutcome({
@@ -125,7 +153,10 @@ export function createHostCredentialResolver(
     acquireAttempt: (context) => router.acquireAttempt(context),
     settle: (lease, outcome) => router.settle(lease, outcome),
     releaseTurn: (sessionId, turnId) => router.releaseTurn(sessionId, turnId),
-    dispose: () => routingStore.dispose(),
+    dispose: () => {
+      void modelFetchTransport?.close();
+      routingStore.dispose();
+    },
   };
 }
 
@@ -158,23 +189,10 @@ async function filterEligibleProfiles(input: {
     ) {
       continue;
     }
-    // Explicit Profile routing requires model-support evidence; unknown is
-    // never optimistically scheduled (RFC 11.1).
-    const verification = await input.routingStore.readProfileVerification(
-      input.connectionId,
-      profileId,
-    );
-    const current = verification.filter(
-      (record) =>
-        record.credentialId === material.credentialId &&
-        record.credentialRevision === material.revision &&
-        record.executionBasisDigest === input.digest,
-    );
-    if (
-      !current.some((record) => record.modelId === input.modelId && record.status === 'supported')
-    ) {
-      continue;
-    }
+    // A configured account is eligible without a synthetic model probe.
+    // Actual requests are the health signal: their outcome updates the
+    // credential/model circuit and drives failover without spending tokens
+    // merely to turn routing on.
     eligible.add(profileId);
   }
   return eligible;
@@ -290,11 +308,57 @@ async function resolveProfileCredential(input: {
   connectionId: string;
   profileId: string;
   authKind: CreateHostCredentialResolverInput['authKind'];
+  providerType: ProviderType;
+  connectionSlug: string;
+  oauthCredentials?: HostOAuthExecutionAuthority;
+  connection?: RuntimeExecutionConnection;
+  sessionId?: string;
+  modelId?: string;
+  createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
+  getModelFetchTransport?: () => ProxiedFetchTransport;
+  proxy?: ProxiedFetchProxy | null;
 }): Promise<RouterCredentialMaterial | null> {
   const locator = profileLocator(input.connectionId, input.profileId, input.authKind);
   if (!locator) return null;
   const material = await input.runtimePolicy.operations.exportCredentialMaterial(locator);
   if (!material) return null;
+  if (input.authKind === 'oauth_token') {
+    if (
+      input.providerType !== 'openai-codex' ||
+      !input.oauthCredentials ||
+      !input.connection ||
+      !input.sessionId ||
+      !input.modelId ||
+      !input.createFetchTransport ||
+      !input.getModelFetchTransport
+    ) {
+      return null;
+    }
+    const binding = input.oauthCredentials.bind({
+      providerType: input.providerType,
+      connectionSlug: input.connectionSlug,
+      material,
+      createRefreshTransport: () => input.createFetchTransport!(input.proxy ?? null),
+    });
+    const tokens = await binding.resolve();
+    const baseFetch: typeof globalThis.fetch = async (url, init) => {
+      return input.getModelFetchTransport!().fetch(url, init);
+    };
+    return {
+      credentialId: material.credentialId,
+      credentialRevision: material.revision,
+      apiKey: tokens.access_token,
+      fetch: createHostOAuthModelFetch({
+        binding,
+        initialTokens: tokens,
+        connection: input.connection,
+        sessionId: input.sessionId,
+        modelId: input.modelId,
+        claudeDeviceId: '',
+        fetchFn: baseFetch,
+      }),
+    };
+  }
   return {
     credentialId: material.credentialId,
     credentialRevision: material.revision,

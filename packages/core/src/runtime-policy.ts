@@ -247,7 +247,7 @@ export interface ConnectionCatalogEntry extends ConnectionConfiguration {
  * Strategy name for Credential Profile selection. MVP accepts a single known
  * value; unknown values fail closed.
  */
-export type CredentialRoutingStrategy = 'smooth_weighted_round_robin';
+export type CredentialRoutingStrategy = 'smooth_weighted_round_robin' | 'priority_failover';
 
 /** Maximum number of Credential Profiles per Connection. */
 export const CONNECTION_CREDENTIAL_PROFILE_MAX = 32 as const;
@@ -319,6 +319,14 @@ export interface RemoveCredentialProfileInput {
 export interface SetCredentialRoutingModeInput {
   readonly expected: ConnectionVersionBasis;
   readonly mode: 'legacy_primary' | 'balanced';
+  /** Absent preserves the current strategy for compatibility. */
+  readonly strategy?: CredentialRoutingStrategy;
+  /**
+   * Optional complete Profile order. The Catalog validates that it contains
+   * every current Profile exactly once and commits order + priority weights
+   * in the same connection CAS write.
+   */
+  readonly orderedProfileIds?: readonly EntityId[];
 }
 
 export type CredentialProfileMutationResult =

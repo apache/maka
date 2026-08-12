@@ -378,6 +378,7 @@ test('projects Profile readiness as a secret-free view', () => {
     connectionId: 'connection-1',
     connectionRevision: 7,
     routingMode: 'balanced',
+    routingStrategy: 'smooth_weighted_round_robin',
     readyCandidateCount: 1,
     profiles: [
       {
@@ -409,6 +410,7 @@ test('wires Profile CRUD, readiness and test channels against the Host client', 
     connectionId: 'connection-1',
     connectionRevision: 4,
     routingMode: 'legacy_primary' as const,
+    routingStrategy: 'smooth_weighted_round_robin' as const,
     readyCandidateCount: 0,
     profiles: [],
   };
@@ -432,8 +434,11 @@ test('wires Profile CRUD, readiness and test channels against the Host client', 
         calls.push(`enabled:${input.expected.profileId}:${input.enabled}`);
         return { kind: 'committed', catalogRevision: 6, connection: { connectionId: 'connection-1', revision: 6 } };
       },
-      setCredentialRoutingMode: async (input: { mode: string }) => {
-        calls.push(`mode:${input.mode}`);
+      setCredentialRoutingMode: async (input: {
+        mode: string;
+        orderedProfileIds?: readonly string[];
+      }) => {
+        calls.push(`mode:${input.mode}:${input.orderedProfileIds?.join(',') ?? ''}`);
         return { kind: 'committed', catalogRevision: 7, connection: { connectionId: 'connection-1', revision: 7 } };
       },
       setCredential: async (input: { locator: { profileId: string }; secret: string }) => {
@@ -442,6 +447,20 @@ test('wires Profile CRUD, readiness and test channels against the Host client', 
         return { kind: 'committed', snapshot: { revision: 2, entries: [] } };
       },
       queryCredential: async () => null,
+      fetchOAuthAccountUsage: async (connectionId: string, profileId: string) => {
+        calls.push(`usage:${connectionId}:${profileId}`);
+        if (profileId === 'profile-rejected') {
+          return { kind: 'unavailable' as const, reason: 'provider_rejected' as const };
+        }
+        return {
+          kind: 'available' as const,
+          provider: 'openai-codex' as const,
+          quota: {
+            fiveHour: { utilization: 12, resetsAt: '2026-08-12T08:00:00.000Z' },
+            fetchedAt: 123,
+          },
+        };
+      },
       testConnectionProfile: async (connectionId: string, profileId: string) => {
         calls.push(`test:${profileId}`);
         return {
@@ -463,6 +482,7 @@ test('wires Profile CRUD, readiness and test channels against the Host client', 
   assert.deepEqual(queried, {
     connectionRevision: 4,
     routingMode: 'legacy_primary',
+    routingStrategy: 'smooth_weighted_round_robin',
     readyCandidateCount: 0,
     profiles: [],
   });
@@ -477,8 +497,12 @@ test('wires Profile CRUD, readiness and test channels against the Host client', 
   });
   assert.ok(calls.includes('enabled:profile-2:true'));
 
-  await handlers.get('connections:profiles:setRoutingMode')?.({}, 'openrouter', { mode: 'balanced' });
-  assert.ok(calls.includes('mode:balanced'));
+  await handlers.get('connections:profiles:setRoutingMode')?.({}, 'openrouter', {
+    mode: 'balanced',
+    strategy: 'priority_failover',
+    orderedProfileIds: ['profile-2', 'profile-1'],
+  });
+  assert.ok(calls.includes('mode:balanced:profile-2,profile-1'));
 
   await handlers.get('connections:profiles:setCredential')?.({}, 'openrouter', {
     profileId: 'profile-2',
@@ -490,6 +514,24 @@ test('wires Profile CRUD, readiness and test channels against the Host client', 
     profileId: 'profile-2',
   });
   assert.deepEqual(tested, { ok: true, modelTested: 'model-1', latencyMs: 12 });
+
+  const usage = await handlers.get('connections:profiles:usage')?.(
+    {},
+    'openrouter',
+    'profile-2',
+  );
+  assert.deepEqual(usage, {
+    kind: 'available',
+    quota: {
+      fiveHour: { utilization: 12, resetsAt: '2026-08-12T08:00:00.000Z' },
+      fetchedAt: 123,
+    },
+  });
+  assert.ok(calls.includes('usage:connection-1:profile-2'));
+  assert.deepEqual(
+    await handlers.get('connections:profiles:usage')?.({}, 'openrouter', 'profile-rejected'),
+    { kind: 'unavailable', reason: 'provider_rejected' },
+  );
 
   await assert.rejects(
     async () =>

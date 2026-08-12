@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,9 +11,11 @@ import type {
   ConnectionCredentialRouting,
 } from '@maka/core/runtime-policy';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { serializeOAuthSubscriptionTokens } from '@maka/runtime';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { createHostCredentialResolver } from '../server/provider-credential-resolver-composition.js';
+import { HostOAuthExecutionAuthority } from '../server/oauth-execution-authority.js';
 
 type Writer = Awaited<ReturnType<typeof openInteractiveRuntimePolicyStoresForWrite>>;
 
@@ -80,12 +84,17 @@ describe('Provider Credential resolver end-to-end', () => {
           (profile) => profile.profileId !== connection.connectionId,
         )!;
 
-        // Balanced activation is rejected without verification evidence.
+        // Routing activation does not spend tokens on a synthetic model probe.
         const beforeVerification = await stores.operations.setCredentialRoutingMode({
           expected: { connectionId: connection.connectionId, revision: snapshot.revision },
           mode: 'balanced',
         });
-        assert.equal(beforeVerification.kind, 'balanced_activation_rejected');
+        assert.equal(beforeVerification.kind, 'committed');
+        if (beforeVerification.kind !== 'committed') return;
+        snapshot = beforeVerification.snapshot;
+        routing = snapshot.connections.find(
+          (item) => item.connectionId === connection.connectionId,
+        )!.credentialRouting!;
 
         // Seed Profile verification through the production writer.
         for (const profile of routing.profiles) {
@@ -102,17 +111,6 @@ describe('Provider Credential resolver end-to-end', () => {
           });
           assert.equal(recorded.kind, 'committed');
         }
-
-        const activated = await stores.operations.setCredentialRoutingMode({
-          expected: { connectionId: connection.connectionId, revision: snapshot.revision },
-          mode: 'balanced',
-        });
-        assert.equal(activated.kind, 'committed');
-        if (activated.kind !== 'committed') return;
-        snapshot = activated.snapshot;
-        routing = snapshot.connections.find(
-          (item) => item.connectionId === connection.connectionId,
-        )!.credentialRouting!;
 
         // Build the real Host resolver against the same root (so it reads the
         // verification rows the coordinator wrote).
@@ -618,7 +616,7 @@ describe('Provider Credential resolver end-to-end', () => {
           // Probe success closes the global row -> the profile recovers.
           await resolver.settle(probe, { kind: 'success' });
           const recovered = await resolver.acquireAttempt(
-            balancedContext(connection, 'gpt-5', 'session-probe', 'turn-5'),
+            balancedContext(connection, 'gpt-5', 'session-probe', 'turn-4'),
           );
           assert.equal(
             recovered.profileId,
@@ -780,11 +778,7 @@ describe('Provider Credential resolver end-to-end', () => {
             'half_open_probe',
             'an unsettled half-open profile must not be an ordinary candidate',
           );
-          assert.notEqual(
-            second.profileId,
-            probe.profileId,
-            'each circuit claims its own probe',
-          );
+          assert.notEqual(second.profileId, probe.profileId, 'each circuit claims its own probe');
           assert.equal(second.healthCircuitModelId, '');
           await resolver.settle(second, { kind: 'success' });
           await resolver.settle(probe, { kind: 'success' });
@@ -915,9 +909,7 @@ describe('Provider Credential resolver end-to-end', () => {
             });
           }
           await assert.rejects(
-            resolver.acquireAttempt(
-              balancedContext(connection, 'gpt-5', 'session-ri', 'turn-3'),
-            ),
+            resolver.acquireAttempt(balancedContext(connection, 'gpt-5', 'session-ri', 'turn-3')),
             /no eligible credential profile/,
           );
 
@@ -949,6 +941,132 @@ describe('Provider Credential resolver end-to-end', () => {
         } finally {
           resolver.dispose();
         }
+      } finally {
+        if (!owner.closed) await owner.close();
+      }
+    });
+  });
+
+  test('routed OAuth keeps its owned transport open until the streamed response is consumed', async () => {
+    await withInteractiveRoot(async ({ root }) => {
+      const owner = await tryAcquireInteractiveRootOwner(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const connection = await createConnection(
+          stores,
+          0,
+          connectionDraft('oauth-stream', 'openai-codex', 'OAuth stream'),
+        );
+        await writeFile(
+          join(root, 'credential-vault.json'),
+          `${JSON.stringify(
+            {
+              schemaVersion: 1,
+              revision: 1,
+              entries: [
+                {
+                  locator: {
+                    scope: 'connection',
+                    connectionId: connection.connectionId,
+                    kind: 'oauth_token',
+                  },
+                  credentialId: randomUUID(),
+                  revision: 1,
+                  secret: serializeOAuthSubscriptionTokens({
+                    access_token: codexAccessToken('account-stream'),
+                    refresh_token: 'refresh-stream',
+                    expires_at: Number.MAX_SAFE_INTEGER,
+                  }),
+                  updatedAt: Date.now(),
+                },
+              ],
+            },
+            null,
+            2,
+          )}\n`,
+          { encoding: 'utf8', mode: 0o600 },
+        );
+        const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
+        assert.equal(resolved.kind, 'ready');
+        if (resolved.kind !== 'ready') return;
+        const routing: ConnectionCredentialRouting = {
+          mode: 'legacy_primary',
+          strategy: 'priority_failover',
+          profiles: [
+            {
+              profileId: connection.connectionId,
+              revision: 1,
+              label: 'primary',
+              enabled: true,
+              weight: 100,
+            },
+          ],
+        };
+
+        let transportClosed = false;
+        let transportCloses = 0;
+        const resolver = createHostCredentialResolver({
+          runtimePolicy: stores,
+          workspaceRoot: root,
+          connectionId: connection.connectionId,
+          connectionSlug: connection.slug,
+          providerType: connection.providerType,
+          endpoint: PROVIDER_DEFAULTS[connection.providerType].baseUrl,
+          apiProtocol: undefined,
+          requestHeadersCredentialId: null,
+          requestHeadersCredentialRevision: null,
+          requestBodyOverlayJson: null,
+          authKind: 'oauth_token',
+          routing,
+          oauthCredentials: new HostOAuthExecutionAuthority(stores),
+          connection: {
+            slug: resolved.connection.slug,
+            providerType: resolved.connection.providerType,
+            ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
+            models: [...resolved.connection.models],
+            defaultModel: 'gpt-5',
+          },
+          sessionId: 'session-stream',
+          modelId: 'gpt-5',
+          createFetchTransport: () => ({
+            fetch: async () =>
+              new Response(
+                new ReadableStream({
+                  start(controller) {
+                    setImmediate(() => {
+                      if (transportClosed) {
+                        controller.error(new Error('transport closed before response consumption'));
+                        return;
+                      }
+                      controller.enqueue(new TextEncoder().encode('stream-ok'));
+                      controller.close();
+                    });
+                  },
+                }),
+              ),
+            close: async () => {
+              transportClosed = true;
+              transportCloses += 1;
+            },
+          }),
+        });
+        try {
+          const lease = await resolver.acquireAttempt(
+            balancedContext(connection, 'gpt-5', 'session-stream', 'turn-stream'),
+          );
+          assert.ok(lease.fetch);
+          const response = await lease.fetch!('https://chatgpt.com/backend-api/codex/responses');
+          assert.equal(await response.text(), 'stream-ok');
+          assert.equal(transportCloses, 0);
+        } finally {
+          resolver.dispose();
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(transportCloses, 1);
       } finally {
         if (!owner.closed) await owner.close();
       }
@@ -1012,4 +1130,11 @@ async function withInteractiveRoot(run: (input: { root: string }) => Promise<voi
   } finally {
     await rm(base, { recursive: true, force: true });
   }
+}
+
+function codexAccessToken(accountId: string): string {
+  const payload = Buffer.from(
+    JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: accountId } }),
+  ).toString('base64url');
+  return `header.${payload}.signature`;
 }

@@ -4,6 +4,7 @@ import { notifyWhenSeeded } from './seed-completion.js';
 import { releaseSessionObservation } from './session-observation-release.js';
 import type {
   CredentialProfileReadinessView,
+  CredentialProfileUsageView,
   MakaBridge,
   OnboardingSnapshot,
   DesktopTaskSubmissionReadinessRequest,
@@ -996,6 +997,9 @@ const makaBridge = {
       query(slug: string): Promise<CredentialProfileReadinessView> {
         return ipcRenderer.invoke('connections:profiles:query', slug);
       },
+      usage(slug: string, profileId: string): Promise<CredentialProfileUsageView> {
+        return ipcRenderer.invoke('connections:profiles:usage', slug, profileId);
+      },
       create(slug: string, input: { label: string; weight: number }): Promise<void> {
         return ipcRenderer.invoke('connections:profiles:create', slug, input);
       },
@@ -1019,7 +1023,11 @@ const makaBridge = {
       remove(slug: string, input: { profileId: string; profileRevision: number }): Promise<void> {
         return ipcRenderer.invoke('connections:profiles:remove', slug, input);
       },
-      setRoutingMode(slug: string, input: { mode: 'legacy_primary' | 'balanced' }): Promise<void> {
+      setRoutingMode(slug: string, input: {
+        mode: 'legacy_primary' | 'balanced';
+        strategy?: 'smooth_weighted_round_robin' | 'priority_failover';
+        orderedProfileIds?: readonly string[];
+      }): Promise<void> {
         return ipcRenderer.invoke('connections:profiles:setRoutingMode', slug, input);
       },
       setCredential(slug: string, input: { profileId: string; secret: string }): Promise<void> {
@@ -1255,8 +1263,8 @@ const makaBridge = {
     isExperimentalEnabled(): Promise<boolean> {
       return invokeActiveRuntimeHost('openai-codex:is-experimental-enabled');
     },
-    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
-      return invokeActiveRuntimeHost('openai-codex:get-auth-url');
+    getAuthUrl(profileId?: string): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
+      return invokeActiveRuntimeHost('openai-codex:get-auth-url', profileId);
     },
     openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult> {
       return invokeActiveRuntimeHost('openai-codex:open-auth-url', authRequestId);

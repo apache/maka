@@ -259,6 +259,7 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
   >();
   const presentation = new RuntimeHostOAuthPresentation(async () => undefined);
   let attemptId = '';
+  let startedProfileId: string | undefined;
   let changed = 0;
   const client = {
     loadConnectionCatalog: async () => catalog,
@@ -268,8 +269,13 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
     updateConnection: async () => {
       throw new Error('Enabled OAuth Connection must not be rewritten');
     },
-    startOAuthLogin: async (nextAttemptId: string) => {
+    startOAuthLogin: async (
+      nextAttemptId: string,
+      _connectionId: string,
+      profileId?: string,
+    ) => {
       attemptId = nextAttemptId;
+      startedProfileId = profileId;
       await presentation.openExternal(
         'https://auth.example/device',
         'DEVICE-CODE',
@@ -320,10 +326,12 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
     isProviderEnabled: () => true,
   });
 
-  assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url'), {
+  const profileId = '00000000-0000-4000-8000-00000000000a';
+  assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url', profileId), {
     authRequestId: attemptId,
     stateHint: 'DEVICE-CODE',
   });
+  assert.equal(startedProfileId, profileId);
   assert.deepEqual(
     await invoke(handlers, 'openai-codex:complete-authorization', attemptId, undefined),
     { ok: true },

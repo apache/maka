@@ -5,6 +5,7 @@ import type {
   SavedRequestHeaders,
   UpdateConnectionInput,
 } from '@maka/core/llm-connections';
+import type { QuotaSnapshot } from '@maka/core/oauth-subscription';
 import {
   connectionEnabledModelIds,
   defaultEnabledModelIdsWhenOmitted,
@@ -43,6 +44,7 @@ type HostConnectionsClient = Pick<
   | 'deleteCredential'
   | 'fetchConnectionModels'
   | 'fetchConnectionProfileModels'
+  | 'fetchOAuthAccountUsage'
   | 'getConnectionRequestHeaders'
   | 'loadConnectionCatalog'
   | 'queryCredential'
@@ -63,6 +65,7 @@ type HostConnectionsClient = Pick<
 export interface CredentialProfileReadinessView {
   readonly connectionRevision: number;
   readonly routingMode: 'legacy_primary' | 'balanced';
+  readonly routingStrategy: 'smooth_weighted_round_robin' | 'priority_failover';
   readonly readyCandidateCount: number;
   readonly profiles: ReadonlyArray<{
     readonly profileId: string;
@@ -72,6 +75,7 @@ export interface CredentialProfileReadinessView {
     readonly weight: number;
     readonly primary: boolean;
     readonly credentialConfigured: boolean;
+    readonly accountHint?: string;
     readonly lastTest:
       | {
           readonly status: 'verified' | 'needs_reauth' | 'error';
@@ -90,12 +94,25 @@ export interface CredentialProfileReadinessView {
   }>;
 };
 
+export type CredentialProfileUsageView =
+  | { readonly kind: 'available'; readonly quota: QuotaSnapshot }
+  | {
+      readonly kind: 'unavailable';
+      readonly reason:
+        | 'unsupported_provider'
+        | 'credential_unavailable'
+        | 'provider_rejected'
+        | 'provider_unavailable'
+        | 'invalid_response';
+    };
+
 export function projectCredentialProfileReadiness(
   result: Extract<CredentialProfileQueryResult, { readonly kind: 'found' }>,
 ): CredentialProfileReadinessView {
   return {
     connectionRevision: result.connectionRevision,
     routingMode: result.routingMode,
+    routingStrategy: result.routingStrategy,
     readyCandidateCount: result.readyCandidateCount,
     profiles: result.profiles.map((profile) => ({
       profileId: profile.profileId,
@@ -105,6 +122,7 @@ export function projectCredentialProfileReadiness(
       weight: profile.weight,
       primary: profile.primary,
       credentialConfigured: profile.credentialConfigured,
+      ...(profile.accountHint ? { accountHint: profile.accountHint } : {}),
       lastTest: profile.lastTest,
       supportedModels: [...profile.supportedModels],
       circuit: profile.circuit,
@@ -349,6 +367,22 @@ export function registerRuntimeHostConnectionsIpc(
     return projectCredentialProfileReadiness(result);
   });
   deps.ipcMain.handle(
+    'connections:profiles:usage',
+    async (_event, slug: unknown, profileId: unknown): Promise<CredentialProfileUsageView> => {
+      const current = requireConnection(await snapshot(), slug);
+      if (typeof profileId !== 'string' || profileId.trim().length === 0) {
+        throw new Error('Invalid Profile usage request');
+      }
+      const result = await deps.client.fetchOAuthAccountUsage(
+        current.connectionId,
+        profileId.trim(),
+      );
+      return result.kind === 'available'
+        ? { kind: 'available', quota: result.quota }
+        : { kind: 'unavailable', reason: result.reason };
+    },
+  );
+  deps.ipcMain.handle(
     'connections:profiles:create',
     async (_event, slug: unknown, raw: unknown) => {
       const catalog = await snapshot();
@@ -427,9 +461,15 @@ export function registerRuntimeHostConnectionsIpc(
       const updated = await deps.client.setCredentialRoutingMode({
         expected: { connectionId: current.connectionId, revision: current.revision },
         mode: input.mode,
+        ...(input.strategy ? { strategy: input.strategy } : {}),
+        ...(input.orderedProfileIds ? { orderedProfileIds: input.orderedProfileIds } : {}),
       });
       if (updated.kind !== 'committed') {
-        throw new Error(`Unable to change Profile routing mode: ${updated.kind}`);
+        throw new Error(
+          updated.kind === 'balanced_activation_rejected'
+            ? updated.reason
+            : `Unable to change Profile routing mode: ${updated.kind}`,
+        );
       }
       deps.emitConnectionListChanged();
     },
@@ -720,6 +760,8 @@ interface ProfileBasisIpcInput {
 
 interface ProfileRoutingModeIpcInput {
   readonly mode: 'legacy_primary' | 'balanced';
+  readonly strategy?: 'smooth_weighted_round_robin' | 'priority_failover';
+  readonly orderedProfileIds?: readonly string[];
 }
 
 interface ProfileCredentialIpcInput {
@@ -809,7 +851,32 @@ function normalizeProfileRoutingModeInput(value: unknown): ProfileRoutingModeIpc
   ) {
     throw new Error('Profile routing mode must be legacy_primary or balanced');
   }
-  return { mode: value.mode };
+  const strategy = 'strategy' in value ? value.strategy : undefined;
+  if (
+    strategy !== undefined &&
+    strategy !== 'smooth_weighted_round_robin' &&
+    strategy !== 'priority_failover'
+  ) {
+    throw new Error('Profile routing strategy is invalid');
+  }
+  const orderedProfileIds = 'orderedProfileIds' in value ? value.orderedProfileIds : undefined;
+  if (
+    orderedProfileIds !== undefined &&
+    (!Array.isArray(orderedProfileIds) ||
+      orderedProfileIds.length === 0 ||
+      orderedProfileIds.length > 32 ||
+      orderedProfileIds.some((profileId) => typeof profileId !== 'string' || !profileId.trim()) ||
+      new Set(orderedProfileIds).size !== orderedProfileIds.length)
+  ) {
+    throw new Error('Profile order must contain unique Profile ids');
+  }
+  return {
+    mode: value.mode,
+    ...(strategy === undefined ? {} : { strategy }),
+    ...(orderedProfileIds === undefined
+      ? {}
+      : { orderedProfileIds: orderedProfileIds as string[] }),
+  };
 }
 
 function normalizeProfileCredentialInput(value: unknown): ProfileCredentialIpcInput {

@@ -308,6 +308,7 @@ export interface PetPackChangedEvent {
 export interface CredentialProfileReadinessView {
   readonly connectionRevision: number;
   readonly routingMode: 'legacy_primary' | 'balanced';
+  readonly routingStrategy: 'smooth_weighted_round_robin' | 'priority_failover';
   readonly readyCandidateCount: number;
   readonly profiles: ReadonlyArray<{
     readonly profileId: string;
@@ -317,6 +318,7 @@ export interface CredentialProfileReadinessView {
     readonly weight: number;
     readonly primary: boolean;
     readonly credentialConfigured: boolean;
+    readonly accountHint?: string;
     readonly lastTest:
       | {
           readonly status: 'verified' | 'needs_reauth' | 'error';
@@ -334,6 +336,21 @@ export interface CredentialProfileReadinessView {
       | null;
   }>;
 }
+
+export type CredentialProfileUsageView =
+  | {
+      readonly kind: 'available';
+      readonly quota: import('@maka/core/oauth-subscription').QuotaSnapshot;
+    }
+  | {
+      readonly kind: 'unavailable';
+      readonly reason:
+        | 'unsupported_provider'
+        | 'credential_unavailable'
+        | 'provider_rejected'
+        | 'provider_unavailable'
+        | 'invalid_response';
+    };
 
 export interface MakaBridge {
   runtimeHost: {
@@ -617,6 +634,10 @@ export interface MakaBridge {
     subscribeEvents(handler: (event: ConnectionEvent) => void): () => void;
     profiles: {
       query(slug: string): Promise<CredentialProfileReadinessView>;
+      usage(
+        slug: string,
+        profileId: string,
+      ): Promise<CredentialProfileUsageView>;
       create(slug: string, input: { label: string; weight: number }): Promise<void>;
       update(
         slug: string,
@@ -636,7 +657,11 @@ export interface MakaBridge {
         },
       ): Promise<void>;
       remove(slug: string, input: { profileId: string; profileRevision: number }): Promise<void>;
-      setRoutingMode(slug: string, input: { mode: 'legacy_primary' | 'balanced' }): Promise<void>;
+      setRoutingMode(slug: string, input: {
+        mode: 'legacy_primary' | 'balanced';
+        strategy?: 'smooth_weighted_round_robin' | 'priority_failover';
+        orderedProfileIds?: readonly string[];
+      }): Promise<void>;
       setCredential(slug: string, input: { profileId: string; secret: string }): Promise<void>;
       test(
         slug: string,
@@ -777,7 +802,7 @@ export interface MakaBridge {
   };
   openAiCodex: {
     isExperimentalEnabled(): Promise<boolean>;
-    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    getAuthUrl(profileId?: string): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
     openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult>;
     completeAuthorization(authRequestId: string): Promise<SubscriptionActionResult>;
     cancelAuthorization(authRequestId?: string): Promise<{ ok: true }>;

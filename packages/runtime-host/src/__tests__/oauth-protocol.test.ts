@@ -68,6 +68,32 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
 
 test('OAuth account usage exposes only a bounded safe quota projection', () => {
   assert.deepEqual(
+    decodeClientFrame({
+      requestId: 'request',
+      operation: 'oauth.account.usage.fetch',
+      input: { connectionId: 'connection', profileId: 'profile-2' },
+    }),
+    {
+      requestId: 'request',
+      operation: 'oauth.account.usage.fetch',
+      input: { connectionId: 'connection', profileId: 'profile-2' },
+    },
+  );
+  assert.deepEqual(
+    decodeHostFrame({
+      requestId: 'request-rejected',
+      operation: 'oauth.account.usage.fetch',
+      ok: true,
+      result: { kind: 'unavailable', reason: 'provider_rejected' },
+    }),
+    {
+      requestId: 'request-rejected',
+      operation: 'oauth.account.usage.fetch',
+      ok: true,
+      result: { kind: 'unavailable', reason: 'provider_rejected' },
+    },
+  );
+  assert.deepEqual(
     decodeHostFrame({
       requestId: 'request',
       operation: 'oauth.account.usage.fetch',

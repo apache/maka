@@ -276,21 +276,18 @@ export interface CredentialProfileReadinessItem {
   readonly weight: number;
   readonly primary: boolean;
   readonly credentialConfigured: boolean;
-  readonly lastTest:
-    | {
-        readonly status: ConnectionTestSummary['status'];
-        readonly checkedAt: string;
-        readonly errorClass?: ConnectionTestErrorClass;
-      }
-    | null;
+  readonly accountHint?: string;
+  readonly lastTest: {
+    readonly status: ConnectionTestSummary['status'];
+    readonly checkedAt: string;
+    readonly errorClass?: ConnectionTestErrorClass;
+  } | null;
   readonly supportedModels: readonly string[];
-  readonly circuit:
-    | {
-        readonly state: 'closed' | 'open' | 'half_open' | 'invalid';
-        readonly blockedUntil: number | null;
-        readonly nextProbeAt: number | null;
-      }
-    | null;
+  readonly circuit: {
+    readonly state: 'closed' | 'open' | 'half_open' | 'invalid';
+    readonly blockedUntil: number | null;
+    readonly nextProbeAt: number | null;
+  } | null;
 }
 
 export interface CredentialProfileQueryInput {
@@ -312,6 +309,7 @@ export type CredentialProfileQueryResult =
       readonly connectionId: string;
       readonly connectionRevision: number;
       readonly routingMode: CredentialProfileRoutingMode;
+      readonly routingStrategy: 'smooth_weighted_round_robin' | 'priority_failover';
       readonly readyCandidateCount: number;
       readonly profiles: readonly CredentialProfileReadinessItem[];
     }
@@ -1469,20 +1467,21 @@ function decodeCredentialProfileQueryResult(value: unknown): CredentialProfileQu
     'connectionId',
     'connectionRevision',
     'routingMode',
+    'routingStrategy',
     'readyCandidateCount',
     'profiles',
   ]);
   if (found.kind !== 'found') throw invalidProtocolFrame('Invalid credential profile found result');
-  if (
-    found.routingMode !== 'legacy_primary' &&
-    found.routingMode !== 'balanced'
-  ) {
+  if (found.routingMode !== 'legacy_primary' && found.routingMode !== 'balanced') {
     throw invalidProtocolFrame('Invalid credential profile routing mode');
   }
   if (
-    !Array.isArray(found.profiles) ||
-    found.profiles.length > CONNECTION_CREDENTIAL_PROFILE_MAX
+    found.routingStrategy !== 'smooth_weighted_round_robin' &&
+    found.routingStrategy !== 'priority_failover'
   ) {
+    throw invalidProtocolFrame('Invalid credential profile routing strategy');
+  }
+  if (!Array.isArray(found.profiles) || found.profiles.length > CONNECTION_CREDENTIAL_PROFILE_MAX) {
     throw invalidProtocolFrame('Invalid credential profile readiness profiles');
   }
   return {
@@ -1490,6 +1489,7 @@ function decodeCredentialProfileQueryResult(value: unknown): CredentialProfileQu
     connectionId: requireEntityId(found.connectionId, 'connectionId'),
     connectionRevision: revision(found.connectionRevision, 'connection revision'),
     routingMode: found.routingMode,
+    routingStrategy: found.routingStrategy,
     readyCandidateCount: integer(
       found.readyCandidateCount,
       'ready candidate count',
@@ -1501,18 +1501,35 @@ function decodeCredentialProfileQueryResult(value: unknown): CredentialProfileQu
 }
 
 function decodeCredentialProfileReadinessItem(value: unknown): CredentialProfileReadinessItem {
-  const item = requireExactRecord(value, 'credential profile readiness item', [
-    'profileId',
-    'revision',
-    'label',
-    'enabled',
-    'weight',
-    'primary',
-    'credentialConfigured',
-    'lastTest',
-    'supportedModels',
-    'circuit',
-  ]);
+  const item = optionalRecord(
+    value,
+    'credential profile readiness item',
+    [
+      'profileId',
+      'revision',
+      'label',
+      'enabled',
+      'weight',
+      'primary',
+      'credentialConfigured',
+      'lastTest',
+      'supportedModels',
+      'circuit',
+      'accountHint',
+    ],
+    [
+      'profileId',
+      'revision',
+      'label',
+      'enabled',
+      'weight',
+      'primary',
+      'credentialConfigured',
+      'lastTest',
+      'supportedModels',
+      'circuit',
+    ],
+  );
   if (
     typeof item.enabled !== 'boolean' ||
     typeof item.primary !== 'boolean' ||
@@ -1550,6 +1567,9 @@ function decodeCredentialProfileReadinessItem(value: unknown): CredentialProfile
     weight,
     primary: item.primary,
     credentialConfigured: item.credentialConfigured,
+    ...(item.accountHint === undefined
+      ? {}
+      : { accountHint: boundedAccountHint(item.accountHint) }),
     lastTest: item.lastTest === null ? null : decodeCredentialProfileLastTest(item.lastTest),
     supportedModels,
     circuit: item.circuit === null ? null : decodeCredentialProfileCircuit(item.circuit),
@@ -1560,6 +1580,12 @@ function decodeCredentialProfileLastTest(
   value: unknown,
 ): NonNullable<CredentialProfileReadinessItem['lastTest']> {
   return decodeDomain(() => decodeConnectionTestSummary(value));
+}
+
+function boundedAccountHint(value: unknown): string {
+  const hint = stringValue(value, 'account hint');
+  if (hint.length > 256) throw invalidProtocolFrame('Invalid account hint length');
+  return hint;
 }
 
 function decodeCredentialProfileCircuit(
@@ -1580,7 +1606,8 @@ function decodeCredentialProfileCircuit(
   }
   return {
     state: item.state,
-    blockedUntil: item.blockedUntil === null ? null : requireCount(item.blockedUntil, 'blocked until'),
+    blockedUntil:
+      item.blockedUntil === null ? null : requireCount(item.blockedUntil, 'blocked until'),
     nextProbeAt: item.nextProbeAt === null ? null : requireCount(item.nextProbeAt, 'next probe at'),
   };
 }

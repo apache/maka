@@ -160,6 +160,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     remove,
     refreshAfterRelogin,
     supportsProfiles,
+    supportsOAuthProfiles,
     profileReadiness,
     profileReadinessFailed,
     profileActionId,
@@ -169,12 +170,17 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     setProfileNewLabel,
     profileNewWeight,
     setProfileNewWeight,
+    profileOAuthStateHints,
+    profileUsage,
+    refreshProfileUsage,
     createProfile,
     updateProfile,
     setProfileEnabled,
     removeProfile,
     setProfileRoutingMode,
+    moveOAuthProfile,
     saveProfileCredential,
+    loginOAuthProfile,
     runProfileTest,
   } = useConnectionDetail(props);
   // Capability switches only exist for openai-compatible relays: built-in
@@ -309,7 +315,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
        box for each was the page telling the user to fill in something that is
        already filled in. */
     <VStack gap={8}>
-      <DetailSection
+      {!supportsOAuthProfiles && <DetailSection
         title={copy.credentials}
         /* One claim, not four phrasings of it: the credential never leaves this
            machine. The endpoint is not a secret, so it did not need a variant. */
@@ -435,10 +441,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             )}
           </VStack>
         )}
-      </DetailSection>
+      </DetailSection>}
       {supportsProfiles && (
         <>
-          <Divider />
+          {!supportsOAuthProfiles && <Divider />}
           <CredentialProfilesSection
             connection={connection}
             readiness={profileReadiness}
@@ -455,7 +461,18 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             onSetEnabled={setProfileEnabled}
             onRemove={removeProfile}
             onSetRoutingMode={setProfileRoutingMode}
+            onMove={moveOAuthProfile}
             onSaveCredential={saveProfileCredential}
+            oauth={supportsOAuthProfiles}
+            oauthStateHints={profileOAuthStateHints}
+            usageByProfile={profileUsage}
+            onRefreshUsage={async (profileId) => {
+              const profile = profileReadiness?.profiles.find(
+                (candidate) => candidate.profileId === profileId,
+              );
+              if (profile) await refreshProfileUsage([profile]);
+            }}
+            onOAuthLogin={loginOAuthProfile}
             onTest={runProfileTest}
             busy={allActionsBusy}
           />

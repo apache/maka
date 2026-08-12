@@ -218,7 +218,7 @@ async function checkedOpenAiCodexFetch(
       edgeRetry += 1;
       continue;
     }
-    throw new Error(formatOpenAiCodexHttpError(response.status, detail));
+    throw new OpenAiCodexHttpError(response.status, detail);
   }
 }
 
@@ -332,8 +332,25 @@ function codexInstructionsFromBody(body: Record<string, unknown>): string {
 function formatOpenAiCodexHttpError(statusCode: number, detail: string): string {
   const compact = redactSecrets(detail).replace(/\s+/g, ' ').trim().slice(0, 240);
   return compact
-    ? `Codex OAuth request failed: HTTP ${statusCode} ${compact}`
-    : `Codex OAuth request failed: HTTP ${statusCode}`;
+    ? `Codex request failed: HTTP ${statusCode} ${compact}`
+    : `Codex request failed: HTTP ${statusCode}`;
+}
+
+/**
+ * Keep the transport status structured across the custom fetch / AI SDK
+ * boundary. Runtime routing must not have to recover a status code from the
+ * redacted presentation string in order to classify and fail over an account.
+ */
+export class OpenAiCodexHttpError extends Error {
+  readonly statusCode: number;
+  readonly code: string;
+
+  constructor(statusCode: number, detail: string) {
+    super(formatOpenAiCodexHttpError(statusCode, detail));
+    this.name = 'OpenAiCodexHttpError';
+    this.statusCode = statusCode;
+    this.code = String(statusCode);
+  }
 }
 
 function buildClaudeSubscriptionCloakedFetch(

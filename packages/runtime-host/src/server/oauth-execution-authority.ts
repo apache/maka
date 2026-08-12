@@ -24,9 +24,13 @@ export type OAuthExecutionCredentialErrorCode =
   | 'refresh_failed'
   | 'persistence_failed';
 
-type OAuthCredentialLocator = Extract<CredentialLocator, { scope: 'connection' }> & {
-  readonly kind: 'oauth_token';
-};
+type OAuthCredentialLocator =
+  | (Omit<Extract<CredentialLocator, { scope: 'connection' }>, 'kind'> & {
+      readonly kind: 'oauth_token';
+    })
+  | (Omit<Extract<CredentialLocator, { scope: 'connection_profile' }>, 'kind'> & {
+      readonly kind: 'oauth_token';
+    });
 
 export class OAuthExecutionCredentialError extends Error {
   constructor(
@@ -88,7 +92,8 @@ export class HostOAuthExecutionAuthority {
       );
     }
     const locator = requireOAuthLocator(input.material.locator);
-    let state = this.#states.get(locator.connectionId);
+    const key = oauthLocatorKey(locator);
+    let state = this.#states.get(key);
     if (state) {
       if (
         state.providerType !== input.providerType ||
@@ -128,7 +133,7 @@ export class HostOAuthExecutionAuthority {
         revision: input.material.revision,
         raw: input.material.secret,
       };
-      this.#states.set(state.locator.connectionId, state);
+      this.#states.set(key, state);
     }
 
     const bound = state;
@@ -229,7 +234,7 @@ export class HostOAuthExecutionAuthority {
 
     let resolved;
     try {
-      resolved = await this.#stores.operations.resolveExecutionConnection(state.connectionSlug);
+      resolved = await this.#stores.operations.exportCredentialMaterial(state.locator);
     } catch (error) {
       throw new OAuthExecutionCredentialError(
         'persistence_failed',
@@ -238,7 +243,7 @@ export class HostOAuthExecutionAuthority {
       );
     }
     this.#assertCurrent(state);
-    const material = resolved.kind === 'ready' ? resolved.secretMaterial.connection : undefined;
+    const material = resolved ?? undefined;
     if (
       material &&
       material.credentialId === candidate.credentialId &&
@@ -302,7 +307,7 @@ export class HostOAuthExecutionAuthority {
   }
 
   #isCurrent(state: CredentialState): boolean {
-    return this.#states.get(state.locator.connectionId) === state;
+    return this.#states.get(oauthLocatorKey(state.locator)) === state;
   }
 
   #assertCurrent(state: CredentialState): void {
@@ -310,7 +315,7 @@ export class HostOAuthExecutionAuthority {
   }
 
   #invalidate(state: CredentialState): void {
-    if (this.#isCurrent(state)) this.#states.delete(state.locator.connectionId);
+    if (this.#isCurrent(state)) this.#states.delete(oauthLocatorKey(state.locator));
   }
 }
 
@@ -413,17 +418,23 @@ class OAuthCredentialSupersededError extends Error {
 }
 
 function requireOAuthLocator(locator: CredentialLocator): OAuthCredentialLocator {
-  if (locator.scope !== 'connection' || locator.kind !== 'oauth_token') {
+  if (
+    (locator.scope !== 'connection' && locator.scope !== 'connection_profile') ||
+    locator.kind !== 'oauth_token'
+  ) {
     throw new OAuthExecutionCredentialError(
       'persistence_failed',
       'Canonical OAuth credential material has an invalid locator',
     );
   }
-  return {
-    scope: 'connection',
-    connectionId: locator.connectionId,
-    kind: 'oauth_token',
-  };
+  return locator.scope === 'connection'
+    ? { scope: 'connection', connectionId: locator.connectionId, kind: 'oauth_token' }
+    : {
+        scope: 'connection_profile',
+        connectionId: locator.connectionId,
+        profileId: locator.profileId,
+        kind: 'oauth_token',
+      };
 }
 
 function assertBoundRequest(state: CredentialState, slug: string, kind: 'oauth_token'): void {
@@ -436,12 +447,25 @@ function assertBoundRequest(state: CredentialState, slug: string, kind: 'oauth_t
 }
 
 function sameLocator(left: CredentialLocator, right: CredentialLocator): boolean {
+  if (left.scope !== right.scope) return false;
+  if (
+    (left.scope !== 'connection' && left.scope !== 'connection_profile') ||
+    (right.scope !== 'connection' && right.scope !== 'connection_profile')
+  ) {
+    return false;
+  }
   return (
-    left.scope === 'connection' &&
-    right.scope === 'connection' &&
     left.connectionId === right.connectionId &&
-    left.kind === right.kind
+    left.kind === right.kind &&
+    (left.scope === 'connection' ||
+      (right.scope === 'connection_profile' && left.profileId === right.profileId))
   );
+}
+
+function oauthLocatorKey(locator: OAuthCredentialLocator): string {
+  return locator.scope === 'connection'
+    ? `${locator.connectionId}:primary`
+    : `${locator.connectionId}:profile:${locator.profileId}`;
 }
 
 function mergedHeaders(

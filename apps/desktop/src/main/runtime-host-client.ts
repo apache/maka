@@ -414,8 +414,13 @@ export class DesktopRuntimeHostClient {
   startOAuthLogin(
     attemptId: string,
     connectionId: string,
+    profileId?: string,
   ): Promise<OperationOutput<"oauth.login.start">> {
-    return this.request("oauth.login.start", { attemptId, connectionId });
+    return this.#request("oauth.login.start", {
+      attemptId,
+      connectionId,
+      ...(profileId ? { profileId } : {}),
+    });
   }
 
   queryOAuthLogin(
@@ -432,8 +437,12 @@ export class DesktopRuntimeHostClient {
 
   fetchOAuthAccountUsage(
     connectionId: string,
+    profileId?: string,
   ): Promise<OperationOutput<"oauth.account.usage.fetch">> {
-    return this.request("oauth.account.usage.fetch", { connectionId });
+    return this.#request("oauth.account.usage.fetch", {
+      connectionId,
+      ...(profileId ? { profileId } : {}),
+    });
   }
 
   async loadSkillCatalog(
