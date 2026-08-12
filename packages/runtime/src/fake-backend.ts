@@ -177,6 +177,7 @@ export class FakeBackend implements AgentBackend {
         let waitingText = rewritesDisplayedText
           ? 'prefix sk-123456789012345'
           : 'Fake backend waiting for the test to stop the Turn.';
+        let acknowledgementBaseText = waitingText;
         let rewritePending = rewritesDisplayedText;
         yield {
           type: 'text_delta',
@@ -193,10 +194,14 @@ export class FakeBackend implements AgentBackend {
             settleOutstanding(leaseId);
           }
           if (pending.length > 0) {
-            const nextText = rewritePending
-              ? `${waitingText}6 NEW`
-              : `${waitingText}\n\nAcknowledged steering: ${steered.join(' | ')}`;
-            rewritePending = false;
+            let nextText: string;
+            if (rewritePending) {
+              nextText = `${waitingText}6 NEW`;
+              acknowledgementBaseText = nextText;
+              rewritePending = false;
+            } else {
+              nextText = `${acknowledgementBaseText}\n\nAcknowledged steering: ${steered.join(' | ')}`;
+            }
             const delta = nextText.slice(waitingText.length);
             waitingText = nextText;
             yield {

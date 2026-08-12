@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';
-import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '../fake-backend.js';
+import {
+  FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_HOLD_OPEN_PROMPT,
+  FakeBackend,
+} from '../fake-backend.js';
 import {
   RuntimeInteractionInvariantError,
   bindRuntimeInteractionRun,
@@ -108,6 +112,36 @@ test('pullSteering drains queued messages at step boundaries as steering events'
   assert.deepEqual(acked, ['lease-1', 'lease-2']);
   // The fake acknowledges the steering it saw, proving it reached the model side.
   assert.match(completedText, /Acknowledged steering: do X \| and Y/);
+});
+
+test('hold-open steering extends one acknowledgement instead of repeating it', async () => {
+  const backend = new FakeBackend({
+    sessionId: 'session-1',
+    header: { model: 'fake-model' } as SessionHeader,
+    store: {} as SessionStore,
+    appendMessage: async () => {},
+  });
+  const pending = [
+    { id: 'lease-1', messageId: 'message-1', content: { text: 'one' } },
+    { id: 'lease-2', messageId: 'message-2', content: { text: 'two' } },
+  ];
+  const textDeltas: string[] = [];
+
+  for await (const event of backend.send({
+    turnId: 'turn-1',
+    text: FAKE_HOLD_OPEN_PROMPT,
+    context: [],
+    pullSteering: () => (pending.length > 0 ? [pending.shift()!] : []),
+  })) {
+    if (event.type !== 'text_delta') continue;
+    textDeltas.push(event.text);
+    if (textDeltas.length === 3) await backend.stop();
+  }
+
+  assert.equal(
+    textDeltas.join(''),
+    'Fake backend waiting for the test to stop the Turn.\n\nAcknowledged steering: one | two',
+  );
 });
 
 test('a batch of leases settles per lease: delivered ones ack, undelivered ones nack', async () => {
