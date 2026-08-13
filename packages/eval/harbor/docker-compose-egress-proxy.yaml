@@ -2,7 +2,7 @@ services:
   harbor-docker-egress-control-sidecar:
     volumes:
       - type: bind
-        source: ./egress-proxy/network-policy
+        source: ${MAKA_EVAL_NETWORK_POLICY_PATH}
         target: /usr/local/bin/network-policy
         read_only: true
 

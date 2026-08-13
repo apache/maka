@@ -346,6 +346,7 @@ async function startTrial(
   const task = decodeTask(framework, options, cell);
   const timeoutMultiplier = positive(cell.budget.timeoutMultiplier, 'budget.timeoutMultiplier');
   const environmentConfig = resolveEnvironmentConfig(options);
+  const networkPolicyPath = resolveNetworkPolicyPath(options);
   const relayPath = resolve(dirname(fileURLToPath(import.meta.url)), '../harbor');
   const executionEnvironment = egressExecutionEnvironment(options.egressProxy);
   const environment = preparationEnvironment(
@@ -354,6 +355,7 @@ async function startTrial(
     [...subjectCredentialNames, ...cell.subject.credentials],
     options.preparationEnvironment,
     options.egressProxy?.allowedHost,
+    networkPolicyPath,
   );
   const server = createServer();
   const connections = new Set<Socket>();
@@ -585,6 +587,7 @@ function preparationEnvironment(
   subjectCredentialNames: readonly string[],
   declared: readonly string[],
   egressAllowedHost?: string,
+  networkPolicyPath?: string,
 ): NodeJS.ProcessEnv {
   const allowed = new Set([
     'HOME',
@@ -613,6 +616,7 @@ function preparationEnvironment(
     MAKA_EVAL_FRAMEWORK: framework,
     PYTHONPATH: [relayPath, inherited.PYTHONPATH].filter(Boolean).join(delimiter),
     ...(egressAllowedHost ? { MAKA_EVAL_EGRESS_ALLOWED_HOST: egressAllowedHost } : {}),
+    ...(networkPolicyPath ? { MAKA_EVAL_NETWORK_POLICY_PATH: networkPolicyPath } : {}),
   };
 }
 
@@ -706,6 +710,7 @@ interface HarnessOptions {
   readonly egressProxy?: {
     readonly composeSourceEnv: string;
     readonly composeRelativePath: string;
+    readonly networkPolicyRelativePath: string;
     readonly proxyUrl: string;
     readonly allowedHost: string;
     readonly containerCaPath: string;
@@ -770,7 +775,14 @@ function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions 
 function decodeEgressProxy(value: unknown): NonNullable<HarnessOptions['egressProxy']> {
   const proxy = exact(
     value,
-    ['composeSourceEnv', 'composeRelativePath', 'proxyUrl', 'allowedHost', 'containerCaPath'],
+    [
+      'composeSourceEnv',
+      'composeRelativePath',
+      'networkPolicyRelativePath',
+      'proxyUrl',
+      'allowedHost',
+      'containerCaPath',
+    ],
     'egressProxy',
   );
   const proxyUrl = text(proxy.proxyUrl, 'egressProxy.proxyUrl');
@@ -780,6 +792,10 @@ function decodeEgressProxy(value: unknown): NonNullable<HarnessOptions['egressPr
   return {
     composeSourceEnv: machinePathEnv(proxy.composeSourceEnv, 'egressProxy.composeSourceEnv'),
     composeRelativePath: relativePath(proxy.composeRelativePath, 'egressProxy.composeRelativePath'),
+    networkPolicyRelativePath: relativePath(
+      proxy.networkPolicyRelativePath,
+      'egressProxy.networkPolicyRelativePath',
+    ),
     proxyUrl,
     allowedHost: hostName(proxy.allowedHost, 'egressProxy.allowedHost'),
     containerCaPath: absolute(proxy.containerCaPath, 'egressProxy.containerCaPath'),
@@ -816,6 +832,16 @@ function resolveEnvironmentConfig(options: HarnessOptions): JsonObject {
     throw new Error('egress proxy compose path escapes its source root');
   }
   return { ...base, extra_docker_compose: [composePath] };
+}
+
+function resolveNetworkPolicyPath(options: HarnessOptions): string | undefined {
+  if (!options.egressProxy) return undefined;
+  const source = resolve(process.env[options.egressProxy.composeSourceEnv]!);
+  const policyPath = resolve(source, options.egressProxy.networkPolicyRelativePath);
+  if (relative(source, policyPath).startsWith(`..${sep}`)) {
+    throw new Error('egress network policy path escapes its source root');
+  }
+  return policyPath;
 }
 
 function decodeTask(framework: Framework, options: HarnessOptions, cell: ExperimentCell) {

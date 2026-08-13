@@ -784,6 +784,7 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
         egressProxy: {
           composeSourceEnv: string;
           composeRelativePath: string;
+          networkPolicyRelativePath: string;
           proxyUrl: string;
           allowedHost: string;
           containerCaPath: string;
@@ -799,6 +800,7 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   assert.deepEqual(spec.executor.config.egressProxy, {
     composeSourceEnv: 'MAKA_EVAL_MAKA_BUNDLE_PATH',
     composeRelativePath: 'packages/eval/harbor/docker-compose-egress-proxy.yaml',
+    networkPolicyRelativePath: 'packages/eval/harbor/egress-proxy/network-policy',
     proxyUrl: 'http://maka-eval-mitmproxy:8080',
     allowedHost: 'maka-eval-mitmproxy',
     containerCaPath: '/opt/maka-egress/mitmproxy-ca-cert.pem',
