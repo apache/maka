@@ -1062,7 +1062,9 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
     case 'model_change':
       try {
         const change = decodeModelChangeNoteData(message.data);
-        return `Model changed from ${change.from.model} to ${change.to.model}.`;
+        const from = modelChangeLabel(change.from, change.to);
+        const to = modelChangeLabel(change.to, change.from);
+        return `Model changed from ${from} to ${to}.`;
       } catch {
         return 'Model changed.';
       }
@@ -1077,6 +1079,15 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
     case 'abort':
       return 'Session was stopped.';
   }
+}
+
+function modelChangeLabel(
+  identity: { connectionSlug: string; model: string },
+  other: { connectionSlug: string; model: string },
+): string {
+  return identity.connectionSlug === other.connectionSlug
+    ? identity.model
+    : `${identity.model} (${identity.connectionSlug})`;
 }
 
 export function renderMakaPiTranscript(

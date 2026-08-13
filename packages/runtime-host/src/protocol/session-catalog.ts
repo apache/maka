@@ -213,6 +213,7 @@ export interface SessionCatalogProjection {
   readonly llmConnectionSlug: string;
   readonly connectionLocked: boolean;
   readonly model: string;
+  /** Present on point reads and configuration results; catalog pages omit the per-Session Run read. */
   readonly lastUsedModel?: {
     readonly connectionSlug: string;
     readonly model: string;

@@ -151,7 +151,12 @@ function user(
   return { type: 'user', id, turnId, ts: NOW - minutesAgo * 60_000, text };
 }
 
-function assistant(id: string, turnId: string, minutesAgo: number, text: string): StoredMessage {
+function assistant(
+  id: string,
+  turnId: string,
+  minutesAgo: number,
+  text: string,
+): Extract<StoredMessage, { type: 'assistant' }> {
   return { type: 'assistant', id, turnId, ts: NOW - minutesAgo * 60_000, text, modelId: 'claude-sonnet-4-5' };
 }
 
@@ -468,12 +473,15 @@ export const ModelChanged: Story = {
             },
           },
           user('msg-model-change-user', 'turn-model-change', 2, '继续检查剩余的失败用例。'),
-          assistant(
-            'msg-model-change-assistant',
-            'turn-model-change',
-            1,
-            '剩余失败与本次改动无关，可以继续收尾。',
-          ),
+          {
+            ...assistant(
+              'msg-model-change-assistant',
+              'turn-model-change',
+              1,
+              '剩余失败与本次改动无关，可以继续收尾。',
+            ),
+            modelId: 'gpt-5.1',
+          },
         ],
       }}
     />
