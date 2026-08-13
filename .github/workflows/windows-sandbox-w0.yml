@@ -23,3 +23,9 @@ jobs:
           node-version: '24'
       - name: Verify closed launcher protocol
         run: node --test experiments/windows-sandbox/*.test.mjs
+      - name: Build process-containment launcher
+        working-directory: experiments/windows-sandbox/launcher
+        run: cargo build --locked
+      - name: Verify restricted token and atomic Job membership
+        shell: pwsh
+        run: ./experiments/windows-sandbox/launcher-smoke.ps1
