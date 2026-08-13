@@ -210,7 +210,7 @@ fn quote_command(executable: &str, arguments: &[String]) -> Vec<u16> {
 }
 
 fn quote_argument(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    format!("\"{}\"", value.replace('"', "\\\""))
 }
 
 fn environment_block(environment: &std::collections::BTreeMap<String, String>) -> Vec<u16> {
