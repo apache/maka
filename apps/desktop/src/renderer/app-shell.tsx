@@ -158,6 +158,7 @@ import { createAppShellSessionEventHandlers } from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import {
   createAppShellChatActions,
+  type PendingAttachment,
   type WorkspaceFileReferencePosition,
 } from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
@@ -2389,6 +2390,7 @@ function AppShellContent({
     revision: 0,
   });
   useActiveSessionEvents({
+    uiLocale,
     activeId,
     activeIdRef,
     handleEvent,
@@ -2401,7 +2403,9 @@ function AppShellContent({
     },
     setMessageLoadErrorBySession,
     setMessageLoadPending,
+    setMessages,
     setSessionEventHealthBySession,
+    toastApi,
   });
   useShellRunUpdates({ activeId, setShellRunUpdatesBySession });
   useSessionEventHealthPolling({
