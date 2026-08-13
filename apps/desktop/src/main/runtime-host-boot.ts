@@ -28,7 +28,7 @@ import {
   createMcpConfigStore,
 } from "@maka/storage";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
-import { registerAppIpc } from "./app-ipc-main.js";
+import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
@@ -1071,6 +1071,11 @@ function requireScheduledTaskEffectString(value: unknown, label: string): string
 }
 
 function registerPersistentClientIpc(): void {
+  registerAppClientIpc({
+    mainWindowController,
+    e2eFixture,
+    updateService,
+  });
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
   ipcMain.handle("sessions:unobserve", async (_event, observerId: unknown) => {
     if (typeof observerId !== "string" || observerId.length === 0 || observerId.length > 256) {
