@@ -74,6 +74,7 @@ interface DesktopNativeCapabilityProviderOptions {
   readonly onSessionUsed?: (sessionId: string) => void;
   readonly onComputerUseTurnUsed?: (sessionId: string, turnId: string) => void;
   readonly onClosed?: () => void;
+  readonly nativeSessionId?: (sessionId: string) => string;
 }
 
 /** Adapt Desktop-owned Maka tools to the open Client Capability protocol. */
@@ -306,8 +307,12 @@ async function invokeNativeTool(
   if (frame.offerId === COMPUTER_USE_OFFER_ID) {
     providerOptions.onComputerUseTurnUsed?.(frame.sessionId, frame.turnId);
   }
+  const sessionId =
+    frame.offerId === BROWSER_OFFER_ID || frame.offerId === COMPUTER_USE_OFFER_ID
+      ? providerOptions.nativeSessionId?.(frame.sessionId) ?? frame.sessionId
+      : frame.sessionId;
   const output = await binding.tool.impl(args, {
-    sessionId: frame.sessionId,
+    sessionId,
     turnId: frame.turnId,
     cwd,
     toolCallId: frame.toolCallId,

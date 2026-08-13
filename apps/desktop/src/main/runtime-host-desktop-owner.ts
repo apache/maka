@@ -36,6 +36,7 @@ export interface RuntimeHostDesktopOwner {
 
 export interface RuntimeHostDesktopTargetSnapshot {
   readonly epoch: string;
+  readonly hostId?: string;
   readonly target: ResolvedRuntimeHostProfile;
   readonly readiness: 'ready' | 'reconnecting';
   readonly candidate?: DesktopRuntimeHostCandidate;
@@ -46,6 +47,7 @@ export type RuntimeHostDesktopTargetState =
       readonly epoch: string;
       readonly target: ResolvedRuntimeHostProfile;
       readonly readiness: 'connecting' | 'reconnecting';
+      readonly hostId?: string;
     }
   | {
       readonly epoch: string;
@@ -98,6 +100,7 @@ interface DesktopRuntimeHostTargetGeneration {
   readonly input: DesktopRuntimeHostCandidateStartInput;
   readonly target: ResolvedRuntimeHostProfile;
   readonly observations: RuntimeHostSessionObservationRegistry;
+  hostId?: string;
   lifecycle?: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>;
   unsubscribeLifecycle?: () => void;
   valid: boolean;
@@ -194,6 +197,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     const candidate = target.lifecycle?.current;
     return {
       epoch: target.epoch,
+      ...(target.hostId ? { hostId: target.hostId } : {}),
       target: target.target,
       readiness: candidate ? 'ready' : 'reconnecting',
       ...(candidate ? { candidate } : {}),
@@ -393,7 +397,10 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
         },
         target.observations,
       );
-      if (result.kind === 'ready') return result.candidate;
+      if (result.kind === 'ready') {
+        target.hostId = result.candidate.client.hostId;
+        return result.candidate;
+      }
       if (result.kind === 'upgrade_required' && result.restartable) {
         const decision = await this.#resolveRestartable(result);
         if (decision === 'cancel') {
@@ -489,6 +496,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
               epoch: target.epoch,
               target: target.target,
               readiness: 'reconnecting',
+              ...(target.hostId ? { hostId: target.hostId } : {}),
             },
       );
     });
@@ -505,6 +513,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
             epoch: target.epoch,
             target: target.target,
             readiness: 'reconnecting',
+            ...(target.hostId ? { hostId: target.hostId } : {}),
           },
     );
   }

@@ -4,6 +4,7 @@ import { redactSecrets } from '@maka/core/redaction';
 import type { TurnTrace } from '@maka/core/session-trace';
 import type { HostDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type { DesktopDiagnosticCopyResult } from '../preload/diagnostics-contract.js';
+import { requireDesktopHostRef } from '../preload/runtime-host-identity.js';
 import {
   formatDesktopErrorDiagnosticReport,
   parseDesktopErrorDiagnosticInput,
@@ -16,6 +17,7 @@ export interface DesktopDiagnosticsIpcDeps {
   readonly ipcMain: Pick<IpcMain, 'handle'>;
   readonly environment: () => DesktopDiagnosticEnvironment;
   readonly mainLogs: () => readonly string[];
+  readonly getActiveHostId: () => string | undefined;
   readonly getRuntimeHostDiagnostics: () => Promise<HostDiagnosticsResult>;
   readonly getRuntimeHostTurnTrace: (sessionId: string, turnId: string) => Promise<TurnTrace | undefined>;
   readonly writeClipboard: (value: string) => void;
@@ -24,7 +26,10 @@ export interface DesktopDiagnosticsIpcDeps {
 export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): void {
   deps.ipcMain.handle(
     'diagnostics:copyErrorReport',
-    async (_event, rawInput: unknown): Promise<DesktopDiagnosticCopyResult> => {
+    async (_event, scope: unknown, rawInput: unknown): Promise<DesktopDiagnosticCopyResult> => {
+      const hostId = deps.getActiveHostId();
+      if (!hostId) throw new Error('Desktop Runtime Host identity is unavailable');
+      requireDesktopHostRef(scope, hostId);
       const input = parseDesktopErrorDiagnosticInput(rawInput);
       let runtimeHost: RuntimeHostDiagnosticRead;
       try {

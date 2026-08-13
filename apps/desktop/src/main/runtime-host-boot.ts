@@ -141,6 +141,7 @@ import {
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
 import { startupStep, whileAwaitingPerson } from "./startup-step.js";
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
+import { parseDesktopSessionResourceKey } from "../preload/runtime-host-identity.js";
 
 await resolveShellEnv();
 
@@ -257,6 +258,7 @@ const mainWindowController = createMainWindowController({
   e2eFixture,
   settingsStore,
   startHidden,
+  getActiveRuntimeHostId: () => owner?.current()?.hostId,
   onClose: () => onMainWindowClose(),
 });
 const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
@@ -303,6 +305,7 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   clientDataRoot: userDataDir,
   selectedProfileId: startupRuntimeHostProfileId,
   getActiveTarget: currentRuntimeHost,
+  getActiveHostId: () => owner?.current()?.hostId,
   getRuntimeHostReadiness: () => runtimeHostReadiness,
   activate: async (target) => {
     try {
@@ -373,7 +376,7 @@ const botRegistry = new BotRegistry({
       .catch((error) => console.error("[runtime-host] bot message failed:", error));
   },
   onStatusChange: (status) => {
-    mainWindowController.send("settings:bots:statusChanged", status);
+    sendActiveRuntimeHostEvent("settings:bots:statusChanged", status);
   },
 });
 const clientSettingsEffects = createClientSettingsEffects({
@@ -385,7 +388,7 @@ const clientSettingsEffects = createClientSettingsEffects({
     ? async () => undefined
     : (settings) => botRegistry.applySettings(settings),
   emitExternalChanged: () =>
-    mainWindowController.send("settings:externalChanged", { ts: Date.now() }),
+    sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() }),
 });
 const clientSettingsTools = buildClientSettingsTools({
   read: () => settingsStore.get(),
@@ -438,7 +441,7 @@ const updateService = createAppUpdateService({
   },
 });
 mcpManager.onChange(() => {
-  mainWindowController.send("mcp:changed", mcpManager.statuses());
+  sendActiveRuntimeHostEvent("mcp:changed", mcpManager.statuses());
   void mcpCapabilityPublisher.refreshIfChanged().catch((error) =>
     console.error("[runtime-host] MCP capability refresh failed:", error),
   );
@@ -446,7 +449,10 @@ mcpManager.onChange(() => {
 
 registerPersistentClientIpc();
 registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
-registerBrowserIpc({ mainWindowController });
+registerBrowserIpc({
+  mainWindowController,
+  getActiveHostId: () => owner?.current()?.hostId,
+});
 registerNotificationsIpc({
   ipcMain,
   settingsStore,
@@ -532,7 +538,7 @@ owner = await startRuntimeHostDesktopOwner(
             if (method === "notify_local") {
               const taskId = requireScheduledTaskEffectString(input.taskId, "taskId");
               const title = requireScheduledTaskEffectString(input.title, "title");
-              mainWindowController.send("scheduled-tasks:fired", { id: taskId, title });
+              sendActiveRuntimeHostEvent("scheduled-tasks:fired", { id: taskId, title });
               return { ok: true };
             }
             if (method === "notify_bot") {
@@ -577,8 +583,6 @@ owner = await startRuntimeHostDesktopOwner(
       );
     },
     emitSessionsChanged,
-    emitModeChanged: (sessionId) =>
-      emitSessionsChanged("mode-change", sessionId),
     completeComputerUseTurn,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({
@@ -596,20 +600,25 @@ owner = await startRuntimeHostDesktopOwner(
   },
   {
     upgradePrompts: runtimeHostUpgradePrompts,
-    onTargetStateChanged: ({ epoch, target, readiness }) => {
-      runtimeHostReadiness = readiness;
-      const targetChanged = lastPublishedRuntimeHostTargetEpoch !== epoch;
-      lastPublishedRuntimeHostTargetEpoch = epoch;
-      lastRuntimeHostTarget = target;
+    onTargetStateChanged: (state) => {
+      runtimeHostReadiness = state.readiness;
+      const targetChanged = lastPublishedRuntimeHostTargetEpoch !== state.epoch;
+      lastPublishedRuntimeHostTargetEpoch = state.epoch;
+      lastRuntimeHostTarget = state.target;
       mainWindowController.send("runtime-host-profiles:changed", {
-        epoch,
-        profileId: target.profile.id,
+        epoch: state.epoch,
+        profileId: state.target.profile.id,
+        ...(state.readiness === "ready"
+          ? { hostId: state.candidate.client.hostId }
+          : "hostId" in state && state.hostId
+            ? { hostId: state.hostId }
+            : {}),
         targetChanged,
-        readiness,
+        readiness: state.readiness,
       });
-      if (readiness === "ready") {
-        mainWindowController.send("projects:changed");
-        emitConnectionListChanged();
+      if (state.readiness === "ready") {
+        mainWindowController.send("projects:changed", { hostId: state.candidate.client.hostId });
+        emitConnectionListChanged(state.candidate.client.hostId);
       }
     },
     onFatalError: (error) => {
@@ -676,8 +685,10 @@ async function handleRemoteRuntimeHostFailure(error: unknown): Promise<never> {
 }
 
 const stopComputerUseSession = (sessionId: string): void => {
+  const ref = parseDesktopSessionResourceKey(sessionId);
+  if (owner?.current()?.hostId !== ref.hostId) return;
   void owner
-    ?.stopSession(sessionId)
+    .stopSession(ref.sessionId)
     .catch((error) => console.error("[runtime-host] stop failed:", error));
 };
 native.computerUsePip.setStopHandler(stopComputerUseSession);
@@ -702,17 +713,17 @@ function registerHostClientIpc(
   isTargetActive: () => boolean,
 ): () => Promise<void> {
   const sendToRenderer = (channel: string, ...args: unknown[]): void => {
-    if (isTargetActive()) mainWindowController.send(channel, ...args);
+    if (isTargetActive()) mainWindowController.send(channel, { hostId: target.rootId }, ...args);
   };
   const emitTargetConnectionListChanged = (): void => {
-    if (isTargetActive()) emitConnectionListChanged();
+    if (isTargetActive()) emitConnectionListChanged(target.rootId);
   };
   const emitTargetSessionsChanged = (
     reason: SessionChangedReason,
     sessionId?: string,
     extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
   ): void => {
-    if (isTargetActive()) emitSessionsChanged(reason, sessionId, extra);
+    if (isTargetActive()) emitSessionsChanged(target.rootId, reason, sessionId, extra);
   };
   const targetProjectRoot = createProjectRootController({
     rootId: target.rootId,
@@ -1056,6 +1067,7 @@ function registerPersistentClientIpc(): void {
       processUptimeSeconds: process.uptime(),
     }),
     mainLogs: () => mainProcessLogBuffer.snapshot(),
+    getActiveHostId: () => owner?.current()?.hostId,
     getRuntimeHostDiagnostics: async () => {
       return requireActiveRuntimePolicyTarget().client.queryHostDiagnostics();
     },
@@ -1111,16 +1123,22 @@ function requireActiveRuntimePolicyTarget() {
   return current;
 }
 
-function emitConnectionListChanged(): void {
+function sendActiveRuntimeHostEvent(channel: string, ...args: unknown[]): void {
+  const hostId = owner?.current()?.hostId;
+  if (hostId) mainWindowController.send(channel, { hostId }, ...args);
+}
+
+function emitConnectionListChanged(hostId: string): void {
   const event: ConnectionEvent = {
     type: "connection_list_changed",
     id: randomUUID(),
     ts: Date.now(),
   };
-  mainWindowController.send("connections:event", event);
+  mainWindowController.send("connections:event", { hostId }, event);
 }
 
 function emitSessionsChanged(
+  hostId: string,
   reason: SessionChangedReason,
   sessionId?: string,
   extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
@@ -1134,7 +1152,7 @@ function emitSessionsChanged(
     ...(extra?.modelId ? { modelId: extra.modelId } : {}),
     ...(extra?.turnId ? { turnId: extra.turnId } : {}),
   };
-  mainWindowController.send("sessions:changed", event);
+  mainWindowController.send("sessions:changed", { hostId }, event);
 }
 
 function wireLifecycle(): void {

@@ -57,6 +57,7 @@ type RuntimeHostSessionExecutionClient = Pick<
 >;
 
 export interface RuntimeHostSessionExecutionIpcDeps {
+  hostId: string;
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
   observations: Pick<
@@ -123,7 +124,13 @@ export function registerRuntimeHostSessionExecutionIpc(
       await deps.observations.observe(
         normalizedSessionId,
         normalizedObserverId,
-        event.sender as RuntimeHostSessionObserverTarget,
+        {
+          id: event.sender.id,
+          send: (channel, payload) =>
+            event.sender.send(channel, { hostId: deps.hostId }, payload),
+          once: event.sender.once.bind(event.sender),
+          off: event.sender.off.bind(event.sender),
+        } satisfies RuntimeHostSessionObserverTarget,
       );
     },
   );

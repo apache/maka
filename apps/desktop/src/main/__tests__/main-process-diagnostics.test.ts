@@ -95,6 +95,7 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
     },
     environment: () => environment,
     mainLogs: () => ['main remained available'],
+    getActiveHostId: () => 'test-host',
     getRuntimeHostDiagnostics: async () => {
       throw new Error('Runtime Host disconnected');
     },
@@ -106,7 +107,11 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
 
   const handler = handlers.get('diagnostics:copyErrorReport');
   assert.ok(handler);
-  const result = await handler({} as never, { surface: 'toast', title: 'Host failed' });
+  const result = await handler(
+    {} as never,
+    { hostId: 'test-host' },
+    { surface: 'toast', title: 'Host failed' },
+  );
 
   assert.deepEqual(result, { ok: true });
   assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
@@ -125,6 +130,7 @@ test('copies bounded evidence for the exact failed Turn', async () => {
     },
     environment: () => environment,
     mainLogs: () => [],
+    getActiveHostId: () => 'test-host',
     getRuntimeHostDiagnostics: async () => runtimeHostDiagnostics,
     getRuntimeHostTurnTrace: async (sessionId, turnId) => {
       assert.equal(sessionId, 'session-1');
@@ -195,11 +201,15 @@ test('copies bounded evidence for the exact failed Turn', async () => {
 
   const handler = handlers.get('diagnostics:copyErrorReport');
   assert.ok(handler);
-  const result = await handler({} as never, {
-    surface: 'toast',
-    title: 'Conversation error',
-    execution: { sessionId: 'session-1', turnId: 'turn-1', eventId: 'event-1' },
-  });
+  const result = await handler(
+    {} as never,
+    { hostId: 'test-host' },
+    {
+      surface: 'toast',
+      title: 'Conversation error',
+      execution: { sessionId: 'session-1', turnId: 'turn-1', eventId: 'event-1' },
+    },
+  );
 
   assert.deepEqual(result, { ok: true });
   assert.match(clipboard, /Runtime Host execution[\s\S]*Run: run-1/);

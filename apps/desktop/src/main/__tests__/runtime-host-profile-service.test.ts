@@ -150,6 +150,7 @@ test("rolls back a failed new remote profile without changing the active Host", 
       profiles: [{ id: "local", name: "Local", kind: "local" }],
       selectedProfileId: "local",
       runtimeHostReadiness: "ready",
+      activeHostId: ROOT_ID,
       activeProfile: { id: "local", name: "Local", kind: "local" },
       activeProfileId: "local",
     },
@@ -508,6 +509,7 @@ function createProfileService(
     clientDataRoot,
     selectedProfileId: options.selectedProfileId ?? activeTarget.profile.id,
     getActiveTarget: () => activeTarget,
+    getActiveHostId: () => ROOT_ID,
     getRuntimeHostReadiness: () => "ready",
     activate: async (target) => {
       const result = options.activate

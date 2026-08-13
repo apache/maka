@@ -57,6 +57,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   assert.deepEqual(first.stoppedSessions, []);
   first.finishDisconnect();
   await secondStarted;
+  assert.equal(owner.current()?.hostId, 'test-host');
   assert.equal(second.botMessages, 0);
   assert.deepEqual(second.stoppedSessions, []);
   releaseSecond();
@@ -497,6 +498,7 @@ function candidateHarness(
     closed,
     hostLifecycleMode: options.lifecycleMode ?? 'ephemeral',
     client: {
+      hostId: 'test-host',
       get lifecycleState() {
         return lifecycleState;
       },

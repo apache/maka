@@ -197,6 +197,8 @@ Selecting a profile chooses which Host a Client connects to. It does not move a 
 
 Desktop applies a new profile without restarting the application. Each target generation owns its connection and Session observations, so a request or live event captured for one generation cannot cross into another. A failed switch attempts to restore the previous target; if neither target can connect, Desktop reports that no Host is active.
 
+Desktop uses the root identity verified during the Host handshake as the scope on every Host-backed IPC request and event. While Desktop has one active Host, preload binds its existing product APIs to that scope, and the main process validates it once before dispatching to domain handlers. The scope survives a same-target reconnect but changes with the target generation. Persistent Client-local surfaces such as Browser control and diagnostics enforce the same fence. This scope prevents cross-Host routing mistakes; it is not an authentication boundary.
+
 The persisted Desktop selection is a desired target, not proof of the active connection. If the selected profile or credential is unavailable during startup, Desktop asks the user to retry, explicitly use `local`, or quit. It does not silently rewrite the selection. TUI and CLI resolve one profile when they start and report an unavailable selection as an error.
 
 A remote Desktop generation cannot submit arbitrary Host paths. It reads Project summaries, submits Project IDs, and keeps Client-local capabilities from receiving remote Host paths. Local filesystem actions such as directory picking, Git review, workspace search, and opening Skill files remain available only for `local`.

@@ -741,7 +741,7 @@ function ipcHarness() {
 function registerExecutionIpc(
   deps: Omit<
     RuntimeHostSessionExecutionIpcDeps,
-    'sessionCopyCleanup' | 'onBackgroundError' | 'observations'
+    'hostId' | 'sessionCopyCleanup' | 'onBackgroundError' | 'observations'
   > &
     Partial<
       Pick<
@@ -753,6 +753,7 @@ function registerExecutionIpc(
 ): (sessionId: string) => Promise<void> {
   return registerRuntimeHostSessionExecutionIpc(
     {
+      hostId: 'test-host',
       ...deps,
       observations: deps.observations ?? deps.observer,
       sessionCopyCleanup: deps.sessionCopyCleanup ?? unusedSessionCopyCleanup(),

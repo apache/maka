@@ -115,7 +115,6 @@ import type {
   RemoteRuntimeHostProfile,
   RuntimeHostProfile,
 } from '@maka/runtime-host/client';
-
 export interface OnboardingSnapshot {
   state: OnboardingState;
   milestones: OnboardingMilestone[];
@@ -220,6 +219,7 @@ export interface DesktopRuntimeHostProfileSnapshot {
   readonly profiles: readonly RuntimeHostProfile[];
   readonly selectedProfileId: string;
   readonly runtimeHostReadiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
+  readonly activeHostId?: string;
   readonly activeProfile?: RuntimeHostProfile;
   readonly activeProfileId?: string;
   readonly unavailable?: {
@@ -248,6 +248,7 @@ export type DesktopRuntimeHostProfileAddResult =
 export interface DesktopRuntimeHostProfileChangedEvent {
   readonly epoch: string;
   readonly profileId: string;
+  readonly hostId?: string;
   readonly targetChanged: boolean;
   readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
 }
