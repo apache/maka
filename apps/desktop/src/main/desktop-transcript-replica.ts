@@ -518,13 +518,13 @@ export class DesktopTranscriptReplica {
   }
 
   #adjustResidentBytes(deltaBytes: number): void {
-    this.#residentBytes += deltaBytes;
     if (this.#residentExternallyAccounted) this.#accountPreparationBytes(deltaBytes);
+    this.#residentBytes += deltaBytes;
   }
 
   #adjustOverlayBytes(deltaBytes: number): void {
-    this.#overlayBytes += deltaBytes;
     this.#adjustResidentBytes(deltaBytes);
+    this.#overlayBytes += deltaBytes;
   }
 
   async #withDecodedPage<T>(

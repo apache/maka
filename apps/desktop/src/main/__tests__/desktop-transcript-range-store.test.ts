@@ -330,6 +330,29 @@ test('transfers prepared transcript bytes into active replica accounting', async
   assert.equal(accountedBytes, 0);
 });
 
+test('does not release resident bytes when preparation accounting rejects them', async () => {
+  const message = assistantMessage('prepared', 'overlay-1');
+  const deltas: number[] = [];
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    loadTranscriptOverlay: async () => [message],
+    async close() {},
+  });
+
+  await assert.rejects(
+    DesktopTranscriptReplica.prepare(handle, {
+      accountPreparationBytes: (deltaBytes) => {
+        deltas.push(deltaBytes);
+        if (deltaBytes > 0) throw new RangeError('capacity reached');
+      },
+    }),
+    /capacity reached/,
+  );
+  assert.deepEqual(deltas.filter((deltaBytes) => deltaBytes < 0), []);
+});
+
 test('reopens a failed transcript range with a fresh generation', async () => {
   const store = new DesktopTranscriptRangeStore();
   let attempts = 0;
