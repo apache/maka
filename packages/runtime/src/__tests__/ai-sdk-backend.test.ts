@@ -6421,6 +6421,66 @@ describe('AiSdkBackend usage telemetry', () => {
     );
   });
 
+  test('restricts the Delegate main agent to durable task orchestration tools', async () => {
+    const durable = durableTurnHarness('turn-delegate-tools', 'delegate a background task');
+    const model = textCompletionModel('Task accepted; I remain available.');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        testTool('Read', z.object({ path: z.string() })),
+        testTool('Bash', z.object({ command: z.string() })),
+        testTool('load_tools', z.object({ group: z.string() })),
+        testTool('agent_spawn', z.object({ prompt: z.string() })),
+        testTool('ArchiveRead', z.object({ ref: z.string() })),
+        testTool('agent_list', z.object({})),
+        testTool('view_agent_graph', z.object({})),
+        testTool('update_agent_graph', z.object({})),
+        testTool('yield_agent_graph', z.object({ reason: z.string() })),
+        testTool('agent_swarm_status', z.object({})),
+        testTool('agent_output', z.object({})),
+      ],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(
+      backend.send(
+        durable.input({
+          toolMode: 'code_mode',
+          orchestration: {
+            mode: 'delegate',
+            source: 'turn_override',
+            agentSwarmAuthorization: 'none',
+          },
+        }),
+      ),
+      durable,
+    );
+
+    const call = model.doStreamCalls[0];
+    const toolNames = (call?.tools ?? []).map((tool) => tool.name);
+    assert.ok(toolNames.includes('update_agent_graph'));
+    assert.ok(toolNames.includes('view_agent_graph'));
+    assert.ok(toolNames.includes('ArchiveRead'));
+    assert.equal(toolNames.includes('yield_agent_graph'), false);
+    assert.equal(toolNames.includes('Read'), false);
+    assert.equal(toolNames.includes('Bash'), false);
+    assert.equal(toolNames.includes('load_tools'), false);
+    assert.equal(toolNames.includes('agent_spawn'), false);
+    assert.equal(toolNames.includes('exec'), false);
+    assert.match(JSON.stringify(call?.prompt), /Orchestration Mode: Delegate/);
+    assert.match(JSON.stringify(call?.prompt), /exactly one structured decision/);
+    assert.match(JSON.stringify(call?.prompt), /requires any tool/);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
   test('ends the tool loop cooperatively when the graph supervisor yields', async () => {
     const durable = durableTurnHarness('turn-graph-yield', 'coordinate the graph');
     let streamCalls = 0;

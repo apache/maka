@@ -983,6 +983,158 @@ test('production Host executes a canonical ai-sdk Session against a real provide
   }
 });
 
+test('Delegate Mode returns the main turn normally while durable child work continues', {
+  timeout: 20_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-delegate-'));
+  const root = join(base, 'interactive');
+  const project = join(base, 'project');
+  const provider = await startProvider();
+  provider.configureDelegateFlow();
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  const context: ConnectionContext = {
+    hostEpoch: 'delegate-test-epoch',
+    connectionId: 'delegate-test-client',
+    surface: 'tui',
+    principal: 'local_os_user',
+    acquireResidency: () => ({ release() {} }),
+  };
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  let graphStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
+  try {
+    await mkdir(project);
+    await writeFile(join(project, 'README.md'), '# Delegate fixture\n');
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'delegate-provider',
+        name: 'Delegate provider',
+        providerType: 'moonshot',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    assert.equal(
+      (
+        await policy.credentialVault.set({
+          locator: {
+            scope: 'connection',
+            connectionId: connection.connectionId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: API_KEY,
+        })
+      ).kind,
+      'committed',
+    );
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID, 32_768);
+
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await execution.sessionStore.create({
+      cwd: project,
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'delegate-provider',
+      model: MODEL_ID,
+      permissionMode: 'bypass',
+    });
+    composition = await createExecutionRuntimeHostComposition({
+      owner,
+      hostEpoch: context.hostEpoch,
+      acquireResidency: context.acquireResidency,
+      retainUntilProcessExit: () => undefined,
+      requestDrain: () => assert.fail('The healthy Delegate flow must not drain the Host'),
+    });
+    await composition.recover();
+
+    const turnId = 'hosted-delegate-turn';
+    const started = await composition.handlers['turn.start'](
+      {
+        sessionId: session.id,
+        turnId,
+        content: { text: 'Delegate this task and remain responsive.' },
+        turnOrchestration: { mode: 'delegate', source: 'host_api' },
+      },
+      context,
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok || started.result.kind !== 'started') return;
+    const initialTerminal = await waitForTerminal(
+      composition,
+      session.id,
+      turnId,
+      started.result.turn,
+      context,
+    );
+    assert.equal(initialTerminal.status, 'completed');
+
+    const initialRun = await execution.agentRunStore.readRun(session.id, initialTerminal.runId);
+    assert.equal(initialRun.orchestrationMode, 'delegate');
+
+    graphStore = createAgentGraphControlStore(root);
+    const graphId = agentGraphIdForRootSession(session.id);
+    let updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
+    let runs = await execution.agentRunStore.listSessionRuns(session.id);
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const wakeRuns = runs.filter((run) => run.agentGraphWakeAttemptId !== undefined);
+      if (
+        wakeRuns.length > 0 &&
+        wakeRuns.every((run) => ['completed', 'failed', 'cancelled'].includes(run.status))
+      ) {
+        break;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
+      runs = await execution.agentRunStore.listSessionRuns(session.id);
+    }
+
+    assert.equal(updates[0]?.source.orchestrationMode, 'delegate');
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0]?.finish, undefined);
+    const wakeRuns = runs.filter((run) => run.agentGraphWakeAttemptId !== undefined);
+    assert.ok(wakeRuns.length > 0);
+    assert.ok(wakeRuns.every((run) => run.orchestrationMode === 'delegate'));
+    assert.ok(wakeRuns.some((run) => run.status === 'completed'));
+    assert.ok(wakeRuns.every((run) => ['completed', 'failed', 'cancelled'].includes(run.status)));
+
+    const supervisorRequests = provider.requests.filter(
+      (request) =>
+        request.body.stream === true && toolNames(request.body).includes('update_agent_graph'),
+    );
+    assert.ok(supervisorRequests.length >= 4);
+    assert.ok(
+      supervisorRequests.every((request) => !toolNames(request.body).includes('yield_agent_graph')),
+    );
+    assert.ok(
+      provider.requests.some((request) =>
+        JSON.stringify(request.body).includes('Background task accepted; I remain available.'),
+      ),
+    );
+  } finally {
+    graphStore?.close();
+    try {
+      await composition?.close();
+    } finally {
+      try {
+        await owner.close();
+      } finally {
+        await provider.close();
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
 test('production Host executes and durably supervises an Agent Graph over a real provider wire', {
   timeout: 20_000,
 }, async () => {
@@ -2869,6 +3021,7 @@ async function startProvider(): Promise<{
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
   configureAgentGraphFlow(): void;
+  configureDelegateFlow(): void;
   close(): Promise<void>;
 }> {
   const requests: ProviderRequest[] = [];
@@ -2901,6 +3054,13 @@ async function startProvider(): Promise<{
       flow = {
         kind: 'agent_graph',
         scenario: new AgentGraphProviderScenario(CHILD_AGENT_RESULT_TEXT),
+      };
+    },
+    configureDelegateFlow: () => {
+      if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
+      flow = {
+        kind: 'agent_graph',
+        scenario: new AgentGraphProviderScenario(CHILD_AGENT_RESULT_TEXT, 'delegate'),
       };
     },
     close: () => closeServer(server),

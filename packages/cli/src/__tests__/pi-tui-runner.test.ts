@@ -2376,6 +2376,46 @@ describe('Maka Pi TUI runner', () => {
     assert.deepEqual(driver.permissionModes, []);
   });
 
+  test('shows, enables, disables, and runs Delegate Mode from the CLI', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/delegate');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Delegate Mode is off'));
+
+    terminal.input('/delegate on');
+    terminal.input('\r');
+    await waitFor(() => driver.orchestrationModes.length === 1);
+    await waitFor(() => terminal.output().includes('Delegate Mode enabled'));
+
+    terminal.input('/delegate off');
+    terminal.input('\r');
+    await waitFor(() => driver.orchestrationModes.length === 2);
+    await waitFor(() => terminal.output().includes('Delegate Mode disabled'));
+
+    terminal.input('/delegate investigate and report later');
+    terminal.input('\r');
+    await waitFor(() => driver.prompts.length === 1);
+    await waitFor(() => terminal.output().includes('Using Delegate Mode for this turn only'));
+
+    assert.deepEqual(driver.orchestrationModes, ['delegate', 'default']);
+    assert.deepEqual(driver.displayPrompts, ['investigate and report later']);
+    assert.deepEqual(driver.turnOrchestrations, [{ mode: 'delegate', source: 'slash_command' }]);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('rejects Swarm commands during a running turn instead of steering them', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();

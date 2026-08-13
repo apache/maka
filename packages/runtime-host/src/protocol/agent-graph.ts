@@ -236,7 +236,7 @@ export interface AgentGraphClientSnapshot {
   readonly schemaVersion: typeof AGENT_GRAPH_CLIENT_SCHEMA_VERSION;
   readonly rootSessionId: string;
   readonly graphId: string;
-  readonly orchestrationMode: 'graph' | 'swarm';
+  readonly orchestrationMode: 'graph' | 'swarm' | 'delegate';
   readonly snapshotVersion: `sha256:${string}`;
   readonly status: AgentGraphClientStatus;
   readonly scheduleRevision: number;
@@ -1201,8 +1201,8 @@ function requireGraphStatus(value: unknown): AgentGraphClientStatus {
   throw invalidProtocolFrame('Invalid agent graph status');
 }
 
-function requireGraphOrchestrationMode(value: unknown): 'graph' | 'swarm' {
-  if (value === 'graph' || value === 'swarm') return value;
+function requireGraphOrchestrationMode(value: unknown): 'graph' | 'swarm' | 'delegate' {
+  if (value === 'graph' || value === 'swarm' || value === 'delegate') return value;
   throw invalidProtocolFrame('Invalid agent graph orchestration mode');
 }
 

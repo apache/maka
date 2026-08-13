@@ -2346,7 +2346,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           resolveEffectiveOrchestration(session.orchestrationMode, undefined).mode)
         : resolveEffectiveOrchestration(session.orchestrationMode, admission.turnOrchestration)
             .mode;
-    return mode === 'graph' || mode === 'swarm'
+    return mode === 'graph' || mode === 'swarm' || mode === 'delegate'
       ? agentGraphIdForRootSession(admission.sessionId)
       : undefined;
   }

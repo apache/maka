@@ -52,6 +52,7 @@ import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
 import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
 import { parseSwarmCommand, type ParsedSwarmCommand } from '@maka/core/swarm-command';
+import { parseDelegateCommand, type ParsedDelegateCommand } from '@maka/core/delegate-command';
 import {
   inspectSessionResumeAvailability,
   type MakaAttachedSessionTurn,
@@ -2270,6 +2271,62 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     });
   };
 
+  const showDelegateStatus = () => {
+    state.entries.push({
+      kind: 'notice',
+      level: 'info',
+      text:
+        orchestrationMode === 'delegate'
+          ? 'Delegate Mode is on for this session.'
+          : 'Delegate Mode is off.',
+    });
+    requestRender();
+  };
+
+  const setDelegateMode = async (mode: OrchestrationMode) => {
+    if (!input.driver.setOrchestrationMode) {
+      throw new Error('Delegate Mode is unavailable on this session driver.');
+    }
+    await input.driver.setOrchestrationMode(mode);
+    orchestrationMode = mode;
+    state.entries.push({
+      kind: 'notice',
+      level: 'info',
+      text:
+        mode === 'delegate' ? 'Delegate Mode enabled for this session.' : 'Delegate Mode disabled.',
+    });
+    requestRender();
+  };
+
+  const runDelegateCommand = (command: ParsedDelegateCommand, idleMs: number) => {
+    if (command.kind === 'status') {
+      showDelegateStatus();
+      return;
+    }
+    if (command.kind === 'set_mode') {
+      void runControl(() => setDelegateMode(command.mode));
+      return;
+    }
+    if (input.firstRun) {
+      void showSetupWizard();
+      return;
+    }
+    lastActivityAt = Date.now();
+    promptSeq += 1;
+    maybeTriggerAutoRecap(idleMs);
+    state.entries.push({
+      kind: 'notice',
+      level: 'info',
+      text: 'Using Delegate Mode for this turn only.',
+    });
+    void runAgentTurn({
+      kind: 'external',
+      prompt: command.task,
+      sessionId: input.driver.getSessionId(),
+      turnOrchestration: { mode: 'delegate', source: 'slash_command' },
+    });
+  };
+
   const moveSession = async (targetCwd: string): Promise<void> => {
     if (!input.driver.moveSession) {
       state.entries.push({
@@ -2609,6 +2666,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseGraphCommand(`/graph${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runGraphCommand(parsed, context.idleMs);
+      },
+    },
+    delegate: {
+      description: 'Show, enable, disable, or run one Delegate turn',
+      run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
+        const parsed = parseDelegateCommand(`/delegate${rawTail ? ` ${rawTail}` : ''}`);
+        if (parsed) runDelegateCommand(parsed, context.idleMs);
       },
     },
     swarm: {

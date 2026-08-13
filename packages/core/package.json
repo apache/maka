@@ -112,6 +112,7 @@
     "./connection-error-copy": "./dist/connection-error-copy.js",
     "./git-review": "./dist/git-review.js",
     "./graph-command": "./dist/graph-command.js",
+    "./delegate-command": "./dist/delegate-command.js",
     "./project": "./dist/project.js",
     "./pty-output-view": "./dist/pty-output-view.js",
     "./relative-time": "./dist/relative-time.js",

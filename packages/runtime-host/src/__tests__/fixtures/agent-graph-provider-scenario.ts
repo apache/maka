@@ -19,7 +19,10 @@ export class AgentGraphProviderScenario {
   #childCompleted = false;
   #resultRecordId: string | undefined;
 
-  constructor(private readonly childResultText: string) {}
+  constructor(
+    private readonly childResultText: string,
+    private readonly orchestrationMode: 'graph' | 'delegate' = 'graph',
+  ) {}
 
   respond(body: Record<string, unknown>, reply: AgentGraphProviderReply): void {
     const names = toolNames(body);
@@ -31,14 +34,14 @@ export class AgentGraphProviderScenario {
       reply.text(this.childResultText);
       return;
     }
-    for (const required of [
-      'agent_output',
-      'update_agent_graph',
-      'view_agent_graph',
-      'yield_agent_graph',
-    ]) {
+    for (const required of ['agent_output', 'update_agent_graph', 'view_agent_graph']) {
       assert.ok(names.includes(required), `Graph provider request omitted ${required}`);
     }
+    assert.equal(
+      names.includes('yield_agent_graph'),
+      this.orchestrationMode === 'graph',
+      `Unexpected yield_agent_graph visibility in ${this.orchestrationMode} mode`,
+    );
 
     const toolResult = latestToolResultAfterCurrentUser(body);
     switch (this.#phase) {
@@ -63,6 +66,10 @@ export class AgentGraphProviderScenario {
         assert.equal(updated.kind, 'agent_graph_updated');
         assert.equal(requireRecord(updated.schedule, 'add-work schedule').closed, false);
         this.#phase = 'await_checkpoint';
+        if (this.orchestrationMode === 'delegate') {
+          reply.text('Background task accepted; I remain available.');
+          return;
+        }
         reply.toolCall('yield_agent_graph', {
           reason: 'Wait for the hosted operator checkpoint.',
         });
@@ -70,7 +77,12 @@ export class AgentGraphProviderScenario {
       }
       case 'await_checkpoint':
         assert.equal(toolResult, undefined);
-        assert.match(latestUserText(body), /reached a durable supervisor checkpoint\./);
+        assert.match(
+          latestUserText(body),
+          this.orchestrationMode === 'delegate'
+            ? /Background task set .* reached a durable checkpoint\.[\s\S]*Checkpoint projection status: settled\./
+            : /reached a durable supervisor checkpoint\./,
+        );
         this.#phase = 'await_view_result';
         reply.toolCall('view_agent_graph', { mode: 'latest' });
         return;
@@ -91,6 +103,11 @@ export class AgentGraphProviderScenario {
         }
         const operator = requireRecord(operators[0], 'graph view operator');
         if (operator.status !== 'completed') {
+          assert.equal(
+            this.orchestrationMode,
+            'graph',
+            'Delegate checkpoint must not wake before background work settles',
+          );
           assert.ok(
             ['not_started', 'waiting', 'runnable', 'running', 'blocked'].includes(
               requireString(operator.status, 'Graph operator status'),
@@ -126,6 +143,11 @@ export class AgentGraphProviderScenario {
         assert.equal(result.status, 'completed');
         assert.equal(result.text, this.childResultText);
         this.#resultRecordId = requireString(result.resultRecordId, 'Graph result record id');
+        if (this.orchestrationMode === 'delegate') {
+          this.#phase = 'completed';
+          reply.text(`Delegated task completed: ${this.childResultText}`);
+          return;
+        }
         this.#phase = 'await_finish_result';
         reply.toolCall('update_agent_graph', {
           operation: 'finish',

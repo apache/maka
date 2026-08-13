@@ -20,6 +20,14 @@ describe('orchestration contract', () => {
     });
   });
 
+  test('delegate mode preserves its identity without granting swarm authority', () => {
+    assert.deepEqual(resolveEffectiveOrchestration('delegate', undefined), {
+      mode: 'delegate',
+      source: 'session',
+      agentSwarmAuthorization: 'none',
+    });
+  });
+
   test('a trusted turn override wins without changing the persisted session mode', () => {
     assert.deepEqual(
       resolveEffectiveOrchestration('default', { mode: 'swarm', source: 'host_api' }),

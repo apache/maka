@@ -184,14 +184,14 @@ export interface AgentGraphSupervisorWakeInput {
     | {
         text: string;
         displayText: string;
-        orchestrationMode: 'graph' | 'swarm';
+        orchestrationMode: 'graph' | 'swarm' | 'delegate';
       }
     | undefined
     | Promise<
         | {
             text: string;
             displayText: string;
-            orchestrationMode: 'graph' | 'swarm';
+            orchestrationMode: 'graph' | 'swarm' | 'delegate';
           }
         | undefined
       >;

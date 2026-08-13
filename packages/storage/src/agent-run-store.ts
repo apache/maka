@@ -1514,11 +1514,12 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   const messageLessExecution = inputlessExecution || providerRetry;
   if (execution.kind === 'agent_graph_supervisor_wake') {
     if (
-      admission.turnOrchestration?.mode !== 'graph' ||
+      (admission.turnOrchestration?.mode !== 'graph' &&
+        admission.turnOrchestration?.mode !== 'delegate') ||
       admission.turnOrchestration.source !== 'host_api'
     ) {
       throw new Error(
-        'Invalid root turn admission contract: Agent Graph supervisor wake requires Host Graph orchestration',
+        'Invalid root turn admission contract: Agent Graph supervisor wake requires Host Graph orchestration or Host Delegate orchestration',
       );
     }
   } else if (admission.turnOrchestration && execution.kind !== 'external_message') {
