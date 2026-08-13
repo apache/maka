@@ -40,6 +40,7 @@ import type { HostMemoryExtractionCoordinator } from './memory-extraction-coordi
 import { readDuringBackendCreation, resolveExecutionTarget } from './execution-model-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import type { HostRunComposer, HostRunComposerFactory } from './host-run-composer.js';
+import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
 
 export interface HostAiSdkBackendInput {
   readonly context: BackendFactoryContext;
@@ -252,6 +253,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       })
     : undefined;
   const recordProviderRequestAttempt = input.context.recordProviderRequestAttempt ?? (() => {});
+  const runProfile = hostedExecutionRunProfile(input.context.header.toolProfile);
   const resolveRunPrompt = async (context: {
     readonly turnId: string;
     readonly runId?: string;
@@ -329,6 +331,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           : {}),
         ...(!input.context.tools && input.childAgents ? input.childAgents : {}),
         providerOptions,
+        ...(runProfile ? { streamIdleTimeoutMs: runProfile.streamIdleTimeoutMs } : {}),
         contextBudget: buildDefaultContextBudgetPolicy(target.connection, {
           name: 'runtime-host-default-history-budget',
           modelId: target.model,

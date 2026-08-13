@@ -33,6 +33,7 @@ export interface HostedExecutionRunProfile {
   readonly toolNames: readonly string[];
   readonly systemPrompt: string;
   readonly memoryExtraction: boolean;
+  readonly streamIdleTimeoutMs: number;
 }
 
 export function hostedExecutionRunProfile(
@@ -44,6 +45,7 @@ export function hostedExecutionRunProfile(
       toolNames: HEADLESS_CODING_V1_TOOL_NAMES,
       systemPrompt: HEADLESS_CODING_V1_SYSTEM_PROMPT,
       memoryExtraction: false,
+      streamIdleTimeoutMs: 0,
     };
   }
   profile satisfies never;

@@ -45,6 +45,26 @@ describe('StreamWatchdog', () => {
     expect(fired).toEqual([{ phase: 'idle', elapsedMs: 10_000 }]);
   });
 
+  test('zero idle timeout disables the idle phase after provider activity', () => {
+    const timers = fakeTimers(2_500);
+    const fired: StreamWatchdogTimeout[] = [];
+    const watchdog = new StreamWatchdog({
+      now: timers.now,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+      connectTimeoutMs: 30_000,
+      idleTimeoutMs: 0,
+      onTimeout: (timeout) => fired.push(timeout),
+    });
+
+    watchdog.start();
+    timers.advance(5_000);
+    watchdog.markActivity();
+    timers.advance(600_000);
+
+    expect(fired).toEqual([]);
+  });
+
   test('pause suppresses timeout while waiting for user permission', () => {
     const timers = fakeTimers(3_000);
     const fired: StreamWatchdogTimeout[] = [];

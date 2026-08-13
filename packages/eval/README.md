@@ -34,7 +34,9 @@ and exposes a foreground-only Bash schema without `run_in_background` or `pty`. 
 routing remains authoritative: DeepSeek Responses exposes `apply_patch` instead of `Write` and
 `Edit`, and Runtime-owned `ArchiveRead` remains available for archived tool results. A real
 `hosted.execution.start` regression test pins SHA-256 hashes for the first main provider request's
-developer prompt and complete tool schema.
+developer prompt and complete tool schema. The profile disables Runtime's product stream-idle
+watchdog after provider activity; benchmark-native subject timeouts remain the execution deadline,
+while the model stream connect timeout still rejects requests that never establish a response.
 
 Every benchmark subject removes `WebSearch`, `WebFetch`, and `FetchURL` from the provider-visible
 tool list. Maka enforces that through its Hosted Execution profile; external harnesses pass through
