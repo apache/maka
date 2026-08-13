@@ -258,7 +258,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       // glide alone would only turn one long slide into a burst of hops.
       if (jumpTargetRef.current !== null) return;
       if (root.scrollHeight - root.scrollTop - root.clientHeight <= SCROLL_END_EPSILON_PX) {
-        setActiveTurnId(turns[turns.length - 1]!.turnId);
+        setActiveTurnId(Array.from(idByElement.values()).at(-1) ?? null);
         return;
       }
       const firstVisible = turns.find((turn) => visible.has(turn.turnId));
