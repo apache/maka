@@ -112,7 +112,7 @@ export { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadat
 const SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE = 256;
 const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_MESSAGES = 1_024;
 const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_BYTES = 4 * 1024 * 1024;
-const SQLITE_TURN_LANDMARK_NEIGHBOR_MESSAGES = 32;
+const SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES = 32;
 
 const require = createRequire(import.meta.url);
 const AGENT_GRAPH_CONTROL_DELETE_TABLES = [...SQLITE_AGENT_GRAPH_CONTROL_TABLES].reverse();
@@ -1745,45 +1745,131 @@ export class SqliteSessionMetadataStore {
         return { throughSequence: null, landmarks: [] };
       }
 
+      const promptRows = this.db
+        .prepare(
+          `
+          SELECT admission.admitted_at, message.sequence
+          FROM core_root_turn_admissions AS admission
+          JOIN session_messages AS message
+            ON message.session_id = admission.session_id
+            AND message.message_id = json_extract(admission.record_json, '$.userMessageId')
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE admission.session_id = ? AND payload.sequence IS NULL
+          ORDER BY admission.admitted_at ASC, admission.turn_id ASC
+          LIMIT ?
+        `,
+        )
+        .all(sessionId, maxLandmarks + 1) as TurnLandmarkCandidateRow[];
+      const selected = new Set<number>();
+      if (promptRows.length <= maxLandmarks) {
+        for (const row of promptRows) {
+          selected.add(requireStoredMessageSequence(row.sequence, sessionId));
+        }
+      }
+
       const forward = this.db.prepare(`
-        SELECT message.sequence, message.message_type, payload.sequence AS payload_sequence
-        FROM session_messages AS message
+        SELECT admission.admitted_at, message.sequence
+        FROM core_root_turn_admissions AS admission
+        JOIN session_messages AS message
+          ON message.session_id = admission.session_id
+          AND message.message_id = json_extract(admission.record_json, '$.userMessageId')
         LEFT JOIN session_message_payloads AS payload
           ON payload.session_id = message.session_id AND payload.sequence = message.sequence
-        WHERE message.session_id = ? AND message.sequence >= ? AND message.sequence <= ?
-        ORDER BY message.sequence ASC
-        LIMIT ${SQLITE_TURN_LANDMARK_NEIGHBOR_MESSAGES}
+        WHERE admission.session_id = ? AND admission.admitted_at >= ? AND payload.sequence IS NULL
+        ORDER BY admission.admitted_at ASC, admission.turn_id ASC
+        LIMIT 1
       `);
       const backward = this.db.prepare(`
-        SELECT message.sequence, message.message_type, payload.sequence AS payload_sequence
-        FROM session_messages AS message
+        SELECT admission.admitted_at, message.sequence
+        FROM core_root_turn_admissions AS admission
+        JOIN session_messages AS message
+          ON message.session_id = admission.session_id
+          AND message.message_id = json_extract(admission.record_json, '$.userMessageId')
         LEFT JOIN session_message_payloads AS payload
           ON payload.session_id = message.session_id AND payload.sequence = message.sequence
-        WHERE message.session_id = ? AND message.sequence < ? AND message.sequence >= ?
-        ORDER BY message.sequence DESC
-        LIMIT ${SQLITE_TURN_LANDMARK_NEIGHBOR_MESSAGES}
+        WHERE admission.session_id = ? AND admission.admitted_at < ? AND payload.sequence IS NULL
+        ORDER BY admission.admitted_at DESC, admission.turn_id DESC
+        LIMIT 1
       `);
-      const selected = new Set<number>();
-      const targetCount = Math.min(maxLandmarks, throughSequence - firstSequence + 1);
-      for (let index = 0; index < targetCount; index += 1) {
-        const target =
-          targetCount === 1
-            ? throughSequence
-            : firstSequence +
-              Math.floor(((throughSequence - firstSequence) * index) / (targetCount - 1));
-        const candidates = [
-          ...(forward.all(sessionId, target, throughSequence) as TurnLandmarkCandidateRow[]),
-          ...(backward.all(sessionId, target, firstSequence) as TurnLandmarkCandidateRow[]),
-        ];
-        let nearest: number | undefined;
-        for (const candidate of candidates) {
-          const sequence = requireStoredMessageSequence(candidate.sequence, sessionId);
-          if (candidate.message_type !== 'user' || candidate.payload_sequence !== null) continue;
-          if (nearest === undefined || Math.abs(sequence - target) < Math.abs(nearest - target)) {
-            nearest = sequence;
+      if (promptRows.length > maxLandmarks) {
+        const firstAdmittedAt = requireTurnLandmarkAdmittedAt(promptRows[0]?.admitted_at);
+        const lastRow = this.db
+          .prepare(
+            `
+            SELECT admitted_at
+            FROM core_root_turn_admissions
+            WHERE session_id = ?
+            ORDER BY admitted_at DESC, turn_id DESC
+            LIMIT 1
+          `,
+          )
+          .get(sessionId) as TurnLandmarkCandidateRow | undefined;
+        const lastAdmittedAt = requireTurnLandmarkAdmittedAt(lastRow?.admitted_at);
+        for (let index = 0; index < maxLandmarks; index += 1) {
+          const target =
+            maxLandmarks === 1
+              ? lastAdmittedAt
+              : firstAdmittedAt +
+                Math.floor(((lastAdmittedAt - firstAdmittedAt) * index) / (maxLandmarks - 1));
+          const candidates = [
+            ...(forward.all(sessionId, target) as TurnLandmarkCandidateRow[]),
+            ...(backward.all(sessionId, target) as TurnLandmarkCandidateRow[]),
+          ];
+          let nearest: TurnLandmarkCandidateRow | undefined;
+          for (const candidate of candidates) {
+            const admittedAt = requireTurnLandmarkAdmittedAt(candidate.admitted_at);
+            if (
+              nearest === undefined ||
+              Math.abs(admittedAt - target) <
+                Math.abs(requireTurnLandmarkAdmittedAt(nearest.admitted_at) - target)
+            ) {
+              nearest = candidate;
+            }
           }
+          if (nearest) selected.add(requireStoredMessageSequence(nearest.sequence, sessionId));
         }
-        if (nearest !== undefined) selected.add(nearest);
+      }
+      if (promptRows.length === 0) {
+        const forwardLegacy = this.db.prepare(`
+          SELECT message.sequence, message.message_type, payload.sequence AS payload_sequence
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id = ? AND message.sequence >= ? AND message.sequence <= ?
+          ORDER BY message.sequence ASC
+          LIMIT ${SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES}
+        `);
+        const backwardLegacy = this.db.prepare(`
+          SELECT message.sequence, message.message_type, payload.sequence AS payload_sequence
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id = ? AND message.sequence < ? AND message.sequence >= ?
+          ORDER BY message.sequence DESC
+          LIMIT ${SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES}
+        `);
+        const targetCount = Math.min(maxLandmarks, throughSequence - firstSequence + 1);
+        for (let index = 0; index < targetCount; index += 1) {
+          const target =
+            targetCount === 1
+              ? throughSequence
+              : firstSequence +
+                Math.floor(((throughSequence - firstSequence) * index) / (targetCount - 1));
+          const candidates = [
+            ...(forwardLegacy.all(sessionId, target, throughSequence) as LegacyTurnLandmarkRow[]),
+            ...(backwardLegacy.all(sessionId, target, firstSequence) as LegacyTurnLandmarkRow[]),
+          ];
+          let nearest: number | undefined;
+          for (const candidate of candidates) {
+            const sequence = requireStoredMessageSequence(candidate.sequence, sessionId);
+            if (candidate.message_type !== 'user' || candidate.payload_sequence !== null) continue;
+            if (nearest === undefined || Math.abs(sequence - target) < Math.abs(nearest - target)) {
+              nearest = sequence;
+            }
+          }
+          if (nearest !== undefined) selected.add(nearest);
+        }
       }
 
       const landmarks = readStoredMessageRows(this.db, sessionId, [...selected]).flatMap(
@@ -5090,8 +5176,20 @@ interface StoredSessionMessagePayloadRow {
 
 interface TurnLandmarkCandidateRow {
   readonly sequence?: unknown;
+  readonly admitted_at?: unknown;
+}
+
+interface LegacyTurnLandmarkRow {
+  readonly sequence?: unknown;
   readonly message_type?: unknown;
   readonly payload_sequence?: unknown;
+}
+
+function requireTurnLandmarkAdmittedAt(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Invalid root Turn admission timestamp');
+  }
+  return value;
 }
 
 function storedMessageRecordBytes(

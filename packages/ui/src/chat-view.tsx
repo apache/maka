@@ -354,18 +354,14 @@ export function ChatView(props: {
     const index = props.transcriptTurnIndex;
     if (!index || index.length === 0) return loadedPromptRailTurns;
     const loadedByTurnId = new Map(loadedPromptRailTurns.map((turn) => [turn.turnId, turn]));
-    const indexedTurnIds = new Set(index.map((turn) => turn.turnId));
-    return [
-      ...index.map((turn) => ({
+    return index.map((turn) => ({
         ...(loadedByTurnId.get(turn.turnId) ?? {
           turnId: turn.turnId,
           label: turn.label,
           reply: '',
         }),
         sequence: turn.sequence,
-      })),
-      ...loadedPromptRailTurns.filter((turn) => !indexedTurnIds.has(turn.turnId)),
-    ];
+      }));
   }, [loadedPromptRailTurns, props.transcriptTurnIndex]);
   // Stable event wrappers (advanced-use-latest): parent handlers are
   // recreated per render upstream; routing through refs keeps the

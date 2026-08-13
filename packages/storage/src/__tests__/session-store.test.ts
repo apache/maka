@@ -710,6 +710,61 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('keeps every prompt landmark when long turns fit within the landmark limit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-landmarks-long-turns-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 3 }, (_, turnIndex) => [
+          {
+            type: 'user' as const,
+            id: `user-${turnIndex}`,
+            turnId: `turn-${turnIndex}`,
+            ts: turnIndex * 10_000,
+            text: `prompt ${turnIndex}`,
+          },
+          ...Array.from({ length: turnIndex === 0 ? 1_000 : 4_000 }, (_, messageIndex) => ({
+            type: 'assistant' as const,
+            id: `assistant-${turnIndex}-${messageIndex}`,
+            turnId: `turn-${turnIndex}`,
+            ts: turnIndex * 10_000 + messageIndex + 1,
+            text: 'x',
+            modelId: 'model-1',
+          })),
+        ]).flat(),
+      );
+      const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+      try {
+        const insert = database.prepare(`
+          INSERT INTO core_root_turn_admissions(session_id, turn_id, admitted_at, record_json)
+          VALUES (?, ?, ?, ?)
+        `);
+        for (let turnIndex = 0; turnIndex < 3; turnIndex += 1) {
+          insert.run(
+            session.id,
+            `turn-${turnIndex}`,
+            turnIndex,
+            JSON.stringify({ userMessageId: `user-${turnIndex}` }),
+          );
+        }
+      } finally {
+        database.close();
+      }
+
+      const snapshot = await store.readTurnLandmarksSnapshot(session.id, 64);
+
+      assert.deepEqual(
+        snapshot.landmarks.map((landmark) => landmark.turnId),
+        ['turn-0', 'turn-1', 'turn-2'],
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('clears unread when the current read marker is already the latest visible message', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-read-marker-'));
     const store = createSessionStore(root);
