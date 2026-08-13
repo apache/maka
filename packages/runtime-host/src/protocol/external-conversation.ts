@@ -12,7 +12,7 @@ import {
   requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
-import { defineOperation } from './operation-spec.js';
+import { defineHostPathOperation } from './operation-spec.js';
 
 export const EXTERNAL_CONVERSATION_ID_MAX_BYTES = 4 * 1024;
 
@@ -52,17 +52,20 @@ export type ExternalConversationReconcileResult =
   | { readonly kind: 'released'; readonly hadBinding: boolean };
 
 export const EXTERNAL_CONVERSATION_OPERATION_SPECS = {
-  'external-conversation.reconcile': defineOperation<
+  'external-conversation.reconcile': defineHostPathOperation<
     ExternalConversationReconcileInput,
     ExternalConversationReconcileResult,
     (typeof RECONCILE_ERRORS)[number]
-  >({
-    mode: 'command',
-    availability: 'ready',
-    errors: RECONCILE_ERRORS,
-    decodeInput: decodeExternalConversationReconcileInput,
-    decodeOutput: decodeExternalConversationReconcileResult,
-  }),
+  >(
+    {
+      mode: 'command',
+      availability: 'ready',
+      errors: RECONCILE_ERRORS,
+      decodeInput: decodeExternalConversationReconcileInput,
+      decodeOutput: decodeExternalConversationReconcileResult,
+    },
+    (input) => input.kind === 'resolve' && input.session?.workspace.kind === 'host_path',
+  ),
 } as const;
 
 export function decodeExternalConversationReconcileInput(
