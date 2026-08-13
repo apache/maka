@@ -67,6 +67,7 @@ export type FilesystemWorkerClientErrorReason =
   | 'worker_bundle_unavailable'
   | 'runtime_executable_unavailable'
   | 'spawn_failed'
+  | 'worker_io_incomplete'
   | 'timeout'
   | 'aborted'
   | 'response_overflow'
@@ -91,6 +92,14 @@ export class FilesystemWorkerClientError extends Error {
   readonly backend?: 'none' | 'macos-seatbelt' | 'linux' | 'windows';
   readonly profileName?: string;
   readonly requiredExpansion?: SandboxBoundaryExpansion;
+  /**
+   * Whether the request had been dispatched to the worker before this failure.
+   * Only meaningful for `'launch'`/`'protocol'` failures: `undefined` means
+   * "the question does not apply" (pre-flight validation). When `false` the
+   * child never ran, so nothing on disk could have changed; when `true` the
+   * child ran and the outcome on disk is genuinely unknown.
+   */
+  readonly dispatched?: boolean;
 
   constructor(input: {
     reason: FilesystemWorkerClientErrorReason;
@@ -101,6 +110,7 @@ export class FilesystemWorkerClientError extends Error {
     backend?: 'none' | 'macos-seatbelt' | 'linux' | 'windows';
     profileName?: string;
     requiredExpansion?: SandboxBoundaryExpansion;
+    dispatched?: boolean;
   }) {
     super(input.message ?? `Filesystem worker failed: ${input.reason}.`);
     this.name = 'FilesystemWorkerClientError';
@@ -111,6 +121,7 @@ export class FilesystemWorkerClientError extends Error {
     this.backend = input.backend;
     this.profileName = input.profileName;
     this.requiredExpansion = input.requiredExpansion;
+    this.dispatched = input.dispatched;
   }
 }
 
@@ -127,7 +138,12 @@ export class FilesystemWorkerClient {
 
   async execute(input: FilesystemWorkerExecuteInput): Promise<FilesystemWorkerResult> {
     const requestId = this.newId();
-    if (input.abortSignal?.aborted) throw clientError('aborted', 'launch', requestId);
+    if (input.abortSignal?.aborted) {
+      // Pre-flight cancel: nothing has been dispatched, so this is a clean
+      // cancellation, not an unknown outcome. Carrying dispatched:false lets
+      // the host tell the two apart instead of blaming every queued tool.
+      throw clientError('aborted', 'launch', requestId, undefined, false, {}, false);
+    }
     if (input.executionBoundary && input.executionBoundary.kind !== 'managed') {
       throw clientError(
         'invalid_request',
@@ -386,15 +402,48 @@ export class FilesystemWorkerClient {
         timeoutMs: this.timeoutMs,
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       });
-    } catch {
-      throw clientError('spawn_failed', 'launch', requestId);
+    } catch (error) {
+      // The process-runner attaches a `dispatched` flag to the rejection so we
+      // can tell "the child never started" (spawn_failed — clean) from "the
+      // child ran but its result was lost" (worker_io_incomplete — the outcome
+      // on disk is unknown). A thrown error without the flag (e.g. spawn()
+      // itself raising before any 'spawn' event could fire) is treated as
+      // never-dispatched.
+      const dispatched =
+        (error as { dispatched?: boolean } | null)?.dispatched === true;
+      throw clientError(
+        dispatched ? 'worker_io_incomplete' : 'spawn_failed',
+        'launch',
+        requestId,
+        undefined,
+        false,
+        {},
+        dispatched,
+      );
     } finally {
       pinnedTarget?.releaseSource();
       pinnedRuntimeWritableRoot?.releaseSource();
     }
-    if (processResult.timedOut) throw clientError('timeout', 'launch', requestId);
-    if (processResult.aborted) throw clientError('aborted', 'launch', requestId);
-    if (processResult.responseOverflow) throw clientError('response_overflow', 'launch', requestId);
+    if (processResult.timedOut) {
+      throw clientError('timeout', 'launch', requestId, undefined, false, {}, processResult.dispatched);
+    }
+    if (processResult.aborted) {
+      // A post-dispatch abort means the child had the request and may have
+      // acted on it before being killed; carry dispatched so the host can
+      // classify it as an unknown outcome rather than a clean cancel.
+      throw clientError('aborted', 'launch', requestId, undefined, false, {}, processResult.dispatched);
+    }
+    if (processResult.responseOverflow) {
+      throw clientError(
+        'response_overflow',
+        'launch',
+        requestId,
+        undefined,
+        false,
+        {},
+        processResult.dispatched,
+      );
+    }
     if (processResult.exitCode !== 0) {
       const brokerFailure =
         transformed.sandboxType === 'windows'
@@ -415,6 +464,9 @@ export class FilesystemWorkerClient {
         'launch',
         requestId,
         processResult.stderrTail || undefined,
+        false,
+        {},
+        processResult.dispatched,
       );
     }
 
@@ -422,11 +474,18 @@ export class FilesystemWorkerClient {
     try {
       response = parseFilesystemWorkerResponse(JSON.parse(processResult.stdout));
     } catch {
-      throw clientError('invalid_response', 'protocol', requestId);
+      // The child produced output we could not parse, but it ran and emitted
+      // something, so the request was dispatched (the on-disk outcome is
+      // unknown for a mutation).
+      throw clientError('invalid_response', 'protocol', requestId, undefined, false, {}, true);
     }
     if (response.requestId !== requestId)
-      throw clientError('response_id_mismatch', 'protocol', requestId);
+      throw clientError('response_id_mismatch', 'protocol', requestId, undefined, false, {}, true);
     if (!response.ok) {
+      // A well-formed worker error means the child ran and answered: dispatch
+      // had happened. Carry dispatched:true so a mutating op that fails here
+      // (e.g. the worker reports `outcome_unknown` after a partial write) is
+      // classified as an unknown outcome rather than slipping through.
       throw clientError(
         response.error.code,
         'operation',
@@ -437,13 +496,14 @@ export class FilesystemWorkerClient {
           backend: transformed.exec.sandboxType,
           profileName: effectiveProfile.name ?? effectiveProfile.type,
         },
+        true,
       );
     }
     if (
       response.result.kind !== operation.kind &&
       !(operation.kind === 'read' && response.result.kind === 'read_image')
     ) {
-      throw clientError('response_kind_mismatch', 'protocol', requestId);
+      throw clientError('response_kind_mismatch', 'protocol', requestId, undefined, false, {}, true);
     }
     return response.result;
   }
@@ -559,6 +619,7 @@ function clientError(
     profileName?: string;
     requiredExpansion?: SandboxBoundaryExpansion;
   } = {},
+  dispatched?: boolean,
 ): FilesystemWorkerClientError {
   return new FilesystemWorkerClientError({
     reason,
@@ -567,5 +628,6 @@ function clientError(
     message,
     recoverable,
     ...metadata,
+    ...(dispatched !== undefined ? { dispatched } : {}),
   });
 }

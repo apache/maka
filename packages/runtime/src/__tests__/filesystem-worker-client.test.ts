@@ -508,6 +508,7 @@ function fakeClient(
         timedOut: false,
         aborted: false,
         responseOverflow: false,
+        dispatched: true,
       };
     },
   });
@@ -559,6 +560,96 @@ function hasArgTriple(
     (value, index) => value === first && argv[index + 1] === second && argv[index + 2] === third,
   );
 }
+
+describe('filesystem worker client dispatch classification', () => {
+  // The process-runner attaches a `dispatched` flag to its rejection so the
+  // client can tell a never-started spawn from a ran-but-result-lost failure.
+  // Only the latter can have written anything, so it gets a distinct reason.
+  function clientWithRejectingRunProcess(
+    reject: (input: FilesystemWorkerProcessRunInput) => Error,
+  ): FilesystemWorkerClient {
+    const sandboxManager = new SandboxManager([new MacosSeatbeltBackend()]);
+    return new FilesystemWorkerClient({
+      sandboxManager,
+      platform: 'darwin',
+      newId: () => 'request-1',
+      getLaunchSpec: async () => ({
+        ok: true,
+        spec: {
+          program: '/usr/bin/node',
+          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          env: {},
+          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
+        },
+      }),
+      runProcess: async (input) => {
+        throw reject(input);
+      },
+    });
+  }
+
+  function dispatchedError(message: string, dispatched: boolean): Error {
+    const error = new Error(message);
+    Object.defineProperty(error, 'dispatched', { value: dispatched, enumerable: true });
+    return error;
+  }
+
+  test('classifies a post-dispatch runProcess rejection as worker_io_incomplete', async () => {
+    const client = clientWithRejectingRunProcess(() =>
+      dispatchedError('Filesystem worker output did not drain before lifecycle deadline', true),
+    );
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path: '/tmp/maka-dispatch-incomplete.txt', content: 'x' },
+        cwd: '/tmp',
+        mode: 'ask',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'worker_io_incomplete');
+        assert.equal(error.dispatched, true);
+        return true;
+      },
+    );
+  });
+
+  test('classifies a never-dispatched runProcess rejection as spawn_failed', async () => {
+    const client = clientWithRejectingRunProcess(() =>
+      dispatchedError('spawn ENOENT', false),
+    );
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path: '/tmp/maka-dispatch-spawn.txt', content: 'x' },
+        cwd: '/tmp',
+        mode: 'ask',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'spawn_failed');
+        assert.equal(error.dispatched, false);
+        return true;
+      },
+    );
+  });
+
+  test('a rejection without a dispatched flag is treated as never-dispatched', async () => {
+    // spawn() itself throwing (before any 'spawn' event) carries no flag.
+    const client = clientWithRejectingRunProcess(() => new Error('spawn EACCES'));
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path: '/tmp/maka-dispatch-noflag.txt', content: 'x' },
+        cwd: '/tmp',
+        mode: 'ask',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'spawn_failed');
+        return true;
+      },
+    );
+  });
+});
 
 function isPathDenied(error: unknown): boolean {
   return error instanceof FilesystemWorkerClientError && error.reason === 'path_denied';

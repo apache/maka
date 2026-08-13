@@ -15,12 +15,14 @@ import { isAbsolute } from 'node:path';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { PermissionMode } from '@maka/core/permission';
 import type { PermissionProfile } from '@maka/core/permission-profile';
+import { ToolOutcomeUnknownError } from '@maka/core/events';
 import { computeEditedSource } from './edit-replace.js';
 import { createUnifiedDiff } from './unified-diff.js';
 import { withFileWriteLock } from './file-write-lock.js';
-import type {
-  FilesystemWorkerClient,
-  FilesystemWorkerClientOperation,
+import {
+  FilesystemWorkerClientError,
+  type FilesystemWorkerClient,
+  type FilesystemWorkerClientOperation,
 } from './filesystem-worker/client.js';
 import type { ImageMimeType } from './image-file.js';
 import type { FilesystemWorkerResult } from './filesystem-worker/protocol.js';
@@ -120,6 +122,48 @@ function mutates(operation: FilesystemOperation): boolean {
 }
 
 /**
+ * Reasons that, when a *mutating* operation fails with them, mean the file's
+ * state on disk is genuinely unknown. Each implies the worker had the request
+ * and may have applied it before losing the ability to report back. Pre-flight
+ * failures (validation/transform, the bundle being unavailable, a never-started
+ * spawn) are deliberately absent — nothing could have been written there.
+ *
+ * Every reason here is *semantically* dispatched: the launch-stage ones are
+ * produced only after the child ran (timeout/worker_crashed/response_overflow
+ * observe a real exit; worker_io_incomplete is defined as "ran but the result
+ * was lost"), and the protocol-stage ones (invalid_response, response_id_mismatch,
+ * response_kind_mismatch, outcome_unknown) are produced while parsing the
+ * child's own response. So membership in this set is a sufficient signal —
+ * `dispatched` is not re-checked for them. Only `aborted` straddles both the
+ * pre-flight and post-dispatch worlds, so it alone is gated on `dispatched`.
+ */
+const UNKNOWN_OUTCOME_REASONS = new Set<FilesystemWorkerClientError['reason']>([
+  'timeout',
+  'worker_io_incomplete',
+  'response_overflow',
+  'worker_crashed',
+  'invalid_response',
+  'response_id_mismatch',
+  'response_kind_mismatch',
+  'outcome_unknown',
+]);
+
+/**
+ * Whether a failed mutation leaves the file in an unknown state. A mutating op
+ * that fails after dispatch may already have written — we surface that as an
+ * unknown outcome so the model re-reads instead of assuming the call did
+ * nothing. `aborted` is special-cased: a cancel before dispatch is clean, only
+ * a cancel after dispatch (the worker had the request) is unknown. The other
+ * unknown-outcome reasons are semantically dispatched (see the set's comment),
+ * so they do not re-check the flag.
+ */
+function isUnknownOutcomeForMutation(error: unknown): error is FilesystemWorkerClientError {
+  if (!(error instanceof FilesystemWorkerClientError)) return false;
+  if (error.reason === 'aborted') return error.dispatched === true;
+  return UNKNOWN_OUTCOME_REASONS.has(error.reason);
+}
+
+/**
  * Compose the backends behind one boundary-driven decision.
  *
  * - `managed` → the sandboxed worker, which enforces the boundary's profile.
@@ -209,28 +253,51 @@ export function createBoundaryFilesystemExecutor(
       // key is derived from the same canonicalisation the backend will resolve
       // with, or the lock-key space and the resolved-path space drift apart.
       const key = await writeLockTarget(call, call.operation.path);
-      return await withFileWriteLock(key, () => run(call));
+      try {
+        return await withFileWriteLock(key, () => run(call));
+      } catch (error) {
+        // A mutation that fails after dispatch may already have landed on disk.
+        // Surface that as an unknown outcome so the model re-reads rather than
+        // assuming the call did nothing. Reads and pre-flight failures pass through.
+        if (isUnknownOutcomeForMutation(error)) {
+          throw new ToolOutcomeUnknownError(
+            `Filesystem mutation may have been applied before the worker failed (${error.reason}).`,
+            { cause: error },
+          );
+        }
+        throw error;
+      }
     },
     async applyPatch(call) {
       const { operation, ...common } = call;
       const semantics = operation.type === 'update_file' ? 'target' : 'entry';
       const key = await writeLockTarget(common, operation.path, semantics);
-      return await withFileWriteLock(key, async () => {
-        const backendOperation: FilesystemWorkerClientOperation =
-          operation.type === 'delete_file'
-            ? { kind: 'apply_patch', path: operation.path, action: 'delete' }
-            : {
-                kind: 'apply_patch',
-                path: operation.path,
-                action: operation.type === 'create_file' ? 'create' : 'update',
-                diff: operation.diff,
-              };
-        const result = await run({ ...common, operation: backendOperation });
-        if (result.kind !== 'apply_patch') {
-          throw new Error(`ApplyPatch backend returned ${JSON.stringify(result.kind)}.`);
+      try {
+        return await withFileWriteLock(key, async () => {
+          const backendOperation: FilesystemWorkerClientOperation =
+            operation.type === 'delete_file'
+              ? { kind: 'apply_patch', path: operation.path, action: 'delete' }
+              : {
+                  kind: 'apply_patch',
+                  path: operation.path,
+                  action: operation.type === 'create_file' ? 'create' : 'update',
+                  diff: operation.diff,
+                };
+          const result = await run({ ...common, operation: backendOperation });
+          if (result.kind !== 'apply_patch') {
+            throw new Error(`ApplyPatch backend returned ${JSON.stringify(result.kind)}.`);
+          }
+          return { status: 'completed' };
+        });
+      } catch (error) {
+        if (isUnknownOutcomeForMutation(error)) {
+          throw new ToolOutcomeUnknownError(
+            `Filesystem mutation may have been applied before the worker failed (${error.reason}).`,
+            { cause: error },
+          );
         }
-        return { status: 'completed' };
-      });
+        throw error;
+      }
     },
   };
 }

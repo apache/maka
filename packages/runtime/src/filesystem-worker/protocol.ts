@@ -175,6 +175,11 @@ export const FilesystemWorkerErrorCodeSchema = z.enum([
   'sandbox_denied',
   'filesystem_denied',
   'filesystem_error',
+  // The worker may have applied the mutation before it lost the ability to
+  // report back (e.g. it wrote the file then the post-write identity check
+  // found the on-path inode no longer matches the one it wrote). The host
+  // treats this as an unknown outcome on disk, not a clean failure.
+  'outcome_unknown',
 ]);
 
 export const FilesystemWorkerResponseSchema = z.discriminatedUnion('ok', [
