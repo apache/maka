@@ -5,6 +5,7 @@ import {
   type HostedExecutionProjection,
   type HostedExecutionStartInput,
 } from '../protocol/index.js';
+import { join } from 'node:path';
 import { connectOwnedRuntimeHost } from './connect-or-spawn.js';
 import type { RuntimeHostConnection } from './connection.js';
 import { configureHostedExecutionTarget } from './hosted-execution-target.js';
@@ -41,7 +42,12 @@ export async function runHostedExecutionWithDependencies(
     return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
   }
   const liveness =
-    input.execution.session.toolProfile === 'headless-coding-v1' ? HEADLESS_LIVENESS : {};
+    input.execution.session.toolProfile === 'headless-coding-v1'
+      ? {
+          ...HEADLESS_LIVENESS,
+          candidateStderrPath: join(input.rootPath, 'runtime-host-candidate.log'),
+        }
+      : {};
   const initial = await dependencies.connectOwnedRuntimeHost({
     rootPath: input.rootPath,
     surface: 'run',

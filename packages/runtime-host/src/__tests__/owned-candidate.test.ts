@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -71,15 +71,19 @@ test('owned Host exits promptly after its first connection closes', async () => 
 
 test('owned candidate settlement requires a clean process exit', async () => {
   const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-candidate-'));
+  const stderrPath = join(rootPath, 'runtime-host-candidate.log');
   const launch = launchOwnedRuntimeHostCandidate({
     rootPath,
     expectedRootId: '00000000-0000-4000-8000-000000000001',
     entrypoint: new URL('./fixtures/owned-candidate-exit.js', import.meta.url),
     env: { MAKA_TEST_EXIT_CODE: '1' },
+    stderrPath,
   });
 
   const candidate = await launch.spawned;
   assert.equal(await candidate.settle(2_000), false);
+  assert.match(await readFile(stderrPath, 'utf8'), /owned candidate stderr sentinel/u);
+  assert.match(await readFile(stderrPath, 'utf8'), /MAKA_RUNTIME_HOST_EXIT_V1 code=1 signal=none/u);
 });
 
 test('owned candidate can be released to the enclosing environment without termination', async () => {

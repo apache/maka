@@ -64,6 +64,10 @@ test('headless hosted execution disables liveness probes for CPU-bound task cont
   assert.equal(result.failureReason, 'Runtime Host did not start: existing_host');
   assert.equal((observed as { livenessIntervalMs?: number }).livenessIntervalMs, 0);
   assert.equal((observed as { livenessTimeoutMs?: number }).livenessTimeoutMs, 30_000);
+  assert.equal(
+    (observed as { candidateStderrPath?: string }).candidateStderrPath,
+    '/runtime-host/runtime-host-candidate.log',
+  );
 });
 
 test('startup cancellation closes admission with the cancelled result', async () => {

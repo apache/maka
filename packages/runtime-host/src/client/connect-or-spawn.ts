@@ -45,6 +45,7 @@ export interface ConnectOrSpawnRuntimeHostInput {
   handshakeTimeoutMs?: number;
   livenessIntervalMs?: number;
   livenessTimeoutMs?: number;
+  candidateStderrPath?: string;
   candidateEntrypoint: string | URL;
   signal?: AbortSignal;
 }
@@ -243,6 +244,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           expectedRootId: capability.rootId,
           entrypoint: input.candidateEntrypoint,
           initialConnectionTimeoutMs: Math.ceil(remaining),
+          ...(input.candidateStderrPath === undefined
+            ? {}
+            : { stderrPath: input.candidateStderrPath }),
           ...(input.generation === undefined ? {} : { generation: input.generation }),
         });
         const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
