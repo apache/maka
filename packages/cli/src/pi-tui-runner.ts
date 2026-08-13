@@ -1291,8 +1291,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const previousConnectionSlug = connectionSlug;
     const previousChoice = modelChoices?.find(
       (candidate) =>
-        candidate.model === previousModel &&
-        candidate.connectionSlug === previousConnectionSlug,
+        candidate.model === previousModel && candidate.connectionSlug === previousConnectionSlug,
     );
     await input.driver.setModel(choice.model, choice.connectionSlug);
     model = choice.model;
