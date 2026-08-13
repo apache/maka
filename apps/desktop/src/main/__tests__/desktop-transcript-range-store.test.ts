@@ -187,6 +187,22 @@ test('reopens a failed transcript range with a fresh generation', async () => {
   await controller.close();
 });
 
+test('cancels a transcript open that is still waiting for a Host', async () => {
+  const store = new DesktopTranscriptRangeStore();
+  let openSignal: AbortSignal | undefined;
+  const controller = createDesktopTranscriptRangeController(
+    store,
+    (signal) =>
+      new Promise((_resolve, reject) => {
+        openSignal = signal;
+        signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+      }),
+  );
+
+  await controller.close();
+  assert.equal(openSignal?.aborted, true);
+});
+
 function assistantMessage(
   text: string,
   id = 'assistant-1',

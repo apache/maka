@@ -575,6 +575,14 @@ export function createAppShellChatActions(deps: {
     try {
       if (activeIdRef.current !== sessionId) return;
       await transcriptRangeRef.current?.reload();
+    } catch (error) {
+      if (activeIdRef.current !== sessionId) return;
+      const message = messageRefreshErrorMessage(error, uiLocale);
+      setMessageLoadErrorBySession((current) => ({
+        ...current,
+        [sessionId]: message,
+      }));
+      toastApi.error(copy.refreshFailedTitle, message);
     } finally {
       clearPendingSessionAction(sessionId, messageRetryPendingRef, setMessageRetryPendingBySession);
     }

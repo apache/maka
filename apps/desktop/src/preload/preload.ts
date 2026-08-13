@@ -838,7 +838,9 @@ const makaBridge = {
     async open(
       sessionId: string,
       handler: (batch: DesktopTranscriptBatch) => void,
+      signal?: AbortSignal,
     ): Promise<DesktopTranscriptHandle> {
+      signal?.throwIfAborted();
       const consumerId = crypto.randomUUID();
       const channel = `sessions:transcript:${consumerId}`;
       let generation: string | undefined;
@@ -853,6 +855,15 @@ const makaBridge = {
         if (batch.generation === generation) handler(batch);
       };
       ipcRenderer.on(channel, listener);
+      let closeTask: Promise<void> | undefined;
+      const requestClose = () => {
+        if (closed) return;
+        closed = true;
+        ipcRenderer.off(channel, listener);
+        closeTask = ipcRenderer.invoke('sessions:transcript:close', consumerId);
+        void closeTask.catch(() => undefined);
+      };
+      signal?.addEventListener('abort', requestClose, { once: true });
       let opened: DesktopTranscriptOpenResult;
       try {
         opened = await ipcRenderer.invoke('sessions:transcript:open', sessionId, consumerId);
@@ -860,7 +871,10 @@ const makaBridge = {
         closed = true;
         ipcRenderer.off(channel, listener);
         throw error;
+      } finally {
+        signal?.removeEventListener('abort', requestClose);
       }
+      if (closed) throw new Error('Desktop transcript open was cancelled');
       generation ??= opened.generation;
       const range = (
         operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-around',
@@ -881,9 +895,8 @@ const makaBridge = {
           range('sessions:transcript:load-around', sequence, maxBytes),
         async close() {
           if (closed) return;
-          closed = true;
-          ipcRenderer.off(channel, listener);
-          await ipcRenderer.invoke('sessions:transcript:close', consumerId);
+          requestClose();
+          await closeTask;
         },
       };
     },

@@ -16,10 +16,11 @@ export interface DesktopTranscriptRangeController {
 
 export function createDesktopTranscriptRangeController(
   store: DesktopTranscriptRangeStore,
-  open: () => Promise<DesktopTranscriptHandle>,
+  open: (signal: AbortSignal) => Promise<DesktopTranscriptHandle>,
 ): DesktopTranscriptRangeController {
   let closed = false;
-  let handle = open();
+  let openController = new AbortController();
+  let handle = open(openController.signal);
   const current = async () => {
     if (closed) throw new Error('Desktop transcript range is closed');
     return handle;
@@ -41,18 +42,21 @@ export function createDesktopTranscriptRangeController(
     },
     async reload() {
       const previous = handle;
+      openController.abort();
       handle = previous
         .then((value) => value.close())
         .catch(() => undefined)
         .then(() => {
           if (closed) throw new Error('Desktop transcript range is closed');
-          return open();
+          openController = new AbortController();
+          return open(openController.signal);
         });
       await handle;
     },
     async close() {
       if (closed) return;
       closed = true;
+      openController.abort();
       await handle.then((value) => value.close()).catch(() => undefined);
     },
   };

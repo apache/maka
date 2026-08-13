@@ -499,6 +499,7 @@ export interface MakaBridge {
     open(
       sessionId: string,
       handler: (batch: DesktopTranscriptBatch) => void,
+      signal?: AbortSignal,
     ): Promise<DesktopTranscriptHandle>;
   };
   externalSessions: {
