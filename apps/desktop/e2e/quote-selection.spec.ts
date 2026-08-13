@@ -10,10 +10,9 @@ test('a transcript drag releases outside the window through its owning Turn', as
 
   const reply = page.getByText(/Fake backend received: pointer capture source/);
   await expect(reply).toBeVisible();
-  // Select from a settled answer, not a streaming one. The markdown renderer
-  // rebuilds a paragraph's inline fragments when the stream closes, and the
-  // browser drops any Selection inside the removed nodes — a race that has
-  // nothing to do with the pointer-capture contract under test here.
+  // Select from a settled answer. Selecting from a streaming one is broken for
+  // an unrelated reason — see the fixme below — and this test exists to pin the
+  // pointer-capture contract, not Selection survival across a stream close.
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
     timeout: 20_000,
   });
@@ -70,4 +69,40 @@ test('a transcript drag releases outside the window through its owning Turn', as
 
   await expect(turn).toHaveAttribute('data-e2e-captured-pointer-up', 'true');
   await expect(quoteLayer).toBeVisible();
+});
+
+// Known broken, kept visible rather than described in a PR nobody re-reads.
+// Selecting inside a still-streaming answer loses the Selection when the
+// stream closes: the markdown renderer rebuilds the paragraph's inline
+// fragments, the browser discards the Selection those nodes held, and it does
+// so without a `selectionchange` — so the quote hook, which re-reads the
+// Selection 350ms after pointer release, finds nothing to offer.
+//
+// Not fixable from this repo as it stands: the rebuild is inside
+// @astryxdesign/core, and pinning the `isStreaming` / `settledText` props that
+// drive it still reproduces. Closing this needs an upstream fix, or a decision
+// to snapshot the quote at pointerup — which would show a quote bar over text
+// whose highlight the browser has already erased.
+test.fixme('a drag begun while the answer streams still offers a quote', async ({
+  window: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('pointer capture source');
+  await composer.press('Enter');
+
+  const reply = page.getByText(/Fake backend received: pointer capture source/);
+  await expect(reply).toBeVisible();
+  const bounds = await reply.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const rect = range.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  });
+  const y = bounds.y + bounds.height / 2;
+  await page.mouse.move(bounds.x + 2, y);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + bounds.width - 2, y, { steps: 5 });
+  await page.mouse.up();
+
+  await expect(page.locator('.maka-quote-actions')).toBeVisible();
 });
