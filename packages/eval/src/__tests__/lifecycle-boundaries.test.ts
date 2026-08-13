@@ -811,6 +811,7 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   assert.match(egressCompose, /condition: service_healthy/u);
   assert.match(egressCompose, /maka-eval-egress-state:\/opt\/maka-egress/u);
   assert.match(egressCompose, /networks:\s*\n\s+- default/u);
+  assert.match(egressCompose, /target: \/usr\/local\/bin\/network-policy/u);
   assert.deepEqual(
     spec.executor.config.mounts.map(({ target }) => target),
     [
