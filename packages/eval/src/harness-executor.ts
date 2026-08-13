@@ -182,6 +182,12 @@ async function runHarnessAttempt(
     }
     await state.closeRelay();
   }
+  if (hasValue && finalizationEvidence && finalizationConfirmed(finalizationEvidence)) {
+    value = {
+      ...value!,
+      artifacts: [...value!.artifacts, ...(await collectedArtifactInventory(state.trialPath))],
+    };
+  }
   if (
     hasValue &&
     (state.transport.failure || cleanupAction || state.diagnostic?.category !== 'none')
@@ -731,7 +737,6 @@ async function readVerification(
     failureReason: score === null ? 'verifier produced no reward' : null,
     artifacts: [
       { kind: 'trial', framework: cell.executor.kind, trialName: state.trialName },
-      ...(await collectedArtifactInventory(state.trialPath)),
       ...(egressAudit
         ? [
             {
@@ -753,6 +758,7 @@ async function collectedArtifactInventory(trialPath: string): Promise<JsonObject
     join(root, basename(MAKA_RUNTIME_ARTIFACT_PATH)),
     join(root, basename(MAKA_SUBJECT_STDOUT_PATH)),
     join(root, basename(MAKA_SUBJECT_STDERR_PATH)),
+    join(trialPath, 'agent'),
   ];
   for (const target of targets) {
     await walkCollectedArtifacts(trialPath, target, files).catch((error: NodeJS.ErrnoException) => {

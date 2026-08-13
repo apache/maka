@@ -74,6 +74,7 @@ test('provider failures remain infrastructure failures until inference admission
         usage: { cacheWriteTokens: number } | null;
         artifacts: Array<{
           kind: string;
+          path?: string;
           admittedRequests?: number;
           usageComplete?: boolean;
         }>;
@@ -88,16 +89,22 @@ test('provider failures remain infrastructure failures until inference admission
         JSON.stringify(result),
         /(?:credential|stdout|stderr)-sentinel-must-not-persist/u,
       );
+      assert.match(
+        await readFile(join(root, 'logs/agent/opencode.jsonl'), 'utf8'),
+        /stdout-sentinel-must-not-persist/u,
+      );
+      assert.match(
+        await readFile(join(root, 'logs/agent/opencode.stderr.txt'), 'utf8'),
+        /stderr-sentinel-must-not-persist/u,
+      );
       assert.equal(
-        (await readdir(join(root, 'logs/agent')).catch(() => [])).some((name) =>
-          name.endsWith('.stderr.txt'),
-        ),
-        false,
+        result.artifacts.find(({ kind }) => kind === 'stdout')?.path,
+        '/logs/agent/opencode.jsonl',
       );
       for (const name of await readdir(join(root, 'logs/agent'))) {
         assert.doesNotMatch(
           await readFile(join(root, 'logs/agent', name), 'utf8'),
-          /(?:credential|stdout|stderr)-sentinel-must-not-persist|0123456789abcdef0123456789abcdef/u,
+          /credential-sentinel-must-not-persist|0123456789abcdef0123456789abcdef/u,
         );
       }
     } finally {
@@ -125,6 +132,17 @@ test('oversized external records are attributed to bounded classification', asyn
   assert.match(stdout?.sha256 ?? '', /^[0-9a-f]{64}$/u);
 });
 
+test('external trajectories are truncated at the persisted byte limit', async () => {
+  const result = await executePiWithTerminalRecord(65 * 1024 * 1024);
+  const stdout = result.artifacts.find(({ kind }) => kind === 'stdout');
+  assert.equal(stdout?.persistedBytes, 64 * 1024 * 1024);
+  assert.ok((stdout?.observedBytes ?? 0) > (stdout?.persistedBytes ?? 0));
+  assert.equal(
+    stdout?.truncatedBytes,
+    (stdout?.observedBytes ?? 0) - (stdout?.persistedBytes ?? 0),
+  );
+});
+
 async function executePiWithTerminalRecord(contentBytes: number): Promise<{
   status: string;
   failureReason: string | null;
@@ -133,6 +151,9 @@ async function executePiWithTerminalRecord(contentBytes: number): Promise<{
     profile?: string;
     exitCode?: number;
     bytes?: number;
+    observedBytes?: number;
+    persistedBytes?: number;
+    truncatedBytes?: number;
     sha256?: string;
     classification?: string;
     limitBytes?: number;

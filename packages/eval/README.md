@@ -58,6 +58,9 @@ cohort. This URL policy is a blocklist for known benchmark and public-solution c
 surfaces, not a complete defense against a deliberately invented lookup channel; the network
 namespace still forces all subject traffic through the audited proxy. Collected Maka runtime files
 and egress audit logs are represented in attempt artifacts with byte counts and SHA-256 digests.
+The external wrapper persists up to 64 MiB of each subject's stdout and stderr under `/logs/agent`;
+after Harbor finalization, Eval inventories the complete trial `agent/` directory into the attempt
+so trajectory, metering, wrapper-state, and runtime-event files remain tied to the scored result.
 The local image tag remains a machine deployment identity rather than a registry digest; digest
 pinning is tracked in issue #2953.
 
