@@ -18,7 +18,11 @@ const originalActEnvironment = (globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
 }).IS_REACT_ACT_ENVIRONMENT;
 
-afterEach(() => {
+const mountedRoots: ReturnType<typeof createRoot>[] = [];
+
+afterEach(async () => {
+  // Unmount before restoring globals: React's cleanup reads `document`.
+  for (const root of mountedRoots.splice(0)) await act(() => root.unmount());
   Object.assign(globalThis, {
     ...originalGlobals,
     IS_REACT_ACT_ENVIRONMENT: originalActEnvironment,
@@ -37,7 +41,9 @@ function domRoot() {
   });
   const container = document.querySelector('#root');
   assert.ok(container);
-  return { container, root: createRoot(container) };
+  const root = createRoot(container);
+  mountedRoots.push(root);
+  return { container, root };
 }
 
 function turnWith(timeline: TurnTimelineItem[]): TurnViewModel {
@@ -56,11 +62,12 @@ function turnWith(timeline: TurnTimelineItem[]): TurnViewModel {
 function renderTurn(
   root: ReturnType<typeof createRoot>,
   turn: TurnViewModel,
+  liveStreaming?: { onStreamingSettled?: (messageId?: string) => void },
 ): Promise<void> {
   return act(() => {
     root.render(
       <LocaleProvider locale="en">
-        <TurnView turn={turn} />
+        <TurnView turn={turn} liveStreaming={liveStreaming} />
       </LocaleProvider>,
     );
   }) as unknown as Promise<void>;
@@ -73,37 +80,38 @@ const ANSWER: TurnTimelineItem = {
   live: true,
 };
 
+const RUNNING_TOOL: TurnTimelineItem = {
+  kind: 'tools',
+  items: [{ toolUseId: 'tool-1', toolName: 'read', status: 'running', args: {} }],
+};
+
 /**
- * The bug this pins: keying the answer by its first timeline entry made the
- * key change whenever that entry did, so React unmounted the answer and
- * mounted a copy. The browser drops any Selection inside a removed subtree, so
- * text selected while the answer streamed lost its highlight — and the quote
- * affordance that reads from the Selection never appeared.
+ * Keying the answer by its first timeline entry made the key change whenever
+ * that entry did, so React unmounted the answer and mounted a copy — taking
+ * the scroll position, any open disclosure, and any text Selection inside it.
+ *
+ * The transition here is the real one from `timeline-fold.ts`: a run's last
+ * tools group is projected away, so the Processing block dissolves and the
+ * leading entry stops being a fold.
  */
 test('keeps the assistant answer element as a turn settles around it', async () => {
   const { container, root } = domRoot();
 
-  // While the turn runs, a tools group folds the leading entries into a
-  // Processing block. The answer is the second entry.
-  await renderTurn(root, turnWith([
-    { kind: 'tools', items: [] },
-    ANSWER,
-  ]));
+  await renderTurn(root, turnWith([RUNNING_TOOL, ANSWER]));
   const streaming = container.querySelector('.maka-assistant-answer');
   assert.ok(streaming, 'the answer renders while the turn runs');
 
-  // The last tools group is projected away, the Processing block dissolves,
-  // and the leading entry becomes something else entirely.
-  await renderTurn(root, turnWith([
-    { kind: 'thinking', text: 'reasoning', messageId: 'think-1' },
-    { ...ANSWER, live: false },
-  ]));
+  await renderTurn(root, turnWith([{ ...ANSWER, live: false }]));
   const settled = container.querySelector('.maka-assistant-answer');
   assert.ok(settled, 'the answer still renders once the turn settles');
   assert.equal(settled.isSameNode(streaming), true, 'the answer element survives the turn settling');
 });
 
-/** Each answer in a turn is identified by the steering message that opened it. */
+/**
+ * Locks the keying scheme rather than the regression above: two answers in one
+ * turn must not collide on a shared key. This is what catches an identity that
+ * is constant across segments — the sentinel-vs-real-id collision, say.
+ */
 test('gives each answer in a steered turn its own stable element', async () => {
   const { container, root } = domRoot();
 
@@ -127,4 +135,38 @@ test('gives each answer in a steered turn its own stable element', async () => {
   assert.equal(settledAnswers.length, 2);
   assert.equal(settledAnswers[0]?.isSameNode(answers[0]), true, 'the first answer keeps its element');
   assert.equal(settledAnswers[1]?.isSameNode(answers[1]), true, 'the second answer keeps its element');
+});
+
+/**
+ * The live handoff announces itself exactly once, when the answer enters its
+ * settled phase. A bubble replayed from history mounts already past the
+ * stream; letting it consume that announcement left the real handoff silent
+ * and the answer stuck wearing the live marker until a timeout cleaned up.
+ */
+test('announces settlement when a persisted answer is promoted to a completed live one', async () => {
+  const { container, root } = domRoot();
+  const settled: string[] = [];
+  const onStreamingSettled = (messageId?: string) => { settled.push(messageId ?? '?'); };
+
+  await renderTurn(root, turnWith([{ ...ANSWER, live: false }]));
+  assert.deepEqual(settled, [], 'history alone announces nothing');
+
+  await renderTurn(
+    root,
+    turnWith([{ ...ANSWER, live: true, complete: true }]),
+    { onStreamingSettled },
+  );
+  assert.deepEqual(settled, ['answer-1'], 'the handoff is announced once');
+  assert.equal(
+    container.querySelector('.maka-bubble-streaming') === null,
+    false,
+    'the live marker is still present while the turn is being followed',
+  );
+
+  await renderTurn(
+    root,
+    turnWith([{ ...ANSWER, live: true, complete: true }]),
+    { onStreamingSettled },
+  );
+  assert.deepEqual(settled, ['answer-1'], 'staying settled does not re-announce');
 });

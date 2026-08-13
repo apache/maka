@@ -681,9 +681,13 @@ type ConversationSegment =
        * What this answer replies to: the steering message that opened it, or
        * the turn itself for the first answer. This is the segment's identity —
        * its React key must not be derived from its contents, because those
-       * change as the turn runs (a Processing fold appears, then the answer
-       * lands) and a changing key remounts the whole answer, which drops any
-       * text Selection the user was holding inside it.
+       * change as the turn runs (a Processing fold dissolves once its last
+       * tools group is projected away) and a changing key remounts the whole
+       * answer, costing the user their scroll position, any disclosure they
+       * had open, and any text Selection held inside it.
+       *
+       * Same rule, same reason as `ProcessingFold.id` in `timeline-fold.ts`:
+       * identity comes from the preceding boundary, never from the first child.
        */
       repliesTo?: string;
     };
@@ -989,54 +993,70 @@ export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }
 }
 
 /**
- * The assistant's answer, in every state it can be in: still streaming,
- * streamed and settled, and replayed from history.
+ * Which of an answer's three lives this bubble is rendering.
  *
- * One component on purpose. Swapping components as a turn ends would unmount
- * the answer's DOM and remount an identical-looking copy, and the browser
- * drops any text Selection that lived in the removed subtree — so a user who
- * selected part of an answer while it was still arriving lost the selection
- * (and the quote affordance it feeds) the instant the turn finished.
+ * One field, not a pair of booleans: a bubble replayed from history has no
+ * stream to be behind, no settlement to announce, and no live-stream seed, so
+ * `historical` must not be able to carry those at all. Spelling it as
+ * `(live, streaming)` made `live: false, streaming: true` representable and
+ * pushed the gating out to every call site, where forgetting one is silent.
  */
-const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: {
-  text: string;
-  /** Belongs to a turn the UI is still following; carries the live-bubble marker. */
-  live: boolean;
-  /** Text is still growing, so the markdown renderer stays behind its cursor. */
-  streaming: boolean;
-  settledText?: string;
-  truncated?: boolean;
-  onSettled?: () => void;
-}) {
+type AssistantAnswerPhase = 'historical' | 'streaming' | 'settled';
+
+type AssistantAnswerBubbleProps =
+  | { text: string; phase: 'historical' }
+  | {
+      text: string;
+      phase: 'streaming' | 'settled';
+      /** Text already streamed before this mount, so a remount does not replay it. */
+      settledText?: string;
+      truncated?: boolean;
+      /** Called once when this answer's stream closes. */
+      onSettled?: () => void;
+    };
+
+/**
+ * The assistant's answer, in every state it can be in.
+ *
+ * One component on purpose. Swapping component types as a turn ends would
+ * unmount the answer's DOM and mount an identical-looking copy, taking with it
+ * the user's scroll position, any open disclosure inside, and any text
+ * Selection held in the removed subtree.
+ */
+const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: AssistantAnswerBubbleProps) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const settledRef = useRef(false);
+  const settledText = props.phase === 'historical' ? undefined : props.settledText;
+  const truncated = props.phase === 'historical' ? false : props.truncated === true;
+  const onSettled = props.phase === 'historical' ? undefined : props.onSettled;
+  // Settlement is an edge, not a value: it happens when this answer *enters*
+  // `settled`, including straight into it on mount. Reading the phase alone
+  // would let a historical bubble — which mounts already past the stream —
+  // consume the announcement that belongs to the live handoff.
+  const announcedFrom = useRef<AssistantAnswerPhase | null>(null);
 
   useEffect(() => {
-    settledRef.current = false;
-  }, [props.text, props.streaming]);
-
-  useEffect(() => {
-    if (props.streaming || settledRef.current) return;
-    settledRef.current = true;
-    props.onSettled?.();
-  }, [props.streaming, props.onSettled]);
+    const previous = announcedFrom.current;
+    announcedFrom.current = props.phase;
+    if (props.phase !== 'settled' || previous === 'settled') return;
+    onSettled?.();
+  }, [props.phase, onSettled]);
 
   return (
     <ChatMessageBubble
       variant="ghost"
       className={
-        props.live
-          ? 'maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-streaming'
-          : 'maka-chat-message-bubble maka-chat-message-bubble-assistant'
+        props.phase === 'historical'
+          ? 'maka-chat-message-bubble maka-chat-message-bubble-assistant'
+          : 'maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-streaming'
       }
     >
       <Markdown
         text={props.text}
-        streaming={props.streaming}
-        settledText={props.settledText}
+        streaming={props.phase === 'streaming'}
+        settledText={settledText}
         density="compact"
       />
-      {props.truncated && (
+      {truncated && (
         <Tooltip content={copy.outputTruncatedTitle}>
           {/* Colour-name archive, not the semantic one: Astryx paints
               `warning` as a solid dark-mode-invariant fill and `yellow` as a
@@ -1087,15 +1107,15 @@ function TurnTimelineEntry(props: {
   if (item.kind === 'tools') {
     return <ToolTrow items={item.items} onOpenLinkedSession={props.onOpenLinkedSession} />;
   }
-  const live = item.live === true;
+  // Same component either way — a type swap here would remount the answer.
+  if (item.live !== true) return <AssistantAnswerBubble text={item.text} phase="historical" />;
   return (
     <AssistantAnswerBubble
       text={item.text}
-      live={live}
-      streaming={live && item.complete !== true}
+      phase={item.complete === true ? 'settled' : 'streaming'}
       settledText={props.initialLiveContent?.get(`text:${item.messageId}`)}
-      truncated={live && item.truncated === true}
-      onSettled={live ? () => props.onStreamingSettled?.(item.messageId) : undefined}
+      truncated={item.truncated === true}
+      onSettled={() => props.onStreamingSettled?.(item.messageId)}
     />
   );
 }
