@@ -16,6 +16,8 @@ import type {
   BotBridge,
   BotIncomingMessage,
   BotPlatform,
+  BotReplyStream,
+  BotReplyStreamOptions,
   BotSendOptions,
   BotStatus,
   SendCapable,
@@ -69,6 +71,16 @@ export class BotRegistry extends EventEmitter {
     const bridge = this.bridges.get(platform) as (BotBridge & Partial<SendCapable>) | undefined;
     if (!bridge || typeof bridge.sendMessage !== 'function') return null;
     return bridge.sendMessage(chatId, text, options);
+  }
+
+  startReplyStream(
+    platform: BotPlatform,
+    chatId: string,
+    options: BotReplyStreamOptions,
+  ): BotReplyStream | null {
+    const bridge = this.bridges.get(platform) as (BotBridge & Partial<SendCapable>) | undefined;
+    if (!bridge || typeof bridge.startReplyStream !== 'function') return null;
+    return bridge.startReplyStream(chatId, options);
   }
 
   /**
