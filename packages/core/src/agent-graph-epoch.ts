@@ -11,7 +11,7 @@ export interface AgentGraphEpochBinding {
 
 export interface ResolveAgentGraphEpochRequest {
   readonly rootSessionId: string;
-  /** Existing deterministic graph identity adopted as epoch 1 when absent. */
+  /** Existing deterministic graph identity exposed as virtual epoch 1 when absent. */
   readonly legacyGraphId: string;
 }
 
@@ -20,11 +20,6 @@ export interface AdvanceAgentGraphEpochRequest {
   readonly expectedEpoch: number;
   readonly expectedGraphId: string;
   readonly nextGraphId: string;
-}
-
-export interface AgentGraphEpochResult {
-  readonly binding: AgentGraphEpochBinding;
-  readonly created: boolean;
 }
 
 /**
@@ -37,8 +32,8 @@ export interface AgentGraphEpochResult {
 export interface AgentGraphEpochStore {
   resolveCurrentAgentGraphEpoch(
     request: ResolveAgentGraphEpochRequest,
-  ): Promise<AgentGraphEpochResult>;
-  advanceAgentGraphEpoch(request: AdvanceAgentGraphEpochRequest): Promise<AgentGraphEpochResult>;
+  ): Promise<AgentGraphEpochBinding>;
+  advanceAgentGraphEpoch(request: AdvanceAgentGraphEpochRequest): Promise<AgentGraphEpochBinding>;
   listAgentGraphEpochs(rootSessionId: string): Promise<AgentGraphEpochBinding[]>;
 }
 

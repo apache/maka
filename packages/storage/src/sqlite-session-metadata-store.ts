@@ -38,7 +38,6 @@ import {
   decodeAgentGraphEpochBinding,
   type AdvanceAgentGraphEpochRequest,
   type AgentGraphEpochBinding,
-  type AgentGraphEpochResult,
   type ResolveAgentGraphEpochRequest,
 } from '@maka/core/agent-graph-epoch';
 import {
@@ -126,7 +125,9 @@ const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 const SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES = 32;
 
 const require = createRequire(import.meta.url);
-const AGENT_GRAPH_CONTROL_DELETE_TABLES = [...SQLITE_AGENT_GRAPH_CONTROL_TABLES].reverse();
+const AGENT_GRAPH_CONTROL_DELETE_TABLES = SQLITE_AGENT_GRAPH_CONTROL_TABLES.filter(
+  (table) => table !== 'agent_graph_epochs',
+).reverse();
 
 function loadSqliteModule(): typeof import('node:sqlite') {
   const emitWarning = process.emitWarning;
@@ -2625,10 +2626,10 @@ export class SqliteSessionMetadataStore {
 
   async resolveCurrentAgentGraphEpoch(
     request: ResolveAgentGraphEpochRequest,
-  ): Promise<AgentGraphEpochResult> {
+  ): Promise<AgentGraphEpochBinding> {
     this.assertOpen();
     assertResolveAgentGraphEpochRequest(request);
-    return this.transaction(() => {
+    return this.readTransaction(() => {
       const current = this.readCurrentAgentGraphEpochSync(request.rootSessionId);
       if (current) {
         const first = this.readAgentGraphEpochSync(request.rootSessionId, 1);
@@ -2637,35 +2638,60 @@ export class SqliteSessionMetadataStore {
             `Agent Graph epoch 1 identity does not match for root Session ${request.rootSessionId}`,
           );
         }
-        return { binding: current, created: false };
+        return current;
       }
 
-      const binding: AgentGraphEpochBinding = {
+      if (this.readAgentGraphEpochByGraphIdSync(request.legacyGraphId)) {
+        throw new AgentGraphEpochConflictError(
+          `Agent Graph epoch 1 could not be resolved for root Session ${request.rootSessionId}`,
+        );
+      }
+
+      return {
         schemaVersion: AGENT_GRAPH_EPOCH_SCHEMA_VERSION,
         rootSessionId: request.rootSessionId,
         epoch: 1,
         graphId: request.legacyGraphId,
-        createdAt: this.now(),
+        createdAt: 0,
       };
-      if (this.readAgentGraphEpochByGraphIdSync(binding.graphId)) {
-        throw new AgentGraphEpochConflictError(
-          `Agent Graph epoch 1 could not be adopted for root Session ${request.rootSessionId}`,
-        );
-      }
-      this.insertAgentGraphEpochSync(binding);
-      return { binding, created: true };
     });
   }
 
   async advanceAgentGraphEpoch(
     request: AdvanceAgentGraphEpochRequest,
-  ): Promise<AgentGraphEpochResult> {
+  ): Promise<AgentGraphEpochBinding> {
     this.assertOpen();
     assertAdvanceAgentGraphEpochRequest(request);
     return this.transaction(() => {
       const current = this.readCurrentAgentGraphEpochSync(request.rootSessionId);
       if (current?.epoch === request.expectedEpoch + 1 && current.graphId === request.nextGraphId) {
-        return { binding: current, created: false };
+        return current;
+      }
+      if (!current && request.expectedEpoch === 1) {
+        if (
+          this.readAgentGraphEpochByGraphIdSync(request.expectedGraphId) ||
+          this.readAgentGraphEpochByGraphIdSync(request.nextGraphId)
+        ) {
+          throw new AgentGraphEpochConflictError(
+            `Agent Graph epoch could not advance for root Session ${request.rootSessionId}`,
+          );
+        }
+        this.insertAgentGraphEpochSync({
+          schemaVersion: AGENT_GRAPH_EPOCH_SCHEMA_VERSION,
+          rootSessionId: request.rootSessionId,
+          epoch: 1,
+          graphId: request.expectedGraphId,
+          createdAt: 0,
+        });
+        const binding: AgentGraphEpochBinding = {
+          schemaVersion: AGENT_GRAPH_EPOCH_SCHEMA_VERSION,
+          rootSessionId: request.rootSessionId,
+          epoch: 2,
+          graphId: request.nextGraphId,
+          createdAt: this.now(),
+        };
+        this.insertAgentGraphEpochSync(binding);
+        return binding;
       }
       if (
         !current ||
@@ -2690,7 +2716,7 @@ export class SqliteSessionMetadataStore {
         );
       }
       this.insertAgentGraphEpochSync(binding);
-      return { binding, created: true };
+      return binding;
     });
   }
 
@@ -2713,6 +2739,18 @@ export class SqliteSessionMetadataStore {
       )
       .all(rootSessionId) as unknown as AgentGraphEpochRow[];
     return rows.map(decodeAgentGraphEpochBinding);
+  }
+
+  async purgeAgentGraphEpochs(rootSessionId: string): Promise<number> {
+    this.assertOpen();
+    assertSafeSessionId(rootSessionId);
+    return this.transaction(() =>
+      Number(
+        this.db
+          .prepare('DELETE FROM agent_graph_epochs WHERE root_session_id = ?')
+          .run(rootSessionId).changes,
+      ),
+    );
   }
 
   async listAgentGraphOperatorProvisions(graphId: string): Promise<AgentGraphOperatorProvision[]> {

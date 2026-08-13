@@ -1240,6 +1240,7 @@ export async function createExecutionRuntimeHostComposition(
         )) {
           await openedGraphControlStore.purgeAgentGraphControlState(graphId);
         }
+        await openedGraphControlStore.purgeAgentGraphEpochs(sessionId);
       },
       worktrees: worktreeChildExecutor,
       requestDrain: context.requestDrain,

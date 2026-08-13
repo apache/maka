@@ -340,10 +340,9 @@ export class AgentGraphCoordinator {
   async listGraphIds(rootSessionId: string): Promise<readonly string[]> {
     requireRootSessionId(rootSessionId);
     if (!this.#input.epochStore) return [agentGraphIdForRootSession(rootSessionId)];
-    await this.currentGraphEpoch(rootSessionId);
-    return (await this.#input.epochStore.listAgentGraphEpochs(rootSessionId)).map(
-      ({ graphId }) => graphId,
-    );
+    const current = await this.currentGraphEpoch(rootSessionId);
+    const epochs = await this.#input.epochStore.listAgentGraphEpochs(rootSessionId);
+    return epochs.length > 0 ? epochs.map(({ graphId }) => graphId) : [current.graphId];
   }
 
   async hasLiveSessionState(rootSessionId: string): Promise<boolean> {
@@ -439,12 +438,9 @@ export class AgentGraphCoordinator {
   }
 
   /** Wake reconciliation without making the caller part of the data path. */
-  async wake(rootSessionId: string): Promise<void> {
+  wake(rootSessionId: string): void {
     if (this.#closed) return;
-    const driver = await this.#driver(rootSessionId);
-    if (driver.stopping) return;
-    driver.paused = false;
-    this.#requestDrive(driver);
+    void this.#wake(rootSessionId);
   }
 
   /** Reconcile now and surface any host-level failure to explicit callers. */
@@ -1201,32 +1197,34 @@ export class AgentGraphCoordinator {
         createdAt: 0,
       };
     }
-    return (
-      await this.#input.epochStore.resolveCurrentAgentGraphEpoch({
-        rootSessionId,
-        legacyGraphId: agentGraphIdForRootSession(rootSessionId),
-      })
-    ).binding;
+    return this.#input.epochStore.resolveCurrentAgentGraphEpoch({
+      rootSessionId,
+      legacyGraphId: agentGraphIdForRootSession(rootSessionId),
+    });
   }
 
   async currentGraphId(rootSessionId: string): Promise<string> {
     return (await this.currentGraphEpoch(rootSessionId)).graphId;
   }
 
-  async advanceGraphEpoch(rootSessionId: string): Promise<AgentGraphEpochBinding> {
+  async advanceGraphEpoch(
+    rootSessionId: string,
+    expected?: AgentGraphEpochBinding,
+  ): Promise<AgentGraphEpochBinding> {
     if (!this.#input.epochStore) {
       throw new Error('Agent graph epoch authority is unavailable');
     }
-    const current = await this.currentGraphEpoch(rootSessionId);
-    const nextGraphId = agentGraphIdForRootSessionEpoch(rootSessionId, current.epoch + 1);
-    return (
-      await this.#input.epochStore.advanceAgentGraphEpoch({
-        rootSessionId,
-        expectedEpoch: current.epoch,
-        expectedGraphId: current.graphId,
-        nextGraphId,
-      })
-    ).binding;
+    const basis = expected ?? (await this.currentGraphEpoch(rootSessionId));
+    if (basis.rootSessionId !== rootSessionId) {
+      throw new Error('Agent graph epoch binding belongs to another root Session');
+    }
+    const nextGraphId = agentGraphIdForRootSessionEpoch(rootSessionId, basis.epoch + 1);
+    return this.#input.epochStore.advanceAgentGraphEpoch({
+      rootSessionId,
+      expectedEpoch: basis.epoch,
+      expectedGraphId: basis.graphId,
+      nextGraphId,
+    });
   }
 
   async beginNextGraphEpoch(
@@ -1249,7 +1247,7 @@ export class AgentGraphCoordinator {
       if ((await this.#readSessionStateForGraph(rootSessionId, current.graphId)) !== 'terminal') {
         return;
       }
-      selected = await this.advanceGraphEpoch(rootSessionId);
+      selected = await this.advanceGraphEpoch(rootSessionId, current);
     });
     return selected;
   }
@@ -1294,6 +1292,17 @@ export class AgentGraphCoordinator {
     };
     this.#drivers.set(graphId, created);
     return created;
+  }
+
+  async #wake(rootSessionId: string): Promise<void> {
+    try {
+      const driver = await this.#driver(rootSessionId);
+      if (driver.stopping) return;
+      driver.paused = false;
+      this.#requestDrive(driver);
+    } catch (error) {
+      await notify(this.#input.onError, rootSessionId, error);
+    }
   }
 
   #wakeFromSchedule(driver: GraphDriver, fence: ScheduleWakeFence): void {

@@ -7,7 +7,7 @@ import { AgentGraphEpochConflictError } from '@maka/core/agent-graph-epoch';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite Agent Graph epochs', () => {
-  test('adopts the legacy graph as epoch 1 and reopens it idempotently', async () => {
+  test('resolves legacy epoch 1 without persisting state for an unused graph', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-agent-graph-epoch-'));
     const path = join(root, 'state.sqlite');
     try {
@@ -18,16 +18,14 @@ describe('SQLite Agent Graph epochs', () => {
           legacyGraphId: 'agent_graph_legacy',
         }),
         {
-          binding: {
-            schemaVersion: 1,
-            rootSessionId: 'root-1',
-            epoch: 1,
-            graphId: 'agent_graph_legacy',
-            createdAt: 100,
-          },
-          created: true,
+          schemaVersion: 1,
+          rootSessionId: 'root-1',
+          epoch: 1,
+          graphId: 'agent_graph_legacy',
+          createdAt: 0,
         },
       );
+      assert.deepEqual(await store.listAgentGraphEpochs('root-1'), []);
       store.close();
 
       const reopened = createSqliteSessionMetadataStore(path, { now: () => 200 });
@@ -37,14 +35,11 @@ describe('SQLite Agent Graph epochs', () => {
           legacyGraphId: 'agent_graph_legacy',
         }),
         {
-          binding: {
-            schemaVersion: 1,
-            rootSessionId: 'root-1',
-            epoch: 1,
-            graphId: 'agent_graph_legacy',
-            createdAt: 100,
-          },
-          created: false,
+          schemaVersion: 1,
+          rootSessionId: 'root-1',
+          epoch: 1,
+          graphId: 'agent_graph_legacy',
+          createdAt: 0,
         },
       );
       reopened.close();
@@ -66,8 +61,8 @@ describe('SQLite Agent Graph epochs', () => {
       nextGraphId: 'agent_graph_2',
     } as const;
 
-    assert.equal((await store.advanceAgentGraphEpoch(request)).created, true);
-    assert.equal((await store.advanceAgentGraphEpoch(request)).created, false);
+    assert.equal((await store.advanceAgentGraphEpoch(request)).graphId, 'agent_graph_2');
+    assert.equal((await store.advanceAgentGraphEpoch(request)).graphId, 'agent_graph_2');
     assert.deepEqual(
       (await store.listAgentGraphEpochs('root-1')).map(({ epoch, graphId }) => ({
         epoch,
@@ -121,6 +116,12 @@ describe('SQLite Agent Graph epochs', () => {
       rootSessionId: 'root-1',
       legacyGraphId: 'agent_graph_1',
     });
+    await store.advanceAgentGraphEpoch({
+      rootSessionId: 'root-1',
+      expectedEpoch: 1,
+      expectedGraphId: 'agent_graph_1',
+      nextGraphId: 'agent_graph_2',
+    });
     await assert.rejects(
       () =>
         store.resolveCurrentAgentGraphEpoch({
@@ -129,6 +130,26 @@ describe('SQLite Agent Graph epochs', () => {
         }),
       AgentGraphEpochConflictError,
     );
+    store.close();
+  });
+
+  test('retains the epoch directory until root-scoped retirement cleanup commits', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    await store.advanceAgentGraphEpoch({
+      rootSessionId: 'root-1',
+      expectedEpoch: 1,
+      expectedGraphId: 'agent_graph_1',
+      nextGraphId: 'agent_graph_2',
+    });
+
+    await store.purgeAgentGraphControlState('agent_graph_1');
+    assert.deepEqual(
+      (await store.listAgentGraphEpochs('root-1')).map(({ graphId }) => graphId),
+      ['agent_graph_1', 'agent_graph_2'],
+    );
+    assert.equal(await store.purgeAgentGraphEpochs('root-1'), 2);
+    assert.deepEqual(await store.listAgentGraphEpochs('root-1'), []);
+    assert.equal(await store.purgeAgentGraphEpochs('root-1'), 0);
     store.close();
   });
 });
