@@ -87,6 +87,7 @@ import {
   type SessionTranscriptStoragePage,
   type SessionTurnContribution,
   type SessionTurnContributionPage,
+  type SessionTurnLandmarkSnapshot,
 } from './session-store.js';
 import {
   isDiscardableConversationCopy,
@@ -111,6 +112,7 @@ export { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadat
 const SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE = 256;
 const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_MESSAGES = 1_024;
 const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_BYTES = 4 * 1024 * 1024;
+const SQLITE_TURN_LANDMARK_NEIGHBOR_MESSAGES = 32;
 
 const require = createRequire(import.meta.url);
 const AGENT_GRAPH_CONTROL_DELETE_TABLES = [...SQLITE_AGENT_GRAPH_CONTROL_TABLES].reverse();
@@ -1714,6 +1716,92 @@ export class SqliteSessionMetadataStore {
         contributions: [...contributions.values()],
         nextPosition: null,
       };
+    });
+  }
+
+  async readTurnLandmarks(
+    sessionId: string,
+    maxLandmarks: number,
+  ): Promise<SessionTurnLandmarkSnapshot> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    if (!Number.isSafeInteger(maxLandmarks) || maxLandmarks < 1 || maxLandmarks > 64) {
+      throw new Error('Invalid Session turn landmark limit');
+    }
+    return this.readTransaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      const bounds = this.db
+        .prepare(
+          `
+          SELECT MIN(sequence) AS first_sequence, MAX(sequence) AS through_sequence
+          FROM session_messages
+          WHERE session_id = ?
+        `,
+        )
+        .get(sessionId) as { first_sequence?: unknown; through_sequence?: unknown };
+      const firstSequence = nullableStoredMessageSequence(bounds.first_sequence, sessionId);
+      const throughSequence = nullableStoredMessageSequence(bounds.through_sequence, sessionId);
+      if (firstSequence === null || throughSequence === null) {
+        return { throughSequence: null, landmarks: [] };
+      }
+
+      const forward = this.db.prepare(`
+        SELECT message.sequence, message.message_type, payload.sequence AS payload_sequence
+        FROM session_messages AS message
+        LEFT JOIN session_message_payloads AS payload
+          ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+        WHERE message.session_id = ? AND message.sequence >= ? AND message.sequence <= ?
+        ORDER BY message.sequence ASC
+        LIMIT ${SQLITE_TURN_LANDMARK_NEIGHBOR_MESSAGES}
+      `);
+      const backward = this.db.prepare(`
+        SELECT message.sequence, message.message_type, payload.sequence AS payload_sequence
+        FROM session_messages AS message
+        LEFT JOIN session_message_payloads AS payload
+          ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+        WHERE message.session_id = ? AND message.sequence < ? AND message.sequence >= ?
+        ORDER BY message.sequence DESC
+        LIMIT ${SQLITE_TURN_LANDMARK_NEIGHBOR_MESSAGES}
+      `);
+      const selected = new Set<number>();
+      const targetCount = Math.min(maxLandmarks, throughSequence - firstSequence + 1);
+      for (let index = 0; index < targetCount; index += 1) {
+        const target =
+          targetCount === 1
+            ? throughSequence
+            : firstSequence +
+              Math.floor(((throughSequence - firstSequence) * index) / (targetCount - 1));
+        const candidates = [
+          ...(forward.all(sessionId, target, throughSequence) as TurnLandmarkCandidateRow[]),
+          ...(backward.all(sessionId, target, firstSequence) as TurnLandmarkCandidateRow[]),
+        ];
+        let nearest: number | undefined;
+        for (const candidate of candidates) {
+          const sequence = requireStoredMessageSequence(candidate.sequence, sessionId);
+          if (candidate.message_type !== 'user' || candidate.payload_sequence !== null) continue;
+          if (nearest === undefined || Math.abs(sequence - target) < Math.abs(nearest - target)) {
+            nearest = sequence;
+          }
+        }
+        if (nearest !== undefined) selected.add(nearest);
+      }
+
+      const landmarks = readStoredMessageRows(this.db, sessionId, [...selected]).flatMap(
+        ({ sequence, recordJson }) => {
+          let message: StoredMessage;
+          try {
+            message = decodeStoredMessage(JSON.parse(recordJson) as unknown);
+          } catch (error) {
+            throw new StoredSessionMessageIncompatibleError(sessionId, sequence, { cause: error });
+          }
+          if (message.type !== 'user') {
+            throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+          }
+          const label = (message.displayText ?? message.text).trim();
+          return label ? [{ turnId: message.turnId, sequence, label }] : [];
+        },
+      );
+      return { throughSequence, landmarks };
     });
   }
 
@@ -4998,6 +5086,12 @@ interface StoredSessionMessagePayloadRow {
   readonly record_json?: unknown;
   readonly record_bytes?: unknown;
   readonly sha256?: unknown;
+}
+
+interface TurnLandmarkCandidateRow {
+  readonly sequence?: unknown;
+  readonly message_type?: unknown;
+  readonly payload_sequence?: unknown;
 }
 
 function storedMessageRecordBytes(

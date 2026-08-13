@@ -316,7 +316,13 @@ export class RuntimeHostSessionObservationRegistry {
     deliverySequence: number,
     targetId?: number,
   ): void {
-    const source = this.#transcriptSource(consumerId);
+    const registration = this.#transcripts.get(consumerId);
+    if (!registration) throw new Error('Desktop transcript consumer does not exist');
+    if (targetId !== undefined && registration.target.id !== targetId) {
+      throw new Error('Desktop transcript consumer belongs to another renderer');
+    }
+    const source = this.#source;
+    if (!source) return;
     if (!source.acknowledgeTranscript) {
       throw new Error('Runtime Host transcript acknowledgement source is unavailable');
     }

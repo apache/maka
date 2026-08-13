@@ -2,10 +2,32 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   decodeSessionTurnsQueryResult,
+  decodeSessionTurnLandmarksQueryResult,
+  projectSessionTurnLandmarkForWire,
   projectSessionTurnContribution,
   projectSessionTurnContributionForWire,
   SESSION_TURN_DIAGNOSTIC_MAX_BYTES,
+  SESSION_TURN_LANDMARK_RESULT_MAX_BYTES,
 } from '../protocol/session-turns.js';
+
+test('keeps a full sampled landmark index inside its encoded result budget', () => {
+  const result = {
+    sessionId: 'session-1',
+    throughSequence: 1_000,
+    landmarks: Array.from({ length: 64 }, (_, index) =>
+      projectSessionTurnLandmarkForWire({
+        turnId: `${index}`.padEnd(128, 't'),
+        sequence: Number.MAX_SAFE_INTEGER - index,
+        label: '\0'.repeat(256),
+      }),
+    ),
+  };
+
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(result), 'utf8') <= SESSION_TURN_LANDMARK_RESULT_MAX_BYTES,
+  );
+  assert.doesNotThrow(() => decodeSessionTurnLandmarksQueryResult(result));
+});
 
 test('keeps legacy assistant presence distinct from retained output', () => {
   assert.deepEqual(

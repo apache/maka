@@ -707,6 +707,9 @@ const makaBridge = {
     listTurns(sessionId: string): Promise<TurnRecord[]> {
       return invokeActiveRuntimeHost('sessions:listTurns', sessionId);
     },
+    listTurnLandmarks(sessionId) {
+      return invokeActiveRuntimeHost('sessions:listTurnLandmarks', sessionId);
+    },
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void> {
       return invokeActiveRuntimeHost('sessions:regenerateTurn', sessionId, input);
     },

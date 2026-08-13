@@ -431,6 +431,7 @@ test('restores transcript consumers across Host replacement', async () => {
   await observations.attach(first, bind('first'));
   await observations.openTranscript('session-1', 'consumer-1', target);
   observations.detach(first);
+  assert.doesNotThrow(() => observations.acknowledgeTranscript('consumer-1', 'first', 1, 18));
   const second = source('second');
   await observations.attach(second, bind('second'));
   observations.detach(second);

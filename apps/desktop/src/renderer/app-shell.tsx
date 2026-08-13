@@ -392,7 +392,7 @@ function AppShellContent({
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
     sessionId: string;
-    turns: Array<{ turnId: string; sequence: number; label: string }>;
+    turns: readonly { turnId: string; sequence: number; label: string }[];
   }>();
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
   // P3: session ids with a live embedded-browser view. The right-side
@@ -2340,20 +2340,12 @@ function AppShellContent({
     }
     let disposed = false;
     setTranscriptTurnIndex(undefined);
-    void window.maka.sessions.listTurns(sessionId).then(
+    void window.maka.sessions.listTurnLandmarks(sessionId).then(
       (turns) => {
         if (disposed || activeIdRef.current !== sessionId) return;
         setTranscriptTurnIndex({
           sessionId,
-          turns: turns.flatMap((turn) =>
-            turn.firstSequence === undefined || !turn.userPromptPreview
-              ? []
-              : [{
-                  turnId: turn.turnId,
-                  sequence: turn.firstSequence,
-                  label: turn.userPromptPreview,
-                }],
-          ),
+          turns,
         });
       },
       () => undefined,

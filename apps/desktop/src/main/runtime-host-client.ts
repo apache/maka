@@ -1339,6 +1339,17 @@ export class DesktopRuntimeHostClient {
       .map(projectSessionTurnContribution);
   }
 
+  async listSessionTurnLandmarks(
+    sessionId: string,
+  ): Promise<OperationOutput<'session.turn_landmarks.query'>['landmarks']> {
+    this.#assertOpen();
+    const result = await this.request('session.turn_landmarks.query', {
+      sessionId,
+      maxLandmarks: 64,
+    });
+    return result.landmarks;
+  }
+
   close(): Promise<void> {
     this.#closeTask ??= this.#close();
     return this.#closeTask;

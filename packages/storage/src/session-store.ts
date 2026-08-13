@@ -213,6 +213,17 @@ export interface SessionTurnContributionPage {
   readonly nextPosition: number | null;
 }
 
+export interface SessionTurnLandmark {
+  readonly turnId: string;
+  readonly sequence: number;
+  readonly label: string;
+}
+
+export interface SessionTurnLandmarkSnapshot {
+  readonly throughSequence: number | null;
+  readonly landmarks: readonly SessionTurnLandmark[];
+}
+
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
@@ -235,6 +246,10 @@ export interface SessionStore {
     position: number,
     maxContributions: number,
   ): Promise<SessionTurnContributionPage>;
+  readTurnLandmarksSnapshot(
+    sessionId: string,
+    maxLandmarks: number,
+  ): Promise<SessionTurnLandmarkSnapshot>;
   /** Read durable messages for startup recovery. */
   readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]>;
   /** Derive durable turns without triggering connection-lock self-healing. */
@@ -708,6 +723,14 @@ class SqliteSessionStore implements SessionAuthorityStore {
       position,
       maxContributions,
     );
+  }
+
+  async readTurnLandmarksSnapshot(
+    sessionId: string,
+    maxLandmarks: number,
+  ): Promise<SessionTurnLandmarkSnapshot> {
+    await this.ensureReady();
+    return this.metadata.readTurnLandmarks(sessionId, maxLandmarks);
   }
 
   async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {

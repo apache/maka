@@ -111,6 +111,27 @@ test('derives turn records from bounded contribution pages', async () => {
   await client.close();
 });
 
+test('reads the bounded prompt rail index without paging every turn', async () => {
+  const connection = {
+    request: async (operation: string, input: unknown) => {
+      assert.equal(operation, 'session.turn_landmarks.query');
+      assert.deepEqual(input, { sessionId: 'session-1', maxLandmarks: 64 });
+      return {
+        sessionId: 'session-1',
+        throughSequence: 100,
+        landmarks: [{ turnId: 'turn-50', sequence: 50, label: 'middle' }],
+      };
+    },
+    close: async () => undefined,
+  } as unknown as RuntimeHostConnection;
+  const client = new DesktopRuntimeHostClient(connection);
+
+  assert.deepEqual(await client.listSessionTurnLandmarks('session-1'), [
+    { turnId: 'turn-50', sequence: 50, label: 'middle' },
+  ]);
+  await client.close();
+});
+
 function subscription(
   sessionId: string,
   lifecycle: string[],

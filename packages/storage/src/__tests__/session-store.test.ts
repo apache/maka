@@ -665,6 +665,51 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('samples a bounded prompt landmark index across the durable transcript', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-landmarks-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 40 }, (_, index) => [
+          {
+            type: 'user' as const,
+            id: `user-${index}`,
+            turnId: `turn-${index}`,
+            ts: index * 2,
+            text: index === 20 ? 'x'.repeat(70 * 1024) : `prompt ${index}`,
+          },
+          {
+            type: 'assistant' as const,
+            id: `assistant-${index}`,
+            turnId: `turn-${index}`,
+            ts: index * 2 + 1,
+            text: 'answer',
+            modelId: 'model-1',
+          },
+        ]).flat(),
+      );
+
+      const snapshot = await store.readTurnLandmarksSnapshot(session.id, 8);
+
+      assert.equal(snapshot.throughSequence, 79);
+      assert.ok(snapshot.landmarks.length <= 8);
+      assert.ok(snapshot.landmarks.length > 1);
+      assert.equal(
+        snapshot.landmarks.some((landmark) => landmark.turnId === 'turn-20'),
+        false,
+      );
+      assert.deepEqual(
+        [...snapshot.landmarks].sort((left, right) => left.sequence - right.sequence),
+        snapshot.landmarks,
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('clears unread when the current read marker is already the latest visible message', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-read-marker-'));
     const store = createSessionStore(root);

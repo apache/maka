@@ -46,6 +46,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "ingestAttachment"
   | "interruptTurn"
   | 'listSessionTurns'
+  | 'listSessionTurnLandmarks'
   | "queryTurnResume"
   | "readExecutionBoundary"
   | "regenerateTurn"
@@ -156,6 +157,12 @@ export function registerRuntimeHostSessionExecutionIpc(
   });
   handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>
     deps.client.listSessionTurns(requiredId(sessionId, 'Session')),
+  );
+  handleReconnectableRead(
+    ipcMain,
+    'sessions:listTurnLandmarks',
+    async (_event, sessionId: unknown) =>
+      deps.client.listSessionTurnLandmarks(requiredId(sessionId, 'Session')),
   );
   handleReconnectableRead(
     ipcMain,

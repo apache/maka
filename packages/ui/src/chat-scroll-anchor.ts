@@ -78,8 +78,9 @@ function firstVisibleArticle(root: HTMLElement, rootTop: number): HTMLElement | 
 
 function nextArticle(root: HTMLElement, from: HTMLElement): HTMLElement | undefined {
   let node: HTMLElement | null = from;
+  let descend = node.tagName !== 'ARTICLE';
   while (node) {
-    if (node.firstElementChild) {
+    if (descend && node.firstElementChild) {
       node = node.firstElementChild as HTMLElement;
     } else {
       while (node && node !== root && !node.nextElementSibling) node = node.parentElement;
@@ -87,6 +88,7 @@ function nextArticle(root: HTMLElement, from: HTMLElement): HTMLElement | undefi
       node = node.nextElementSibling as HTMLElement;
     }
     if (node.tagName === 'ARTICLE') return node;
+    descend = true;
   }
   return undefined;
 }
@@ -96,7 +98,9 @@ function previousArticle(root: HTMLElement, from: HTMLElement): HTMLElement | un
   while (node && node !== root) {
     if (node.previousElementSibling) {
       node = node.previousElementSibling as HTMLElement;
-      while (node.lastElementChild) node = node.lastElementChild as HTMLElement;
+      while (node.tagName !== 'ARTICLE' && node.lastElementChild) {
+        node = node.lastElementChild as HTMLElement;
+      }
     } else {
       node = node.parentElement;
     }

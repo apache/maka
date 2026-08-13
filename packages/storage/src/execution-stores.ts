@@ -375,6 +375,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
             maxContributions,
           ),
         ),
+      readTurnLandmarksSnapshot: (sessionId, maxLandmarks) =>
+        run(() => sessionStore.readTurnLandmarksSnapshot(sessionId, maxLandmarks)),
       readMessagesForRecovery: (sessionId) =>
         run(() => sessionStore.readMessagesForRecovery(sessionId)),
       listTurnsSnapshot: (sessionId) => run(() => sessionStore.listTurnsSnapshot(sessionId)),

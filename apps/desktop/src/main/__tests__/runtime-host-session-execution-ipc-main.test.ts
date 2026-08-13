@@ -579,6 +579,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     getSession: unavailable,
     ingestAttachment: unavailable,
     interruptTurn: unavailable,
+    listSessionTurnLandmarks: unavailable,
     listSessionTurns: unavailable,
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,

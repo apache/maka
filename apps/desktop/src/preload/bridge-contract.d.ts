@@ -85,6 +85,7 @@ import type { PetPackManifestV1 } from '@maka/core/pet';
 import type {
   OperationInput,
   OperationOutput,
+  SessionTurnLandmark,
 } from '@maka/runtime-host/protocol';
 import type {
   RendererRuntimeHostCommandOperation,
@@ -442,6 +443,7 @@ export interface MakaBridge {
       }) => void,
     ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
+    listTurnLandmarks(sessionId: string): Promise<readonly SessionTurnLandmark[]>;
     compact(sessionId: string): Promise<void>;
     resumeLatest(sessionId: string): Promise<
       | { disposition: 'started'; runId: string; turnId: string }

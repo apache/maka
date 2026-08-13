@@ -901,6 +901,7 @@ function createFixture(
       contributions: [],
       nextPosition: null,
     }),
+    readTurnLandmarksSnapshot: async () => ({ throughSequence: null, landmarks: [] }),
     updateHeaderVersioned: async (_sessionId, patch, expectedRevision) => {
       if (expectedRevision !== revision) {
         throw new SessionMetadataVersionConflictError(sessionId, expectedRevision, revision);
