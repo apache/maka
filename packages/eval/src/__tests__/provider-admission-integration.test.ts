@@ -219,8 +219,9 @@ test('unbounded tool diagnostics stay in the metering snapshot, not the relay fr
 
 test('late provider usage survives a downstream CLI disconnect', async () => {
   const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.flushHeaders();
     setTimeout(() => {
-      response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.end(
         'data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2}}}\n\ndata: [DONE]\n\n',
       );
@@ -237,9 +238,7 @@ test('late provider usage survives a downstream CLI disconnect', async () => {
   await writeFile(
     child,
     [
-      'const controller=new AbortController();',
-      'setTimeout(()=>controller.abort(),20);',
-      "await fetch(`${process.env.DEEPSEEK_BASE_URL}/responses`,{method:'POST',body:'{}',signal:controller.signal}).catch(()=>{});",
+      "await fetch(`${process.env.DEEPSEEK_BASE_URL}/responses`,{method:'POST',body:'{}'});",
       "console.log(JSON.stringify({type:'error'}));",
       '',
     ].join('\n'),
