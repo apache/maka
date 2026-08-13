@@ -81,9 +81,16 @@ test('owned candidate settlement requires a clean process exit', async () => {
   });
 
   const candidate = await launch.spawned;
+  assert.ok(candidate.recordDiagnostic);
+  candidate.recordDiagnostic('MAKA_RUNTIME_HOST_CLIENT_ERROR_V1 {"name":"Sentinel"}');
   assert.equal(await candidate.settle(2_000), false);
   assert.match(await readFile(stderrPath, 'utf8'), /owned candidate stderr sentinel/u);
   assert.match(await readFile(stderrPath, 'utf8'), /MAKA_RUNTIME_HOST_EXIT_V1 code=1 signal=none/u);
+  assert.ok(
+    (await readFile(stderrPath, 'utf8')).includes(
+      'MAKA_RUNTIME_HOST_CLIENT_ERROR_V1 {"name":"Sentinel"}',
+    ),
+  );
 });
 
 test('owned candidate can be released to the enclosing environment without termination', async () => {

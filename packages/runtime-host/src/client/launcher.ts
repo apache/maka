@@ -27,6 +27,7 @@ export interface DetachedCandidateAttempt {
 
 export interface OwnedCandidateAttempt extends DetachedCandidateAttempt {
   releaseToEnvironment(): void;
+  recordDiagnostic?(value: string): void;
   settle(timeoutMs: number): Promise<boolean>;
 }
 
@@ -51,7 +52,7 @@ export function launchDetachedRuntimeHostCandidate(
 export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): {
   readonly spawned: Promise<OwnedCandidateAttempt>;
 } {
-  const { child, closed } = spawnCandidate(input, false);
+  const { child, closed, recordDiagnostic } = spawnCandidate(input, false);
   const startupFailure = readStartupFailure(child);
   return {
     spawned: spawnedPid(child).then(({ pid }) => ({
@@ -59,6 +60,9 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
       startupFailure,
       releaseToEnvironment(): void {
         child.unref();
+      },
+      recordDiagnostic(value: string): void {
+        recordDiagnostic(value);
       },
       async settle(timeoutMs: number): Promise<boolean> {
         const result = await within(closed, timeoutMs);
@@ -123,13 +127,18 @@ function spawnCandidate(input: DetachedCandidateInput, detached: boolean) {
       ),
     );
   });
-  return { child, closed };
+  return {
+    child,
+    closed,
+    recordDiagnostic: (value: string) => stderr?.writeDiagnostic(value),
+  };
 }
 
 function openCandidateStderr(path: string | undefined):
   | {
       descriptor: number;
       finish(code: number | null, signal: NodeJS.Signals | null, errorCode?: string): void;
+      writeDiagnostic(value: string): void;
       close(): void;
     }
   | undefined {
@@ -161,6 +170,13 @@ function openCandidateStderr(path: string | undefined):
         : `MAKA_RUNTIME_HOST_EXIT_V1 code=${code ?? 'none'} signal=${signal ?? 'none'}\n`;
       writeSync(descriptor, marker);
       close();
+    },
+    writeDiagnostic: (value) => {
+      if (closed) return;
+      const line = Buffer.from(value.replace(/[\r\n]+/gu, ' '))
+        .subarray(0, 1024)
+        .toString();
+      writeSync(descriptor, `${line}\n`);
     },
     close,
   };

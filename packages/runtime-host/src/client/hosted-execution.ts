@@ -112,7 +112,8 @@ export async function runHostedExecutionWithDependencies(
       }
     }
     projection = await executeHostedExecution(connected.connection, input.execution, input.signal);
-  } catch {
+  } catch (error) {
+    connected.host.recordDiagnostic?.(runtimeHostClientErrorMarker(error));
     projection = input.signal?.aborted
       ? indeterminate(input.execution.executionId, 'Hosted execution was cancelled')
       : indeterminate(
@@ -130,6 +131,19 @@ export async function runHostedExecutionWithDependencies(
   const clean = await connected.host.settle(input.hostSettlementTimeoutMs ?? 15_000);
   if (clean || projection.kind === 'indeterminate') return projection;
   return indeterminate(input.execution.executionId, 'Runtime Host did not exit cleanly');
+}
+
+function runtimeHostClientErrorMarker(error: unknown): string {
+  const failure = error instanceof Error ? error : new Error(String(error));
+  const code =
+    typeof (failure as NodeJS.ErrnoException).code === 'string'
+      ? (failure as NodeJS.ErrnoException).code
+      : null;
+  return `MAKA_RUNTIME_HOST_CLIENT_ERROR_V1 ${JSON.stringify({
+    name: failure.name,
+    code,
+    message: failure.message,
+  })}`;
 }
 
 async function executeHostedExecution(
