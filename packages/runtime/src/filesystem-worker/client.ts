@@ -422,8 +422,7 @@ export class FilesystemWorkerClient {
       // on disk is unknown). A thrown error without the flag (e.g. spawn()
       // itself raising before any 'spawn' event could fire) is treated as
       // never-dispatched.
-      const dispatched =
-        (error as { dispatched?: boolean } | null)?.dispatched === true;
+      const dispatched = (error as { dispatched?: boolean } | null)?.dispatched === true;
       throw clientError(
         dispatched ? 'worker_io_incomplete' : 'spawn_failed',
         'launch',
@@ -438,13 +437,29 @@ export class FilesystemWorkerClient {
       pinnedRuntimeWritableRoot?.releaseSource();
     }
     if (processResult.timedOut) {
-      throw clientError('timeout', 'launch', requestId, undefined, false, {}, processResult.dispatched);
+      throw clientError(
+        'timeout',
+        'launch',
+        requestId,
+        undefined,
+        false,
+        {},
+        processResult.dispatched,
+      );
     }
     if (processResult.aborted) {
       // A post-dispatch abort means the child had the request and may have
       // acted on it before being killed; carry dispatched so the host can
       // classify it as an unknown outcome rather than a clean cancel.
-      throw clientError('aborted', 'launch', requestId, undefined, false, {}, processResult.dispatched);
+      throw clientError(
+        'aborted',
+        'launch',
+        requestId,
+        undefined,
+        false,
+        {},
+        processResult.dispatched,
+      );
     }
     if (processResult.responseOverflow) {
       throw clientError(
@@ -516,7 +531,15 @@ export class FilesystemWorkerClient {
       response.result.kind !== operation.kind &&
       !(operation.kind === 'read' && response.result.kind === 'read_image')
     ) {
-      throw clientError('response_kind_mismatch', 'protocol', requestId, undefined, false, {}, true);
+      throw clientError(
+        'response_kind_mismatch',
+        'protocol',
+        requestId,
+        undefined,
+        false,
+        {},
+        true,
+      );
     }
     return response.result;
   }

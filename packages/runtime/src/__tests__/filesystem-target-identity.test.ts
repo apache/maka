@@ -35,7 +35,11 @@ function requestFor(
     version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
     requestId: 'test',
     operation,
-    operationBoundary: { filesystem: { entries: [{ path: expectedTarget.enforcementPath, access: 'write', scope: 'exact' }] } },
+    operationBoundary: {
+      filesystem: {
+        entries: [{ path: expectedTarget.enforcementPath, access: 'write', scope: 'exact' }],
+      },
+    },
     expectedTarget,
   };
 }
@@ -70,7 +74,10 @@ describe('filesystem worker target identity CAS', () => {
     assert.equal(response.ok, false);
     assert.equal(response.error?.code, 'path_changed');
     // The write must NOT have landed on the replacement file.
-    assert.equal(await import('node:fs/promises').then((fs) => fs.readFile(target, 'utf8')), 'replacement');
+    assert.equal(
+      await import('node:fs/promises').then((fs) => fs.readFile(target, 'utf8')),
+      'replacement',
+    );
   });
 
   test('allows a write when the target inode is unchanged', async () => {
@@ -88,7 +95,59 @@ describe('filesystem worker target identity CAS', () => {
     );
 
     assert.equal(response.ok, true);
-    assert.equal(await import('node:fs/promises').then((fs) => fs.readFile(target, 'utf8')), 'updated');
+    assert.equal(
+      await import('node:fs/promises').then((fs) => fs.readFile(target, 'utf8')),
+      'updated',
+    );
+  });
+
+  test('rejects a delete when the target inode changed after authorisation', async () => {
+    const cwd = await temporaryDirectory('maka-identity-delete-');
+    const target = join(cwd, 'delete-me.txt');
+    const replacement = join(cwd, 'replacement.txt');
+    await writeFile(target, 'original', 'utf8');
+    await writeFile(replacement, 'replacement', 'utf8');
+
+    // Capture identity of the original, then swap to a different inode.
+    const identity = await captureIdentity(target);
+    await rename(replacement, target);
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'apply_patch', cwd, path: target, action: 'delete' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file', identity },
+      ),
+    );
+
+    assert.equal(response.ok, false);
+    assert.equal(response.error?.code, 'path_changed');
+    // The replacement must NOT have been deleted.
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(await readFile(target, 'utf8'), 'replacement');
+  });
+
+  test('rejects an edit when the target inode changed after authorisation', async () => {
+    const cwd = await temporaryDirectory('maka-identity-edit-');
+    const target = join(cwd, 'edit.txt');
+    const replacement = join(cwd, 'replacement.txt');
+    await writeFile(target, 'line\nold\n', 'utf8');
+    await writeFile(replacement, 'replacement\nold\n', 'utf8');
+
+    const identity = await captureIdentity(target);
+    await rename(replacement, target);
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'edit', cwd, path: target, oldString: 'old', newString: 'new' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file', identity },
+      ),
+    );
+
+    assert.equal(response.ok, false);
+    assert.equal(response.error?.code, 'path_changed');
+    // The replacement content must be untouched (no edit applied).
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(await readFile(target, 'utf8'), 'replacement\nold\n');
   });
 
   test('skips the identity check for a missing target (create)', async () => {
@@ -98,7 +157,13 @@ describe('filesystem worker target identity CAS', () => {
     // Missing target has no identity; the create proceeds and lands.
     const response = await executeFilesystemWorkerRequest(
       requestFor(
-        { kind: 'apply_patch', cwd, path: target, action: 'create', diff: '*** Begin Patch\n*** End Patch' },
+        {
+          kind: 'apply_patch',
+          cwd,
+          path: target,
+          action: 'create',
+          diff: '*** Begin Patch\n*** End Patch',
+        },
         { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'missing' },
       ),
     );

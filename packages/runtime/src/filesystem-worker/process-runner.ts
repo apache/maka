@@ -142,24 +142,29 @@ async function observeWorker(
         ioDrainTimeoutMs,
       },
     );
-    void lifecycle.completion.then((outcome) => {
-      if (settled) return;
-      if (!outcome.ioDrained) {
-        rejectOnce(workerError('Filesystem worker output did not drain before lifecycle deadline'));
-        return;
-      }
-      settled = true;
-      cleanup();
-      resolvePromise({
-        exitCode: outcome.exitCode ?? 1,
-        stdout: responseOverflow ? '' : Buffer.concat(stdoutChunks).toString('utf8'),
-        stderrTail: stderrTail.toString('utf8'),
-        timedOut: termination === 'timeout',
-        aborted: termination === 'abort',
-        responseOverflow,
-        dispatched,
-      });
-    }, (error: unknown) => rejectOnce(workerError(error)));
+    void lifecycle.completion.then(
+      (outcome) => {
+        if (settled) return;
+        if (!outcome.ioDrained) {
+          rejectOnce(
+            workerError('Filesystem worker output did not drain before lifecycle deadline'),
+          );
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolvePromise({
+          exitCode: outcome.exitCode ?? 1,
+          stdout: responseOverflow ? '' : Buffer.concat(stdoutChunks).toString('utf8'),
+          stderrTail: stderrTail.toString('utf8'),
+          timedOut: termination === 'timeout',
+          aborted: termination === 'abort',
+          responseOverflow,
+          dispatched,
+        });
+      },
+      (error: unknown) => rejectOnce(workerError(error)),
+    );
     const timeout = setTimeout(() => terminate('timeout'), timeoutMs);
     const abort = () => terminate('abort');
     if (input.abortSignal) {

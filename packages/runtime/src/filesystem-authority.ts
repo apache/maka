@@ -70,17 +70,18 @@ export type FilesystemMutationOutcome = 'applied' | 'rejected' | 'unknown';
  * never-started spawn) are deliberately absent: nothing could have been
  * written there.
  */
-export const UNKNOWN_OUTCOME_REASONS: ReadonlySet<FilesystemWorkerClientError['reason']> =
-  new Set<FilesystemWorkerClientError['reason']>([
-    'timeout',
-    'worker_io_incomplete',
-    'response_overflow',
-    'worker_crashed',
-    'invalid_response',
-    'response_id_mismatch',
-    'response_kind_mismatch',
-    'outcome_unknown',
-  ]);
+export const UNKNOWN_OUTCOME_REASONS: ReadonlySet<FilesystemWorkerClientError['reason']> = new Set<
+  FilesystemWorkerClientError['reason']
+>([
+  'timeout',
+  'worker_io_incomplete',
+  'response_overflow',
+  'worker_crashed',
+  'invalid_response',
+  'response_id_mismatch',
+  'response_kind_mismatch',
+  'outcome_unknown',
+]);
 
 /**
  * Classify the outcome of a failed mutation. Returns `undefined` for errors

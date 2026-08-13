@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 
-import { ToolOutcomeUnknownError } from '@maka/core';
+import { ToolOutcomeUnknownError } from '@maka/core/events';
 
 import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
 import {
@@ -72,7 +72,10 @@ describe('filesystem mutation unknown-outcome classification', () => {
         }),
         (error: unknown) => {
           assert.ok(error instanceof ToolOutcomeUnknownError, `${reason} should convert`);
-          assert.ok(error.cause instanceof FilesystemWorkerClientError);
+          assert.ok(
+            error.cause instanceof FilesystemWorkerClientError,
+            'cause should be the original worker error',
+          );
           return true;
         },
       );

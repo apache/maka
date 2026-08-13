@@ -192,6 +192,7 @@ export async function executeFilesystemOperation(
         operationBoundary,
       );
       await updatePatchedFile(path, operation.diff);
+      await assertPathStillMatchesIdentity(path, expectedTarget?.identity);
       return { kind: 'apply_patch', ok: true, path };
     }
     case 'edit': {
@@ -218,6 +219,7 @@ export async function executeFilesystemOperation(
         );
       }
       await fs.writeFile(path, edited.content, 'utf8');
+      await assertPathStillMatchesIdentity(path, expectedTarget?.identity);
       const diff = createUnifiedDiff(path, content, edited.content);
       return {
         kind: 'edit',
@@ -257,6 +259,7 @@ export async function executeFilesystemOperation(
       }
       const formatted = JSON.stringify(operation.sortKeys ? sortKeysDeep(parsed) : parsed, null, 2);
       await fs.writeFile(path, formatted, 'utf8');
+      await assertPathStillMatchesIdentity(path, expectedTarget?.identity);
       const bytesAfter = Buffer.byteLength(formatted, 'utf8');
       const diff =
         formatted === original ? undefined : createUnifiedDiff(path, original, formatted);
@@ -426,7 +429,10 @@ async function assertTargetUnchanged(
     const metadata = noFollowFinalSymlink
       ? await fs.lstat(enforcementPath, { bigint: true })
       : await fs.stat(enforcementPath, { bigint: true });
-    if (String(metadata.dev) !== expected.identity.dev || String(metadata.ino) !== expected.identity.ino) {
+    if (
+      String(metadata.dev) !== expected.identity.dev ||
+      String(metadata.ino) !== expected.identity.ino
+    ) {
       throw operationError(
         'path_changed',
         'The approved filesystem target changed before execution.',

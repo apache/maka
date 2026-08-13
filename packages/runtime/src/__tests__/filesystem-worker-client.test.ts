@@ -617,9 +617,7 @@ describe('filesystem worker client dispatch classification', () => {
   });
 
   test('classifies a never-dispatched runProcess rejection as spawn_failed', async () => {
-    const client = clientWithRejectingRunProcess(() =>
-      dispatchedError('spawn ENOENT', false),
-    );
+    const client = clientWithRejectingRunProcess(() => dispatchedError('spawn ENOENT', false));
     await assert.rejects(
       client.execute({
         operation: { kind: 'write', path: '/tmp/maka-dispatch-spawn.txt', content: 'x' },

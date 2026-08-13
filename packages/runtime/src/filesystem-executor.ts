@@ -18,7 +18,10 @@ import type { PermissionProfile } from '@maka/core/permission-profile';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
 import { computeEditedSource } from './edit-replace.js';
 import { createUnifiedDiff } from './unified-diff.js';
-import { classifyFailedMutationOutcome, type FilesystemTargetIdentity } from './filesystem-authority.js';
+import {
+  classifyFailedMutationOutcome,
+  type FilesystemTargetIdentity,
+} from './filesystem-authority.js';
 import { withFileWriteLock } from './file-write-lock.js';
 import type {
   FilesystemWorkerClient,
