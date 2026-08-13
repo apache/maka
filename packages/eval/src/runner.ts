@@ -33,10 +33,12 @@ export interface SubjectExecutionContext {
     readonly environment?: Readonly<Record<string, string>>;
     readonly credentialEnvironment: Readonly<Record<string, string>>;
     readonly captureStdout?: boolean;
+    readonly recoveryPath?: string;
   }) => Promise<{
     readonly termination: 'exited' | 'framework_timeout';
     readonly exitCode: number;
     readonly stdout: string;
+    readonly recovery?: JsonObject;
     readonly diagnostic?: {
       readonly category:
         | 'none'

@@ -62,6 +62,7 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
         throw new Error(`${cell.subject.id} toolchain was not verified before execution`);
       }
       const startedAt = Date.now();
+      const profile = bundledProfile(config.args);
       try {
         const execution = await context.execute({
           command: config.command,
@@ -81,12 +82,14 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
                 },
               }),
           ...(config.result === 'exit-code' ? { captureStdout: false } : {}),
+          ...(profile ? { recoveryPath: `/logs/agent/${profile}.provider-usage.json` } : {}),
         });
         const decoded = execution.stdout.length === 0 ? undefined : decodeResult(execution.stdout);
+        const recovered = decodeUsageCheckpoint(execution.recovery, profile);
         if (execution.termination === 'framework_timeout') {
           return {
-            usage: decoded?.usage ?? null,
-            costUsd: decoded?.costUsd ?? null,
+            usage: decoded?.usage ?? recovered?.usage ?? null,
+            costUsd: decoded?.costUsd ?? recovered?.costUsd ?? null,
             durationMs: Date.now() - startedAt,
             status: 'failed' as const,
             failureReason: 'external subject exceeded the framework timeout',
@@ -126,12 +129,14 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
         }
         if (execution.diagnostic?.category.startsWith('result-frame-')) {
           return {
-            usage: null,
-            costUsd: null,
+            usage: recovered?.usage ?? null,
+            costUsd: recovered?.costUsd ?? null,
             durationMs: Date.now() - startedAt,
             status: context.signal?.aborted
               ? ('indeterminate' as const)
-              : ('infra_failed' as const),
+              : recovered && recovered.admittedRequests > 0
+                ? ('failed' as const)
+                : ('infra_failed' as const),
             failureReason: 'external subject result transport failed',
             artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
           };
@@ -185,6 +190,52 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
       }
     },
   };
+}
+
+function decodeUsageCheckpoint(
+  value: JsonObject | undefined,
+  profile: ExternalProfile | undefined,
+): { usage: NormalizedUsage | null; costUsd: number | null; admittedRequests: number } | undefined {
+  if (!value || !profile) return undefined;
+  try {
+    const checkpoint = exact(
+      value,
+      [
+        'schemaVersion',
+        'profile',
+        'usage',
+        'costUsd',
+        'requests',
+        'admittedRequests',
+        'usageRequests',
+        'usageComplete',
+        'removedWebTools',
+        'models',
+        'toolNames',
+      ],
+      'external usage checkpoint',
+    );
+    if (
+      checkpoint.schemaVersion !== 'maka.external_provider_usage.v1' ||
+      checkpoint.profile !== profile ||
+      typeof checkpoint.usageComplete !== 'boolean'
+    ) {
+      return undefined;
+    }
+    return {
+      usage: checkpoint.usage === null ? null : decodeUsage(checkpoint.usage),
+      costUsd:
+        checkpoint.costUsd === null
+          ? null
+          : nonnegative(checkpoint.costUsd, 'external checkpoint cost'),
+      admittedRequests: nonnegative(
+        checkpoint.admittedRequests,
+        'external checkpoint admitted requests',
+      ),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 interface ExternalSubjectConfig {

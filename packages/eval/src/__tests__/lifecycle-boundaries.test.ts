@@ -79,6 +79,9 @@ while (true) {
 }
 const trialPath = new URL('./' + config.trial_name + '/', new URL('file://' + config.trials_dir + '/'));
 await mkdir(trialPath, { recursive: true });
+const agentArtifacts = new URL('artifacts/logs/agent/', trialPath);
+await mkdir(agentArtifacts, { recursive: true });
+await writeFile(new URL('opencode.provider-usage.json', agentArtifacts), '{"usageRequests":1}\\n');
 await writeFile(new URL('result.json', trialPath), JSON.stringify({ verifier_result: { rewards: { reward: 1 } } }));
 socket.end();
 `,
@@ -130,7 +133,21 @@ socket.end();
     assert.doesNotThrow(() => process.kill(pid, 0));
     await writeFile(release, '');
     const results = await running;
-    assert.equal(results.get('task::1::external')?.result.status, 'completed');
+    const result = results.get('task::1::external')?.result;
+    assert.equal(result?.status, 'completed');
+    assert.deepEqual(
+      result?.artifacts.find(
+        ({ kind, path }) =>
+          kind === 'collected-artifact' &&
+          path === 'artifacts/logs/agent/opencode.provider-usage.json',
+      ),
+      {
+        kind: 'collected-artifact',
+        path: 'artifacts/logs/agent/opencode.provider-usage.json',
+        bytes: 20,
+        sha256: 'sha256:8f625fe55aa6336fccf93df0b9431dfac84d7d6fe772a745b56c9a284364310a',
+      },
+    );
   } finally {
     await writeFile(release, '').catch(() => undefined);
     globalThis.setTimeout = nativeSetTimeout;

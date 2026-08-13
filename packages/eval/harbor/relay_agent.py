@@ -33,6 +33,9 @@ RESULT_PAYLOAD_LIMIT_BYTES = 2 * 1024
 RESULT_CARRIER_LIMIT_BYTES = 64 * 1024
 SUBJECT_STDOUT_PATH = "/logs/artifacts/maka-subject.stdout.txt"
 SUBJECT_STDERR_PATH = "/logs/artifacts/maka-subject.stderr.txt"
+RECOVERY_PATH_PATTERN = re.compile(
+    r"/logs/agent/[a-z][a-z0-9-]*\.provider-usage\.json"
+)
 
 _host_teardown_requested = False
 
@@ -112,6 +115,7 @@ class RelayAgent(BaseAgent):
                 raise RelayTransportClosed("Maka Eval relay received control before execution")
             result = execution.result()
             await _persist_subject_outputs(environment, result)
+            recovery = await _read_recovery(environment, request)
             stdout, diagnostic = _project_result(result, request)
             if diagnostic["category"] != "execution-scope-unavailable":
                 await _quiesce_scope(environment, cwd, scope_path)
@@ -123,6 +127,7 @@ class RelayAgent(BaseAgent):
                     "termination": "exited",
                     "exitCode": result.return_code,
                     "stdout": stdout,
+                    **({"recovery": recovery} if recovery is not None else {}),
                     "diagnostic": diagnostic,
                 },
             ):
@@ -156,6 +161,7 @@ class RelayAgent(BaseAgent):
                     and not execution_reported
                     and (execution_terminal or not _host_teardown_requested)
                 ):
+                    recovery = await _read_recovery(environment, request)
                     stdout, diagnostic = terminal_projection or _project_result(result, request)
                     with contextlib.suppress(Exception):
                         await _send(
@@ -166,10 +172,16 @@ class RelayAgent(BaseAgent):
                                 "termination": "exited" if execution_terminal else "framework_timeout",
                                 "exitCode": result.return_code if execution_terminal else 124,
                                 "stdout": stdout,
+                                **(
+                                    {"recovery": recovery}
+                                    if recovery is not None
+                                    else {}
+                                ),
                                 "diagnostic": diagnostic,
                             },
                         )
                 elif not execution_reported and not _host_teardown_requested:
+                    recovery = await _read_recovery(environment, request)
                     with contextlib.suppress(Exception):
                         await _send(
                             writer,
@@ -179,6 +191,11 @@ class RelayAgent(BaseAgent):
                                 "termination": "framework_timeout",
                                 "exitCode": 124,
                                 "stdout": "",
+                                **(
+                                    {"recovery": recovery}
+                                    if recovery is not None
+                                    else {}
+                                ),
                                 "diagnostic": (
                                     _carrier_diagnostic("result-frame-missing", b"")
                                     if request.get("captureStdout", True)
@@ -246,6 +263,12 @@ async def _prepare_command(
     capture_stdout = request.get("captureStdout", True)
     if not isinstance(capture_stdout, bool):
         raise RuntimeError("invalid Maka Eval stdout policy")
+    recovery_path = request.get("recoveryPath")
+    if recovery_path is not None and (
+        not isinstance(recovery_path, str)
+        or RECOVERY_PATH_PATTERN.fullmatch(recovery_path) is None
+    ):
+        raise RuntimeError("invalid Maka Eval recovery path")
     result_token = request.get("resultToken")
     if not isinstance(result_token, str) or re.fullmatch(r"[0-9a-f]{32}", result_token) is None:
         raise RuntimeError("invalid Maka Eval result token")
@@ -296,6 +319,24 @@ async def _persist_subject_outputs(environment: Any, result: Any) -> None:
             raise RuntimeError("Maka Eval could not prepare subject artifact output")
         await environment.upload_file(stdout, SUBJECT_STDOUT_PATH)
         await environment.upload_file(stderr, SUBJECT_STDERR_PATH)
+
+
+async def _read_recovery(
+    environment: Any, request: dict[str, Any]
+) -> dict[str, Any] | None:
+    source = request.get("recoveryPath")
+    if source is None:
+        return None
+    if not isinstance(source, str) or RECOVERY_PATH_PATTERN.fullmatch(source) is None:
+        raise RuntimeError("invalid Maka Eval recovery path")
+    with tempfile.TemporaryDirectory() as directory:
+        destination = Path(directory) / "recovery.json"
+        try:
+            await environment.download_file(source, destination)
+            value = json.loads(destination.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, TypeError, ValueError):
+            return None
+    return value if isinstance(value, dict) else None
 
 
 def _decode_result_carrier(carrier: str, token: str) -> tuple[str, dict[str, Any]]:
