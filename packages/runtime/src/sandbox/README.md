@@ -2,7 +2,9 @@
 
 This directory owns platform sandbox selection and command transformation. It translates the profile in an active session `ExecutionBoundary` into an execution request; it does not decide whether a requested boundary expansion is approved and does not execute the request itself.
 
-Code and focused tests are the final authority. Remaining enforcement work is tracked in [issue #843](https://github.com/maka-agent/maka-agent/issues/843), not in this document.
+Code and focused tests are the final authority. Windows enforcement work is tracked in
+[issue #2142](https://github.com/maka-agent/maka-agent/issues/2142) and specified by the
+[Windows sandbox backend RFC](../../../../docs/architecture/windows-sandbox-rfc-v1.md).
 
 ## Ownership
 
@@ -17,6 +19,8 @@ Code and focused tests are the final authority. Remaining enforcement work is tr
 - `types.ts` defines sandbox selection, command, path-context, execution-request, and typed failure contracts.
 - `sandbox-manager.ts` decides whether a profile requires a sandbox, selects a platform backend, and delegates transformation.
 - `macos-seatbelt.ts` builds the Seatbelt policy and wraps inner argv with `/usr/bin/sandbox-exec`.
+- `linux-sandbox.ts` builds the bubblewrap mounts, namespace arguments, and network seccomp filter.
+- `linux-capability.ts` proves bubblewrap and namespace availability before selection is usable.
 - `default-sandbox-manager.ts` registers the supported default backends.
 - `index.ts` is the public subpath surface; the runtime package barrel re-exports the supported API.
 
@@ -26,8 +30,9 @@ Code and focused tests are the final authority. Remaining enforcement work is tr
 - Unrestricted, disabled, and external profiles do not add a Maka-managed local sandbox.
 - `require` forces platform sandbox selection; `forbid` selects host execution and is an internal orchestration input, not proof of approval.
 - macOS selects the Seatbelt backend and fails closed when the backend is unavailable.
-- Linux selection is explicit but currently returns `backend_not_implemented`.
-- Other platforms return `unsupported_platform` when a sandbox is required.
+- Linux selects the bubblewrap backend and fails closed when its executable, namespace probe, or
+  requested profile cannot be enforced.
+- Windows and other unsupported platforms return `unsupported_platform` when a sandbox is required.
 - A backend that receives an invalid or unsupported profile returns a typed failure; it does not silently downgrade to host execution.
 
 ## Boundaries
@@ -45,7 +50,7 @@ Code and focused tests are the final authority. Remaining enforcement work is tr
 - Diff/write-back or apply-patch UI
 - Automatic unsandboxed retry
 - Managed network proxy or domain allowlists
-- Windows sandbox support
+- Windows sandbox implementation; its proposed boundary is documented separately in the Phase 4 RFC
 - A second permission language, shell runner, or file-policy system
 
 ## Verification
@@ -54,4 +59,6 @@ Code and focused tests are the final authority. Remaining enforcement work is tr
 - Selection and transformation: `packages/runtime/src/__tests__/sandbox-manager.test.ts`
 - macOS policy and wrapper: `packages/runtime/src/__tests__/macos-seatbelt.test.ts`
 - macOS platform behavior: `packages/runtime/src/__tests__/macos-seatbelt-smoke.test.ts`
+- Linux policy and wrapper: `packages/runtime/src/__tests__/linux-sandbox.test.ts`
+- Linux platform behavior: `packages/runtime/src/__tests__/linux-sandbox-smoke.test.ts`
 - Public exports and default registration: `sandbox-export.test.ts` and `default-sandbox-manager.test.ts`
