@@ -26,7 +26,10 @@ export function parseLaunchRequest(value) {
   if (!['restricted', 'enabled'].includes(value.network)) {
     throw new Error('network must be restricted or enabled');
   }
-  if (!Array.isArray(value.arguments) || !value.arguments.every((item) => typeof item === 'string')) {
+  if (
+    !Array.isArray(value.arguments) ||
+    !value.arguments.every((item) => typeof item === 'string')
+  ) {
     throw new Error('arguments must be an array of strings');
   }
   requireRecord(value.environment, 'environment');

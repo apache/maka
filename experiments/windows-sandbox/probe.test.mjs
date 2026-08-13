@@ -24,16 +24,24 @@ test('reports matching allowed and denied observations', () => {
       }),
     );
 
-    const result = spawnSync(process.execPath, ['experiments/windows-sandbox/probe.mjs', '--manifest', manifestPath], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-      env: { ...process.env, MAKA_W0_TEST_SECRET: undefined },
-    });
+    const result = spawnSync(
+      process.execPath,
+      ['experiments/windows-sandbox/probe.mjs', '--manifest', manifestPath],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: { ...process.env, MAKA_W0_TEST_SECRET: undefined },
+      },
+    );
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const report = JSON.parse(result.stdout);
     assert.equal(report.passed, true);
     assert.deepEqual(
-      report.observations.map(({ operation, expected, actual }) => ({ operation, expected, actual })),
+      report.observations.map(({ operation, expected, actual }) => ({
+        operation,
+        expected,
+        actual,
+      })),
       [
         { operation: 'read_allowed', expected: 'allowed', actual: 'allowed' },
         { operation: 'read_denied', expected: 'denied', actual: 'denied' },
@@ -57,10 +65,14 @@ test('returns failure when an expected denial is actually allowed', () => {
     writeFileSync(readable, 'not denied');
     writeFileSync(manifestPath, JSON.stringify({ deniedRead: readable }));
 
-    const result = spawnSync(process.execPath, ['experiments/windows-sandbox/probe.mjs', '--manifest', manifestPath], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-    });
+    const result = spawnSync(
+      process.execPath,
+      ['experiments/windows-sandbox/probe.mjs', '--manifest', manifestPath],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+      },
+    );
     assert.equal(result.status, 1);
     assert.equal(JSON.parse(result.stdout).passed, false);
   } finally {

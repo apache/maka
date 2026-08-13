@@ -11,7 +11,9 @@ const observations = [];
 
 await observe('read_allowed', manifest.allowedRead, 'allowed', (path) => readFile(path));
 await observe('read_denied', manifest.deniedRead, 'denied', (path) => readFile(path));
-await observe('write_allowed', manifest.allowedWrite, 'allowed', (path) => writeFile(path, 'probe'));
+await observe('write_allowed', manifest.allowedWrite, 'allowed', (path) =>
+  writeFile(path, 'probe'),
+);
 await observe('write_denied', manifest.deniedWrite, 'denied', (path) => writeFile(path, 'probe'));
 await observeNetwork(manifest.network);
 observeEnvironment(manifest.forbiddenEnvironment ?? []);

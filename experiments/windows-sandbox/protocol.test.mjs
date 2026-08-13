@@ -3,7 +3,8 @@ import test from 'node:test';
 import { parseLaunchRequest } from './protocol.mjs';
 
 const root = process.platform === 'win32' ? 'C:\\sandbox\\workspace' : '/sandbox/workspace';
-const executable = process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\node.exe' : '/usr/bin/node';
+const executable =
+  process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\node.exe' : '/usr/bin/node';
 
 function validRequest() {
   return {
@@ -34,7 +35,11 @@ test('rejects unknown versions', () => {
 test('rejects relative and non-canonical paths', () => {
   assert.throws(() => parseLaunchRequest({ ...validRequest(), cwd: 'workspace' }), /absolute/u);
   assert.throws(
-    () => parseLaunchRequest({ ...validRequest(), cwd: `${root}${process.platform === 'win32' ? '\\..\\workspace' : '/../workspace'}` }),
+    () =>
+      parseLaunchRequest({
+        ...validRequest(),
+        cwd: `${root}${process.platform === 'win32' ? '\\..\\workspace' : '/../workspace'}`,
+      }),
     /canonical/u,
   );
 });
