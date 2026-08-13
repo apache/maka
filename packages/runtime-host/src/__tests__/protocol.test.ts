@@ -978,6 +978,7 @@ describe('Runtime Host bootstrap protocol', () => {
         messageId: 'message-1',
         content: { text: 'adjust the active turn' },
         placement: 'current_turn' as const,
+        busyBehavior: 'reject' as const,
       },
     };
     const retract = {
