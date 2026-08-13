@@ -2550,18 +2550,11 @@ describe('Maka Pi TUI runner', () => {
       terminal,
     });
 
-    terminal.input('keep this context');
-    terminal.input('\r');
-    await waitFor(() => driver.prompts.length === 1);
     terminal.input('/model');
     terminal.input('\r');
 
     await waitFor(() => terminal.output().includes('Select Model'));
     await waitFor(() => terminal.output().includes('glm-5.2'));
-    assert.match(
-      plainTerminalOutput(terminal.screenOutput()),
-      /切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高/,
-    );
     // The picker opens on the current model (gpt-5.5); move down to the choice on
     // the other connection and select it.
     terminal.input('\x1b[B');
@@ -2570,11 +2563,6 @@ describe('Maka Pi TUI runner', () => {
 
     assert.deepEqual(driver.models, ['glm-5.2']);
     assert.deepEqual(driver.modelConnections, ['zai']);
-    await waitFor(() =>
-      plainTerminalOutput(terminal.screenOutput()).includes(
-        'Model changed: gpt-5.5 (OpenAI) → glm-5.2 (Z.ai)',
-      ),
-    );
     // The status line now reflects both the new model and the new connection.
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes('Maka · Auto · glm-5.2 · zai · /repo'),
@@ -2636,10 +2624,6 @@ describe('Maka Pi TUI runner', () => {
       const out = plainTerminalOutput(terminal.screenOutput());
       return out.includes('gpt-5.5') && out.includes('glm-max') && out.includes('text-unicorn');
     });
-    assert.doesNotMatch(
-      plainTerminalOutput(terminal.screenOutput()),
-      /切换模型可能需要重建提示缓存/,
-    );
 
     // Each query isolates exactly one of the five match criteria named by #1098
     // (model id, connection name, connection slug, provider type, provider

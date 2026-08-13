@@ -291,7 +291,6 @@ export class PickerOverlay implements Component {
       title: string;
       rightLabel: string;
       hint?: string;
-      notice?: string;
       onInput?: (data: string) => boolean;
     },
   ) {}
@@ -310,7 +309,6 @@ export class PickerOverlay implements Component {
     return [
       padLine(`${this.input.title} ${ansi.accent(this.input.rightLabel)}`, safeWidth),
       padLine(ansi.dim(this.input.hint ?? 'enter select / esc close'), safeWidth),
-      ...(this.input.notice ? [padLine(ansi.yellow(this.input.notice), safeWidth)] : []),
       padLine('', safeWidth),
       ...this.list.render(safeWidth).map((line) => formatPickerItemLine(line, safeWidth)),
       padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth),
@@ -572,13 +570,9 @@ function matchesModelChoice(choice: ModelChoice, query: string): boolean {
 export interface ModelSearchOverlayInput {
   choices: readonly ModelChoice[];
   current: { model: string; connectionSlug: string };
-  showCacheWarning?: boolean;
   onSelect: (choice: ModelChoice) => void;
   onCancel: () => void;
 }
-
-export const MODEL_SWITCH_CACHE_WARNING =
-  '⚠ 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。';
 
 /**
  * One bottom search field + a bounded single-select list, for the cross-
@@ -667,9 +661,6 @@ export class ModelSearchOverlay implements Component {
     return [
       padLine(`Select Model ${ansi.accent(String(this.filtered.length))}`, safeWidth),
       padLine(ansi.dim('搜索模型 / 服务商 / 连接 · ↑↓ 选择 · Enter 确认 · Esc 取消'), safeWidth),
-      ...(this.input.showCacheWarning
-        ? [padLine(ansi.yellow(MODEL_SWITCH_CACHE_WARNING), safeWidth)]
-        : []),
       padLine('', safeWidth),
       ...this.renderFieldRow(this.searchEditor, '搜索', safeWidth),
       padLine('', safeWidth),

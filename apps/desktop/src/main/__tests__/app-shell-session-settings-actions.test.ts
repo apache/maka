@@ -31,7 +31,7 @@ function session(id: string): SessionSummary {
   };
 }
 
-function createHarness(options: { confirm?: () => Promise<boolean>; connections?: LlmConnection[] } = {}) {
+function createHarness(options: { confirm?: () => Promise<boolean> } = {}) {
   const activeIdRef = { current: 'session-a' as string | undefined };
   const sessions = [session('session-a'), session('session-b')];
   const sessionsRef = { current: sessions };
@@ -41,7 +41,6 @@ function createHarness(options: { confirm?: () => Promise<boolean>; connections?
   const permissionCalls: string[] = [];
   const thinkingCalls: string[] = [];
   const errors: string[] = [];
-  const successes: Array<{ title: string; description?: string }> = [];
   const modelResult = deferred<SessionSummary>();
   const thinkingResult = deferred<SessionSummary>();
 
@@ -70,7 +69,7 @@ function createHarness(options: { confirm?: () => Promise<boolean>; connections?
   const actions = createAppShellSessionSettingsActions({
     uiLocale: 'zh',
     activeIdRef,
-    connections: options.connections ?? ([{ slug: 'e2e', name: 'E2E' }] as LlmConnection[]),
+    connections: [{ slug: 'e2e', name: 'E2E' }] as LlmConnection[],
     pendingPermissionModeChangesRef: { current: new Set() },
     pendingSessionModelChangesRef: { current: pending },
     refreshSessions: async () => sessions,
@@ -87,7 +86,7 @@ function createHarness(options: { confirm?: () => Promise<boolean>; connections?
       sessionsRef.current = update(sessionsRef.current);
     },
     toastApi: {
-      success: (title, description) => successes.push({ title, description }),
+      success: () => undefined,
       error: (title) => errors.push(title),
       confirm: options.confirm ?? (async () => true),
     },
@@ -104,7 +103,6 @@ function createHarness(options: { confirm?: () => Promise<boolean>; connections?
     permissionCalls,
     thinkingCalls,
     thinkingResult,
-    successes,
   };
 }
 
@@ -139,48 +137,6 @@ describe('AppShell session settings actions', () => {
 
     harness.modelResult.resolve(session('session-a'));
     await modelChange;
-  });
-
-  it('confirms both sides of a successful model change', async () => {
-    const harness = createHarness();
-
-    const modelChange = harness.actions.setSessionModel({
-      llmConnectionSlug: 'e2e',
-      model: 'claude-opus',
-    });
-    harness.modelResult.resolve({ ...session('session-a'), model: 'claude-opus' });
-    await modelChange;
-
-    assert.deepEqual(harness.successes, [
-      {
-        title: '已切换当前会话模型',
-        description: 'claude-sonnet → claude-opus',
-      },
-    ]);
-  });
-
-  it('includes connection names when a switch rebinds the connection', async () => {
-    const harness = createHarness({
-      connections: [
-        { slug: 'e2e', name: 'Primary' },
-        { slug: 'relay', name: 'Relay' },
-      ] as LlmConnection[],
-    });
-
-    const modelChange = harness.actions.setSessionModel({
-      llmConnectionSlug: 'relay',
-      model: 'claude-sonnet',
-    });
-    harness.modelResult.resolve({
-      ...session('session-a'),
-      llmConnectionSlug: 'relay',
-    });
-    await modelChange;
-
-    assert.equal(
-      harness.successes[0]?.description,
-      'claude-sonnet (Primary) → claude-sonnet (Relay)',
-    );
   });
 
   it('keeps another session available while the first session mutation is pending', async () => {

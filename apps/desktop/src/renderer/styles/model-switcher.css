@@ -26,13 +26,6 @@
   white-space: nowrap;
 }
 
-/* A quiet, always-discoverable warning on the EXISTING-conversation picker.
-   The whole trigger owns the tooltip, so the icon adds no second focus target. */
-.maka-model-switch-warning-icon {
-  color: var(--warning-text);
-  flex: 0 0 auto;
-}
-
 .maka-model-picker-root {
   display: inline-flex;
   min-width: 0;
