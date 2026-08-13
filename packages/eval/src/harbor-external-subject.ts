@@ -51,6 +51,7 @@ process.once('SIGINT', interrupt);
 
 const logsRoot = rooted(systemRoot, '/logs/agent');
 const statePath = join(logsRoot, `${profile}.wrapper-state.json`);
+const meteringPath = join(logsRoot, `${profile}.metering.json`);
 const artifacts: Record<string, unknown>[] = [];
 let usage: Usage | null = null;
 let costUsd: number | null = null;
@@ -70,7 +71,7 @@ try {
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.DEEPSEEK_API_KEY;
   if (!key) throw new Error('external subject credential is missing');
-  const proxy = await startMeteringProxy(baseUrl, key, profile === 'claude-code');
+  const proxy = await startMeteringProxy(baseUrl, key, profile === 'claude-code', meteringPath);
   try {
     await writeState('proxy_started');
     const prepared = await prepareProfile(profile, proxy.baseUrl, systemRoot, command, args);
@@ -112,6 +113,7 @@ try {
         toolNames: proxy.observedToolNames(),
       },
       fileArtifact('wrapper-state', statePath, profile),
+      fileArtifact('provider-metering-snapshot', meteringPath, profile),
     );
   } finally {
     await proxy.close();
@@ -588,6 +590,7 @@ async function startMeteringProxy(
   upstreamBaseUrl: string,
   upstreamKey: string,
   anthropic: boolean,
+  meteringPath: string,
 ): Promise<{
   baseUrl: string;
   usage(): Usage | null;
@@ -608,6 +611,22 @@ async function startMeteringProxy(
   let removedWebTools = 0;
   const requestModels = new Set<string>();
   const observedToolNames = new Set<string>();
+  let snapshotWrite = Promise.resolve();
+  const persistSnapshot = () => {
+    const snapshot = `${JSON.stringify({
+      schemaVersion: 1,
+      profile,
+      usage: measured ? { ...total, totalTokens: total.inputTokens + total.outputTokens } : null,
+      costUsd: measured ? estimateCost(total) : null,
+      requests,
+      admittedRequests,
+      usageRequests,
+      usageComplete: admittedRequests > 0 && usageRequests === admittedRequests,
+    })}\n`;
+    snapshotWrite = snapshotWrite.then(() => writeFile(meteringPath, snapshot, { mode: 0o600 }));
+    return snapshotWrite;
+  };
+  await persistSnapshot();
   const providerTransport = createExternalProviderDispatcher(process.env.HTTPS_PROXY);
   const active = new Set<Promise<void>>();
   const server = createServer((request, response) => {
@@ -666,6 +685,7 @@ async function startMeteringProxy(
             addUsage(total, parsed.usage);
           }
         }
+        await persistSnapshot();
       }
     })().catch((error: unknown) => {
       response.statusCode = 502;
@@ -690,6 +710,7 @@ async function startMeteringProxy(
     observedToolNames: () => [...observedToolNames].sort(),
     close: async () => {
       await Promise.allSettled([...active]);
+      await snapshotWrite;
       await closeServer(server);
       await providerTransport.close();
     },

@@ -227,7 +227,7 @@ function relayContext(state: RelayState, signal?: AbortSignal): SubjectExecution
   return {
     cwd: state.cwd,
     taskInput: state.taskInput,
-    metadata: { trialName: state.trialName },
+    metadata: { trialName: state.trialName, trialPath: state.trialPath },
     ...(signal ? { signal } : {}),
     execute: async (input) => {
       signal?.throwIfAborted();
