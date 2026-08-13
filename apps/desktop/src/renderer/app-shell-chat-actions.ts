@@ -62,7 +62,6 @@ import {
   noRealConnectionSetupDescription,
 } from './model-connection-errors.js';
 import { readSettledMessages, type RefreshMessagesOptions } from './session-message-settlement.js';
-import { createMessageRefreshOrder } from './message-refresh-order.js';
 
 export type { RefreshMessagesOptions };
 
@@ -171,7 +170,6 @@ export function createAppShellChatActions(deps: {
   newChatOrchestrationMode: OrchestrationMode;
   newChatProjectId: string | null | undefined;
 }): AppShellChatActions {
-  const messageRefreshOrder = createMessageRefreshOrder();
   const {
     uiLocale,
     activeIdRef,
@@ -615,18 +613,12 @@ export function createAppShellChatActions(deps: {
   }
 
   async function refreshMessages(sessionId: string, options: RefreshMessagesOptions = {}): Promise<boolean> {
-    const refreshTicket = messageRefreshOrder.begin(sessionId);
     try {
       const result = await readSettledMessages(sessionId, options);
       const next = result.messages;
-      if (
-        messageRefreshOrder.acceptSuccessful(refreshTicket)
-        && activeIdRef.current === sessionId
-      ) {
+      if (activeIdRef.current === sessionId) {
         markSessionReadLocally(sessionId, next);
-        if (!options.preserveVisibleMessagesOnEmpty || next.length > 0) {
-          setMessages(next);
-        }
+        setMessages(next);
         setMessageLoadErrorBySession((current) => {
           if (!current[sessionId]) return current;
           const updated = { ...current };
@@ -667,12 +659,10 @@ export function createAppShellChatActions(deps: {
       // polling cycle itself.
       if (activeIdRef.current !== sessionId) return;
       try {
-        const refreshTicket = messageRefreshOrder.begin(sessionId);
         const next = await window.maka.sessions.readMessages(sessionId);
         if (activeIdRef.current !== sessionId) return;
         const hasSentUserTurn = next.some((message) => message.type === 'user' && message.turnId === turnId);
         if (hasSentUserTurn) {
-          if (!messageRefreshOrder.acceptSuccessful(refreshTicket)) return;
           markSessionReadLocally(sessionId, next);
           setMessages(next);
           return;

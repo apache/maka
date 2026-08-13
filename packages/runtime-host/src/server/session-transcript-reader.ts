@@ -121,46 +121,20 @@ function emptyAssistantText(thinking: RuntimeEvent): RuntimeEvent {
   };
 }
 
-function transcriptMergeKey(message: StoredMessage): string {
-  // RuntimeEvent projection deliberately gives function responses canonical
-  // event ids, while the durable Session row may retain an older generated id.
-  // Both rows describe the same response when they point at the same tool use.
-  if (message.type === 'tool_result') {
-    return `${message.type}\0${message.turnId}\0${message.toolUseId}`;
-  }
-  return `${message.type}\0${message.id}`;
-}
-
-export function mergeMessageUpserts(
+function mergeMessageUpserts(
   stored: readonly StoredMessage[],
   active: readonly StoredMessage[],
 ): StoredMessage[] {
-  const activeKeys = new Set(active.map(transcriptMergeKey));
-  const activeIndexByKey = new Map(
-    active.map((message, index) => [transcriptMergeKey(message), index]),
-  );
-  const merged: StoredMessage[] = [];
-  let activeCursor = 0;
-  for (const storedMessage of stored) {
-    const key = transcriptMergeKey(storedMessage);
-    const activeIndex = activeIndexByKey.get(key);
-    if (activeIndex !== undefined && activeIndex >= activeCursor) {
-      for (const message of active.slice(activeCursor, activeIndex + 1)) {
-        merged.push(structuredClone(message));
-      }
-      activeCursor = activeIndex + 1;
-      continue;
+  const merged = stored.map((message) => structuredClone(message));
+  const indices = new Map(merged.map((message, index) => [message.id, index]));
+  for (const message of active) {
+    const index = indices.get(message.id);
+    if (index === undefined) {
+      indices.set(message.id, merged.length);
+      merged.push(structuredClone(message));
+    } else {
+      merged[index] = structuredClone(message);
     }
-    // A matching active row that was already emitted is the same semantic
-    // message under a different durable id (notably tool_result); do not show
-    // it twice. Rows owned only by Session storage, such as turn_state, keep
-    // their exact database position between the surrounding active anchors.
-    if (!activeKeys.has(key)) {
-      merged.push(structuredClone(storedMessage));
-    }
-  }
-  for (const message of active.slice(activeCursor)) {
-    merged.push(structuredClone(message));
   }
   return merged;
 }

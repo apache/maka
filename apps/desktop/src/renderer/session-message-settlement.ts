@@ -15,8 +15,6 @@ const COMMITTED_ASSISTANT_SETTLE_DELAYS_MS = [120, 360] as const;
 
 export interface RefreshMessagesOptions {
   requiredAssistantMessageId?: string;
-  /** Session hydration must not erase an optimistic send with an empty read. */
-  preserveVisibleMessagesOnEmpty?: boolean;
 }
 
 export function hasAssistantMessage(
