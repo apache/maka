@@ -11,7 +11,6 @@ import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
   armLiveTurn,
   dequeueInteractionByRequestId,
-  type ComposerStagedContext,
   type InteractionQueues,
   type LiveTurnProjection,
   type NavSelection,
@@ -103,7 +102,6 @@ export interface AppShellChatActions {
     options?: {
       turnOrchestration?: TurnOrchestration;
       quotes?: readonly QuoteRef[];
-      stagedContext?: ComposerStagedContext;
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
       displayText?: string;
       onSessionResolved?: (sessionId: string) => void;
@@ -323,23 +321,12 @@ export function createAppShellChatActions(deps: {
     options: {
       turnOrchestration?: TurnOrchestration;
       quotes?: readonly QuoteRef[];
-      stagedContext?: ComposerStagedContext;
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
       displayText?: string;
       onSessionResolved?: (sessionId: string) => void;
     } = {},
   ): Promise<boolean> {
-    // #1954 review P2-1: a queued entry drains with the tray snapshot it
-    // captured at queue time. The snapshot wins over anything currently
-    // staged; the tray values are the direct-send fallback.
-    const quotes =
-      options.stagedContext?.quotes && options.stagedContext.quotes.length > 0
-        ? options.stagedContext.quotes
-        : options.quotes;
-    const resolvedPending =
-      options.stagedContext?.attachments && options.stagedContext.attachments.length > 0
-        ? options.stagedContext.attachments.map((item) => item.ingestToken as PendingAttachment)
-        : pending;
+    const quotes = options.quotes;
     const initialSessionId = activeIdRef.current;
     const sendOwner = captureComposerImportOwner();
     const newChatOwner = initialSessionId ? null : sendOwner;
@@ -375,7 +362,7 @@ export function createAppShellChatActions(deps: {
     try {
       const turnId = crypto.randomUUID();
       if (!initialSessionId) {
-        if (resolvedPending && resolvedPending.length > 0) preflightAttachmentItems(resolvedPending, uiLocale);
+        if (pending && pending.length > 0) preflightAttachmentItems(pending, uiLocale);
         const session = await window.maka.sessions.create({
           // Omit permissionMode so main.ts's sessions:create resolves the
           // configured chatDefaults.permissionMode as the single authority.
@@ -397,8 +384,8 @@ export function createAppShellChatActions(deps: {
         optimisticTurnId = turnId;
         armTurnActive(session.id, turnId);
         const attachmentItems =
-          resolvedPending && resolvedPending.length > 0
-            ? toRendererIngestItems(resolvedPending)
+          pending && pending.length > 0
+            ? toRendererIngestItems(pending)
             : undefined;
         const sendResult = await window.maka.sessions.send(session.id, {
           type: 'send',
@@ -470,8 +457,8 @@ export function createAppShellChatActions(deps: {
       optimisticTurnId = turnId;
       armTurnActive(sessionId, turnId);
       const attachmentItems =
-        resolvedPending && resolvedPending.length > 0
-          ? toRendererIngestItems(resolvedPending)
+        pending && pending.length > 0
+          ? toRendererIngestItems(pending)
           : undefined;
       const sendResult = await window.maka.sessions.send(sessionId, {
         type: 'send',

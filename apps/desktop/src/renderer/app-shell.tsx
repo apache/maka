@@ -25,7 +25,6 @@ import {
   ChatSurfaceLayout,
   type ComposerHandle,
   type ComposerSendMetadata,
-  type ComposerStagedContext,
   type ComposerSlashCommandOption,
   type MakaUriDest,
   MakaUriContext,
@@ -47,7 +46,6 @@ import {
   enqueueInteraction,
   getConversationCopy,
   getSharedUiCopy,
-  isComposerResponseBusy,
   reconcileInteractions,
 } from '@maka/ui';
 import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
@@ -158,7 +156,6 @@ import { createAppShellSessionEventHandlers } from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import {
   createAppShellChatActions,
-  type PendingAttachment,
   type WorkspaceFileReferencePosition,
 } from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
@@ -391,17 +388,9 @@ function AppShellContent({
     pendingQuotes,
     addQuote,
     removeQuote,
-    removeQuotesByRefs,
     clearQuotes,
     clearAllQuotes,
   } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
-  // Embed each staged item as the composer's opaque `ingestToken`, so a queued
-  // entry can carry the ingestable item (file/approval source) through the
-  // queue and back without re-staging (#1954 review P2-1).
-  const composerPendingAttachments = useMemo(
-    () => pendingAttachments.map((item) => ({ ...item, ingestToken: item })),
-    [pendingAttachments],
-  );
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
   const [scheduledTaskCreateRequestNonce, setScheduledTaskCreateRequestNonce] = useState(0);
   const [pendingCollaborationModeBySession, setPendingCollaborationModeBySession] = useState<Record<string, boolean>>({});
@@ -1966,7 +1955,6 @@ function AppShellContent({
   async function sendWithAttachments(
     text: string,
     metadata?: ComposerSendMetadata,
-    staged?: ComposerStagedContext,
   ): Promise<boolean | void> {
     const revision = revisionDraftRef.current;
     const revisionSend = Boolean(
@@ -2122,35 +2110,19 @@ function AppShellContent({
       if (ok !== false && quotes) clearQuotes();
       return ok;
     }
-    // #1954 review P2-1: a queued entry drains with the tray snapshot it
-    // captured at queue time, never with whatever is staged right now — a
-    // later entry's chips (or a chip removed meanwhile) must not change this
-    // send. The live tray is the fallback for a direct (non-queued) send.
-    const pending = (staged?.attachments && staged.attachments.length > 0
-      ? staged.attachments.map((item) => item.ingestToken as PendingAttachment)
-      : undefined)
-      ?? (pendingAttachments.length > 0 ? pendingAttachments : undefined);
+    const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
     const expectedRevisionDraft = revisionSend
       ? revisionDraftRef.current
       : undefined;
-    const quotes = (staged?.quotes && staged.quotes.length > 0
-      ? staged.quotes
-      : undefined)
-      ?? (pendingQuotes.length > 0 ? pendingQuotes : undefined);
+    const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
       ...(quotes ? { quotes } : {}),
       ...(metadata?.workspaceFileReferences?.length
         ? { workspaceFileReferences: metadata.workspaceFileReferences }
         : {}),
-      ...(staged ? { stagedContext: staged } : {}),
     });
     if (ok !== false && pending) clearSubmittedAttachments(pending);
-    if (ok !== false && quotes) {
-      // The queued entry owns its snapshot: clear exactly the captured items.
-      // A plain send still clears the whole tray, as before.
-      if (staged) removeQuotesByRefs(quotes);
-      else clearQuotes();
-    }
+    if (ok !== false && quotes) clearQuotes();
     if (ok !== false && revisionSend) {
       if (expectedRevisionDraft) {
         completeTurnRevisionCopyAttempt(expectedRevisionDraft);
@@ -2205,18 +2177,10 @@ function AppShellContent({
   function submitWhileStreaming(
     text: string,
     metadata?: ComposerSendMetadata,
-    staged?: ComposerStagedContext,
   ): Promise<boolean | void> {
     return parseDesktopSlashCommand(text)
-      ? sendWithAttachments(text, metadata, staged)
+      ? sendWithAttachments(text, metadata)
       : steerWithText(text);
-  }
-
-  function shouldSubmitWhileStreaming(text: string): boolean {
-    // Slash-leading drafts must reach the Desktop router immediately: valid
-    // commands are dispatched there, while command-like text that does not
-    // parse remains eligible for the Host's steering path.
-    return text.trimStart().startsWith('/');
   }
 
   const stop = createAppShellStopAction({
@@ -2888,10 +2852,7 @@ function AppShellContent({
                   // send), so neither witness can veto the other — see
                   // `deriveTurnActive`. `activeStreamingLive` is folded in
                   // defensively for the rare replay where the arm was over-cleared.
-                  streaming={isComposerResponseBusy(
-                    turnActive || activeStreamingLive,
-                    activeSessionForView?.status,
-                  )}
+                  streaming={turnActive || activeStreamingLive}
                   // #646: in the first-token wait (Stop up, nothing streams yet) the
                   // hint reads "Maka 正在处理…"; in a mid-turn lull it reads the calm
                   // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.
@@ -2899,7 +2860,6 @@ function AppShellContent({
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendWithAttachments}
                   onStreamingSubmit={submitWhileStreaming}
-                  shouldSubmitWhileStreaming={shouldSubmitWhileStreaming}
                   onStop={stop}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
@@ -2914,7 +2874,7 @@ function AppShellContent({
                   mentionSkills={mentionSkills}
                   slashCommands={desktopSlashCommands}
                   onSearchMentionFiles={searchMentionFiles}
-                  pendingAttachments={composerPendingAttachments}
+                  pendingAttachments={pendingAttachments}
                   onRemoveAttachment={removeAttachment}
                   pendingQuotes={pendingQuotes}
                   onRemoveQuote={removeQuote}

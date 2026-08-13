@@ -21,60 +21,6 @@
   max-width: var(--maka-chat-measure);
 }
 
-.maka-composer-pending-queue {
-  display: flex;
-  width: min(var(--maka-chat-measure), 100%);
-  max-width: var(--maka-chat-measure);
-  flex-direction: column;
-  gap: var(--space-1);
-  margin-bottom: var(--space-1-5);
-}
-
-.maka-composer-pending-row {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.maka-composer-pending-copy {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.maka-composer-pending-editor {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.maka-composer-pending-edit-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-1);
-}
-
-.maka-composer-pending-text {
-  overflow: hidden;
-  color: var(--foreground);
-  font: var(--maka-text-body);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-composer-pending-actions {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: var(--space-1);
-}
-
 /* Row-flow, not the old stacked column: image thumbnails and file/quote
    chips share one wrapping row. `width: 100%` is what makes the wrap real:
    as a flex item of Astryx's drawer content this group would otherwise size

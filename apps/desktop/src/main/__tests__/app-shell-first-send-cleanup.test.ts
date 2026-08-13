@@ -17,7 +17,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import type { SessionSummary } from '@maka/core/session';
-import type { ComposerStagedContext, LiveTurnProjection } from '@maka/ui';
+import type { LiveTurnProjection } from '@maka/ui';
 import { applyLiveTurnEvent } from '@maka/ui';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
 import { createAppShellSessionUiStateController } from '../../renderer/app-shell-session-ui-state.js';
@@ -589,77 +589,5 @@ describe('Host-named turn rebind (#1954 review P2-2)', () => {
       undefined,
       'a no-content abort on the Host turn must settle the arm',
     );
-  });
-});
-
-describe('queued-entry staged context (#1954 review P2-1)', () => {
-  it('drains each queued entry with its own captured context, never the current tray', async () => {
-    const sessionId = 'session-1';
-    const sent: Array<{ text: string; attachmentItems?: unknown; quotes?: unknown }> = [];
-    // Entry A captured quote A + file a.txt at queue time; entry B captured
-    // quote B. The tray has since moved on — neither drain may see anything
-    // but its own snapshot.
-    const quoteA = { text: 'quote A' };
-    const quoteB = { text: 'quote B' };
-    const fileA = new File(['a'], 'a.txt');
-    const attachmentA = {
-      displayName: 'a.txt',
-      kind: 'doc' as const,
-      size: 1,
-      ingestToken: { stagingKey: 'a', source: { type: 'file' as const, file: fileA } },
-    };
-    const entryA: ComposerStagedContext = {
-      quotes: [quoteA],
-      attachments: [attachmentA],
-    };
-    const entryB: ComposerStagedContext = { quotes: [quoteB] };
-    const restoreWindow = installWindow({
-      sessions: {
-        send: async (
-          _sendSessionId: string,
-          command: { text: string; attachmentItems?: unknown; quotes?: unknown },
-        ) => {
-          sent.push({
-            text: command.text,
-            ...(command.attachmentItems ? { attachmentItems: command.attachmentItems } : {}),
-            ...(command.quotes ? { quotes: command.quotes } : {}),
-          });
-          return {
-            ok: true,
-            disposition: 'turn_started',
-            turnId: 'turn-1',
-            attachments: [],
-            skillInvocation: { loaded: [], failed: [] },
-          };
-        },
-        // `refreshMessagesUntilTurn` waits for the sent turn to appear in the
-        // transcript; echo it so the happy path completes instead of timing out.
-        readMessages: async () => [
-          { type: 'user', id: 'user-turn-1', turnId: 'turn-1', ts: 1, text: 'entry' },
-        ],
-      },
-    });
-    try {
-      const actions = createAppShellChatActions({
-        ...createActionsDeps(),
-        activeIdRef: { current: sessionId },
-      });
-      // Entry A captured quote A + file a.txt at queue time; entry B captured
-      // quote B. The tray has since moved on — neither drain may see anything
-      // but its own snapshot.
-      assert.equal(await actions.send('entry A', undefined, { stagedContext: entryA }), true);
-      assert.equal(await actions.send('entry B', undefined, { stagedContext: entryB }), true);
-    } finally {
-      restoreWindow();
-    }
-    assert.deepEqual(sent[0], {
-      text: 'entry A',
-      attachmentItems: [{ file: fileA }],
-      quotes: [quoteA],
-    });
-    assert.deepEqual(sent[1], {
-      text: 'entry B',
-      quotes: [quoteB],
-    });
   });
 });

@@ -40,30 +40,6 @@ export function useAppShellComposerQuotes(options: { draftKey: string }) {
     setPendingByKey((map) => removePending(map, ownerKey, index));
   }
 
-  /**
-   * Remove exactly the captured quotes after a queued entry drains. Identity,
-   * not a full clear: quotes staged later for another entry (or a not-yet-
-   * queued send) must survive this entry's cleanup (#1954 review P2-1).
-   */
-  function removeQuotesByRefs(refs: readonly QuoteRef[]): void {
-    if (refs.length === 0) return;
-    const ownerKey = options.draftKey;
-    setPendingByKey((map) => {
-      const current = selectPending(map, ownerKey);
-      const kept = current.filter(
-        (quote) =>
-          !refs.some(
-            (ref) =>
-              quote.text === ref.text &&
-              (quote.sourceTurnId ?? null) === (ref.sourceTurnId ?? null) &&
-              (quote.label ?? null) === (ref.label ?? null),
-          ),
-      );
-      if (kept.length === current.length) return map;
-      return { ...map, [ownerKey]: kept };
-    });
-  }
-
   function clearQuotes(): void {
     const ownerKey = options.draftKey;
     setPendingByKey((map) => clearPending(map, ownerKey));
@@ -73,5 +49,5 @@ export function useAppShellComposerQuotes(options: { draftKey: string }) {
     setPendingByKey({});
   }
 
-  return { pendingQuotes, addQuote, removeQuote, removeQuotesByRefs, clearQuotes, clearAllQuotes };
+  return { pendingQuotes, addQuote, removeQuote, clearQuotes, clearAllQuotes };
 }
