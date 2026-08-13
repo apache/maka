@@ -119,6 +119,7 @@ test('dispatches a staged slash command instead of steering it into a running tu
   await composer.fill('/compact explain');
   await expect(page.getByRole('button', { name: '插入消息' })).toBeVisible();
   await composer.press('Enter');
+  await expect(page.getByText(/Acknowledged steering: \/compact explain/)).toBeVisible();
 
   await composer.fill('/');
   const menu = page.getByRole('listbox', { name: '命令和技能' });
@@ -133,6 +134,5 @@ test('dispatches a staged slash command instead of steering it into a running tu
   await composer.press('Enter');
 
   await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(1);
-  await expect(page.getByText(/Acknowledged steering: \/compact explain/)).toBeVisible();
   await page.getByRole('button', { name: '停止' }).click();
 });
