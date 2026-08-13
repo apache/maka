@@ -136,7 +136,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const stopRequestedRef = useRef(false);
   const activeTurnIdRef = useRef<string | null>(null);
   const turnInFlightRef = useRef(false);
-  const sendPendingRef = useRef(false);
   const settlingTurnIdsRef = useRef<Set<string>>(new Set());
   const onForkVisibilityChangeRef = useRef(onForkVisibilityChange);
   onForkVisibilityChangeRef.current = onForkVisibilityChange;
@@ -337,20 +336,17 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       attachmentItems?: RendererIngestInput[],
     ): Promise<boolean> => {
       const trimmed = text.trim();
-      if (!trimmed || sendPendingRef.current || !sourceSession) return false;
-      // A running companion accepts ordinary Enter submissions into the
-      // Host's next-turn queue. Keep a separate submission lock: the active
-      // turn flag describes the Stop/steer target and must remain true while a
-      // follow-up IPC is pending.
-      const queueBehindActiveTurn = turnInFlightRef.current;
-      sendPendingRef.current = true;
+      if (!trimmed || turnInFlightRef.current || !sourceSession) return false;
+      // Close the same-frame double-submit window before the first await. The
+      // visible in-flight state still begins only when the run is armed.
+      turnInFlightRef.current = true;
       setError(null);
       const turnId = crypto.randomUUID();
       const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
       const label = (quoteSnapshot.quotes[0]?.text ?? trimmed).slice(0, 24);
       const fork = await ensureFork(`${copyRef.current.namePrefix}${label}`);
       if (fork.status !== 'ready') {
-        sendPendingRef.current = false;
+        turnInFlightRef.current = false;
         return false;
       }
       const result = await performCompanionTurn({
@@ -373,7 +369,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         onForkCommitted: () => {},
         // Arm the optimistic live turn right before the send.
         onBeforeSend: () => {
-          if (queueBehindActiveTurn) return;
           stopRequestedRef.current = false;
           activeTurnIdRef.current = turnId;
           turnInFlightRef.current = true;
@@ -390,16 +385,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
             activeTurnIdRef.current = accepted.turnId;
             ownTurnIdsRef.current.delete(turnId);
             ownTurnIdsRef.current.add(accepted.turnId);
-            setLiveTurn((current) => queueBehindActiveTurn
-              ? armLiveTurn(accepted.turnId)
-              : current
-                ? { ...current, turnId: accepted.turnId }
-                : armLiveTurn(accepted.turnId));
+            setLiveTurn((current) => current
+              ? { ...current, turnId: accepted.turnId }
+              : armLiveTurn(accepted.turnId));
             setOwnTurnTick((tick) => tick + 1);
             return;
           }
-
-          if (queueBehindActiveTurn) return;
 
           // A cross-client race can make an otherwise idle companion send join
           // a Turn that another client started. The message is accepted, but no
@@ -414,7 +405,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         onQuotesConsumed: () => onQuotesConsumed(quoteSnapshot),
       });
       if (result.status === 'sent') {
-        sendPendingRef.current = false;
         setHasContent(true);
         // Surface the just-sent user message immediately, and reflect any
         // automatic connection/model rebound in the read-only model label.
@@ -443,17 +433,15 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           send_rejected: errors.sendRejected,
         };
         setError(byCode[result.code]);
-        if (!queueBehindActiveTurn) {
-          activeTurnIdRef.current = null;
-          turnInFlightRef.current = false;
-          setTurnInFlight(false);
-          setLiveTurn(undefined);
-          ownTurnIdsRef.current.delete(turnId);
-          setOwnTurnTick((tick) => tick + 1);
-        }
+        activeTurnIdRef.current = null;
+        turnInFlightRef.current = false;
+        setTurnInFlight(false);
+        setLiveTurn(undefined);
+        ownTurnIdsRef.current.delete(turnId);
+        setOwnTurnTick((tick) => tick + 1);
       }
       // 'disposed' → the panel unmounted mid-create; nothing to update.
-      sendPendingRef.current = false;
+      turnInFlightRef.current = false;
       return false;
     },
     [
