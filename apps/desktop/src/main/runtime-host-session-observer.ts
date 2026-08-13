@@ -94,6 +94,8 @@ interface ObservedSessionState {
   readonly transcriptConsumers: Map<string, TranscriptConsumer>;
   readonly subscriptionOwner: RuntimeHostSessionSubscriptionOwner;
   transcriptDeliveryTail: Promise<void>;
+  transcriptDeliveryTask?: Promise<void>;
+  transcriptResetRequested: boolean;
   pendingTranscriptConsumers: number;
   replica?: DesktopTranscriptReplica;
   snapshot?: SessionContinuitySnapshot;
@@ -547,6 +549,7 @@ export class RuntimeHostSessionObserver {
       transcriptConsumers: new Map(),
       subscriptionOwner,
       transcriptDeliveryTail: Promise.resolve(),
+      transcriptResetRequested: false,
       pendingTranscriptConsumers: 0,
       transcriptAccess: 0,
       closing: false,
@@ -773,7 +776,7 @@ export class RuntimeHostSessionObserver {
       state.replica = subscription.replica;
       state.projector = projector;
       previousReplica?.close();
-      this.#resetTranscriptConsumers(state, subscription.replica);
+      this.#resetTranscriptConsumers(state);
       this.#touchReplica(state);
 
       if (replacement) {
@@ -995,6 +998,10 @@ export class RuntimeHostSessionObserver {
     replica: DesktopTranscriptReplica,
     change: DesktopTranscriptReplicaChange,
   ): void {
+    if (state.transcriptDeliveryTask) {
+      state.transcriptResetRequested = true;
+      return;
+    }
     const consumers = [...state.transcriptConsumers.values()];
     const batches = encodeDesktopTranscriptChange(
       {
@@ -1004,25 +1011,47 @@ export class RuntimeHostSessionObserver {
       },
       change,
     );
-    void this.#queueTranscriptDelivery(state, () =>
+    void this.#scheduleTranscriptDelivery(state, () =>
       this.#broadcastTranscriptBatches(state, consumers, batches),
     );
   }
 
-  #resetTranscriptConsumers(
+  #resetTranscriptConsumers(state: ObservedSessionState): void {
+    state.transcriptResetRequested = true;
+    void this.#scheduleTranscriptDelivery(state);
+  }
+
+  #scheduleTranscriptDelivery(
     state: ObservedSessionState,
-    replica: DesktopTranscriptReplica,
-  ): void {
-    const consumers = [...state.transcriptConsumers.values()];
-    const batches = encodeDesktopTranscriptSnapshot(replica.snapshot());
-    void this.#queueTranscriptDelivery(state, async () => {
-      for (const consumer of consumers) {
-        if (state.transcriptConsumers.get(consumer.consumerId) === consumer) {
-          consumer.generation = replica.generation;
+    initial?: () => Promise<void>,
+  ): Promise<void> {
+    if (state.transcriptDeliveryTask) {
+      state.transcriptResetRequested = true;
+      return state.transcriptDeliveryTask;
+    }
+    let task!: Promise<void>;
+    task = state.transcriptDeliveryTail
+      .then(async () => {
+        await initial?.();
+        while (state.transcriptResetRequested) {
+          state.transcriptResetRequested = false;
+          const replica = state.replica;
+          if (!replica?.resident || state.closing) return;
+          const consumers = [...state.transcriptConsumers.values()];
+          for (const consumer of consumers) consumer.generation = replica.generation;
+          await this.#broadcastTranscriptBatches(
+            state,
+            consumers,
+            encodeDesktopTranscriptSnapshot(replica.snapshot()),
+          );
         }
-      }
-      await this.#broadcastTranscriptBatches(state, consumers, batches);
-    });
+      })
+      .finally(() => {
+        if (state.transcriptDeliveryTask === task) state.transcriptDeliveryTask = undefined;
+      });
+    state.transcriptDeliveryTask = task;
+    state.transcriptDeliveryTail = task.catch(() => undefined);
+    return task;
   }
 
   #queueTranscriptDelivery(

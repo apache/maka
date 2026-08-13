@@ -204,6 +204,28 @@ test('keeps a bounded contiguous window while moving between history and the tai
   assert.ok(replica.residentBytes <= maxResidentBytes);
 });
 
+test('rejects an overlay that exceeds the complete session cache budget', async () => {
+  const messages = [
+    assistantMessage('x'.repeat(700), 'overlay-1'),
+    assistantMessage('y'.repeat(700), 'overlay-2'),
+  ];
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    loadTranscriptOverlay: async () => messages,
+    async close() {},
+  });
+
+  await assert.rejects(
+    DesktopTranscriptReplica.prepare(handle, {
+      maxResidentBytes: 1_024,
+      maxMessageBytes: 1_024,
+    }),
+    /overlay exceeds the session cache limit/,
+  );
+});
+
 test('reopens a failed transcript range with a fresh generation', async () => {
   const store = new DesktopTranscriptRangeStore();
   let attempts = 0;

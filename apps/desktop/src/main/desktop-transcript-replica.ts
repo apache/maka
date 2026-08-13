@@ -107,6 +107,9 @@ export class DesktopTranscriptReplica {
     replica.#installDurable(durable.messages);
     replica.#hasOlder = durable.nextCursor !== null;
     replica.#evictToBudget();
+    if (replica.#residentBytes > replica.#maxResidentBytes) {
+      throw new RangeError('Desktop transcript overlay exceeds the session cache limit');
+    }
     return replica;
   }
 

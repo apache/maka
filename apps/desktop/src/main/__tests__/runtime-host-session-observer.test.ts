@@ -608,6 +608,98 @@ test('keeps one transcript batch in flight until the renderer acknowledges it', 
   await observer.close();
 });
 
+test('coalesces transcript changes while renderer delivery is backpressured', async () => {
+  const events = new AsyncFrameQueue();
+  let decoded = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([]),
+          events,
+          loadTranscriptPage: async (input) => ({
+            kind: 'page',
+            sessionId: 'session-1',
+            source: 'durable',
+            direction: 'newer',
+            throughSequence: input.throughSequence,
+            rawBytes: 1,
+            fragments: [],
+            nextCursor: null,
+          }),
+          decodeTranscriptPage: async (page) => {
+            if (page.throughSequence === null) return { messages: [], nextCursor: null };
+            decoded += 1;
+            const identity = page.throughSequence;
+            return {
+              messages: [{
+                identity,
+                message: {
+                  type: 'assistant',
+                  id: `a-${identity}`,
+                  turnId: 'turn-1',
+                  ts: identity,
+                  text: String(identity),
+                  modelId: 'test-model',
+                },
+              }],
+              nextCursor: null,
+            };
+          },
+          async close() {
+            events.end();
+          },
+        }),
+    },
+    emitSessionsChanged() {},
+  });
+  const batches: DesktopTranscriptBatch[] = [];
+  const consumerId = 'consumer-coalesced';
+  await observer.openTranscript('session-1', consumerId, {
+    id: 22,
+    send(_channel, batch) {
+      batches.push(batch);
+      if (batch.reset) {
+        queueMicrotask(() =>
+          observer.acknowledgeTranscript(
+            consumerId,
+            batch.generation,
+            batch.deliverySequence,
+            22,
+          ),
+        );
+      }
+    },
+    once() {},
+    off() {},
+  });
+  batches.splice(0);
+
+  for (let sequence = 0; sequence < 5; sequence += 1) {
+    events.push({
+      kind: 'subscription.transcript_advanced',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sessionId: 'session-1',
+      sequence: sequence + 1,
+      throughSequence: sequence,
+    });
+    await waitFor(() => decoded === sequence + 1);
+  }
+  await waitFor(() => batches.length === 1);
+  assert.equal(batches[0]!.reset, false);
+  observer.acknowledgeTranscript(
+    consumerId,
+    batches[0]!.generation,
+    batches[0]!.deliverySequence,
+    22,
+  );
+  await waitFor(() => batches.some((batch) => batch.reset));
+  assert.equal(batches.filter((batch) => !batch.reset).length, 1);
+  await observer.close();
+});
+
 test("ignores a stale seed failure after its replacement succeeds", async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   let rejectStale!: (error: Error) => void;
