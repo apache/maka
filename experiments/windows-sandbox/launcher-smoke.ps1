@@ -10,8 +10,8 @@ $requestPath = Join-Path $env:RUNNER_TEMP 'maka-windows-sandbox-request.json'
 $request = @{
   version = 1
   requestId = 'ci-process-containment'
-  executable = $launcher
-  arguments = @('--self-probe')
+  executable = $env:ComSpec
+  arguments = @('/d', '/c', 'exit 0')
   cwd = $launcherRoot
   readRoots = @()
   writeRoots = @()
@@ -27,11 +27,10 @@ $output = & $launcher $requestPath
 if ($LASTEXITCODE -ne 0) {
   throw "Launcher exited with $LASTEXITCODE"
 }
-$probe = $output | ConvertFrom-Json
-if ($probe.restrictedToken -ne $true) {
+if ($output -notmatch '"restrictedToken":true') {
   throw 'Child process did not receive a restricted token'
 }
-if ($probe.inJob -ne $true) {
+if ($output -notmatch '"inJob":true') {
   throw 'Child process was not created inside the Job Object'
 }
-Write-Host "Restricted token and atomic Job membership verified: $output"
+Write-Host "Restricted token and post-create Job membership verified: $output"

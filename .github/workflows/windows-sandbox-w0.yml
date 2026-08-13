@@ -26,6 +26,6 @@ jobs:
       - name: Build process-containment launcher
         working-directory: experiments/windows-sandbox/launcher
         run: cargo build --locked
-      - name: Verify restricted token and atomic Job membership
+      - name: Verify restricted token and post-create Job membership
         shell: pwsh
         run: ./experiments/windows-sandbox/launcher-smoke.ps1

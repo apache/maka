@@ -180,6 +180,9 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
     } else if unsafe { ResumeThread(process.hThread) } == u32::MAX {
         Err(last_error("ResumeThread"))
     } else {
+        let child_restricted = child_token_is_restricted(process.hProcess)?;
+        let child_in_job = child_process_is_in_job(process.hProcess)?;
+        println!("{{\"restrictedToken\":{child_restricted},\"inJob\":{child_in_job}}}");
         let wait = unsafe { WaitForSingleObject(process.hProcess, 30_000) };
         if wait == WAIT_TIMEOUT {
             unsafe { TerminateProcess(process.hProcess, 124) };
@@ -205,6 +208,24 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
         CloseHandle(process.hProcess);
     }
     result
+}
+
+unsafe fn child_token_is_restricted(process: HANDLE) -> Result<bool, String> {
+    let mut token = null_mut();
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return Err(last_error("OpenProcessToken(child)"));
+    }
+    let result = unsafe { IsTokenRestricted(token) != 0 };
+    unsafe { CloseHandle(token) };
+    Ok(result)
+}
+
+unsafe fn child_process_is_in_job(process: HANDLE) -> Result<bool, String> {
+    let mut in_job = 0;
+    if unsafe { IsProcessInJob(process, null_mut(), &mut in_job) } == 0 {
+        return Err(last_error("IsProcessInJob(child)"));
+    }
+    Ok(in_job != 0)
 }
 
 fn quote_command(executable: &str, arguments: &[String]) -> Vec<u16> {
