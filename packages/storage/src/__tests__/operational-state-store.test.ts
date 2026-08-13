@@ -96,6 +96,9 @@ test('rolls back every scope when migration publication fails', async () => {
       .all();
     const runtimeVersion = (legacy.prepare('PRAGMA user_version').get() as { user_version: number })
       .user_version;
+    const sessionMetadataVersion = legacy
+      .prepare("SELECT version FROM session_metadata_schema WHERE scope = 'session_metadata'")
+      .get()?.version;
     const reminder = legacy
       .prepare('SELECT record_json FROM workflow_plan_reminders')
       .get()?.record_json;
@@ -120,12 +123,26 @@ test('rolls back every scope when migration publication fails', async () => {
       runtimeVersion,
     );
     assert.equal(
+      preserved
+        .prepare("SELECT version FROM session_metadata_schema WHERE scope = 'session_metadata'")
+        .get()?.version,
+      sessionMetadataVersion,
+    );
+    assert.equal(
       preserved.prepare('SELECT record_json FROM workflow_plan_reminders').get()?.record_json,
       reminder,
     );
     assert.equal(
       preserved
         .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_scheduled_tasks'")
+        .get(),
+      undefined,
+    );
+    assert.equal(
+      preserved
+        .prepare(
+          "SELECT 1 FROM sqlite_schema WHERE name IN ('session_message_payloads', 'session_message_chunks') LIMIT 1",
+        )
         .get(),
       undefined,
     );
