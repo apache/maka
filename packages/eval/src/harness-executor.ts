@@ -47,6 +47,7 @@ interface RelayState {
   readonly taskInput: string;
   readonly credentials: Readonly<Record<string, string>>;
   readonly cwd: string;
+  readonly executionEnvironment: Readonly<Record<string, string>>;
   used: boolean;
   diagnostic?: SubjectProcessDiagnostic;
 }
@@ -240,7 +241,10 @@ function relayContext(state: RelayState, signal?: AbortSignal): SubjectExecution
           kind: 'execute',
           command: input.command,
           args: input.args,
-          environment: input.environment ?? {},
+          environment: mergeExecutionEnvironment(
+            state.executionEnvironment,
+            input.environment ?? {},
+          ),
           credentials,
           resultToken,
           captureStdout: input.captureStdout ?? true,
@@ -343,6 +347,7 @@ async function startTrial(
   const timeoutMultiplier = positive(cell.budget.timeoutMultiplier, 'budget.timeoutMultiplier');
   const environmentConfig = { ...options.environment, mounts: resolveMounts(options.mounts) };
   const relayPath = resolve(dirname(fileURLToPath(import.meta.url)), '../harbor');
+  const executionEnvironment = egressExecutionEnvironment(options.egressProxy);
   const environment = preparationEnvironment(
     framework,
     relayPath,
@@ -449,6 +454,7 @@ async function startTrial(
         taskInput: ready.instruction,
         credentials,
         cwd: ready.cwd,
+        executionEnvironment,
         used: false,
       },
     };
@@ -596,6 +602,42 @@ function preparationEnvironment(
   };
 }
 
+function mergeExecutionEnvironment(
+  required: Readonly<Record<string, string>>,
+  subject: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const overlap = Object.keys(required).filter((name) => Object.hasOwn(subject, name));
+  if (overlap.length > 0) {
+    throw new Error(`subject environment overrides Eval egress policy: ${overlap.join(', ')}`);
+  }
+  return { ...subject, ...required };
+}
+
+function egressExecutionEnvironment(
+  options: HarnessOptions['egressProxy'],
+): Readonly<Record<string, string>> {
+  if (!options) return {};
+  const proxyUrl = process.env[options.urlEnv]!;
+  if (!URL.canParse(proxyUrl) || new URL(proxyUrl).protocol !== 'http:') {
+    throw new Error(`machine path ${options.urlEnv} must be an HTTP proxy URL`);
+  }
+  const proxyHost = new URL(proxyUrl).hostname;
+  const noProxy = `127.0.0.1,localhost,${proxyHost}`;
+  return {
+    HTTP_PROXY: proxyUrl,
+    HTTPS_PROXY: proxyUrl,
+    http_proxy: proxyUrl,
+    https_proxy: proxyUrl,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+    SSL_CERT_FILE: options.containerCaPath,
+    REQUESTS_CA_BUNDLE: options.containerCaPath,
+    CURL_CA_BUNDLE: options.containerCaPath,
+    GIT_SSL_CAINFO: options.containerCaPath,
+    NODE_EXTRA_CA_CERTS: options.containerCaPath,
+  };
+}
+
 function safeErrorCode(error: unknown): string | null {
   const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
   return code && ['ENOENT', 'EACCES', 'EPERM'].includes(code) ? code : null;
@@ -638,6 +680,11 @@ interface HarnessOptions {
   readonly tasksRootEnv?: string;
   readonly environment: JsonObject;
   readonly preparationEnvironment: readonly string[];
+  readonly egressProxy?: {
+    readonly urlEnv: string;
+    readonly caCertificatePathEnv: string;
+    readonly containerCaPath: string;
+  };
   readonly mounts: readonly {
     readonly sourceEnv: string;
     readonly target: string;
@@ -657,6 +704,7 @@ function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions 
     'preparationEnvironment',
     'mounts',
   ];
+  if (Object.hasOwn(value, 'egressProxy')) fields.push('egressProxy');
   if (framework === 'pier') fields.push('tasksRootEnv');
   const options = exact(value, fields, 'executor.config');
   const preparationEnvironment = array(
@@ -675,15 +723,36 @@ function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions 
     trialsRootEnv: machinePathEnv(options.trialsRootEnv, 'trialsRootEnv'),
     environment: decodeJsonObject(options.environment, 'environment'),
     preparationEnvironment,
+    ...(Object.hasOwn(options, 'egressProxy')
+      ? { egressProxy: decodeEgressProxy(options.egressProxy) }
+      : {}),
     mounts: array(options.mounts, 'mounts').map((mount, index) => decodeMount(mount, index)),
     ...(framework === 'pier'
       ? { tasksRootEnv: machinePathEnv(options.tasksRootEnv, 'tasksRootEnv') }
       : {}),
   };
-  for (const name of [decoded.pythonPathEnv, decoded.trialsRootEnv, decoded.tasksRootEnv]) {
+  for (const name of [
+    decoded.pythonPathEnv,
+    decoded.trialsRootEnv,
+    decoded.tasksRootEnv,
+    decoded.egressProxy?.urlEnv,
+    decoded.egressProxy?.caCertificatePathEnv,
+  ]) {
     if (name && !process.env[name]) throw new Error(`machine path ${name} is unavailable`);
   }
   return decoded;
+}
+
+function decodeEgressProxy(value: unknown): NonNullable<HarnessOptions['egressProxy']> {
+  const proxy = exact(value, ['urlEnv', 'caCertificatePathEnv', 'containerCaPath'], 'egressProxy');
+  return {
+    urlEnv: machinePathEnv(proxy.urlEnv, 'egressProxy.urlEnv'),
+    caCertificatePathEnv: machinePathEnv(
+      proxy.caCertificatePathEnv,
+      'egressProxy.caCertificatePathEnv',
+    ),
+    containerCaPath: absolute(proxy.containerCaPath, 'egressProxy.containerCaPath'),
+  };
 }
 
 function decodeMount(value: unknown, index: number) {

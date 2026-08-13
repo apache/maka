@@ -10,6 +10,7 @@ import {
   type ExternalProfile as Profile,
 } from './toolchain-verification.js';
 import { isInferenceAdmissionEvent } from './provider-admission.js';
+import { removeEvalWebTools } from './provider-web-tool-surface.js';
 import { takeRelayResultToken, writeRelayResult } from './relay-result-frame.js';
 
 const resultToken = takeRelayResultToken();
@@ -91,6 +92,7 @@ try {
       requests: proxy.requestCount(),
       admittedRequests: proxy.admittedRequestCount(),
       usageRequests: proxy.usageRequestCount(),
+      removedWebTools: proxy.removedWebToolCount(),
     });
     artifacts.push(
       { kind: 'external-process', profile, exitCode: result.exitCode },
@@ -103,6 +105,7 @@ try {
         admittedRequests: proxy.admittedRequestCount(),
         usageRequests: proxy.usageRequestCount(),
         usageComplete: proxy.usageComplete(),
+        removedWebTools: proxy.removedWebToolCount(),
       },
       fileArtifact('wrapper-state', statePath, profile),
     );
@@ -181,7 +184,7 @@ async function prepareProfile(
     await writePolicy(
       rooted(root, '/etc/claude-code'),
       'managed-settings.json',
-      '{"permissions":{"deny":["WebSearch","WebFetch"]}}\n',
+      '{"permissions":{"deny":["WebSearch","WebFetch","FetchURL"]}}\n',
     );
   } else if (selected === 'reasonix') {
     const modelReference = executableArgs[executableArgs.indexOf('--model') + 1];
@@ -268,6 +271,7 @@ async function prepareProfile(
         '[permission]',
         'rules = [',
         '  { decision = "deny", scope = "user", pattern = "WebSearch", reason = "Disabled for eval parity" },',
+        '  { decision = "deny", scope = "user", pattern = "WebFetch", reason = "Disabled for eval parity" },',
         '  { decision = "deny", scope = "user", pattern = "FetchURL", reason = "Disabled for eval parity" },',
         ']',
         '',
@@ -370,7 +374,7 @@ async function prepareProfile(
         model: 'deepseek/deepseek-v4-flash',
         permission: {
           mode: 'yolo',
-          disallowedTools: ['WebSearch', 'WebFetch'],
+          disallowedTools: ['WebSearch', 'WebFetch', 'FetchURL'],
         },
         features: { memory: false, mcp: false },
         plugins: { enabled: false },
@@ -587,6 +591,7 @@ async function startMeteringProxy(
   admittedRequestCount(): number;
   usageRequestCount(): number;
   usageComplete(): boolean;
+  removedWebToolCount(): number;
   close(): Promise<void>;
 }> {
   const total = zeroUsage();
@@ -594,11 +599,13 @@ async function startMeteringProxy(
   let requests = 0;
   let admittedRequests = 0;
   let usageRequests = 0;
+  let removedWebTools = 0;
   const active = new Set<Promise<void>>();
   const server = createServer((request, response) => {
     const operation = (async () => {
       requests += 1;
-      const body = await readRequest(request);
+      const projected = removeEvalWebTools(await readRequest(request));
+      removedWebTools += projected.removed;
       const target = joinUpstream(upstreamBaseUrl, request.url ?? '/');
       const headers = new Headers();
       for (const [name, value] of Object.entries(request.headers)) {
@@ -616,7 +623,7 @@ async function startMeteringProxy(
       const upstream = await fetch(target, {
         method: request.method,
         headers,
-        body: body.length === 0 ? undefined : new Uint8Array(body),
+        body: projected.body.length === 0 ? undefined : new Uint8Array(projected.body),
       });
       response.statusCode = upstream.status;
       upstream.headers.forEach((value, name) => {
@@ -666,6 +673,7 @@ async function startMeteringProxy(
     admittedRequestCount: () => admittedRequests,
     usageRequestCount: () => usageRequests,
     usageComplete: () => admittedRequests > 0 && usageRequests === admittedRequests,
+    removedWebToolCount: () => removedWebTools,
     close: async () => {
       await Promise.allSettled([...active]);
       await closeServer(server);

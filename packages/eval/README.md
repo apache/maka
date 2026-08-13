@@ -34,4 +34,13 @@ remains available when context budget pruning creates an archive placeholder. Lo
 triggers and product task, goal, scheduling, skill, interaction, background-control, and parent-agent
 tools are outside this profile and must not drift into a benchmark run.
 
+Every benchmark subject removes `WebSearch`, `WebFetch`, and `FetchURL` from the provider-visible
+tool list. Maka enforces that through its Hosted Execution profile; external harnesses pass through
+the Eval metering proxy, which structurally removes named and provider-native web tools from JSON
+requests. Shell networking remains enabled. The configured HTTPS egress proxy blocks only
+Terminal-Bench repository paths for `harbor-framework/terminal-bench*` and
+`NousResearch/terminal-bench*` on GitHub, the GitHub repositories API, raw content, and codeload.
+The machine must provide `MAKA_EVAL_EGRESS_PROXY_URL` and a trusted CA file through
+`MAKA_EVAL_EGRESS_PROXY_CA_CERT_PATH`.
+
 The experiment directory contains the frozen `experiment.json` and append-only attempt records. There is no second mutable results file. A leftover `.writer.lock` means the previous writer did not complete; remove it only after proving that no writer process remains.

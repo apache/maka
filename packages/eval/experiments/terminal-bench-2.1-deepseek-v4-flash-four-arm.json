@@ -28,7 +28,17 @@
         "https_proxy",
         "no_proxy"
       ],
+      "egressProxy": {
+        "urlEnv": "MAKA_EVAL_EGRESS_PROXY_URL",
+        "caCertificatePathEnv": "MAKA_EVAL_EGRESS_PROXY_CA_CERT_PATH",
+        "containerCaPath": "/opt/maka-egress/mitmproxy-ca-cert.pem"
+      },
       "mounts": [
+        {
+          "sourceEnv": "MAKA_EVAL_EGRESS_PROXY_CA_CERT_PATH",
+          "target": "/opt/maka-egress/mitmproxy-ca-cert.pem",
+          "readOnly": true
+        },
         {
           "sourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
           "target": "/opt/maka-agent",
@@ -69,6 +79,7 @@
         "runtimeHostsPath": "/tmp/maka-runtime-hosts",
         "connectionSlug": "env-openai",
         "baseUrl": "https://api.deepseek.com",
+        "webTools": "disabled",
         "model": "deepseek-v4-flash",
         "thinkingLevel": "max",
         "permissionMode": "bypass",
@@ -114,6 +125,10 @@
           "--print",
           "--output-format",
           "json",
+          "--disallowedTools",
+          "WebSearch",
+          "WebFetch",
+          "FetchURL",
           "--dangerously-skip-permissions",
           "--model",
           "deepseek-v4-flash",

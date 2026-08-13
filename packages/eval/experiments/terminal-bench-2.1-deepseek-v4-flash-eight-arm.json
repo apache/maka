@@ -29,7 +29,17 @@
         "no_proxy",
         "SSH_AUTH_SOCK"
       ],
+      "egressProxy": {
+        "urlEnv": "MAKA_EVAL_EGRESS_PROXY_URL",
+        "caCertificatePathEnv": "MAKA_EVAL_EGRESS_PROXY_CA_CERT_PATH",
+        "containerCaPath": "/opt/maka-egress/mitmproxy-ca-cert.pem"
+      },
       "mounts": [
+        {
+          "sourceEnv": "MAKA_EVAL_EGRESS_PROXY_CA_CERT_PATH",
+          "target": "/opt/maka-egress/mitmproxy-ca-cert.pem",
+          "readOnly": true
+        },
         {
           "sourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
           "target": "/opt/maka-agent",
@@ -147,6 +157,7 @@
           "--disallowedTools",
           "WebSearch",
           "WebFetch",
+          "FetchURL",
           "--dangerously-skip-permissions",
           "--model",
           "deepseek-v4-flash",
@@ -245,7 +256,7 @@
           "--cwd",
           "{{task.cwd}}",
           "--disallowedTools",
-          "WebSearch,WebFetch",
+          "WebSearch,WebFetch,FetchURL",
           "--prompt",
           "{{task.input}}"
         ]

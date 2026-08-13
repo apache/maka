@@ -773,16 +773,31 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
       config: { args?: string[]; webTools?: string; toolProfile?: string };
     }>;
     execution: { maxConcurrentTaskGroups: number };
-    executor: { config: { mounts: Array<{ target: string }> } };
+    executor: {
+      config: {
+        mounts: Array<{ target: string }>;
+        egressProxy: {
+          urlEnv: string;
+          caCertificatePathEnv: string;
+          containerCaPath: string;
+        };
+      };
+    };
   };
   assert.equal(spec.execution.maxConcurrentTaskGroups, 16);
   assert.deepEqual(
     spec.subjects.map(({ id }) => id),
     ['maka', 'codex', 'claude-code', 'reasonix', 'opencode', 'kimi-code', 'zcode', 'pi'],
   );
+  assert.deepEqual(spec.executor.config.egressProxy, {
+    urlEnv: 'MAKA_EVAL_EGRESS_PROXY_URL',
+    caCertificatePathEnv: 'MAKA_EVAL_EGRESS_PROXY_CA_CERT_PATH',
+    containerCaPath: '/opt/maka-egress/mitmproxy-ca-cert.pem',
+  });
   assert.deepEqual(
     spec.executor.config.mounts.map(({ target }) => target),
     [
+      '/opt/maka-egress/mitmproxy-ca-cert.pem',
       '/opt/maka-agent',
       '/opt/maka-node-toolchain',
       '/opt/maka-codex-toolchain',
@@ -808,7 +823,7 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
       zcode.config.args.indexOf('--disallowedTools'),
       zcode.config.args.indexOf('--disallowedTools') + 2,
     ),
-    ['--disallowedTools', 'WebSearch,WebFetch'],
+    ['--disallowedTools', 'WebSearch,WebFetch,FetchURL'],
   );
   assert.equal(pi.config.args?.includes('/opt/maka-pi-toolchain/bin/pi'), true);
   assert.equal(pi.config.args?.includes('--mode'), true);
