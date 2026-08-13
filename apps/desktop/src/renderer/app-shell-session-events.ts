@@ -133,11 +133,11 @@ export function createAppShellSessionEventHandlers(options: {
     if (!optimisticSteeringIds.delete(optimisticSteeringKey(sessionId, messageId))) return;
     setLiveTurnBySession((current) => {
       const projection = current[sessionId];
-      if (!projection?.steering?.some((message) => message.id === messageId)) return current;
-      const steering = projection.steering.filter((message) => message.id !== messageId);
+      if (!projection?.pendingSteering?.some((message) => message.id === messageId)) return current;
+      const pendingSteering = projection.pendingSteering.filter((message) => message.id !== messageId);
       const nextProjection = { ...projection };
-      if (steering.length > 0) nextProjection.steering = steering;
-      else delete nextProjection.steering;
+      if (pendingSteering.length > 0) nextProjection.pendingSteering = pendingSteering;
+      else delete nextProjection.pendingSteering;
       return { ...current, [sessionId]: nextProjection };
     });
   }

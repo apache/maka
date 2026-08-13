@@ -500,7 +500,7 @@ describe('single live-turn handoff', () => {
 
     // The steer also lands in the live projection (surfaced as an interjection
     // by the overlay's steering projection)…
-    assert.equal(liveTurns.get()['session-1']?.steering?.[0]?.id, 'user-steer-1');
+    assert.equal(liveTurns.get()['session-1']?.pendingSteering?.[0]?.id, 'user-steer-1');
     // …and the transcript refresh fires for the owning session.
     assert.deepEqual(refreshes, ['session-1']);
     assert.deepEqual(consumed, [{ sessionId: 'session-1', messageId: 'user-steer-1' }]);
@@ -541,11 +541,10 @@ describe('single live-turn handoff', () => {
       handlers.projectOptimisticSteering('session-1', 'steer-1', '用英文回答', 2),
       true,
     );
-    assert.deepEqual(liveTurns.get()['session-1']?.steering, [{
+    assert.deepEqual(liveTurns.get()['session-1']?.pendingSteering, [{
       id: 'steer-1',
-      text: '用英文回答',
+      content: { text: '用英文回答', displayText: '用英文回答' },
       ts: 2,
-      beforeStepIds: ['assistant-before'],
     }]);
 
     handlers.handleEvent('session-1', {
@@ -556,16 +555,16 @@ describe('single live-turn handoff', () => {
       messageId: 'steer-1',
       content: { text: '用英文回答' },
     });
-    assert.equal(liveTurns.get()['session-1']?.steering?.length, 1);
+    assert.equal(liveTurns.get()["session-1"]?.pendingSteering?.length, 1);
     assert.deepEqual(consumed, ['steer-1']);
     handlers.rollbackOptimisticSteering('session-1', 'steer-1');
-    assert.equal(liveTurns.get()['session-1']?.steering?.length, 1);
+    assert.equal(liveTurns.get()["session-1"]?.pendingSteering?.length, 1);
 
     handlers.projectOptimisticSteering('session-1', 'steer-failed', '这条会失败', 4);
-    assert.equal(liveTurns.get()['session-1']?.steering?.length, 2);
+    assert.equal(liveTurns.get()["session-1"]?.pendingSteering?.length, 2);
     handlers.rollbackOptimisticSteering('session-1', 'steer-failed');
     assert.deepEqual(
-      liveTurns.get()['session-1']?.steering?.map((message) => message.id),
+      liveTurns.get()["session-1"]?.pendingSteering?.map((message) => message.id),
       ['steer-1'],
     );
   });

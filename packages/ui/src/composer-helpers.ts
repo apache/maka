@@ -17,7 +17,7 @@
  * panel in isolation.
  */
 
-import type { AttachmentRef, QuoteRef } from '@maka/core';
+import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 
 /**
  * Maximum number of characters retained for a single draft. Drafts
