@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -704,6 +704,11 @@ test('eight-arm spec and wrappers freeze the working provider contracts', async 
     assert.match(
       await readFile(join(root, 'etc/claude-code/managed-settings.json'), 'utf8'),
       /WebSearch.*WebFetch/u,
+    );
+    assert.equal((await stat(join(root, 'etc/claude-code'))).mode & 0o777, 0o755);
+    assert.equal(
+      (await stat(join(root, 'etc/claude-code/managed-settings.json'))).mode & 0o777,
+      0o644,
     );
     assert.match(
       await readFile(join(root, 'tmp/maka-eval-reasonix/config.toml'), 'utf8'),

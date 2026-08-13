@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, rmSync, statSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { basename, dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
@@ -107,6 +107,8 @@ try {
         usageRequests: proxy.usageRequestCount(),
         usageComplete: proxy.usageComplete(),
         removedWebTools: proxy.removedWebToolCount(),
+        models: proxy.requestModels(),
+        toolNames: proxy.observedToolNames(),
       },
       fileArtifact('wrapper-state', statePath, profile),
     );
@@ -593,6 +595,8 @@ async function startMeteringProxy(
   usageRequestCount(): number;
   usageComplete(): boolean;
   removedWebToolCount(): number;
+  requestModels(): readonly string[];
+  observedToolNames(): readonly string[];
   close(): Promise<void>;
 }> {
   const total = zeroUsage();
@@ -601,6 +605,8 @@ async function startMeteringProxy(
   let admittedRequests = 0;
   let usageRequests = 0;
   let removedWebTools = 0;
+  const requestModels = new Set<string>();
+  const observedToolNames = new Set<string>();
   const dispatcher = process.env.HTTPS_PROXY ? new ProxyAgent(process.env.HTTPS_PROXY) : undefined;
   const active = new Set<Promise<void>>();
   const server = createServer((request, response) => {
@@ -608,6 +614,8 @@ async function startMeteringProxy(
       requests += 1;
       const projected = removeEvalWebTools(await readRequest(request));
       removedWebTools += projected.removed;
+      if (projected.model) requestModels.add(projected.model);
+      for (const name of projected.toolNames) observedToolNames.add(name);
       const target = joinUpstream(upstreamBaseUrl, request.url ?? '/');
       const headers = new Headers();
       for (const [name, value] of Object.entries(request.headers)) {
@@ -677,6 +685,8 @@ async function startMeteringProxy(
     usageRequestCount: () => usageRequests,
     usageComplete: () => admittedRequests > 0 && usageRequests === admittedRequests,
     removedWebToolCount: () => removedWebTools,
+    requestModels: () => [...requestModels].sort(),
+    observedToolNames: () => [...observedToolNames].sort(),
     close: async () => {
       await Promise.allSettled([...active]);
       await closeServer(server);
@@ -838,8 +848,11 @@ function fileArtifact(kind: string, path: string, selected: Profile): Record<str
 }
 
 async function writePolicy(directory: string, name: string, contents: string): Promise<void> {
-  await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, name), contents);
+  await mkdir(directory, { recursive: true, mode: 0o755 });
+  await chmod(directory, 0o755);
+  const path = join(directory, name);
+  await writeFile(path, contents, { mode: 0o644 });
+  await chmod(path, 0o644);
 }
 
 function rooted(root: string, absolutePath: string): string {

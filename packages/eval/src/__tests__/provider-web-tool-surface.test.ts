@@ -20,6 +20,8 @@ test('Eval removes named and provider-native web tools from provider requests', 
   );
 
   assert.equal(projected.removed, 5);
+  assert.equal(projected.model, 'deepseek-v4-flash');
+  assert.deepEqual(projected.toolNames, ['Read']);
   assert.deepEqual(JSON.parse(projected.body.toString('utf8')), {
     model: 'deepseek-v4-flash',
     tools: [{ type: 'function', function: { name: 'Read' } }],
