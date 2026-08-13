@@ -1250,7 +1250,7 @@ export class AgentGraphCoordinator {
     }
     const page = await this.#input.epochStore.listAgentGraphEpochPage({
       rootSessionId,
-      beforeEpoch: beforeEpoch ?? current.epoch,
+      beforeEpoch: Math.min(beforeEpoch ?? current.epoch, current.epoch),
       limit: 1,
     });
     const selected: AgentGraphSelectedResultInput[] = [];

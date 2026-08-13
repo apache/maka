@@ -197,6 +197,9 @@ export async function reconcileAgentGraphSchedule(
       snapshot.observation.projection.records.map((record) => [record.recordId, record]),
     );
     for (const [recordId, record] of snapshot.selectedResultRecords) {
+      if (committedRecords.has(recordId)) {
+        throw new Error(`Selected graph result id ${recordId} collides with the current graph`);
+      }
       committedRecords.set(recordId, record);
     }
     const deferredWork: AgentGraphScheduleDeferredWork[] = [];
