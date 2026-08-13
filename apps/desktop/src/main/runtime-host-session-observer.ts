@@ -19,6 +19,8 @@ import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
   type DesktopTranscriptBatch,
   type DesktopTranscriptBatchPayload,
   type DesktopTranscriptOpenResult,
@@ -1053,7 +1055,7 @@ export class RuntimeHostSessionObserver {
             this.#clearPendingTranscriptChange(consumer);
             const replica = state.replica;
             if (!replica?.resident || state.closing) return;
-            const deliveryBytes = replica.residentBytes;
+            const deliveryBytes = resetDeliveryWorkingSetBytes(replica.residentBytes);
             if (!this.#adjustTranscriptDeliveryBytes(consumer, deliveryBytes)) {
               throw new Error('Desktop transcript delivery capacity was reached');
             }
@@ -1381,11 +1383,21 @@ function requireTranscriptRangeBytes(value: number): number {
   if (
     !Number.isSafeInteger(value) ||
     value < 1 ||
-    value > DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES
+    value > DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES
   ) {
     throw new Error('Invalid Desktop transcript range byte limit');
   }
   return value;
+}
+
+function resetDeliveryWorkingSetBytes(residentBytes: number): number {
+  return (
+    Math.min(residentBytes, DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES) +
+    Math.min(
+      residentBytes,
+      (TRANSCRIPT_DELIVERY_WINDOW * 2 + 1) * DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+    )
+  );
 }
 
 function sameGoal(

@@ -9,7 +9,7 @@ export interface DesktopTranscriptRangeController {
   readonly store: DesktopTranscriptRangeStore;
   ready(): Promise<void>;
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean>;
-  loadBefore(): Promise<void>;
+  loadBefore(maxBytes?: number): Promise<void>;
   loadAround(sequence: number): Promise<void>;
   loadLatest(): Promise<void>;
   reload(): Promise<void>;
@@ -36,10 +36,10 @@ export function createDesktopTranscriptRangeController(
       await current();
       return store.waitForDurableMessage(messageId, timeoutMs);
     },
-    async loadBefore() {
+    async loadBefore(maxBytes) {
       const range = store.range();
       if (!range.hasOlder) return;
-      await (await current()).loadBefore(range.oldestSequence);
+      await (await current()).loadBefore(range.oldestSequence, maxBytes);
     },
     async loadAround(sequence) {
       await (await current()).loadAround(sequence);

@@ -27,6 +27,12 @@ export interface RuntimeHostDesktopOwner {
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
   stopSession(ref: DesktopSessionRef): Promise<void>;
   closeTranscript(consumerId: string, targetId: number): Promise<void>;
+  acknowledgeTranscript(
+    consumerId: string,
+    generation: string,
+    deliverySequence: number,
+    targetId: number,
+  ): void;
   unobserveSession(observerId: string): Promise<void>;
   switchTarget(
     remote: DesktopRuntimeHostCandidateStartInput['remote'],
@@ -248,6 +254,20 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       [...this.#observationRegistries].map((observations) =>
         observations.closeTranscript(consumerId, targetId),
       ),
+    );
+  }
+
+  acknowledgeTranscript(
+    consumerId: string,
+    generation: string,
+    deliverySequence: number,
+    targetId: number,
+  ): void {
+    this.#activeTarget?.observations.acknowledgeTranscript(
+      consumerId,
+      generation,
+      deliverySequence,
+      targetId,
     );
   }
 

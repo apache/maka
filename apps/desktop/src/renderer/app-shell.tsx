@@ -95,6 +95,7 @@ import {
 import { McpPage } from './mcp-page';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
+import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../preload/transcript-contract.js';
 import {
   isAppUpdateInstallFailure,
   requestDownloadedAppUpdate,
@@ -218,7 +219,6 @@ type ComposerImportOwner = {
  * assistant stream slot when the primary post-commit signal is missed.
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
-const TRANSCRIPT_HISTORY_PREFETCH_PAGES = 4;
 /**
  * Module surfaces that own their whole column and render no workspace toolbar.
  * This used to be a `display: none` rule keyed on the detail panel's
@@ -2562,22 +2562,9 @@ function AppShellContent({
     setHistoryLoadPendingSessionId(sessionId);
     try {
       if (target === 'earlier') {
-        for (let page = 0; page < TRANSCRIPT_HISTORY_PREFETCH_PAGES; page += 1) {
-          if (
-            transcriptRangeRef.current !== controller ||
-            activeIdRef.current !== sessionId
-          ) break;
-          const before = controller.store.range();
-          if (!before.hasOlder) break;
-          await controller.loadBefore();
-          const after = controller.store.range();
-          if (!after.hasOlder || after.oldestSequence === before.oldestSequence) break;
-        }
+        await controller.loadBefore(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
       } else {
         await controller.loadLatest();
-      }
-      if (transcriptRangeRef.current === controller && activeIdRef.current === sessionId) {
-        setMessages([...controller.store.snapshot().messages]);
       }
     } catch (error) {
       toastApi.error(

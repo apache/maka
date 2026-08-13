@@ -387,6 +387,37 @@ test('reopens a failed transcript range with a fresh generation', async () => {
   await controller.close();
 });
 
+test('forwards a larger logical history range without changing batch size', async () => {
+  const store = new DesktopTranscriptRangeStore();
+  for (const batch of encodeDesktopTranscriptSnapshot({
+    sessionId: 'session-1',
+    generation: 'generation-1',
+    hostEpoch: 'host-1',
+    durableThrough: 1,
+    durable: [{ sequence: 1, message: assistantMessage('latest') }],
+    overlay: [],
+    hasOlder: true,
+    hasNewer: false,
+  })) store.accept(batch);
+  let request: { anchorSequence: number | null; maxBytes?: number } | undefined;
+  const controller = createDesktopTranscriptRangeController(store, async () => ({
+    sessionId: 'session-1',
+    generation: 'generation-1',
+    hostEpoch: 'host-1',
+    readThroughMessageId: 'assistant-1',
+    async loadBefore(anchorSequence, maxBytes) {
+      request = { anchorSequence, maxBytes };
+    },
+    async loadAround() {},
+    async close() {},
+  }));
+
+  await controller.loadBefore(512 * 1024);
+
+  assert.deepEqual(request, { anchorSequence: 1, maxBytes: 512 * 1024 });
+  await controller.close();
+});
+
 test('waits for the required durable message on the current transcript generation', async () => {
   const store = new DesktopTranscriptRangeStore();
   const identity = {

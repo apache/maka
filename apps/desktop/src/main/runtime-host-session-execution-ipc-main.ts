@@ -62,7 +62,6 @@ export interface RuntimeHostSessionExecutionIpcDeps {
   observer: RuntimeHostSessionObserver;
   observations: Pick<
     RuntimeHostSessionObservationRegistry,
-    | 'acknowledgeTranscript'
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
     | 'observe'
@@ -141,17 +140,6 @@ export function registerRuntimeHostSessionExecutionIpc(
         event.sender as RuntimeHostTranscriptTarget,
       );
       return result;
-    },
-  );
-  ipcMain.handle(
-    'sessions:transcript:ack',
-    (event, consumerId: unknown, generation: unknown, deliverySequence: unknown) => {
-      deps.observations.acknowledgeTranscript(
-        requiredId(consumerId, 'Transcript consumer'),
-        requiredId(generation, 'Transcript generation'),
-        requiredSequence(deliverySequence, 'Transcript delivery'),
-        event.sender.id,
-      );
     },
   );
   ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
