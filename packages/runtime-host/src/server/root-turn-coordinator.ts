@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { BackendStopMode } from '@maka/core/backend-types';
+import type { AgentGraphInstanceStore } from '@maka/core/agent-graph-instance';
 import type { AgentRunHeader, RootExecutionDescriptor } from '@maka/core/agent-run';
 import {
   INLINE_REFERENCE_MAX_COUNT,
@@ -16,7 +17,10 @@ import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
-import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import {
+  agentGraphIdForRootSession,
+  agentGraphIdForRootSessionEpoch,
+} from '@maka/runtime/stream-graph-coordinator';
 import {
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
@@ -298,6 +302,12 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     ) => Promise<void>,
     attachmentValidator?: HostTurnAttachmentValidator,
     prepareSkillInvocation?: HostSkillInvocationPreparer,
+    private readonly graphInstances?: Pick<
+      AgentGraphInstanceStore,
+      | 'getOrCreateActiveAgentGraphInstance'
+      | 'readActiveAgentGraphInstance'
+      | 'readLatestAgentGraphInstance'
+    >,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);
@@ -928,11 +938,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       mode?: BackendStopMode;
     } = {},
   ): Promise<void> {
-    const graphId = agentGraphIdForRootSession(sessionId);
     const identity = await this.runCommand(() =>
       this.sessionAdmission.run(sessionId, () => {
         const active = this.#executions.get(sessionId);
-        if (!active || !activeRootOwnsAgentGraph(active, graphId)) return undefined;
+        if (!active?.graphOwnerId) return undefined;
         return {
           sessionId,
           turnId: active.turnId,
@@ -2346,9 +2355,22 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           resolveEffectiveOrchestration(session.orchestrationMode, undefined).mode)
         : resolveEffectiveOrchestration(session.orchestrationMode, admission.turnOrchestration)
             .mode;
-    return mode === 'graph' || mode === 'swarm'
-      ? agentGraphIdForRootSession(admission.sessionId)
-      : undefined;
+    if (mode !== 'graph' && mode !== 'swarm') return undefined;
+    if (admission.execution.kind === 'agent_graph_supervisor_wake') {
+      return admission.execution.graphId;
+    }
+    if (!this.graphInstances) return agentGraphIdForRootSession(admission.sessionId);
+    const active = await this.graphInstances.readActiveAgentGraphInstance(admission.sessionId);
+    if (active) return active.graphId;
+    const latest = await this.graphInstances.readLatestAgentGraphInstance(admission.sessionId);
+    const sequence = (latest?.sequence ?? 0) + 1;
+    return (
+      await this.graphInstances.getOrCreateActiveAgentGraphInstance({
+        schemaVersion: 1,
+        graphId: agentGraphIdForRootSessionEpoch(admission.sessionId, sequence),
+        rootSessionId: admission.sessionId,
+      })
+    ).instance.graphId;
   }
 
   private async assertRunMatchesDurableExecution(
@@ -2699,10 +2721,6 @@ function isTerminalSnapshot(snapshot: TurnSnapshot): boolean {
     snapshot.status === 'failed' ||
     snapshot.status === 'cancelled'
   );
-}
-
-function activeRootOwnsAgentGraph(active: ActiveRootTurn, graphId: string): boolean {
-  return active.graphOwnerId === graphId;
 }
 
 function isShutdownCancelledBackendStart(error: unknown): boolean {

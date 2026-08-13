@@ -1,10 +1,11 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 23;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 24;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
 export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
+  'agent_graph_instances',
   'agent_graph_intent_claims',
   'agent_graph_schedule_updates',
   'agent_graph_operator_provisions',
@@ -877,7 +878,56 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
         REFERENCES session_message_payloads(session_id, sequence)
         ON DELETE CASCADE
     ) WITHOUT ROWID;
+  `,
+  ],
+  [
+    24,
+    `
+    CREATE TABLE IF NOT EXISTS agent_graph_instances (
+      graph_id TEXT PRIMARY KEY,
+      root_session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence > 0),
+      status TEXT NOT NULL CHECK (status IN ('open', 'finished')),
+      created_at INTEGER NOT NULL CHECK (created_at >= 0),
+      finished_at INTEGER,
+      CHECK (
+        (status = 'open' AND finished_at IS NULL)
+        OR (status = 'finished' AND finished_at IS NOT NULL AND finished_at >= created_at)
+      ),
+      UNIQUE(root_session_id, sequence)
+    );
 
+    CREATE UNIQUE INDEX IF NOT EXISTS agent_graph_instances_one_open_per_root
+      ON agent_graph_instances(root_session_id)
+      WHERE status = 'open';
+
+    INSERT OR IGNORE INTO agent_graph_instances(
+      graph_id,
+      root_session_id,
+      sequence,
+      status,
+      created_at,
+      finished_at
+    )
+    SELECT
+      updates.graph_id,
+      (
+        SELECT first_update.source_session_id
+        FROM agent_graph_schedule_updates first_update
+        WHERE first_update.graph_id = updates.graph_id
+        ORDER BY first_update.revision ASC
+        LIMIT 1
+      ),
+      1,
+      CASE WHEN MAX(updates.closes_graph) = 1 THEN 'finished' ELSE 'open' END,
+      MIN(updates.committed_at),
+      CASE
+        WHEN MAX(updates.closes_graph) = 1
+        THEN MAX(CASE WHEN updates.closes_graph = 1 THEN updates.committed_at END)
+        ELSE NULL
+      END
+    FROM agent_graph_schedule_updates updates
+    GROUP BY updates.graph_id;
   `,
   ],
 ]);

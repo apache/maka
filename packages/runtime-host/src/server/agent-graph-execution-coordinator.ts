@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { AgentGraphInstanceStore } from '@maka/core/agent-graph-instance';
 import { normalizeMessageContent } from '@maka/core/events';
 import { type UserMessageInput } from '@maka/core/runtime-inputs';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
@@ -32,6 +33,7 @@ type AgentGraphRuntime = Pick<SessionManager, 'compactSession' | 'sendMessage'>;
 export interface HostAgentGraphExecutionCoordinatorOptions {
   readonly executions: AgentGraphExecutionAuthority;
   readonly runtime: AgentGraphRuntime;
+  readonly graphInstances?: Pick<AgentGraphInstanceStore, 'listAgentGraphInstances'>;
   readonly newId?: () => string;
 }
 
@@ -39,11 +41,13 @@ export interface HostAgentGraphExecutionCoordinatorOptions {
 export class HostAgentGraphExecutionCoordinator {
   readonly #executions: AgentGraphExecutionAuthority;
   readonly #runtime: AgentGraphRuntime;
+  readonly #graphInstances: Pick<AgentGraphInstanceStore, 'listAgentGraphInstances'> | undefined;
   readonly #newId: () => string;
 
   constructor(options: HostAgentGraphExecutionCoordinatorOptions) {
     this.#executions = options.executions;
     this.#runtime = options.runtime;
+    this.#graphInstances = options.graphInstances;
     this.#newId = options.newId ?? randomUUID;
   }
 
@@ -53,7 +57,7 @@ export class HostAgentGraphExecutionCoordinator {
     abortSignal: AbortSignal,
     isCurrent: () => Promise<boolean>,
   ): Promise<AgentGraphSupervisorTurnOutcome> {
-    assertAgentGraphInput(sessionId, input);
+    await assertAgentGraphInput(sessionId, input, this.#graphInstances);
     const origin = input.origin;
     if (origin?.kind !== 'agent_graph') {
       throw new RuntimeMessageAuthorityInvariantError('Agent Graph execution lost its origin');
@@ -172,10 +176,21 @@ export class HostAgentGraphExecutionCoordinator {
   }
 }
 
-function assertAgentGraphInput(sessionId: string, input: UserMessageInput): void {
+async function assertAgentGraphInput(
+  sessionId: string,
+  input: UserMessageInput,
+  graphInstances?: Pick<AgentGraphInstanceStore, 'listAgentGraphInstances'>,
+): Promise<void> {
+  const ownedGraphIds = new Set(
+    graphInstances
+      ? (await graphInstances.listAgentGraphInstances(sessionId)).map(
+          (instance) => instance.graphId,
+        )
+      : [agentGraphIdForRootSession(sessionId)],
+  );
   if (
     input.origin?.kind !== 'agent_graph' ||
-    input.origin.graphId !== agentGraphIdForRootSession(sessionId) ||
+    !ownedGraphIds.has(input.origin.graphId) ||
     input.turnOrchestration?.mode !== 'graph' ||
     input.turnOrchestration.source !== 'host_api'
   ) {

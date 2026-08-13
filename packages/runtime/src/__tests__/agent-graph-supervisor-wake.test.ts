@@ -491,6 +491,32 @@ describe('Agent Graph supervisor wake delivery', () => {
     }
   });
 
+  test('recovers a historical wake from its exact graph instance snapshot', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const requestedGraphIds: Array<string | undefined> = [];
+    await createRunningAttempt(store);
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async (_rootSessionId, graphId) => {
+        requestedGraphIds.push(graphId);
+        return snapshot({ graphId: graphId ?? 'graph-current' });
+      },
+      startTurn: async (_sessionId, input) => ({ kind: 'completed', turnId: input.turnId }),
+      inspectAttempt: async () => 'failed',
+      newId: sequentialIds(),
+    });
+    try {
+      await coordinator.recover();
+      await coordinator.waitForIdle();
+      assert.ok(requestedGraphIds.length > 0);
+      assert.ok(requestedGraphIds.every((graphId) => graphId === 'graph-1'));
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
   test('converges a completed crash-window AgentRun without duplicate delivery', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     await createRunningAttempt(store);

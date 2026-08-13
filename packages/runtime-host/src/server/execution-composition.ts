@@ -4,10 +4,7 @@ import { emptyPlanSessionState } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
 import { isDeepResearchSession } from '@maka/core/session';
 import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
-import {
-  AgentGraphCoordinator,
-  agentGraphIdForRootSession,
-} from '@maka/runtime/stream-graph-coordinator';
+import { AgentGraphCoordinator } from '@maka/runtime/stream-graph-coordinator';
 import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-supervisor-wake';
 import {
   BackendRegistry,
@@ -583,8 +580,12 @@ export async function createExecutionRuntimeHostComposition(
         context.requestDrain();
       },
       onSandboxBoundarySettled: (sessionId) =>
-        notifySandboxBoundaryGraphWake(sessionId, stores.sessionStore, (rootSessionId) =>
-          requireGraphSupervisorWake(graphSupervisorWake).notifyPermissionResponse(rootSessionId),
+        notifySandboxBoundaryGraphWake(
+          sessionId,
+          stores.sessionStore,
+          openedGraphControlStore,
+          (rootSessionId) =>
+            requireGraphSupervisorWake(graphSupervisorWake).notifyPermissionResponse(rootSessionId),
         ),
     });
     memory = new HostMemoryCoordinator({
@@ -910,11 +911,15 @@ export async function createExecutionRuntimeHostComposition(
       runtime: manager,
       newId: randomUUID,
       acquireResidency: () => context.acquireResidency('agent-graph'),
-      onReconciliation: (rootSessionId, result) => {
-        void requireGraphSupervisorWake(graphSupervisorWake).notify(rootSessionId, result);
+      onReconciliation: (rootSessionId, result, graphId) => {
+        void requireGraphSupervisorWake(graphSupervisorWake).notify(rootSessionId, result, graphId);
       },
-      onCheckpoint: (rootSessionId) => {
-        void requireGraphSupervisorWake(graphSupervisorWake).notify(rootSessionId);
+      onCheckpoint: (rootSessionId, graphId) => {
+        void requireGraphSupervisorWake(graphSupervisorWake).notify(
+          rootSessionId,
+          undefined,
+          graphId,
+        );
       },
     });
     graphClient = new HostAgentGraphCoordinator({
@@ -1016,6 +1021,7 @@ export async function createExecutionRuntimeHostComposition(
           host: buildHostCapabilitiesFromBinding(toolNames),
         });
       },
+      openedGraphControlStore,
     );
     const coordinator = rootCoordinator;
     const contextOperations = new HostContextCoordinator({
@@ -1036,12 +1042,13 @@ export async function createExecutionRuntimeHostComposition(
     const graphExecutions = new HostAgentGraphExecutionCoordinator({
       executions: coordinator,
       runtime: manager,
+      graphInstances: openedGraphControlStore,
     });
     graphSupervisorWake = new AgentGraphSupervisorWakeCoordinator({
       activityRegistry: graphWakeActivities,
       wakeStore: openedGraphControlStore,
-      readSnapshot: (rootSessionId) =>
-        requireGraphCoordinator(graphCoordinator).getSnapshot(rootSessionId),
+      readSnapshot: (rootSessionId, graphId) =>
+        requireGraphCoordinator(graphCoordinator).getSnapshot(rootSessionId, {}, graphId),
       startTurn: (sessionId, input, _activity, abortSignal, isCurrent) =>
         graphExecutions.run(sessionId, input, abortSignal, isCurrent),
       inspectAttempt: async (rootSessionId, attemptId, turnId) => {
@@ -1212,9 +1219,7 @@ export async function createExecutionRuntimeHostComposition(
         await openedDeepResearchStore.purgeSessionState(sessionId);
       },
       purgeAgentGraphState: async (sessionId) => {
-        await openedGraphControlStore.purgeAgentGraphControlState(
-          agentGraphIdForRootSession(sessionId),
-        );
+        await openedGraphControlStore.purgeAgentGraphControlStateForRootSession(sessionId);
       },
       worktrees: worktreeChildExecutor,
       requestDrain: context.requestDrain,

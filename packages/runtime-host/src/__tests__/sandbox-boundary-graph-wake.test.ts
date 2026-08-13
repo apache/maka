@@ -6,35 +6,39 @@ import {
   sandboxBoundaryGraphWakeRoot,
 } from '../server/sandbox-boundary-graph-wake.js';
 
-test('routes sandbox boundary graph wakes to the durable root Session', () => {
-  assert.equal(sandboxBoundaryGraphWakeRoot({ id: 'root-session' }), 'root-session');
+test('routes sandbox boundary graph wakes to the durable root Session', async () => {
+  const graphInstances = instanceStore('root-session');
+  assert.equal(await sandboxBoundaryGraphWakeRoot({ id: 'root-session' }), 'root-session');
   assert.equal(
-    sandboxBoundaryGraphWakeRoot({
+    await sandboxBoundaryGraphWakeRoot({
       id: 'ordinary-child',
       subagentParent: subagentParent('root-session'),
     }),
     undefined,
   );
   assert.equal(
-    sandboxBoundaryGraphWakeRoot({
-      id: 'graph-operator',
-      subagentParent: {
-        ...subagentParent('root-session'),
-        graph: {
-          graphId: agentGraphIdForRootSession('root-session'),
-          workId: 'work-1',
-          operatorId: 'operator-1',
+    await sandboxBoundaryGraphWakeRoot(
+      {
+        id: 'graph-operator',
+        subagentParent: {
+          ...subagentParent('root-session'),
+          graph: {
+            graphId: agentGraphIdForRootSession('root-session'),
+            workId: 'work-1',
+            operatorId: 'operator-1',
+          },
         },
       },
-    }),
+      graphInstances,
+    ),
     'root-session',
   );
 });
 
-test('rejects graph operator lineage that is not owned by its parent Session', () => {
-  assert.throws(
-    () =>
-      sandboxBoundaryGraphWakeRoot({
+test('rejects graph operator lineage that is not owned by its parent Session', async () => {
+  await assert.rejects(
+    sandboxBoundaryGraphWakeRoot(
+      {
         id: 'graph-operator',
         subagentParent: {
           ...subagentParent('root-session'),
@@ -44,7 +48,9 @@ test('rejects graph operator lineage that is not owned by its parent Session', (
             operatorId: 'operator-1',
           },
         },
-      }),
+      },
+      instanceStore('root-session'),
+    ),
     /does not match root Session/,
   );
 });
@@ -81,8 +87,9 @@ test('reads durable operator lineage before notifying only its root graph', asyn
     wakes.push(sessionId);
   };
 
-  await notifySandboxBoundaryGraphWake('graph-operator', reader, notify);
-  await notifySandboxBoundaryGraphWake('ordinary-child', reader, notify);
+  const graphInstances = instanceStore('root-session');
+  await notifySandboxBoundaryGraphWake('graph-operator', reader, graphInstances, notify);
+  await notifySandboxBoundaryGraphWake('ordinary-child', reader, graphInstances, notify);
 
   assert.deepEqual(reads, ['graph-operator', 'ordinary-child']);
   assert.deepEqual(wakes, ['root-session']);
@@ -98,5 +105,23 @@ function subagentParent(parentSessionId: string) {
       toolCallId: 'tool-call',
     },
     lifecycle: 'foreground' as const,
+  };
+}
+
+function instanceStore(rootSessionId: string) {
+  return {
+    listAgentGraphInstances: async (requestedRootSessionId: string) =>
+      requestedRootSessionId === rootSessionId
+        ? [
+            {
+              schemaVersion: 1 as const,
+              graphId: agentGraphIdForRootSession(rootSessionId),
+              rootSessionId,
+              sequence: 1,
+              status: 'open' as const,
+              createdAt: 1,
+            },
+          ]
+        : [],
   };
 }

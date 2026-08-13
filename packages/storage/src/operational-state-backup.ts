@@ -381,6 +381,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         'session_metadata_labels',
         'session_metadata_tombstones',
         'subagent_spawns',
+        'agent_graph_instances',
         'agent_graph_intent_claims',
         'agent_graph_schedule_updates',
         'agent_graph_operator_provisions',

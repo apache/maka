@@ -31,6 +31,7 @@ import {
   AgentGraphClientOperationError,
   AgentGraphCoordinator,
   agentGraphIdForRootSession,
+  agentGraphIdForRootSessionEpoch,
   type AgentGraphCoordinatorInput,
 } from '../stream-graph-coordinator.js';
 import { encodeAgentGraphTerminalCursor } from '../stream-graph-read-model.js';
@@ -485,6 +486,9 @@ describe('host-managed agent graph coordinator', () => {
     const graphId = agentGraphIdForRootSession('root-session');
     assert.match(graphId, /^agent_graph_[a-f0-9]{32}$/);
     assert.equal(graphId, agentGraphIdForRootSession('root-session'));
+    assert.equal(graphId, agentGraphIdForRootSessionEpoch('root-session', 1));
+    assert.notEqual(graphId, agentGraphIdForRootSessionEpoch('root-session', 2));
+    assert.deepEqual(['root-session'].map(agentGraphIdForRootSession), [graphId]);
     assert.notEqual(graphId, agentGraphIdForRootSession('other-root'));
   });
 
@@ -968,6 +972,88 @@ describe('host-managed agent graph coordinator', () => {
             (failure) => failure instanceof AggregateError && failure.errors.length === 2,
           )),
     );
+  });
+
+  test('binds later supervisor turns to a new graph instance after finish', async () => {
+    const rootSessionId = 'root-session';
+    const controlStore = createSqliteSessionMetadataStore(':memory:');
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async (sessionId: string) =>
+          ({ id: sessionId, status: 'active', isArchived: false }) as never,
+      },
+      runStore: { listSessionRuns: async () => [] },
+      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      controlStore,
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('no work should be provisioned');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('no work should be dispatched');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+      rootSessionId,
+    } as unknown as AgentGraphCoordinatorInput);
+    try {
+      const firstTools = await coordinator.toolsForSession(rootSessionId);
+      const first = await controlStore.readActiveAgentGraphInstance(rootSessionId);
+      assert.ok(first);
+      assert.equal(first.sequence, 1);
+
+      await controlStore.commitAgentGraphScheduleUpdate(
+        compileAgentGraphScheduleUpdate({
+          graphId: first.graphId,
+          input: {
+            operation: 'finish',
+            finish: { result_ids: ['published-result'], reason: 'first graph complete' },
+          },
+          context: toolContext(rootSessionId, 'run-first', 'turn-first', 'tool-finish'),
+        }),
+      );
+
+      const secondTools = await coordinator.toolsForSession(rootSessionId);
+      const second = await controlStore.readActiveAgentGraphInstance(rootSessionId);
+      assert.ok(second);
+      assert.equal(second.sequence, 2);
+      assert.notEqual(second.graphId, first.graphId);
+      assert.equal(firstTools.length, secondTools.length);
+      assert.deepEqual(
+        (await controlStore.listAgentGraphInstances(rootSessionId)).map(
+          (instance) => instance.status,
+        ),
+        ['finished', 'open'],
+      );
+
+      const staleUpdate = firstTools.find((tool) => tool.name === UPDATE_AGENT_GRAPH_TOOL_NAME);
+      assert.ok(staleUpdate);
+      await assert.rejects(
+        async () =>
+          await staleUpdate.impl(
+            {
+              operation: 'add_work',
+              add_work: [
+                {
+                  target_kind: 'new_agent',
+                  agent_id: 'implementation',
+                  instruction: 'This must not drift into the next graph.',
+                  input_ids: [],
+                  replacement_mode: 'none',
+                },
+              ],
+            },
+            toolContext(rootSessionId, 'run-stale', 'turn-stale', 'tool-stale'),
+          ),
+        /already finished/,
+      );
+      assert.deepEqual(await controlStore.listAgentGraphScheduleUpdates(second.graphId), []);
+    } finally {
+      await coordinator.close();
+      controlStore.close();
+    }
   });
 
   test('rejects concurrent yield when reconciliation only waits for uncommitted input', async () => {

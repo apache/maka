@@ -23,7 +23,8 @@ export type AgentGraphRevisionReferencePreparation =
       readonly message: string;
     };
 
-type GraphReader = Pick<AgentGraphCoordinator, 'readSessionState'>;
+type GraphReader = Pick<AgentGraphCoordinator, 'readSessionState'> &
+  Partial<Pick<AgentGraphCoordinator, 'listGraphInstances'>>;
 
 interface GraphRevisionDependencies {
   readonly agentRunStore: {
@@ -119,15 +120,31 @@ export async function prepareAgentGraphRevisionReferences(
 
   const references = new Map<string, MutableExternalChildReferences>();
   const runsByChildSession = new Map<string, ReadonlyMap<string, AgentRunHeader>>();
+  const graphIdsByRoot = new Map<string, ReadonlySet<string>>();
   for (const request of requests) {
     const childSessionId = request.childSessionId;
     const child = headersById.get(childSessionId);
     const parent = child?.subagentParent;
+    let ownedGraphIds = graphIdsByRoot.get(parent?.parentSessionId ?? '');
+    if (parent?.graph && !ownedGraphIds) {
+      try {
+        ownedGraphIds = new Set(
+          dependencies.graph.listGraphInstances
+            ? (await dependencies.graph.listGraphInstances(parent.parentSessionId)).map(
+                (instance) => instance.graphId,
+              )
+            : [agentGraphIdForRootSession(parent.parentSessionId)],
+        );
+      } catch {
+        return failure('operation_unavailable', 'Retained Agent Graph lineage is unavailable');
+      }
+      graphIdsByRoot.set(parent.parentSessionId, ownedGraphIds);
+    }
     if (
       !child ||
       !parent?.graph ||
       !familySessionIds.has(parent.parentSessionId) ||
-      parent.graph.graphId !== agentGraphIdForRootSession(parent.parentSessionId) ||
+      !ownedGraphIds?.has(parent.graph.graphId) ||
       !retainedTurnIds.has(parent.spawnedBy.parentTurnId)
     ) {
       return failure(

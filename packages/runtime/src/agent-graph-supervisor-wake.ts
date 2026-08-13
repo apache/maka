@@ -158,7 +158,7 @@ export type AgentGraphSupervisorWakeDiagnostic =
 export interface AgentGraphSupervisorWakeInput {
   activityRegistry: SessionActivityRegistry;
   wakeStore: AgentGraphSupervisorWakeStore;
-  readSnapshot(rootSessionId: string): Promise<AgentGraphClientSnapshot>;
+  readSnapshot(rootSessionId: string, graphId?: string): Promise<AgentGraphClientSnapshot>;
   startTurn(
     sessionId: string,
     input: UserMessageInput,
@@ -246,6 +246,7 @@ export class AgentGraphSupervisorWakeCoordinator {
   notify(
     rootSessionId: string,
     result?: AgentGraphScheduleReconciliationResult,
+    graphId?: string,
   ): Promise<void> | undefined {
     if (
       this.#closed ||
@@ -256,7 +257,7 @@ export class AgentGraphSupervisorWakeCoordinator {
     }
     return this.#runTracked(rootSessionId, async (abortSignal) => {
       try {
-        await this.#wake(rootSessionId, abortSignal, result);
+        await this.#wake(rootSessionId, abortSignal, result, graphId);
       } catch (error) {
         if (!this.#closed && !isAbortError(error)) {
           await notifyError(this.#input.onError, rootSessionId, error);
@@ -350,10 +351,11 @@ export class AgentGraphSupervisorWakeCoordinator {
     rootSessionId: string,
     abortSignal: AbortSignal,
     result?: AgentGraphScheduleReconciliationResult,
+    graphId?: string,
   ): Promise<void> {
     abortSignal.throwIfAborted();
     if (!(await this.#isSessionDeliverable(rootSessionId))) return;
-    const snapshot = await this.#input.readSnapshot(rootSessionId);
+    const snapshot = await this.#input.readSnapshot(rootSessionId, graphId);
     abortSignal.throwIfAborted();
     const wakeDecision = await this.#input.shouldWake?.(rootSessionId, result, snapshot);
     abortSignal.throwIfAborted();
@@ -425,7 +427,7 @@ export class AgentGraphSupervisorWakeCoordinator {
       await this.#supersedeSession(wake.rootSessionId, 'session_unavailable');
       return;
     }
-    const snapshot = await this.#input.readSnapshot(wake.rootSessionId);
+    const snapshot = await this.#input.readSnapshot(wake.rootSessionId, wake.graphId);
     if (
       this.#closed ||
       snapshot.closed ||
@@ -618,7 +620,7 @@ export class AgentGraphSupervisorWakeCoordinator {
   ): Promise<AgentGraphSupervisorContextOverflowError> {
     let currentSnapshot = fallbackSnapshot;
     try {
-      currentSnapshot = await this.#input.readSnapshot(rootSessionId);
+      currentSnapshot = await this.#input.readSnapshot(rootSessionId, fallbackSnapshot.graphId);
     } catch {
       // The checkpoint snapshot is already durable and sufficient for a bounded fallback.
     }
@@ -650,7 +652,7 @@ export class AgentGraphSupervisorWakeCoordinator {
   async #isWakeCurrent(wake: AgentGraphSupervisorWakeRecord): Promise<boolean> {
     if (this.#sessionWakesSuppressed(wake.rootSessionId)) return false;
     if (!(await this.#isSessionDeliverable(wake.rootSessionId))) return false;
-    const snapshot = await this.#input.readSnapshot(wake.rootSessionId);
+    const snapshot = await this.#input.readSnapshot(wake.rootSessionId, wake.graphId);
     return (
       !snapshot.closed &&
       snapshot.graphId === wake.graphId &&

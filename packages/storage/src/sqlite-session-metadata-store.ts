@@ -17,6 +17,13 @@ import {
   type CommitAgentGraphClientProjectionRequest,
 } from '@maka/core/agent-graph-client-projection';
 import {
+  assertCreateAgentGraphInstanceRequest,
+  decodeAgentGraphInstance,
+  type AgentGraphInstance,
+  type AgentGraphInstanceResult,
+  type CreateAgentGraphInstanceRequest,
+} from '@maka/core/agent-graph-instance';
+import {
   assessSandboxBoundaryExpansion,
   assertExecutionBoundaryCapacity,
   decodeExecutionBoundary,
@@ -2179,6 +2186,51 @@ export class SqliteSessionMetadataStore {
     return rows.map(decodeAgentGraphIntentClaim);
   }
 
+  async getOrCreateActiveAgentGraphInstance(
+    request: CreateAgentGraphInstanceRequest,
+  ): Promise<AgentGraphInstanceResult> {
+    this.assertOpen();
+    assertCreateAgentGraphInstanceRequest(request);
+    return this.transaction(() => this.getOrCreateActiveAgentGraphInstanceSync(request));
+  }
+
+  async readActiveAgentGraphInstance(
+    rootSessionId: string,
+  ): Promise<AgentGraphInstance | undefined> {
+    this.assertOpen();
+    assertGraphLookupIdentity(rootSessionId, 'root Session id');
+    return this.readActiveAgentGraphInstanceSync(rootSessionId);
+  }
+
+  async readLatestAgentGraphInstance(
+    rootSessionId: string,
+  ): Promise<AgentGraphInstance | undefined> {
+    this.assertOpen();
+    assertGraphLookupIdentity(rootSessionId, 'root Session id');
+    return this.readLatestAgentGraphInstanceSync(rootSessionId);
+  }
+
+  async listAgentGraphInstances(rootSessionId: string): Promise<AgentGraphInstance[]> {
+    this.assertOpen();
+    assertGraphLookupIdentity(rootSessionId, 'root Session id');
+    const rows = this.db
+      .prepare(`
+        SELECT
+          1 AS schemaVersion,
+          graph_id AS graphId,
+          root_session_id AS rootSessionId,
+          sequence,
+          status,
+          created_at AS createdAt,
+          finished_at AS finishedAt
+        FROM agent_graph_instances
+        WHERE root_session_id = ?
+        ORDER BY sequence ASC
+      `)
+      .all(rootSessionId) as unknown as AgentGraphInstanceRow[];
+    return rows.map(decodeAgentGraphInstanceRow);
+  }
+
   async commitAgentGraphScheduleUpdate(
     request: AgentGraphScheduleUpdateRequest,
   ): Promise<AgentGraphScheduleUpdateResult> {
@@ -2189,6 +2241,30 @@ export class SqliteSessionMetadataStore {
       if (existingById) return this.matchAgentGraphScheduleUpdate(existingById, request);
       const existingBySource = this.readAgentGraphScheduleUpdateBySourceSync(request.source);
       if (existingBySource) return this.matchAgentGraphScheduleUpdate(existingBySource, request);
+      let committedAt: number | undefined;
+      const instance = this.readAgentGraphInstanceByIdSync(request.graphId);
+      if (!instance) {
+        committedAt = this.now();
+        const created = this.getOrCreateActiveAgentGraphInstanceSync(
+          {
+            schemaVersion: 1,
+            graphId: request.graphId,
+            rootSessionId: request.source.sessionId,
+          },
+          committedAt,
+        ).instance;
+        if (created.graphId !== request.graphId) {
+          throw new AgentGraphScheduleUpdateConflictError(
+            `Root Session ${request.source.sessionId} already has active graph ${created.graphId}`,
+          );
+        }
+      } else if (instance.rootSessionId !== request.source.sessionId) {
+        throw new AgentGraphScheduleUpdateConflictError(
+          `Agent graph ${request.graphId} belongs to another root Session`,
+        );
+      } else if (instance.status === 'finished') {
+        throw new AgentGraphScheduleUpdateConflictError('Agent graph schedule is already finished');
+      }
       if (this.hasClosedAgentGraphSchedule(request.graphId)) {
         throw new AgentGraphScheduleUpdateConflictError('Agent graph schedule is already finished');
       }
@@ -2211,7 +2287,7 @@ export class SqliteSessionMetadataStore {
             }
           : {}),
         revision,
-        committedAt: this.now(),
+        committedAt: committedAt ?? this.now(),
       };
       this.db
         .prepare(
@@ -2247,6 +2323,20 @@ export class SqliteSessionMetadataStore {
           update.committedAt,
         );
       this.options.failpoint?.('after_agent_graph_schedule_update_write');
+      if (update.finish) {
+        const closed = this.db
+          .prepare(`
+            UPDATE agent_graph_instances
+            SET status = 'finished', finished_at = ?
+            WHERE graph_id = ? AND status = 'open'
+          `)
+          .run(update.committedAt, update.graphId);
+        if (closed.changes !== 1) {
+          throw new AgentGraphScheduleUpdateConflictError(
+            `Agent graph instance ${update.graphId} could not be finished`,
+          );
+        }
+      }
       return { update: decodeAgentGraphScheduleUpdate(update), created: true };
     });
   }
@@ -2641,6 +2731,36 @@ export class SqliteSessionMetadataStore {
         0,
       ),
     );
+  }
+
+  async purgeAgentGraphControlStateForRootSession(rootSessionId: string): Promise<number> {
+    this.assertOpen();
+    assertGraphLookupIdentity(rootSessionId, 'root Session id');
+    return this.transaction(() => {
+      const graphIds = (
+        this.db
+          .prepare(`
+            SELECT graph_id AS graphId
+            FROM agent_graph_instances
+            WHERE root_session_id = ?
+            ORDER BY sequence ASC
+          `)
+          .all(rootSessionId) as Array<{ graphId: string }>
+      ).map((row) => row.graphId);
+      return graphIds.reduce(
+        (total, graphId) =>
+          total +
+          AGENT_GRAPH_CONTROL_DELETE_TABLES.reduce(
+            (removed, table) =>
+              removed +
+              Number(
+                this.db.prepare(`DELETE FROM ${table} WHERE graph_id = ?`).run(graphId).changes,
+              ),
+            0,
+          ),
+        0,
+      );
+    });
   }
 
   async readAgentGraphTimelineMetadata(
@@ -4493,6 +4613,112 @@ export class SqliteSessionMetadataStore {
     }
   }
 
+  private getOrCreateActiveAgentGraphInstanceSync(
+    request: CreateAgentGraphInstanceRequest,
+    createdAtOverride?: number,
+  ): AgentGraphInstanceResult {
+    const active = this.readActiveAgentGraphInstanceSync(request.rootSessionId);
+    if (active) return { instance: active, created: false };
+
+    const reused = this.readAgentGraphInstanceByIdSync(request.graphId);
+    if (reused) {
+      if (reused.rootSessionId !== request.rootSessionId) {
+        throw new SessionMetadataConflictError(
+          `Agent graph ${request.graphId} belongs to another root Session`,
+        );
+      }
+      if (reused.status !== 'open') {
+        throw new SessionMetadataConflictError(
+          `Finished agent graph ${request.graphId} cannot be reused`,
+        );
+      }
+      return { instance: reused, created: false };
+    }
+
+    const latest = this.readLatestAgentGraphInstanceSync(request.rootSessionId);
+    const sequence = (latest?.sequence ?? 0) + 1;
+    const createdAt = createdAtOverride ?? this.now();
+    this.db
+      .prepare(`
+        INSERT INTO agent_graph_instances(
+          graph_id,
+          root_session_id,
+          sequence,
+          status,
+          created_at,
+          finished_at
+        ) VALUES (?, ?, ?, 'open', ?, NULL)
+      `)
+      .run(request.graphId, request.rootSessionId, sequence, createdAt);
+    return {
+      instance: {
+        schemaVersion: 1,
+        graphId: request.graphId,
+        rootSessionId: request.rootSessionId,
+        sequence,
+        status: 'open',
+        createdAt,
+      },
+      created: true,
+    };
+  }
+
+  private readAgentGraphInstanceByIdSync(graphId: string): AgentGraphInstance | undefined {
+    const row = this.db
+      .prepare(`
+        SELECT
+          1 AS schemaVersion,
+          graph_id AS graphId,
+          root_session_id AS rootSessionId,
+          sequence,
+          status,
+          created_at AS createdAt,
+          finished_at AS finishedAt
+        FROM agent_graph_instances
+        WHERE graph_id = ?
+      `)
+      .get(graphId) as unknown as AgentGraphInstanceRow | undefined;
+    return row ? decodeAgentGraphInstanceRow(row) : undefined;
+  }
+
+  private readActiveAgentGraphInstanceSync(rootSessionId: string): AgentGraphInstance | undefined {
+    const row = this.db
+      .prepare(`
+        SELECT
+          1 AS schemaVersion,
+          graph_id AS graphId,
+          root_session_id AS rootSessionId,
+          sequence,
+          status,
+          created_at AS createdAt,
+          finished_at AS finishedAt
+        FROM agent_graph_instances
+        WHERE root_session_id = ? AND status = 'open'
+      `)
+      .get(rootSessionId) as unknown as AgentGraphInstanceRow | undefined;
+    return row ? decodeAgentGraphInstanceRow(row) : undefined;
+  }
+
+  private readLatestAgentGraphInstanceSync(rootSessionId: string): AgentGraphInstance | undefined {
+    const row = this.db
+      .prepare(`
+        SELECT
+          1 AS schemaVersion,
+          graph_id AS graphId,
+          root_session_id AS rootSessionId,
+          sequence,
+          status,
+          created_at AS createdAt,
+          finished_at AS finishedAt
+        FROM agent_graph_instances
+        WHERE root_session_id = ?
+        ORDER BY sequence DESC
+        LIMIT 1
+      `)
+      .get(rootSessionId) as unknown as AgentGraphInstanceRow | undefined;
+    return row ? decodeAgentGraphInstanceRow(row) : undefined;
+  }
+
   private transaction<T>(operation: () => T): T {
     if (this.databaseLease) return this.databaseLease.transaction('write', operation);
     this.db.exec('BEGIN IMMEDIATE');
@@ -4659,6 +4885,16 @@ interface SubagentSpawnClaim {
 
 interface AgentGraphScheduleUpdateRow {
   payloadJson: string;
+}
+
+interface AgentGraphInstanceRow {
+  schemaVersion: number;
+  graphId: string;
+  rootSessionId: string;
+  sequence: number;
+  status: string;
+  createdAt: number;
+  finishedAt: number | null;
 }
 
 interface AgentGraphOperatorProvisionRow {
@@ -5132,6 +5368,18 @@ function encodeProjectionPayload(payload: unknown, name: string): string {
     throw new Error(`Invalid agent graph ${name} payload`);
   }
   return encoded;
+}
+
+function decodeAgentGraphInstanceRow(row: AgentGraphInstanceRow): AgentGraphInstance {
+  return decodeAgentGraphInstance({
+    schemaVersion: row.schemaVersion,
+    graphId: row.graphId,
+    rootSessionId: row.rootSessionId,
+    sequence: row.sequence,
+    status: row.status,
+    createdAt: row.createdAt,
+    ...(row.finishedAt === null ? {} : { finishedAt: row.finishedAt }),
+  });
 }
 
 function decodeAgentGraphClientProjectionRow(

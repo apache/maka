@@ -66,6 +66,7 @@ type RetirementSessionEffects = {
 };
 type RetirementGraph = {
   hasLiveSessionState(sessionId: string): Promise<boolean>;
+  listGraphInstances?(sessionId: string): Promise<readonly { readonly graphId: string }[]>;
 };
 type RetirementGraphWake = {
   hasLiveSessionState(sessionId: string): boolean;
@@ -378,7 +379,21 @@ export class HostSessionRetirementCoordinator {
         sessionRevisionFamilyId(header) === familyId,
     );
     const graphRoots = new Map(
-      roots.map((header) => [header.id, agentGraphIdForRootSession(header.id)]),
+      await Promise.all(
+        roots.map(
+          async (header) =>
+            [
+              header.id,
+              new Set(
+                this.#graph.listGraphInstances
+                  ? (await this.#graph.listGraphInstances(header.id)).map(
+                      (instance) => instance.graphId,
+                    )
+                  : [agentGraphIdForRootSession(header.id)],
+              ),
+            ] as const,
+        ),
+      ),
     );
     const members = headers
       .filter((header) => {
@@ -387,7 +402,7 @@ export class HostSessionRetirementCoordinator {
         const parent = header.subagentParent;
         return (
           parent?.graph !== undefined &&
-          parent.graph.graphId === graphRoots.get(parent.parentSessionId)
+          graphRoots.get(parent.parentSessionId)?.has(parent.graph.graphId) === true
         );
       })
       .map((header) => header.id);

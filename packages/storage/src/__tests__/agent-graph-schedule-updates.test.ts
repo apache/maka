@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import {
   AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION,
   AgentGraphScheduleClosedError,
@@ -137,6 +138,58 @@ describe('SQLite agent graph schedule updates', () => {
     }
   });
 
+  test('backfills legacy schedule ownership as the first graph instance', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-agent-graph-instance-migration-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const store = createSqliteSessionMetadataStore(path, { now: () => 77 });
+      await store.commitAgentGraphScheduleUpdate(request());
+      await store.commitAgentGraphScheduleUpdate(
+        request({
+          updateId: `graph_update_${'d'.repeat(32)}`,
+          updateFingerprint: `sha256:${'e'.repeat(64)}`,
+          source: {
+            sessionId: 'session-main',
+            runId: 'run-main',
+            turnId: 'turn-finish',
+            toolCallId: 'tool-finish',
+          },
+          addWork: [],
+          finish: { resultIds: ['result-1'], reason: 'legacy graph complete' },
+        }),
+      );
+      store.close();
+
+      const legacy = new DatabaseSync(path);
+      legacy.exec(`
+        DROP TABLE agent_graph_instances;
+        UPDATE session_metadata_schema
+        SET version = 23
+        WHERE scope = 'session_metadata';
+      `);
+      legacy.close();
+
+      const migrated = createSqliteSessionMetadataStore(path);
+      try {
+        assert.deepEqual(await migrated.listAgentGraphInstances('session-main'), [
+          {
+            schemaVersion: 1,
+            graphId: 'graph-1',
+            rootSessionId: 'session-main',
+            sequence: 1,
+            status: 'finished',
+            createdAt: 77,
+            finishedAt: 77,
+          },
+        ]);
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('linearizes scheduled admission against revision changes and closure', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(90) });
     try {
@@ -197,6 +250,103 @@ describe('SQLite agent graph schedule updates', () => {
         AgentGraphScheduleClosedError,
       );
       assert.equal((await store.listAgentGraphIntentClaims('graph-1')).length, 1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('creates sequential graph instances after finish without reopening history', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(200) });
+    try {
+      const first = await store.getOrCreateActiveAgentGraphInstance({
+        schemaVersion: 1,
+        graphId: 'graph-1',
+        rootSessionId: 'session-main',
+      });
+      assert.equal(first.created, true);
+      assert.equal(first.instance.sequence, 1);
+
+      await store.commitAgentGraphScheduleUpdate(request());
+      await store.commitAgentGraphScheduleUpdate(
+        request({
+          updateId: `graph_update_${'d'.repeat(32)}`,
+          updateFingerprint: `sha256:${'e'.repeat(64)}`,
+          source: {
+            sessionId: 'session-main',
+            runId: 'run-main',
+            turnId: 'turn-finish',
+            toolCallId: 'tool-finish',
+          },
+          addWork: [],
+          finish: { resultIds: ['result-1'], reason: 'first graph complete' },
+        }),
+      );
+
+      assert.equal(await store.readActiveAgentGraphInstance('session-main'), undefined);
+      assert.equal((await store.readLatestAgentGraphInstance('session-main'))?.status, 'finished');
+
+      const second = await store.getOrCreateActiveAgentGraphInstance({
+        schemaVersion: 1,
+        graphId: 'graph-2',
+        rootSessionId: 'session-main',
+      });
+      assert.equal(second.created, true);
+      assert.equal(second.instance.sequence, 2);
+      assert.notEqual(second.instance.graphId, first.instance.graphId);
+
+      const concurrentRetry = await store.getOrCreateActiveAgentGraphInstance({
+        schemaVersion: 1,
+        graphId: 'graph-3',
+        rootSessionId: 'session-main',
+      });
+      assert.equal(concurrentRetry.created, false);
+      assert.equal(concurrentRetry.instance.graphId, 'graph-2');
+
+      const secondUpdate = await store.commitAgentGraphScheduleUpdate(
+        request({
+          graphId: 'graph-2',
+          updateId: `graph_update_${'f'.repeat(32)}`,
+          updateFingerprint: `sha256:${'1'.repeat(64)}`,
+          source: {
+            sessionId: 'session-main',
+            runId: 'run-second',
+            turnId: 'turn-second',
+            toolCallId: 'tool-second',
+          },
+        }),
+      );
+      assert.equal(secondUpdate.update.revision, 1);
+      assert.deepEqual(
+        (await store.listAgentGraphInstances('session-main')).map((instance) => ({
+          graphId: instance.graphId,
+          sequence: instance.sequence,
+          status: instance.status,
+        })),
+        [
+          { graphId: 'graph-1', sequence: 1, status: 'finished' },
+          { graphId: 'graph-2', sequence: 2, status: 'open' },
+        ],
+      );
+
+      await assert.rejects(
+        store.commitAgentGraphScheduleUpdate(
+          request({
+            updateId: `graph_update_${'2'.repeat(32)}`,
+            updateFingerprint: `sha256:${'3'.repeat(64)}`,
+            source: {
+              sessionId: 'session-main',
+              runId: 'run-old',
+              turnId: 'turn-old',
+              toolCallId: 'tool-old',
+            },
+          }),
+        ),
+        /already finished/,
+      );
+      assert.equal(await store.purgeAgentGraphControlStateForRootSession('session-main'), 5);
+      assert.deepEqual(await store.listAgentGraphInstances('session-main'), []);
+      assert.deepEqual(await store.listAgentGraphScheduleUpdates('graph-1'), []);
+      assert.deepEqual(await store.listAgentGraphScheduleUpdates('graph-2'), []);
     } finally {
       store.close();
     }

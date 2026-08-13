@@ -1802,7 +1802,7 @@ describe('SQLite agent graph operator provisions', () => {
       assert.equal(await store.has(child.record.header.id), false);
       assert.equal((await store.listAgentGraphOperatorProvisions('graph-1')).length, 1);
 
-      assert.equal(await store.purgeAgentGraphControlState('graph-1'), 9);
+      assert.equal(await store.purgeAgentGraphControlState('graph-1'), 10);
       assert.deepEqual(await store.listAgentGraphOperatorProvisions('graph-1'), []);
       assert.deepEqual(await store.listAgentGraphScheduleUpdates('graph-1'), []);
       assert.deepEqual(await store.listAgentGraphIntentClaims('graph-1'), []);
