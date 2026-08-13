@@ -413,12 +413,28 @@ test('restores transcript consumers across Host replacement', async () => {
   await observations.attach(first);
   await observations.openTranscript('session-1', 'consumer-1', target);
   observations.detach(first);
-  await observations.attach(source('second'));
+  const second = source('second');
+  await observations.attach(second);
+  observations.detach(second);
+  await observations.closeTranscript('consumer-1');
+  const pending = observations.openTranscript('session-1', 'consumer-2', target);
+  let pendingSettled = false;
+  void pending.finally(() => {
+    pendingSettled = true;
+  });
+  await Promise.resolve();
+  assert.equal(pendingSettled, false);
+  await observations.attach(source('third'));
+  assert.equal((await pending).generation, 'third');
 
-  assert.deepEqual(opens, ['first:session-1:consumer-1', 'second:session-1:consumer-1']);
+  assert.deepEqual(opens, [
+    'first:session-1:consumer-1',
+    'second:session-1:consumer-1',
+    'third:session-1:consumer-2',
+  ]);
   assert.deepEqual(
     batches.map((batch) => batch.generation),
-    ['first', 'second'],
+    ['first', 'second', 'third'],
   );
   await observations.close();
 });
