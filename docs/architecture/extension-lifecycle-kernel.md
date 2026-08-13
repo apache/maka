@@ -52,3 +52,17 @@ If preparation, health checking, or activation fails, the candidate is disposed 
 ## Adapter boundary
 
 Future contribution adapters register their reversible work through `ExtensionActivationContext.ownEffect`. A Tool adapter, for example, will own the Tool registry entry's disposer. The kernel does not bypass Maka's existing Runtime, permission, sandbox, or Run-composition authorities; those integrations belong to later phases.
+
+## System verification
+
+`extension-lifecycle-kernel.system.test.ts` treats the exported kernel as the test boundary. It does not replace lifecycle methods or assert mock call counts. The scenarios exercise:
+
+- a real TCP server and persistent client through health check, dependency injection, provider stop, automatic consumer restart, scope disposal, and port release;
+- real `EventEmitter` listeners and timers to detect resource leaks across stop, restart, and binding removal;
+- a diamond dependency graph moving from one provider revision to another, including transitive stop and reactivation order;
+- candidate, dependent, binding-removal, and scope-disposal cleanup failures with retained ownership and retry;
+- invalid definitions, candidates, effect registration, dependency reads, binding conflicts, and missing objects through public error codes;
+- deterministic revision/composition ordering and stable composition digests across generation changes;
+- 2,000 seeded public lifecycle operations across four scopes, three dependent extensions, and two revisions while continuously checking public-state/composition agreement and exact live-resource counts.
+
+The focused fault-matrix tests remain alongside these system scenarios. Coverage is collected from the compiled JavaScript with Node's test runner so the result measures the implementation that actually executes.
