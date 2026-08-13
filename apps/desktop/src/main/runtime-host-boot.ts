@@ -601,8 +601,7 @@ owner = await startRuntimeHostDesktopOwner(
         resumeSessionCopy,
         processId: sessionCopyOwnerProcessId,
       }),
-    sendToRenderer: (channel, payload) =>
-      mainWindowController.send(channel, payload),
+    renderer: mainWindowController,
     onError: (error) =>
       console.error("[runtime-host] projection refresh failed:", error),
     registerClientIpc: registerHostClientIpc,

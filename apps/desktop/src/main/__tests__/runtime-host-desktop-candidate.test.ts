@@ -480,14 +480,16 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
       ...deps(secondIpc),
       emitSessionsChanged: (_hostId, reason, sessionId) =>
         sessionChanges.push({ reason, sessionId }),
-      sendToRenderer: (channel, _host, payload) => {
-        resyncs.push({ channel, payload });
-        if (channel === 'shell-runs:resync') {
-          terminalReattach ??= secondIpc.invoke('shell-runs:attach', {
-            sessionId: 'session-1',
-            ref,
-          });
-        }
+      renderer: {
+        send(channel, _host, payload) {
+          resyncs.push({ channel, payload });
+          if (channel === 'shell-runs:resync') {
+            terminalReattach ??= secondIpc.invoke('shell-runs:attach', {
+              sessionId: 'session-1',
+              ref,
+            });
+          }
+        },
       },
     },
     observations,

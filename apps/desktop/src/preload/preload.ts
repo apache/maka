@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
 import { notifyWhenSeeded } from './seed-completion.js';
+import { releaseSessionObservation } from './session-observation-release.js';
 import type {
   MakaBridge,
   OnboardingSnapshot,
@@ -741,9 +742,9 @@ const makaBridge = {
       return () => {
         disposeSeedNotification();
         unsubscribeEvents();
-        void observeDispatch
-          .then(() => ipcRenderer.invoke('sessions:unobserve', observerId))
-          .catch(() => undefined);
+        void releaseSessionObservation(observeDispatch, () =>
+          ipcRenderer.invoke('sessions:unobserve', observerId),
+        ).catch(() => undefined);
       };
     },
     subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void {

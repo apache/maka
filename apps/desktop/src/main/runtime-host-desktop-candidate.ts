@@ -85,7 +85,9 @@ export interface DesktopRuntimeHostCandidateDeps {
     sessionId: string,
   ) => void | Promise<void>;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
-  readonly sendToRenderer?: (channel: string, ...args: unknown[]) => void;
+  readonly renderer?: {
+    send(channel: string, scope: DesktopHostRef, payload: unknown): void;
+  };
   readonly onError?: RuntimeHostSessionDomainsIpcDeps["onError"];
   readonly isTargetActive?: () => boolean;
   readonly isTargetValid?: () => boolean;
@@ -348,7 +350,7 @@ export async function createDesktopRuntimeHostCandidate(
     channel,
     payload,
   ) => {
-    if (isTargetActive()) deps.sendToRenderer?.(channel, scope, payload);
+    if (isTargetActive()) deps.renderer?.send(channel, scope, payload);
   };
   const reportError = (error: unknown): void => {
     if (isTargetActive()) deps.onError?.(error);
@@ -455,7 +457,7 @@ export async function createDesktopRuntimeHostCandidate(
         client,
         sessionObserver,
         emitModeChanged,
-        ...(deps.sendToRenderer ? { sendToRenderer } : {}),
+        ...(deps.renderer ? { sendToRenderer } : {}),
         ...(deps.onError ? { onError: reportError } : {}),
         ...(deps.newId ? { newId: deps.newId } : {}),
         ...(deps.now ? { now: deps.now } : {}),
