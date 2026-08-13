@@ -113,7 +113,6 @@ export async function startRuntimeHostDesktopOwner(
     startCandidate?: (
       input: DesktopRuntimeHostCandidateStartInput,
       observationRegistry: RuntimeHostSessionObservationRegistry,
-      targetEpoch: string,
     ) => Promise<DesktopRuntimeHostCandidateStartResult>;
     onFatalError?: (error: Error) => void;
     upgradePrompts?: RuntimeHostUpgradePrompts;
@@ -152,7 +151,6 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     private readonly startCandidate: (
       input: DesktopRuntimeHostCandidateStartInput,
       observationRegistry: RuntimeHostSessionObservationRegistry,
-      targetEpoch: string,
     ) => Promise<DesktopRuntimeHostCandidateStartResult>,
     private readonly onFatalError: (error: Error) => void,
     private readonly upgradePrompts: RuntimeHostUpgradePrompts | undefined,
@@ -420,7 +418,6 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
           ...(takeoverHostEpoch === undefined ? {} : { takeoverHostEpoch }),
         },
         target.observations,
-        target.epoch,
       );
       if (result.kind === 'ready') {
         target.hostId = result.candidate.client.hostId;

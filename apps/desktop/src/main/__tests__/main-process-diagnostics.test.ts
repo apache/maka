@@ -122,6 +122,38 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
   assert.match(clipboard, /Diagnostics unavailable: Runtime Host disconnected/);
 });
 
+test('copies Desktop diagnostics while the scoped Host is reconnecting', async () => {
+  type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
+  const handlers = new Map<string, IpcHandler>();
+  let clipboard = '';
+  registerDesktopDiagnosticsIpc({
+    ipcMain: {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    environment: () => environment,
+    mainLogs: () => ['main remained available'],
+    resolveRuntimeHost: () => undefined,
+    writeClipboard: (value) => {
+      clipboard = value;
+    },
+  });
+
+  const handler = handlers.get('diagnostics:copyErrorReport');
+  assert.ok(handler);
+  assert.deepEqual(
+    await handler(
+      {} as never,
+      { hostId: 'test-host', targetEpoch: 'test-target' },
+      { surface: 'toast', title: 'Host reconnecting' },
+    ),
+    { ok: true },
+  );
+  assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
+  assert.match(clipboard, /Diagnostics unavailable: Runtime Host is reconnecting/);
+});
+
 test('copies bounded evidence for the exact failed Turn', async () => {
   type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
   const handlers = new Map<string, IpcHandler>();

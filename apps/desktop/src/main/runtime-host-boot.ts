@@ -1123,14 +1123,16 @@ function requireRuntimePolicyTarget(target: DesktopRuntimeHostTargetPolicy) {
 }
 
 function resolveRuntimeHostDiagnostics(scope: DesktopHostRef) {
-  const current = runtimePolicyTarget;
+  const active = activeRuntimeHostRef();
   if (
-    !current?.isActive() ||
-    current.scope.hostId !== scope.hostId ||
-    current.scope.targetEpoch !== scope.targetEpoch
+    !active ||
+    active.hostId !== scope.hostId ||
+    active.targetEpoch !== scope.targetEpoch
   ) {
     throw new Error("Desktop Runtime Host request belongs to a different target");
   }
+  const current = runtimePolicyTarget;
+  if (!current?.isActive()) return undefined;
   const client = current.client;
   return {
     getDiagnostics: () => client.queryHostDiagnostics(),

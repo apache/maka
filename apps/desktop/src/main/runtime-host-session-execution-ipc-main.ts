@@ -29,7 +29,6 @@ import {
 } from "./ipc-reconnect-policy.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
-import type { DesktopHostRef } from '../preload/runtime-host-identity.js';
 import type { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,
@@ -58,7 +57,6 @@ type RuntimeHostSessionExecutionClient = Pick<
 >;
 
 export interface RuntimeHostSessionExecutionIpcDeps {
-  scope: DesktopHostRef;
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
   observations: Pick<
@@ -125,13 +123,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       await deps.observations.observe(
         normalizedSessionId,
         normalizedObserverId,
-        {
-          id: event.sender.id,
-          send: (channel, payload) =>
-            event.sender.send(channel, deps.scope, payload),
-          once: event.sender.once.bind(event.sender),
-          off: event.sender.off.bind(event.sender),
-        } satisfies RuntimeHostSessionObserverTarget,
+        event.sender as RuntimeHostSessionObserverTarget,
       );
     },
   );

@@ -195,6 +195,75 @@ test("restores renderer observation after the Host connection is replaced", asyn
   await secondObserver.close();
 });
 
+test("rebinds a restored renderer observation to the current target scope", async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const sent: unknown[][] = [];
+  const renderer: RuntimeHostSessionObserverTarget = {
+    id: 11,
+    send: (...args: unknown[]) => sent.push(args),
+    once() {},
+    off() {},
+  };
+  let firstTarget: RuntimeHostSessionObserverTarget | undefined;
+  let secondTarget: RuntimeHostSessionObserverTarget | undefined;
+  const firstSource = {
+    async observe(
+      _sessionId: string,
+      _observerId: string,
+      target: RuntimeHostSessionObserverTarget,
+    ) {
+      firstTarget = target;
+    },
+    async unobserve() {},
+  };
+  const secondSource = {
+    async observe(
+      _sessionId: string,
+      _observerId: string,
+      target: RuntimeHostSessionObserverTarget,
+    ) {
+      secondTarget = target;
+    },
+    async unobserve() {},
+  };
+  const bind = (targetEpoch: string) => (target: RuntimeHostSessionObserverTarget) => ({
+    ...target,
+    send: (channel: string, payload: unknown) =>
+      (target.send as (channel: string, ...args: unknown[]) => void)(
+        channel,
+        { targetEpoch },
+        payload,
+      ),
+  });
+
+  await observations.attach(firstSource, bind('target-a'));
+  await observations.observe('session-1', 'observer-1', renderer);
+  observations.detach(firstSource);
+  await observations.attach(secondSource, bind('target-b'));
+
+  const firstEvent: SessionEvent = {
+    type: 'abort',
+    id: 'event-a',
+    turnId: 'turn-1',
+    ts: 1,
+    reason: 'user_stop',
+  };
+  const secondEvent: SessionEvent = {
+    type: 'complete',
+    id: 'event-b',
+    turnId: 'turn-2',
+    ts: 2,
+    stopReason: 'end_turn',
+  };
+  firstTarget?.send('sessions:event:observer-1', firstEvent);
+  secondTarget?.send('sessions:event:observer-1', secondEvent);
+  assert.deepEqual(sent, [
+    ['sessions:event:observer-1', { targetEpoch: 'target-a' }, firstEvent],
+    ['sessions:event:observer-1', { targetEpoch: 'target-b' }, secondEvent],
+  ]);
+  await observations.close();
+});
+
 test("does not report an observation ready before its source has seeded", async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const staleSeeded = deferred<void>();

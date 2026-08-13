@@ -37,7 +37,7 @@ function createDesktopRuntimeHostCandidate(
     candidateDeps,
     observationRegistry,
     'ephemeral',
-    { kind: 'local', targetEpoch: TEST_TARGET_EPOCH },
+    'local',
   );
 }
 
@@ -131,23 +131,25 @@ test('rejects a stale Host identity when raw Session IDs collide', async () => {
 
 test('rejects a stale target generation when two profiles share one Host', async () => {
   const ipc = ipcHarness();
+  ipc.setEpoch('target-a');
   const first = connectionHarness('same-host-a');
   const firstCandidate = await createCandidate(
     first.connection,
     deps(ipc),
     undefined,
     'ephemeral',
-    { kind: 'local', targetEpoch: 'target-a' },
+    'local',
   );
   await firstCandidate.close();
 
+  ipc.setEpoch('target-b');
   const second = connectionHarness('same-host-b');
   const secondCandidate = await createCandidate(
     second.connection,
     deps(ipc),
     undefined,
     'ephemeral',
-    { kind: 'local', targetEpoch: 'target-b' },
+    'local',
   );
 
   await assert.rejects(
@@ -554,6 +556,7 @@ type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
 function ipcHarness() {
   const handlers = new Map<string, IpcHandler>();
+  let epoch = TEST_TARGET_EPOCH;
   const sender = Object.assign(new EventEmitter(), {
     id: 1,
     sent: [] as Array<{ channel: string; hostId?: string; payload: unknown }>,
@@ -567,6 +570,15 @@ function ipcHarness() {
     },
   });
   return {
+    get epoch() {
+      return epoch;
+    },
+    isActive() {
+      return true;
+    },
+    setEpoch(value: string) {
+      epoch = value;
+    },
     handle(channel: string, handler: IpcHandler): void {
       if (handlers.has(channel)) throw new Error(`duplicate handler: ${channel}`);
       handlers.set(channel, handler);

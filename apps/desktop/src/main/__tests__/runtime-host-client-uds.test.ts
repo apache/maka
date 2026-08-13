@@ -224,7 +224,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         recover: async () => ({ removed: [], failed: [] }),
       }),
       newId: () => 'session-ipc',
-    }, undefined, 'uds-target');
+    });
     assert.equal(started.kind, 'ready');
     if (started.kind !== 'ready') throw new Error('Desktop candidate did not start');
     const { candidate } = started;
@@ -321,10 +321,6 @@ test('drives the renderer Session execution facade through real UDS framing', as
     const ipc = ipcHarness();
     registerRuntimeHostSessionExecutionIpc(
       {
-        scope: {
-          hostId: connected.connection.rootId,
-          targetEpoch: 'uds-target',
-        },
         client,
         observer,
         observations: observer,
@@ -493,6 +489,8 @@ function ipcHarness() {
   const ipcHandlers = new Map<string, IpcHandler>();
   let host: { hostId: string; targetEpoch: string } | undefined;
   return {
+    epoch: 'uds-target',
+    isActive: () => true,
     handle(channel: string, handler: IpcHandler) {
       assert.equal(ipcHandlers.has(channel), false, `duplicate handler: ${channel}`);
       ipcHandlers.set(channel, handler);

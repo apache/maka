@@ -51,6 +51,7 @@ import {
 import { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
 import { RuntimeHostSessionObserver } from "./runtime-host-session-observer.js";
 import type { IpcHandler, ReconnectableReadIpcMain } from "./ipc-reconnect-policy.js";
+import type { RuntimeHostTargetIpcMain } from "./runtime-host-reconnecting-ipc-main.js";
 import {
   desktopSessionResourceKey,
   requireDesktopHostRef,
@@ -60,7 +61,7 @@ import {
 type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler">;
 
 export interface DesktopRuntimeHostCandidateDeps {
-  readonly ipcMain: CandidateIpcMain;
+  readonly ipcMain: RuntimeHostTargetIpcMain;
   readonly workspaceRoot: string;
   readonly attachmentApprovals: AttachmentApprovalRegistry;
   readonly stat: (path: string) => Promise<{ size: number }>;
@@ -119,16 +120,13 @@ export type DesktopRuntimeHostTargetPolicy =
       readonly rootId: string;
     };
 
-interface DesktopRuntimeHostCandidateTarget {
-  readonly kind: DesktopRuntimeHostTargetPolicy["kind"];
-  readonly targetEpoch: string;
-}
-
 export interface DesktopRuntimeHostCandidateControls {
   refreshClientCapabilities(): Promise<void>;
 }
 
-export interface DesktopRuntimeHostCandidateStartInput extends DesktopRuntimeHostCandidateDeps {
+export interface DesktopRuntimeHostCandidateStartInput
+  extends Omit<DesktopRuntimeHostCandidateDeps, "ipcMain"> {
+  readonly ipcMain: CandidateIpcMain;
   readonly rootPath: string;
   readonly clientInstanceId?: string;
   readonly electionDeadlineMs?: number;
@@ -248,15 +246,15 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
 
 export async function startDesktopRuntimeHostCandidate(
   input: DesktopRuntimeHostCandidateStartInput,
-  observationRegistry: RuntimeHostSessionObservationRegistry | undefined,
-  targetEpoch: string,
+  observationRegistry?: RuntimeHostSessionObservationRegistry,
 ): Promise<DesktopRuntimeHostCandidateStartResult> {
+  const ipcMain = requireTargetIpcMain(input.ipcMain);
   if (input.remote) {
     return startRemoteDesktopRuntimeHostCandidate(
       input,
       input.remote,
       observationRegistry,
-      targetEpoch,
+      ipcMain,
     );
   }
   const connection = await connectOrSpawnRuntimeHost(connectInput(input));
@@ -266,10 +264,10 @@ export async function startDesktopRuntimeHostCandidate(
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(
         connection.connection,
-        input,
+        { ...input, ipcMain },
         observationRegistry,
         connection.registration.lifecycleMode,
-        { kind: "local", targetEpoch },
+        "local",
       ),
     };
   } catch (error) {
@@ -282,7 +280,7 @@ async function startRemoteDesktopRuntimeHostCandidate(
   input: DesktopRuntimeHostCandidateStartInput,
   remote: NonNullable<DesktopRuntimeHostCandidateStartInput["remote"]>,
   observationRegistry: RuntimeHostSessionObservationRegistry | undefined,
-  targetEpoch: string,
+  ipcMain: RuntimeHostTargetIpcMain,
 ): Promise<DesktopRuntimeHostCandidateStartResult> {
   const connection = await connectRemoteRuntimeHostProfile({
     profile: remote.profile,
@@ -309,10 +307,10 @@ async function startRemoteDesktopRuntimeHostCandidate(
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(
         connection,
-        input,
+        { ...input, ipcMain },
         observationRegistry,
         "remote",
-        { kind: "remote", targetEpoch },
+        "remote",
       ),
     };
   } catch (error) {
@@ -326,15 +324,16 @@ export async function createDesktopRuntimeHostCandidate(
   deps: DesktopRuntimeHostCandidateDeps,
   observationRegistry: RuntimeHostSessionObservationRegistry | undefined,
   hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote",
-  candidateTarget: DesktopRuntimeHostCandidateTarget,
+  targetKind: DesktopRuntimeHostTargetPolicy["kind"],
 ): Promise<DesktopRuntimeHostCandidate> {
   const target: DesktopRuntimeHostTargetPolicy = {
-    kind: candidateTarget.kind,
+    kind: targetKind,
     rootId: connection.rootId,
   };
-  const scope = { hostId: connection.rootId, targetEpoch: candidateTarget.targetEpoch };
+  const ipcMain = deps.ipcMain;
+  const scope = { hostId: connection.rootId, targetEpoch: ipcMain.epoch };
   const client = new DesktopRuntimeHostClient(connection);
-  const ipc = new ScopedIpcMain(deps.ipcMain, scope);
+  const ipc = new ScopedIpcMain(ipcMain, scope);
   const isTargetActive = deps.isTargetActive ?? (() => true);
   const emitSessionsChanged = (
     reason: SessionChangedReason,
@@ -464,7 +463,20 @@ export async function createDesktopRuntimeHostCandidate(
       ipc,
     );
     closeSessionDomains = domains.close;
-    const restoredSessionIds = await sessionObservations.attach(sessionObserver);
+    const restoredSessionIds = await sessionObservations.attach(
+      sessionObserver,
+      (target) => ({
+        id: target.id,
+        send: (channel, payload) =>
+          (target.send as (channel: string, ...args: unknown[]) => void)(
+            channel,
+            scope,
+            payload,
+          ),
+        once: target.once.bind(target),
+        off: target.off.bind(target),
+      }),
+    );
     observationsAttached = true;
     for (const sessionId of restoredSessionIds) {
       emitSessionsChanged("message-appended", sessionId);
@@ -571,7 +583,6 @@ export async function createDesktopRuntimeHostCandidate(
     );
     const stopSession = registerRuntimeHostSessionExecutionIpc(
       {
-        scope,
         client,
         observer: sessionObserver,
         observations: sessionObservations,
@@ -665,6 +676,18 @@ function connectInput(
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   };
+}
+
+function requireTargetIpcMain(ipcMain: CandidateIpcMain): RuntimeHostTargetIpcMain {
+  const target = ipcMain as Partial<RuntimeHostTargetIpcMain>;
+  if (
+    typeof target.epoch !== "string" ||
+    !target.epoch ||
+    typeof target.isActive !== "function"
+  ) {
+    throw new Error("Desktop Runtime Host target IPC is required");
+  }
+  return ipcMain as RuntimeHostTargetIpcMain;
 }
 
 class ScopedIpcMain implements ReconnectableReadIpcMain {
