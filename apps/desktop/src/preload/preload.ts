@@ -845,7 +845,7 @@ const makaBridge = {
       let generation: string | undefined;
       let closed = false;
       let requestClose = () => {};
-      let openedScope: DesktopHostRef | undefined;
+      let consumerScope: DesktopHostRef | undefined;
       const listener = (
         _event: Electron.IpcRendererEvent,
         scope: unknown,
@@ -861,16 +861,19 @@ const makaBridge = {
             host.targetEpoch !== activeRuntimeHost.targetEpoch
           ) return;
           batch = assertDesktopTranscriptBatch(value);
-          if (batch.reset || generation === undefined) generation = batch.generation;
+          if (batch.reset || generation === undefined) {
+            generation = batch.generation;
+            consumerScope = host;
+          }
           if (batch.generation === generation) handler(batch);
         } catch (error) {
           requestClose();
           throw error;
         }
-        if (openedScope) {
+        if (consumerScope) {
           void ipcRenderer.invoke(
             'sessions:transcript:ack',
-            openedScope,
+            consumerScope,
             consumerId,
             batch.generation,
             batch.deliverySequence,
@@ -879,7 +882,7 @@ const makaBridge = {
       };
       ipcRenderer.on(channel, listener);
       const openDispatch = activeRuntimeHostRef().then((scope) => {
-        openedScope = scope;
+        consumerScope = scope;
         return {
           completion: ipcRenderer.invoke(
             'sessions:transcript:open',
@@ -915,7 +918,7 @@ const makaBridge = {
         anchorSequence: number | null,
         maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
       ): Promise<void> =>
-        ipcRenderer.invoke(operation, openedScope, {
+        ipcRenderer.invoke(operation, consumerScope, {
           consumerId,
           generation,
           anchorSequence,

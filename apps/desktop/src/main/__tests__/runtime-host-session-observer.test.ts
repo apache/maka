@@ -372,14 +372,26 @@ test("keeps an active observation across a failed Host replacement", async () =>
 test('restores transcript consumers across Host replacement', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const batches: DesktopTranscriptBatch[] = [];
+  const scopes: string[] = [];
   const target: RuntimeHostTranscriptTarget = {
     id: 18,
-    send(_channel, batch) {
+    send(_channel, ...args: unknown[]) {
+      const [scope, batch] = args as [{ targetEpoch: string }, DesktopTranscriptBatch];
+      scopes.push(scope.targetEpoch);
       batches.push(batch);
     },
     once() {},
     off() {},
   };
+  const bind = (targetEpoch: string) => <Payload>(target: RuntimeHostRendererTarget<Payload>) => ({
+    ...target,
+    send: (channel: string, payload: Payload) =>
+      (target.send as (channel: string, ...args: unknown[]) => void)(
+        channel,
+        { targetEpoch },
+        payload,
+      ),
+  });
   const opens: string[] = [];
   const source = (generation: string) => ({
     async observe() {},
@@ -416,11 +428,11 @@ test('restores transcript consumers across Host replacement', async () => {
     async closeTranscript() {},
   });
   const first = source('first');
-  await observations.attach(first);
+  await observations.attach(first, bind('first'));
   await observations.openTranscript('session-1', 'consumer-1', target);
   observations.detach(first);
   const second = source('second');
-  await observations.attach(second);
+  await observations.attach(second, bind('second'));
   observations.detach(second);
   await observations.closeTranscript('consumer-1');
   const pending = observations.openTranscript('session-1', 'consumer-2', target);
@@ -430,7 +442,7 @@ test('restores transcript consumers across Host replacement', async () => {
   });
   await Promise.resolve();
   assert.equal(pendingSettled, false);
-  await observations.attach(source('third'));
+  await observations.attach(source('third'), bind('third'));
   assert.equal((await pending).generation, 'third');
 
   assert.deepEqual(opens, [
@@ -442,6 +454,7 @@ test('restores transcript consumers across Host replacement', async () => {
     batches.map((batch) => batch.generation),
     ['first', 'second', 'third'],
   );
+  assert.deepEqual(scopes, ['first', 'second', 'third']);
   await observations.close();
 });
 
