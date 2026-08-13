@@ -8,6 +8,7 @@ import { RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
 import type { SessionTranscriptPage } from '@maka/runtime-host/protocol';
 import {
   DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES,
   DESKTOP_TRANSCRIPT_SESSION_CACHE_MAX_BYTES,
 } from '../preload/transcript-contract.js';
 import type { DesktopRuntimeHostSession } from './runtime-host-client.js';
@@ -16,6 +17,7 @@ export interface DesktopTranscriptReplicaOptions {
   readonly generation?: string;
   readonly maxMessageBytes?: number;
   readonly maxResidentBytes?: number;
+  readonly maxOverlayBytes?: number;
   readonly accountPreparationBytes?: (deltaBytes: number) => void;
   readonly onChange?: (
     replica: DesktopTranscriptReplica,
@@ -58,6 +60,7 @@ export class DesktopTranscriptReplica {
   readonly hostEpoch: string;
   readonly #handle: DesktopRuntimeHostSession;
   readonly #maxResidentBytes: number;
+  readonly #maxOverlayBytes: number;
   readonly #maxMessageBytes: number;
   readonly #accountPreparationBytes: (deltaBytes: number) => void;
   readonly #onChange: (
@@ -67,6 +70,7 @@ export class DesktopTranscriptReplica {
   readonly #durable = new Map<number, ResidentMessage>();
   readonly #overlay = new Map<string, StoredMessage>();
   #residentBytes = 0;
+  #overlayBytes = 0;
   #durableThrough: number | null;
   #targetThrough: number | null;
   #hasOlder: boolean;
@@ -87,6 +91,8 @@ export class DesktopTranscriptReplica {
     this.hostEpoch = handle.hostEpoch;
     this.#maxResidentBytes =
       options.maxResidentBytes ?? DESKTOP_TRANSCRIPT_SESSION_CACHE_MAX_BYTES;
+    this.#maxOverlayBytes =
+      options.maxOverlayBytes ?? DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES;
     this.#maxMessageBytes = options.maxMessageBytes ?? DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES;
     this.#accountPreparationBytes = options.accountPreparationBytes ?? (() => undefined);
     this.#onChange = options.onChange ?? (() => undefined);
@@ -111,7 +117,7 @@ export class DesktopTranscriptReplica {
         replica.#hasOlder = durable.nextCursor !== null;
       });
       replica.#evictToBudget();
-      if (replica.#residentBytes > replica.#maxResidentBytes) {
+      if (replica.#overlayBytes > replica.#maxOverlayBytes) {
         throw new RangeError('Desktop transcript overlay exceeds the session cache limit');
       }
       return replica;
@@ -218,7 +224,7 @@ export class DesktopTranscriptReplica {
       }
       const completedOverlayMessageIds = this.#installDurable(decoded.messages);
       this.#hasOlder = decoded.nextCursor !== null;
-      const evictedDurableSequences = this.#evictToBudget(this.#maxResidentBytes, 'newest');
+      const evictedDurableSequences = this.#evictToBudget(undefined, 'newest');
       this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
     });
   }
@@ -266,7 +272,7 @@ export class DesktopTranscriptReplica {
       this.#hasOlder = loadTail ? decoded.nextCursor !== null : sequence > 0;
       this.#hasNewer = loadTail ? false : decoded.nextCursor !== null;
       evictedDurableSequences.push(
-        ...this.#evictToBudget(this.#maxResidentBytes, loadTail ? 'oldest' : 'newest'),
+        ...this.#evictToBudget(undefined, loadTail ? 'oldest' : 'newest'),
       );
       this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
     });
@@ -309,9 +315,10 @@ export class DesktopTranscriptReplica {
     this.#resident = false;
     this.#clearDurable();
     for (const message of this.#overlay.values()) {
-      this.#adjustResidentBytes(-encodedMessageBytes(message));
+      this.#adjustOverlayBytes(-encodedMessageBytes(message));
     }
     this.#overlay.clear();
+    this.#overlayBytes = 0;
   }
 
   close(): void {
@@ -319,6 +326,7 @@ export class DesktopTranscriptReplica {
     this.#resident = false;
     this.#durable.clear();
     this.#overlay.clear();
+    this.#overlayBytes = 0;
     if (this.#residentExternallyAccounted) {
       this.#accountPreparationBytes(-this.#residentBytes);
     }
@@ -382,9 +390,9 @@ export class DesktopTranscriptReplica {
   #installOverlay(messages: readonly StoredMessage[]): void {
     for (const message of messages) {
       const previous = this.#overlay.get(message.id);
-      if (previous) this.#adjustResidentBytes(-encodedMessageBytes(previous));
+      if (previous) this.#adjustOverlayBytes(-encodedMessageBytes(previous));
       this.#overlay.set(message.id, message);
-      this.#adjustResidentBytes(encodedMessageBytes(message));
+      this.#adjustOverlayBytes(encodedMessageBytes(message));
     }
   }
 
@@ -412,7 +420,7 @@ export class DesktopTranscriptReplica {
       const overlay = this.#overlay.get(message.id);
       if (overlay) {
         this.#overlay.delete(message.id);
-        this.#adjustResidentBytes(-encodedMessageBytes(overlay));
+        this.#adjustOverlayBytes(-encodedMessageBytes(overlay));
         completedOverlayMessageIds.push(message.id);
       }
     }
@@ -468,13 +476,14 @@ export class DesktopTranscriptReplica {
   }
 
   #evictToBudget(
-    budget = this.#maxResidentBytes,
+    budget: number | undefined = undefined,
     edge: 'oldest' | 'newest' = 'oldest',
   ): number[] {
+    const residentBudget = budget ?? this.#maxResidentBytes + this.#overlayBytes;
     const evicted: number[] = [];
     const direction = edge === 'oldest' ? 1 : -1;
     for (const sequence of [...this.#durable.keys()].sort((left, right) => direction * (left - right))) {
-      if (this.#residentBytes <= budget) break;
+      if (this.#residentBytes <= residentBudget) break;
       const entry = this.#durable.get(sequence);
       if (!entry) continue;
       this.#durable.delete(sequence);
@@ -511,6 +520,11 @@ export class DesktopTranscriptReplica {
   #adjustResidentBytes(deltaBytes: number): void {
     this.#residentBytes += deltaBytes;
     if (this.#residentExternallyAccounted) this.#accountPreparationBytes(deltaBytes);
+  }
+
+  #adjustOverlayBytes(deltaBytes: number): void {
+    this.#overlayBytes += deltaBytes;
+    this.#adjustResidentBytes(deltaBytes);
   }
 
   async #withDecodedPage<T>(

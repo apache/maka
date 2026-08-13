@@ -245,7 +245,7 @@ test('loads a history target with newer messages available below it', async () =
   assert.equal(replica.snapshot().hasNewer, true);
 });
 
-test('rejects an overlay that exceeds the complete session cache budget', async () => {
+test('rejects an overlay that exceeds its cache budget', async () => {
   const messages = [
     assistantMessage('x'.repeat(700), 'overlay-1'),
     assistantMessage('y'.repeat(700), 'overlay-2'),
@@ -261,10 +261,45 @@ test('rejects an overlay that exceeds the complete session cache budget', async 
   await assert.rejects(
     DesktopTranscriptReplica.prepare(handle, {
       maxResidentBytes: 1_024,
+      maxOverlayBytes: 1_024,
       maxMessageBytes: 1_024,
     }),
     /overlay exceeds the session cache limit/,
   );
+});
+
+test('keeps history resident when an active overlay uses its own cache budget', async () => {
+  const overlay = assistantMessage('o'.repeat(700), 'overlay-1');
+  const historical = assistantMessage('h'.repeat(700), 'history-1');
+  const bootstrapPage = transcriptPage('older', 'older', 1);
+  const olderPage = transcriptPage('older', null, 1);
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 1,
+      overlayMessageCount: 1,
+      durable: bootstrapPage,
+      overlay: { ...transcriptPage('older', null, 1), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [overlay],
+    decodeTranscriptPage: async (page) => page === olderPage
+      ? { messages: [{ identity: 0, message: historical }], nextCursor: null }
+      : { messages: [], nextCursor: 'older' },
+    loadTranscriptPage: async () => olderPage,
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes: 1_024,
+    maxOverlayBytes: 1_024,
+    maxMessageBytes: 1_024,
+  });
+
+  await replica.loadBefore(null, 128 * 1024);
+
+  assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [0]);
+  assert.equal(replica.snapshot().hasOlder, false);
 });
 
 test('transfers prepared transcript bytes into active replica accounting', async () => {
