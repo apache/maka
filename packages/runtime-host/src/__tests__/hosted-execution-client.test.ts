@@ -52,7 +52,7 @@ test('startup failure preserves its fixed safe cause', async () => {
   assert.equal(result.failureReason, 'Runtime Host did not start: existing_host');
 });
 
-test('headless hosted execution widens liveness for CPU-bound task containers', async () => {
+test('headless hosted execution disables liveness probes for CPU-bound task containers', async () => {
   let observed: unknown;
   const result = await runHostedExecutionWithDependencies(headlessInput(), {
     connectOwnedRuntimeHost: async (input) => {
@@ -62,7 +62,7 @@ test('headless hosted execution widens liveness for CPU-bound task containers', 
   });
 
   assert.equal(result.failureReason, 'Runtime Host did not start: existing_host');
-  assert.equal((observed as { livenessIntervalMs?: number }).livenessIntervalMs, 10_000);
+  assert.equal((observed as { livenessIntervalMs?: number }).livenessIntervalMs, 0);
   assert.equal((observed as { livenessTimeoutMs?: number }).livenessTimeoutMs, 30_000);
 });
 

@@ -23,7 +23,7 @@ interface RunHostedExecutionDependencies {
 
 const defaultDependencies: RunHostedExecutionDependencies = { connectOwnedRuntimeHost };
 const HEADLESS_LIVENESS = {
-  livenessIntervalMs: 10_000,
+  livenessIntervalMs: 0,
   livenessTimeoutMs: 30_000,
 } as const;
 

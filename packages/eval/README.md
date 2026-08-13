@@ -38,8 +38,9 @@ developer prompt and complete tool schema. The profile disables Runtime's produc
 watchdog and Undici's provider headers/body inactivity timers after provider activity;
 benchmark-native subject timeouts remain the execution deadline, while the model stream connect
 timeout still rejects requests that never establish a response. Hosted Eval clients also use a
-10-second liveness cadence with a 30-second response budget so a CPU-bound one-core task cannot
-starve the Runtime Host briefly enough to be mistaken for a dead connection.
+disabled active liveness probe for their owned Runtime Host process so a CPU-bound one-core task
+cannot starve the Host briefly enough to be mistaken for a dead connection. Child-process exit,
+transport closure, and the benchmark-native subject timeout remain authoritative.
 
 Every benchmark subject removes `WebSearch`, `WebFetch`, and `FetchURL` from the provider-visible
 tool list. Maka enforces that through its Hosted Execution profile; external harnesses pass through

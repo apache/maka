@@ -912,6 +912,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   #scheduleLivenessCheck(): void {
     if (
       this.#terminalError ||
+      this.#livenessIntervalMs === 0 ||
       this.#livenessTimer ||
       this.#livenessProbePending ||
       !this.#hasOutstandingDomainRequest()
@@ -1192,7 +1193,7 @@ function normalizeConnectRuntimeHostInput(
       input.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
       'handshakeTimeoutMs',
     ),
-    livenessIntervalMs: requireTimeout(
+    livenessIntervalMs: requireLivenessInterval(
       input.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS,
       'livenessIntervalMs',
     ),
@@ -1236,7 +1237,7 @@ export async function connectResolvedRuntimeHost(
     input.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
     'handshakeTimeoutMs',
   );
-  const livenessIntervalMs = requireTimeout(
+  const livenessIntervalMs = requireLivenessInterval(
     input.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS,
     'livenessIntervalMs',
   );
@@ -1646,6 +1647,13 @@ function openTransport(
 function requireTimeout(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > 120_000) {
     throw new RangeError(`${label} must be an integer between 1 and 120000`);
+  }
+  return value;
+}
+
+function requireLivenessInterval(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 120_000) {
+    throw new RangeError(`${label} must be an integer between 0 and 120000`);
   }
   return value;
 }
