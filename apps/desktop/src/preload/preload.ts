@@ -844,14 +844,27 @@ const makaBridge = {
       const channel = `sessions:transcript:${consumerId}`;
       let generation: string | undefined;
       let closed = false;
+      let requestClose = () => {};
       const listener = (
         _event: Electron.IpcRendererEvent,
         value: unknown,
       ) => {
         if (closed) return;
-        const batch = assertDesktopTranscriptBatch(value);
-        if (batch.reset || generation === undefined) generation = batch.generation;
-        if (batch.generation === generation) handler(batch);
+        let batch: DesktopTranscriptBatch;
+        try {
+          batch = assertDesktopTranscriptBatch(value);
+          if (batch.reset || generation === undefined) generation = batch.generation;
+          if (batch.generation === generation) handler(batch);
+        } catch (error) {
+          requestClose();
+          throw error;
+        }
+        void invokeActiveRuntimeHost(
+          'sessions:transcript:ack',
+          consumerId,
+          batch.generation,
+          batch.deliverySequence,
+        ).catch(requestClose);
       };
       ipcRenderer.on(channel, listener);
       const openDispatch = activeRuntimeHostRef().then((scope) => ({
@@ -863,7 +876,7 @@ const makaBridge = {
         ) as Promise<DesktopTranscriptOpenResult>,
       }));
       let closeTask: Promise<void> | undefined;
-      const requestClose = () => {
+      requestClose = () => {
         if (closed) return;
         closed = true;
         ipcRenderer.off(channel, listener);

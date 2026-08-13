@@ -555,6 +555,9 @@ export function createAppShellChatActions(deps: {
       ) {
         return false;
       }
+      if (activeIdRef.current !== sessionId || transcriptRangeRef.current !== controller) {
+        return false;
+      }
       const range = controller.store;
       const snapshot = range.snapshot();
       if (snapshot.sessionId !== sessionId) return false;

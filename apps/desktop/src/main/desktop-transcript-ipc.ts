@@ -1,7 +1,7 @@
 import type { StoredMessage } from '@maka/core/session';
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-  type DesktopTranscriptBatch,
+  type DesktopTranscriptBatchPayload,
   type DesktopTranscriptFragment,
 } from '../preload/transcript-contract.js';
 import type {
@@ -29,7 +29,7 @@ interface TranscriptBatchContent {
 
 export function encodeDesktopTranscriptSnapshot(
   snapshot: DesktopTranscriptReplicaSnapshot,
-): Iterable<DesktopTranscriptBatch> {
+): Iterable<DesktopTranscriptBatchPayload> {
   return encodeDesktopTranscriptBatches(snapshot, {
     durableThrough: snapshot.durableThrough,
     durable: snapshot.durable,
@@ -45,7 +45,7 @@ export function encodeDesktopTranscriptSnapshot(
 export function encodeDesktopTranscriptChange(
   identity: TranscriptBatchIdentity,
   change: DesktopTranscriptReplicaChange,
-): Iterable<DesktopTranscriptBatch> {
+): Iterable<DesktopTranscriptBatchPayload> {
   return encodeDesktopTranscriptBatches(identity, {
     durableThrough: change.durableThrough,
     durable: change.durableUpserts,
@@ -61,7 +61,7 @@ export function encodeDesktopTranscriptChange(
 function* encodeDesktopTranscriptBatches(
   identity: TranscriptBatchIdentity,
   content: TranscriptBatchContent,
-): Iterable<DesktopTranscriptBatch> {
+): Iterable<DesktopTranscriptBatchPayload> {
   const fragments = encodeMessages(content);
   let fragment = fragments.next();
   let evictedIndex = 0;

@@ -135,8 +135,8 @@ export class DesktopTranscriptReplica {
       generation: this.generation,
       hostEpoch: this.hostEpoch,
       durableThrough: this.#durableThrough,
-      durable: this.#orderedDurable(),
-      overlay: [...this.#overlay.values()].map((message) => structuredClone(message)),
+      durable: this.#orderedDurable(false),
+      overlay: [...this.#overlay.values()],
       hasOlder: this.#hasOlder,
       hasNewer: this.#hasNewer,
     };
@@ -422,12 +422,12 @@ export class DesktopTranscriptReplica {
   ): DesktopTranscriptReplicaChange {
     return {
       durableThrough: this.#durableThrough,
-      durableUpserts: messages
-        .filter((entry) => this.#durable.get(entry.identity)?.message.id === entry.message.id)
-        .map((entry) => ({
-          sequence: entry.identity,
-          message: structuredClone(entry.message),
-        })),
+      durableUpserts: messages.flatMap((entry) => {
+        const resident = this.#durable.get(entry.identity);
+        return resident?.message.id === entry.message.id
+          ? [{ sequence: entry.identity, message: resident.message }]
+          : [];
+      }),
       evictedDurableSequences: [...new Set(evictedDurableSequences)].filter(
         (sequence) => !this.#durable.has(sequence),
       ),
@@ -447,7 +447,6 @@ export class DesktopTranscriptReplica {
       if (this.#residentBytes <= budget) break;
       const entry = this.#durable.get(sequence);
       if (!entry) continue;
-      if (this.#durable.size === 1 && entry.encodedBytes > budget) break;
       this.#durable.delete(sequence);
       this.#residentBytes -= entry.encodedBytes;
       if (edge === 'oldest') this.#hasOlder = true;
@@ -457,12 +456,12 @@ export class DesktopTranscriptReplica {
     return evicted;
   }
 
-  #orderedDurable(): DesktopSequencedTranscriptMessage[] {
+  #orderedDurable(cloneMessages = true): DesktopSequencedTranscriptMessage[] {
     return [...this.#durable.values()]
       .sort((left, right) => left.sequence - right.sequence)
       .map((entry) => ({
         sequence: entry.sequence,
-        message: structuredClone(entry.message),
+        message: cloneMessages ? structuredClone(entry.message) : entry.message,
       }));
   }
 

@@ -1,6 +1,6 @@
 import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
 import type {
-  DesktopTranscriptBatch,
+  DesktopTranscriptBatchPayload,
   DesktopTranscriptFragment,
   DesktopTranscriptHandle,
 } from '../preload/transcript-contract.js';
@@ -76,7 +76,7 @@ interface PendingRecord {
   readonly identity: number | string;
   readonly order: number | null;
   readonly totalBytes: number;
-  readonly chunks: Map<number, Uint8Array>;
+  readonly bytes: Uint8Array;
   receivedBytes: number;
 }
 
@@ -120,7 +120,7 @@ export class DesktopTranscriptRangeStore {
   #batchChanged = false;
   readonly #durableWaiters = new Set<() => void>();
 
-  accept(batch: DesktopTranscriptBatch): boolean {
+  accept(batch: DesktopTranscriptBatchPayload): boolean {
     if (batch.reset) this.#reset(batch);
     if (
       batch.sessionId !== this.#sessionId ||
@@ -214,7 +214,7 @@ export class DesktopTranscriptRangeStore {
     });
   }
 
-  #reset(batch: DesktopTranscriptBatch): void {
+  #reset(batch: DesktopTranscriptBatchPayload): void {
     this.#durable.clear();
     this.#overlay.clear();
     this.#pending.clear();
@@ -239,7 +239,7 @@ export class DesktopTranscriptRangeStore {
         identity: fragment.identity,
         order: fragment.order,
         totalBytes: fragment.totalBytes,
-        chunks: new Map(),
+        bytes: new Uint8Array(fragment.totalBytes),
         receivedBytes: 0,
       };
       this.#pending.set(key, pending);
@@ -259,25 +259,13 @@ export class DesktopTranscriptRangeStore {
     ) {
       throw new Error('Desktop transcript fragment is outside its record');
     }
-    const previous = pending.chunks.get(fragment.byteOffset);
-    if (previous) {
-      if (!equalBytes(previous, bytes)) {
-        throw new Error('Desktop transcript fragment changed during replay');
-      }
-      return false;
+    if (fragment.byteOffset !== pending.receivedBytes) {
+      throw new Error('Desktop transcript record has a fragment gap');
     }
-    for (const [offset, chunk] of pending.chunks) {
-      if (
-        fragment.byteOffset < offset + chunk.byteLength &&
-        offset < fragment.byteOffset + bytes.byteLength
-      ) {
-        throw new Error('Desktop transcript fragments overlap');
-      }
-    }
-    pending.chunks.set(fragment.byteOffset, bytes);
+    pending.bytes.set(bytes, fragment.byteOffset);
     pending.receivedBytes += bytes.byteLength;
     if (pending.receivedBytes < pending.totalBytes) return false;
-    const encoded = assembleRecord(pending);
+    const encoded = new TextDecoder('utf-8', { fatal: true }).decode(pending.bytes);
     const message = decodeStoredMessage(JSON.parse(encoded) as unknown);
     this.#pending.delete(key);
     if (pending.source === 'durable') {
@@ -321,23 +309,4 @@ export class DesktopTranscriptRangeStore {
       this.#newestSequence = Math.max(this.#newestSequence ?? sequence, sequence);
     }
   }
-}
-
-function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
-  return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
-}
-
-function assembleRecord(record: PendingRecord): string {
-  const chunks = [...record.chunks.entries()].sort(([left], [right]) => left - right);
-  const bytes = new Uint8Array(record.totalBytes);
-  let expectedOffset = 0;
-  for (const [offset, chunk] of chunks) {
-    if (offset !== expectedOffset) throw new Error('Desktop transcript record has a fragment gap');
-    bytes.set(chunk, offset);
-    expectedOffset += chunk.byteLength;
-  }
-  if (expectedOffset !== record.totalBytes) {
-    throw new Error('Desktop transcript record is incomplete');
-  }
-  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }

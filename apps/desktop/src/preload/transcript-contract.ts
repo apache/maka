@@ -1,7 +1,7 @@
 export const DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES = 128 * 1024;
 export const DESKTOP_TRANSCRIPT_SESSION_CACHE_MAX_BYTES = 20 * 1024 * 1024;
-export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 96 * 1024 * 1024;
-export const DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES = 64 * 1024 * 1024;
+export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+export const DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 
 export interface DesktopTranscriptFragment {
   readonly source: 'durable' | 'overlay';
@@ -12,7 +12,7 @@ export interface DesktopTranscriptFragment {
   readonly data: Uint8Array;
 }
 
-export interface DesktopTranscriptBatch {
+export interface DesktopTranscriptBatchPayload {
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
@@ -24,6 +24,10 @@ export interface DesktopTranscriptBatch {
   readonly hasNewer: boolean;
   readonly reset: boolean;
   readonly ready: boolean;
+}
+
+export interface DesktopTranscriptBatch extends DesktopTranscriptBatchPayload {
+  readonly deliverySequence: number;
 }
 
 export interface DesktopTranscriptOpenResult {
@@ -53,6 +57,7 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
   const batch = value as Record<string, unknown>;
   if (
     typeof batch.sessionId !== 'string' ||
+    !isSequence(batch.deliverySequence) ||
     typeof batch.generation !== 'string' ||
     typeof batch.hostEpoch !== 'string' ||
     (batch.durableThrough !== null && !isSequence(batch.durableThrough)) ||

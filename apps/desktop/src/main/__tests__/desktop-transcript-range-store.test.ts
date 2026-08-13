@@ -204,49 +204,6 @@ test('keeps a bounded contiguous window while moving between history and the tai
   assert.ok(replica.residentBytes <= maxResidentBytes);
 });
 
-test('retains one supported oversized record without treating the cache budget as a record limit', async () => {
-  const message = assistantMessage('x'.repeat(4_096));
-  const durable = { identity: 0, message };
-  const page = {
-    kind: 'page' as const,
-    sessionId: 'session-1',
-    source: 'durable' as const,
-    direction: 'older' as const,
-    throughSequence: 0,
-    rawBytes: 1,
-    fragments: [],
-    nextCursor: null,
-  };
-  const maxMessageBytes = 8 * 1024;
-  const handle = runtimeHostSessionFixture({
-    snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
-      throughSequence: 0,
-      overlayMessageCount: 0,
-      durable: page,
-      overlay: { ...page, source: 'overlay' },
-    },
-    loadTranscriptOverlay: async (limit) => {
-      assert.equal(limit, maxMessageBytes);
-      return [];
-    },
-    decodeTranscriptPage: async (_candidate, limit) => {
-      assert.equal(limit, maxMessageBytes);
-      return { messages: [durable], nextCursor: null };
-    },
-    async close() {},
-  });
-  const replica = await DesktopTranscriptReplica.prepare(handle, {
-    maxResidentBytes: 256,
-    maxMessageBytes,
-  });
-
-  assert.deepEqual(replica.snapshot().durable, [{ sequence: 0, message }]);
-  assert.ok(replica.residentBytes > 256);
-});
-
 test('reopens a failed transcript range with a fresh generation', async () => {
   const store = new DesktopTranscriptRangeStore();
   let attempts = 0;

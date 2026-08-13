@@ -12,14 +12,21 @@ type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'observe' | 'un
   Partial<
     Pick<
       RuntimeHostSessionObserver,
-      'closeTranscript' | 'loadTranscriptAround' | 'loadTranscriptBefore' | 'openTranscript'
+      | 'acknowledgeTranscript'
+      | 'closeTranscript'
+      | 'loadTranscriptAround'
+      | 'loadTranscriptBefore'
+      | 'openTranscript'
     >
   >;
 
 type TranscriptSource = Required<
   Pick<
     RuntimeHostSessionObserver,
-    'closeTranscript' | 'loadTranscriptAround' | 'loadTranscriptBefore' | 'openTranscript'
+    | 'closeTranscript'
+    | 'loadTranscriptAround'
+    | 'loadTranscriptBefore'
+    | 'openTranscript'
   >
 >;
 
@@ -294,6 +301,24 @@ export class RuntimeHostSessionObservationRegistry {
   loadTranscriptAround(request: DesktopTranscriptRangeRequest, targetId?: number): Promise<void> {
     return requireTranscriptSource(this.#transcriptSource(request.consumerId)).loadTranscriptAround(
       request,
+      targetId,
+    );
+  }
+
+  acknowledgeTranscript(
+    consumerId: string,
+    generation: string,
+    deliverySequence: number,
+    targetId?: number,
+  ): void {
+    const source = this.#transcriptSource(consumerId);
+    if (!source.acknowledgeTranscript) {
+      throw new Error('Runtime Host transcript acknowledgement source is unavailable');
+    }
+    source.acknowledgeTranscript(
+      consumerId,
+      generation,
+      deliverySequence,
       targetId,
     );
   }

@@ -312,9 +312,10 @@ export function createAppShellRevisionActions(deps: {
       upsertSessionSummary(newSession);
       openSessionInChat(newSession.id);
       setMessages([]);
-      const { messages: preparedMessages } = await readSettledMessages(newSession.id, {
+      const { messages: preparedMessages, settled } = await readSettledMessages(newSession.id, {
         signal: preparationAbort.signal,
       });
+      if (!settled) throw new Error('Revised Session transcript did not become ready');
       if (
         activeIdRef.current !== newSession.id ||
         revisionDraftRef.current !== prepared
@@ -328,6 +329,7 @@ export function createAppShellRevisionActions(deps: {
       await refreshSessions();
       return true;
     } catch (error) {
+      if (preparationAbort.signal.aborted) return false;
       if (preparedSessionId) {
         await rollbackPreparedRevision(startedDraft, preparedSessionId, text);
       }

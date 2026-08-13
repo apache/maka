@@ -9,7 +9,10 @@ import type {
 } from "@maka/runtime-host/protocol";
 import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
-import type { DesktopTranscriptBatch } from '../../preload/transcript-contract.js';
+import {
+  DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+  type DesktopTranscriptBatch,
+} from '../../preload/transcript-contract.js';
 import { RuntimeHostSessionObservationRegistry } from "../runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,
@@ -387,6 +390,7 @@ test('restores transcript consumers across Host replacement', async () => {
     ) {
       opens.push(`${generation}:${sessionId}:${consumerId}`);
       consumer.send(`sessions:transcript:${consumerId}`, {
+        deliverySequence: 1,
         sessionId,
         generation,
         hostEpoch: `host-${generation}`,
@@ -516,10 +520,19 @@ test('broadcasts transcript changes to every consumer and advances the read mark
   });
   const transcriptBatches: DesktopTranscriptBatch[][] = [[], []];
   for (const [index, batches] of transcriptBatches.entries()) {
-    await observer.openTranscript('session-1', `consumer-${index}`, {
+    const consumerId = `consumer-${index}`;
+    await observer.openTranscript('session-1', consumerId, {
       id: 19 + index,
       send(_channel, batch) {
         batches.push(batch);
+        queueMicrotask(() =>
+          observer.acknowledgeTranscript(
+            consumerId,
+            batch.generation,
+            batch.deliverySequence!,
+            19 + index,
+          ),
+        );
       },
       once() {},
       off() {},
@@ -541,6 +554,57 @@ test('broadcasts transcript changes to every consumer and advances the read mark
 
   assert.deepEqual(markers, ['assistant-1']);
   assert.deepEqual(transcriptBatches[1], transcriptBatches[0]);
+  await observer.close();
+});
+
+test('keeps one transcript batch in flight until the renderer acknowledges it', async () => {
+  const events = new AsyncFrameQueue();
+  const message: StoredMessage = {
+    type: 'assistant',
+    id: 'assistant-large',
+    turnId: 'turn-1',
+    ts: 2,
+    text: 'x'.repeat(DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES * 2),
+    modelId: 'test-model',
+  };
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([message]),
+          events,
+          async close() {
+            events.end();
+          },
+        }),
+    },
+    emitSessionsChanged() {},
+  });
+  const batches: DesktopTranscriptBatch[] = [];
+  const opening = observer.openTranscript('session-1', 'consumer-ack', {
+    id: 21,
+    send(_channel, batch) {
+      batches.push(batch);
+    },
+    once() {},
+    off() {},
+  });
+
+  await waitFor(() => batches.length === 1);
+  for (let index = 0; ; index += 1) {
+    const batch = batches[index]!;
+    observer.acknowledgeTranscript(
+      'consumer-ack',
+      batch.generation,
+      batch.deliverySequence!,
+      21,
+    );
+    if (batch.ready) break;
+    await waitFor(() => batches.length === index + 2);
+  }
+  await opening;
+  assert.ok(batches.length > 1);
   await observer.close();
 });
 
