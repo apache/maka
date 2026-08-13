@@ -85,91 +85,109 @@ export class HostUsagePricingCoordinator {
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
     try {
-      const now = Date.now();
-      if (input.kind === 'summary') {
-        const merged = mergeUsageSummary(
-          await this.#stores.telemetry.summary(input.query),
-          await this.#canonicalUsage(input.query, now),
-          input.query,
-          now,
-        );
-        const { provenance, ...summary } = merged;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const before = await this.#stores.usageSnapshotRevision();
+        const result = await this.#queryUsageResult(input, before);
+        const after = await this.#stores.usageSnapshotRevision();
+        if (after === before) {
+          return {
+            ok: true,
+            result: encodeUsageQueryResult(result),
+          };
+        }
+      }
+      return {
+        ok: false,
+        error: {
+          code: 'internal_failure',
+          message: 'Usage authority changed while reading the projection',
+        },
+      };
+    } catch (error) {
+      if (error instanceof InvalidUsageOffsetError) {
         return {
-          ok: true,
-          result: encodeUsageQueryResult({ kind: 'summary', summary, provenance }),
+          ok: false,
+          error: { code: 'invalid_request', message: 'Usage offset is invalid' },
         };
       }
-      if (input.kind === 'buckets') {
-        const offset = input.offset ?? 0;
-        const limit = input.limit ?? USAGE_PAGE_MAX_ITEMS;
-        const legacy = await this.#stores.telemetry.buckets(input.query, input.groupBy);
-        // Tool buckets group tool invocations, which the model-call ledger does
-        // not describe; there is nothing canonical to merge into them.
-        const merged =
-          input.groupBy === 'tool'
-            ? { buckets: [...legacy], provenance: EMPTY_PROVENANCE }
-            : mergeUsageBuckets(
-                legacy,
-                await this.#canonicalUsage(input.query, now),
-                input.query,
-                input.groupBy,
-                now,
-              );
-        if (offset > merged.buckets.length) return invalidUsageOffset();
-        return {
-          ok: true,
-          result: encodeUsageQueryResult(
-            usagePage(
-              'buckets',
-              merged.buckets.map(projectUsageBucket),
-              merged.buckets.length,
-              offset,
-              limit,
-              merged.provenance,
-            ),
-          ),
-        };
-      }
-      const offset = input.offset ?? 0;
-      const limit = input.limit ?? USAGE_PAGE_MAX_ITEMS;
-      if (input.source === 'tool') {
-        const page = await this.#stores.telemetry.toolLogs(input.query, offset, limit);
-        if (offset > page.total) return invalidUsageOffset();
-        return {
-          ok: true,
-          result: encodeUsageQueryResult(
-            usageLogPage('tool', page.rows.map(projectToolUsageLog), page.total, offset, limit),
-          ),
-        };
-      }
-      // Both sources are newest-first, so the merged page can only be drawn
-      // from each source's own first `offset + limit` rows.
-      const legacy = await this.#stores.telemetry.logs(input.query, 0, offset + limit);
-      const merged = mergeUsageLogs(
-        legacy,
+      return this.#mapReadFailure<'usage.query'>(error, 'Usage authority');
+    }
+  }
+
+  async #queryUsageResult(input: UsageQueryInput, revision: number): Promise<UsageQueryResult> {
+    const now = Date.now();
+    if (input.kind === 'summary') {
+      const merged = mergeUsageSummary(
+        await this.#stores.telemetry.summary(input.query),
         await this.#canonicalUsage(input.query, now),
         input.query,
         now,
+      );
+      const { provenance, ...summary } = merged;
+      return { kind: 'summary', revision, summary, provenance };
+    }
+    if (input.kind === 'buckets') {
+      const offset = input.offset ?? 0;
+      const limit = input.limit ?? USAGE_PAGE_MAX_ITEMS;
+      const legacy = await this.#stores.telemetry.buckets(input.query, input.groupBy);
+      // Tool buckets group tool invocations, which the model-call ledger does
+      // not describe; there is nothing canonical to merge into them.
+      const merged =
+        input.groupBy === 'tool'
+          ? { buckets: [...legacy], provenance: EMPTY_PROVENANCE }
+          : mergeUsageBuckets(
+              legacy,
+              await this.#canonicalUsage(input.query, now),
+              input.query,
+              input.groupBy,
+              now,
+            );
+      if (offset > merged.buckets.length) throw new InvalidUsageOffsetError();
+      return usagePage(
+        'buckets',
+        revision,
+        merged.buckets.map(projectUsageBucket),
+        merged.buckets.length,
+        offset,
+        limit,
+        merged.provenance,
+      );
+    }
+    const offset = input.offset ?? 0;
+    const limit = input.limit ?? USAGE_PAGE_MAX_ITEMS;
+    if (input.source === 'tool') {
+      const page = await this.#stores.telemetry.toolLogs(input.query, offset, limit);
+      if (offset > page.total) throw new InvalidUsageOffsetError();
+      return usageLogPage(
+        'tool',
+        revision,
+        page.rows.map(projectToolUsageLog),
+        page.total,
         offset,
         limit,
       );
-      if (offset > merged.total) return invalidUsageOffset();
-      return {
-        ok: true,
-        result: encodeUsageQueryResult(
-          usageLogPage(
-            'llm',
-            merged.rows.map(projectUsageLog),
-            merged.total,
-            offset,
-            limit,
-            merged.provenance,
-          ),
-        ),
-      };
-    } catch (error) {
-      return this.#mapReadFailure<'usage.query'>(error, 'Usage authority');
     }
+    // Both sources are newest-first, so the merged page can only be drawn
+    // from each source's own first `offset + limit` rows.
+    const legacy = await this.#stores.telemetry.logs(input.query, 0, offset + limit);
+    const merged = mergeUsageLogs(
+      legacy,
+      await this.#canonicalUsage(input.query, now),
+      input.query,
+      now,
+      offset,
+      limit,
+    );
+    if (offset > merged.total) throw new InvalidUsageOffsetError();
+    return usageLogPage(
+      'llm',
+      revision,
+      merged.rows.map(projectUsageLog),
+      merged.total,
+      offset,
+      limit,
+      merged.provenance,
+    );
   }
 
   async #queryPricing(input: PricingQueryInput): Promise<OperationOutcome<'pricing.query'>> {
@@ -334,12 +352,7 @@ const EMPTY_PROVENANCE: UsageProvenance = {
   pendingRepairs: 0,
 };
 
-function invalidUsageOffset(): OperationOutcome<'usage.query'> {
-  return {
-    ok: false,
-    error: { code: 'invalid_request', message: 'Usage offset is invalid' },
-  };
-}
+class InvalidUsageOffsetError extends Error {}
 
 function createPricingPage(
   revision: number,
@@ -400,6 +413,7 @@ function projectEffectivePricingEntries(
 
 function usagePage(
   kind: 'buckets',
+  revision: number,
   allItems: readonly UsageBucket[],
   total: number,
   offset: number,
@@ -414,6 +428,7 @@ function usagePage(
     if (
       jsonBytes(
         bucketPageResult(
+          revision,
           candidate,
           total,
           offset,
@@ -430,21 +445,30 @@ function usagePage(
     throw new Error('Canonical usage item exceeds the wire page limit');
   }
   const nextOffset = offset + items.length;
-  return bucketPageResult(items, total, offset, nextOffset < total ? nextOffset : null, provenance);
+  return bucketPageResult(
+    revision,
+    items,
+    total,
+    offset,
+    nextOffset < total ? nextOffset : null,
+    provenance,
+  );
 }
 
 function bucketPageResult(
+  revision: number,
   items: readonly UsageBucket[],
   total: number,
   offset: number,
   nextOffset: number | null,
   provenance: UsageProvenance,
 ): Extract<UsageQueryResult, { kind: 'buckets' }> {
-  return { kind: 'buckets', buckets: items, offset, total, nextOffset, provenance };
+  return { kind: 'buckets', revision, buckets: items, offset, total, nextOffset, provenance };
 }
 
 function usageLogPage(
   source: 'llm',
+  revision: number,
   allItems: readonly LlmUsageLogProjection[],
   total: number,
   offset: number,
@@ -453,6 +477,7 @@ function usageLogPage(
 ): Extract<UsageQueryResult, { kind: 'logs'; source: 'llm' }>;
 function usageLogPage(
   source: 'tool',
+  revision: number,
   allItems: readonly ToolUsageLogProjection[],
   total: number,
   offset: number,
@@ -460,6 +485,7 @@ function usageLogPage(
 ): Extract<UsageQueryResult, { kind: 'logs'; source: 'tool' }>;
 function usageLogPage(
   source: 'llm' | 'tool',
+  revision: number,
   allItems: readonly UsageLogProjection[],
   total: number,
   offset: number,
@@ -474,6 +500,7 @@ function usageLogPage(
       jsonBytes(
         logPageResult(
           source,
+          revision,
           candidate,
           total,
           offset,
@@ -492,6 +519,7 @@ function usageLogPage(
   const nextOffset = offset + items.length;
   return logPageResult(
     source,
+    revision,
     items,
     total,
     offset,
@@ -502,6 +530,7 @@ function usageLogPage(
 
 function logPageResult(
   source: 'llm' | 'tool',
+  revision: number,
   rows: readonly UsageLogProjection[],
   total: number,
   offset: number,
@@ -511,6 +540,7 @@ function logPageResult(
   return {
     kind: 'logs',
     source,
+    revision,
     rows,
     offset,
     total,

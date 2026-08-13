@@ -210,11 +210,13 @@ export type UsageQueryInput =
 export type UsageQueryResult =
   | {
       readonly kind: 'summary';
+      readonly revision: number;
       readonly summary: UsageSummaryV2;
       readonly provenance: UsageProvenance;
     }
   | {
       readonly kind: 'buckets';
+      readonly revision: number;
       readonly buckets: readonly UsageBucket[];
       readonly offset: number;
       readonly total: number;
@@ -223,6 +225,7 @@ export type UsageQueryResult =
     }
   | {
       readonly kind: 'logs';
+      readonly revision: number;
       readonly source: 'llm';
       readonly rows: readonly LlmUsageLogProjection[];
       readonly offset: number;
@@ -232,6 +235,7 @@ export type UsageQueryResult =
     }
   | {
       readonly kind: 'logs';
+      readonly revision: number;
       readonly source: 'tool';
       readonly rows: readonly ToolUsageLogProjection[];
       readonly offset: number;
@@ -381,11 +385,13 @@ export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
   if (result.kind === 'summary') {
     const exact = requireExactRecord(result, 'usage summary result', [
       'kind',
+      'revision',
       'summary',
       'provenance',
     ]);
     return {
       kind: 'summary',
+      revision: requireCount(exact.revision, 'usage revision'),
       summary: decodeUsageSummary(exact.summary),
       provenance: decodeUsageProvenance(exact.provenance),
     };
@@ -393,6 +399,7 @@ export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
   if (result.kind === 'buckets') {
     const exact = requireExactRecord(result, 'usage buckets result', [
       'kind',
+      'revision',
       'buckets',
       'offset',
       'total',
@@ -407,6 +414,7 @@ export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
     if (result.source === 'llm') {
       const exact = requireExactRecord(result, 'usage llm logs result', [
         'kind',
+        'revision',
         'source',
         'rows',
         'offset',
@@ -419,6 +427,7 @@ export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
     if (result.source === 'tool') {
       const exact = requireExactRecord(result, 'usage tool logs result', [
         'kind',
+        'revision',
         'source',
         'rows',
         'offset',
@@ -730,6 +739,7 @@ function decodeUsagePage(
   const page = decodeUsagePagePosition(result, items.length);
   const decoded = {
     kind,
+    revision: requireCount(result.revision, 'usage revision'),
     buckets: items,
     ...page,
     provenance: decodeUsageProvenance(result.provenance),
@@ -761,6 +771,7 @@ function decodeUsageLogPage(
   const page = decodeUsagePagePosition(result, items.length);
   const decoded = {
     kind: 'logs',
+    revision: requireCount(result.revision, 'usage revision'),
     source,
     rows: items,
     ...page,

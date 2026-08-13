@@ -119,6 +119,12 @@ export interface InteractiveUsageStoresWriter {
   readonly telemetry: Readonly<TelemetryIndexWriter>;
   readonly modelCalls: Readonly<ModelCallIndexWriter>;
   readonly pricing: Readonly<PricingAuthorityWriter>;
+  /**
+   * Host-epoch revision for the complete Usage read model. Waits for writes
+   * already admitted at the call boundary, so a caller can fence multi-read
+   * projections without observing an in-flight mutation.
+   */
+  usageSnapshotRevision(): Promise<number>;
   beginDrain(): Promise<void>;
   flush(): Promise<void>;
   close(): Promise<void>;
@@ -318,6 +324,7 @@ function createWriterFacade(
   const failures: unknown[] = [];
   let drainPromise: Promise<void> | undefined;
   let closePromise: Promise<void> | undefined;
+  let usageRevision = 0;
 
   const assertOpen = () => {
     if (state !== 'open') throw new InteractiveUsageStoresClosedError();
@@ -336,6 +343,14 @@ function createWriterFacade(
     );
     barrier = Promise.all([barrier, observed]).then(() => undefined);
     return admitted;
+  };
+  const admitUsage = <T>(operation: () => Promise<T>): Promise<T> => {
+    assertOpen();
+    if (usageRevision === Number.MAX_SAFE_INTEGER) {
+      return Promise.reject(new Error('Usage revision is exhausted'));
+    }
+    usageRevision += 1;
+    return admit(operation);
   };
   const read = <T>(operation: () => T): Promise<T> => {
     assertOpen();
@@ -401,18 +416,18 @@ function createWriterFacade(
       toolLogs: (query, offset, limit) => read(() => telemetry.toolLogs(query, offset, limit)),
       latestLlmRuntimeProbe: (connectionSlug, modelId) =>
         read(() => telemetry.latestLlmRuntimeProbe(connectionSlug, modelId)),
-      recordLlmCall: (record) => admit(() => run(() => telemetry.insertLlmCall(record))),
+      recordLlmCall: (record) => admitUsage(() => run(() => telemetry.insertLlmCall(record))),
       recordToolInvocation: (record) =>
-        admit(() => run(() => telemetry.insertToolInvocation(record))),
+        admitUsage(() => run(() => telemetry.insertToolInvocation(record))),
     },
     modelCalls: {
       modelCallAttempts: (range) => read(() => modelCalls.read(range)),
-      recordModelCallAttempt: (attempt) => admit(() => run(() => modelCalls.record(attempt))),
+      recordModelCallAttempt: (attempt) => admitUsage(() => run(() => modelCalls.record(attempt))),
       markRunPendingReprojection: (sessionId, runId) =>
-        admit(() => run(() => modelCalls.markRunPendingReprojection(sessionId, runId))),
+        admitUsage(() => run(() => modelCalls.markRunPendingReprojection(sessionId, runId))),
       pendingReprojections: () => read(() => modelCalls.pendingReprojections()),
       clearPendingReprojection: (sessionId, runId) =>
-        admit(() => run(() => modelCalls.clearPendingReprojection(sessionId, runId))),
+        admitUsage(() => run(() => modelCalls.clearPendingReprojection(sessionId, runId))),
     },
     pricing: {
       snapshot: () => read(() => pricing.snapshot()),
@@ -423,6 +438,14 @@ function createWriterFacade(
           () => run(() => pricing.delete(expectedRevision, modelKey)),
           isExpectedPricingFailure,
         ),
+    },
+    usageSnapshotRevision: async () => {
+      while (true) {
+        assertOpen();
+        const accepted = barrier;
+        await accepted;
+        if (accepted === barrier) return usageRevision;
+      }
     },
     beginDrain,
     flush,

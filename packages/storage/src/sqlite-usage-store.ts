@@ -159,7 +159,10 @@ class SqliteTelemetryRepo implements TelemetryRepo {
         cacheRead: sum(rows.map((row) => row.cacheHitInputTokens)),
         cacheWrite: sum(rows.map((row) => row.cacheWriteInputTokens)),
         reasoning: sum(rows.map((row) => row.reasoningTokens)),
-        total: sum(rows.map((row) => row.totalTokens)),
+        // `reasoningTokens` is an output-token detail, not an additional token
+        // class. Older telemetry rows sometimes stored input + output +
+        // reasoning here, so normalize at the frozen read boundary.
+        total: sum(rows.map(canonicalTotalTokens)),
       },
       cacheHitRequests: rows.filter((row) => row.cacheHitInputTokens > 0).length,
       cacheCreateRequests: rows.filter((row) => row.cacheWriteInputTokens > 0).length,
@@ -543,7 +546,7 @@ function toUsageLogRow(row: PersistedLlmCallRecord): UsageLogRow {
     cacheWriteTokens: row.cacheWriteInputTokens,
     ...(row.cacheMissInputSource ? { cacheMissInputSource: row.cacheMissInputSource } : {}),
     reasoningTokens: row.reasoningTokens,
-    totalTokens: row.totalTokens,
+    totalTokens: canonicalTotalTokens(row),
     costUsd: row.costUsd,
     latencyMs: row.latencyMs,
     status: row.status,
@@ -576,11 +579,22 @@ function usageBucket(key: string, rows: readonly PersistedLlmCallRecord[]): Usag
     cacheReadTokens: sum(rows.map((row) => row.cacheHitInputTokens)),
     cacheWriteTokens: sum(rows.map((row) => row.cacheWriteInputTokens)),
     reasoningTokens: sum(rows.map((row) => row.reasoningTokens)),
-    totalTokens: sum(rows.map((row) => row.totalTokens)),
+    totalTokens: sum(rows.map(canonicalTotalTokens)),
     costUsd: sum(rows.map((row) => row.costUsd)),
     avgLatencyMs: rows.length ? Math.round(sum(rows.map((row) => row.latencyMs)) / rows.length) : 0,
     errorRate: rows.length ? errors / rows.length : 0,
   };
+}
+
+function canonicalTotalTokens(row: PersistedLlmCallRecord): number {
+  const inputAndOutput = row.inputTokens + row.outputTokens;
+  // The frozen recorder used input + output + reasoning only when its caller
+  // omitted totalTokens. Preserve provider-owned totals (and unknown token
+  // remainders); normalize only the exact legacy fallback shape.
+  return row.rawUsage?.total_tokens === undefined &&
+    row.totalTokens === inputAndOutput + row.reasoningTokens
+    ? inputAndOutput
+    : row.totalTokens;
 }
 
 function toolBuckets(rows: readonly PersistedToolInvocationRecord[]): UsageBucket[] {

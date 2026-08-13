@@ -195,6 +195,7 @@ describe('Usage/Pricing client response correlation', () => {
           result: {
             kind: 'logs',
             source: 'tool',
+            revision: 0,
             rows: [],
             offset: 50,
             total: 50,
@@ -227,6 +228,7 @@ describe('Usage/Pricing client response correlation', () => {
         assert.deepEqual(await response, {
           kind: 'logs',
           source: 'tool',
+          revision: 0,
           rows: [],
           offset: 50,
           total: 50,

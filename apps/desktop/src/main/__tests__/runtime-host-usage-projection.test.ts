@@ -52,12 +52,35 @@ describe("Runtime Host Usage projection", () => {
     assert.equal(stats.summary.totalRequests, 2);
     assert.equal(snapshotAttempt, 2);
   });
+
+  test("retries a same-count payload mutation identified by the Host revision", async () => {
+    let snapshotAttempt = 0;
+    const client = usageClient({
+      onSummary: () => {
+        snapshotAttempt += 1;
+      },
+      revision: (input) =>
+        snapshotAttempt === 1 && input.kind === "buckets" && input.groupBy === "provider"
+          ? 2
+          : snapshotAttempt,
+      bucketTokens: (groupBy) =>
+        snapshotAttempt === 1 && groupBy === "provider" ? 9 : 5,
+    });
+
+    const stats = await loadUsageStatsSnapshot(client as never, "all", 2_000);
+
+    assert.equal(snapshotAttempt, 2);
+    assert.equal(stats.summary.totalTokens, 5);
+    assert.equal(stats.byProvider[0]?.tokens, 5);
+  });
 });
 
 function usageClient(options: {
   queries?: UsageQuery[];
   onSummary?: () => void;
   bucketRequests?: (groupBy: string) => number;
+  bucketTokens?: (groupBy: string) => number;
+  revision?: (input: Record<string, unknown>) => number;
 }) {
   return {
     async queryUsage(input: Record<string, unknown>) {
@@ -66,6 +89,7 @@ function usageClient(options: {
         options.onSummary?.();
         return {
           kind: "summary",
+          revision: options.revision?.(input) ?? 0,
           summary: usageSummary(),
           provenance: provenance(),
         };
@@ -75,10 +99,12 @@ function usageClient(options: {
         const label = groupBy === "provider" ? "openai" : "openai:gpt-test";
         return {
           kind: "buckets",
+          revision: options.revision?.(input) ?? 0,
           buckets: [
             {
               ...usageBucket(label),
               requests: options.bucketRequests?.(groupBy) ?? 2,
+              totalTokens: options.bucketTokens?.(groupBy) ?? 5,
             },
           ],
           offset: 0,
@@ -91,6 +117,7 @@ function usageClient(options: {
         return {
           kind: "logs",
           source: "tool",
+          revision: options.revision?.(input) ?? 0,
           rows: [toolLog()],
           offset: 0,
           total: 1,
@@ -100,6 +127,7 @@ function usageClient(options: {
       return {
         kind: "logs",
         source: "llm",
+        revision: options.revision?.(input) ?? 0,
         rows: [
           llmLog("reported", "priced", 2_000),
           llmLog("missing", "unpriced", 1_500),

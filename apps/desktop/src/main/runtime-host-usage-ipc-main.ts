@@ -147,11 +147,12 @@ export function registerRuntimeHostUsageIpc(
 async function loadAllBuckets(
   client: DesktopRuntimeHostClient,
   query: UsageQuery & { groupBy: UsageGroupBy },
-): Promise<{ buckets: UsageBucket[]; provenance: UsageProvenance }> {
+): Promise<{ buckets: UsageBucket[]; provenance: UsageProvenance; revision: number }> {
   const buckets: UsageBucket[] = [];
   let offset = 0;
   let total: number | undefined;
   let provenance: UsageProvenance | undefined;
+  let revision: number | undefined;
   while (true) {
     const result = await client.queryUsage(
       query.groupBy === "tool"
@@ -174,17 +175,19 @@ async function loadAllBuckets(
       throw invalidUsageProjection();
     if (
       (total !== undefined && total !== result.total) ||
+      (revision !== undefined && revision !== result.revision) ||
       (provenance && !sameProvenance(provenance, result.provenance))
     ) {
       throw new UsageSnapshotChangedError();
     }
     total = result.total;
+    revision = result.revision;
     provenance = result.provenance;
     buckets.push(...result.buckets);
     if (result.nextOffset === null) {
       if (buckets.length !== result.total)
         throw new UsageSnapshotChangedError();
-      return { buckets, provenance: result.provenance };
+      return { buckets, provenance: result.provenance, revision: result.revision };
     }
     if (result.nextOffset <= offset) throw invalidUsageProjection();
     offset = result.nextOffset;
@@ -217,11 +220,13 @@ export async function loadUsageStatsSnapshot(
     if (
       sameUsageSnapshot(
         query.range,
+        summaryResult.revision,
         summaryResult.summary,
         summaryResult.provenance,
         providerResult,
         modelResult,
         llmResult,
+        toolResult,
       )
     ) {
       return projectUsageStats(
@@ -244,11 +249,13 @@ async function loadAllLlmLogs(
   rows: LlmUsageLogProjection[];
   total: number;
   provenance: UsageProvenance;
+  revision: number;
 }> {
   const rows: LlmUsageLogProjection[] = [];
   let offset = 0;
   let total: number | undefined;
   let provenance: UsageProvenance | undefined;
+  let revision: number | undefined;
   while (true) {
     const result = await client.queryUsage({
       kind: "logs",
@@ -265,16 +272,23 @@ async function loadAllLlmLogs(
       throw invalidUsageProjection();
     if (
       (total !== undefined && total !== result.total) ||
+      (revision !== undefined && revision !== result.revision) ||
       (provenance && !sameProvenance(provenance, result.provenance))
     ) {
       throw new UsageSnapshotChangedError();
     }
     provenance = result.provenance;
+    revision = result.revision;
     total = result.total;
     rows.push(...result.rows);
     if (result.nextOffset === null) {
       if (rows.length !== result.total) throw new UsageSnapshotChangedError();
-      return { rows, total: result.total, provenance: result.provenance };
+      return {
+        rows,
+        total: result.total,
+        provenance: result.provenance,
+        revision: result.revision,
+      };
     }
     if (result.nextOffset <= offset) throw invalidUsageProjection();
     offset = result.nextOffset;
@@ -284,10 +298,11 @@ async function loadAllLlmLogs(
 async function loadAllToolLogs(
   client: DesktopRuntimeHostClient,
   query: UsageQuery,
-): Promise<{ rows: ToolUsageLogProjection[]; total: number }> {
+): Promise<{ rows: ToolUsageLogProjection[]; total: number; revision: number }> {
   const rows: ToolUsageLogProjection[] = [];
   let offset = 0;
   let total: number | undefined;
+  let revision: number | undefined;
   while (true) {
     const result = await client.queryUsage({
       kind: "logs",
@@ -302,13 +317,17 @@ async function loadAllToolLogs(
       result.offset !== offset
     )
       throw invalidUsageProjection();
-    if (total !== undefined && total !== result.total)
+    if (
+      (total !== undefined && total !== result.total) ||
+      (revision !== undefined && revision !== result.revision)
+    )
       throw new UsageSnapshotChangedError();
     total = result.total;
+    revision = result.revision;
     rows.push(...result.rows);
     if (result.nextOffset === null) {
       if (rows.length !== result.total) throw new UsageSnapshotChangedError();
-      return { rows, total: result.total };
+      return { rows, total: result.total, revision: result.revision };
     }
     if (result.nextOffset <= offset) throw invalidUsageProjection();
     offset = result.nextOffset;
@@ -317,6 +336,7 @@ async function loadAllToolLogs(
 
 function sameUsageSnapshot(
   expectedRange: UsageTimeWindow,
+  revision: number,
   summary: {
     readonly range: { readonly from: number; readonly to: number };
     readonly totalRequests: number;
@@ -325,14 +345,21 @@ function sameUsageSnapshot(
   providers: {
     readonly buckets: readonly UsageBucket[];
     readonly provenance: UsageProvenance;
+    readonly revision: number;
   },
   models: {
     readonly buckets: readonly UsageBucket[];
     readonly provenance: UsageProvenance;
+    readonly revision: number;
   },
-  logs: { readonly total: number; readonly provenance: UsageProvenance },
+  logs: { readonly total: number; readonly provenance: UsageProvenance; readonly revision: number },
+  tools: { readonly revision: number },
 ): boolean {
   return (
+    revision === providers.revision &&
+    revision === models.revision &&
+    revision === logs.revision &&
+    revision === tools.revision &&
     summary.range.from === expectedRange.from &&
     summary.range.to === expectedRange.to &&
     summary.totalRequests === logs.total &&
