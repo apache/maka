@@ -5,11 +5,12 @@ import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { basename, dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
-import { fetch as undiciFetch, ProxyAgent } from 'undici';
+import { fetch as undiciFetch } from 'undici';
 import {
   decodePreverifiedToolchain,
   type ExternalProfile as Profile,
 } from './toolchain-verification.js';
+import { createExternalProviderDispatcher } from './external-provider-dispatcher.js';
 import { isInferenceAdmissionEvent } from './provider-admission.js';
 import { removeEvalWebTools } from './provider-web-tool-surface.js';
 import { takeRelayResultToken, writeRelayResult } from './relay-result-frame.js';
@@ -607,7 +608,7 @@ async function startMeteringProxy(
   let removedWebTools = 0;
   const requestModels = new Set<string>();
   const observedToolNames = new Set<string>();
-  const dispatcher = process.env.HTTPS_PROXY ? new ProxyAgent(process.env.HTTPS_PROXY) : undefined;
+  const providerTransport = createExternalProviderDispatcher(process.env.HTTPS_PROXY);
   const active = new Set<Promise<void>>();
   const server = createServer((request, response) => {
     const operation = (async () => {
@@ -634,7 +635,7 @@ async function startMeteringProxy(
         method: request.method,
         headers,
         body: projected.body.length === 0 ? undefined : new Uint8Array(projected.body),
-        ...(dispatcher ? { dispatcher } : {}),
+        dispatcher: providerTransport.dispatcher,
       });
       response.statusCode = upstream.status;
       upstream.headers.forEach((value, name) => {
@@ -690,7 +691,7 @@ async function startMeteringProxy(
     close: async () => {
       await Promise.allSettled([...active]);
       await closeServer(server);
-      await dispatcher?.close();
+      await providerTransport.close();
     },
   };
 }
