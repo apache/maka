@@ -2,12 +2,61 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { EXTERNAL_CONVERSATION_OPERATION_SPECS } from '../protocol/external-conversation.js';
 import { operationAllowsRemoteOwner } from '../protocol/operations.js';
+import {
+  authorizeRuntimeHostOperation,
+  createRuntimeHostConnectionAuthority,
+} from '../server/connection-authority.js';
 
 const reconcile = EXTERNAL_CONVERSATION_OPERATION_SPECS['external-conversation.reconcile'];
 
 describe('external-conversation protocol', () => {
   test('is available to a remote Desktop owner', () => {
     assert.equal(operationAllowsRemoteOwner('external-conversation.reconcile'), true);
+  });
+
+  test('requires remote Host-path authority only when creating from a Host path', () => {
+    const authority = createRuntimeHostConnectionAuthority({
+      principalKind: 'remote_owner',
+      principalId: 'remote-client',
+      credentialId: 'remote-credential',
+      operationGrants: ['external-conversation.reconcile'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const frame = (
+      workspace?:
+        | { readonly kind: 'project'; readonly projectId: string }
+        | { readonly kind: 'host_path'; readonly path: string },
+    ) => ({
+      kind: 'request' as const,
+      requestId: 'request-1',
+      operation: 'external-conversation.reconcile' as const,
+      input: {
+        kind: 'resolve' as const,
+        conversationId: 'telegram:chat-1',
+        ...(workspace
+          ? {
+              session: {
+                workspace,
+                modelTarget: { kind: 'default' as const },
+              },
+            }
+          : {}),
+      },
+    });
+
+    assert.equal(authorizeRuntimeHostOperation(authority, frame()), true);
+    assert.equal(
+      authorizeRuntimeHostOperation(authority, frame({ kind: 'project', projectId: 'project-1' })),
+      true,
+    );
+    assert.equal(
+      authorizeRuntimeHostOperation(
+        authority,
+        frame({ kind: 'host_path', path: '/host/workspace' }),
+      ),
+      false,
+    );
   });
 
   test('decodes resolve and release without accepting a Client-selected Session id', () => {
