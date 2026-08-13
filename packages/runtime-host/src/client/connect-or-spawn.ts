@@ -197,6 +197,8 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       clientInstanceId,
       connectTimeoutMs: input.connectTimeoutMs,
       handshakeTimeoutMs: input.handshakeTimeoutMs,
+      livenessIntervalMs: input.livenessIntervalMs,
+      livenessTimeoutMs: input.livenessTimeoutMs,
       electionDeadline: deadline,
     });
     if (result.kind === 'election_deadline_elapsed') {
