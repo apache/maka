@@ -137,6 +137,7 @@ unsafe fn create_kill_on_close_job() -> Result<HANDLE, String> {
 
 unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> Result<u8, String> {
     let mut command = quote_command(&request.executable, &request.arguments);
+    let mut executable = wide(&request.executable);
     let mut cwd = wide(&request.cwd);
     let environment = environment_block(&request.environment);
     let environment_ptr = if environment.is_empty() {
@@ -152,7 +153,7 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
         CreateProcessWithTokenW(
             token,
             0,
-            null(),
+            executable.as_mut_ptr(),
             command.as_mut_ptr(),
             CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
             environment_ptr,
