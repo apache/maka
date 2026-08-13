@@ -29,6 +29,7 @@
  * in the `ReasoningPanel` header.
  */
 
+import { appendRedactedDisplay } from './incremental-display-redaction.js';
 import { redactSecrets } from './redact.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getSharedUiCopy } from './shared-ui-copy.js';
@@ -108,11 +109,10 @@ export function applyThinkingDelta(
     deltaTruncated = true;
   }
 
-  // L3: append.
-  const appended = (prev ?? '') + delta;
+  const appended = appendRedactedDisplay(prev ?? '', delta);
 
   // L4: per-session total cap. Tail-keep most recent.
-  let result = appended;
+  let result = appended.text;
   let totalTruncated = false;
   if (result.length > maxTotal) {
     const keep = maxTotal - truncatedHeadMarker.length;
@@ -122,7 +122,7 @@ export function applyThinkingDelta(
 
   return {
     text: result,
-    redacted: redactionHappened,
+    redacted: redactionHappened || appended.redacted,
     truncated: deltaTruncated || totalTruncated,
   };
 }

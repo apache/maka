@@ -2,6 +2,8 @@ import { PROMPT_RAIL_PROMPT_COUNT } from '../src/main/e2e-fixture/seed-helpers';
 import { expect, test } from './fixtures';
 import type { Page } from '@playwright/test';
 
+const MAX_PROMPT_RAIL_TICKS = 64;
+
 /**
  * The prompt anchor rail (#563) has failed three times in a row in the same
  * way: the code kept working and the pixels stopped. #2161 pinned it against
@@ -82,7 +84,7 @@ test('every tick paints a bar with a real box', async ({ promptRailWindow: page 
     }),
   );
 
-  expect(bars).toHaveLength(PROMPT_RAIL_PROMPT_COUNT);
+  expect(bars).toHaveLength(Math.min(PROMPT_RAIL_PROMPT_COUNT, MAX_PROMPT_RAIL_TICKS));
   // #2580 shipped bars at 0x0 — present in the DOM, painting nothing.
   expect(Math.min(...bars.map((bar) => bar.width))).toBeGreaterThan(0);
   expect(Math.min(...bars.map((bar) => bar.height))).toBeGreaterThan(0);
@@ -206,6 +208,17 @@ test('the first click of a session lands on its prompt and holds', async ({
   expect(settled?.offset).toBeGreaterThan(-24);
   expect(settled?.offset).toBeLessThan(24);
   expect(settled?.tickIsCurrent).toBe(true);
+});
+
+test('long transcripts keep a bounded mounted turn window', async ({
+  promptRailWindow: page,
+}) => {
+  const count = async () => page.locator('[data-virtual-turn-id]').count();
+  await page.locator('[data-chat-scroll-container="true"][data-turn-window="ready"]').waitFor();
+  expect(await count()).toBeLessThanOrEqual(100);
+  await page.locator('.maka-prompt-rail-tick').first().click({ force: true });
+  await expect(page.locator('[data-turn-id="turn-prompt-rail-1"]')).toHaveCount(1);
+  expect(await count()).toBeLessThanOrEqual(100);
 });
 
 test('a tick is what the pointer lands on, not the scrollbar', async ({

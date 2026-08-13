@@ -198,6 +198,59 @@ describe('single live-turn handoff', () => {
     assert.ok(refreshes.some((call) => call.required === 'assistant-1'));
   });
 
+  it('publishes visible deltas at most once per animation frame', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': armLiveTurn('turn-1'),
+    });
+    const liveTurnBySessionRef = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const frames: Array<() => void> = [];
+    let publications = 0;
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'zh',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater) => {
+        publications += 1;
+        liveTurns.set(updater);
+        liveTurnBySessionRef.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+      scheduleFrame: (callback) => { frames.push(callback); },
+    });
+
+    for (let index = 0; index < 100; index += 1) {
+      handlers.handleEvent('session-1', {
+        type: 'text_delta',
+        id: `event-${index}`,
+        turnId: 'turn-1',
+        messageId: 'assistant-1',
+        ts: index,
+        text: 'x',
+      });
+    }
+    assert.equal(publications, 0);
+    assert.equal(frames.length, 1);
+    frames.shift()?.();
+    assert.equal(publications, 1);
+    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.text, 'x'.repeat(100));
+
+    handlers.handleEvent('session-1', {
+      type: 'text_delta', id: 'event-100', turnId: 'turn-1', messageId: 'assistant-1', ts: 100, text: 'y',
+    });
+    handlers.handleEvent('session-1', {
+      type: 'text_complete', id: 'event-101', turnId: 'turn-1', messageId: 'assistant-1', ts: 101, text: 'done',
+    });
+    assert.equal(publications, 2);
+    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.text, 'done');
+    frames.shift()?.();
+    assert.equal(publications, 2);
+  });
+
   it('queues a sandbox boundary request without ending the live turn', () => {
     const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
       'session-1': armLiveTurn('turn-1'),

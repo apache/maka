@@ -23,6 +23,14 @@
   width: 100%;
 }
 
+.maka-turn-virtual-item {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: var(--space-1);
+  contain: layout style;
+}
+
 .maka-chat-message-loading {
   display: grid;
   place-items: center;

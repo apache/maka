@@ -29,15 +29,10 @@ import {
   type TurnPresentationDeriver,
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
-import { useProgressiveTurnMount } from './use-progressive-turn-mount.js';
-import { createTurnSizeIndex, layoutKeyOf, measureSettledGeometry } from './turn-size-index.js';
+import { useTurnVirtualizer } from './use-turn-virtualizer.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { SessionContextLayer } from './session-context-layer.js';
-
-// #2224: one geometry cache for the app's single ChatView. Session-keyed
-// inside; module scope only saves threading it through the shell.
-const turnSizeIndex = createTurnSizeIndex();
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
@@ -411,42 +406,20 @@ export function ChatView(props: {
   }
   const scrollRef = chatLayout.scrollContainerRef;
   const [latestNavigationNonce, setLatestNavigationNonce] = useState(0);
-  // #2052: the first commit after a session switch mounts only a tail window
-  // of turns; the rest arrive in idle chunks with scroll compensation. The
-  // full `turns` array above still feeds deriveTurnPresentation and the
-  // prompt rail, so presentation caching (#2030) and rail geometry are not
-  // window-dependent; only the JSX mapping below is sliced.
   const orderedTurnIds = useMemo(() => turns.map((turn) => turn.turnId), [turns]);
-  // #2224: heights measured on a previous visit under the current layout.
-  // With them the unmounted prefix is held by one spacer and each turn's
-  // intrinsic size is seeded, so the scroller's total height stays put while
-  // the fill runs. Without them (first visit, resized window) everything
-  // below degrades to the plain #2052 fill and the warm-up relearns sizes.
   const sessionId = props.activeSession?.id;
-  // The lookup should land in the same commit as the session switch, so the
-  // scroller never paints a frame at its unseeded height. An in-place
-  // switch has the scroller ref during render and the memo reads it there.
-  // Two things invalidate that read: on a fresh mount the ref is still null
-  // (the scroller is an ancestor host whose ref attaches after descendant
-  // effects), and on platforms with classic scrollbars the column is wider
-  // until enough turns mount to overflow, so an early read misses the
-  // record. The nudge effect below answers both by retrying after every
-  // commit while the fill window is open (each fill chunk moves mountStart)
-  // and stopping on the first hit or when the window closes, so token
-  // streaming never re-reads layout.
-  const [lookupPass, setLookupPass] = useState(0);
-  const seededGeometry = useMemo(() => {
-    const root = scrollRef.current;
-    if (!sessionId || !root) return undefined;
-    return turnSizeIndex.lookup(sessionId, layoutKeyOf(root));
-  }, [sessionId, scrollRef, lookupPass]);
-  const { start: mountStart, filled: turnsFilled, prefixHeight, revealTurn } = useProgressiveTurnMount({
+  const {
+    start: mountStart,
+    end: mountEnd,
+    beforeHeight,
+    afterHeight,
+    revealTurn,
+  } = useTurnVirtualizer({
     sessionId,
     turnIds: orderedTurnIds,
     scrollRef,
-    scrollBehavior: props.scrollBehavior,
     targetTurnId: props.scrollTargetTurn?.turnId,
-    seededGeometry,
+    targetKey: props.scrollTargetTurn?.nonce,
   });
   const navigatePromptRailFallback = useCallback((turn: PromptAnchorRailTurn) => {
     if (turnIdsRef.current.has(turn.turnId)) revealTurn(turn.turnId);
@@ -454,56 +427,7 @@ export function ChatView(props: {
       loadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
     }
   }, [revealTurn]);
-  useEffect(() => {
-    if (!turnsFilled && !seededGeometry && scrollRef.current) {
-      setLookupPass((count) => count + 1);
-    }
-  }, [sessionId, orderedTurnIds, mountStart, turnsFilled, seededGeometry, scrollRef]);
-  const mountedTurns = mountStart === 0 ? turns : turns.slice(mountStart);
-  // Record geometry once the transcript has settled: fill complete and the
-  // warm-up done, so every turn's box is its remembered final size and
-  // reading it forces no render. An exit-time capture would be too late,
-  // React runs effect cleanups after the next session's DOM is already in.
-  // Streaming turns are still moving and are left out.
-  useEffect(() => {
-    const root = scrollRef.current;
-    // A pair of turns is the smallest transcript measureSettledGeometry
-    // accepts, and the pair gate also keeps an empty session from polling
-    // forever: with no turns the warm-up never runs, so 'settled' is never
-    // written and the wait below would have no end.
-    if (!sessionId || !root || !turnsFilled || orderedTurnIds.length < 2) return;
-    let disposed = false;
-    let timer: number | undefined;
-    // Backstop for the same never-settles shape arriving some other way: a
-    // walk that has not settled after 150 polls is not going to, and a dead
-    // timer must not keep reading layout on a resting surface.
-    let polls = 0;
-    const startKey = layoutKeyOf(root);
-    const measure = () => {
-      if (disposed) return;
-      const attempt = measureSettledGeometry(root, startKey);
-      if (attempt.status === 'pending') {
-        polls += 1;
-        if (polls < 150) timer = window.setTimeout(measure, 200);
-        return;
-      }
-      if (attempt.status === 'measured') {
-        turnSizeIndex.record(sessionId, startKey, attempt.geometry);
-        // Published like data-turn-warmup, with the key as the value: a
-        // wait can then ask for the record covering the layout it is about
-        // to rely on, not merely some record from an earlier width.
-        root.dataset.turnGeometry = startKey;
-      }
-    };
-    timer = window.setTimeout(measure, 200);
-    return () => {
-      disposed = true;
-      window.clearTimeout(timer);
-      // The key describes the transcript that was measured; whatever
-      // replaces it must not inherit the announcement.
-      delete root.dataset.turnGeometry;
-    };
-  }, [sessionId, turnsFilled, orderedTurnIds, scrollRef]);
+  const mountedTurns = turns.slice(mountStart, mountEnd);
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
@@ -511,7 +435,6 @@ export function ChatView(props: {
     messages: props.messages,
     target: props.scrollTargetTurn,
     behavior: props.scrollBehavior,
-    warmupReady: turnsFilled,
     hasOlderHistory: props.hasOlderHistory,
     historyLoadPending: props.historyLoadPending,
     onLoadEarlierHistory: props.onLoadEarlierHistory,
@@ -656,7 +579,6 @@ export function ChatView(props: {
           scrollRef={scrollRef}
           onNavigateFallback={navigatePromptRailFallback}
           onNavigateStart={chatLayout.unlockAutoFollow}
-          transcriptFilled={turnsFilled}
         />
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
@@ -668,27 +590,22 @@ export function ChatView(props: {
           {showEmptyState ? null : (
             <>
               {chat.length === 0 && !streamingActive ? emptyContent : null}
-              {/* #2224: stands in for the unmounted prefix so the scroller's
-                  total height (and the native scrollbar) holds still while
-                  the fill replaces it chunk by chunk. */}
-              {mountStart > 0 && prefixHeight !== undefined && prefixHeight > 0 && (
+              {beforeHeight > 0 && (
                 <div
                   aria-hidden="true"
-                  className="maka-turn-prefix-spacer"
-                  // transition: none matters: the app-wide transition rule
-                  // (even at its near-zero duration) applies height changes
-                  // a frame after the commit, so the fill's same-frame
-                  // scroll compensation would read the old spacer height
-                  // and the anchor would jump by one chunk per step.
-                  style={{ height: prefixHeight, flex: '0 0 auto', transition: 'none' }}
+                  className="maka-turn-virtual-spacer"
+                  style={{ height: beforeHeight, flex: '0 0 auto', transition: 'none' }}
                 />
               )}
               {mountedTurns.map((turn) => {
                 return (
-                  <Fragment key={turn.turnId}>
+                  <div
+                    key={turn.turnId}
+                    className="maka-turn-virtual-item"
+                    data-virtual-turn-id={turn.turnId}
+                  >
                     <TurnView
                       turn={turn}
-                      seededHeight={seededGeometry?.heights.get(turn.turnId)}
                       userLabel={props.userLabel}
                       footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
                       onFooterAction={stableTurnFooterAction}
@@ -726,9 +643,16 @@ export function ChatView(props: {
                     {conversationItemsByTurn.get(turn.turnId)?.map((item) => (
                       <Fragment key={item.id}>{item.content}</Fragment>
                     ))}
-                  </Fragment>
+                  </div>
                 );
               })}
+              {afterHeight > 0 && (
+                <div
+                  aria-hidden="true"
+                  className="maka-turn-virtual-spacer"
+                  style={{ height: afterHeight, flex: '0 0 auto', transition: 'none' }}
+                />
+              )}
               {/* #642 fallback: streaming began before the optimistic user turn
                   materialized (rare — e.g. an event replay while messages are still
                   loading), so there is no tail turn to inject into. Render the live

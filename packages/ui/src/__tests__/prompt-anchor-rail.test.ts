@@ -8,7 +8,7 @@ import {
 
 /**
  * The e2e suite cannot stage what these cover. Whether a jump survives depends
- * on which frame the progressive fill lands on, and the e2e case went green
+ * on which frame the virtual window lands on, and the e2e case went green
  * against a renderer that did not survive it. Driving the frames here makes it
  * deterministic.
  */
@@ -36,7 +36,6 @@ function railHoldHarness() {
     /** The target's top edge, relative to the scrollport's. 0 = landed. */
     targetTop: 600,
     targetPresent: true,
-    filled: false,
     queried: '',
     settled: 0,
   };
@@ -86,7 +85,6 @@ test('a jump re-aims at its destination every time the transcript grows', () => 
   const release = holdJumpDestination({
     root,
     readTargetId: () => 'turn-7',
-    isTranscriptFilled: () => state.filled,
     onSettled: () => {
       state.settled += 1;
     },
@@ -110,7 +108,6 @@ test('a jump re-aims at its destination every time the transcript grows', () => 
 
   // A scroll that was cancelled part-way leaves the target off-target on an
   // otherwise still frame. That is the other way a jump used to be lost.
-  state.filled = true;
   state.targetTop = 240;
   harness.runFrame();
   assert.equal(scrolled.length, 3, 'a stalled jump is corrected, not accepted');
@@ -119,14 +116,13 @@ test('a jump re-aims at its destination every time the transcript grows', () => 
   harness.restore();
 });
 
-test('a jump holds until the transcript reports itself filled and still', () => {
+test('a jump holds until the mounted destination is still', () => {
   const harness = railHoldHarness();
   const { root, scheduler, state } = harness;
 
   holdJumpDestination({
     root,
     readTargetId: () => 'turn-7',
-    isTranscriptFilled: () => state.filled,
     onSettled: () => {
       state.settled += 1;
     },
@@ -136,18 +132,11 @@ test('a jump holds until the transcript reports itself filled and still', () => 
   // Landed already, so nothing below is a correction — only the boundary.
   state.targetTop = 0;
 
-  // Still filling: quiet frames must not count, however many pass. This is the
-  // case a fixed timeout got wrong — it expired mid-fill and handed a
-  // still-growing transcript back to whatever else was moving it.
-  for (let index = 0; index < 20; index += 1) harness.runFrame();
-  assert.equal(state.settled, 0, 'an unfilled transcript keeps its hold');
-
-  state.filled = true;
   harness.runFrame();
   harness.runFrame();
   assert.equal(state.settled, 0, 'settling waits for a few still frames');
   harness.runFrame();
-  assert.equal(state.settled, 1, 'filled and still ends the hold');
+  assert.equal(state.settled, 1, 'a mounted and still destination ends the hold');
 
   harness.restore();
 });
@@ -155,13 +144,11 @@ test('a jump holds until the transcript reports itself filled and still', () => 
 test('a jump waits for an unloaded destination before settling', () => {
   const harness = railHoldHarness();
   const { root, scheduler, state } = harness;
-  state.filled = true;
   state.targetPresent = false;
 
   holdJumpDestination({
     root,
     readTargetId: () => 'turn-7',
-    isTranscriptFilled: () => state.filled,
     onSettled: () => {
       state.settled += 1;
     },
@@ -189,7 +176,6 @@ test('a jump gives the transcript back the moment the reader touches it', () => 
   holdJumpDestination({
     root,
     readTargetId: () => 'turn-7',
-    isTranscriptFilled: () => state.filled,
     onSettled: () => {
       state.settled += 1;
     },

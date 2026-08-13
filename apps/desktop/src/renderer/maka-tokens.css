@@ -1482,8 +1482,7 @@
   .maka-turn {
     display: flex;
     flex-direction: column;
-    /* The content wrapper owns between-turn flex layout; turns must retain
-       their measured height for content-visibility warm-up and scrolling. */
+    /* The content wrapper owns between-turn flex layout. */
     flex: 0 0 auto;
     /* PR5 CHAT-TURN-SPACING-0: uniform 12px within-turn gap, matching the
        between-turn gap (.maka-chatContent) — one density, no between/within
@@ -1493,29 +1492,6 @@
     margin: 0 auto;
     width: 100%;
     box-sizing: border-box;
-    /* Long-conversation first render: skip layout/paint for off-screen
-       turns (vercel react-best-practices rendering-content-visibility —
-       ~10x initial-render win on long sessions, keeps native Cmd+F and
-       text selection, no virtualization library). `auto 250px` is only a
-       placeholder until a turn is first rendered; the remembered actual
-       size then keeps scroll geometry exact. Never-rendered history would
-       otherwise inflate turn by turn while scrolling up ("endless scroll"),
-       so chat-view runs an idle-time bottom-up warm-up after session load —
-       see packages/ui/src/turn-size-warmup.ts. */
-    content-visibility: auto;
-    contain-intrinsic-size: auto 250px;
-  }
-
-  /* #642 single render path: the streaming answer now rides the tail turn's
-     own `.maka-turn` node (not a separate `.maka-turn-streaming` section), so
-     the content-visibility override keys off the `data-live-streaming` hook
-     the tail turn carries. It must never be skipped: it grows every frame and
-     anchors the auto-scroll-to-bottom behavior. The old `.maka-turn-streaming`
-     box + `margin-top` position-parity rule is gone: the tail turn is already
-     spaced by its parent `.maka-turn` gap, so there is no out-of-band section
-     to re-align. */
-  .maka-turn[data-live-streaming="true"] {
-    content-visibility: visible;
   }
 
   /* ChatReasoning is ejected from Astryx lab 0.1.9 because lab is canary-only.
