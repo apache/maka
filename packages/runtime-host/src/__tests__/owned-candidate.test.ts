@@ -58,7 +58,10 @@ test('owned Host exits promptly after its first connection closes', async () => 
         max: RUNTIME_HOST_PROTOCOL_VERSION,
       },
       compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-      electionDeadlineMs: 2_000,
+      // This test owns the post-connect exit deadline below. Give a cold CI
+      // process the same election window as the preceding startup test so
+      // scheduler load cannot fail it before the connection under test exists.
+      electionDeadlineMs: 6_000,
     },
     { launchCandidate: launchOwnedRuntimeHostCandidate },
   );
