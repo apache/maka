@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  captureQueuedInputStagedContext,
   isComposerResponseBusy,
   isReferenceSizedPaste,
   navigateComposerHistory,
@@ -11,6 +12,7 @@ import {
   rememberComposerDraft,
   rememberComposerHistoryEntry,
   type ComposerHistoryState,
+  type ComposerPendingAttachment,
 } from '../composer-helpers.js';
 
 describe('isComposerResponseBusy', () => {
@@ -138,5 +140,38 @@ describe('isReferenceSizedPaste', () => {
     assert.equal(isReferenceSizedPaste('x'.repeat(PASTE_AS_QUOTE_MIN_CHARS)), true);
     assert.equal(isReferenceSizedPaste(lines(PASTE_AS_QUOTE_MIN_LINES)), false);
     assert.equal(isReferenceSizedPaste(lines(PASTE_AS_QUOTE_MIN_LINES + 1)), true);
+  });
+});
+
+describe('queued-input staged context (#1954 review P2-1)', () => {
+  it('returns undefined for a bare-text entry', () => {
+    assert.equal(captureQueuedInputStagedContext(undefined, undefined), undefined);
+    assert.equal(captureQueuedInputStagedContext([], []), undefined);
+  });
+
+  it('captures a defensive copy of the tray at queue time', () => {
+    const quoteA = { text: 'quote A' };
+    const attachmentA: ComposerPendingAttachment = {
+      displayName: 'a.txt',
+      kind: 'doc',
+      size: 1,
+      ingestToken: { stagingKey: 'a' },
+    };
+    const captured = captureQueuedInputStagedContext([quoteA], [attachmentA]);
+    assert.deepEqual(captured, { quotes: [quoteA], attachments: [attachmentA] });
+  });
+
+  it('isolates each entry from the chips staged for the next entry', () => {
+    const quoteA = { text: 'quote A' };
+    const quoteB = { text: 'quote B' };
+    const entryA = captureQueuedInputStagedContext([quoteA], undefined);
+    // The tray moved on to B's chips before B was queued.
+    const entryB = captureQueuedInputStagedContext([quoteB], undefined);
+    assert.deepEqual(entryA, { quotes: [quoteA] });
+    assert.deepEqual(entryB, { quotes: [quoteB] });
+    // A later tray change (or removal) cannot retroactively change A.
+    const later = captureQueuedInputStagedContext([], undefined);
+    assert.equal(later, undefined);
+    assert.deepEqual(entryA, { quotes: [quoteA] });
   });
 });

@@ -757,6 +757,25 @@ describe('settleLiveTurnStep', () => {
     };
     assert.equal(settleLiveTurnStep(projection, 'step-1'), undefined);
   });
+
+  it('keeps steering visible when the terminal text step hands off', () => {
+    const projection: LiveTurnProjection = {
+      turnId: 'turn-1',
+      phase: 'streamed',
+      terminal: true,
+      steps: [{
+        stepId: 'step-1',
+        text: { text: 'guided answer', truncated: false, complete: true },
+        tools: [],
+      }],
+      steering: [{ id: 'steer-1', text: 'guide this turn', ts: 2 }],
+    };
+
+    assert.deepEqual(settleLiveTurnStep(projection, 'step-1'), {
+      ...projection,
+      steps: [],
+    });
+  });
 });
 
 describe('reconcileTerminalLiveTurn', () => {

@@ -17,7 +17,8 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import type { SessionSummary } from '@maka/core';
-import type { LiveTurnProjection } from '@maka/ui';
+import type { ComposerStagedContext, LiveTurnProjection } from '@maka/ui';
+import { applyLiveTurnEvent } from '@maka/ui';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
 import { createAppShellSessionUiStateController } from '../../renderer/app-shell-session-ui-state.js';
 import { settledSessionTransientIds } from '../../renderer/settled-session-transients.js';
@@ -525,5 +526,140 @@ describe('queued mid-turn send rollback (#1954 review 4.2)', () => {
     // The optimistic arm was disarmed: no unconfirmed live turn survives.
     const armed = controller.getState().liveTurnBySession[sessionId];
     assert.equal(armed, undefined, 'a queued send must not leave an armed turn behind');
+  });
+});
+
+describe('Host-named turn rebind (#1954 review P2-2)', () => {
+  it('rebinds the optimistic arm to the Host turn id so a no-content abort settles it', async () => {
+    const sessionId = 'session-1';
+    const controller = createAppShellSessionUiStateController();
+    const restoreWindow = installWindow({
+      sessions: {
+        send: async () => ({
+          ok: true,
+          disposition: 'turn_started',
+          // The Host names the started turn; the renderer's pre-generated id
+          // only labeled the submitted message (runtime-host-client-uds).
+          turnId: 'host-turn-1',
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
+        // `refreshMessagesUntilTurn` waits for the sent turn in the transcript.
+        readMessages: async () => [
+          { type: 'user', id: 'user-host-turn-1', turnId: 'host-turn-1', ts: 1, text: 'hello' },
+        ],
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: sessionId },
+        setLiveTurnBySession: controller.setLiveTurnBySession,
+      });
+      assert.equal(await actions.send('hello'), true);
+    } finally {
+      restoreWindow();
+    }
+
+    const armed = controller.getState().liveTurnBySession[sessionId];
+    assert.equal(
+      armed?.turnId,
+      'host-turn-1',
+      'the arm must be renamed to the Host-authoritative turn',
+    );
+    assert.equal(armed?.unconfirmed, true, 'the rebind must keep the pending claim');
+
+    // The provider aborts before emitting any content: the terminal event
+    // names the Host turn, and with no steps the projection must settle
+    // (remove) the arm instead of leaving the composer stuck in Stop/busy.
+    controller.setLiveTurnBySession((current) => {
+      const nextProjection = applyLiveTurnEvent(
+        current[sessionId],
+        { type: 'abort', id: 'abort-1', turnId: 'host-turn-1', ts: 2, reason: 'crash' },
+        'en',
+      );
+      if (nextProjection === current[sessionId]) return current;
+      const next = { ...current };
+      if (nextProjection) next[sessionId] = nextProjection;
+      else delete next[sessionId];
+      return next;
+    });
+    assert.equal(
+      controller.getState().liveTurnBySession[sessionId],
+      undefined,
+      'a no-content abort on the Host turn must settle the arm',
+    );
+  });
+});
+
+describe('queued-entry staged context (#1954 review P2-1)', () => {
+  it('drains each queued entry with its own captured context, never the current tray', async () => {
+    const sessionId = 'session-1';
+    const sent: Array<{ text: string; attachmentItems?: unknown; quotes?: unknown }> = [];
+    // Entry A captured quote A + file a.txt at queue time; entry B captured
+    // quote B. The tray has since moved on — neither drain may see anything
+    // but its own snapshot.
+    const quoteA = { text: 'quote A' };
+    const quoteB = { text: 'quote B' };
+    const fileA = new File(['a'], 'a.txt');
+    const attachmentA = {
+      displayName: 'a.txt',
+      kind: 'doc' as const,
+      size: 1,
+      ingestToken: { stagingKey: 'a', source: { type: 'file' as const, file: fileA } },
+    };
+    const entryA: ComposerStagedContext = {
+      quotes: [quoteA],
+      attachments: [attachmentA],
+    };
+    const entryB: ComposerStagedContext = { quotes: [quoteB] };
+    const restoreWindow = installWindow({
+      sessions: {
+        send: async (
+          _sendSessionId: string,
+          command: { text: string; attachmentItems?: unknown; quotes?: unknown },
+        ) => {
+          sent.push({
+            text: command.text,
+            ...(command.attachmentItems ? { attachmentItems: command.attachmentItems } : {}),
+            ...(command.quotes ? { quotes: command.quotes } : {}),
+          });
+          return {
+            ok: true,
+            disposition: 'turn_started',
+            turnId: 'turn-1',
+            attachments: [],
+            skillInvocation: { loaded: [], failed: [] },
+          };
+        },
+        // `refreshMessagesUntilTurn` waits for the sent turn to appear in the
+        // transcript; echo it so the happy path completes instead of timing out.
+        readMessages: async () => [
+          { type: 'user', id: 'user-turn-1', turnId: 'turn-1', ts: 1, text: 'entry' },
+        ],
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: sessionId },
+      });
+      // Entry A captured quote A + file a.txt at queue time; entry B captured
+      // quote B. The tray has since moved on — neither drain may see anything
+      // but its own snapshot.
+      assert.equal(await actions.send('entry A', undefined, { stagedContext: entryA }), true);
+      assert.equal(await actions.send('entry B', undefined, { stagedContext: entryB }), true);
+    } finally {
+      restoreWindow();
+    }
+    assert.deepEqual(sent[0], {
+      text: 'entry A',
+      attachmentItems: [{ file: fileA }],
+      quotes: [quoteA],
+    });
+    assert.deepEqual(sent[1], {
+      text: 'entry B',
+      quotes: [quoteB],
+    });
   });
 });

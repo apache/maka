@@ -37,7 +37,13 @@ import {
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { type ChatModelChoice, modelChoiceValue } from './chat-model-helpers.js';
-import { appendPromptContextDraft, isReferenceSizedPaste } from './composer-helpers.js';
+import {
+  appendPromptContextDraft,
+  captureQueuedInputStagedContext,
+  isReferenceSizedPaste,
+  type ComposerPendingAttachment,
+  type ComposerStagedContext,
+} from './composer-helpers.js';
 import { stripQuoteHeadingMarkers } from './quote-ref-chip.js';
 import { WorkspacePicker, type WorkspacePickerModel } from './workspace-picker.js';
 import { useComposerDraft, type ComposerDraftPersistence } from './use-composer-draft.js';
@@ -55,7 +61,7 @@ import {
   type ComposerTextPort,
 } from './chat-input-behavior.js';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
-import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
+import type { PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
 import {
   Button as UiButton,
   ButtonGroup,
@@ -186,6 +192,12 @@ interface QueuedComposerInput {
   id: number;
   text: string;
   metadata?: ComposerSendMetadata;
+  /**
+   * Quotes/attachments staged in the tray when this entry was queued. Bound to
+   * the entry so a later entry's chips — or a chip removed from the tray
+   * before drain — can never change what this entry sends (#1954 review P2-1).
+   */
+  staged?: ComposerStagedContext;
 }
 
 type ComposerImportActionId = 'pick' | 'attach';
@@ -227,28 +239,20 @@ export const Composer = forwardRef<
     onSend(
       text: string,
       metadata?: ComposerSendMetadata,
+      staged?: ComposerStagedContext,
     ): boolean | void | Promise<boolean | void>;
     /** Submit while a turn is active; the host owns control-command versus steering semantics. */
     onStreamingSubmit?(
       text: string,
       metadata?: ComposerSendMetadata,
+      staged?: ComposerStagedContext,
     ): boolean | void | Promise<boolean | void>;
     /** Return true when this draft must bypass the local mid-turn queue. */
     shouldSubmitWhileStreaming?(text: string): boolean;
     onStop(): void | Promise<void>;
     onPickAttachments?(): void | Promise<void>;
     onAttachFilePaths?(files: File[]): void | Promise<void>;
-    pendingAttachments?: readonly {
-      displayName: string;
-      kind: AttachmentRef['kind'];
-      mimeType?: string;
-      size: number;
-      /** Renderer-resolvable image source (object/data URL) for `kind: 'image'`
-       *  previews. When set, the chip is clickable and opens the image in a
-       *  Lightbox; while absent (still loading, or preview failed) the chip is
-       *  inert like any other kind. */
-      previewUrl?: string;
-    }[];
+    pendingAttachments?: readonly ComposerPendingAttachment[];
     onRemoveAttachment?(index: number): void;
     /** Quoted excerpts staged for the next send; rendered as removable chips. */
     pendingQuotes?: readonly QuoteRef[];
@@ -385,8 +389,6 @@ export const Composer = forwardRef<
   const [editingQueuedInputId, setEditingQueuedInputId] = useState<number | null>(null);
   const [queuedInputEditText, setQueuedInputEditText] = useState('');
   const queuedInputSequenceRef = useRef(0);
-  const autoDrainReadyDraftKeysRef = useRef(new Set<string>());
-  const previousQueueStreamingRef = useRef<{ draftKey: string; streaming: boolean } | null>(null);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
@@ -1068,6 +1070,15 @@ export const Composer = forwardRef<
       id: ++queuedInputSequenceRef.current,
       ...input,
     };
+    // #1954 review P2-1: bind the tray at queue time. The entry owns its
+    // quotes/attachments snapshot, so queueing B after A with different chips
+    // can never make A's drain send B's chips, and removing a chip before
+    // drain no longer changes what an already-queued entry sends.
+    const staged = captureQueuedInputStagedContext(
+      props.pendingQuotes,
+      props.pendingAttachments,
+    );
+    if (staged) entry.staged = staged;
     setQueuedInputsByDraftKey((current) => ({
       ...current,
       [queuedInputDraftKey]: [...(current[queuedInputDraftKey] ?? []), entry],
@@ -1130,6 +1141,7 @@ export const Composer = forwardRef<
               ...(text === entry.text && entry.metadata !== undefined
                 ? { metadata: entry.metadata }
                 : {}),
+              ...(entry.staged ? { staged: entry.staged } : {}),
             }
           : entry
       )),
@@ -1146,7 +1158,7 @@ export const Composer = forwardRef<
       const submit = props.streaming && props.onStreamingSubmit
         ? props.onStreamingSubmit
         : props.onSend;
-      sent = await submit(entry.text, entry.metadata);
+      sent = await submit(entry.text, entry.metadata, entry.staged);
     } finally {
       sendPendingRef.current = false;
       if (composerMountedRef.current) setSendPending(false);
@@ -1155,46 +1167,6 @@ export const Composer = forwardRef<
     rememberSentEntry(entry.text);
     removeQueuedInput(entry.id);
   }
-
-  useEffect(() => {
-    const previous = previousQueueStreamingRef.current;
-    previousQueueStreamingRef.current = {
-      draftKey: queuedInputDraftKey,
-      streaming: Boolean(props.streaming),
-    };
-    if (
-      previous?.draftKey === queuedInputDraftKey
-      && previous.streaming
-      && !props.streaming
-    ) {
-      autoDrainReadyDraftKeysRef.current.add(queuedInputDraftKey);
-    }
-    if (
-      props.streaming
-      || props.disabled
-      || props.sendBlocked
-      || sendPending
-      || editingQueuedInputId !== null
-      || !autoDrainReadyDraftKeysRef.current.has(queuedInputDraftKey)
-    ) return;
-    const next = queuedInputs[0];
-    if (!next) {
-      autoDrainReadyDraftKeysRef.current.delete(queuedInputDraftKey);
-      return;
-    }
-    // Consume one completion edge per queued send. The send starts another
-    // busy cycle; its own busy -> idle edge releases exactly one next item.
-    autoDrainReadyDraftKeysRef.current.delete(queuedInputDraftKey);
-    void submitQueuedInput(next);
-  }, [
-    editingQueuedInputId,
-    props.disabled,
-    props.sendBlocked,
-    props.streaming,
-    queuedInputDraftKey,
-    queuedInputs,
-    sendPending,
-  ]);
 
   async function sendCurrent() {
     if (

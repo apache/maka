@@ -17,6 +17,8 @@
  * panel in isolation.
  */
 
+import type { AttachmentRef, QuoteRef } from '@maka/core';
+
 /**
  * Maximum number of characters retained for a single draft. Drafts
  * that grow past this limit keep only the trailing window so the
@@ -196,4 +198,56 @@ export function isReferenceSizedPaste(text: string): boolean {
     if (text[i] === '\n' && ++lines > PASTE_AS_QUOTE_MIN_LINES) return true;
   }
   return false;
+}
+
+/**
+ * A staged attachment as the Composer renders it in the drawer. The host's
+ * original staged item (with its ingestable `source`) is embedded verbatim as
+ * `ingestToken`; the composer never reads it, and returns it unchanged when a
+ * queued entry drains so the host can re-ingest without re-staging
+ * (#1954 review P2-1).
+ */
+export interface ComposerPendingAttachment {
+  displayName: string;
+  kind: AttachmentRef['kind'];
+  mimeType?: string;
+  size: number;
+  /** Renderer-resolvable image source (object/data URL) for `kind: 'image'`
+   *  previews. When set, the chip is clickable and opens the image in a
+   *  Lightbox; while absent (still loading, or preview failed) the chip is
+   *  inert like any other kind. */
+  previewUrl?: string;
+  /** Opaque host handle to the original staged item; returned verbatim when a
+   *  queued entry drains so the host can re-ingest without re-staging. Never
+   *  read by the composer. */
+  ingestToken?: unknown;
+}
+
+/**
+ * Quotes/attachments staged in the tray when a message was queued. A queued
+ * entry owns this snapshot: a later entry's chips (or a chip removed from the
+ * tray before drain) must never change what an earlier entry sends.
+ */
+export interface ComposerStagedContext {
+  quotes?: readonly QuoteRef[];
+  attachments?: readonly ComposerPendingAttachment[];
+}
+
+/**
+ * Capture the staged tray at queue time. Returns `undefined` for a bare-text
+ * entry; otherwise a defensive copy so the entry is insulated from later tray
+ * edits (removal, replacement, reordering).
+ */
+export function captureQueuedInputStagedContext(
+  quotes: readonly QuoteRef[] | undefined,
+  attachments: readonly ComposerPendingAttachment[] | undefined,
+): ComposerStagedContext | undefined {
+  const quoteSnapshot = quotes && quotes.length > 0 ? [...quotes] : undefined;
+  const attachmentSnapshot =
+    attachments && attachments.length > 0 ? [...attachments] : undefined;
+  if (!quoteSnapshot && !attachmentSnapshot) return undefined;
+  return {
+    ...(quoteSnapshot ? { quotes: quoteSnapshot } : {}),
+    ...(attachmentSnapshot ? { attachments: attachmentSnapshot } : {}),
+  };
 }

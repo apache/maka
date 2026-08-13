@@ -478,7 +478,11 @@ export function settleLiveTurnStep(
     ))
     : current.steps.filter((candidate) => candidate.stepId !== stepId);
   if (steps.length === current.steps.length && retainedTools.length === 0) return current;
-  if (steps.length === 0 && current.terminal) return undefined;
+  if (
+    steps.length === 0
+    && current.terminal
+    && (current.steering?.length ?? 0) === 0
+  ) return undefined;
   const settledAssistantStepIds = current.settledAssistantStepIds?.includes(stepId)
     ? current.settledAssistantStepIds
     : [...(current.settledAssistantStepIds ?? []), stepId];

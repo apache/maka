@@ -15,6 +15,7 @@ import { DEFAULT_SESSION_NAME } from '@maka/core';
 import {
   armLiveTurn,
   dequeueInteractionByRequestId,
+  type ComposerStagedContext,
   type InteractionQueues,
   type LiveTurnProjection,
   type NavSelection,
@@ -106,6 +107,7 @@ export interface AppShellChatActions {
     options?: {
       turnOrchestration?: TurnOrchestration;
       quotes?: readonly QuoteRef[];
+      stagedContext?: ComposerStagedContext;
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
       displayText?: string;
       onSessionResolved?: (sessionId: string) => void;
@@ -294,18 +296,54 @@ export function createAppShellChatActions(deps: {
     });
   }
 
+  /**
+   * #1954 review P2-2: the Host names a started turn; the renderer's
+   * pre-generated id only labels the submitted message. Rename the optimistic
+   * arm to the Host-authoritative id so a no-content error/abort (or a failed
+   * refresh) settles it instead of leaving an unconfirmed arm behind.
+   *
+   * Only the arm this send placed is renamed: `unconfirmed` + `'waiting'` is
+   * set exclusively by `armLiveTurn`, so a projection that already rebased to
+   * the new id through a content event (phase `'streamed'`) — or one that was
+   * settled — is left untouched.
+   */
+  function rebindTurnActive(sessionId: string, oldTurnId: string, newTurnId: string): void {
+    setLiveTurnBySession((current) => {
+      const active = current[sessionId];
+      if (
+        active?.turnId !== oldTurnId
+        || active.unconfirmed !== true
+        || active.phase !== 'waiting'
+      ) {
+        return current;
+      }
+      return { ...current, [sessionId]: { ...active, turnId: newTurnId } };
+    });
+  }
+
   async function send(
     text: string,
     pending?: readonly PendingAttachment[],
     options: {
       turnOrchestration?: TurnOrchestration;
       quotes?: readonly QuoteRef[];
+      stagedContext?: ComposerStagedContext;
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
       displayText?: string;
       onSessionResolved?: (sessionId: string) => void;
     } = {},
   ): Promise<boolean> {
-    const quotes = options.quotes;
+    // #1954 review P2-1: a queued entry drains with the tray snapshot it
+    // captured at queue time. The snapshot wins over anything currently
+    // staged; the tray values are the direct-send fallback.
+    const quotes =
+      options.stagedContext?.quotes && options.stagedContext.quotes.length > 0
+        ? options.stagedContext.quotes
+        : options.quotes;
+    const resolvedPending =
+      options.stagedContext?.attachments && options.stagedContext.attachments.length > 0
+        ? options.stagedContext.attachments.map((item) => item.ingestToken as PendingAttachment)
+        : pending;
     const initialSessionId = activeIdRef.current;
     const sendOwner = captureComposerImportOwner();
     const newChatOwner = initialSessionId ? null : sendOwner;
@@ -341,7 +379,7 @@ export function createAppShellChatActions(deps: {
     try {
       const turnId = crypto.randomUUID();
       if (!initialSessionId) {
-        if (pending && pending.length > 0) preflightAttachmentItems(pending, uiLocale);
+        if (resolvedPending && resolvedPending.length > 0) preflightAttachmentItems(resolvedPending, uiLocale);
         const session = await window.maka.sessions.create({
           // Omit permissionMode so main.ts's sessions:create resolves the
           // configured chatDefaults.permissionMode as the single authority.
@@ -363,8 +401,8 @@ export function createAppShellChatActions(deps: {
         optimisticTurnId = turnId;
         armTurnActive(session.id, turnId);
         const attachmentItems =
-          pending && pending.length > 0
-            ? toRendererIngestItems(pending)
+          resolvedPending && resolvedPending.length > 0
+            ? toRendererIngestItems(resolvedPending)
             : undefined;
         const sendResult = await window.maka.sessions.send(session.id, {
           type: 'send',
@@ -399,6 +437,12 @@ export function createAppShellChatActions(deps: {
           return true;
         }
         unsentSessionId = undefined;
+        // #1954 review P2-2: the Host named this turn; rebind the arm we
+        // placed under the pre-generated id so terminal events settle it.
+        if (sendResult.turnId && sendResult.turnId !== turnId) {
+          optimisticTurnId = sendResult.turnId;
+          rebindTurnActive(session.id, turnId, sendResult.turnId);
+        }
         options.onSessionResolved?.(session.id);
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
@@ -430,8 +474,8 @@ export function createAppShellChatActions(deps: {
       optimisticTurnId = turnId;
       armTurnActive(sessionId, turnId);
       const attachmentItems =
-        pending && pending.length > 0
-          ? toRendererIngestItems(pending)
+        resolvedPending && resolvedPending.length > 0
+          ? toRendererIngestItems(resolvedPending)
           : undefined;
       const sendResult = await window.maka.sessions.send(sessionId, {
         type: 'send',
@@ -469,6 +513,14 @@ export function createAppShellChatActions(deps: {
         await refreshMessages(sessionId);
         await refreshSessions();
         return true;
+      }
+      // #1954 review P2-2: the Host named this turn (the pre-generated id only
+      // labeled the submitted message); rebind the arm we placed under the old
+      // id so a no-content error/abort — whose terminal event carries the Host
+      // id — settles it instead of leaving an unconfirmed arm behind.
+      if (sendResult.turnId && sendResult.turnId !== turnId) {
+        optimisticTurnId = sendResult.turnId;
+        rebindTurnActive(sessionId, turnId, sendResult.turnId);
       }
       options.onSessionResolved?.(sessionId);
       if (activeIdRef.current === sessionId) {
