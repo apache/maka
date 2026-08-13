@@ -813,6 +813,8 @@ export interface TurnStateMessage {
 
 export interface TurnRecord {
   turnId: string;
+  firstSequence?: number;
+  userPromptPreview?: string;
   status: TurnStatus;
   /**
    * Whether `status` came from a `turn_state` message or was reconstructed by

@@ -1,15 +1,19 @@
 import { decodeStoredMessage, type TurnRecord, type TurnStateMessage } from '@maka/core/session';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   requireCount,
   requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
+  requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
 export const SESSION_TURN_QUERY_MAX_CONTRIBUTIONS = 128;
 export const SESSION_TURN_QUERY_RESULT_MAX_BYTES = 192 * 1024;
+export const SESSION_TURN_DIAGNOSTIC_MAX_BYTES = 128;
+export const SESSION_TURN_PROMPT_PREVIEW_MAX_BYTES = 256;
 
 export interface SessionTurnContribution {
   readonly turnId: string;
@@ -18,6 +22,7 @@ export interface SessionTurnContribution {
     readonly sequence: number;
     readonly message: TurnStateMessage;
   } | null;
+  readonly userPromptPreview: string | null;
   readonly hasAssistantMessage: boolean;
   readonly hasAssistantOutput: boolean;
   readonly hasToolResult: boolean;
@@ -54,11 +59,43 @@ export function mergeSessionTurnContributions(
       (next.latestState !== null && next.latestState.sequence > current.latestState.sequence)
         ? next.latestState
         : current.latestState,
+    userPromptPreview: current.userPromptPreview ?? next.userPromptPreview,
     hasAssistantMessage: current.hasAssistantMessage || next.hasAssistantMessage,
     hasAssistantOutput: current.hasAssistantOutput || next.hasAssistantOutput,
     hasToolResult: current.hasToolResult || next.hasToolResult,
     hasFailedToolResult: current.hasFailedToolResult || next.hasFailedToolResult,
     hasAbortNote: current.hasAbortNote || next.hasAbortNote,
+  };
+}
+
+export function projectSessionTurnContributionForWire(
+  contribution: SessionTurnContribution,
+): SessionTurnContribution {
+  const latestState = contribution.latestState;
+  const projectedLatestState = latestState
+    ? (() => {
+        const { abortSource, errorClass, ...message } = latestState.message;
+        return {
+          ...latestState,
+          message: {
+            ...message,
+            ...(abortSource
+              ? { abortSource: truncateUtf8(abortSource, SESSION_TURN_DIAGNOSTIC_MAX_BYTES) }
+              : {}),
+            ...(errorClass
+              ? { errorClass: truncateUtf8(errorClass, SESSION_TURN_DIAGNOSTIC_MAX_BYTES) }
+              : {}),
+          },
+        };
+      })()
+    : null;
+  return {
+    ...contribution,
+    latestState: projectedLatestState,
+    userPromptPreview:
+      contribution.userPromptPreview === null
+        ? null
+        : truncateUtf8(contribution.userPromptPreview, SESSION_TURN_PROMPT_PREVIEW_MAX_BYTES),
   };
 }
 
@@ -68,6 +105,10 @@ export function projectSessionTurnContribution(contribution: SessionTurnContribu
   if (state) {
     return {
       turnId: contribution.turnId,
+      firstSequence: contribution.firstSequence,
+      ...(contribution.userPromptPreview
+        ? { userPromptPreview: contribution.userPromptPreview }
+        : {}),
       status: state.status,
       statusSource: 'recorded',
       ...(state.parentTurnId ? { parentTurnId: state.parentTurnId } : {}),
@@ -85,6 +126,10 @@ export function projectSessionTurnContribution(contribution: SessionTurnContribu
   }
   return {
     turnId: contribution.turnId,
+    firstSequence: contribution.firstSequence,
+    ...(contribution.userPromptPreview
+      ? { userPromptPreview: contribution.userPromptPreview }
+      : {}),
     status: contribution.hasAbortNote
       ? 'aborted'
       : contribution.hasAssistantMessage
@@ -187,6 +232,7 @@ function decodeSessionTurnContribution(value: unknown): SessionTurnContribution 
     'turnId',
     'firstSequence',
     'latestState',
+    'userPromptPreview',
     'hasAssistantMessage',
     'hasAssistantOutput',
     'hasToolResult',
@@ -203,6 +249,20 @@ function decodeSessionTurnContribution(value: unknown): SessionTurnContribution 
     if (message.type !== 'turn_state') {
       throw invalidProtocolFrame('Invalid Session turn state contribution');
     }
+    if (message.abortSource !== undefined) {
+      requireUtf8String(
+        message.abortSource,
+        'Session turn abort source',
+        SESSION_TURN_DIAGNOSTIC_MAX_BYTES,
+      );
+    }
+    if (message.errorClass !== undefined) {
+      requireUtf8String(
+        message.errorClass,
+        'Session turn error class',
+        SESSION_TURN_DIAGNOSTIC_MAX_BYTES,
+      );
+    }
     latestState = {
       sequence: requireCount(state.sequence, 'Session turn state sequence'),
       message,
@@ -212,6 +272,14 @@ function decodeSessionTurnContribution(value: unknown): SessionTurnContribution 
     turnId: requireEntityId(contribution.turnId, 'turnId'),
     firstSequence: requireCount(contribution.firstSequence, 'Session turn first sequence'),
     latestState,
+    userPromptPreview:
+      contribution.userPromptPreview === null
+        ? null
+        : requireUtf8String(
+            contribution.userPromptPreview,
+            'Session turn prompt preview',
+            SESSION_TURN_PROMPT_PREVIEW_MAX_BYTES,
+          ),
     hasAssistantMessage: requireBoolean(contribution.hasAssistantMessage),
     hasAssistantOutput: requireBoolean(contribution.hasAssistantOutput),
     hasToolResult: requireBoolean(contribution.hasToolResult),

@@ -787,6 +787,7 @@ export class RuntimeHostSessionObserver {
       }
       state.snapshot = structuredClone(subscription.snapshot);
       state.replica = subscription.replica;
+      subscription.replica.adoptResidentAccounting();
       state.projector = projector;
       previousReplica?.close();
       this.#resetTranscriptConsumers(state);

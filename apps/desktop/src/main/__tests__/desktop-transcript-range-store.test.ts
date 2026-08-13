@@ -226,6 +226,34 @@ test('rejects an overlay that exceeds the complete session cache budget', async 
   );
 });
 
+test('transfers prepared transcript bytes into active replica accounting', async () => {
+  const message = assistantMessage('prepared', 'overlay-1');
+  const messageBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
+  let accountedBytes = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    loadTranscriptOverlay: async (_maxMessageBytes, accountAssemblyBytes) => {
+      accountAssemblyBytes?.(messageBytes);
+      accountAssemblyBytes?.(-messageBytes);
+      return [message];
+    },
+    async close() {},
+  });
+
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    accountPreparationBytes: (deltaBytes) => {
+      accountedBytes += deltaBytes;
+    },
+  });
+  assert.equal(accountedBytes, messageBytes);
+  replica.adoptResidentAccounting();
+  assert.equal(accountedBytes, 0);
+  replica.close();
+  assert.equal(accountedBytes, 0);
+});
+
 test('reopens a failed transcript range with a fresh generation', async () => {
   const store = new DesktopTranscriptRangeStore();
   let attempts = 0;

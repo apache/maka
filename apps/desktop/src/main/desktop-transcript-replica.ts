@@ -72,6 +72,7 @@ export class DesktopTranscriptReplica {
   #hasOlder: boolean;
   #hasNewer = false;
   #resident = true;
+  #residentExternallyAccounted = true;
   #closed = false;
   #catchUpTask: Promise<void> | undefined;
   #operationTail = Promise.resolve();
@@ -99,21 +100,25 @@ export class DesktopTranscriptReplica {
     options: DesktopTranscriptReplicaOptions = {},
   ): Promise<DesktopTranscriptReplica> {
     const replica = new DesktopTranscriptReplica(handle, options);
-    replica.#installOverlay(
-      await handle.loadTranscriptOverlay(
-        replica.#maxMessageBytes,
-        replica.#accountPreparationBytes,
-      ),
-    );
-    await replica.#withDecodedPage(handle.transcriptBootstrap.durable, (durable) => {
-      replica.#installDurable(durable.messages);
-      replica.#hasOlder = durable.nextCursor !== null;
-    });
-    replica.#evictToBudget();
-    if (replica.#residentBytes > replica.#maxResidentBytes) {
-      throw new RangeError('Desktop transcript overlay exceeds the session cache limit');
+    try {
+      await replica.#withAssembly(async (accountAssemblyBytes) => {
+        replica.#installOverlay(
+          await handle.loadTranscriptOverlay(replica.#maxMessageBytes, accountAssemblyBytes),
+        );
+      });
+      await replica.#withDecodedPage(handle.transcriptBootstrap.durable, (durable) => {
+        replica.#installDurable(durable.messages);
+        replica.#hasOlder = durable.nextCursor !== null;
+      });
+      replica.#evictToBudget();
+      if (replica.#residentBytes > replica.#maxResidentBytes) {
+        throw new RangeError('Desktop transcript overlay exceeds the session cache limit');
+      }
+      return replica;
+    } catch (error) {
+      replica.close();
+      throw error;
     }
-    return replica;
   }
 
   get residentBytes(): number {
@@ -122,6 +127,12 @@ export class DesktopTranscriptReplica {
 
   get resident(): boolean {
     return this.#resident;
+  }
+
+  adoptResidentAccounting(): void {
+    if (!this.#residentExternallyAccounted) return;
+    this.#residentExternallyAccounted = false;
+    this.#accountPreparationBytes(-this.#residentBytes);
   }
 
   get durableThrough(): number | null {
@@ -292,8 +303,10 @@ export class DesktopTranscriptReplica {
     if (!this.#resident) return;
     this.#resident = false;
     this.#clearDurable();
+    for (const message of this.#overlay.values()) {
+      this.#adjustResidentBytes(-encodedMessageBytes(message));
+    }
     this.#overlay.clear();
-    this.#residentBytes = 0;
   }
 
   close(): void {
@@ -301,6 +314,9 @@ export class DesktopTranscriptReplica {
     this.#resident = false;
     this.#durable.clear();
     this.#overlay.clear();
+    if (this.#residentExternallyAccounted) {
+      this.#accountPreparationBytes(-this.#residentBytes);
+    }
     this.#residentBytes = 0;
   }
 
@@ -361,9 +377,9 @@ export class DesktopTranscriptReplica {
   #installOverlay(messages: readonly StoredMessage[]): void {
     for (const message of messages) {
       const previous = this.#overlay.get(message.id);
-      if (previous) this.#residentBytes -= encodedMessageBytes(previous);
+      if (previous) this.#adjustResidentBytes(-encodedMessageBytes(previous));
       this.#overlay.set(message.id, message);
-      this.#residentBytes += encodedMessageBytes(message);
+      this.#adjustResidentBytes(encodedMessageBytes(message));
     }
   }
 
@@ -379,7 +395,7 @@ export class DesktopTranscriptReplica {
       if (previous && previous.message.id !== item.message.id) {
         throw correlationError(`Desktop transcript sequence ${item.identity} changed identity`);
       }
-      if (previous) this.#residentBytes -= previous.encodedBytes;
+      if (previous) this.#adjustResidentBytes(-previous.encodedBytes);
       const message = item.message;
       const encodedBytes = encodedMessageBytes(message);
       this.#durable.set(item.identity, {
@@ -387,11 +403,11 @@ export class DesktopTranscriptReplica {
         message,
         encodedBytes,
       });
-      this.#residentBytes += encodedBytes;
+      this.#adjustResidentBytes(encodedBytes);
       const overlay = this.#overlay.get(message.id);
       if (overlay) {
         this.#overlay.delete(message.id);
-        this.#residentBytes -= encodedMessageBytes(overlay);
+        this.#adjustResidentBytes(-encodedMessageBytes(overlay));
         completedOverlayMessageIds.push(message.id);
       }
     }
@@ -457,7 +473,7 @@ export class DesktopTranscriptReplica {
       const entry = this.#durable.get(sequence);
       if (!entry) continue;
       this.#durable.delete(sequence);
-      this.#residentBytes -= entry.encodedBytes;
+      this.#adjustResidentBytes(-entry.encodedBytes);
       if (edge === 'oldest') this.#hasOlder = true;
       else this.#hasNewer = true;
       evicted.push(sequence);
@@ -483,8 +499,13 @@ export class DesktopTranscriptReplica {
   }
 
   #clearDurable(): void {
-    for (const entry of this.#durable.values()) this.#residentBytes -= entry.encodedBytes;
+    for (const entry of this.#durable.values()) this.#adjustResidentBytes(-entry.encodedBytes);
     this.#durable.clear();
+  }
+
+  #adjustResidentBytes(deltaBytes: number): void {
+    this.#residentBytes += deltaBytes;
+    if (this.#residentExternallyAccounted) this.#accountPreparationBytes(deltaBytes);
   }
 
   async #withDecodedPage<T>(
@@ -493,13 +514,37 @@ export class DesktopTranscriptReplica {
       decoded: Awaited<ReturnType<DesktopRuntimeHostSession['decodeTranscriptPage']>>,
     ) => T | Promise<T>,
   ): Promise<T> {
-    return accept(
-      await this.#handle.decodeTranscriptPage(
-        page,
-        this.#maxMessageBytes,
-        this.#accountPreparationBytes,
+    return this.#withAssembly(async (accountAssemblyBytes) =>
+      accept(
+        await this.#handle.decodeTranscriptPage(
+          page,
+          this.#maxMessageBytes,
+          accountAssemblyBytes,
+        ),
       ),
     );
+  }
+
+  async #withAssembly<T>(
+    operation: (accountAssemblyBytes: (deltaBytes: number) => void) => Promise<T>,
+  ): Promise<T> {
+    let acquiredBytes = 0;
+    let balance = 0;
+    const accountAssemblyBytes = (deltaBytes: number) => {
+      const next = balance + deltaBytes;
+      if (!Number.isSafeInteger(next) || next < 0) {
+        throw new RangeError('Invalid Desktop transcript assembly accounting');
+      }
+      balance = next;
+      if (deltaBytes <= 0) return;
+      this.#accountPreparationBytes(deltaBytes);
+      acquiredBytes += deltaBytes;
+    };
+    try {
+      return await operation(accountAssemblyBytes);
+    } finally {
+      if (acquiredBytes > 0) this.#accountPreparationBytes(-acquiredBytes);
+    }
   }
 
   #assertOpen(): void {

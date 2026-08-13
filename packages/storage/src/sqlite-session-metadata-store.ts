@@ -5075,15 +5075,18 @@ function foldTurnContribution(
     turnId,
     firstSequence: sequence,
     latestState: null,
+    userPromptPreview: null,
     hasAssistantMessage: false,
     hasAssistantOutput: false,
     hasToolResult: false,
     hasFailedToolResult: false,
     hasAbortNote: false,
   };
+  const userPrompt = message.type === 'user' ? (message.displayText ?? message.text).trim() : '';
   return {
     ...contribution,
     latestState: message.type === 'turn_state' ? { sequence, message } : contribution.latestState,
+    userPromptPreview: contribution.userPromptPreview ?? (userPrompt || null),
     hasAssistantMessage: contribution.hasAssistantMessage || message.type === 'assistant',
     hasAssistantOutput:
       contribution.hasAssistantOutput ||

@@ -185,13 +185,14 @@ export interface PromptAnchorRailTurn {
   turnId: string;
   label: string;
   reply?: string;
+  sequence?: number;
 }
 
 export interface PromptAnchorRailProps {
   turns: readonly PromptAnchorRailTurn[];
   scrollRef: RefObject<HTMLElement | null>;
   /** When progressive mount has not yet placed the turn in the DOM. */
-  onNavigateFallback?: (turnId: string) => void;
+  onNavigateFallback?: (turn: PromptAnchorRailTurn) => void;
   /** Bumped when turn DOM membership changes without `turns` changing. */
   mountedTurnsRevision?: number;
   /**
@@ -369,7 +370,8 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     });
   }, [jump, scrollRef]);
 
-  function jumpTo(turnId: string): void {
+  function jumpTo(turn: PromptAnchorRailTurn): void {
+    const turnId = turn.turnId;
     const root = scrollRef.current;
     const el = root?.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
     // Before the scroll, not after: auto-follow has to be released while the
@@ -388,7 +390,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       // Landing reliably beats animating unreliably.
       (el as HTMLElement).scrollIntoView({ behavior: 'auto', block: 'start' });
     } else if (!el) {
-      onNavigateFallback?.(turnId);
+      onNavigateFallback?.(turn);
     }
     jumpSequenceRef.current += 1;
     setJump({ sequence: jumpSequenceRef.current, turnId });
@@ -447,7 +449,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
                 className="maka-prompt-rail-tick"
                 data-active={isActive ? 'true' : undefined}
                 aria-current={isActive ? 'true' : undefined}
-                onClick={() => jumpTo(turn.turnId)}
+                onClick={() => jumpTo(turn)}
                 onPointerEnter={() => setHoveredIndex(index)}
                 style={
                   {

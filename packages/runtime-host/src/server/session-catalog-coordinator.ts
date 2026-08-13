@@ -53,6 +53,7 @@ import {
   type SessionReadMarkerSetInput,
   type SessionUpdateResult,
   type SessionTurnsQueryInput,
+  projectSessionTurnContributionForWire,
 } from '../protocol/index.js';
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
@@ -245,7 +246,7 @@ export class HostSessionCatalogCoordinator {
         result: {
           sessionId: input.sessionId,
           throughSequence: page.throughSequence,
-          contributions: page.contributions,
+          contributions: page.contributions.map(projectSessionTurnContributionForWire),
           nextPosition: page.nextPosition,
         },
       };

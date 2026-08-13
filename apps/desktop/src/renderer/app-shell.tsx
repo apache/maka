@@ -218,6 +218,7 @@ type ComposerImportOwner = {
  * assistant stream slot when the primary post-commit signal is missed.
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
+const TRANSCRIPT_HISTORY_PREFETCH_PAGES = 4;
 /**
  * Module surfaces that own their whole column and render no workspace toolbar.
  * This used to be a `display: none` rule keyed on the detail panel's
@@ -389,6 +390,10 @@ function AppShellContent({
   const [newChatGraphModeActive, setNewChatGraphModeActive] = useState(false);
   const [pendingOrchestrationModeBySession, setPendingOrchestrationModeBySession] = useState<Record<string, boolean>>({});
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
+  const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
+    sessionId: string;
+    turns: Array<{ turnId: string; sequence: number; label: string }>;
+  }>();
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
   // P3: session ids with a live embedded-browser view. The right-side
   // BrowserPanel mounts only for these, so ordinary chats reserve no space.
@@ -2328,6 +2333,36 @@ function AppShellContent({
     toastApi,
   });
   useEffect(() => {
+    const sessionId = activeId;
+    if (!sessionId) {
+      setTranscriptTurnIndex(undefined);
+      return;
+    }
+    let disposed = false;
+    setTranscriptTurnIndex(undefined);
+    void window.maka.sessions.listTurns(sessionId).then(
+      (turns) => {
+        if (disposed || activeIdRef.current !== sessionId) return;
+        setTranscriptTurnIndex({
+          sessionId,
+          turns: turns.flatMap((turn) =>
+            turn.firstSequence === undefined || !turn.userPromptPreview
+              ? []
+              : [{
+                  turnId: turn.turnId,
+                  sequence: turn.firstSequence,
+                  label: turn.userPromptPreview,
+                }],
+          ),
+        });
+      },
+      () => undefined,
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [activeId, activeIdRef]);
+  useEffect(() => {
     const target = searchScrollTarget;
     if (!target || target.sessionId !== activeId || target.sequence === undefined) return;
     const sequence = target.sequence;
@@ -2526,8 +2561,21 @@ function AppShellContent({
     if (!controller || !sessionId || historyLoadPendingSessionId) return;
     setHistoryLoadPendingSessionId(sessionId);
     try {
-      if (target === 'earlier') await controller.loadBefore();
-      else await controller.loadLatest();
+      if (target === 'earlier') {
+        for (let page = 0; page < TRANSCRIPT_HISTORY_PREFETCH_PAGES; page += 1) {
+          if (
+            transcriptRangeRef.current !== controller ||
+            activeIdRef.current !== sessionId
+          ) break;
+          const before = controller.store.range();
+          if (!before.hasOlder) break;
+          await controller.loadBefore();
+          const after = controller.store.range();
+          if (!after.hasOlder || after.oldestSequence === before.oldestSequence) break;
+        }
+      } else {
+        await controller.loadLatest();
+      }
       if (transcriptRangeRef.current === controller && activeIdRef.current === sessionId) {
         setMessages([...controller.store.snapshot().messages]);
       }
@@ -3015,7 +3063,7 @@ function AppShellContent({
                 hasOlderHistory={activeTranscriptRange?.hasOlder === true}
                 hasNewerHistory={activeTranscriptRange?.hasNewer === true}
                 historyLoadPending={historyLoadPendingSessionId === activeId}
-                onLoadEarlierHistory={() => void loadTranscriptHistory('earlier')}
+                onLoadEarlierHistory={() => loadTranscriptHistory('earlier')}
                 onReturnToLatestHistory={() => void loadTranscriptHistory('latest')}
                 liveContentSeedRevision={activeEventSeed.sessionId === activeId
                   ? activeEventSeed.revision
@@ -3081,6 +3129,14 @@ function AppShellContent({
                           }
                     : undefined
                 }
+                transcriptTurnIndex={
+                  transcriptTurnIndex && transcriptTurnIndex.sessionId === activeId
+                    ? transcriptTurnIndex.turns
+                    : undefined
+                }
+                onLoadTranscriptTurn={activeId
+                  ? (target) => openSessionInChat(activeId, target.turnId, target.sequence)
+                  : undefined}
                 scrollBehavior={readScrollMotionBehavior()}
                 branchBanner={branchBanner}
                 onBranchBannerClick={handleBranchBannerClick}

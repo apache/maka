@@ -199,6 +199,7 @@ export interface SessionTurnContribution {
     readonly sequence: number;
     readonly message: TurnStateMessage;
   } | null;
+  readonly userPromptPreview: string | null;
   readonly hasAssistantMessage: boolean;
   readonly hasAssistantOutput: boolean;
   readonly hasToolResult: boolean;

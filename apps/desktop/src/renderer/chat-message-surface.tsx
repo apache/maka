@@ -72,7 +72,7 @@ interface ChatMessageSurfaceProps extends Omit<
   hasOlderHistory: boolean;
   hasNewerHistory: boolean;
   historyLoadPending: boolean;
-  onLoadEarlierHistory: () => void;
+  onLoadEarlierHistory: () => Promise<void> | void;
   onReturnToLatestHistory: () => void;
 }
 
@@ -214,26 +214,15 @@ export function ChatMessageSurface({
 
   return (
     <>
-      {(hasOlderHistory || hasNewerHistory) && (
+      {hasNewerHistory && (
         <div className="maka-transcript-history-controls">
-          {hasOlderHistory && (
-            <Button
-              label={historyLoadPending ? transcriptCopy.loadingEarlier : transcriptCopy.loadEarlier}
-              variant="ghost"
-              size="sm"
-              isDisabled={historyLoadPending}
-              onClick={onLoadEarlierHistory}
-            />
-          )}
-          {hasNewerHistory && (
-            <Button
-              label={transcriptCopy.returnLatest}
-              variant="ghost"
-              size="sm"
-              isDisabled={historyLoadPending}
-              onClick={onReturnToLatestHistory}
-            />
-          )}
+          <Button
+            label={transcriptCopy.returnLatest}
+            variant="ghost"
+            size="sm"
+            isDisabled={historyLoadPending}
+            onClick={onReturnToLatestHistory}
+          />
         </div>
       )}
       <ChatView
@@ -245,6 +234,9 @@ export function ChatMessageSurface({
         shellRunUpdates={shellRunUpdates}
         deepResearchRun={deepResearchRun}
         emptyOverride={emptyOverride}
+        hasOlderHistory={hasOlderHistory}
+        historyLoadPending={historyLoadPending}
+        onLoadEarlierHistory={onLoadEarlierHistory}
       />
       {taskReadinessNotice && (
         <div className="maka-workspace-readiness-notice">

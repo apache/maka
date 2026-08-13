@@ -58,6 +58,7 @@ test('derives turn records from bounded contribution pages', async () => {
             turnId: 'turn-1',
             firstSequence: 0,
             latestState: null,
+            userPromptPreview: 'hello',
             hasAssistantMessage: true,
             hasAssistantOutput: true,
             hasToolResult: false,
@@ -84,6 +85,7 @@ test('derives turn records from bounded contribution pages', async () => {
               partialOutputRetained: false,
             },
           },
+          userPromptPreview: null,
           hasAssistantMessage: false,
           hasAssistantOutput: false,
           hasToolResult: true,
@@ -99,6 +101,8 @@ test('derives turn records from bounded contribution pages', async () => {
 
   assert.deepEqual(await client.listSessionTurns('session-1'), [{
     turnId: 'turn-1',
+    firstSequence: 0,
+    userPromptPreview: 'hello',
     status: 'completed',
     statusSource: 'recorded',
     partialOutputRetained: true,
