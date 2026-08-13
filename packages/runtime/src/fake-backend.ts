@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { BackendKind, SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
+import type { BackendKind, SessionHeader, StoredMessage } from '@maka/core/session';
+import type { SessionEvent } from '@maka/core/events';
 import type {
   AgentBackend,
   BackendSendInput,
@@ -22,6 +23,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const FAKE_ASK_USER_QUESTION_PROMPT = '__e2e_ask_user_question__';
 export const FAKE_ASK_SANDBOX_BOUNDARY_PROMPT = '__e2e_ask_sandbox_boundary__';
 export const FAKE_WAIT_FOR_STEERING_PROMPT = '__e2e_wait_for_steering__';
+export const FAKE_HOLD_OPEN_PROMPT = '__e2e_hold_open__';
+export const FAKE_HOLD_OPEN_REWRITE_PROMPT = '__e2e_hold_open_rewrite__';
 export const FAKE_MERMAID_PROMPT = '__e2e_mermaid__';
 export const FAKE_MERMAID_HOSTILE_PROMPT = '__e2e_mermaid_hostile__';
 export const FAKE_ERROR_PROMPT_PREFIX = '__e2e_error__:';
@@ -169,6 +172,54 @@ export class FakeBackend implements AgentBackend {
     };
 
     try {
+      if (input.text === FAKE_HOLD_OPEN_PROMPT || input.text === FAKE_HOLD_OPEN_REWRITE_PROMPT) {
+        const rewriteTarget = input.text === FAKE_HOLD_OPEN_REWRITE_PROMPT;
+        const waitingPrefix = rewriteTarget
+          ? 'prefix sk-123456789012345'
+          : 'Fake backend waiting for the test to stop the Turn.';
+        let waitingText = waitingPrefix;
+        yield {
+          type: 'text_delta',
+          id: randomUUID(),
+          turnId,
+          ts: Date.now(),
+          messageId,
+          text: waitingText,
+        };
+        while (!this.stopped) {
+          const pending = drainSteering();
+          for (const { leaseId, event } of pending) {
+            yield event;
+            settleOutstanding(leaseId);
+          }
+          if (pending.length > 0) {
+            const nextText = rewriteTarget
+              ? `${waitingPrefix}6 NEW`
+              : `${waitingPrefix}\n\nAcknowledged steering: ${steered.join(' | ')}`;
+            const delta = nextText.slice(waitingText.length);
+            waitingText = nextText;
+            yield {
+              type: 'text_delta',
+              id: randomUUID(),
+              turnId,
+              ts: Date.now(),
+              messageId,
+              text: delta,
+            };
+          }
+          await sleep(5);
+        }
+        yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
+        yield {
+          type: 'complete',
+          id: randomUUID(),
+          turnId,
+          ts: Date.now(),
+          stopReason: 'user_stop',
+        };
+        return;
+      }
+
       if (input.text === FAKE_WAIT_FOR_STEERING_PROMPT) {
         let pending = drainSteering();
         while (pending.length === 0 && !this.stopped) {

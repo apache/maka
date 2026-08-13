@@ -7,13 +7,15 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   AGENT_GRAPH_INTENT_CLAIM_SCHEMA_VERSION,
-  AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
   type AgentGraphIntentClaim,
+} from '@maka/core/agent-graph-control';
+import {
+  AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
   type AgentGraphOperatorProvision,
-  type AgentGraphScheduleUpdate,
-  type AgentRunHeader,
-  type RuntimeEvent,
-} from '@maka/core';
+} from '@maka/core/agent-graph-topology';
+import { type AgentGraphScheduleUpdate } from '@maka/core/agent-graph-schedule';
+import { type AgentRunHeader } from '@maka/core/agent-run';
+import { type RuntimeEvent } from '@maka/core/runtime-event';
 import {
   createSessionStore,
   createSqliteSessionMetadataStore,
@@ -777,7 +779,11 @@ describe('host-managed agent graph coordinator', () => {
       sessionStore: {
         listForRecovery: async () => [],
         readHeader: async (sessionId: string) =>
-          ({ id: sessionId, status: 'active', isArchived: false }) as never,
+          ({
+            id: sessionId,
+            status: 'active',
+            isArchived: false,
+          }) as never,
       },
       runStore: { listSessionRuns: async () => runs },
       runtimeEventStore: { readImmutableRuntimeEvents: async () => runtimeEvents },
@@ -906,6 +912,14 @@ describe('host-managed agent graph coordinator', () => {
   test('attempts every operator stop and surfaces all close failures', async () => {
     const graphId = agentGraphIdForRootSession('root-session');
     const stopped: string[] = [];
+    let releaseStops!: () => void;
+    const stopsReleased = new Promise<void>((resolve) => {
+      releaseStops = resolve;
+    });
+    let markStopsStarted!: () => void;
+    const stopsStarted = new Promise<void>((resolve) => {
+      markStopsStarted = resolve;
+    });
     const coordinator = new AgentGraphCoordinator({
       sessionStore: {
         listForRecovery: async () => [],
@@ -932,6 +946,8 @@ describe('host-managed agent graph coordinator', () => {
       runtime: {
         stopSession: async (sessionId: string) => {
           stopped.push(sessionId);
+          if (stopped.length === 2) markStopsStarted();
+          await stopsReleased;
           throw new Error(`cannot stop ${sessionId}`);
         },
       },
@@ -939,6 +955,10 @@ describe('host-managed agent graph coordinator', () => {
       rootSessionId: 'root-session',
     } as unknown as AgentGraphCoordinatorInput);
     await coordinator.toolsForSession('root-session');
+    coordinator.beginDrain();
+    await stopsStarted;
+    assert.deepEqual(stopped.sort(), ['child-a', 'child-b']);
+    releaseStops();
     await assert.rejects(
       coordinator.close(),
       (error: unknown) =>
@@ -948,7 +968,6 @@ describe('host-managed agent graph coordinator', () => {
             (failure) => failure instanceof AggregateError && failure.errors.length === 2,
           )),
     );
-    assert.deepEqual(stopped.sort(), ['child-a', 'child-b']);
   });
 
   test('rejects concurrent yield when reconciliation only waits for uncommitted input', async () => {
@@ -985,7 +1004,11 @@ describe('host-managed agent graph coordinator', () => {
       sessionStore: {
         listForRecovery: async () => [],
         readHeader: async (sessionId: string) =>
-          ({ id: sessionId, status: 'active', isArchived: false }) as never,
+          ({
+            id: sessionId,
+            status: 'active',
+            isArchived: false,
+          }) as never,
       },
       runStore: { listSessionRuns: async () => [] },
       runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },

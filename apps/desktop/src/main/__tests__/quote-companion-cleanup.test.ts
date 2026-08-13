@@ -165,37 +165,6 @@ describe('quote companion cleanup authority', () => {
     assert.deepEqual(await readPendingIds(workspaceRoot), []);
   });
 
-  it('upgrades pending cleanup rows written by the previous schema', async () => {
-    const workspaceRoot = await createWorkspace();
-    const database = new DatabaseSync(join(workspaceRoot, 'runtime.sqlite'));
-    try {
-      database.exec(`
-        CREATE TABLE workflow_quote_companion_cleanup (
-          session_id TEXT PRIMARY KEY,
-          tracked_at INTEGER NOT NULL
-        );
-        INSERT INTO workflow_quote_companion_cleanup(session_id, tracked_at)
-        VALUES ('fork-before-lease-schema', 1);
-      `);
-    } finally {
-      database.close();
-    }
-    const removed: string[] = [];
-    const authority = createSessionCopyCleanupAuthority({
-      workspaceRoot,
-      processId: 'process-current',
-      removeSession: async (sessionId) => {
-        removed.push(sessionId);
-      },
-    });
-
-    assert.deepEqual(await authority.recover(), {
-      removed: ['fork-before-lease-schema'],
-      failed: [],
-    });
-    assert.deepEqual(removed, ['fork-before-lease-schema']);
-  });
-
   it('acknowledges abandon after the intent is durable without waiting for removal', async () => {
     const workspaceRoot = await createWorkspace();
     let releaseRemoval: (() => void) | undefined;

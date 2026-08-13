@@ -7,7 +7,7 @@ test('rejects a Run header with multiple hosted root authorities', () => {
     () =>
       decodeAgentRunHeader({
         ...runHeader(),
-        automationId: 'automation-1',
+        scheduledTaskId: 'scheduled-task-1',
         goalId: 'goal-1',
       }),
     /Invalid AgentRun header schema/,

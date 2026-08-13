@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { QuotaSnapshot } from '@maka/core';
-import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime';
+import type { QuotaSnapshot } from '@maka/core/oauth-subscription';
+import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime/oauth-provider-contracts';
 import {
   OAUTH_LOGIN_PROVIDERS,
   type OAuthLoginProjection,

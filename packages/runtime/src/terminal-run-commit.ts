@@ -1,12 +1,12 @@
-import { isPartialRuntimeEvent, isTerminalRuntimeEvent } from '@maka/core';
+import { isPartialRuntimeEvent, isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type {
   AgentRunEvent,
   AgentRunHeader,
   AgentRunEventType,
   AgentRunStore,
-  RuntimeEvent,
-  RuntimeEventStore,
-} from '@maka/core';
+} from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import {
   classifyRuntimeEventTerminalFact,
   type RuntimeEventTerminalFact,
@@ -151,6 +151,8 @@ async function commitTerminalRunProjection(
 
 export interface CommitOrCreateTerminalRunFactInput
   extends Omit<CommitTerminalRunWithRuntimeFactInput, 'status' | 'terminalEvent'> {
+  /** Runs after the terminal durability barrier, before the header commit. */
+  afterTerminalDurable?: () => Promise<void>;
   terminalEvent?: RuntimeEvent;
   allowHeaderCommitFailure?: boolean;
   fallbackStatus: TerminalAgentRunStatus;
@@ -215,6 +217,12 @@ export async function commitOrCreateTerminalRunFact(
     input.runId,
     terminalEvent,
   );
+  // Between the terminal durability barrier and the header commit: the one
+  // point where "the terminal fact is durable" is true and nothing else has
+  // been projected yet. Callers that must order a crash boundary against
+  // the barrier itself hang it here (#2313 corruption recovery, where the
+  // claimed event's own write never ran).
+  await input.afterTerminalDurable?.();
   let headerCommitted = false;
   let headerCommitError: unknown;
   try {

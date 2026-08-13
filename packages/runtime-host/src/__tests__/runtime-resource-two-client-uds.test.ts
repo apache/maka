@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
-import { ShellRunProcessManager } from '@maka/runtime';
+import { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
 import {
   resolveRootControlNamespace,
   resolveStorageRoot,

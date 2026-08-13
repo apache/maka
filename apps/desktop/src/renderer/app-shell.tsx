@@ -9,23 +9,18 @@ import {
   type Dispatch,
   type SetStateAction,
 } from 'react';
-import type {
-  PlanReminder,
-  QuoteRef,
-  SessionSummary,
-  SlashCommandIdForSurface,
-  UiLocale,
-  UiLocalePreference,
-} from '@maka/core';
-import {
-  collapseSessionRevisions,
-  isLinkedSubagentSession,
-  resolveUiLocale,
-  slashCommandsForSurface,
-} from '@maka/core';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
+import type { QuoteRef } from '@maka/core/events';
+import type { SessionSummary } from '@maka/core/session';
+import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
+import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
+import { collapseSessionRevisions } from '@maka/core/session-revisions';
+import { isLinkedSubagentSession } from '@maka/core/session';
+import { resolveUiLocale } from '@maka/core/ui-locale';
+import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
-  AutomationsPage,
+  ScheduledTasksPage,
   DailyReviewPage,
   ChatSurfaceLayout,
   type ComposerHandle,
@@ -108,6 +103,7 @@ import {
 } from './app-update-install';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
+import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import {
   getDesktopConversationCopy,
@@ -263,6 +259,7 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
             title: input.title,
             ...(input.description ? { description: input.description } : {}),
             ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
+            ...(input.diagnosticTarget ? { execution: input.diagnosticTarget } : {}),
             rendererUserAgent: navigator.userAgent,
             rendererLocale: navigator.language,
           })
@@ -352,6 +349,7 @@ function AppShellContent({
     setActiveId,
     startNewSession,
     clearOwnedSessionState,
+    clearRuntimeHostSessionState,
     messages,
     setMessages,
     messageLoadPending,
@@ -386,6 +384,7 @@ function AppShellContent({
     attachFilePaths,
     removeAttachment,
     clearSubmittedAttachments,
+    clearAllAttachments,
   } = useAppShellComposerAttachments({ draftKey: attachmentDraftKey, toastApi });
   const {
     pendingQuotes,
@@ -393,9 +392,8 @@ function AppShellContent({
     removeQuote,
     removeQuotesByRefs,
     clearQuotes,
-  } = useAppShellComposerQuotes({
-    draftKey: attachmentDraftKey,
-  });
+    clearAllQuotes,
+  } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
   // Embed each staged item as the composer's opaque `ingestToken`, so a queued
   // entry can carry the ingestable item (file/approval source) through the
   // queue and back without re-staging (#1954 review P2-1).
@@ -404,7 +402,7 @@ function AppShellContent({
     [pendingAttachments],
   );
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
-  const [planReminderCreateRequestNonce, setPlanReminderCreateRequestNonce] = useState(0);
+  const [scheduledTaskCreateRequestNonce, setScheduledTaskCreateRequestNonce] = useState(0);
   const [pendingCollaborationModeBySession, setPendingCollaborationModeBySession] = useState<Record<string, boolean>>({});
   const [newChatSwarmModeActive, setNewChatSwarmModeActive] = useState(false);
   const [newChatGraphModeActive, setNewChatGraphModeActive] = useState(false);
@@ -438,7 +436,7 @@ function AppShellContent({
   // injected into the system prompt). State and the fire-and-forget refresh
   // live in `useShellMemoryPill`; recompute is triggered on mount (bootstrap
   // subscriptions) and when Settings closes (closeSettings).
-  const { memoryActive, refreshMemoryActive } = useShellMemoryPill({ toastApi, uiLocale });
+  const { memoryActive, clearMemoryActive, refreshMemoryActive } = useShellMemoryPill({ toastApi, uiLocale });
   const {
     connections,
     defaultConnection,
@@ -522,7 +520,7 @@ function AppShellContent({
   }, []);
 
   const updateReminder = updateReminderFromStatus(appUpdateStatus);
-  // Dispatches on the reminder, not on the raw status: the footer is this
+  // Dispatches on the task, not on the raw status: the footer is this
   // callback's only caller and it only renders for the two states above, so
   // reading the status again here would be the same "who needs the user" list
   // maintained twice.
@@ -859,6 +857,26 @@ function AppShellContent({
     orchestrationModeChangeRegistry.keysRef.current.delete(sessionId);
     setPendingOrchestrationModeBySession((current) => omitSessionKey(current, sessionId));
     sessionModelChangeRegistry.keysRef.current.delete(sessionId);
+  }
+
+  function clearRuntimeHostRendererState(): void {
+    clearRuntimeHostSessionState();
+    interactionHydrationEpochRef.current.clear();
+    turnActionRegistry.clearAll();
+    sessionRowActionRegistry.clearAll();
+    permissionModeChangeRegistry.clearAll();
+    collaborationModeChangeRegistry.clearAll();
+    orchestrationModeChangeRegistry.clearAll();
+    sessionModelChangeRegistry.clearAll();
+    setPendingCollaborationModeBySession({});
+    setPendingOrchestrationModeBySession({});
+    clearRuntimeHostProjectState();
+    clearRuntimeHostModuleData();
+    clearMemoryActive();
+    setConnections([]);
+    setDefaultConnection(null);
+    clearAllAttachments();
+    clearAllQuotes();
   }
 
   const sessionRowActionHandlers = useStableActions(createAppShellSessionRowActions, {
@@ -1666,8 +1684,8 @@ function AppShellContent({
     sideConversations.removePanels(staleIds);
   }, [quotePanels, activeId, closeWorkbarTab, sideConversations, workbarPanelsState]);
 
-  function isAutomationsSurfaceActive(): boolean {
-    return navSelectionRef.current.section === 'automations' && navSelectionRef.current.module === 'plan-reminders';
+  function isScheduledTasksSurfaceActive(): boolean {
+    return navSelectionRef.current.section === 'automations' && navSelectionRef.current.module === 'scheduled-tasks';
   }
 
   function isSkillsSurfaceActive(): boolean {
@@ -1682,15 +1700,16 @@ function AppShellContent({
     skills,
     managedSkillSources,
     bundledSkillCatalog,
-    planReminders,
-    refreshPlanReminders,
-    createPlanReminder,
-    updatePlanReminder,
-    togglePlanReminder,
-    triggerPlanReminderNow,
-    snoozePlanReminder,
-    clearPlanReminderRunHistory,
-    deletePlanReminder,
+    scheduledTasks,
+    clearRuntimeHostModuleData,
+    refreshScheduledTasks,
+    createScheduledTask,
+    updateScheduledTask,
+    toggleScheduledTask,
+    triggerScheduledTaskNow,
+    snoozeScheduledTask,
+    clearScheduledTaskRunHistory,
+    deleteScheduledTask,
     refreshSkills,
     refreshManagedSkillSources,
     refreshBundledSkillCatalog,
@@ -1706,7 +1725,7 @@ function AppShellContent({
   } = useAppShellModuleData({
     uiLocale,
     isSkillsSurfaceActive,
-    isAutomationsSurfaceActive,
+    isScheduledTasksSurfaceActive,
     toastApi,
   });
 
@@ -1718,12 +1737,14 @@ function AppShellContent({
   const {
     projectInfo,
     projects,
+    projectCapabilities,
     selectedProjectId,
     currentProjectId,
     currentProject,
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
+    clearRuntimeHostProjectState,
     refreshAppInfo,
     refreshProjects,
     addProject,
@@ -1745,6 +1766,9 @@ function AppShellContent({
     sessionCwd: activeSession?.cwd,
     sessionProjectId: activeSession?.projectId,
     onProjectSelected: (ownerSessionId) => {
+      void refreshSkills();
+      void refreshManagedSkillSources();
+      void refreshBundledSkillCatalog();
       if (ownerSessionId && activeIdRef.current === ownerSessionId) openNewTaskSurface();
     },
     toastApi,
@@ -1755,27 +1779,30 @@ function AppShellContent({
   const workspacePicker: WorkspacePickerModel = {
     label:
       currentProject?.name ??
-      (currentProjectId === null
+      (currentProjectId === null && projectCapabilities.selectNoProject
         ? getConversationCopy(uiLocale).workspace.noProject
         : undefined),
     branch: currentProjectId === null ? null : projectInfo?.projectGit.branch,
     pending: projectPickerPending,
     projects: projects.filter((project) => project.archivedAt === undefined),
     selectedProjectId: currentProjectId,
-    onAdd: () => {
-      void addProject();
-    },
+    ...(projectCapabilities.chooseClientDirectory
+      ? { onAdd: () => void addProject() }
+      : {}),
     onSelectProject: (projectId: string) => {
       void selectProject(projectId);
     },
-    onRelink: (projectId: string) => {
-      void relinkProject(projectId, true);
-    },
-    onSelectNoProject: selectNoProject,
+    ...(projectCapabilities.chooseClientDirectory
+      ? { onRelink: (projectId: string) => void relinkProject(projectId, true) }
+      : {}),
+    ...(projectCapabilities.selectNoProject
+      ? { onSelectNoProject: selectNoProject }
+      : {}),
   };
+  const taskReadinessWorkspace = activeSession?.cwd ?? projectInfo?.projectPath;
   const taskReadinessRequest = {
     ...resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
-    cwd: activeSession?.cwd ?? projectInfo?.projectPath,
+    ...(taskReadinessWorkspace ? { cwd: taskReadinessWorkspace } : {}),
   };
   const taskReadiness = useTaskSubmissionReadiness(
     taskReadinessRequest,
@@ -1821,9 +1848,9 @@ function AppShellContent({
     onRename: renameProject,
     onArchive: archiveProject,
     onRestore: restoreProject,
-    onRelink: async (projectId) => {
-      await relinkProject(projectId);
-    },
+    ...(projectCapabilities.chooseClientDirectory
+      ? { onRelink: (projectId: string) => relinkProject(projectId).then(() => undefined) }
+      : {}),
   };
 
   // Composer mention popups: `/` uses Runtime's session/project-aware,
@@ -1841,16 +1868,10 @@ function AppShellContent({
   });
 
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
-    openPalette,
-    composerRef,
     openSettingsSection,
-    openConnectionDetail,
     refreshSessions,
     setActiveId,
-    setLiveBrowserSessionIds,
-    setLiveTurnBySession,
     setNavSelection,
-    setInteractionBySession,
     setSearchModalOpen,
     setSessionListCollapsed,
     setWorkbarCollapsed,
@@ -2322,6 +2343,7 @@ function AppShellContent({
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
     confirmLiveTurn,
     clearSessionRendererState,
+    clearRuntimeHostRendererState,
     createSession,
     handleConnectionEvent,
     openHelp,
@@ -2336,7 +2358,7 @@ function AppShellContent({
     refreshConnections,
     refreshMemoryActive,
     refreshMessages,
-    refreshPlanReminders,
+    refreshScheduledTasks,
     refreshProjects,
     refreshShellSettings,
     refreshSkills,
@@ -2362,11 +2384,22 @@ function AppShellContent({
     themePalette,
     themePref,
   });
+  const [activeEventSeed, setActiveEventSeed] = useState({
+    sessionId: undefined as string | undefined,
+    revision: 0,
+  });
   useActiveSessionEvents({
     activeId,
     activeIdRef,
     handleEvent,
-    refreshMessages,
+    markSessionReadLocally,
+    onEventSeeded: (sessionId) => {
+      setActiveEventSeed((current) => ({
+        sessionId,
+        revision: current.revision + 1,
+      }));
+    },
+    setMessageLoadErrorBySession,
     setMessageLoadPending,
     setSessionEventHealthBySession,
   });
@@ -2458,10 +2491,10 @@ function AppShellContent({
     if (await prepareProject(projectId)) openNewTaskSurface();
   }
 
-  function openPlanReminderForm() {
-    setNavSelection({ section: 'automations', module: 'plan-reminders' });
+  function openScheduledTaskForm() {
+    setNavSelection({ section: 'automations', module: 'scheduled-tasks' });
     closePalette();
-    setPlanReminderCreateRequestNonce((nonce) => nonce + 1);
+    setScheduledTaskCreateRequestNonce((nonce) => nonce + 1);
   }
 
   /**
@@ -2544,6 +2577,7 @@ function AppShellContent({
     activeId,
     activePermissionMode,
     canSetPermissionMode: activeBoundarySurface.localInteractionAvailable,
+    clientPathsAccessible: projectCapabilities.viewClientPath,
     connections,
     defaultConnection,
     dailyReviewBridge,
@@ -2557,7 +2591,7 @@ function AppShellContent({
     startModeSession,
     isComposerImportOwnerActive,
     openHelp,
-    openPlanReminderForm,
+    openScheduledTaskForm,
     openProjectFolder,
     openSessionInChat,
     openSideConversation,
@@ -2659,7 +2693,12 @@ function AppShellContent({
                 }}
                 project={
                   titlebarProjectName
-                    ? { name: titlebarProjectName, onOpenFolder: () => void openProjectFolder() }
+                    ? {
+                        name: titlebarProjectName,
+                        ...(projectCapabilities.viewClientPath
+                          ? { onOpenFolder: () => void openProjectFolder() }
+                          : {}),
+                      }
                     : undefined
                 }
                 parentSession={titlebarParentSession}
@@ -2701,7 +2740,7 @@ function AppShellContent({
             selection={navSelection}
             sessions={visibleSessions}
             activeId={sidebarActiveId}
-            planReminders={planReminders}
+            scheduledTasks={scheduledTasks}
             streamingSessionIds={streamingSessionIds}
             staleSessionIds={staleSessionIds}
             viewMode={viewMode}
@@ -2737,14 +2776,20 @@ function AppShellContent({
                 <SkillsPage
                   hubHeader={extensionsHubHeader}
                   skills={skills}
-                  planReminders={planReminders}
+                  scheduledTasks={scheduledTasks}
                   onRefreshSkills={() => refreshSkills()}
                   onRefreshManagedSkillSources={() => refreshManagedSkillSources()}
-                  onOpenSkill={(skillId) => openSkill(skillId)}
+                  onOpenSkill={projectCapabilities.viewClientPath
+                    ? (skillId) => openSkill(skillId)
+                    : undefined}
                   onUseSkill={useSkillInChat}
-                  onOpenSkillsFolder={() => openSkillsFolder()}
+                  onOpenSkillsFolder={projectCapabilities.viewClientPath
+                    ? () => openSkillsFolder()
+                    : undefined}
                   managedSkillSources={managedSkillSources}
-                  onImportManagedSkillSource={() => importManagedSkillSource()}
+                  onImportManagedSkillSource={projectCapabilities.viewClientPath
+                    ? () => importManagedSkillSource()
+                    : undefined}
                   onInstallManagedSkill={(sourceId) => installManagedSkill(sourceId)}
                   bundledSkillCatalog={bundledSkillCatalog}
                   onRefreshBundledSkillCatalog={() => refreshBundledSkillCatalog()}
@@ -2757,12 +2802,12 @@ function AppShellContent({
                 />
               ) : navSelection.section === 'extensions' && navSelection.module === 'mcp' ? (
                 <McpPage hubHeader={extensionsHubHeader} />
-              ) : navSelection.section === 'automations' && navSelection.module === 'plan-reminders' ? (
-                <AutomationsPage
+              ) : navSelection.section === 'automations' && navSelection.module === 'scheduled-tasks' ? (
+                <ScheduledTasksPage
                   hubHeader={automationsHubHeader}
-                  reminders={planReminders}
-                  createRequestNonce={planReminderCreateRequestNonce}
-                  onCreateRequestHandled={() => setPlanReminderCreateRequestNonce(0)}
+                  tasks={scheduledTasks}
+                  createRequestNonce={scheduledTaskCreateRequestNonce}
+                  onCreateRequestHandled={() => setScheduledTaskCreateRequestNonce(0)}
                   keepSystemAwake={
                     keepSystemAwakeController.supported
                       ? keepSystemAwakeController.keepSystemAwake
@@ -2774,17 +2819,17 @@ function AppShellContent({
                       : undefined
                   }
                     onRefresh={() =>
-                      refreshPlanReminders({
-                        shouldShowError: isAutomationsSurfaceActive,
+                      refreshScheduledTasks({
+                        shouldShowError: isScheduledTasksSurfaceActive,
                       })
                     }
-                  onCreate={(input) => createPlanReminder(input)}
-                  onUpdate={(id, patch) => updatePlanReminder(id, patch)}
-                  onToggle={(id, enabled) => togglePlanReminder(id, enabled)}
-                  onTriggerNow={(id) => triggerPlanReminderNow(id)}
-                  onSnooze={(id) => snoozePlanReminder(id)}
-                  onClearRunHistory={(id) => clearPlanReminderRunHistory(id)}
-                  onDelete={(id) => deletePlanReminder(id)}
+                  onCreate={(input) => createScheduledTask(input)}
+                  onUpdate={(id, patch) => updateScheduledTask(id, patch)}
+                  onToggle={(id, enabled) => toggleScheduledTask(id, enabled)}
+                  onTriggerNow={(id) => triggerScheduledTaskNow(id)}
+                  onSnooze={(id) => snoozeScheduledTask(id)}
+                  onClearRunHistory={(id) => clearScheduledTaskRunHistory(id)}
+                  onDelete={(id) => deleteScheduledTask(id)}
                 />
               ) : navSelection.section === 'automations' && navSelection.module === 'daily-review' ? (
                 <DailyReviewPage
@@ -2993,6 +3038,9 @@ function AppShellContent({
                   <ChatMessageSurface
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
+                liveContentSeedRevision={activeEventSeed.sessionId === activeId
+                  ? activeEventSeed.revision
+                  : 0}
                 messages={messages}
                 messageLoading={activeMessageLoading}
                 runningStatus={showRunningStatus}
@@ -3093,9 +3141,9 @@ function AppShellContent({
                   taskReadinessNotice?.action === 'workspace_picker'
                     ? activeSession
                       ? openNewTaskSurface
-                      : () => {
-                          void addProject();
-                        }
+                      : projectCapabilities.chooseClientDirectory
+                        ? () => void addProject()
+                        : undefined
                     : taskReadiness.refresh
                 }
                 showOnboardingHero={showOnboardingHero}
@@ -3232,6 +3280,8 @@ function AppShellContent({
           closeWorkbarTabsImmediately('bottom', byPlacement.bottom);
         }}
       />
+
+      <RuntimeHostSshTerminalDialog />
 
       <AppShellOverlays
         settingsOpen={settingsOpen}

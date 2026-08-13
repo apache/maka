@@ -1,4 +1,5 @@
-import type { SettingsSection, UiCatalog, UiLocale } from '@maka/core';
+import type { SettingsSection } from '@maka/core/settings';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type { SettingsNavGroup } from '../settings/nav-group-summary.js';
 
 export type SettingsNavigationCopy = {
@@ -17,7 +18,7 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = {
     sections: {
       general: { label: '通用', description: '显示名称与界面语言、隐私与通知、对话默认与网络代理。' },
       appearance: { label: '外观', description: '界面主题与调色板。' },
-      projects: { label: '项目', description: '管理 Maka 认识的项目，以及新对话默认打开哪一个。' },
+      projects: { label: '工作区', description: '选择 Runtime Host，并管理该 Host 上的项目。' },
       models: { label: '模型', description: '模型连接、API key 与 OAuth 订阅管理。' },
       subagents: { label: '子 Agent', description: '配置主 Agent 可以自动选择的子 Agent、能力边界与模型。' },
       usage: { label: '使用统计', description: 'token、模型、工具使用走势与配额追踪。' },
@@ -41,7 +42,7 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = {
     sections: {
       general: { label: 'General', description: 'Display name and interface language, privacy and notifications, conversation defaults, and network proxy.' },
       appearance: { label: 'Appearance', description: 'Interface theme and color palette.' },
-      projects: { label: 'Projects', description: 'Manage the projects Maka knows about, and which one new conversations open in.' },
+      projects: { label: 'Workspace', description: 'Choose the Runtime Host and manage the projects available on it.' },
       models: { label: 'Models', description: 'Model connections, API keys, and OAuth subscriptions.' },
       subagents: { label: 'Subagents', description: 'Configure the subagents, capability boundaries, and models the main agent may select.' },
       usage: { label: 'Usage', description: 'Token, model, tool usage trends, and quota tracking.' },

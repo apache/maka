@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AppSettings, UpdateAppSettingsResult } from '@maka/core';
+import type { AppSettings, UpdateAppSettingsResult } from '@maka/core/settings';
 
 import {
   Banner,
@@ -94,13 +94,14 @@ export function MemorySettingsPage(props: {
     onReloadSettings: props.onReloadSettings,
   });
   const entryActionsBlocked = memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled;
+  const hasLocalMemoryPaths = Boolean(effective.path);
 
   return (
     <SettingsPage>
       <SettingsSection description={sharedCopy.groups.memorySourcesHelp}>
         <SettingsRow
-          label={copy.text.localFile}
-          description={copy.text.localFileHelp}
+          label={hasLocalMemoryPaths ? copy.text.localFile : 'MEMORY.md'}
+          description={hasLocalMemoryPaths ? copy.text.localFileHelp : copy.text.fileContent}
           end={(
             <span className="settingsFormRowControlCluster">
               <span className="settingsStatus">
@@ -111,7 +112,7 @@ export function MemorySettingsPage(props: {
                 <span>{memoryStatusLabel(effective.status, copy)}</span>
               </span>
               <Switch
-                label={copy.text.enableLocalFile}
+                label={hasLocalMemoryPaths ? copy.text.enableLocalFile : copy.text.fileContent}
                 isLabelHidden
                 value={effective.enabled}
                 isDisabled={memoryControlsDisabled}
@@ -330,7 +331,7 @@ export function MemorySettingsPage(props: {
       >
         <SettingsRow
           align="start"
-          label={effective.path ? displayMemoryPath(effective.path) : copy.text.waitingFile}
+          label={effective.path ? displayMemoryPath(effective.path) : 'MEMORY.md'}
           description={(
             <>
               {effective.latestBackup ? (
@@ -358,14 +359,16 @@ export function MemorySettingsPage(props: {
                   return (
                     <li key={`${backup.kind}:${backup.path}`} className="settingsMemoryBackupCandidate">
                       <span>{backupCandidateLabel} · <RelativeTime ts={backup.updatedAt} /></span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={copy.openBackupAria(backupCandidateLabel)}
-                        isDisabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending(`backup:${backup.kind}:open`)}
-                        onClick={() => void openBackupCandidate(backup)}
-                        label={isMemoryActionPending(`backup:${backup.kind}:open`) ? copy.text.opening : copy.text.open}
-                      />
+                      {backup.path && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={copy.openBackupAria(backupCandidateLabel)}
+                          isDisabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending(`backup:${backup.kind}:open`)}
+                          onClick={() => void openBackupCandidate(backup)}
+                          label={isMemoryActionPending(`backup:${backup.kind}:open`) ? copy.text.opening : copy.text.open}
+                        />
+                      )}
                       <Button
                         variant="ghost"
                         size="sm"
@@ -374,14 +377,16 @@ export function MemorySettingsPage(props: {
                         onClick={() => void restoreBackupCandidate(backup)}
                         label={isMemoryActionPending(`backup:${backup.kind}:restore`) ? copy.text.restoring : copy.text.restore}
                       />
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={copy.copyBackupAria(backupCandidateLabel)}
-                        isDisabled={isMemoryActionPending(`backup:${backup.kind}:copy`)}
-                        onClick={() => void copyBackupReference(backup)}
-                        label={isMemoryActionPending(`backup:${backup.kind}:copy`) ? copy.text.copying : copy.text.copyReference}
-                      />
+                      {backup.path && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={copy.copyBackupAria(backupCandidateLabel)}
+                          isDisabled={isMemoryActionPending(`backup:${backup.kind}:copy`)}
+                          onClick={() => void copyBackupReference(backup)}
+                          label={isMemoryActionPending(`backup:${backup.kind}:copy`) ? copy.text.copying : copy.text.copyReference}
+                        />
+                      )}
                     </li>
                   );
                 })}
@@ -420,17 +425,17 @@ export function MemorySettingsPage(props: {
         )}
         <SettingsActions role="group" aria-label={copy.text.fileActionsAria}>
           <Button variant="primary" className="settingsActionWidthXs" isDisabled={memoryControlsDisabled || !effective.enabled || !memoryDraftDirty} onClick={() => void save()} label={pendingMemoryWriteAction === 'save' ? copy.text.saving : memoryDraftDirty ? copy.text.save : copy.text.saved} />
-          <Button variant="ghost" isDisabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending('memory:file:open')} onClick={() => void openFile()} label={isMemoryActionPending('memory:file:open') ? copy.text.opening : copy.text.openFile} />
+          {hasLocalMemoryPaths && <Button variant="ghost" isDisabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending('memory:file:open')} onClick={() => void openFile()} label={isMemoryActionPending('memory:file:open') ? copy.text.opening : copy.text.openFile} />}
           <Button variant="ghost" isDisabled={memoryControlsDisabled || !effective.enabled} onClick={() => void reloadDraftFromDisk()} label={pendingMemoryWriteAction === 'reload' ? copy.text.loading : copy.text.reload} />
           <MoreMenu
             label={copy.text.fileActionsAria}
             size="sm"
             items={[
-              { label: copy.text.openFolder, isDisabled: memoryControlsDisabled || !effective.enabled, onClick: () => void openFolder() },
-              { label: copy.text.copyPath, isDisabled: !effective.path, onClick: () => void copyPath() },
+              { label: copy.text.openFolder, isDisabled: memoryControlsDisabled || !effective.enabled || !hasLocalMemoryPaths, onClick: () => void openFolder() },
+              { label: copy.text.copyPath, isDisabled: !hasLocalMemoryPaths, onClick: () => void copyPath() },
               { type: 'divider' },
-              { label: copy.text.openPrevious, isDisabled: memoryControlsDisabled || !effective.enabled || !effective.latestBackup, onClick: () => void openLatestBackup() },
-              { label: copy.text.copyPrevious, isDisabled: !effective.latestBackup, onClick: () => void copyLatestBackupReference() },
+              { label: copy.text.openPrevious, isDisabled: memoryControlsDisabled || !effective.enabled || !effective.latestBackup?.path, onClick: () => void openLatestBackup() },
+              { label: copy.text.copyPrevious, isDisabled: !effective.latestBackup?.path, onClick: () => void copyLatestBackupReference() },
               { label: copy.text.restorePrevious, isDisabled: memoryControlsDisabled || !effective.enabled || !effective.latestBackup, onClick: () => void restoreLatestBackup() },
               { type: 'divider' },
               { label: copy.text.resetBackup, isDisabled: memoryControlsDisabled || !effective.enabled, onClick: () => void reset() },

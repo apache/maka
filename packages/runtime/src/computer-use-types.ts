@@ -6,7 +6,7 @@ import type {
   ComputerUsePageIdentity,
   CuAction,
   CuPoint,
-} from '@maka/core';
+} from '@maka/core/computer-use';
 import type { CuaBoundAction } from './cua-frame-state.js';
 
 export interface CuScreenshot {

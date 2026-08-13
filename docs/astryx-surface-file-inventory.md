@@ -121,7 +121,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/module-pages/capability-audit.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/module-pages/mcp.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/module-pages/module-shell.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/styles/module-pages/plan-reminders.css` | module-hub | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
+| `apps/desktop/src/renderer/styles/module-pages/scheduled-tasks.css` | module-hub | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/module-pages/skills.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/native-cursor.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/onboarding.css` | dialog-overlay | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
@@ -178,9 +178,9 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/module-hub-selector.tsx` | ui-composition | Tab, TabList | aligned — uses Astryx (Tab, TabList) | aligned |
 | `packages/ui/src/module-pages.tsx` | ui-composition | EmptyState, Spinner | aligned — uses Astryx (EmptyState, Spinner) | aligned |
 | `packages/ui/src/permission-mode-menu.tsx` | ui-composition | Selector | aligned — uses Astryx (Selector) | aligned |
-| `packages/ui/src/plan-reminder-form-dialog.tsx` | module-hub | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Selector, Text, TextInput | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Selector, Text) | aligned |
-| `packages/ui/src/plan-reminder-inspector.tsx` | module-hub | Button, Divider, HStack, Heading, List, ListItem, MetadataList, MetadataListItem, Switch, Text, VStack | aligned — uses Astryx (Button, Divider, HStack, Heading, List, ListItem, MetadataList, MetadataListItem) | aligned |
-| `packages/ui/src/plan-reminder-panel.tsx` | module-hub | Button, Divider, EmptyState, List, ListItem, SegmentedControl, SegmentedControlItem, Selector, Text, TextInput, Toolbar | aligned — uses Astryx (Button, Divider, EmptyState, List, ListItem, SegmentedControl, SegmentedControlItem, Selector) | aligned |
+| `packages/ui/src/scheduled-task-form-dialog.tsx` | module-hub | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Selector, Text, TextInput | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Selector, Text) | aligned |
+| `packages/ui/src/scheduled-task-inspector.tsx` | module-hub | Button, Divider, HStack, Heading, List, ListItem, MetadataList, MetadataListItem, Switch, Text, VStack | aligned — uses Astryx (Button, Divider, HStack, Heading, List, ListItem, MetadataList, MetadataListItem) | aligned |
+| `packages/ui/src/scheduled-task-panel.tsx` | module-hub | Button, Divider, EmptyState, List, ListItem, SegmentedControl, SegmentedControlItem, Selector, Text, TextInput, Toolbar | aligned — uses Astryx (Button, Divider, EmptyState, List, ListItem, SegmentedControl, SegmentedControlItem, Selector) | aligned |
 | `packages/ui/src/primitives/chat.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/primitives/module-page.tsx` | primitive | Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel, ResizeHandle, Text, VStack | aligned — uses Astryx (Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel) | aligned |
 | `packages/ui/src/primitives/page-header.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |

@@ -9,35 +9,6 @@ import {
 } from '../protocol/index.js';
 
 describe('Session revision protocol', () => {
-  test('declares exact ready-only branch and revision commands', () => {
-    for (const operation of ['session.branch.create', 'session.revision.create'] as const) {
-      assert.equal(HOST_OPERATION_SPECS[operation].mode, 'command');
-      assert.equal(HOST_OPERATION_SPECS[operation].availability, 'ready');
-      assert.deepEqual(
-        decodeClientFrame({
-          requestId: 'request-1',
-          operation,
-          input: {
-            sourceSessionId: 'source-session',
-            targetSessionId: 'target-session',
-            sourceTurnId: 'turn-1',
-            expectedSourceRevision: 3,
-          },
-        }),
-        {
-          requestId: 'request-1',
-          operation,
-          input: {
-            sourceSessionId: 'source-session',
-            targetSessionId: 'target-session',
-            sourceTurnId: 'turn-1',
-            expectedSourceRevision: 3,
-          },
-        },
-      );
-    }
-  });
-
   test('rejects aliasing, unknown fields, and mismatched response identities', () => {
     assert.throws(
       () =>
@@ -149,7 +120,10 @@ function sessionProjection(id: string): SessionCatalogProjection {
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: 'Session',

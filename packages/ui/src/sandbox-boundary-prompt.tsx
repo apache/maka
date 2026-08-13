@@ -1,4 +1,4 @@
-import type { SandboxBoundaryRequestEvent } from '@maka/core';
+import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
 import { useEffect, useId, useRef, useState } from 'react';
 
 import { getConversationCopy } from './conversation-copy.js';

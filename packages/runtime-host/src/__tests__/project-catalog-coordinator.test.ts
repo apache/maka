@@ -43,11 +43,12 @@ test('Host Project Catalog relink merges identities and reassigns every affected
       sessionFrames.push(frame);
     },
   });
+  const membership = new HostProjectMembershipGate();
   const coordinator = new HostProjectCatalogCoordinator(
     catalog,
     projectChanges,
     sessionChanges,
-    new HostProjectMembershipGate(),
+    membership,
     () => assert.fail('ordinary project mutations must not drain the Host'),
   );
 
@@ -65,7 +66,7 @@ test('Host Project Catalog relink merges identities and reassigns every affected
     );
     assert.equal(relinked.ok, true);
     if (!relinked.ok || relinked.result.kind !== 'project') return;
-    assert.equal(relinked.result.projectId, original.id);
+    assert.equal(relinked.result.project.id, original.id);
     const [project] = await catalog.list();
     assert.deepEqual(project?.aliases, [duplicate.id]);
     assert.equal(project?.preferredPath, destinationPath);
@@ -93,12 +94,30 @@ test('Host Project Catalog relink merges identities and reassigns every affected
     );
 
     const listed = await coordinator.handlers['project.catalog.query'](
-      { kind: 'list_start' },
+      { kind: 'list_start', view: 'summary' },
       connection(),
     );
     assert.equal(listed.ok, true);
     assert.equal(listed.ok && listed.result.kind, 'page');
     assert.equal(listed.ok && listed.result.kind === 'page' && listed.result.projectCount, 1);
+
+    const locations = await coordinator.handlers['project.catalog.query'](
+      { kind: 'list_start', view: 'locations' },
+      connection(),
+    );
+    assert.equal(locations.ok, true);
+    if (!locations.ok || locations.result.kind !== 'page') return;
+    assert.deepEqual(
+      locations.result.items.filter((item) => item.kind === 'location'),
+      [
+        {
+          kind: 'location',
+          projectIndex: 0,
+          itemIndex: 0,
+          location: { path: destinationPath, isWorktree: false },
+        },
+      ],
+    );
   } finally {
     catalog.close();
     await sessions.close?.();

@@ -5,12 +5,11 @@
 // shows only the shortest next action. Provider configuration remains owned
 // by Settings, and a ready workspace returns to the ordinary Composer.
 
-import {
-  type LlmConnection,
-  type OnboardingState,
-  type ProviderType,
-  type SettingsSection,
-} from '@maka/core';
+import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
+
+import { type OnboardingState } from '@maka/core/onboarding';
+
+import { type SettingsSection } from '@maka/core/settings';
 import { Button, MakaWordmark, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, AlertCircle, ChevronRight, Cpu, KeyRound } from '@maka/ui/icons';
 import {

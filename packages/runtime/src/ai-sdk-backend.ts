@@ -80,7 +80,7 @@ import type { AttachmentByteReader } from '@maka/core/attachments';
 import {
   MAX_PROVIDER_IMAGE_REQUEST_BYTES,
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
-} from '@maka/core';
+} from '@maka/core/attachments';
 import { stripUndefinedDeep } from '@maka/core/tool-args-identity';
 import type {
   LlmCallRecord,
@@ -4715,6 +4715,8 @@ function mergeActiveToolResultPruneDiagnosticPatches(
 ): ActiveToolResultPruneDiagnosticPatch {
   return {
     ...sumOptionalCounts('activePrunedToolResults', left, right),
+    ...sumOptionalCounts('activeSupersededToolResults', left, right),
+    ...sumOptionalCounts('activeDuplicateToolResults', left, right),
     ...sumOptionalCounts('activeArchiveFailures', left, right),
     ...sumOptionalCounts('activeEstimatedTokensSaved', left, right),
   };

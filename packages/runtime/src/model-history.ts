@@ -42,11 +42,8 @@ import {
   type RuntimeEventContent,
   type RuntimeEventRole,
 } from '@maka/core/runtime-event';
-import {
-  formatAttachmentResourceRef,
-  normalizeShellToolResultContent,
-  normalizeToolResultContentForRead,
-} from '@maka/core';
+import { formatAttachmentResourceRef } from '@maka/core/attachments';
+import { decodeCanonicalShellToolResultContent } from '@maka/core/shell-run-result';
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
 import { projectBashToolResultForModel } from './bash-model-output.js';
@@ -590,7 +587,7 @@ export function buildRuntimeEventModelReplayPlan(
           );
           continue;
         }
-        const shellResult = normalizeShellToolResultContent(event.content.result);
+        const shellResult = decodeCanonicalShellToolResultContent(event.content.result);
         let invalidResultMessage: string | undefined;
         let normalizedResult: unknown =
           event.content.providerExecuted && event.content.providerOutput !== undefined
@@ -598,16 +595,8 @@ export function buildRuntimeEventModelReplayPlan(
             : event.content.result;
         if (shellResult.state === 'invalid') {
           invalidResultMessage = 'function_response contains an invalid shell tool result';
-        } else if (
-          shellResult.state === 'valid' ||
-          isLegacySubagentToolResultCandidate(event.content.name, event.content.result)
-        ) {
-          try {
-            normalizedResult = normalizeToolResultContentForRead(event.content.result);
-          } catch {
-            invalidResultMessage =
-              'function_response contains an invalid legacy subagent tool result';
-          }
+        } else if (shellResult.state === 'valid') {
+          normalizedResult = shellResult.content;
         }
         if (!invalidResultMessage && event.content.name === 'Bash') {
           normalizedResult = projectBashToolResultForModel(normalizedResult);
@@ -892,15 +881,6 @@ export function stripSteeringMessages(
     const eventId = steeringEventIdOf(message);
     return eventId === undefined || !ids.has(eventId);
   });
-}
-
-const LEGACY_SUBAGENT_RESULT_TOOL_NAMES = new Set(['Task', 'agent_spawn']);
-
-function isLegacySubagentToolResultCandidate(toolName: string, value: unknown): boolean {
-  if (!LEGACY_SUBAGENT_RESULT_TOOL_NAMES.has(toolName)) return false;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
-  return candidate.kind === 'subagent' && candidate.status === 'waiting_permission';
 }
 
 /**

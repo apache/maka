@@ -1,4 +1,4 @@
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type { ConfigCategory } from '@maka/storage';
 
 export type DataSettingsCopy = {

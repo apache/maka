@@ -1,84 +1,91 @@
+import type { ConnectionEvent } from '@maka/core/connections';
 import type {
-  ConnectionEvent,
   ConnectionTestResult,
   CreateConnectionInput,
-  AppSettings,
-  BotProvider,
-  BotOnboardingSnapshot,
-  BotOnboardingStartInput,
-  HealthSnapshot,
-  ExecutionBoundaryReadModel,
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
-  ActiveInteractionRequestEvent,
-  SandboxBoundaryResponse,
-  UserQuestionResponse,
-  PermissionMode,
-  CollaborationMode,
-  OrchestrationMode,
-  TurnOrchestration,
-  PlanSessionState,
-  SearchErrorReason,
-  SearchRequest,
-  SearchResult,
-  SettingsTestResult,
-  SessionCommand,
-  SessionChangedEvent,
-  SessionEvent,
-  SessionListFilter,
-  SessionSummary,
-  ShellRunUpdate,
-  StoredMessage,
-  ThinkingLevel,
   UpdateConnectionInput,
+} from '@maka/core/llm-connections';
+import type {
+  AppSettings,
+  SettingsTestResult,
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
   UsageRange,
   UsageStats,
-  E2eFixtureState,
-  ExternalSessionSummary,
+  ThemePreference,
+} from '@maka/core/settings';
+import type { BotProvider } from '@maka/core/bot-chat-settings';
+import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/bot-onboarding';
+import type { HealthSnapshot } from '@maka/core/health';
+import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type {
+  ActiveInteractionRequestEvent,
+  SessionCommand,
+  SessionEvent,
+  ShellRunUpdate,
+  QueueEnqueueOutcome,
+} from '@maka/core/events';
+import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { PermissionMode } from '@maka/core/permission';
+import type { CollaborationMode } from '@maka/core/collaboration';
+import type { OrchestrationMode } from '@maka/core/orchestration';
+import type {
+  TurnOrchestration,
+  SessionListFilter,
+  BranchFromTurnInput,
+  RegenerateTurnInput,
+  ReviseBeforeTurnInput,
+} from '@maka/core/runtime-inputs';
+import type { PlanSessionState } from '@maka/core/plan';
+import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
+import type { SessionChangedEvent, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { E2eFixtureState } from '@maka/core/e2e-fixture';
+import type { ExternalSessionSummary } from '@maka/core/external-session';
+import type {
   GitReviewReadResult,
   GitReviewMutationAction,
   GitReviewMutationResult,
   GitReviewSource,
+} from '@maka/core/git-review';
+import type {
   ArtifactBinaryReadResult,
   ArtifactChangedEvent,
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
-  BranchFromTurnInput,
-  CapabilitySnapshotCollection,
-  RegenerateTurnInput,
-  ReviseBeforeTurnInput,
-  TurnRecord,
-  PermissionSnapshot,
-  LocalMemoryState,
+} from '@maka/core/artifacts';
+import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/core/capabilities';
+import type { LocalMemoryState, LocalMemoryEntryPreview } from '@maka/core/local-memory';
+import type {
   AuthorizationUrlPayload,
   SubscriptionAccountState,
   SubscriptionActionResult,
-  PlanReminder,
-  ProjectRecord,
-  PlanReminderDeliveryTarget,
-  PlanReminderRecurrence,
+} from '@maka/core/oauth-subscription';
+import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
+import type { ProjectRecord } from '@maka/core/project';
+import type {
   DailyReviewArchive,
-  QueueEnqueueOutcome,
   DailyReviewArchiveSummary,
   DailyReviewConfig,
   DailyReviewRange,
   DailyReviewSummary,
-  WebSearchProvider,
-  WebSearchResponse,
-  BrowserState,
-  BrowserViewRect,
-  ThemePreference,
-  Task,
-  TaskLedgerChangedEvent,
-  DeepResearchChangedEvent,
-  DeepResearchClientProgress,
-  LocalMemoryEntryPreview,
-  PetPackManifestV1,
-} from '@maka/core';
+} from '@maka/core/daily-review';
+import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
+import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
+import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
+import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
+import type { PetPackManifestV1 } from '@maka/core/pet';
+import type {
+  OperationInput,
+  OperationOutput,
+} from '@maka/runtime-host/protocol';
+import type {
+  RendererRuntimeHostCommandOperation,
+  RendererRuntimeHostQueryOperation,
+} from './runtime-host-renderer-operations.js';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
@@ -87,7 +94,7 @@ import type {
   DesktopErrorDiagnosticInput,
 } from './diagnostics-contract.js';
 import type { Result } from '@maka/core/result';
-import type { CreateSessionRequestInput } from '@maka/core';
+import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigFile,
   McpServerConfig,
@@ -98,27 +105,25 @@ import type {
   AgentGraphClientSnapshot,
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
-  BotStatus,
-  ShellRunPtyDataEvent,
-  ShellRunPtySnapshot,
-  WechatBridgeQrCodeResult,
-} from '@maka/runtime';
+} from '@maka/runtime/stream-graph-read-model';
+import type { BotStatus, WechatBridgeQrCodeResult } from '@maka/runtime/bots';
+import type { ShellRunPtyDataEvent, ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from '@maka/ui';
 import type { ConfigCategory } from '@maka/storage';
+import type { OnboardingMilestone, OnboardingMilestoneId, OnboardingState } from '@maka/core/onboarding';
 import type {
-  OnboardingMilestone,
-  OnboardingMilestoneId,
-  OnboardingState,
-} from '@maka/core';
+  RemoteRuntimeHostProfile,
+  RuntimeHostProfile,
+} from '@maka/runtime-host/client';
 
 export interface OnboardingSnapshot {
   state: OnboardingState;
   milestones: OnboardingMilestone[];
-  sessions: import('@maka/core').SessionSummary[];
-  connections: import('@maka/core').LlmConnection[];
+  sessions: import('@maka/core/session').SessionSummary[];
+  connections: import('@maka/core/llm-connections').LlmConnection[];
   defaultSlug: string | null;
-  chatModelChoices: import('@maka/core').ChatModelChoice[];
-  sessionSendOutcomes: Record<string, import('@maka/core').SessionSendProjection>;
+  chatModelChoices: import('@maka/core/chat-model-choice').ChatModelChoice[];
+  sessionSendOutcomes: Record<string, import('@maka/core/session-send-projection').SessionSendProjection>;
 }
 
 export interface DesktopTaskSubmissionReadinessRequest {
@@ -211,6 +216,78 @@ export type AppUpdateInstallResult =
   | { ok: false; reason: 'active_tasks' }
   | { ok: false; reason: 'not_downloaded' | 'install_failed' };
 
+export interface DesktopRuntimeHostProfileSnapshot {
+  readonly profiles: readonly RuntimeHostProfile[];
+  readonly selectedProfileId: string;
+  readonly runtimeHostReadiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
+  readonly activeProfile?: RuntimeHostProfile;
+  readonly activeProfileId?: string;
+  readonly unavailable?: {
+    readonly profileId: string;
+    readonly message: string;
+  };
+}
+
+export interface DesktopRuntimeHostProfileAddInput {
+  readonly profile: RemoteRuntimeHostProfile;
+  readonly credential?: string;
+}
+
+export type DesktopRuntimeHostProfileAddResult =
+  | {
+      readonly kind: 'connected';
+      readonly snapshot: DesktopRuntimeHostProfileSnapshot;
+      readonly warning?: string;
+    }
+  | {
+      readonly kind: 'unavailable';
+      readonly snapshot: DesktopRuntimeHostProfileSnapshot;
+      readonly message: string;
+    };
+
+export interface DesktopRuntimeHostProfileChangedEvent {
+  readonly epoch: string;
+  readonly profileId: string;
+  readonly targetChanged: boolean;
+  readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
+}
+
+export type DesktopRuntimeHostSshTerminalEvent =
+  | { readonly kind: 'opened'; readonly revision: number; readonly sessionId: string }
+  | { readonly kind: 'data'; readonly revision: number; readonly sessionId: string; readonly data: string }
+  | { readonly kind: 'connected'; readonly revision: number; readonly sessionId: string }
+  | {
+      readonly kind: 'closed';
+      readonly revision: number;
+      readonly sessionId: string;
+      readonly code: number | null;
+      readonly signal: string | null;
+    };
+
+export type DesktopRuntimeHostSshTerminalSnapshot =
+  | { readonly kind: 'idle'; readonly revision: number }
+  | { readonly kind: 'connecting'; readonly revision: number; readonly sessionId: string; readonly output: string }
+  | {
+      readonly kind: 'closed';
+      readonly revision: number;
+      readonly sessionId: string;
+      readonly output: string;
+      readonly code: number | null;
+      readonly signal: string | null;
+    };
+
+export interface DesktopProjectCapabilities {
+  readonly chooseClientDirectory: boolean;
+  readonly selectNoProject: boolean;
+  readonly setLocalDefault: boolean;
+  readonly viewClientPath: boolean;
+}
+
+export interface DesktopProjectSnapshot {
+  readonly projects: readonly ProjectRecord[];
+  readonly capabilities: DesktopProjectCapabilities;
+}
+
 /**
  * Commands dispatched by the native application menu (see
  * main/application-menu.ts). The renderer owns the implementations.
@@ -225,6 +302,36 @@ export interface PetPackChangedEvent {
 }
 
 export interface MakaBridge {
+  runtimeHost: {
+    query<K extends RendererRuntimeHostQueryOperation>(
+      operation: K,
+      input: OperationInput<K>,
+    ): Promise<OperationOutput<K>>;
+    command<K extends RendererRuntimeHostCommandOperation>(
+      operation: K,
+      input: OperationInput<K>,
+    ): Promise<OperationOutput<K>>;
+  };
+
+  runtimeHostProfiles: {
+    getSnapshot(): Promise<DesktopRuntimeHostProfileSnapshot>;
+    addAndSelect(
+      input: DesktopRuntimeHostProfileAddInput,
+    ): Promise<DesktopRuntimeHostProfileAddResult>;
+    remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
+    select(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
+    subscribeChanges(
+      handler: (event: DesktopRuntimeHostProfileChangedEvent) => void,
+    ): () => void;
+  };
+
+  runtimeHostSshTerminal: {
+    getSnapshot(): Promise<DesktopRuntimeHostSshTerminalSnapshot>;
+    write(sessionId: string, data: string): Promise<void>;
+    resize(sessionId: string, cols: number, rows: number): Promise<void>;
+    cancel(sessionId: string): Promise<void>;
+    subscribe(handler: (event: DesktopRuntimeHostSshTerminalEvent) => void): () => void;
+  };
 
   pets: {
     list(): Promise<PetPackManifestV1[]>;
@@ -301,9 +408,9 @@ export interface MakaBridge {
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
-            quotes?: import('@maka/core').QuoteRef[];
+            quotes?: import('@maka/core/events').QuoteRef[];
             workspaceFileReferences?: Array<
-              Pick<import('@maka/core').InlineReference, 'value' | 'start'>
+              Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
             >;
           },
     ): Promise<
@@ -322,14 +429,14 @@ export interface MakaBridge {
           ok: true;
           disposition: 'turn_started';
           turnId: string;
-          attachments: import('@maka/core').AttachmentRef[];
-          inlineReferences: import('@maka/core').InlineReference[];
-          skillInvocation: import('@maka/runtime').SkillInvocationResult;
+          attachments: import('@maka/core/events').AttachmentRef[];
+          inlineReferences: import('@maka/core/events').InlineReference[];
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
         }
       | {
           ok: false;
           reason: 'skill_invocation_failed';
-          skillInvocation: import('@maka/runtime').SkillInvocationResult;
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
         }
     >;
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
@@ -360,7 +467,11 @@ export interface MakaBridge {
     }): Promise<
       { ok: true; path: string } | { ok: false; reason: 'canceled' | 'write_failed' | 'invalid_input' }
     >;
-    subscribeEvents(sessionId: string, handler: (event: SessionEvent) => void): () => void;
+    subscribeEvents(
+      sessionId: string,
+      handler: (event: SessionEvent) => void,
+      onSeeded?: () => void,
+    ): () => void;
     subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
     archive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
     unarchive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
@@ -398,7 +509,6 @@ export interface MakaBridge {
     list(input: {
       adapterId: string;
       includeArchived?: boolean;
-      cwd?: string;
       cursor?: string;
     }): Promise<{ sessions: ExternalSessionSummary[]; nextCursor: string | null }>;
     import(input: {
@@ -407,7 +517,7 @@ export interface MakaBridge {
     }): Promise<ExternalSessionImportIpcResult>;
   };
   projects: {
-    list(): Promise<ProjectRecord[]>;
+    getSnapshot(): Promise<DesktopProjectSnapshot>;
     subscribeChanges(handler: () => void): () => void;
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
@@ -462,7 +572,7 @@ export interface MakaBridge {
   };
   goal: {
     /** The session's current goal (null when none is set). */
-    get(sessionId: string): Promise<import('@maka/runtime').GoalState | null>;
+    get(sessionId: string): Promise<import('@maka/runtime/goal-state').GoalState | null>;
     /** Clear the active goal, stopping autonomous continuation. */
     clear(sessionId: string): Promise<void>;
   };
@@ -477,11 +587,11 @@ export interface MakaBridge {
     test(slug: string, opts?: { model?: string }): Promise<ConnectionTestResult>;
     fetchModels(slug: string): Promise<ModelDiscoveryResult>;
     hasSecret(slug: string): Promise<boolean>;
-    getRequestHeaders(slug: string): Promise<import('@maka/core').SavedRequestHeaders>;
+    getRequestHeaders(slug: string): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     setRequestHeaders(
       slug: string,
-      headers: readonly import('@maka/core').RequestHeaderUpdate[],
-    ): Promise<import('@maka/core').SavedRequestHeaders>;
+      headers: readonly import('@maka/core/llm-connections').RequestHeaderUpdate[],
+    ): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     subscribeEvents(handler: (event: ConnectionEvent) => void): () => void;
   };
   mcp: {
@@ -539,7 +649,7 @@ export interface MakaBridge {
   taskReadiness: {
     getSnapshot(
       input?: DesktopTaskSubmissionReadinessRequest,
-    ): Promise<import('@maka/core').TaskSubmissionReadinessSnapshot>;
+    ): Promise<import('@maka/core/task-submission-readiness').TaskSubmissionReadinessSnapshot>;
   };
   permissions: {
     getSnapshot(): Promise<PermissionSnapshot>;
@@ -686,22 +796,22 @@ export interface MakaBridge {
     refreshTokens(): Promise<SubscriptionActionResult>;
     logout(): Promise<SubscriptionActionResult>;
   };
-  plans: {
-    list(): Promise<PlanReminder[]>;
-    create(input: { title: string; note?: string; runAt: number | string; recurrence?: PlanReminderRecurrence; cronExpression?: string; delivery?: PlanReminderDeliveryTarget }): Promise<PlanReminder>;
+  scheduledTasks: {
+    list(): Promise<ScheduledTask[]>;
+    create(input: Omit<CreateScheduledTaskInput, 'createdBy'>): Promise<ScheduledTask>;
     update(
       id: string,
-      patch: { title?: string; note?: string; runAt?: number | string; recurrence?: PlanReminderRecurrence; cronExpression?: string; delivery?: PlanReminderDeliveryTarget; enabled?: boolean },
-    ): Promise<PlanReminder>;
-    setEnabled(id: string, enabled: boolean): Promise<PlanReminder>;
-    triggerNow(id: string): Promise<PlanReminder>;
-    snooze(id: string): Promise<PlanReminder>;
-    clearRunHistory(id: string): Promise<PlanReminder>;
+      patch: UpdateScheduledTaskInput,
+    ): Promise<ScheduledTask>;
+    setEnabled(id: string, enabled: boolean): Promise<ScheduledTask>;
+    triggerNow(id: string): Promise<ScheduledTask>;
+    snooze(id: string): Promise<ScheduledTask>;
+    clearRunHistory(id: string): Promise<ScheduledTask>;
     delete(id: string): Promise<void>;
     subscribeChanges(
-      handler: (event: { type: 'plans_changed'; reason: string; reminderId?: string; ts: number }) => void,
+      handler: (event: { type: 'scheduled_tasks_changed'; reason: string; taskId?: string; ts: number }) => void,
     ): () => void;
-    subscribeDue(handler: (reminder: PlanReminder) => void): () => void;
+    subscribeDue(handler: (task: Pick<ScheduledTask, 'id' | 'title'>) => void): () => void;
   };
   inspector: {
     /** Read-only per-session causal trace (#1625). */
@@ -866,7 +976,7 @@ export interface MakaBridge {
         model?: string;
         collaborationMode?: 'agent' | 'plan';
       },
-    ): Promise<import('@maka/runtime').InvocableSkillEntry[]>;
+    ): Promise<import('@maka/runtime/skill-invocation').InvocableSkillEntry[]>;
     catalog: {
       list(): Promise<BundledSkillCatalogEntry[]>;
       install(id: string): Promise<

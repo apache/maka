@@ -1,4 +1,4 @@
-import type { BotChannelSettings } from '@maka/core';
+import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { SocketModeClient } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';

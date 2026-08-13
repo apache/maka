@@ -1,16 +1,8 @@
-import type {
-  AgentRunEvent,
-  AgentRunEventType,
-  AgentRunHeader,
-  RuntimeEvent,
-  RuntimeContinuationAuthorityStore,
-  SessionHeader,
-  SessionListFilter,
-  SessionSummary,
-  StoredMessage,
-  ToolBoundaryProtocol,
-  TurnRecord,
-} from '@maka/core';
+import type { AgentRunEvent, AgentRunEventType, AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
+import type { RuntimeContinuationAuthorityStore } from '@maka/core/runtime-event-store';
+import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type { SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   createSqliteAgentRunStore,
   type AgentRunIdentitySearchResult,
@@ -136,11 +128,8 @@ export interface InteractiveExecutionStoresWriter extends ExecutionStoresWriterB
   readonly interactionStore: InteractiveInteractionStoreWriterFacade;
 }
 
-export type HeadlessExecutionStoresWriter = ExecutionStoresWriterBase<'headless'>;
-
 interface ExecutionStoresWriters {
   readonly interactive: InteractiveExecutionStoresWriter;
-  readonly headless: HeadlessExecutionStoresWriter;
 }
 
 export type ExecutionStoresWriter<K extends StorageRootKind> = ExecutionStoresWriters[K];
@@ -204,11 +193,8 @@ export interface InteractiveExecutionStoresReader extends ExecutionStoresReaderB
   readonly interactionStore: InteractiveInteractionStoreReaderFacade;
 }
 
-export type HeadlessExecutionStoresReader = ExecutionStoresReaderBase<'headless'>;
-
 interface ExecutionStoresReaders {
   readonly interactive: InteractiveExecutionStoresReader;
-  readonly headless: HeadlessExecutionStoresReader;
 }
 
 export type ExecutionStoresReader<K extends StorageRootKind> = ExecutionStoresReaders[K];
@@ -238,12 +224,6 @@ export async function openInteractiveExecutionStoresForWrite(
 ): Promise<ExecutionStoresWriter<'interactive'>> {
   const interactionStore = await openSqliteInteractiveInteractionStoreForWrite(lease);
   return openExecutionStoresForWrite(lease, 'interactive', { interactionStore });
-}
-
-export async function openHeadlessExecutionStoresForWrite(
-  lease: StorageRootLease<'headless', 'write'>,
-): Promise<ExecutionStoresWriter<'headless'>> {
-  return openExecutionStoresForWrite(lease, 'headless', {});
 }
 
 async function openExecutionStoresForWrite<K extends StorageRootKind, E extends object>(
@@ -336,8 +316,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.createStableSession(request, initialBoundary)),
       discardStableConversationCopy: (sessionId, requestFingerprint) =>
         run(() => sessionStore.discardStableConversationCopy(sessionId, requestFingerprint)),
-      importSession: (header, messages) => run(() => sessionStore.importSession(header, messages)),
-      hasSession: (sessionId) => run(() => sessionStore.hasSession(sessionId)),
       createSubagent: (input, initialBoundary) =>
         run(() => sessionStore.createSubagent(input, initialBoundary)),
       createAgentGraphOperator: (input, request, expectedRevision, initialBoundary) =>
@@ -362,8 +340,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       listCatalogPage: (filter, cursor, limit, expectedRevision) =>
         run(() => sessionStore.listCatalogPage(filter, cursor, limit, expectedRevision)),
       listHeaders: () => run(() => sessionStore.listHeaders()),
-      listSessionsWithUnresolvedProject: () =>
-        run(() => sessionStore.listSessionsWithUnresolvedProject()),
       listForRecovery: () => run(() => sessionStore.listForRecovery()),
       readHeaderSnapshot: (sessionId) => run(() => sessionStore.readHeaderSnapshot(sessionId)),
       readHeaderRecordSnapshot: (sessionId) =>
@@ -522,12 +498,6 @@ export async function openInteractiveExecutionStoresForRead(
 ): Promise<ExecutionStoresReader<'interactive'>> {
   const interactionStore = await openSqliteInteractiveInteractionStoreForRead(lease);
   return openExecutionStoresForRead(lease, 'interactive', { interactionStore });
-}
-
-export async function openHeadlessExecutionStoresForRead(
-  lease: StorageRootLease<'headless', 'read'>,
-): Promise<ExecutionStoresReader<'headless'>> {
-  return openExecutionStoresForRead(lease, 'headless', {});
 }
 
 async function openExecutionStoresForRead<K extends StorageRootKind, E extends object>(

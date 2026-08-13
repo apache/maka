@@ -1,19 +1,14 @@
-import { useEffect, useRef, type ComponentType } from 'react';
-import {
-  countDiffLineStats,
-  isInFlightToolStatus,
-  type ToolResultContent,
-  type UiLocale,
-} from '@maka/core';
+import { useEffect, useRef } from 'react';
+import { countDiffLineStats } from '@maka/core/unified-diff';
+import { isInFlightToolStatus } from '@maka/core/tool-result-status';
+import { type ToolResultContent } from '@maka/core/events';
+import { type UiLocale } from '@maka/core/ui-locale';
 import {
   ICON_SIZE,
   Check,
   ChevronRight,
-  Clock,
   Copy,
-  Repeat,
   ShieldAlert,
-  type LucideProps,
 } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { useUiLocale } from './locale-context.js';
@@ -22,7 +17,6 @@ import { isConnectorTool, resolveToolDisplayName } from './tool-activity/display
 import { computerActionLabel } from './tool-activity/computer-action-label.js';
 import {
   extractErrorText,
-  isAutomationTool,
   isCancelledToolResult,
   isPermissionDeniedToolResult,
   resultOwnsOwnPanel,
@@ -78,87 +72,6 @@ function LoadToolResultPreview(props: { args: unknown; value: unknown }) {
       <p className={previewVariants({ part: 'load-tool-footer' })}>{desc.footer}</p>
     </div>
   );
-}
-
-// ── Automation result preview ───────────────────────────────────────────────
-
-const AUTOMATION_RESULT_ICON_CLASS = 'maka-automation-result-icon';
-
-/** Icon for one automation description: recurring schedules cycle, one-shots tick. */
-function automationScheduleIcon(text: string): ComponentType<LucideProps> {
-  return /Schedule: (every |cron )/.test(text) ? Repeat : Clock;
-}
-
-/**
- * Compact preview card for the unified Automation tool's text results
- * (created / deleted / listed). The tool returns human-readable text, so this
- * parses its stable first-line shapes; anything unrecognized (pause/resume,
- * errors) falls back to the generic text preview.
- */
-function AutomationResultPreview(props: { text: string }) {
-  const copy = getToolActivityCopy(useUiLocale()).automation;
-  const text = props.text;
-
-  // mode:create success — "Automation created: "NAME" (kind[, durable])\nID: …\nSchedule: …\nNext fire: …"
-  const created = text.match(/^Automation created: "(.+?)" \((.+?)\)\n/);
-  if (created) {
-    const schedule = text.match(/^Schedule: (.+)$/m)?.[1];
-    const nextFire = text.match(/^Next fire: (.+)$/m)?.[1];
-    const Icon = automationScheduleIcon(text);
-    return (
-      <div className={previewVariants({ part: 'load-tool' })} data-kind="automation_create">
-        <p className={previewVariants({ part: 'load-tool-title' })}>
-          <Icon size={ICON_SIZE.control} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
-          {copy.created(redactSecrets(created[1] ?? ''))}
-        </p>
-        {schedule && <p className={previewVariants({ part: 'load-tool-count' })}>{redactSecrets(schedule)}</p>}
-        {nextFire && nextFire !== 'N/A' && <p className={previewVariants({ part: 'load-tool-tools' })}>{copy.nextFire(redactSecrets(nextFire))}</p>}
-        <p className={previewVariants({ part: 'load-tool-footer' })}>{redactSecrets(created[2] ?? '')}</p>
-      </div>
-    );
-  }
-
-  // mode:delete — "Automation "id" deleted." / not-found message
-  const deleted = text.match(/^Automation "(.+?)" (deleted\.|not found or not owned by this session\.)$/);
-  if (deleted) {
-    const ok = deleted[2] === 'deleted.';
-    return (
-      <div className={previewVariants({ part: 'load-tool' })} data-kind="automation_delete">
-        <p className={previewVariants({ part: 'load-tool-title' })}>
-          <Check size={ICON_SIZE.control} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
-          {ok ? copy.deleted : copy.notFound}
-        </p>
-      </div>
-    );
-  }
-
-  // mode:list — automation blocks separated by "---", or the empty-list message.
-  const isList = text === 'No automations for this session.' || /^\[[A-Z]+\] .+ \((heartbeat|cron)/.test(text);
-  if (isList) {
-    const blocks = text === 'No automations for this session.' ? [] : text.split('\n---\n');
-    return (
-      <div className={previewVariants({ part: 'load-tool' })} data-kind="automation_list">
-        <p className={previewVariants({ part: 'load-tool-title' })}>
-          <Clock size={ICON_SIZE.control} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
-          {copy.list(blocks.length)}
-        </p>
-        {blocks.length === 0 && <p className={previewVariants({ part: 'load-tool-count' })}>{copy.empty}</p>}
-        {blocks.slice(0, 5).map((block, i) => {
-          const head = block.split('\n')[0] ?? '';
-          const BlockIcon = automationScheduleIcon(block);
-          return (
-            <p key={i} className={previewVariants({ part: 'load-tool-tools' })}>
-              <BlockIcon size={ICON_SIZE.meta} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
-              {redactSecrets(head)}
-            </p>
-          );
-        })}
-      </div>
-    );
-  }
-
-  // Fallback for pause/resume confirmations, errors, or unexpected shapes.
-  return <ToolResultPreview content={{ kind: 'text', text }} />;
 }
 
 /**
@@ -227,8 +140,6 @@ export function ToolCallDetail({
       {showResult && ownsPanel && displayResult && (
         isConnectorTool(item.toolName) && displayResult.kind === 'json' ? (
           <LoadToolResultPreview args={item.args} value={displayResult.value} />
-        ) : isAutomationTool(item.toolName) && displayResult.kind === 'text' ? (
-          <AutomationResultPreview text={displayResult.text} />
         ) : (
           <ToolResultPreview
             content={displayResult}

@@ -13,12 +13,8 @@ import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import { SettingsField, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy';
-import type {
-  AppSettings,
-  PersonalizationSettings,
-  UiLocalePreference,
-  UpdateAppSettingsResult,
-} from '@maka/core';
+import type { AppSettings, PersonalizationSettings, UpdateAppSettingsResult } from '@maka/core/settings';
+import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { TextArea, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
@@ -192,7 +188,6 @@ export function PersonalizationSettingsSection(props: {
           width="100%"
         />
       </SettingsExpandableRow>
-
       {/*
         PR-LANG-PREF-0 (WAWQAQ msg `edc9cb41` + kenji `7e532892`
         acceptance criteria): 自动 / 中文 / English. User explicit
@@ -212,7 +207,6 @@ export function PersonalizationSettingsSection(props: {
           ))}
         </SegmentedControl>}
       />
-
       <SettingsField>
         {/* No fixed height style: it lands as inline style on the wrapper,
             which pins the visible box while the inner textarea keeps its

@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AppSettings, LocalMemoryState, UiLocale } from '@maka/core';
+import type { AppSettings } from '@maka/core/settings';
+import type { LocalMemoryState } from '@maka/core/local-memory';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   appendManualLocalMemoryEntryDraft,
   findLocalMemoryEntryDraftRange,
   setLocalMemoryEntryStatusDraft,
-} from '@maka/core';
+} from '@maka/core/local-memory';
 import { useToast, useUiLocale } from '@maka/ui';
 import { openPathFailureCopy, openPathActionLabel } from '../open-path';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -18,6 +20,7 @@ import {
 import { deriveMemorySettingsViewModel } from './memory-settings-view-model';
 import { useKeyedActionGuard } from './use-action-guard';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
+import { readScrollMotionBehavior } from '../scroll-motion-policy';
 
 export interface MemoryDocumentControllerProps {
   settings: AppSettings;
@@ -419,7 +422,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
       editorRef.current?.setSelectionRange(range.start, range.end);
       editorRef.current?.scrollIntoView({
         block: 'center',
-        behavior: 'smooth',
+        behavior: readScrollMotionBehavior(),
       });
     });
   }

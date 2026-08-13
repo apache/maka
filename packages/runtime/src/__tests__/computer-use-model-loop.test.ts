@@ -1,13 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from '@ai-sdk/provider';
-import type {
-  LlmConnection,
-  SessionEvent,
-  SessionHeader,
-  StoredMessage,
-  ToolInvocationRecord,
-} from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionEvent } from '@maka/core/events';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
+import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 
 import { AiSdkBackend } from '../ai-sdk-backend.js';

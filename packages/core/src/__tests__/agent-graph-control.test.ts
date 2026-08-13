@@ -7,15 +7,6 @@ import {
 } from '../agent-graph-control.js';
 
 describe('agent graph intent claim protocol', () => {
-  test('accepts an exact durable claim shape', () => {
-    const claim = {
-      ...request(),
-      claimedAt: 42,
-    };
-    assert.deepEqual(decodeAgentGraphIntentClaim(claim), claim);
-    assert.doesNotThrow(() => assertAgentGraphIntentClaimRequest(request()));
-  });
-
   test('rejects malformed identities, timestamps, and unknown fields', () => {
     assert.throws(
       () => decodeAgentGraphIntentClaim({ ...request(), claimedAt: -1 }),

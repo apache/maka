@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, test } from 'node:test';
-import type { StoredMessage } from '@maka/core';
+import type { StoredMessage } from '@maka/core/session';
 import type {
   DirectRequestOperationKey,
   RuntimeHostSessionSubscription,
@@ -26,6 +26,101 @@ import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../se
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
+  test('keeps remote Session paths out of Client filesystem policy', async () => {
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: new FakeConnection([]).value,
+      cwd: '/client/workspace',
+      workspace: { kind: 'project', projectId: 'project-1' },
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      executionLocation: { kind: 'host' },
+    });
+
+    assert.equal(driver.moveSession, undefined);
+    assert.deepEqual(
+      await driver.getSessionResumeAvailability!({ cwd: '/srv/remote-only' } as never),
+      { available: true },
+    );
+    await assert.rejects(
+      driver.switchSession('session-1', { relocateCwd: '/client/workspace' }),
+      /cannot be relocated by this Client/,
+    );
+
+    const driverWithoutProject = createRuntimeHostMakaSessionDriver({
+      connection: new FakeConnection([]).value,
+      cwd: '/client/workspace',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      executionLocation: { kind: 'host' },
+    });
+    await assert.rejects(
+      driverWithoutProject.createSession({
+        cwd: '/client/workspace',
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        backend: 'ai-sdk',
+        permissionMode: 'ask',
+      }),
+      /requires an explicit Project/,
+    );
+  });
+
+  test('honors explicit Project intent before inheriting the current workspace', async () => {
+    const cases = [
+      { cwd: '/repo', projectId: null, expected: { kind: 'host_path', path: '/repo' } },
+      {
+        cwd: '/repo',
+        projectId: 'project-b',
+        expected: { kind: 'project', projectId: 'project-b' },
+      },
+      {
+        cwd: '/other',
+        projectId: 'project-b',
+        expected: { kind: 'project', projectId: 'project-b' },
+      },
+      { cwd: '/repo', expected: { kind: 'project', projectId: 'project-a' } },
+      { cwd: '/other', expected: { kind: 'host_path', path: '/other' } },
+    ] as const;
+
+    for (const candidate of cases) {
+      const connection = new FakeConnection([
+        new FakeSubscription(continuitySnapshot(), Promise.resolve([])),
+      ]);
+      const driver = createRuntimeHostMakaSessionDriver({
+        connection: connection.value,
+        cwd: '/repo',
+        workspace: { kind: 'project', projectId: 'project-a' },
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        newId: () => 'session-id',
+      });
+
+      await driver.createSession({
+        cwd: candidate.cwd,
+        ...('projectId' in candidate ? { projectId: candidate.projectId } : {}),
+        backend: 'ai-sdk',
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        permissionMode: 'ask',
+      });
+
+      assert.deepEqual(
+        connection.requests.find(({ operation }) => operation === 'session.create')?.input,
+        {
+          sessionId: 'session-id',
+          workspace: candidate.expected,
+          name: 'New Chat',
+          modelTarget: {
+            kind: 'explicit',
+            connectionSlug: 'openai-main',
+            model: 'gpt-5',
+          },
+          permissionMode: 'ask',
+        },
+      );
+    }
+  });
+
   test('relocates a moved Session through Host authority before attaching', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tui-resume-moved-cwd-'));
     const target = join(root, 'new-worktree');
@@ -36,8 +131,12 @@ describe('Runtime Host Maka Session driver', () => {
         new FakeSubscription(continuitySnapshot(), Promise.resolve([])),
       ]);
       connection.sessionQueries.push(
-        sessionProjection({ cwd: oldCwd }),
-        sessionProjection({ cwd: oldCwd }),
+        sessionProjection({
+          workspace: { target: { kind: 'host_path', path: oldCwd }, hostCwd: oldCwd },
+        }),
+        sessionProjection({
+          workspace: { target: { kind: 'host_path', path: oldCwd }, hostCwd: oldCwd },
+        }),
       );
       const inspected: string[] = [];
       const driver = createRuntimeHostMakaSessionDriver({
@@ -70,13 +169,13 @@ describe('Runtime Host Maka Session driver', () => {
           'session.catalog.query',
           'session.execution_boundary.query',
           'session.catalog.query',
-          'session.cwd.relocate',
+          'session.workspace.relocate',
         ],
       );
       assert.deepEqual(connection.requests.at(-1)?.input, {
         sessionId: 'session-1',
         expectedRevision: 1,
-        cwd: canonicalTarget,
+        workspace: { kind: 'host_path', path: canonicalTarget },
       });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -98,7 +197,7 @@ describe('Runtime Host Maka Session driver', () => {
       /Cannot resume externally isolated session/,
     );
     assert.equal(
-      connection.requests.some(({ operation }) => operation === 'session.cwd.relocate'),
+      connection.requests.some(({ operation }) => operation === 'session.workspace.relocate'),
       false,
     );
   });
@@ -133,6 +232,40 @@ describe('Runtime Host Maka Session driver', () => {
       startOffset: 5,
       text: ' world',
     });
+  });
+
+  test('delivers completed thinking while a later step remains active', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 50,
+    });
+
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+    subscription.push(thinkingFrame(1, 'step-1', 0, 'first'));
+    subscription.push(thinkingFrame(2, 'step-1', 5, '', true));
+    subscription.push(thinkingFrame(3, 'step-2', 0, 'second'));
+
+    assert.deepEqual(
+      [
+        await nextEvent(switched.activeTurn.events),
+        await nextEvent(switched.activeTurn.events),
+        await nextEvent(switched.activeTurn.events),
+      ].map((event) => ({
+        type: event.type,
+        messageId: 'messageId' in event ? event.messageId : undefined,
+      })),
+      [
+        { type: 'thinking_delta', messageId: 'step-1' },
+        { type: 'thinking_complete', messageId: 'step-1' },
+        { type: 'thinking_delta', messageId: 'step-2' },
+      ],
+    );
   });
 
   test('restarts initial hydration when the first connection closes during transcript load', async () => {
@@ -248,7 +381,6 @@ describe('Runtime Host Maka Session driver', () => {
         rootTurn: completedTurn('turn-1', 'run-1'),
       }),
     });
-    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'text_complete');
     assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
     assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     await waitFor(() => refresh.nextCalls > 0);
@@ -1028,14 +1160,26 @@ class FakeConnection {
     input: OperationInput<K>,
   ): Promise<OperationOutput<K>> {
     this.requests.push({ operation, input });
-    if (operation === 'session.cwd.relocate') {
+    if (operation === 'session.workspace.relocate') {
+      const workspace = (input as OperationInput<'session.workspace.relocate'>).workspace;
+      if (workspace.kind !== 'host_path') throw new Error('Expected Host-path workspace');
       return {
         kind: 'committed',
         session: sessionProjection({
           revision: 2,
-          cwd: (input as OperationInput<'session.cwd.relocate'>).cwd,
+          workspace: { target: workspace, hostCwd: workspace.path },
         }),
       } as OperationOutput<K>;
+    }
+    if (operation === 'session.create') {
+      const create = input as OperationInput<'session.create'>;
+      return sessionProjection({
+        id: create.sessionId,
+        workspace: {
+          target: create.workspace,
+          hostCwd: create.workspace.kind === 'host_path' ? create.workspace.path : '/project',
+        },
+      }) as OperationOutput<K>;
     }
     const turnInput = input as {
       sessionId?: string;
@@ -1108,6 +1252,7 @@ class FakeConnection {
 
 class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<SubscriptionFrame> {
   readonly hostEpoch = 'host-1';
+  readonly activeAssistantStreams = [];
   readonly subscriptionId: string;
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<{
@@ -1205,7 +1350,10 @@ function sessionProjection(
   return {
     id: 'session-1',
     revision: 1,
-    cwd: '/tmp',
+    workspace: {
+      target: { kind: 'host_path', path: '/tmp' },
+      hostCwd: '/tmp',
+    },
     createdAt: 1,
     lastUsedAt: 2,
     name: 'Session',
@@ -1276,6 +1424,31 @@ function deltaFrame(
       messageId: `message-${turnId}`,
       startOffset,
       text,
+    },
+  };
+}
+
+function thinkingFrame(
+  sequence: number,
+  messageId: string,
+  startOffset: number,
+  text: string,
+  complete = false,
+): SubscriptionFrame {
+  return {
+    kind: 'subscription.session_delta',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence,
+    sessionId: 'session-1',
+    delta: {
+      kind: 'thinking',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      messageId,
+      startOffset,
+      text,
+      ...(complete ? { complete: true } : {}),
     },
   };
 }

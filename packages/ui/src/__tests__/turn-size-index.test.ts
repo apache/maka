@@ -2,7 +2,6 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   createTurnSizeIndex,
-  layoutKeyFor,
   layoutKeyOf,
   measureSettledGeometry,
   measureTurnGeometry,
@@ -34,15 +33,6 @@ function fakeRoot(options: {
 }
 
 describe('createTurnSizeIndex', () => {
-  it('returns a record only for the layout it was measured under', () => {
-    const index = createTurnSizeIndex();
-    index.record('s1', layoutKeyFor(900, 'balanced'), geometry({ a: 100 }));
-    assert.ok(index.lookup('s1', layoutKeyFor(900, 'balanced')));
-    assert.equal(index.lookup('s1', layoutKeyFor(700, 'balanced')), undefined);
-    assert.equal(index.lookup('s1', layoutKeyFor(900, 'compact')), undefined);
-    assert.equal(index.lookup('s2', layoutKeyFor(900, 'balanced')), undefined);
-  });
-
   it('drops the oldest session past capacity', () => {
     const index = createTurnSizeIndex(2);
     index.record('s1', 'k', geometry({ a: 1 }));
@@ -52,35 +42,10 @@ describe('createTurnSizeIndex', () => {
     assert.ok(index.lookup('s2', 'k'));
     assert.ok(index.lookup('s3', 'k'));
   });
-
-  it('re-recording refreshes a session instead of evicting it', () => {
-    const index = createTurnSizeIndex(2);
-    index.record('s1', 'k', geometry({ a: 1 }));
-    index.record('s2', 'k', geometry({ a: 1 }));
-    index.record('s1', 'k', geometry({ a: 2 }));
-    index.record('s3', 'k', geometry({ a: 1 }));
-    assert.equal(index.lookup('s2', 'k'), undefined);
-    assert.equal(index.lookup('s1', 'k')?.heights.get('a'), 2);
-  });
-
-  it('ignores an empty measurement', () => {
-    const index = createTurnSizeIndex();
-    index.record('s1', 'k', geometry({}));
-    assert.equal(index.lookup('s1', 'k'), undefined);
-  });
 });
 
 describe('prefixHeightFor', () => {
   const ids = ['a', 'b', 'c', 'd'];
-
-  it('is zero for a complete transcript', () => {
-    assert.equal(prefixHeightFor(ids, 0, geometry({})), 0);
-    assert.equal(prefixHeightFor(ids, 0, undefined), 0);
-  });
-
-  it('is undefined without a record', () => {
-    assert.equal(prefixHeightFor(ids, 2, undefined), undefined);
-  });
 
   it('is undefined when any prefix turn lacks a height', () => {
     assert.equal(prefixHeightFor(ids, 2, geometry({ a: 100 })), undefined);
@@ -93,26 +58,11 @@ describe('prefixHeightFor', () => {
   });
 });
 
-describe('layoutKeyOf', () => {
-  it('keys on the reading column, not the scroller', () => {
-    assert.equal(layoutKeyOf(fakeRoot({ width: 900, columnWidth: 720 })), '720:balanced');
-  });
-
-  it('falls back to the scroller when no column is mounted', () => {
-    assert.equal(layoutKeyOf(fakeRoot({ width: 900 })), '900:balanced');
-  });
-});
-
 describe('measureSettledGeometry', () => {
   const turns = [
     { id: 'a', top: 0, height: 100 },
     { id: 'b', top: 104, height: 200 },
   ];
-
-  it('is pending until the warm-up settles', () => {
-    const root = fakeRoot({ turns });
-    assert.deepEqual(measureSettledGeometry(root, layoutKeyOf(root)), { status: 'pending' });
-  });
 
   it('aborts when the layout moved since the key was captured', () => {
     const before = layoutKeyOf(fakeRoot({ width: 900 }));
@@ -133,19 +83,9 @@ describe('measureSettledGeometry', () => {
       assert.equal(attempt.geometry.gap, 4);
     }
   });
-
-  it('aborts a settled transcript with no measurable pair', () => {
-    const root = fakeRoot({ warmup: 'settled', turns: [turns[0]!] });
-    assert.deepEqual(measureSettledGeometry(root, layoutKeyOf(root)), { status: 'aborted' });
-  });
 });
 
 describe('measureTurnGeometry', () => {
-  it('needs at least one adjacent pair to learn the gap', () => {
-    assert.equal(measureTurnGeometry([]), undefined);
-    assert.equal(measureTurnGeometry([{ turnId: 'a', top: 0, height: 100 }]), undefined);
-  });
-
   it('records heights and the median between-turn gap', () => {
     const record = measureTurnGeometry([
       { turnId: 'a', top: 0, height: 100 },

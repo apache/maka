@@ -1,7 +1,7 @@
 // packages/ui/src/skill-inspector.tsx
 //
 // The end-panel inspector for one selected Skill, modelled on
-// plan-reminder-inspector.tsx (itself the vendor's incident-console
+// scheduled-task-inspector.tsx (itself the vendor's incident-console
 // archetype): identity + status at the top, the actions that change it,
 // then its facts as a MetadataList.
 //

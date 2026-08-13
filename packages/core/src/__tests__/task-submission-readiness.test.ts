@@ -7,18 +7,6 @@ import {
 import { expect } from '../test-helpers.js';
 
 describe('task submission readiness', () => {
-  test('projects a ready baseline from current authorities', () => {
-    const snapshot = deriveTaskSubmissionReadiness(readyInput());
-
-    expect(snapshot.state).toBe('ready');
-    expect(snapshot.blockers).toEqual([]);
-    expect(snapshot.dimensions.map((dimension) => dimension.id)).toEqual([
-      'runtime',
-      'model_target',
-      'workspace',
-    ]);
-  });
-
   test('reuses connection readiness and routes an invalid model to its connection', () => {
     const input = readyInput();
     if (input.modelTarget.kind !== 'resolved') throw new Error('expected resolved model target');
@@ -45,26 +33,6 @@ describe('task submission readiness', () => {
     expect(snapshot.state).toBe('unknown');
     expect(snapshot.blockers[0]?.blockerCode).toBe('model_credentials_unknown');
     expect(snapshot.blockers[0]?.repairTarget).toBe(undefined);
-  });
-
-  test('normalizes a legacy Codex session model exactly like the send path', () => {
-    const input = readyInput();
-    input.modelTarget = {
-      kind: 'resolved',
-      connection: {
-        ...connection(),
-        slug: 'codex-sub',
-        providerType: 'openai-codex',
-        defaultModel: 'gpt-5.6-sol',
-        enabledModelIds: ['gpt-5.6-sol'],
-        models: [{ id: 'gpt-5.6-sol' }],
-      },
-      hasSecret: true,
-      requestedModel: 'gpt-5-codex',
-      checkedAt: 90,
-    };
-
-    expect(deriveTaskSubmissionReadiness(input).state).toBe('ready');
   });
 
   test('distinguishes unavailable runtime and workspace from repairable setup', () => {

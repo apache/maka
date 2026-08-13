@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
 import { userEvent } from 'storybook/test';
 import { SessionListPanel } from '../src/session-list-panel.js';
 

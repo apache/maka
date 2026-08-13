@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { SandboxBoundaryRequestEvent, SessionEventStreamSnapshot, SessionSummary } from '@maka/core';
+import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
+import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
+import type { SessionSummary } from '@maka/core/session';
 import { armLiveTurn, confirmLiveTurn } from '@maka/ui';
 import { settledSessionTransientIds } from '../../renderer/settled-session-transients.js';
 import {
@@ -193,6 +195,20 @@ describe('app shell session UI state controller', () => {
     controller.clearSessionUiState('drop');
 
     assert.deepEqual(Object.keys(controller.sessionEventHealthBySessionRef.current), ['keep']);
+  });
+
+  it('drops every Host-scoped session projection when the target changes', () => {
+    const controller = createAppShellSessionUiStateController(seededState());
+    controller.setSessionEventHealthBySession(() => ({
+      drop: healthSnapshot('drop'),
+      keep: healthSnapshot('keep'),
+    }));
+
+    controller.clearAllSessionUiState();
+
+    assert.deepEqual(controller.getState(), createInitialAppShellSessionUiState());
+    assert.deepEqual(controller.sessionEventHealthBySessionRef.current, {});
+    assert.deepEqual(controller.liveTurnBySessionRef.current, {});
   });
 
   it('keeps the synchronous live-turn ref aligned with reducer updates', () => {

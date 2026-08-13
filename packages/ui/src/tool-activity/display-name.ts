@@ -5,7 +5,7 @@
  * to the canonical tool name.
  */
 
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { ToolActivityItem } from '../materialize.js';
 import { loadToolDisplayName } from '../tool-format.js';
 

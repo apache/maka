@@ -18,7 +18,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { COMPUTER_USE_WITHHELD_VALUE, computerUseModelCallArgs } from '@maka/core';
+import { COMPUTER_USE_WITHHELD_VALUE, computerUseModelCallArgs } from '@maka/core/computer-use';
 import { computerWireParams } from '../computer-use-tools.js';
 import { computerActionNames, computerParams } from '../computer-use-codec.js';
 

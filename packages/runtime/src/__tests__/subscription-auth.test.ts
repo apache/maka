@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { base64urlEncode } from '@maka/core';
+import { base64urlEncode } from '@maka/core/oauth-subscription';
 import {
   extractCodexAccountClaims,
   extractCodexAccountId,

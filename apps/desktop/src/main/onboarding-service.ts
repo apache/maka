@@ -27,19 +27,22 @@
  * the SettingsStore.
  */
 
+import { collapseSessionRevisions } from '@maka/core/session-revisions';
+
 import {
-  collapseSessionRevisions,
   deriveOnboardingState,
   hasSettledInitialOnboarding,
   ONBOARDING_MILESTONE_IDS,
-  projectSessionSendOutcome,
-  type ChatModelChoice,
   type OnboardingMilestone,
   type OnboardingMilestoneId,
   type OnboardingState,
-  type SessionSummary,
-  type SessionSendProjection,
-} from '@maka/core';
+} from '@maka/core/onboarding';
+
+import { projectSessionSendOutcome, type SessionSendProjection } from '@maka/core/session-send-projection';
+
+import { type ChatModelChoice } from '@maka/core/chat-model-choice';
+
+import { type SessionSummary } from '@maka/core/session';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { LlmConnection } from '@maka/core/llm-connections';
 
@@ -236,64 +239,4 @@ function buildSnapshot(
 
 function isOnboardingMilestoneId(value: string): value is OnboardingMilestoneId {
   return (ONBOARDING_MILESTONE_IDS as readonly string[]).includes(value);
-}
-
-/**
- * Return a generalized error class string ('error_name' or 'unknown')
- * suitable for dev logs. We never log the underlying error message
- * because it might contain credential bytes / paths / etc.
- */
-/**
- * Bind helpers that wire the live `SettingsStore` + `ConnectionStore`
- * + credential store to `OnboardingServiceDeps`. Exposed separately so
- * tests can mix-and-match: real settings store + fake credential store,
- * etc.
- */
-export function bindOnboardingDeps(input: {
-  settingsStore: {
-    get(): Promise<{ onboarding: { milestones: OnboardingMilestone[] } }>;
-    upsertOnboardingMilestone(
-      id: OnboardingMilestoneId,
-      status: 'completed' | 'skipped',
-    ): Promise<OnboardingMilestone[]>;
-    clearOnboardingMilestone(id: OnboardingMilestoneId): Promise<OnboardingMilestone[]>;
-  };
-  connectionStore: {
-    list(): Promise<LlmConnection[]>;
-    getDefault(): Promise<string | null>;
-  };
-  /**
-   * Read-only credential-presence check, covering both API-key
-   * connections (credential store) and OAuth-subscription connections
-   * (claude-subscription / openai-codex stored tokens). Callers
-   * must pass a resolver that NEVER refreshes an OAuth token or
-   * otherwise mutates credential state — see `hasConnectionSecret` in
-   * main.ts, which deliberately does not reuse the send-path's
-   * refreshing `resolveConnectionSecret`. A resolver that only checks
-   * the API-key credential store makes every OAuth-subscription
-   * connection look like it's missing credentials, even when it's the
-   * verified default.
-   */
-  hasCredential(connection: LlmConnection): Promise<boolean>;
-  listSessions(): Promise<SessionSummary[]>;
-}): OnboardingServiceDeps {
-  return {
-    listConnections: () => input.connectionStore.list(),
-    getDefaultSlug: () => input.connectionStore.getDefault(),
-    listSessions: () => input.listSessions(),
-    getMilestones: async () => (await input.settingsStore.get()).onboarding.milestones,
-    upsertMilestone: (id, status) => input.settingsStore.upsertOnboardingMilestone(id, status),
-    clearMilestone: (id) => input.settingsStore.clearOnboardingMilestone(id),
-    hasCredential: async (connection) => {
-      try {
-        return await input.hasCredential(connection);
-      } catch (error) {
-        console.warn(
-          `[onboarding] failed to read credential for ${connection.slug}; treating as missing.`,
-          error instanceof Error && error.name ? error.name : 'unknown',
-        );
-        return false;
-      }
-    },
-  };
 }

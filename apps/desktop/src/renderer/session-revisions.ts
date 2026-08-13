@@ -1,8 +1,6 @@
-import {
-  sessionRevisionFamilyId,
-  visibleSessionRevisionMembers,
-  type SessionSummary,
-} from '@maka/core';
+import { sessionRevisionFamilyId, visibleSessionRevisionMembers } from '@maka/core/session-revisions';
+
+import { type SessionSummary } from '@maka/core/session';
 
 export interface SessionRevisionNavigation {
   current: number;

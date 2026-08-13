@@ -1,4 +1,6 @@
-import { revisionFamilySessionIds, type SessionSummary } from '@maka/core';
+import { revisionFamilySessionIds } from '@maka/core/session-revisions';
+
+import { type SessionSummary } from '@maka/core/session';
 
 export function requestsRevisionFamily(options: unknown): boolean {
   if (options === undefined) return false;

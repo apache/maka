@@ -1,4 +1,6 @@
-import type { ProviderType, UiCatalog, UiLocale } from '@maka/core';
+import type { ProviderType } from '@maka/core/llm-connections';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 /**
  * Pure-data provider introduction copy, localized zh / en.

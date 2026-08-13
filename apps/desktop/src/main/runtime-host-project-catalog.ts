@@ -1,12 +1,12 @@
-import type { ProjectRecord } from "@maka/core";
-import { RuntimeHostOperationError } from "@maka/runtime-host/client";
-import { ProjectPathMismatchError } from "@maka/storage";
+import { findProjectByIdentity, type ProjectRecord } from '@maka/core/project';
+import type {
+  ProjectCatalogProject,
+  ProjectCatalogProjectDetails,
+} from "@maka/runtime-host/protocol";
 import type { ProjectManagementCatalog } from "./project-management-service.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 
-export interface DesktopProjectCatalog extends ProjectManagementCatalog {
-  touch(projectId: string, path?: string): Promise<ProjectRecord>;
-}
+export interface DesktopProjectCatalog extends ProjectManagementCatalog {}
 
 type RuntimeHostProjectClient = Pick<
   DesktopRuntimeHostClient,
@@ -16,30 +16,69 @@ type RuntimeHostProjectClient = Pick<
   | "relinkProject"
   | "renameProject"
   | "restoreProject"
-  | "selectProject"
-  | "touchProject"
 >;
 
 export function createRuntimeHostProjectCatalog(
-  resolveClient: () => RuntimeHostProjectClient,
+  resolveTarget: () => {
+    readonly client: RuntimeHostProjectClient;
+    readonly includeHostPaths: boolean;
+  },
 ): DesktopProjectCatalog {
   return {
-    list: () => resolveClient().listProjects(),
-    register: (path) => resolveClient().registerProject(path),
-    select: (projectId) => resolveClient().selectProject(projectId),
-    async touch(projectId, path) {
-      try {
-        return await resolveClient().touchProject(projectId, path);
-      } catch (error) {
-        if (error instanceof RuntimeHostOperationError && error.code === "operation_conflict") {
-          throw new ProjectPathMismatchError(projectId, path ?? "");
-        }
-        throw error;
-      }
+    list: async () => {
+      const target = resolveTarget();
+      return (await target.client.listProjects(target.includeHostPaths)).map(toProjectRecord);
     },
-    relink: (projectId, path) => resolveClient().relinkProject(projectId, path),
-    rename: (projectId, name) => resolveClient().renameProject(projectId, name),
-    archive: (projectId) => resolveClient().archiveProject(projectId),
-    restore: (projectId) => resolveClient().restoreProject(projectId),
+    register: async (path) => {
+      const target = resolveTarget();
+      return projectRecord(target, await target.client.registerProject(path));
+    },
+    relink: async (projectId, path) => {
+      const target = resolveTarget();
+      return projectRecord(target, await target.client.relinkProject(projectId, path));
+    },
+    rename: async (projectId, name) => {
+      const target = resolveTarget();
+      return projectRecord(target, await target.client.renameProject(projectId, name));
+    },
+    archive: async (projectId) => {
+      const target = resolveTarget();
+      return projectRecord(target, await target.client.archiveProject(projectId));
+    },
+    restore: async (projectId) => {
+      const target = resolveTarget();
+      return projectRecord(target, await target.client.restoreProject(projectId));
+    },
+  };
+}
+
+async function projectRecord(
+  target: {
+    readonly client: Pick<DesktopRuntimeHostClient, "listProjects">;
+    readonly includeHostPaths: boolean;
+  },
+  project: ProjectCatalogProject,
+): Promise<ProjectRecord> {
+  const details = findProjectByIdentity(
+    await target.client.listProjects(target.includeHostPaths),
+    project.id,
+  );
+  if (!details) throw new Error(`Project ${project.id} disappeared after mutation`);
+  return toProjectRecord(details);
+}
+
+function toProjectRecord(
+  project: ProjectCatalogProject | ProjectCatalogProjectDetails,
+): ProjectRecord {
+  return {
+    id: project.id,
+    ...(project.aliases.length === 0 ? {} : { aliases: [...project.aliases] }),
+    name: project.name,
+    locations: "locations" in project ? [...project.locations] : [],
+    ...(project.archivedAt === null ? {} : { archivedAt: project.archivedAt }),
+    available: project.available,
+    ...("preferredPath" in project && project.preferredPath !== null
+      ? { preferredPath: project.preferredPath }
+      : {}),
   };
 }

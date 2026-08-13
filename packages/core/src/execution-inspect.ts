@@ -1,5 +1,5 @@
 import { AGENT_RUN_STATUSES, type AgentRunHeader } from './agent-run.js';
-import { EXECUTION_LOG_LEDGERS, type ExecutionLogCoverage } from './execution-evidence.js';
+import { EXECUTION_LOG_LEDGERS, type ExecutionLogCoverage } from './execution-log-coverage.js';
 import { SESSION_STATUSES, type SessionHeader } from './session.js';
 
 export const AGENT_RUN_INSPECT_DOCUMENT_VERSION = 'maka.agent_run_inspect.v1' as const;

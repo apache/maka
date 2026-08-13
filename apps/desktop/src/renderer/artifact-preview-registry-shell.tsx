@@ -1,31 +1,7 @@
-/**
- * PR-UI-RENDER-3a — renderer components consumed by the registry.
- *
- * Two components, both deliberately small:
- *
- *   - `UnsupportedArtifactPreview` — pure UI. Shows file metadata
- *     (name, MIME if known, size) and a brief reason copy keyed to
- *     `PreviewResolution.reason`. Optionally renders a real
- *     "在 Finder 中打开" button when the caller passes
- *     `onShowInFolder`. No prop = no button (NOT a disabled button —
- *     @kenji review @msg 9cf1ca7a says disabled buttons here would
- *     wrongly suggest "all unsupported items can be opened in
- *     Finder").
- *   - `ImageArtifactPreview` — loads the binary via
- *     `window.maka.artifacts.readBinary`, applies the L2 base64
- *     length cap from `exceedsImagePayloadCap` BEFORE decoding,
- *     and renders a `<img>` with `object-fit: contain` inside a
- *     bounded container. Loading / failure / oversize all fall
- *     back to the Unsupported component with a typed `reason`.
- *
- * No new IPC introduced — the components only call existing
- * `window.maka.artifacts.readBinary` (PR-UI-12) and reuse
- * `window.maka.app.openArtifactPath` via the caller's optional
- * `onShowInFolder` prop.
- */
+/** Renderer shell for capped raster previews and typed unsupported outcomes. */
 
 import { useEffect, useState } from 'react';
-import type { ArtifactDescriptor } from '@maka/core';
+import type { ArtifactDescriptor } from '@maka/core/artifacts';
 import { Button, useUiLocale } from '@maka/ui';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Spinner } from '@astryxdesign/core/Spinner';

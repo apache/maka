@@ -1,4 +1,5 @@
-import type { RuntimeWorkspaceVersionAuthorityStore, WorkspaceHeadRecordV1 } from '@maka/core';
+import type { RuntimeWorkspaceVersionAuthorityStore } from '@maka/core/runtime-event-store';
+import type { WorkspaceHeadRecordV1 } from '@maka/core/workspace-version-authority';
 import type {
   ManagedWorkspaceBaselineReceiptV1,
   ManagedWorkspaceBinding,

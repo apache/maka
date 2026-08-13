@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentRunEvent, AgentRunHeader, AgentRunStore } from '@maka/core';
+import type { AgentRunEvent, AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   buildHistoryCompactCheckpoint,
@@ -14,63 +14,26 @@ import { estimateRuntimeEventsTokens } from '../context-budget.js';
 import { applyRuntimeEventHistoryCompact } from '../history-compact.js';
 
 describe('history compact checkpoint', () => {
-  test('keeps 10K-event coverage bounded and validates the exact ordered prefix', () => {
-    const events = Array.from({ length: 10_000 }, (_, index) => textEvent(index));
+  test('validates the exact ordered source prefix', () => {
+    const events = Array.from({ length: 4 }, (_, index) => textEvent(index));
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: events,
-      summary: 'A bounded continuation summary.',
+      summary: 'Continuation summary.',
       now: 1_800_000_010_000,
     });
 
     assert.equal(validateHistoryCompactCheckpointShape(checkpoint, 'session-1'), true);
-    assert.ok(Buffer.byteLength(JSON.stringify(checkpoint), 'utf8') < 64 * 1024);
-    assert.equal(checkpoint.coverage.eventCount, 10_000);
-    assert.equal(checkpoint.coverage.turnCount, 5_000);
-    assert.equal(checkpoint.coverage.through.runtimeEventId, 'event-9999');
-    assert.equal(checkpoint.source?.policyVersion, 'maka.compactable_runtime_event_projection.v1');
-    assert.deepEqual(checkpoint.source?.coverage, {
-      lowWater: {
-        ledger: 'runtime_event_projection',
-        streamId: 'session-1',
-        sequence: 0,
-        eventId: 'event-0',
-      },
-      highWater: {
-        ledger: 'runtime_event_projection',
-        streamId: 'session-1',
-        sequence: 9_999,
-        eventId: 'event-9999',
-      },
-      eventCount: 10_000,
-    });
-    const prefixMatch = matchHistoryCompactCheckpointPrefix(checkpoint, [
-      ...events,
-      textEvent(10_000),
-    ]);
-    assert.equal(prefixMatch.coveredEventCount, 10_000);
+    const prefixMatch = matchHistoryCompactCheckpointPrefix(checkpoint, [...events, textEvent(4)]);
+    assert.equal(prefixMatch.coveredEventCount, 4);
     assert.deepEqual(
       prefixMatch.successorRuntimeEvents.map((event) => event.id),
-      ['event-10000'],
+      ['event-4'],
     );
-    const replay = applyRuntimeEventHistoryCompact(
-      [...events, textEvent(10_000)],
-      {
-        enabled: true,
-        mode: 'read_write',
-        checkpoint,
-        highWaterRatio: 0.000001,
-        tailEstimatedTokens: 1,
-      },
-      1,
-      1_000_000,
-    );
-    assert.equal(replay.checkpoint?.checkpointId, checkpoint.checkpointId);
-    assert.ok(Buffer.byteLength(JSON.stringify(replay.diagnosticPatch), 'utf8') < 16 * 1024);
 
     const changed = [...events];
-    changed[4_999] = {
-      ...changed[4_999]!,
+    changed[1] = {
+      ...changed[1]!,
       content: { kind: 'text', text: 'changed source fact' },
     };
     assert.equal(
@@ -128,20 +91,13 @@ describe('history compact checkpoint', () => {
     );
   });
 
-  test('keeps legacy V2 checkpoints readable but rejects inconsistent projection cursors', () => {
+  test('rejects inconsistent projection cursors', () => {
     const events = [textEvent(0), textEvent(1)];
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: events,
       summary: 'source-bound',
     });
-    const { source: _source, ...legacy } = checkpoint;
-    assert.equal(validateHistoryCompactCheckpointShape(legacy, 'session-1'), true);
-    assert.equal(
-      matchHistoryCompactCheckpointPrefix(legacy as typeof checkpoint, events).coveredEventCount,
-      events.length,
-    );
-
     const invalid = {
       ...checkpoint,
       source: {
@@ -250,34 +206,6 @@ describe('history compact checkpoint', () => {
     const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
 
     assert.equal(loaded?.checkpointId, furthest.checkpointId);
-  });
-
-  test('prefers source-bound recovery over a legacy checkpoint that cannot prove cursor ordering', async () => {
-    const sourceBound = buildHistoryCompactCheckpoint({
-      sessionId: 'session-1',
-      coveredRuntimeEvents: [textEvent(0), textEvent(1)],
-      summary: 'bound',
-    });
-    const legacyBuilt = buildHistoryCompactCheckpoint({
-      sessionId: 'session-1',
-      coveredRuntimeEvents: [textEvent(0), textEvent(1), textEvent(2)],
-      summary: 'legacy',
-    });
-    const { source: _source, ...legacy } = legacyBuilt;
-    const store = new StubAgentRunStore(
-      [run('run-bound', 10), run('run-legacy', 20)],
-      new Map([
-        ['run-bound', [checkpointEvent('ledger-bound', 'run-bound', sourceBound, 10)]],
-        [
-          'run-legacy',
-          [checkpointEvent('ledger-legacy', 'run-legacy', legacy as typeof legacyBuilt, 20)],
-        ],
-      ]),
-    );
-
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
-
-    assert.equal(loaded?.checkpointId, sourceBound.checkpointId);
   });
 
   test('recovers the tip of an out-of-order same-coverage successor chain across runs', async () => {

@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import type { AgentGraphClientChangedEvent } from '@maka/runtime/stream-graph-coordinator';
 import type {
-  AgentGraphClientChangedEvent,
   AgentGraphClientSnapshot,
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
-  GoalState,
-  ShellRunPtyDataEvent,
-} from '@maka/runtime';
+} from '@maka/runtime/stream-graph-read-model';
+import type { GoalState } from '@maka/runtime/goal-state';
+import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
 import type { GoalProjection, SessionDomainChange } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserver } from './runtime-host-session-observer.js';

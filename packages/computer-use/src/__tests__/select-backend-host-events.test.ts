@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { CuDispatchBackend } from '@maka/runtime';
+import type { CuDispatchBackend } from '@maka/runtime/computer-use-types';
 import type { MakaCuBackendOptions } from '../maka-cu-backend.js';
 import { selectComputerUseBackend } from '../select-backend.js';
 

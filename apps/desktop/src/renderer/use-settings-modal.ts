@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import type { ProviderType, SettingsSection } from '@maka/core';
+import type { ProviderType } from '@maka/core/llm-connections';
+import type { SettingsSection } from '@maka/core/settings';
 import { safeLocalStorageSet } from './browser-storage';
 
 /**

@@ -1,7 +1,8 @@
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { createWorkspaceWritePermissionProfile, type SandboxBoundarySettlement } from '@maka/core';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
+import { type SandboxBoundarySettlement } from '@maka/core/sandbox-boundary';
 import type { HostedInteractionBridge } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';

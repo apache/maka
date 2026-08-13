@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { SessionHeader } from '@maka/core/session';
-import type { RuntimeReadModelSessionView } from '@maka/runtime';
+import type { RuntimeReadModelSessionView } from '@maka/runtime/runtime-read-model';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';

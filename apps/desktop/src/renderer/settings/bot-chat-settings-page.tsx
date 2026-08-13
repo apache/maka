@@ -1,11 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type {
-  AppSettings,
-  BotOnboardingProvider,
-  BotProvider,
-  UpdateAppSettingsResult,
-} from "@maka/core";
-import type { BotStatus } from "@maka/runtime";
+import type { AppSettings, UpdateAppSettingsResult } from '@maka/core/settings';
+import type { BotOnboardingProvider } from '@maka/core/bot-onboarding';
+import type { BotProvider } from '@maka/core/bot-chat-settings';
+import type { BotStatus } from '@maka/runtime/bots';
 import { useMountedRef, useToast, useUiLocale } from "@maka/ui";
 import { settingsActionErrorMessage } from "./settings-error-copy";
 import {

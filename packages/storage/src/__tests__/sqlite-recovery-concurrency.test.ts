@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import type { RuntimeEvent } from '@maka/core';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { scanToolLedger } from '@maka/core/tool-ledger-scanner';
 import {
@@ -270,7 +270,7 @@ describe('SQLite recovery authority multi-process races', () => {
       const db = new DatabaseSync(dbPath);
       try {
         db.exec(
-          "DROP TABLE runtime_session_event_ordinals; DROP TABLE runtime_partial_segments; DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE headless_task_run_events; DELETE FROM runtime_capabilities WHERE capability = 'runtime_workspace_version_authority'; PRAGMA user_version = 6;",
+          "DROP TABLE runtime_session_event_ordinals; DROP TABLE runtime_partial_segments; DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DELETE FROM runtime_capabilities WHERE capability = 'runtime_workspace_version_authority'; PRAGMA user_version = 6;",
         );
       } finally {
         db.close();

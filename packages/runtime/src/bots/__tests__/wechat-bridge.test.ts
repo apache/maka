@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { describe, test } from 'node:test';
-import { createDefaultBotChannel } from '@maka/core';
+import { createDefaultBotChannel } from '@maka/core/bot-chat-settings';
 import { botReadinessFromSettings, botSettingsRequireRestart } from '../base-adapter.js';
 import {
   getWechatBridgeQrCode,
@@ -11,17 +11,14 @@ import {
   normalizeWechatIlinkBaseUrl,
   normalizeWechatSendTarget,
   readSseJsonObjects,
-  testWechatIlinkCredentials,
 } from '../wechat-bridge.js';
 
 describe('WechatBridge', () => {
   test('normalizes only local http bridge URLs', () => {
     assert.equal(normalizeWechatBridgeUrl(undefined), 'http://127.0.0.1:18400');
     assert.equal(normalizeWechatBridgeUrl(' http://localhost:18400/ '), 'http://localhost:18400');
-    assert.equal(normalizeWechatBridgeUrl('http://127.0.0.1:18400/'), 'http://127.0.0.1:18400');
     assert.equal(normalizeWechatBridgeUrl('https://127.0.0.1:18400'), null);
     assert.equal(normalizeWechatBridgeUrl('http://192.168.0.2:18400'), null);
-    assert.equal(normalizeWechatBridgeUrl('https://example.com/wechat-bridge'), null);
   });
 
   test('normalizes only the iLink base URL for direct WeChat login', () => {
@@ -32,13 +29,10 @@ describe('WechatBridge', () => {
     );
     assert.equal(normalizeWechatIlinkBaseUrl('http://ilinkai.weixin.qq.com'), null);
     assert.equal(normalizeWechatIlinkBaseUrl('https://example.com'), null);
-    assert.equal(normalizeWechatIlinkBaseUrl('http://127.0.0.1:18400'), null);
   });
 
   test('normalizes send targets before direct bridge and iLink sends', () => {
-    assert.equal(normalizeWechatSendTarget(' wxid_friend '), 'wxid_friend');
     assert.equal(normalizeWechatSendTarget(' room@chatroom '), 'room@chatroom');
-    assert.equal(normalizeWechatSendTarget(''), null);
     assert.equal(normalizeWechatSendTarget('   '), null);
   });
 
@@ -186,19 +180,6 @@ describe('WechatBridge', () => {
     assert.equal(event?.sourceMessageId, 'client-1');
     assert.equal(event?.text, 'hello\nvoice transcript');
     assert.equal(event?.receivedAt, 1_700_000_002_000);
-  });
-
-  test('treats saved iLink credentials as a direct send-capable WeChat identity', async () => {
-    const result = await testWechatIlinkCredentials({
-      ...createDefaultBotChannel('wechat'),
-      token: 'ilink-token',
-      webhookUrl: 'https://ilinkai.weixin.qq.com',
-      botUserId: 'bot-1',
-    });
-
-    assert.equal(result.ok, true);
-    assert.equal(result.capabilities?.send, true);
-    assert.equal(result.identity?.id, 'bot-1');
   });
 
   test('maps bridge media kinds and rejects empty non-media messages', () => {

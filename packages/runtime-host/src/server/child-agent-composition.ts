@@ -1,14 +1,15 @@
 import type { TaskLedgerStore } from '@maka/core/task-ledger';
-import {
-  AiSdkBackend,
-  buildBuiltinTools,
-  buildChildAgentTools,
-  buildParentAgentTools,
-  listRunnableBuiltinAgentDefinitions,
-  type BuildBuiltinToolsOptions,
-  type MakaTool,
-  type SessionManager,
-} from '@maka/runtime';
+import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
+
+import { buildBuiltinTools, type BuildBuiltinToolsOptions } from '@maka/runtime/builtin-tools';
+
+import { buildChildAgentTools, buildParentAgentTools } from '@maka/runtime/subagent-tools';
+
+import { listRunnableBuiltinAgentDefinitions } from '@maka/runtime/agent-catalog';
+
+import { type MakaTool } from '@maka/runtime/tool-runtime';
+
+import { type SessionManager } from '@maka/runtime/session-manager';
 
 type ChildAgentAuthority = Pick<
   SessionManager,

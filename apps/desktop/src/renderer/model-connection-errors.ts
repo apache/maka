@@ -1,7 +1,7 @@
-import type { ChatConfigurationReason, SessionEvent, UiLocale } from '@maka/core';
-import {
-  parseNoRealConnectionError,
-} from '@maka/core';
+import type { ChatConfigurationReason } from '@maka/core/connection-readiness';
+import type { SessionEvent } from '@maka/core/events';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import { describeSessionErrorReason } from './session-error-presentation.js';

@@ -1,0 +1,28 @@
+{
+  "name": "@maka/eval",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "Minimal experiment semantics for Maka evaluation.",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./harbor": "./dist/harness-executor.js",
+    "./pier": "./dist/harness-executor.js"
+  },
+  "scripts": {
+    "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:dist": "node --test \"dist/**/*.test.js\" && python3 harbor/test_relay_contract.py && python3 harbor/test_relay_lifecycle.py"
+  },
+  "dependencies": {
+    "@maka/core": "0.1.0",
+    "@maka/runtime-host": "0.1.0"
+  }
+}

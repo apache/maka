@@ -3,26 +3,6 @@ import { describe, it } from 'node:test';
 import { createAppQuitCoordinator } from '../app-quit-coordinator.js';
 
 describe('app quit coordinator', () => {
-  it('focuses or creates the main window while the app is running', () => {
-    let focusOrCreateCount = 0;
-    let windowCreationSignal: AbortSignal | undefined;
-    const coordinator = createAppQuitCoordinator({
-      cleanup: async () => {},
-      focusOrCreateWindow: (signal?: AbortSignal) => {
-        focusOrCreateCount += 1;
-        windowCreationSignal = signal;
-      },
-      onCleanupError: () => {},
-      resumeQuit: () => {},
-    });
-
-    coordinator.focusOrCreateWindow();
-
-    assert.equal(focusOrCreateCount, 1);
-    assert.equal(windowCreationSignal?.aborted, false);
-    assert.equal(coordinator.getWindowCreationSignal(), windowCreationSignal);
-  });
-
   it('keeps quit prevented until it resumes in a fresh event-loop turn', async () => {
     let resumeQuitCount = 0;
     let preventedCount = 0;

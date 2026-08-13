@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { ComponentProps } from 'react';
-import type { AttachmentRef, SessionSummary, StoredMessage } from '@maka/core';
+import type { AttachmentRef } from '@maka/core/events';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import { ChatSurfaceLayout, ChatView, Composer } from '../src/components.js';
 import type { ChatModelChoice } from '../src/chat-model-helpers.js';
 
@@ -93,6 +94,7 @@ const baseComposer: ComposerProps = {
 
 const baseChat: ChatViewProps = {
   messages: [],
+  scrollBehavior: 'smooth',
   activeSession: session(),
   activeConnectionLabel: 'Anthropic',
   activeModel: 'claude-sonnet-4-5',

@@ -1,25 +1,19 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as timerDelay } from 'node:timers/promises';
-import { deriveTurnRecords, DurableStoreWriteError, isTerminalRuntimeEvent } from '@maka/core';
+import { deriveTurnRecords } from '@maka/core/session';
+import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
+import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import {
   ToolLedgerCorruptionError,
   ToolLedgerRejectionError,
 } from '@maka/core/tool-ledger-scanner';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import type {
-  AgentRunEvent,
-  AgentRunHeader,
-  AgentRunStore,
-  CreateSessionInput,
-  RuntimeEvent,
-  RuntimeEventStore,
-  SessionHeader,
-  SessionListFilter,
-  SessionSummary,
-  StoredMessage,
-  TurnRecord,
-} from '@maka/core';
+import type { AgentRunEvent, AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
+import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import { expect } from '../test-helpers.js';
@@ -545,15 +539,16 @@ describe('SessionManager terminal ledger invariants', () => {
     ).toBe(false);
   });
 
-  test('an already-corrupt ledger latches the store, and the latch is what costs the terminal fact', async () => {
+  test('a corrupt ledger keeps stream writes closed but still lets the run say it ended', async () => {
     // The exemption is for a bad candidate against a healthy store; a ledger
-    // that is already damaged keeps failing closed. This test pins that, and
-    // pins the price, because the price is not what the fail-closed rationale
-    // assumes: a corrupt ledger only refuses TOOL facts (production gates the
-    // health scan behind `isToolLedgerBearingEvent`). The terminal event is not
-    // one, so the damaged ledger would have accepted it. What actually keeps it
-    // out is the latch. Assert both halves — the refusal and the collateral —
-    // so that changing either side has to change this test.
+    // that is already damaged keeps failing closed for stream writes. What
+    // the latch must not cost is the terminal fact (#2313): production gates
+    // the health scan behind `isToolLedgerBearingEvent`, so the damaged
+    // ledger would accept the terminal event, and before the finalize-time
+    // probe the latch alone kept it out and parked the run at `running`
+    // forever. Assert all three parts: the tool fact is refused, stream
+    // writes stay closed under the latch, and finalization still lands the
+    // terminal fact.
     const store = new TinySessionStore();
     const runStore = new TinyAgentRunStore({ corruptLedger: true, durability: 'canonical' });
     const session = await store.create(makeInput());
@@ -589,32 +584,198 @@ describe('SessionManager terminal ledger invariants', () => {
       /Tool ledger is corrupt: duplicate_call/,
     );
 
-    // The terminal event carries no tool fact, so the corrupt ledger itself
-    // would take it — the double proves that by not throwing for it. The latch
-    // is the only thing in its way: under a canonical store `recordRuntimeEvents`
-    // never reaches the append and replays the latched failure instead. (The
-    // replay carries the original error object, so the message still reads
-    // "corrupt" and the stack still points into the double's append — neither
-    // is evidence the append ran.)
+    // Stream writes stay fail-closed: under a canonical store the latched
+    // failure replays without reaching the append, so the mid-run path
+    // cannot smuggle facts past a damaged ledger.
     await assert.rejects(
       run.recordRuntimeEvents([
         runtimeEvent({
-          id: 'terminal-after-corruption',
+          id: 'stream-write-after-corruption',
           sessionId: session.id,
           runId: run.runId,
           turnId: run.turnId,
-          status: 'failed',
-          actions: { endInvocation: true },
+          content: { kind: 'text', text: 'late stream text' },
         }),
       ]),
       (error: unknown) => error instanceof ToolLedgerCorruptionError,
     );
-    // This is the assertion that fails if the latch goes away: without it the
-    // append is attempted, the double accepts a non-tool fact, and the run's
-    // terminal event lands after all.
+
+    // The terminal fact is the exception: commitTerminalRun probes the
+    // latched store with a read, the store answers (only its tool lanes are
+    // refused), and the run ends instead of parking at `running`.
+    await run.finalize();
+
+    const terminalEvents = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
+      isTerminalRuntimeEvent,
+    );
+    expect(terminalEvents).toHaveLength(1);
+    expect((await runStore.readRun(session.id, run.runId)).status).toBe('failed');
+  });
+
+  test('finalization keeps the silent skip when even the terminal barrier is refused', async () => {
+    // The terminal durability barrier is the corruption path's own scoped
+    // probe; when the store refuses even that write, the finalize path
+    // keeps its historical behaviour: skip quietly, change nothing.
+    const store = new TinySessionStore();
+    const runStore = new TinyAgentRunStore({
+      corruptLedger: true,
+      failTerminalRuntimeEventAppends: true,
+      durability: 'canonical',
+    });
+    const session = await store.create(makeInput());
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId: 'turn-1', text: 'hello' },
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      newId: nextId(),
+      now: nextNow(24_100),
+      hooks: inertAgentRunHooks(store),
+    });
+    await runStore.createRun(
+      makeRunHeader({ sessionId: session.id, runId: run.runId, turnId: run.turnId }),
+    );
+    await run
+      .recordRuntimeEvents([
+        runtimeEvent({
+          id: 'latching-tool-fact',
+          sessionId: session.id,
+          runId: run.runId,
+          turnId: run.turnId,
+          content: { kind: 'function_call', id: 'call-1', name: 'noop', args: {} },
+        }),
+      ])
+      .catch(() => {});
+
+    await run.finalize();
+
     expect(
       (await runStore.readRuntimeEvents(session.id, run.runId)).some(isTerminalRuntimeEvent),
     ).toBe(false);
+    expect((await runStore.readRun(session.id, run.runId)).status).toBe('running');
+  });
+
+  test('a sealed-run refusal neither latches the store nor stamps a trace failure', async () => {
+    // Pressing stop seals the run ahead of the still-draining stream, so the
+    // straggler window is open by construction and refusing what lands in it
+    // is the store doing its job (#2311). The refusal must stay a refusal:
+    // no store latch, no trace-write failure on a run whose history is
+    // exactly as durable as it should be.
+    const store = new TinySessionStore();
+    const runStore = new TinyAgentRunStore({ durability: 'canonical' });
+    const session = await store.create(makeInput());
+    const newId = nextId();
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId: 'turn-1', text: 'hello' },
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      newId,
+      now: nextNow(24_200),
+      hooks: inertAgentRunHooks(store),
+    });
+    await runStore.createRun(
+      makeRunHeader({ sessionId: session.id, runId: run.runId, turnId: run.turnId }),
+    );
+    run.stop('stop_button');
+    await run.settleStopTerminal();
+    expect(
+      (await runStore.readRuntimeEvents(session.id, run.runId)).filter(isTerminalRuntimeEvent),
+    ).toHaveLength(1);
+
+    runStore.sealedRuns.add(run.runId);
+    await assert.rejects(
+      run.recordRuntimeEvents([
+        runtimeEvent({
+          id: 'straggler-after-seal',
+          sessionId: session.id,
+          runId: run.runId,
+          turnId: run.turnId,
+          content: { kind: 'text', text: 'late stream text' },
+        }),
+      ]),
+      (error: unknown) => error instanceof RunSealedError,
+    );
+
+    expect((await runStore.readRun(session.id, run.runId)).traceWriteError).toBeUndefined();
+    // The seal is per run and permanent, the way SqliteRuntimeStore keeps
+    // refusing; the store stays healthy for everything else, so a second
+    // run on the same store still writes.
+    const second = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId: 'turn-2', text: 'again' },
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      newId,
+      now: nextNow(24_300),
+      hooks: inertAgentRunHooks(store),
+    });
+    await runStore.createRun(
+      makeRunHeader({ sessionId: session.id, runId: second.runId, turnId: second.turnId }),
+    );
+    await second.recordRuntimeEvents([
+      runtimeEvent({
+        id: 'post-seal-probe',
+        sessionId: session.id,
+        runId: second.runId,
+        turnId: second.turnId,
+        content: { kind: 'text', text: 'still landing' },
+      }),
+    ]);
+    expect(
+      (await runStore.readRuntimeEvents(session.id, second.runId)).some(
+        (event) => event.id === 'post-seal-probe',
+      ),
+    ).toBe(true);
+  });
+
+  test('the continuation boundary hook fires between the terminal barrier and the header', async () => {
+    // The #2313 recovery path defers 'after_terminal_event_committed' into
+    // this hook because the claimed event's own write never ran; a crash at
+    // the boundary must always find the terminal fact durable first.
+    const order: string[] = [];
+    class OrderRecordingStore extends TinyAgentRunStore {
+      override async updateRun(
+        sessionId: string,
+        runId: string,
+        patch: Partial<AgentRunHeader>,
+      ): Promise<AgentRunHeader> {
+        order.push('header');
+        return super.updateRun(sessionId, runId, patch);
+      }
+    }
+    const runStore = new OrderRecordingStore({
+      beforeTerminalRuntimeEventAppend: async () => {
+        order.push('barrier');
+      },
+    });
+    await runStore.createRun(
+      makeRunHeader({ sessionId: 'session-1', runId: 'run-1', turnId: 'turn-1' }),
+    );
+
+    await commitOrCreateTerminalRunFact({
+      runStore,
+      runtimeEventStore: runStore,
+      newId: nextId(),
+      sessionId: 'session-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      ts: 24_400,
+      fallbackStatus: 'cancelled',
+      fallbackInvocationId: 'run-1',
+      allowHeaderCommitFailure: false,
+      afterTerminalDurable: async () => {
+        order.push('boundary');
+      },
+    });
+
+    expect(order.slice(0, 3)).toEqual(['barrier', 'boundary', 'header']);
   });
 
   test('synthetic finalization claims its terminal outcome before its first await', async () => {
@@ -2413,6 +2574,8 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   failRuntimeEventReads = false;
   /** One-shot run-event append rejections, for latching the Run store. */
   failNextRunEventAppends = 0;
+  /** Runs whose appends refuse persistently, the way assertRunNotSealed answers. */
+  readonly sealedRuns = new Set<string>();
 
   constructor(
     private readonly options: {
@@ -2475,6 +2638,9 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   }
 
   async appendRuntimeEvent(sessionId: string, runId: string, event: RuntimeEvent): Promise<void> {
+    if (this.sealedRuns.has(runId)) {
+      throw new RunSealedError(runId);
+    }
     if (this.failNextRuntimeEventAppends > 0) {
       this.failNextRuntimeEventAppends -= 1;
       throw new Error('runtime event append rejected');

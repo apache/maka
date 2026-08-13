@@ -8,10 +8,28 @@ type SessionObservationSource = Pick<
   "observe" | "unobserve"
 >;
 
+interface ObservationReadiness {
+  readonly promise: Promise<void>;
+  resolve(): void;
+  reject(error: Error): void;
+}
+
 interface SessionObservationRegistration {
   readonly sessionId: string;
   readonly target: RuntimeHostSessionObserverTarget;
   readonly destroyedListener: () => void;
+  readonly ready: ObservationReadiness;
+  lifecycle: "pending" | "active";
+}
+
+function observationReadiness(): ObservationReadiness {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 /**
@@ -44,9 +62,25 @@ export class RuntimeHostSessionObservationRegistry {
             observerId,
             registration.target,
           );
+          if (
+            this.#source !== source ||
+            this.#registrations.get(observerId) !== registration
+          ) {
+            return undefined;
+          }
+          registration.lifecycle = "active";
+          registration.ready.resolve();
           return registration.sessionId;
         } catch (error) {
-          if (this.#source === source) this.#onError(error);
+          if (
+            this.#source === source &&
+            this.#registrations.get(observerId) === registration
+          ) {
+            if (registration.lifecycle === "pending") {
+              this.#deleteRegistration(observerId, registration);
+            }
+            this.#onError(error);
+          }
           return undefined;
         }
       }),
@@ -69,29 +103,46 @@ export class RuntimeHostSessionObservationRegistry {
       if (previous.sessionId !== sessionId || previous.target.id !== target.id) {
         throw new Error("Runtime Host Session observer identity was reused");
       }
-      return;
+      return previous.ready.promise;
     }
 
     const destroyedListener = () => {
       void this.#remove(observerId).catch(this.#onError);
     };
-    const registration = { sessionId, target, destroyedListener };
+    const ready = observationReadiness();
+    void ready.promise.catch(() => undefined);
+    const registration: SessionObservationRegistration = {
+      sessionId,
+      target,
+      destroyedListener,
+      ready,
+      lifecycle: "pending",
+    };
     this.#registrations.set(observerId, registration);
     target.once("destroyed", destroyedListener);
 
     const source = this.#source;
-    if (!source) return;
+    if (!source) return registration.ready.promise;
     try {
       await source.observe(sessionId, observerId, target);
+      if (
+        this.#source === source &&
+        this.#registrations.get(observerId) === registration
+      ) {
+        registration.lifecycle = "active";
+        registration.ready.resolve();
+      }
     } catch (error) {
       if (
         this.#source === source &&
         this.#registrations.get(observerId) === registration
       ) {
         this.#deleteRegistration(observerId, registration);
+        throw error;
       }
-      throw error;
+      return registration.ready.promise;
     }
+    return registration.ready.promise;
   }
 
   async unobserve(observerId: string): Promise<void> {
@@ -107,6 +158,9 @@ export class RuntimeHostSessionObservationRegistry {
     this.#registrations.clear();
     for (const [, registration] of registrations) {
       registration.target.off("destroyed", registration.destroyedListener);
+      registration.ready.reject(
+        new Error("Session observation ended before it became ready"),
+      );
     }
     if (source) {
       await Promise.allSettled(
@@ -129,6 +183,9 @@ export class RuntimeHostSessionObservationRegistry {
     if (this.#registrations.get(observerId) !== registration) return;
     this.#registrations.delete(observerId);
     registration.target.off("destroyed", registration.destroyedListener);
+    registration.ready.reject(
+      new Error("Session observation ended before it became ready"),
+    );
   }
 
   #assertOpen(): void {

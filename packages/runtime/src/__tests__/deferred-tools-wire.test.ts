@@ -100,61 +100,6 @@ describe('hidden tools are trimmed from the provider request (wire-level)', () =
 });
 
 describe('ModelAdapter provider-step boundary', () => {
-  test('one startStream call ends after the provider returns tool calls', async () => {
-    let providerCalls = 0;
-    const model = new MockLanguageModelV4({
-      doStream: async () => {
-        providerCalls += 1;
-        return {
-          stream: convertArrayToReadableStream<LanguageModelV4StreamPart>(
-            providerCalls === 1
-              ? [
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'tool-call',
-                    toolCallId: 'tool-1',
-                    toolName: 'Read',
-                    input: JSON.stringify({ q: 'README.md' }),
-                  },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                    usage: ZERO_USAGE,
-                  },
-                ]
-              : [
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'stop', raw: 'stop' },
-                    usage: ZERO_USAGE,
-                  },
-                ],
-          ),
-        };
-      },
-    });
-    const result = await newAdapter().startStream({
-      model,
-      messages: [{ role: 'user', content: 'read it' }],
-      tools: {
-        Read: {
-          inputSchema: z.object({ q: z.string() }),
-        },
-      },
-      activeTools: ['Read'],
-      onStreamActivity: () => {},
-      abortSignal: new AbortController().signal,
-      repairToolCall: async () => null,
-    });
-
-    for await (const _event of result.events) {
-      void _event;
-    }
-
-    assert.equal(providerCalls, 1);
-  });
-
   test('returns provider tool calls without executing tool behavior inside the SDK', async () => {
     let executeCalls = 0;
     const toolsWithExecutableBehavior = {

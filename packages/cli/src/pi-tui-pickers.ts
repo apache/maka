@@ -15,17 +15,17 @@ import {
   type SelectItem,
   type TUI,
 } from '@earendil-works/pi-tui';
-import type { UserQuestionOption } from '@maka/core';
+import type { UserQuestionOption } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { InvocableSkillEntry } from '@maka/runtime';
+import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
 import type { ModelChoice, OnboardingProviderEntry } from './pi-tui-contracts.js';
 import { skillInvocationPrefixAt } from './skill-token.js';
 import { ansi, editorTheme, selectListTheme, stripAnsi } from './tui-ansi.js';
 
 export class MakaAutocompleteProvider implements AutocompleteProvider {
-  private readonly fileProvider: CombinedAutocompleteProvider;
+  private readonly fileProvider: CombinedAutocompleteProvider | undefined;
   private readonly slashCommands: readonly MakaSlashCommandMetadata[];
   private readonly listSkills?: () => Promise<readonly InvocableSkillEntry[]>;
 
@@ -37,11 +37,11 @@ export class MakaAutocompleteProvider implements AutocompleteProvider {
   private lastSlashKind: 'skill' | null = null;
 
   constructor(
-    basePath: string,
+    basePath: string | undefined,
     slashCommands: readonly MakaSlashCommandMetadata[],
     listSkills?: () => Promise<readonly InvocableSkillEntry[]>,
   ) {
-    this.fileProvider = new CombinedAutocompleteProvider([], basePath);
+    this.fileProvider = basePath ? new CombinedAutocompleteProvider([], basePath) : undefined;
     this.slashCommands = slashCommands;
     this.listSkills = listSkills;
   }
@@ -142,7 +142,7 @@ export class MakaAutocompleteProvider implements AutocompleteProvider {
       // from triggerCharacters), so returning null restores the prior behavior.
       return null;
     }
-    return this.fileProvider.getSuggestions(lines, cursorLine, cursorCol, options);
+    return this.fileProvider?.getSuggestions(lines, cursorLine, cursorCol, options) ?? null;
   }
 
   applyCompletion(
@@ -185,12 +185,14 @@ export class MakaAutocompleteProvider implements AutocompleteProvider {
         cursorCol: beforePrefix.length + item.value.length + 1,
       };
     }
-    return this.fileProvider.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+    return this.fileProvider
+      ? this.fileProvider.applyCompletion(lines, cursorLine, cursorCol, item, prefix)
+      : { lines, cursorLine, cursorCol };
   }
 
   shouldTriggerFileCompletion(lines: string[], cursorLine: number, cursorCol: number): boolean {
     if (skillInvocationPrefixAt(lines, cursorLine, cursorCol) !== null) return false;
-    return this.fileProvider.shouldTriggerFileCompletion(lines, cursorLine, cursorCol);
+    return this.fileProvider?.shouldTriggerFileCompletion(lines, cursorLine, cursorCol) ?? false;
   }
 }
 

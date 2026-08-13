@@ -18,13 +18,17 @@ describe('ApplyPatch profile routing', () => {
       ).applyPatchProfile,
       { kind: 'codex-v4a-freeform' },
     );
+    assert.deepEqual(
+      resolveModelRuntime({ providerType: 'deepseek' }, 'deepseek-v4-pro').applyPatchProfile,
+      { kind: 'codex-v4a-freeform' },
+    );
     assert.equal(
       resolveModelRuntime({ providerType: 'xai' }, 'deepseek-v4-flash').applyPatchProfile,
       null,
     );
   });
 
-  test('selects Codex V4A freeform only for declared V4 Flash Responses', () => {
+  test('selects Codex V4A freeform for declared DeepSeek V4 Responses models', () => {
     assert.deepEqual(
       resolveApplyPatchProfile(
         { wire: 'openai-responses', applyPatchProtocol: 'codex-v4a-freeform' },
@@ -39,12 +43,12 @@ describe('ApplyPatch profile routing', () => {
       ),
       null,
     );
-    assert.equal(
+    assert.deepEqual(
       resolveApplyPatchProfile(
         { wire: 'openai-responses', applyPatchProtocol: 'codex-v4a-freeform' },
         'deepseek-v4-pro',
       ),
-      null,
+      { kind: 'codex-v4a-freeform' },
     );
     assert.equal(resolveApplyPatchProfile({ wire: 'openai-responses' }, 'deepseek-v4-flash'), null);
   });

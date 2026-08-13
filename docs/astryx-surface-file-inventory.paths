@@ -93,7 +93,7 @@ apps/desktop/src/renderer/styles/module-pages.css
 apps/desktop/src/renderer/styles/module-pages/capability-audit.css
 apps/desktop/src/renderer/styles/module-pages/mcp.css
 apps/desktop/src/renderer/styles/module-pages/module-shell.css
-apps/desktop/src/renderer/styles/module-pages/plan-reminders.css
+apps/desktop/src/renderer/styles/module-pages/scheduled-tasks.css
 apps/desktop/src/renderer/styles/module-pages/skills.css
 apps/desktop/src/renderer/styles/native-cursor.css
 apps/desktop/src/renderer/styles/onboarding.css
@@ -150,9 +150,9 @@ packages/ui/src/model-picker.tsx
 packages/ui/src/module-hub-selector.tsx
 packages/ui/src/module-pages.tsx
 packages/ui/src/permission-mode-menu.tsx
-packages/ui/src/plan-reminder-form-dialog.tsx
-packages/ui/src/plan-reminder-inspector.tsx
-packages/ui/src/plan-reminder-panel.tsx
+packages/ui/src/scheduled-task-form-dialog.tsx
+packages/ui/src/scheduled-task-inspector.tsx
+packages/ui/src/scheduled-task-panel.tsx
 packages/ui/src/primitives/chat.tsx
 packages/ui/src/primitives/module-page.tsx
 packages/ui/src/primitives/page-header.tsx

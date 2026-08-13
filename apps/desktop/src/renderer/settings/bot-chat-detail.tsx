@@ -2,13 +2,11 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ICON_SIZE, ArrowLeft } from '@maka/ui/icons';
 import {
   BOT_ONBOARDING_PROVIDERS,
-  type BotChannelSettings,
   type BotOnboardingBrand,
   type BotOnboardingProvider,
-  type BotProvider,
-  type BotReadinessState,
-} from '@maka/core';
-import type { BotStatus } from '@maka/runtime';
+} from '@maka/core/bot-onboarding';
+import { type BotChannelSettings, type BotProvider, type BotReadinessState } from '@maka/core/bot-chat-settings';
+import type { BotStatus } from '@maka/runtime/bots';
 import { MAX_ALLOWED_USER_IDS, parseAllowedUserIdsFromText } from '@maka/core/settings';
 import { Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, StatusDot, Text, VStack } from '@astryxdesign/core';
 import {
@@ -218,202 +216,198 @@ export function BotChatChannelDetail(props: {
             </a>
           )}
         </header>
-
-        {/* Astryx convergence: the runtime block was a full-width tinted card
-            used as page structure (the named cards-in-page anti-pattern). It
-            is an open kit section now — header + anchor divider + rows. */}
-        <SettingsSection
-          variant="bare"
-          titleId="settings-bot-runtime-heading"
-          title={viewState.liveOperational ? detailCopy.listening : readinessCopy.label}
-          description={viewState.liveOperational ? detailCopy.healthy : readinessCopy.detail}
-          action={(
-            <div className="settingsBotActionStack" role="group" aria-label={detailCopy.actionsAria(providerPresentation.label)}>
-              {inQuickOnboarding ? (
-                <>
-                  <Button variant="primary" isDisabled={props.actionBusy} onClick={() => setScanLoginPhase('mounting')} label={provider === 'wecom' ? detailCopy.quickBind : provider === 'wechat' ? detailCopy.scanLogin : detailCopy.scanConnect} />
-                  {provider === 'wechat' && (channel.token || status?.identity) && (
-                    <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onDisconnectSession()} label={props.pendingAction === 'disconnect' ? detailCopy.disconnecting : detailCopy.disconnectWechat} />
-                  )}
-                  {provider === 'wechat' && (
-                    <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => setWechatQrPhase('mounting')} label={detailCopy.bridgeQr} />
-                  )}
-                  <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onTest()} label={props.pendingAction === 'test' ? detailCopy.testing : detailCopy.test} />
-                </>
-              ) : support === 'runtime' && !status?.running ? (
-                <Button variant="primary" isDisabled={props.actionBusy} onClick={() => void props.onTestAndConnect()} label={props.pendingAction === 'connect' ? detailCopy.connecting : detailCopy.testAndConnect} />
-              ) : (
-                <Button variant="secondary" isDisabled={props.actionBusy || support === 'planned'} onClick={() => void props.onTest()} label={props.pendingAction === 'test' ? detailCopy.testing : support === 'runtime' ? detailCopy.test : detailCopy.testAndConnect} />
-              )}
-              {support === 'runtime' && (status?.running || props.restarting) && provider !== 'wechat' && (
-                <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onRestart()} label={props.restarting ? detailCopy.restarting : detailCopy.restart} />
-              )}
-            </div>
-          )}
-        >
-          {/* Astryx convergence: the hand-rolled <dl> grid (4→2→1 columns via
-              two media queries) is MetadataList, whose multi-column layout
-              handles the collapse itself. */}
-          {/* Deep-review fix: MetadataList destructures a closed prop list and
-              silently drops aria-label — the group name rides a real wrapper. */}
-          <div role="group" aria-label={detailCopy.runtimeAria(providerPresentation.label)}>
-          <MetadataList columns="multi">
-            <MetadataListItem label={detailCopy.identity}>{status?.identity?.username ?? status?.identity?.displayName ?? detailCopy.unknownIdentity}</MetadataListItem>
-            <MetadataListItem label={detailCopy.connectionType}>{botConnectionLabel(status?.connection ?? 'none', locale)}</MetadataListItem>
-            <MetadataListItem label={detailCopy.lastEvent}>{status?.lastEventAt ? <RelativeTime ts={status.lastEventAt} /> : detailCopy.noneYet}</MetadataListItem>
-            <MetadataListItem label={detailCopy.lastTest}>{channel.lastTestAt ? <RelativeTime ts={channel.lastTestAt} /> : detailCopy.neverTested}</MetadataListItem>
-          </MetadataList>
+      {/* Astryx convergence: the runtime block was a full-width tinted card
+          used as page structure (the named cards-in-page anti-pattern). It
+          is an open kit section now — header + anchor divider + rows. */}
+      <SettingsSection
+        variant="bare"
+        titleId="settings-bot-runtime-heading"
+        title={viewState.liveOperational ? detailCopy.listening : readinessCopy.label}
+        description={viewState.liveOperational ? detailCopy.healthy : readinessCopy.detail}
+        action={(
+          <div className="settingsBotActionStack" role="group" aria-label={detailCopy.actionsAria(providerPresentation.label)}>
+            {inQuickOnboarding ? (
+              <>
+                <Button variant="primary" isDisabled={props.actionBusy} onClick={() => setScanLoginPhase('mounting')} label={provider === 'wecom' ? detailCopy.quickBind : provider === 'wechat' ? detailCopy.scanLogin : detailCopy.scanConnect} />
+                {provider === 'wechat' && (channel.token || status?.identity) && (
+                  <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onDisconnectSession()} label={props.pendingAction === 'disconnect' ? detailCopy.disconnecting : detailCopy.disconnectWechat} />
+                )}
+                {provider === 'wechat' && (
+                  <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => setWechatQrPhase('mounting')} label={detailCopy.bridgeQr} />
+                )}
+                <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onTest()} label={props.pendingAction === 'test' ? detailCopy.testing : detailCopy.test} />
+              </>
+            ) : support === 'runtime' && !status?.running ? (
+              <Button variant="primary" isDisabled={props.actionBusy} onClick={() => void props.onTestAndConnect()} label={props.pendingAction === 'connect' ? detailCopy.connecting : detailCopy.testAndConnect} />
+            ) : (
+              <Button variant="secondary" isDisabled={props.actionBusy || support === 'planned'} onClick={() => void props.onTest()} label={props.pendingAction === 'test' ? detailCopy.testing : support === 'runtime' ? detailCopy.test : detailCopy.testAndConnect} />
+            )}
+            {support === 'runtime' && (status?.running || props.restarting) && provider !== 'wechat' && (
+              <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onRestart()} label={props.restarting ? detailCopy.restarting : detailCopy.restart} />
+            )}
           </div>
-        </SettingsSection>
-
-        {props.statusLoadError && (
-          <Banner
-            status="error"
-            title={detailCopy.statusRefreshFailed}
-            description={props.statusLoadError} />
         )}
-        {status?.reason && channel.enabled && !viewState.liveOperational && (
-          <Banner
-            status="warning"
-            title={botStatusDetail(status, locale)}
-            description={readinessCopy.detail} />
-        )}
-        {viewState.currentError && support !== 'planned' && (
-          <Banner
-            status="error"
-            title={detailCopy.latestFailure}
-            description={(
-              <span className="settingsBotBannerDescription">
-                {locale === 'zh' ? viewState.currentError : detailCopy.latestFailureDetail}
-              </span>
-            )} />
-        )}
-
-        {/* Astryx convergence: the bespoke configuration header dialect
-            becomes a kit section wrapping the mode toggle, quick-setup
-            callout, and credential form. */}
-        <SettingsSection
-          variant="bare"
-          title={quickOnboarding && !qrOnlyOnboarding ? detailCopy.setupMethod : detailCopy.connectionSettings}
-          description={quickOnboarding ? detailCopy.localCredentials : detailCopy.autosave}
+      >
+        {/* Astryx convergence: the hand-rolled <dl> grid (4→2→1 columns via
+            two media queries) is MetadataList, whose multi-column layout
+            handles the collapse itself. */}
+        {/* Deep-review fix: MetadataList destructures a closed prop list and
+            silently drops aria-label — the group name rides a real wrapper. */}
+        <div role="group" aria-label={detailCopy.runtimeAria(providerPresentation.label)}>
+        <MetadataList columns="multi">
+          <MetadataListItem label={detailCopy.identity}>{status?.identity?.username ?? status?.identity?.displayName ?? detailCopy.unknownIdentity}</MetadataListItem>
+          <MetadataListItem label={detailCopy.connectionType}>{botConnectionLabel(status?.connection ?? 'none', locale)}</MetadataListItem>
+          <MetadataListItem label={detailCopy.lastEvent}>{status?.lastEventAt ? <RelativeTime ts={status.lastEventAt} /> : detailCopy.noneYet}</MetadataListItem>
+          <MetadataListItem label={detailCopy.lastTest}>{channel.lastTestAt ? <RelativeTime ts={channel.lastTestAt} /> : detailCopy.neverTested}</MetadataListItem>
+        </MetadataList>
+        </div>
+      </SettingsSection>
+      {props.statusLoadError && (
+        <Banner
+          status="error"
+          title={detailCopy.statusRefreshFailed}
+          description={props.statusLoadError} />
+      )}
+      {status?.reason && channel.enabled && !viewState.liveOperational && (
+        <Banner
+          status="warning"
+          title={botStatusDetail(status, locale)}
+          description={readinessCopy.detail} />
+      )}
+      {viewState.currentError && support !== 'planned' && (
+        <Banner
+          status="error"
+          title={detailCopy.latestFailure}
+          description={(
+            <span className="settingsBotBannerDescription">
+              {locale === 'zh' ? viewState.currentError : detailCopy.latestFailureDetail}
+            </span>
+          )} />
+      )}
+      {/* Astryx convergence: the bespoke configuration header dialect
+          becomes a kit section wrapping the mode toggle, quick-setup
+          callout, and credential form. */}
+      <SettingsSection
+        variant="bare"
+        title={quickOnboarding && !qrOnlyOnboarding ? detailCopy.setupMethod : detailCopy.connectionSettings}
+        description={quickOnboarding ? detailCopy.localCredentials : detailCopy.autosave}
+      >
+      {quickOnboarding && !qrOnlyOnboarding && (
+        <SegmentedControl
+          className="settingsBotSetupModes"
+          value={setupMode}
+          label={detailCopy.setupAria(providerPresentation.label)}
+          onChange={(value) => setSetupMode(value as 'quick' | 'manual')}
         >
-        {quickOnboarding && !qrOnlyOnboarding && (
-          <SegmentedControl
-            className="settingsBotSetupModes"
-            value={setupMode}
-            label={detailCopy.setupAria(providerPresentation.label)}
-            onChange={(value) => setSetupMode(value as 'quick' | 'manual')}
-          >
-            <SegmentedControlItem value="quick" label={detailCopy.quickRecommended} />
-            <SegmentedControlItem value="manual" label={detailCopy.manual} />
-          </SegmentedControl>
-        )}
+          <SegmentedControlItem value="quick" label={detailCopy.quickRecommended} />
+          <SegmentedControlItem value="manual" label={detailCopy.manual} />
+        </SegmentedControl>
+      )}
 
-        {quickOnboarding && provider !== 'wechat' && setupMode === 'quick' && (
-          /* Astryx convergence: the hand-tinted quick-setup plate is an
-             Astryx Card — a genuine callout, the one legitimate Card use
-             inside a settings page. */
-          <Card padding={4} role="region" aria-label={detailCopy.quickAria(providerPresentation.label)}>
-            <VStack gap={2} align="start">
-              <VStack gap={0.5}>
-                <Text weight="semibold">
-                  {provider === 'wecom'
-                    ? detailCopy.quickWecomTitle
-                    : provider === 'qq'
-                      ? detailCopy.quickQqTitle
-                      : detailCopy.quickTitle}
-                </Text>
-                <Text type="supporting" color="secondary">
-                  {provider === 'wecom'
-                    ? detailCopy.quickWecomDetail
-                    : provider === 'qq'
-                      ? detailCopy.quickQqDetail
-                      : detailCopy.quickDetail}
-                </Text>
-              </VStack>
-              {provider === 'feishu' ? (
-                <SegmentedControl
-                  className="settingsBotBrandChoice"
-                  value={feishuBrand}
-                  label={detailCopy.feishuRegionAria}
-                  onChange={(value) => setFeishuBrand(value as BotOnboardingBrand)}
-                >
-                  <SegmentedControlItem value="feishu" label={detailCopy.feishu} />
-                  <SegmentedControlItem value="lark" label="Lark" />
-                </SegmentedControl>
-              ) : null}
-              <Button variant="primary" onClick={() => setScanLoginPhase('mounting')} label={provider === 'wecom' ? detailCopy.beginQuickBind : detailCopy.scanWith(provider === 'feishu' && feishuBrand === 'lark' ? 'Lark' : providerPresentation.label)} />
+      {quickOnboarding && provider !== 'wechat' && setupMode === 'quick' && (
+        /* Astryx convergence: the hand-tinted quick-setup plate is an
+           Astryx Card — a genuine callout, the one legitimate Card use
+           inside a settings page. */
+        (<Card padding={4} role="region" aria-label={detailCopy.quickAria(providerPresentation.label)}>
+          <VStack gap={2} align="start">
+            <VStack gap={0.5}>
+              <Text weight="semibold">
+                {provider === 'wecom'
+                  ? detailCopy.quickWecomTitle
+                  : provider === 'qq'
+                    ? detailCopy.quickQqTitle
+                    : detailCopy.quickTitle}
+              </Text>
+              <Text type="supporting" color="secondary">
+                {provider === 'wecom'
+                  ? detailCopy.quickWecomDetail
+                  : provider === 'qq'
+                    ? detailCopy.quickQqDetail
+                    : detailCopy.quickDetail}
+              </Text>
             </VStack>
-          </Card>
-        )}
+            {provider === 'feishu' ? (
+              <SegmentedControl
+                className="settingsBotBrandChoice"
+                value={feishuBrand}
+                label={detailCopy.feishuRegionAria}
+                onChange={(value) => setFeishuBrand(value as BotOnboardingBrand)}
+              >
+                <SegmentedControlItem value="feishu" label={detailCopy.feishu} />
+                <SegmentedControlItem value="lark" label="Lark" />
+              </SegmentedControl>
+            ) : null}
+            <Button variant="primary" onClick={() => setScanLoginPhase('mounting')} label={provider === 'wecom' ? detailCopy.beginQuickBind : detailCopy.scanWith(provider === 'feishu' && feishuBrand === 'lark' ? 'Lark' : providerPresentation.label)} />
+          </VStack>
+        </Card>)
+      )}
 
-        {/* PR-BOT-WECHAT-SCAN-LOGIN-0 (WAWQAQ msg `2fa6ada6` screenshots):
-            each platform's fields, labels, placeholders and notices
-            rewritten to match the reference design 1:1. The previous
-            implementations diverged with technical wording, extra
-            fields, and missing TUN-mode amber notices. */}
-        {(!quickOnboarding || provider === 'wechat' || setupMode === 'manual') && (
-          <BotCredentialFields
-            provider={provider}
-            channel={channel}
-            onUpdateChannel={props.onUpdateChannel}
-          />
-        )}
+      {/* PR-BOT-WECHAT-SCAN-LOGIN-0 (WAWQAQ msg `2fa6ada6` screenshots):
+          each platform's fields, labels, placeholders and notices
+          rewritten to match the reference design 1:1. The previous
+          implementations diverged with technical wording, extra
+          fields, and missing TUN-mode amber notices. */}
+      {(!quickOnboarding || provider === 'wechat' || setupMode === 'manual') && (
+        <BotCredentialFields
+          provider={provider}
+          channel={channel}
+          onUpdateChannel={props.onUpdateChannel}
+        />
+      )}
 
-        {/* PR-BOT-WECHAT-SCAN-LOGIN-0 (WAWQAQ msg `1d9c412e`): WeChat
-            personal account integration. Reference design uses ONE
-            Bot Token field for the local bridge connection + a
-            scan-login affordance. 公众号 (App ID / App Secret) and
-            advanced bridge URL stay available behind a collapsed
-            「高级设置」section so runtime backward compatibility is
-            preserved. */}
-        {provider === 'wechat' && (
-          <BotWeChatFields channel={channel} updateChannel={props.onUpdateChannel} />
-        )}
+      {/* PR-BOT-WECHAT-SCAN-LOGIN-0 (WAWQAQ msg `1d9c412e`): WeChat
+          personal account integration. Reference design uses ONE
+          Bot Token field for the local bridge connection + a
+          scan-login affordance. 公众号 (App ID / App Secret) and
+          advanced bridge URL stay available behind a collapsed
+          「高级设置」section so runtime backward compatibility is
+          preserved. */}
+      {provider === 'wechat' && (
+        <BotWeChatFields channel={channel} updateChannel={props.onUpdateChannel} />
+      )}
 
-        {support === 'planned' && (
-          <Banner status="info" title={detailCopy.planned} />
-        )}
-        </SettingsSection>
-
-        {/* WeChat keeps scan login as a first-class action, separate from
-            connection testing, because QR generation and listener readiness
-            are different states. */}
-        {scanLoginPhase !== 'closed' && (
-          <BotOnboardingModal
-            provider={provider as BotOnboardingProvider}
-            brand={provider === 'feishu' ? feishuBrand : undefined}
-            isOpen={scanLoginPhase === 'open'}
-            onOpenChange={(isOpen) => setScanLoginPhase(isOpen ? 'open' : 'closing')}
-            onConnected={async (snapshot) => {
-              await props.onReload();
-              if (!botDetailMountedRef.current) return;
-              await props.onRefreshStatuses();
-              if (!botDetailMountedRef.current) return;
-              // PR1197 review (P0-3): the bridge may have failed to start even
-              // though credentials saved. Reflect that honestly instead of a
-              // success toast that overstates the connection.
-              if (snapshot.warning) {
-                toast.warning(
-                  detailCopy.credentialsSaved(providerPresentation.label),
-                  locale === 'zh' ? snapshot.warning : detailCopy.savedButNotConnected,
-                );
-                return;
-              }
-              toast.success(
-                detailCopy.scanComplete(providerPresentation.label),
-                snapshot.identity?.displayName ?? snapshot.identity?.id ?? detailCopy.savedAndConnected,
+      {support === 'planned' && (
+        <Banner status="info" title={detailCopy.planned} />
+      )}
+      </SettingsSection>
+      {/* WeChat keeps scan login as a first-class action, separate from
+          connection testing, because QR generation and listener readiness
+          are different states. */}
+      {scanLoginPhase !== 'closed' && (
+        <BotOnboardingModal
+          provider={provider as BotOnboardingProvider}
+          brand={provider === 'feishu' ? feishuBrand : undefined}
+          isOpen={scanLoginPhase === 'open'}
+          onOpenChange={(isOpen) => setScanLoginPhase(isOpen ? 'open' : 'closing')}
+          onConnected={async (snapshot) => {
+            await props.onReload();
+            if (!botDetailMountedRef.current) return;
+            await props.onRefreshStatuses();
+            if (!botDetailMountedRef.current) return;
+            // PR1197 review (P0-3): the bridge may have failed to start even
+            // though credentials saved. Reflect that honestly instead of a
+            // success toast that overstates the connection.
+            if (snapshot.warning) {
+              toast.warning(
+                detailCopy.credentialsSaved(providerPresentation.label),
+                locale === 'zh' ? snapshot.warning : detailCopy.savedButNotConnected,
               );
-            }}
-          />
-        )}
-        {wechatQrPhase !== 'closed' && (
-          <WechatQrLoginModal
-            isOpen={wechatQrPhase === 'open'}
-            onOpenChange={(isOpen) => setWechatQrPhase(isOpen ? 'open' : 'closing')}
-            onRefreshStatuses={props.onRefreshStatuses}
-          />
-        )}
+              return;
+            }
+            toast.success(
+              detailCopy.scanComplete(providerPresentation.label),
+              snapshot.identity?.displayName ?? snapshot.identity?.id ?? detailCopy.savedAndConnected,
+            );
+          }}
+        />
+      )}
+      {wechatQrPhase !== 'closed' && (
+        <WechatQrLoginModal
+          isOpen={wechatQrPhase === 'open'}
+          onOpenChange={(isOpen) => setWechatQrPhase(isOpen ? 'open' : 'closing')}
+          onRefreshStatuses={props.onRefreshStatuses}
+        />
+      )}
     </SettingsPage>
   );
 }

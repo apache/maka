@@ -1,5 +1,6 @@
-import type { SessionSummary, StoredMessage, UiLocale } from '@maka/core';
-import { userFacingText } from '@maka/core';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { userFacingText } from '@maka/core/session';
 import type { ComposerHandle } from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';

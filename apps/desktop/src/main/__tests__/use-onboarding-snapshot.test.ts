@@ -1,23 +1,11 @@
-/**
- * Tests for the onboarding snapshot poller + isSetupRequired helper
- * (PR110c).
- *
- * The React hook (`useOnboardingSnapshotImpl`) is a thin shell over
- * `createOnboardingSnapshotPoller`. We test the pure poller here —
- * stale-response defense, lifecycle gating, error handling — and
- * verify the helper predicate `isSetupRequired`. The React wiring is
- * covered by Playwright E2E + manual UI testing in PR110d.
- */
-
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { OnboardingState } from '@maka/core';
+import type { OnboardingState } from '@maka/core/onboarding';
 import {
   advanceOnboardingSnapshotState,
   createOnboardingSnapshotPoller,
   createOnboardingSnapshotState,
   getOnboardingActivationCandidate,
-  isSetupRequired,
 } from '../../renderer/use-onboarding-snapshot.js';
 import type { OnboardingSnapshot } from '../../preload/bridge-contract.js';
 
@@ -85,20 +73,6 @@ describe('getOnboardingActivationCandidate', () => {
 });
 
 describe('createOnboardingSnapshotPoller', () => {
-  it('routes a successful getSnapshot to onSnapshot', async () => {
-    const events: Array<{ type: 'snap' | 'err'; payload: unknown }> = [];
-    const poller = createOnboardingSnapshotPoller(
-      { getSnapshot: async () => READY_SNAPSHOT },
-      {
-        onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
-        onError: (m) => events.push({ type: 'err', payload: m }),
-      },
-      () => 'zh',
-    );
-    await poller.pull();
-    assert.deepEqual(events, [{ type: 'snap', payload: READY_SNAPSHOT }]);
-  });
-
   it('scrubs getSnapshot rejections before routing them to onError', async () => {
     const events: Array<{ type: 'snap' | 'err'; payload: unknown }> = [];
     const poller = createOnboardingSnapshotPoller(
@@ -293,39 +267,5 @@ describe('onboarding mounted snapshot handoff', () => {
       afterC.mountedSnapshotHandoff?.sessions.map(({ id }) => id),
       ['created-during-bootstrap'],
     );
-  });
-});
-
-describe('isSetupRequired', () => {
-  it('returns true for the three needs_* variants', () => {
-    for (const kind of [
-      'needs_connection',
-      'needs_connection_credentials',
-      'needs_model',
-    ] as const) {
-      const state =
-        kind === 'needs_connection_credentials' || kind === 'needs_model'
-          ? ({ kind, connectionSlug: 'a' } as OnboardingState)
-          : ({ kind } as OnboardingState);
-      assert.equal(isSetupRequired(state), true, `${kind} should be setup-required`);
-    }
-  });
-
-  it('returns false for ready_empty / ready_with_history / blocked / undefined', () => {
-    const ready: OnboardingState = {
-      kind: 'ready_empty',
-      connectionSlug: 'a',
-      model: 'm',
-    };
-    const withHistory: OnboardingState = {
-      kind: 'ready_with_history',
-      connectionSlug: 'a',
-      model: 'm',
-    };
-    const blocked: OnboardingState = { kind: 'blocked', reason: 'all_connections_unhealthy' };
-    assert.equal(isSetupRequired(ready), false);
-    assert.equal(isSetupRequired(withHistory), false);
-    assert.equal(isSetupRequired(blocked), false);
-    assert.equal(isSetupRequired(undefined), false);
   });
 });

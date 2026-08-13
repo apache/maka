@@ -1,4 +1,8 @@
-import type { ChatConfigurationReason, ModelCallKind, UiCatalog, UiLocale } from '@maka/core';
+import type { ChatConfigurationReason } from '@maka/core/connection-readiness';
+
+import type { ModelCallKind } from '@maka/core/model-call-attempt';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export interface DesktopConversationCopy {
   actions: {

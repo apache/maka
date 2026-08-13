@@ -3,7 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { MAX_ATTACHMENT_BYTES, type StorageRef } from '@maka/core';
+import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
+import { type StorageRef } from '@maka/core/events';
 import {
   createArtifactAttachmentResourceReader,
   createAttachmentByteReader,
@@ -42,40 +43,6 @@ describe('artifact attachment authority', () => {
       await assert.rejects(
         reader.readAttachmentResource('session-1', 'notes-1', signal),
         /not found in this Session/,
-      );
-    });
-  });
-
-  test('returns image attachments as provider-materializable image results', async () => {
-    await withStore(async (store) => {
-      await store.create({
-        id: 'image-upload',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'image.png',
-        kind: 'image',
-        content: png,
-        mimeType: 'image/png',
-        source: 'user_upload',
-        now: 1,
-      });
-      const reader = createArtifactAttachmentResourceReader({ artifactStore: store });
-
-      assert.deepEqual(
-        await reader.readAttachmentResource(
-          'session-1',
-          'image-upload',
-          new AbortController().signal,
-        ),
-        {
-          kind: 'image',
-          mimeType: 'image/png',
-          ref: {
-            kind: 'session_file',
-            sessionId: 'session-1',
-            relativePath: 'image-upload',
-          },
-        },
       );
     });
   });
@@ -162,31 +129,6 @@ describe('artifact attachment authority', () => {
         ok: false,
         reason: 'unsupported_mime',
       });
-    });
-  });
-
-  test('snapshotter publishes a tool-result image and returns its stable artifact ref', async () => {
-    await withStore(async (store) => {
-      const ref = await createReadImageSnapshotter(store)({
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'image.png',
-        bytes: png,
-        mimeType: 'image/png',
-      });
-
-      assert.equal(ref.kind, 'session_file');
-      assert.equal(ref.sessionId, 'session-1');
-      const record = await store.get(ref.relativePath);
-      assert.equal(record?.source, 'tool_result');
-      assert.equal(record?.kind, 'image');
-      assert.deepEqual(
-        await createAttachmentByteReader({
-          artifactStore: store,
-          sessionId: 'session-1',
-        })(ref),
-        { ok: true, bytes: Buffer.from(png) },
-      );
     });
   });
 

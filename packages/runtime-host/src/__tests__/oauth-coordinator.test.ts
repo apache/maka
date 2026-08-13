@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
+import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provider-contracts';
+import { OAuthTokenEndpointError } from '@maka/runtime/oauth-login';
 import {
-  OAuthDeviceAuthorizationExpiredError,
-  OAuthTokenEndpointError,
   parseOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
-} from '@maka/runtime';
+} from '@maka/runtime/subscription-credentials';
 import {
   openInteractiveRuntimePolicyStoresForWrite,
   type RuntimePolicyStoresWriter,

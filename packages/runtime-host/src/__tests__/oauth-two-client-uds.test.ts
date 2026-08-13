@@ -4,7 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { isOAuthEnrollmentProviderEnabled, parseOAuthSubscriptionTokens } from '@maka/runtime';
+import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime/oauth-provider-contracts';
+import { parseOAuthSubscriptionTokens } from '@maka/runtime/subscription-credentials';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {

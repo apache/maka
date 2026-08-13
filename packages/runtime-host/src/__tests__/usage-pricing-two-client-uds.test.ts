@@ -9,10 +9,9 @@ import {
   PRICING_MODEL_KEY_MAX_CHARS,
 } from '@maka/core/usage-stats/pricing';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
-import { BUILTIN_PRICING } from '@maka/runtime';
+import { BUILTIN_PRICING } from '@maka/runtime/telemetry';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
-  createHeadlessRootLease,
   resolveRootControlNamespace,
   resolveStorageRoot,
   StorageRootAuthorityError,
@@ -46,24 +45,12 @@ const CONNECTION_CONTEXT: ConnectionContext = {
   acquireResidency: () => ({ release() {} }),
 };
 
-test('Headless root leases cannot open the Interactive usage authority', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-usage-pricing-headless-'));
-  try {
-    const capability = await resolveStorageRoot({
-      path: join(base, 'headless-root'),
-      kind: 'headless',
-    });
-    const headlessLease = createHeadlessRootLease(capability, 'write');
-    await assert.rejects(
-      openInteractiveUsageStoresForWrite(
-        headlessLease as unknown as StorageRootLease<'interactive', 'write'>,
-      ),
-      (error: unknown) =>
-        error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
-    );
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
+test('forged root leases cannot open the Interactive usage authority', async () => {
+  await assert.rejects(
+    openInteractiveUsageStoresForWrite({} as StorageRootLease<'interactive', 'write'>),
+    (error: unknown) =>
+      error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
+  );
 });
 
 test('usage authority drain rejects a new pricing mutation with typed lifecycle failure', async () => {

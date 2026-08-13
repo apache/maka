@@ -3,14 +3,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import type {
-  AgentRunEvent,
-  EmittedAgentRunEvent,
-  AgentRunHeader,
-  CreateSessionInput,
-  SessionHeader,
-  StoredMessage,
-} from '@maka/core';
+import type { AgentRunEvent, EmittedAgentRunEvent, AgentRunHeader } from '@maka/core/agent-run';
+import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   createSessionStore,
   type DurableAgentRunStore,

@@ -9,11 +9,9 @@ import type {
   AgentGraphIntentClaimRequest,
 } from '@maka/core/agent-graph-control';
 import type { ShellRunRecord } from '@maka/core/shell-run';
-import {
-  FAKE_ASK_USER_QUESTION_PROMPT,
-  LOCAL_READ_AGENT_DEFINITION,
-  SessionManager,
-} from '@maka/runtime';
+import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '@maka/runtime/fake-backend';
+import { LOCAL_READ_AGENT_DEFINITION } from '@maka/runtime/agent-catalog';
+import { SessionManager } from '@maka/runtime/session-manager';
 import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-admission';
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -29,6 +27,8 @@ import {
 } from '@maka/storage/root-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 import {
   createExecutionRuntimeHostComposition,
   runtimeHostFilesystemWorkerRuntime,
@@ -129,6 +129,123 @@ test('composition drain preserves usage admission until active Runtime work sett
     );
 
     await composition.close();
+  });
+});
+
+test('hosted execution settles while its tracked environment resource remains verifiable', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'hosted-fake',
+        name: 'Hosted fake',
+        providerType: 'ollama',
+        enabled: true,
+        enabledModelIds: ['fake-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    const fetch = await policy.operations.beginModelFetch(connection.connectionId);
+    assert.equal(fetch.kind, 'ready');
+    if (fetch.kind !== 'ready') return;
+    const fetched = await policy.operations.completeModelFetch(fetch.ticket, {
+      models: [{ id: 'fake-model' }],
+      source: 'fetched',
+      fetchedAt: Date.now(),
+    });
+    assert.equal(fetched.kind, 'committed');
+    if (fetched.kind !== 'committed') return;
+    const defaultTarget = await policy.connectionCatalog.setDefaultTarget({
+      expectedCatalogRevision: fetched.snapshot.revision,
+      target: { connectionId: connection.connectionId, modelId: 'fake-model' },
+    });
+    assert.equal(defaultTarget.kind, 'committed');
+
+    const residencies = new HostResidencyRegistry();
+    let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>;
+    const operationContext = {
+      hostEpoch: 'hosted-environment-test',
+      connectionId: 'hosted-environment-test',
+      surface: 'run' as const,
+      principal: 'runtime_host' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    composition = await createExecutionRuntimeHostComposition(
+      {
+        owner,
+        hostEpoch: operationContext.hostEpoch,
+        acquireResidency: (label) => residencies.acquire(label),
+        retainUntilProcessExit: () => undefined,
+        requestDrain: () => composition?.beginDrain(),
+        waitForResidencies: () => residencies.waitForEmpty(),
+        waitForResidenciesExcept: (label) => residencies.waitForEmptyExcept(label),
+      },
+      { bootstrapRuntimePolicy: false },
+      {
+        primaryBackendFactory: (backendContext) => {
+          const backend = new FakeBackend(backendContext);
+          const send = backend.send.bind(backend);
+          backend.send = async function* (input) {
+            if (input.text === 'leave the environment ready for verification') {
+              const started = await composition.handlers['runtime.resource.start'](
+                { sessionId: backendContext.sessionId, launchId: input.turnId },
+                operationContext,
+              );
+              assert.equal(started.ok, true);
+            }
+            yield* send(input);
+          };
+          return backend;
+        },
+      },
+    );
+    try {
+      await composition.recover();
+      const executionId = '00000000-0000-4000-8000-000000000111';
+      const execution = composition.handlers['hosted.execution.start'](
+        {
+          executionId,
+          session: {
+            workspace: { kind: 'host_path', path: root },
+            modelTarget: { kind: 'default' },
+            name: 'Hosted environment test',
+          },
+          content: { text: 'leave the environment ready for verification' },
+        },
+        operationContext,
+      );
+      let settled = false;
+      void execution.then(() => {
+        settled = true;
+      });
+      try {
+        await waitFor(async () => settled, 5_000);
+      } catch {
+        assert.fail(`Hosted execution did not settle: ${JSON.stringify(residencies.snapshot())}`);
+      }
+      const result = await execution;
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+      if (result.result.kind !== 'settled') assert.fail(result.result.failureReason);
+
+      const resources = await composition.handlers['runtime.resource.query'](
+        { kind: 'list_start', sessionId: executionId },
+        operationContext,
+      );
+      assert.equal(resources.ok, true);
+      if (!resources.ok || resources.result.kind !== 'page') return;
+      assert.equal(
+        resources.result.resources.some((item) => item.result.status === 'running'),
+        true,
+      );
+    } finally {
+      composition.beginDrain();
+      await composition.close();
+    }
   });
 });
 
@@ -290,7 +407,7 @@ test('new Full Access Plan Skill previews use the mutating tool surface', async 
             kind: 'start',
             target: {
               kind: 'new_session',
-              context: { projectRoot: root },
+              context: { workspace: { kind: 'host_path', path: root } },
               collaborationMode: 'plan',
               permissionMode,
             },

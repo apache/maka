@@ -24,7 +24,6 @@ export {
 } from './runtime-policy/domain-codec.js';
 export {
   decodeCanonicalRuntimePolicy,
-  decodeLegacyRuntimePolicyV1,
   normalizeRuntimePolicyMutation,
 } from './runtime-policy/policy-codec.js';
 export {

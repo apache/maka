@@ -10,10 +10,7 @@
       "@maka/ui/artifact-preview-registry": ["../../packages/ui/src/artifact-preview-registry.ts"],
       "@maka/ui/assistant-stream": ["../../packages/ui/src/assistant-stream.ts"],
       "@maka/ui/maka-uri": ["../../packages/ui/src/maka-uri.ts"],
-      "@maka/core": ["../../packages/core/src/index.ts"],
-      "@maka/runtime": ["../../packages/runtime/src/index.ts"],
       "@maka/storage": ["../../packages/storage/src/index.ts"],
-      "@maka/headless": ["../../packages/headless/src/index.ts"]
     }
   },
   "include": [

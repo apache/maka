@@ -1,0 +1,68 @@
+.settingsRuntimeHostTransportField {
+  padding-block: var(--space-4);
+}
+
+.settingsRuntimeHostTransport {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settingsRuntimeHostTransport legend {
+  padding: 0;
+  color: var(--foreground-primary);
+  font: var(--maka-text-body);
+  font-weight: 600;
+}
+
+.settingsRuntimeHostTransport p {
+  margin: 0 0 var(--space-1);
+  color: var(--foreground-secondary);
+  font: var(--maka-text-supporting);
+}
+
+.settingsRuntimeHostTransport [role="radiogroup"] {
+  max-width: 100%;
+}
+
+.settingsRuntimeHostSshTerminalDialog {
+  min-width: min(720px, calc(100vw - 32px));
+}
+
+.settingsRuntimeHostSshTerminalBody {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.settingsRuntimeHostSshTerminal {
+  width: 100%;
+  height: clamp(220px, 40vh, 340px);
+  overflow: hidden;
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: #111;
+}
+
+.settingsRuntimeHostSshTerminal .xterm {
+  box-sizing: border-box;
+  height: 100%;
+  padding: var(--space-3);
+}
+
+.settingsRuntimeHostSshTerminal .xterm-viewport {
+  scrollbar-width: thin;
+}
+
+.settingsRuntimeHostSshTerminalActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-height: 620px) {
+  .settingsRuntimeHostSshTerminal {
+    height: 220px;
+  }
+}

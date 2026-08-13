@@ -45,6 +45,28 @@ npm test
 
 The generated [Windows test skip inventory](./windows-test-inventory.md) classifies every detected Windows-excluded test declaration. Adding or removing one requires regenerating the inventory with `npm run windows:inventory:write` and reviewing its classification.
 
+## Crash and durability boundary
+
+Windows recovery evidence distinguishes an application process crash from an operating-system or
+device power loss. Passing a real-process crash gate proves that committed state converges after the
+owning process is forcibly terminated. It does not, by itself, prove that Windows has forced every
+parent-directory update through volatile device caches.
+
+| Surface | Current Windows guarantee | Boundary |
+|---|---|---|
+| SQLite operational state | Databases use WAL journaling with `synchronous=FULL`. Real-process failpoint tests verify that committed runtime, continuation, memory, and managed-workspace facts survive owner death while incomplete transactions do not become authoritative. | The guarantee is the SQLite and Windows filesystem contract on supported local storage. Maka does not claim protection from storage hardware or drivers that acknowledge flushes before data is stable. |
+| Artifact payload publication | Payload bytes are written to a same-directory staging file and the file is synchronized before publication. Recovery reconciles staged payloads, metadata, deletes, and owner death without accepting uncommitted residue. | Windows evidence covers forced process termination and restart. It does not establish a separately forced parent-directory entry after sudden system power loss. |
+| Marker and managed-workspace control files | Writers synchronize temporary file contents before same-directory `link` or `rename` publication. Readers validate file and root identity and fail closed on unsupported replacement. | Node can synchronize the file on Windows, but the repository's directory synchronization barrier is intentionally unavailable on Windows. |
+| Root and open-database replacement | Live owners retain exclusive authority and cleanup closes stores and leases before deleting their roots. | Windows does not permit the POSIX test technique of renaming or unlinking an open SQLite database or replacing a directory that contains open files. Those tests remain classified as platform contracts rather than portable recovery gates. |
+
+On POSIX, stable-storage paths synchronize changed parent directories after publishing or removing a
+name. On Windows, Node does not provide the same usable directory-handle synchronization operation,
+so `syncDirectory()` is a no-op. Maka therefore does not currently promise POSIX-equivalent
+power-loss durability for a newly created, renamed, linked, or removed directory entry on Windows.
+The supported evidence is narrower: file contents are synchronized where the storage protocol calls
+for it, SQLite transactions use full synchronous WAL semantics, process-crash recovery converges,
+and unsupported live-root replacement fails closed.
+
 ## Baseline captured on 2026-08-04
 
 Environment: Windows 11 x64, Node.js 22.23.1, npm 11, Git for Windows.

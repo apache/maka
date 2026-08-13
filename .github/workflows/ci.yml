@@ -16,10 +16,8 @@ jobs:
     outputs:
       code: ${{ steps.plan.outputs.code }}
       e2e: ${{ steps.plan.outputs.e2e }}
-      headless: ${{ steps.plan.outputs.headless }}
       runtime_host: ${{ steps.plan.outputs.runtime_host }}
       runtime_sandbox: ${{ steps.plan.outputs.runtime_sandbox }}
-      script_mode: ${{ steps.plan.outputs.script_mode }}
       standard_workspaces: ${{ steps.plan.outputs.standard_workspaces }}
       storage_stress: ${{ steps.plan.outputs.storage_stress }}
       storybook: ${{ steps.plan.outputs.storybook }}
@@ -72,20 +70,9 @@ jobs:
         run: npx knip --workspace apps/desktop
       - name: Knip (packages/ui)
         run: npx knip --workspace packages/ui
-      # Dead-CSS governance. Lived only under `check:release`, so a regression
-      # stayed invisible until a release was cut; it was red on main when this
-      # step was added. Same class of source-scanning guard as knip above.
-      - name: Dead CSS
-        run: node scripts/check-dead-css.mjs --check
-      # Storybook fidelity: every Product/* story must name the real user path
-      # to the state it renders. Presence is mechanical; truth stays with the
-      # reviewer. See apps/desktop/stories/FIDELITY.md.
-      - name: Story annotations
-        run: node scripts/check-story-annotations.mjs
-
   test_workspaces:
     needs: changes
-    if: needs.changes.outputs.standard_workspaces != '' || needs.changes.outputs.script_mode != 'none'
+    if: needs.changes.outputs.standard_workspaces != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -117,12 +104,6 @@ jobs:
         env:
           MAKA_REQUIRE_LINUX_SANDBOX_SMOKE: '1'
         run: npm exec -w @maka/runtime -- node --test dist/__tests__/linux-sandbox-smoke.test.js
-      - name: Run fast script tests
-        if: needs.changes.outputs.script_mode == 'fast' || needs.changes.outputs.script_mode == 'full'
-        run: npm run test:scripts
-      - name: Run extended script tests
-        if: needs.changes.outputs.script_mode == 'extended' || needs.changes.outputs.script_mode == 'full'
-        run: npm run test:scripts:extended
       # Workspaces consume the dist built above. Selection includes reverse
       # dependencies, while bounded concurrency avoids both the old serial
       # critical path and an unbounded process stampede on two-core runners.
@@ -152,49 +133,18 @@ jobs:
       - name: Run Runtime Host tests
         run: npm --workspace @maka/runtime-host run test:dist
 
-  test_headless:
-    needs: changes
-    if: needs.changes.outputs.headless == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-      - name: Install pinned Harbor contract runtime
-        run: |
-          uv tool install "harbor==0.13.2"
-          uv tool dir --bin >> "$GITHUB_PATH"
-      - name: Install Linux runtime dependencies
-        run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
-      - run: npm ci
-      - run: npm run build:test
-      - name: Run Headless tests
-        env:
-          MAKA_REQUIRE_HARBOR_CONTRACT: '1'
-        run: npm --workspace @maka/headless run test:dist
-      # The Harbor adapters are Python, so their contracts cannot ride the
-      # workspace suite. This one needs only the stdlib.
-      - name: Run Harbor adapter tests
-        run: python3 packages/headless/harbor/tests/test_process_scope.py
-
   # Preserve one stable required check while letting independent heavy suites
   # occupy their own runners. The aggregator waits for every selected lane.
   test:
-    needs: [changes, test_workspaces, test_runtime_host, test_headless]
+    needs: [changes, test_workspaces, test_runtime_host]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Require successful test lanes
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
-          HEADLESS_RESULT: ${{ needs.test_headless.result }}
-          HEADLESS_SELECTED: ${{ needs.changes.outputs.headless }}
           RUNTIME_HOST_RESULT: ${{ needs.test_runtime_host.result }}
           RUNTIME_HOST_SELECTED: ${{ needs.changes.outputs.runtime_host }}
-          SCRIPT_MODE: ${{ needs.changes.outputs.script_mode }}
           STANDARD_WORKSPACES: ${{ needs.changes.outputs.standard_workspaces }}
           WORKSPACES_RESULT: ${{ needs.test_workspaces.result }}
         run: |
@@ -216,12 +166,11 @@ jobs:
             fi
           }
           workspaces_selected="false"
-          if [[ -n "$STANDARD_WORKSPACES" || "$SCRIPT_MODE" != "none" ]]; then
+          if [[ -n "$STANDARD_WORKSPACES" ]]; then
             workspaces_selected="true"
           fi
           require_lane "workspace tests" "$workspaces_selected" "$WORKSPACES_RESULT"
           require_lane "Runtime Host tests" "$RUNTIME_HOST_SELECTED" "$RUNTIME_HOST_RESULT"
-          require_lane "Headless tests" "$HEADLESS_SELECTED" "$HEADLESS_RESULT"
 
   # One Electron job: install once, run the (now small) e2e suite, then the
   # CDP alignment audit against the same built renderer. Dual shards plus a

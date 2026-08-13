@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createReadOnlyPermissionProfile, createWorkspaceWritePermissionProfile } from '@maka/core';
-import type { ExecutionBoundary, SessionEvent } from '@maka/core';
+import { createReadOnlyPermissionProfile, createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
+import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
+
+import type { SessionEvent } from '@maka/core/events';
 
 import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
 import {

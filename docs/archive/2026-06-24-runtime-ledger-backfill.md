@@ -81,7 +81,9 @@ Create `packages/runtime/src/__tests__/runtime-event-backfill.test.ts` with this
 
 ```ts
 import { describe, test } from 'node:test';
-import type { AgentRunHeader, RuntimeEvent, StoredMessage } from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { StoredMessage } from '@maka/core/session';
 import { expect } from '../test-helpers.js';
 import {
   RUNTIME_EVENT_BACKFILL_STATE_KEY,
@@ -335,17 +337,19 @@ Create `packages/runtime/src/runtime-event-backfill.ts` with this content:
 
 ```ts
 import type {
-  AgentRunHeader,
-  PermissionDecisionMessage,
   RuntimeEvent,
   RuntimeEventStatus,
+} from '@maka/core/runtime-event';
+import { createRuntimeEventId } from '@maka/core/runtime-event';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type {
+  PermissionDecisionMessage,
   StoredMessage,
   TokenUsageMessage,
   ToolCallMessage,
   ToolResultMessage,
   TurnStateMessage,
-} from '@maka/core';
-import { createRuntimeEventId } from '@maka/core';
+} from '@maka/core/session';
 
 export const RUNTIME_EVENT_BACKFILL_STATE_KEY = 'makaRuntimeRecovery';
 

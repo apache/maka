@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFile, realpath, rename, stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { basename, dirname, join, normalize, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import type { ProjectLocation, ProjectRecord, SessionHeader } from '@maka/core';
+import type { ProjectLocation, ProjectRecord } from '@maka/core/project';
+import type { SessionHeader } from '@maka/core/session';
 import { hasEnclosingGitEntry } from './git-entry.js';
 import {
   acquireOperationalStateDatabase,
@@ -11,7 +12,7 @@ import {
 } from './operational-state-store.js';
 import { normalizeSessionHeader } from './session-store.js';
 
-export type { ProjectLocation, ProjectRecord } from '@maka/core';
+export type { ProjectLocation, ProjectRecord } from '@maka/core/project';
 
 const execFileAsync = promisify(execFile);
 
@@ -115,17 +116,13 @@ export function createProjectCatalog(
   deps: {
     now?: () => number;
     createId?: () => string;
-    /** Report a `projects.json` that could not be imported; the catalog still opens. */
-    onLegacyImportFailure?: (error: unknown) => void;
     relinkFailpoint?: (stage: 'after_session_updates') => void;
   } = {},
 ): ProjectCatalog {
   return new SqliteProjectCatalog(
     acquireOperationalStateDatabase(storageRoot),
-    join(storageRoot, 'projects.json'),
     deps.now ?? Date.now,
     deps.createId ?? randomUUID,
-    deps.onLegacyImportFailure ?? (() => {}),
     deps.relinkFailpoint,
   );
 }
@@ -143,14 +140,11 @@ export function createProjectCatalog(
  */
 class SqliteProjectCatalog implements ProjectCatalog {
   private queue: Promise<void> = Promise.resolve();
-  private legacyImport: Promise<void> | undefined;
 
   constructor(
     private readonly lease: OperationalStateDatabaseLease,
-    private readonly legacyPath: string,
     private readonly now: () => number,
     private readonly createId: () => string,
-    private readonly onLegacyImportFailure: (error: unknown) => void,
     private readonly relinkFailpoint?: (stage: 'after_session_updates') => void,
   ) {}
 
@@ -277,7 +271,12 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   async touch(projectId: string, path?: string): Promise<ProjectRecord> {
-    const resolved = path ? await resolveProjectLocation({ path }) : undefined;
+    let resolved: Awaited<ReturnType<typeof resolveProjectLocation>> | undefined;
+    try {
+      resolved = path ? await resolveProjectLocation({ path }) : undefined;
+    } catch {
+      throw new ProjectUnavailableError(projectId);
+    }
     const resolvedPath = resolved
       ? resolved.kind === 'git'
         ? resolved.git!.worktreeRoot
@@ -331,7 +330,6 @@ class SqliteProjectCatalog implements ProjectCatalog {
       | { readonly project: PersistedProject; readonly updatedSessionIds: readonly string[] }
       | undefined;
     await this.withQueue(async () => {
-      await this.importLegacyCatalogOnce();
       committed = this.lease.transaction('write', () => {
         const file = this.selectCatalog();
         const project = findProjectById(file.projects, projectId);
@@ -422,7 +420,6 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   private async read(): Promise<ProjectCatalogFile> {
-    await this.importLegacyCatalogOnce();
     return this.selectCatalog();
   }
 
@@ -439,7 +436,6 @@ class SqliteProjectCatalog implements ProjectCatalog {
    * `relink` await the filesystem mid-change and keep the two-phase form.
    */
   private async mutate<T>(change: (file: ProjectCatalogFile) => T): Promise<T> {
-    await this.importLegacyCatalogOnce();
     return this.lease.transaction('write', () => {
       const file = this.selectCatalog();
       const result = change(file);
@@ -539,47 +535,6 @@ class SqliteProjectCatalog implements ProjectCatalog {
         for (const alias of project.aliases ?? []) insertAlias.run(alias, project.id);
       }
     });
-  }
-
-  /**
-   * `projects.json` predates the operational database and was left behind when
-   * the rest of the File stores were retired, so it still holds the only copy
-   * of every project name, relink alias and archive state. Importing it once is
-   * not legacy-format support: it recovers state this refactor would otherwise
-   * strand. The file is renamed rather than deleted so a failed upgrade stays
-   * inspectable, and a malformed file leaves SQLite untouched.
-   *
-   * An import that cannot complete — unreadable file, malformed contents, a
-   * read-only disk — is reported and then dropped rather than rethrown. SQLite
-   * is the authority now, so failing the import must not take the read path
-   * down with it; `projects.json` is still on disk to recover from by hand.
-   */
-  private importLegacyCatalogOnce(): Promise<void> {
-    this.legacyImport ??= (async () => {
-      try {
-        let raw: string;
-        try {
-          raw = await readFile(this.legacyPath, 'utf8');
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-          throw error;
-        }
-        const imported = normalizeProjectCatalogFile(JSON.parse(raw));
-        const occupied = this.lease.transaction(
-          'read',
-          () =>
-            this.lease.database.prepare('SELECT 1 AS found FROM projects LIMIT 1').get() !==
-            undefined,
-        );
-        if (!occupied) this.replaceCatalog(imported);
-        // Timestamped so a second upgrade attempt cannot overwrite the only
-        // remaining copy of a catalog that failed to import the first time.
-        await rename(this.legacyPath, `${this.legacyPath}.imported-${this.now()}`);
-      } catch (error) {
-        this.onLegacyImportFailure(error);
-      }
-    })();
-    return this.legacyImport;
   }
 
   private withQueue(operation: () => Promise<void>): Promise<void> {

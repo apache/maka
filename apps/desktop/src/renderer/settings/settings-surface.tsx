@@ -17,16 +17,15 @@ import { ICON_SIZE, ArrowLeft } from '@maka/ui/icons';
 import type {
   AppSettings,
   ChatDefaultPermissionMode,
-  LlmConnection,
-  ProviderType,
   SettingsSection,
   ThemePalette,
   ThemePreference,
-  UiLocalePreference,
   UpdateAppSettingsResult,
   UsageRange,
   UsageStats,
-} from '@maka/core';
+} from '@maka/core/settings';
+import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { createDefaultSettings } from '@maka/core/settings';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';

@@ -4,8 +4,8 @@ import {
   normalizeRequestHeaderUpdates,
   normalizeRequestHeaders,
   type JsonObject,
-  type RequestHeaderUpdate,
-} from '@maka/core';
+} from '@maka/core/runtime-policy';
+import { type RequestHeaderUpdate } from '@maka/core/llm-connections';
 import { Button, IconButton, TextArea, TextInput } from '@maka/ui';
 import { Trash2 } from '@maka/ui/icons';
 import { PasswordInput } from './password-input';

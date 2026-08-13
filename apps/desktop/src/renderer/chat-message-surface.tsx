@@ -1,13 +1,17 @@
-import { useMemo, type ComponentProps, type ReactNode } from 'react';
-import {
-  isDeepResearchSession,
-  type LlmConnection,
-  type OnboardingState,
-  type ProviderType,
-  type SettingsSection,
-} from '@maka/core';
+import { useMemo, useState, type ComponentProps, type ReactNode } from 'react';
+import { isDeepResearchSession } from '@maka/core/explore-agent';
+import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
+import { type OnboardingState } from '@maka/core/onboarding';
+import { type SettingsSection } from '@maka/core/settings';
 import { Skeleton } from '@astryxdesign/core';
-import { Banner, Button, ChatView, useUiLocale } from '@maka/ui';
+import {
+  Banner,
+  Button,
+  ChatView,
+  useUiLocale,
+  type LiveContentActivationSnapshot,
+  type LiveTurnProjection,
+} from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';
 import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state';
 import type { SessionHealthNoticeView } from './use-shell-chat-model';
@@ -33,7 +37,11 @@ const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string |
  */
 interface ChatMessageSurfaceProps extends Omit<
   ComponentProps<typeof ChatView>,
-  'deepResearchRun' | 'emptyOverride' | 'liveTurn' | 'shellRunUpdates'
+  | 'deepResearchRun'
+  | 'emptyOverride'
+  | 'initialLiveContentSnapshot'
+  | 'liveTurn'
+  | 'shellRunUpdates'
 > {
   /**
    * #1985: the live projection and the shell-run records are the only session
@@ -44,10 +52,12 @@ interface ChatMessageSurfaceProps extends Omit<
   sessionUiController: AppShellSessionUiStateController;
   /** The shell's selected session. Not derived from `activeSession`, which the shell substitutes for an unsaved chat. */
   activeSessionId: string | undefined;
+  /** Advances after Runtime Host has seeded the active session's current live projection. */
+  liveContentSeedRevision: number;
   sessionHealthNotice?: SessionHealthNoticeView;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
   taskReadinessNotice?: TaskReadinessNotice;
-  onTaskReadinessAction: () => void;
+  onTaskReadinessAction?: () => void;
   showOnboardingHero: boolean;
   onboardingState: OnboardingState | undefined;
   isOnboardingLoading: boolean;
@@ -60,9 +70,23 @@ interface ChatMessageSurfaceProps extends Omit<
   onSkip: () => Promise<void> | void;
 }
 
+function captureLiveContent(
+  liveTurn: LiveTurnProjection | undefined,
+): LiveContentActivationSnapshot | undefined {
+  if (!liveTurn) return undefined;
+  return {
+    turnId: liveTurn.turnId,
+    entries: new Map(liveTurn.steps.flatMap((step) => [
+      ...(step.thinking?.text ? [[`thinking:${step.stepId}`, step.thinking.text] as const] : []),
+      ...(step.text?.text ? [[`text:${step.stepId}`, step.text.text] as const] : []),
+    ])),
+  };
+}
+
 export function ChatMessageSurface({
   sessionUiController,
   activeSessionId,
+  liveContentSeedRevision,
   sessionHealthNotice,
   workspaceReadinessRecovery,
   taskReadinessNotice,
@@ -104,6 +128,34 @@ export function ChatMessageSurface({
     isDeepResearchSession(activeSession?.labels),
   );
   const liveTurn = useAppShellSessionUiSelector(sessionUiController, selectLiveTurn, activeSessionId);
+  const [activation, setActivation] = useState(() => ({
+    sessionId: activeSessionId,
+    seedRevision: liveContentSeedRevision,
+    initialLiveContent: captureLiveContent(liveTurn),
+  }));
+  if (
+    activation.sessionId !== activeSessionId
+    || activation.seedRevision !== liveContentSeedRevision
+  ) {
+    setActivation({
+      sessionId: activeSessionId,
+      seedRevision: liveContentSeedRevision,
+      initialLiveContent: captureLiveContent(liveTurn),
+    });
+  } else if (
+    activation.initialLiveContent
+    && (
+      !liveTurn
+      || liveTurn.terminal
+      || liveTurn.turnId !== activation.initialLiveContent.turnId
+    )
+  ) {
+    setActivation({
+      sessionId: activeSessionId,
+      seedRevision: liveContentSeedRevision,
+      initialLiveContent: undefined,
+    });
+  }
   // Select the raw per-session record: its identity is the store's own, so a
   // change to any OTHER map cannot rebuild the array. Deriving it in the
   // selector would need a comparator to say the same thing, and would still
@@ -152,6 +204,9 @@ export function ChatMessageSurface({
       <ChatView
         {...chatViewRest}
         liveTurn={liveTurn}
+        initialLiveContentSnapshot={activation.sessionId === activeSessionId
+          ? activation.initialLiveContent
+          : captureLiveContent(liveTurn)}
         shellRunUpdates={shellRunUpdates}
         deepResearchRun={deepResearchRun}
         emptyOverride={emptyOverride}
@@ -164,12 +219,12 @@ export function ChatMessageSurface({
             role="status"
             title={taskReadinessNotice.title}
             description={taskReadinessNotice.description}
-            endContent={<Button
+            endContent={onTaskReadinessAction ? <Button
               label={taskReadinessNotice.actionLabel}
               variant="ghost"
               size="sm"
               onClick={onTaskReadinessAction}
-            />} />
+            /> : undefined} />
         </div>
       )}
       {workspaceReadinessRecovery && (

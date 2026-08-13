@@ -1,3 +1,0 @@
-{"id":"legacy-tornnewline-1","workspaceRoot":"/Users/fixture/Library/Application Support/Maka/workspaces/default","cwd":"/Users/fixture/work/torn-project","createdAt":1783926000000,"lastUsedAt":1783926010000,"name":"Torn Newline","isFlagged":false,"labels":[],"isArchived":false,"status":"active","statusUpdatedAt":1783926010000,"hasUnread":false,"backend":"ai-sdk","llmConnectionSlug":"openai-compatible","connectionLocked":true,"model":"demo-model","permissionMode":"ask","schemaVersion":1,"lastMessageAt":1783926010000}
-{"type":"user","id":"msg-user-tornnl-1","turnId":"turn-tornnl-1","ts":1783926005000,"text":"hello"}
-{"type":"user","id":"msg-user-cut","turnId":"turn-cut","ts":1783926009000,"text":"cut off mid-wr

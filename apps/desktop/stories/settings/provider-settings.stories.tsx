@@ -7,7 +7,7 @@ import type {
   LlmConnection,
   ModelDiscoveryResult,
   ProviderType,
-} from '@maka/core';
+} from '@maka/core/llm-connections';
 import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import { SettingsPage } from '../../src/renderer/settings/settings-section';
 

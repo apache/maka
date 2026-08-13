@@ -4,7 +4,7 @@ import { mkdirSync, renameSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applySandboxBoundaryExpansion } from '@maka/core';
+import { applySandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { LinuxBubblewrapBackend, linuxExecutableRoots } from '../sandbox/linux-sandbox.js';
 import { detectLinuxSandboxCapability } from '../sandbox/linux-capability.js';

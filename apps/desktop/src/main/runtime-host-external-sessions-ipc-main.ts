@@ -1,4 +1,4 @@
-import type { SessionChangedReason } from '@maka/core';
+import type { SessionChangedReason } from '@maka/core/session';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type {
   ExternalSessionCatalogQueryInput,
@@ -40,9 +40,18 @@ export function registerRuntimeHostExternalSessionsIpc(
   handleReconnectableRead(ipcMain, 'external-sessions:listSources', () =>
     deps.client.listExternalSessionSources(),
   );
-  handleReconnectableRead(ipcMain, 'external-sessions:list', (_event, input: unknown) =>
-    deps.client.listExternalSessions(decodeExternalSessionCatalogQueryInput(input)),
-  );
+  handleReconnectableRead(ipcMain, 'external-sessions:list', async (_event, input: unknown) => {
+    const result = await deps.client.listExternalSessions(
+      decodeExternalSessionCatalogQueryInput(input),
+    );
+    return {
+      ...result,
+      sessions: result.sessions.map(({ hostCwd, ...session }) => ({
+        ...session,
+        cwd: hostCwd,
+      })),
+    };
+  });
   ipcMain.handle('external-sessions:import', async (_event, input: unknown) => {
     try {
       const session = await deps.client.importExternalSession(

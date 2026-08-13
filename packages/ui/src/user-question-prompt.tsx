@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import type { UserQuestionRequestEvent, UserQuestionResponse } from '@maka/core';
+import type { UserQuestionRequestEvent } from '@maka/core/events';
+import type { UserQuestionResponse } from '@maka/core/user-question';
 import { Button, RadioList, RadioListItem, TextInput } from '@astryxdesign/core';
 import { useMountedRef } from './use-mounted-ref.js';
 import {

@@ -64,10 +64,10 @@ export function ModuleHubSelector(props: ModuleHubSelectorProps) {
   }
 
   const options = [
-    ['plan-reminders', copy.automations.planReminders, <CalendarCheck key="plan-reminders" size={ICON_SIZE.chrome} aria-hidden="true" />],
+    ['scheduled-tasks', copy.automations.scheduledTasks, <CalendarCheck key="scheduled-tasks" size={ICON_SIZE.chrome} aria-hidden="true" />],
     ['daily-review', copy.automations.dailyReview, <Sun key="daily-review" size={ICON_SIZE.chrome} aria-hidden="true" />],
   ] as const;
-  const selectedLabel = options.find(([value]) => value === props.value)?.[1] ?? copy.automations.planReminders;
+  const selectedLabel = options.find(([value]) => value === props.value)?.[1] ?? copy.automations.scheduledTasks;
   return (
     <Selector
       value={props.value}

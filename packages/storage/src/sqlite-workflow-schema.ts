@@ -1,9 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 5;
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 8;
 
 export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
   db.exec(`
+    DROP INDEX IF EXISTS workflow_plan_reminders_order;
+    DROP TABLE IF EXISTS workflow_plan_reminders;
+
     CREATE TABLE IF NOT EXISTS workflow_task_ledger_events (
       session_id TEXT NOT NULL,
       sequence INTEGER NOT NULL CHECK (sequence >= 0),
@@ -44,15 +47,22 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
       UNIQUE (session_id, event_id)
     );
 
-    CREATE TABLE IF NOT EXISTS workflow_plan_reminders (
-      reminder_id TEXT PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS workflow_scheduled_tasks (
+      task_id TEXT PRIMARY KEY,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       record_json TEXT NOT NULL
     );
 
-    CREATE INDEX IF NOT EXISTS workflow_plan_reminders_order
-      ON workflow_plan_reminders(created_at, reminder_id);
+    CREATE INDEX IF NOT EXISTS workflow_scheduled_tasks_order
+      ON workflow_scheduled_tasks(created_at, task_id);
+
+    CREATE TABLE IF NOT EXISTS workflow_scheduled_task_fires (
+      claim_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL UNIQUE,
+      claimed_at INTEGER NOT NULL,
+      record_json TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS workflow_quote_companion_cleanup (
       session_id TEXT PRIMARY KEY,

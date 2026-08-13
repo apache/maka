@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { SessionHeader } from '@maka/core/session';
-import { cleanSessionRecapText, type RuntimeReadModelSessionView } from '@maka/runtime';
+import { cleanSessionRecapText } from '@maka/runtime/session-recap';
+import { type RuntimeReadModelSessionView } from '@maka/runtime/runtime-read-model';
 import {
   authenticateInteractiveArtifactStoreWriter,
   type InteractiveArtifactStoreWriter,

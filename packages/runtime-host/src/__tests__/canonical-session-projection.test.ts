@@ -3,15 +3,23 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { AgentRunHeader, RuntimeEvent } from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   openInteractiveExecutionStoresForWrite,
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
 import type { StoredInteractionRequest } from '@maka/storage/interaction-store';
 import { acquireOperationalStateDatabase } from '@maka/storage';
+import {
+  createSessionEventMapMemory,
+  mapSessionEventToRuntimeEvent,
+} from '@maka/runtime/ai-sdk-flow';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
-import { type SessionMessageQueueProjection } from '../protocol/index.js';
+import {
+  TURN_MESSAGE_TEXT_MAX_BYTES,
+  type SessionMessageQueueProjection,
+} from '../protocol/index.js';
 import {
   type CanonicalSessionProjection,
   CanonicalSessionProjectionReader,
@@ -21,6 +29,7 @@ import { type HostMessageRootPort, HostMessageCoordinator } from '../server/mess
 import { worstCaseGoalProjection } from '../server/goal-projection.js';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { worstCaseFailedTurnSnapshot } from '../server/canonical-turn-snapshot.js';
 
 test('projects the canonical root lifecycle and the attachment queue from real Stores', async () => {
   await withStores(async (root, stores) => {
@@ -277,6 +286,123 @@ test('preflights queued steering at the exact in-flight snapshot boundary', asyn
   });
 });
 
+test('preflights the worst-case failed Turn before accepting more queued content', async () => {
+  await withStores(async (root, stores) => {
+    const { sessionId, rootAdmissions } = await createRunningRoot(root, stores);
+
+    let currentQueue: SessionMessageQueueProjection = {
+      hostEpoch: 'epoch-1',
+      queueRevision: 1,
+      steering: [],
+      followup: [],
+    };
+    const reader = new CanonicalSessionProjectionReader({
+      stores,
+      rootAdmissions,
+      messages: { projection: () => currentQueue },
+    });
+    const canonical = await reader.read(sessionId);
+    assert.ok(canonical?.rootTurn);
+    const capacityCanonical = {
+      ...canonical,
+      goal: worstCaseGoalProjection(sessionId),
+    };
+    currentQueue = largestFittingFollowupQueue(capacityCanonical);
+
+    assert.doesNotThrow(() =>
+      createSessionContinuitySnapshot(
+        { ...capacityCanonical, queue: currentQueue },
+        Number.MAX_SAFE_INTEGER,
+      ),
+    );
+    assert.throws(() =>
+      createSessionContinuitySnapshot(
+        {
+          ...capacityCanonical,
+          rootTurn: worstCaseFailedTurnSnapshot(capacityCanonical.rootTurn!),
+          queue: currentQueue,
+        },
+        Number.MAX_SAFE_INTEGER,
+      ),
+    );
+    assert.equal(await reader.fitsCandidate(sessionId, { queue: currentQueue }), false);
+  });
+});
+
+test('projects a failed Turn message from the canonical terminal event', async () => {
+  await withStores(async (root, stores) => {
+    const { sessionId, rootAdmissions } = await createRunningRoot(root, stores);
+    const memory = createSessionEventMapMemory();
+    const context = {
+      sessionId,
+      invocationId: 'run-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      source: 'test',
+      startedAt: 10,
+      request: {
+        sessionId,
+        invocationId: 'run-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        text: 'hello',
+        source: 'test',
+      },
+      newId: () => 'unused',
+      now: () => 12,
+    } as const;
+    const errorEvent = mapSessionEventToRuntimeEvent(
+      {
+        type: 'error',
+        id: 'provider-error-1',
+        turnId: 'turn-1',
+        ts: 12,
+        recoverable: false,
+        code: 'provider_error',
+        message: 'canonical provider failure api_key=sk-test-secret-value',
+      },
+      context,
+      memory,
+    );
+    const terminalEvent = mapSessionEventToRuntimeEvent(
+      {
+        type: 'complete',
+        id: 'terminal-failed-1',
+        turnId: 'turn-1',
+        ts: 13,
+        stopReason: 'error',
+      },
+      context,
+      memory,
+    );
+    await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', errorEvent);
+    await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', terminalEvent);
+    await stores.agentRunStore.updateRun(sessionId, 'run-1', {
+      status: 'failed',
+      updatedAt: 13,
+      completedAt: 13,
+      failureClass: 'provider_error',
+      failureMessage: 'stale Run header failure',
+    });
+
+    const reader = new CanonicalSessionProjectionReader({
+      stores,
+      rootAdmissions,
+      messages: {
+        projection: () => ({ hostEpoch: 'epoch-1', queueRevision: 0, steering: [], followup: [] }),
+      },
+    });
+    const canonical = await reader.read(sessionId);
+    assert.equal(canonical?.rootTurn?.status, 'failed');
+    if (canonical?.rootTurn?.status === 'failed') {
+      assert.equal(
+        canonical.rootTurn.failureMessage,
+        'canonical provider failure api_key=[redacted]',
+      );
+    }
+  });
+});
+
 test('propagates canonical Store read failures during candidate preflight', async () => {
   await withStores(async (root, stores) => {
     const session = await stores.sessionStore.create(sessionInput(root));
@@ -435,6 +561,39 @@ function runHeader(sessionId: string): AgentRunHeader {
   };
 }
 
+async function createRunningRoot(
+  root: string,
+  stores: ExecutionStoresWriter<'interactive'>,
+): Promise<{ sessionId: string; rootAdmissions: RootAdmissionOwner }> {
+  const session = await stores.sessionStore.create(sessionInput(root));
+  const rootAdmissions = new RootAdmissionOwner(stores.agentRunStore);
+  await rootAdmissions.recoverSession(session.id);
+  await rootAdmissions.admitRootTurn({
+    sessionId: session.id,
+    turnId: 'turn-1',
+    proposedRunId: 'run-1',
+    proposedUserMessageId: 'user-1',
+    execution: { kind: 'external_message' },
+    normalizedInput: { text: 'hello' },
+    sourceMessages: [],
+    admittedAt: 10,
+  });
+  await stores.agentRunStore.createRun(runHeader(session.id));
+  await stores.agentRunStore.appendEvent(session.id, 'run-1', {
+    type: 'run_started',
+    id: 'run-started-1',
+    sessionId: session.id,
+    turnId: 'turn-1',
+    runId: 'run-1',
+    ts: 11,
+  });
+  await stores.agentRunStore.updateRun(session.id, 'run-1', {
+    status: 'running',
+    updatedAt: 11,
+  });
+  return { sessionId: session.id, rootAdmissions };
+}
+
 function terminalEvent(sessionId: string): RuntimeEvent {
   return {
     id: 'terminal-1',
@@ -544,4 +703,49 @@ function largestFittingInFlightSteeringText(canonical: CanonicalSessionProjectio
     else upper = midpoint;
   }
   return lower;
+}
+
+function largestFittingFollowupQueue(
+  canonical: CanonicalSessionProjection,
+): SessionMessageQueueProjection {
+  const queue = (tailBytes: number): SessionMessageQueueProjection => ({
+    hostEpoch: 'epoch-1',
+    queueRevision: Number.MAX_SAFE_INTEGER,
+    steering: [],
+    followup: [
+      {
+        entryId: 'large-entry',
+        messageId: 'large-message',
+        content: { text: 'q'.repeat(TURN_MESSAGE_TEXT_MAX_BYTES) },
+        placement: 'next_turn',
+        state: 'queued',
+      },
+      {
+        entryId: 'tail-entry',
+        messageId: 'tail-message',
+        content: { text: 'q'.repeat(tailBytes) },
+        placement: 'next_turn',
+        state: 'queued',
+      },
+    ],
+  });
+  const fits = (tailBytes: number): boolean => {
+    try {
+      createSessionContinuitySnapshot(
+        { ...canonical, queue: queue(tailBytes) },
+        Number.MAX_SAFE_INTEGER,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let lower = 0;
+  let upper = TURN_MESSAGE_TEXT_MAX_BYTES;
+  while (lower + 1 < upper) {
+    const midpoint = Math.floor((lower + upper) / 2);
+    if (fits(midpoint)) lower = midpoint;
+    else upper = midpoint;
+  }
+  return queue(lower);
 }

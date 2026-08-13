@@ -1,4 +1,4 @@
-import type { UiCatalog, UiLocale } from "@maka/core";
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type WidenCopy<T> = T extends string
   ? string
@@ -7,27 +7,27 @@ type WidenCopy<T> = T extends string
     : { [K in keyof T]: WidenCopy<T[K]> };
 
 const zhCopy = {
-  planActions: {
+  scheduledTaskActions: {
     refreshFailed: "刷新计划失败",
-    refreshFallback: "刷新计划提醒失败，请稍后重试。",
-    created: "已创建计划提醒",
+    refreshFallback: "刷新定时任务失败，请稍后重试。",
+    created: "已创建定时任务",
     createFailed: "创建计划失败",
-    createFallback: "创建计划提醒失败，请稍后重试。",
-    createIncognitoBlocked: "隐身模式开启时不能创建计划提醒。",
-    saved: "已保存计划提醒",
+    createFallback: "创建定时任务失败，请稍后重试。",
+    createIncognitoBlocked: "隐身模式开启时不能创建定时任务。",
+    saved: "已保存定时任务",
     saveFailed: "保存计划失败",
-    saveFallback: "保存计划提醒失败，请稍后重试。",
-    enabled: "已启用提醒",
-    paused: "已暂停提醒",
+    saveFallback: "保存定时任务失败，请稍后重试。",
+    enabled: "已启用任务",
+    paused: "已暂停任务",
     updateFailed: "更新计划失败",
-    updateFallback: "更新计划提醒失败，请稍后重试。",
-    triggered: "已触发计划提醒",
+    updateFallback: "更新定时任务失败，请稍后重试。",
+    triggered: "已触发定时任务",
     triggerFailed: "触发计划失败",
-    triggerFallback: "触发计划提醒失败，请稍后重试。",
+    triggerFallback: "触发定时任务失败，请稍后重试。",
     snoozed: "已延后 10 分钟",
     snoozeFailed: "延后计划失败",
-    snoozeFallback: "延后计划提醒失败，请稍后重试。",
-    reminder: "计划提醒",
+    snoozeFallback: "延后定时任务失败，请稍后重试。",
+    task: "定时任务",
     clearTitle: (name: string) => `清空 “${name}” 的执行记录`,
     clearDescription: "定时任务本身会保留；只清空最近执行记录和最近状态。",
     clear: "清空记录",
@@ -36,11 +36,11 @@ const zhCopy = {
     clearFailed: "清空记录失败",
     clearFallback: "清空定时任务记录失败，请稍后重试。",
     deleteTitle: (name: string) => `删除 “${name}”`,
-    deleteDescription: "该提醒和最近执行记录会被删除。该操作不可撤销。",
+    deleteDescription: "该任务和最近执行记录会被删除。该操作不可撤销。",
     delete: "删除",
-    deleted: "已删除计划提醒",
+    deleted: "已删除定时任务",
     deleteFailed: "删除计划失败",
-    deleteFallback: "删除计划提醒失败，请稍后重试。",
+    deleteFallback: "删除定时任务失败，请稍后重试。",
   },
   dailyReview: {
     yesterday: "昨天",
@@ -63,7 +63,7 @@ const zhCopy = {
     loadingSettingsProgress: "正在加载设置…",
   },
   notifications: {
-    planReminder: "计划提醒",
+    scheduledTask: "定时任务",
     viewScheduledTasks: "查看定时任务",
   },
   conversationExport: {
@@ -77,29 +77,29 @@ const zhCopy = {
 export type ShellRemainingCopy = WidenCopy<typeof zhCopy>;
 
 const enCopy: ShellRemainingCopy = {
-  planActions: {
-    refreshFailed: "Failed to refresh reminders",
-    refreshFallback: "Plan reminders could not be refreshed. Try again later.",
-    created: "Plan reminder created",
-    createFailed: "Failed to create reminder",
-    createFallback: "The plan reminder could not be created. Try again later.",
+  scheduledTaskActions: {
+    refreshFailed: "Failed to refresh tasks",
+    refreshFallback: "Scheduled tasks could not be refreshed. Try again later.",
+    created: "Scheduled task created",
+    createFailed: "Failed to create task",
+    createFallback: "The scheduled task could not be created. Try again later.",
     createIncognitoBlocked:
-      "Plan reminders cannot be created while incognito mode is active.",
-    saved: "Plan reminder saved",
-    saveFailed: "Failed to save reminder",
-    saveFallback: "The plan reminder could not be saved. Try again later.",
-    enabled: "Reminder enabled",
-    paused: "Reminder paused",
-    updateFailed: "Failed to update reminder",
-    updateFallback: "The plan reminder could not be updated. Try again later.",
-    triggered: "Plan reminder triggered",
-    triggerFailed: "Failed to trigger reminder",
+      "Scheduled tasks cannot be created while incognito mode is active.",
+    saved: "Scheduled task saved",
+    saveFailed: "Failed to save task",
+    saveFallback: "The scheduled task could not be saved. Try again later.",
+    enabled: "Task enabled",
+    paused: "Task paused",
+    updateFailed: "Failed to update task",
+    updateFallback: "The scheduled task could not be updated. Try again later.",
+    triggered: "Scheduled task triggered",
+    triggerFailed: "Failed to trigger task",
     triggerFallback:
-      "The plan reminder could not be triggered. Try again later.",
+      "The scheduled task could not be triggered. Try again later.",
     snoozed: "Snoozed for 10 minutes",
-    snoozeFailed: "Failed to snooze reminder",
-    snoozeFallback: "The plan reminder could not be snoozed. Try again later.",
-    reminder: "Plan reminder",
+    snoozeFailed: "Failed to snooze task",
+    snoozeFallback: "The scheduled task could not be snoozed. Try again later.",
+    task: "Scheduled task",
     clearTitle: (name) => `Clear run history for “${name}”?`,
     clearDescription:
       "The scheduled task will remain. Only recent run history and status will be cleared.",
@@ -111,11 +111,11 @@ const enCopy: ShellRemainingCopy = {
       "The scheduled-task history could not be cleared. Try again later.",
     deleteTitle: (name) => `Delete “${name}”?`,
     deleteDescription:
-      "The reminder and its recent run history will be deleted. This cannot be undone.",
+      "The task and its recent run history will be deleted. This cannot be undone.",
     delete: "Delete",
-    deleted: "Plan reminder deleted",
-    deleteFailed: "Failed to delete reminder",
-    deleteFallback: "The plan reminder could not be deleted. Try again later.",
+    deleted: "Scheduled task deleted",
+    deleteFailed: "Failed to delete task",
+    deleteFallback: "The scheduled task could not be deleted. Try again later.",
   },
   dailyReview: {
     yesterday: "Yesterday",
@@ -139,7 +139,7 @@ const enCopy: ShellRemainingCopy = {
     loadingSettingsProgress: "Loading Settings…",
   },
   notifications: {
-    planReminder: "Plan reminder",
+    scheduledTask: "Scheduled task",
     viewScheduledTasks: "View scheduled tasks",
   },
   conversationExport: {

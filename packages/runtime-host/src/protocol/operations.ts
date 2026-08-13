@@ -1,7 +1,6 @@
 import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
 import { ACCESS_AUTHORITY_OPERATION_SPECS } from './access-authority.js';
 import { AGENT_GRAPH_OPERATION_SPECS } from './agent-graph.js';
-import { AUTOMATION_OPERATION_SPECS } from './automation.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
 import { CONFIGURATION_OPERATION_SPECS } from './configuration.js';
@@ -13,6 +12,7 @@ import { EXTERNAL_SESSION_OPERATION_SPECS } from './external-session.js';
 import { CLIENT_CAPABILITY_OPERATION_SPECS } from './client-capability.js';
 import { invalidProtocolFrame } from './errors.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from './host-status.js';
+import { HOSTED_EXECUTION_OPERATION_SPECS } from './hosted-execution.js';
 import { GOAL_OPERATION_SPECS } from './goal.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
@@ -29,6 +29,7 @@ import {
 } from './operation-spec.js';
 import { RUNTIME_POLICY_OPERATION_SPECS } from './runtime-policy.js';
 import { RUNTIME_RESOURCE_OPERATION_SPECS } from './runtime-resource.js';
+import { SCHEDULED_TASK_OPERATION_SPECS } from './scheduled-task.js';
 import { SESSION_CATALOG_OPERATION_SPECS } from './session-catalog.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
 import { SESSION_TRANSCRIPT_OPERATION_SPECS } from './session-transcript.js';
@@ -44,9 +45,12 @@ import { WEB_SEARCH_OPERATION_SPECS } from './web-search.js';
 export type {
   HostDiagnosticsInput,
   HostDiagnosticsResult,
+  HostActivitySnapshot,
   HostLifecycleState,
   HostStatusInput,
   HostStatusResult,
+  HostUpgradePrepareInput,
+  HostUpgradePrepareResult,
 } from './host-status.js';
 export type {
   HostOperationError,
@@ -85,6 +89,7 @@ export type {
   ArtifactTextPreview,
 } from './artifact.js';
 export {
+  TURN_FAILURE_MESSAGE_MAX_BYTES,
   TURN_MESSAGE_CONTENT_MAX_BYTES,
   TURN_MESSAGE_TEXT_MAX_BYTES,
   TURN_RESUME_PARK_REASONS,
@@ -135,6 +140,7 @@ export * from './plan.js';
 export * from './project-catalog.js';
 export * from './runtime-policy.js';
 export * from './runtime-resource.js';
+export * from './scheduled-task.js';
 export * from './session-catalog.js';
 export * from './session-revision.js';
 export * from './session-retirement.js';
@@ -143,9 +149,11 @@ export * from './session-effects.js';
 export * from './skill-catalog.js';
 export * from './usage-pricing.js';
 export * from './web-search.js';
+export * from './workspace.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_BOOTSTRAP_OPERATION_SPECS,
+  HOSTED_EXECUTION_OPERATION_SPECS,
   ACCESS_AUTHORITY_OPERATION_SPECS,
   AGENT_GRAPH_OPERATION_SPECS,
   GOAL_OPERATION_SPECS,
@@ -158,7 +166,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   EXTERNAL_SESSION_OPERATION_SPECS,
   RUNTIME_POLICY_OPERATION_SPECS,
   RUNTIME_RESOURCE_OPERATION_SPECS,
-  AUTOMATION_OPERATION_SPECS,
+  SCHEDULED_TASK_OPERATION_SPECS,
   PLAN_OPERATION_SPECS,
   PROJECT_CATALOG_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,
@@ -183,6 +191,112 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;
 export type OperationKey = keyof OperationSpecMap;
+
+// Remote credentials are fail-closed: adding a protocol operation does not
+// grant it to remote owners until this policy is deliberately updated.
+export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
+  'agent.graph.operator.query',
+  'agent.graph.query',
+  'agent.graph.stop',
+  'artifact.delete',
+  'artifact.ingest',
+  'artifact.query',
+  'client.capability.replace',
+  'client.capability.unregister',
+  'configuration.credentials.export',
+  'connection.catalog.create',
+  'connection.catalog.query',
+  'connection.catalog.remove',
+  'connection.catalog.set-default-target',
+  'connection.catalog.update',
+  'connection.models.fetch',
+  'connection.onboarding.save',
+  'connection.onboarding.verify',
+  'connection.request-headers.query',
+  'connection.request-headers.replace',
+  'connection.test.run',
+  'context.compact',
+  'context.diagnostics.query',
+  'credential.vault.delete',
+  'credential.vault.query',
+  'credential.vault.set',
+  'daily-review.mutate',
+  'daily-review.query',
+  'deep-research.query',
+  'execution.inspect.query',
+  'execution.inspect.resolve',
+  'external-session.catalog.query',
+  'external-session.import',
+  'external-session.source.query',
+  'goal.control',
+  'goal.query',
+  'host.diagnostics.query',
+  'host.status',
+  'interaction.answer',
+  'interaction.query',
+  'memory.mutate',
+  'memory.query',
+  'network-proxy.test',
+  'oauth.account.usage.fetch',
+  'oauth.login.cancel',
+  'oauth.login.query',
+  'oauth.login.start',
+  'plan.control',
+  'plan.query',
+  'plan.turn.start',
+  'pricing.mutate',
+  'pricing.query',
+  'project.catalog.mutate',
+  'project.catalog.query',
+  'queue.retract',
+  'runtime.policy.mutate',
+  'runtime.policy.query',
+  'runtime.resource.controller.acquire',
+  'runtime.resource.controller.control',
+  'runtime.resource.controller.release',
+  'runtime.resource.query',
+  'runtime.resource.start',
+  'runtime.resource.stop',
+  'scheduled-task.mutate',
+  'scheduled-task.query',
+  'session.branch.create',
+  'session.catalog.query',
+  'session.configuration.update',
+  'session.create',
+  'session.execution_boundary.query',
+  'session.lifecycle.set',
+  'session.metadata.update',
+  'session.read_marker.set',
+  'session.recap.generate',
+  'session.remove',
+  'session.revision.abandon',
+  'session.revision.create',
+  'session.transcript.query',
+  'session.workspace.relocate',
+  'skill.catalog.invocable.query',
+  'skill.catalog.mutate',
+  'skill.catalog.preview-update',
+  'skill.catalog.query',
+  'subscription.close',
+  'subscription.open',
+  'task.ledger.query',
+  'turn.interrupt',
+  'turn.message.submit',
+  'turn.query',
+  'turn.regenerate',
+  'turn.resume.query',
+  'turn.resume.start',
+  'turn.start',
+  'turn.stop',
+  'usage.query',
+  'web-search.execute',
+] as const satisfies readonly OperationKey[]);
+
+const REMOTE_OWNER_OPERATION_GRANT_SET = new Set<OperationKey>(REMOTE_OWNER_OPERATION_GRANTS);
+
+export function operationAllowsRemoteOwner(operation: OperationKey): boolean {
+  return REMOTE_OWNER_OPERATION_GRANT_SET.has(operation);
+}
 
 type InferInput<Spec> =
   Spec extends OperationSpec<infer Input, unknown, HostOperationErrorCode> ? Input : never;

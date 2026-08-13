@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { type CuAction, type CuPoint } from '@maka/core';
+import { type CuAction, type CuPoint } from '@maka/core/computer-use';
 import type { CuDispatchEvidence, CuRunResult, CuSemanticAction } from './computer-use-types.js';
 
 export const coordinate = z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()]);

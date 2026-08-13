@@ -6,7 +6,7 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core';
+import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/explore-agent';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
@@ -27,6 +27,7 @@ import {
   encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  RuntimeHostProtocolError,
   type ClientFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,
@@ -70,7 +71,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       });
       const createInput: SessionCreateInput = {
         sessionId: 'stable-session',
-        cwd: root,
+        workspace: { kind: 'host_path', path: root },
         name: 'Stable Session',
         labels: ['catalog'],
         modelTarget: { kind: 'default' },
@@ -172,14 +173,15 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       await assert.rejects(
         desktop.request('session.create', {
           sessionId: 'relative-session',
-          cwd: '.',
+          workspace: { kind: 'host_path', path: '.' },
           modelTarget: { kind: 'default' },
         }),
-        operationError('invalid_request'),
+        (error: unknown) =>
+          error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame',
       );
       const planSession = await desktop.request('session.create', {
         sessionId: 'plan-session',
-        cwd: root,
+        workspace: { kind: 'host_path', path: root },
         modelTarget: { kind: 'default' },
         collaborationMode: 'plan',
       });
@@ -188,7 +190,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       const researchSession = requireSessionProjection(
         await desktop.request('session.create', {
           sessionId: 'deep-research-session',
-          cwd: root,
+          workspace: { kind: 'host_path', path: root },
           mode: 'deep_research',
           name: 'Caller override',
           labels: ['customer-label'],
@@ -321,15 +323,15 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       const secondCwd = join(base, 'workspace-second');
       await Promise.all([mkdir(firstCwd), mkdir(secondCwd)]);
       const relocationOutcomes = await Promise.all([
-        desktop.relocateSessionCwd({
+        desktop.relocateSessionWorkspace({
           sessionId: narrowedSession.id,
           expectedRevision: narrowedSession.revision,
-          cwd: firstCwd,
+          workspace: { kind: 'host_path', path: firstCwd },
         }),
-        tui.relocateSessionCwd({
+        tui.relocateSessionWorkspace({
           sessionId: narrowedSession.id,
           expectedRevision: narrowedSession.revision,
-          cwd: secondCwd,
+          workspace: { kind: 'host_path', path: secondCwd },
         }),
       ]);
       assert.deepEqual(relocationOutcomes.map((outcome) => outcome.kind).sort(), [
@@ -341,8 +343,8 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       if (relocated?.kind !== 'committed') assert.fail('One Session relocation must commit');
       const relocatedSession = requireSessionProjection(relocated.session);
       assert.ok(
-        relocatedSession.cwd === (await realpath(firstCwd)) ||
-          relocatedSession.cwd === (await realpath(secondCwd)),
+        relocatedSession.workspace.hostCwd === (await realpath(firstCwd)) ||
+          relocatedSession.workspace.hostCwd === (await realpath(secondCwd)),
       );
       assert.deepEqual(await querySession(tui, narrowedSession.id), relocatedSession);
 
@@ -351,7 +353,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       await assert.rejects(
         desktop.request('session.create', {
           sessionId: rejectedSessionId,
-          cwd: root,
+          workspace: { kind: 'host_path', path: root },
           modelTarget: { kind: 'default' },
         }),
         operationError('invalid_request'),
@@ -403,7 +405,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
           Array.from({ length: 34 }, (_, index) =>
             desktop.request('session.create', {
               sessionId: `bulk-${String(index).padStart(2, '0')}`,
-              cwd: root,
+              workspace: { kind: 'host_path', path: root },
               labels: ['paged'],
               modelTarget: { kind: 'default' },
             }),
@@ -503,17 +505,18 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       });
       const retirementIterator = retirementSubscription[Symbol.asyncIterator]();
       const beforeArchive = await querySession(desktop, created.id);
-      const heartbeat = await desktop.request('automation.mutate', {
+      const heartbeat = await desktop.request('scheduled-task.mutate', {
         kind: 'create',
-        sessionId: created.id,
-        automationKind: 'heartbeat',
-        name: 'Retirement blocker',
-        prompt: 'Remain attached to this Session.',
-        schedule: { type: 'interval', seconds: 3_600 },
+        input: {
+          title: 'Retirement blocker',
+          intentBody: 'Remain attached to this Session.',
+          schedule: { kind: 'interval', everySeconds: 3_600, startAt: Date.now() },
+          effect: { kind: 'session_resume', sessionId: created.id },
+        },
       });
-      assert.equal(heartbeat.kind, 'committed');
-      if (heartbeat.kind !== 'committed' || !heartbeat.automation) {
-        assert.fail('Heartbeat creation must commit');
+      assert.equal(heartbeat.kind, 'task');
+      if (heartbeat.kind !== 'task') {
+        assert.fail('ScheduledTask creation must commit');
       }
       await assert.rejects(
         tui.request('session.lifecycle.set', {
@@ -522,12 +525,11 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         }),
         operationError('session_busy'),
       );
-      const deletedHeartbeat = await tui.request('automation.mutate', {
+      const deletedHeartbeat = await tui.request('scheduled-task.mutate', {
         kind: 'delete',
-        sessionId: created.id,
-        automationId: heartbeat.automation.id,
+        taskId: heartbeat.task.id,
       });
-      assert.equal(deletedHeartbeat.kind, 'committed');
+      assert.equal(deletedHeartbeat.kind, 'deleted');
       const archived = requireSessionProjection(
         await desktop.request('session.lifecycle.set', {
           sessionId: created.id,
@@ -577,13 +579,6 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       );
       await assert.rejects(
         desktop.request('runtime.resource.query', {
-          kind: 'list_start',
-          sessionId: created.id,
-        }),
-        operationError('not_found'),
-      );
-      await assert.rejects(
-        tui.request('automation.query', {
           kind: 'list_start',
           sessionId: created.id,
         }),
@@ -687,7 +682,7 @@ test('stable Session creation survives response loss and Host restart', {
     host = await startHost(root, capability.rootId);
     const input: SessionCreateInput = {
       sessionId: 'response-loss-session',
-      cwd: root,
+      workspace: { kind: 'host_path', path: root },
       name: 'Response Loss Session',
       labels: ['catalog'],
       modelTarget: { kind: 'default' },

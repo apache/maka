@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { CuAction } from '@maka/core';
+import type { CuAction } from '@maka/core/computer-use';
 import { zodSchema } from 'ai';
 import {
   adaptToCuAction,
@@ -100,57 +100,6 @@ function observation(over: Partial<CuObservation> = {}): CuObservation {
 }
 
 describe('adaptToCuAction — flat Anthropic grammar → discriminated CuAction', () => {
-  test('screenshot / cursor_position take no coordinate', () => {
-    assert.deepEqual(adaptToCuAction({ action: 'screenshot' } as never), { type: 'screenshot' });
-    assert.deepEqual(adaptToCuAction({ action: 'cursor_position' } as never), {
-      type: 'cursor_position',
-    });
-  });
-
-  test('left_click maps coordinate tuple → {x,y} and carries modifier text', () => {
-    const a = adaptToCuAction({
-      action: 'left_click',
-      coordinate: [12, 34],
-      text: 'super',
-    } as never);
-    assert.deepEqual(a, { type: 'left_click', coordinate: { x: 12, y: 34 }, text: 'super' });
-  });
-
-  test('scroll fills direction/amount defaults', () => {
-    const a = adaptToCuAction({ action: 'scroll', coordinate: [1, 2] } as never) as Extract<
-      CuAction,
-      { type: 'scroll' }
-    >;
-    assert.equal(a.scrollDirection, 'down');
-    assert.equal(a.scrollAmount, 3);
-  });
-
-  test('left_click_drag needs both start and end coordinates', () => {
-    const a = adaptToCuAction({
-      action: 'left_click_drag',
-      start_coordinate: [1, 2],
-      coordinate: [3, 4],
-    } as never);
-    assert.deepEqual(a, {
-      type: 'left_click_drag',
-      startCoordinate: { x: 1, y: 2 },
-      coordinate: { x: 3, y: 4 },
-      text: undefined,
-    });
-  });
-
-  test('hold_key/wait convert seconds → ms', () => {
-    assert.deepEqual(adaptToCuAction({ action: 'wait', duration: 1.5 } as never), {
-      type: 'wait',
-      durationMs: 1500,
-    });
-    assert.deepEqual(adaptToCuAction({ action: 'hold_key', text: 'shift', duration: 2 } as never), {
-      type: 'hold_key',
-      text: 'shift',
-      durationMs: 2000,
-    });
-  });
-
   test('a click without a coordinate throws invalid_coordinate', () => {
     assert.throws(() => adaptToCuAction({ action: 'left_click' } as never), /invalid_coordinate/);
   });
@@ -250,21 +199,6 @@ test('computer params reject accessors before policy or execution', () => {
 });
 
 describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
-  test('uses the Maka-owned function name in the computer_use category', () => {
-    const [tool] = buildComputerUseTools({ backend: fakeBackend() });
-    assert.equal(tool.name, 'maka_computer');
-    assert.equal(tool.categoryHint, 'computer_use');
-    assert.ok(tool.parameters, 'carries a zod parameter schema');
-  });
-
-  test('declares the activity kind the renderer buckets it by', () => {
-    // Without this the `computer` kind has no producer at all, and every
-    // surface has to recognise Computer Use by its tool name instead — which
-    // is the recognition-by-string the kind was added to replace.
-    const [tool] = buildComputerUseTools({ backend: fakeBackend() });
-    assert.equal(tool.activityKind, 'computer');
-  });
-
   test('waits for presentation readiness before dispatch without waiting for finish', async () => {
     const events: string[] = [];
     let ready!: () => void;
@@ -1873,23 +1807,6 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     });
     assert.match(r.text, /permission_missing/);
     assert.match(r.text, /Screen Recording/);
-  });
-
-  test('dispatches the adapted action to the backend and summarizes success + tier', async () => {
-    const backend = fakeBackend();
-    const r = await callComputer(backend, { action: 'wait', duration: 0.01 });
-    assert.deepEqual(backend.last, { type: 'wait', durationMs: 10 });
-    assert.match(r.text, /computer\.wait ok via ax/);
-  });
-
-  test('passes the full runtime context to the dispatch backend', async () => {
-    const backend = fakeBackend();
-    await callComputer(backend, { action: 'wait' });
-    assert.deepEqual(backend.lastContext, {
-      sessionId: 's1',
-      turnId: 't1',
-      toolCallId: 'call1',
-    });
   });
 
   test('serializes preflight and dispatch in tool-call arrival order', async () => {

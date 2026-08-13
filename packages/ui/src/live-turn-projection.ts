@@ -1,8 +1,11 @@
-import type { ProviderRetryEvent, SessionEvent, StoredMessage, UiLocale } from '@maka/core';
+import type { MessageContent, ProviderRetryEvent, SessionEvent } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { materializeToolResultPreviewForActivity } from '@maka/core/tool-result-preview';
 import { applyAssistantComplete, applyAssistantDelta } from './assistant-stream.js';
-import { projectToolActivityArgs, toolResultActivityStatus } from '@maka/core';
-import { isInFlightToolStatus } from '@maka/core';
+import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
+import { toolResultActivityStatus } from '@maka/core/tool-result-status';
+import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import type { ToolActivityItem } from './materialize.js';
 import { applyThinkingComplete, applyThinkingDelta } from './thinking-stream.js';
 import { applyToolOutputChunk } from './tool-output-stream.js';
@@ -20,6 +23,8 @@ export interface LiveThinkingProjection {
 export interface LiveTurnStepProjection {
   stepId: string;
   contentOrder?: LiveTurnStepContentKind[];
+  /** Steering drained immediately before this provider step began. */
+  leadingSteering?: LiveSteeringProjection[];
   thinking?: LiveThinkingProjection;
   text?: LiveTextProjection;
   tools: ToolActivityItem[];
@@ -37,27 +42,16 @@ export interface LiveTextProjection {
 
 export interface LiveSteeringProjection {
   id: string;
-  text: string;
+  content: MessageContent;
   ts: number;
-  /** Live assistant steps already observed before this steering arrived. */
-  beforeStepIds?: string[];
 }
 
 export interface LiveTurnProjection {
   turnId: string;
   phase: 'waiting' | 'streamed';
   terminal?: true;
-  steering?: LiveSteeringProjection[];
-  /**
-   * Assistant steps already handed off to the persisted transcript.
-   *
-   * Runtime Host emits full thinking/text completion snapshots for every
-   * accumulated assistant message when a turn becomes terminal. Without this
-   * tombstone, an older thinking-only step removed after persistence catches
-   * up is mistaken for a brand-new live step and appended after the currently
-   * streaming guided response.
-   */
-  settledAssistantStepIds?: string[];
+  /** Steering acknowledged after the current content and awaiting its next provider step. */
+  pendingSteering?: LiveSteeringProjection[];
   /**
    * Set by `armLiveTurn` and cleared by the first word the authority says about
    * this turn (`confirmLiveTurn`, or any event carrying the same turnId).
@@ -161,21 +155,17 @@ export function applyLiveTurnEvent(
     const prior = current?.turnId === event.turnId
       ? current
       : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
-    const steering = prior.steering ?? [];
-    if (steering.some((message) => message.id === event.messageId)) {
+    if (liveSteeringMessages(prior).some((message) => message.id === event.messageId)) {
       return confirmed(prior);
     }
     return {
       ...confirmed(prior),
-      steering: [
-        ...steering,
+      pendingSteering: [
+        ...(prior.pendingSteering ?? []),
         {
           id: event.messageId,
-          text: event.content.displayText ?? event.content.text,
+          content: structuredClone(event.content),
           ts: event.ts,
-          ...(prior.steps.length > 0
-            ? { beforeStepIds: prior.steps.map((step) => step.stepId) }
-            : {}),
         },
       ],
     };
@@ -189,13 +179,13 @@ export function applyLiveTurnEvent(
   if (event.type === 'error' || event.type === 'abort') {
     if (!current || current.turnId !== event.turnId) return current;
     const steps = terminalizeLiveSteps(current.steps);
-    if (steps.length === 0) return undefined;
+    if (steps.length === 0 && liveSteeringMessages(current).length === 0) return undefined;
     const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
     return { ...withoutRetry, terminal: true, steps };
   }
   if (event.type === 'complete') {
     if (!current || current.turnId !== event.turnId) return current;
-    if (current.steps.length === 0 && (current.steering?.length ?? 0) === 0) {
+    if (current.steps.length === 0 && liveSteeringMessages(current).length === 0) {
       return undefined;
     }
     const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
@@ -236,11 +226,20 @@ export function applyLiveTurnEvent(
     : event.type === 'tool_start'
       ? event.stepId ?? existingToolStep?.stepId ?? `tool:${event.toolUseId}`
       : existingToolStep?.stepId ?? `tool:${event.toolUseId}`;
-  if (messageEvent && prior.settledAssistantStepIds?.includes(stepId)) {
-    return priorWithoutRetry;
-  }
   const stepIndex = prior.steps.findIndex((step) => step.stepId === stepId);
-  const step = stepIndex >= 0 ? prior.steps[stepIndex]! : { stepId, tools: [] };
+  const isNewStep = stepIndex < 0;
+  const claimsPendingSteering = isNewStep
+    && existingToolStep === undefined
+    && (prior.pendingSteering?.length ?? 0) > 0;
+  const step: LiveTurnStepProjection = isNewStep
+    ? {
+        stepId,
+        tools: [],
+        ...(claimsPendingSteering
+          ? { leadingSteering: prior.pendingSteering }
+          : {}),
+      }
+    : prior.steps[stepIndex]!;
   let nextStep: LiveTurnStepProjection;
   if (event.type === 'thinking_delta') {
     const delta = replaySafeDelta(step.thinking?.sourceEndOffset, event);
@@ -407,7 +406,10 @@ export function applyLiveTurnEvent(
     if (sourceWithoutTool.tools.length === 0 && sourceWithoutTool.contentOrder) {
       sourceWithoutTool.contentOrder = sourceWithoutTool.contentOrder.filter((kind) => kind !== 'tools');
     }
-    const sourceIsEmpty = !sourceWithoutTool.thinking && !sourceWithoutTool.text && sourceWithoutTool.tools.length === 0;
+    const sourceIsEmpty = !sourceWithoutTool.thinking
+      && !sourceWithoutTool.text
+      && sourceWithoutTool.tools.length === 0
+      && (sourceWithoutTool.leadingSteering?.length ?? 0) === 0;
     steps = [];
     for (let index = 0; index < prior.steps.length; index += 1) {
       const candidate = prior.steps[index]!;
@@ -426,7 +428,19 @@ export function applyLiveTurnEvent(
       ? prior.steps.map((candidate, index) => index === stepIndex ? nextStep : candidate)
       : [...prior.steps, nextStep];
   }
-  return { ...priorWithoutRetry, phase: 'streamed', steps };
+  const { pendingSteering: _pendingSteering, ...withoutPendingSteering } = priorWithoutRetry;
+  return {
+    ...(claimsPendingSteering ? withoutPendingSteering : priorWithoutRetry),
+    phase: 'streamed',
+    steps,
+  };
+}
+
+function liveSteeringMessages(current: LiveTurnProjection): LiveSteeringProjection[] {
+  return [
+    ...(current.pendingSteering ?? []),
+    ...current.steps.flatMap((step) => step.leadingSteering ?? []),
+  ];
 }
 
 function replaySafeDelta(
@@ -478,15 +492,8 @@ export function settleLiveTurnStep(
     ))
     : current.steps.filter((candidate) => candidate.stepId !== stepId);
   if (steps.length === current.steps.length && retainedTools.length === 0) return current;
-  if (
-    steps.length === 0
-    && current.terminal
-    && (current.steering?.length ?? 0) === 0
-  ) return undefined;
-  const settledAssistantStepIds = current.settledAssistantStepIds?.includes(stepId)
-    ? current.settledAssistantStepIds
-    : [...(current.settledAssistantStepIds ?? []), stepId];
-  return { ...current, settledAssistantStepIds, steps };
+  if (steps.length === 0 && current.terminal) return undefined;
+  return { ...current, steps };
 }
 
 /**
@@ -530,17 +537,18 @@ export function reconcileTerminalLiveTurn(
   messages: readonly StoredMessage[],
 ): LiveTurnProjection | undefined {
   const turnMessages = messages.filter((message) => message.turnId === current.turnId);
+  const transcriptReachedTerminal = turnMessages.some(
+    (message) => message.type === 'turn_state' && message.status !== 'running',
+  );
+  if (
+    current.terminal === true
+    && liveSteeringMessages(current).length > 0
+    && !transcriptReachedTerminal
+  ) return current;
   const assistantIds = new Set(turnMessages.flatMap((message) => message.type === 'assistant' ? [message.id] : []));
-  const userIds = new Set(turnMessages.flatMap((message) => message.type === 'user' ? [message.id] : []));
   const toolCallIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_call' ? [message.id] : []));
   const toolResultIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_result' ? [message.toolUseId] : []));
-  // Keep an acknowledged steering row live until the same user message is
-  // visible in durable history. A terminal refresh can race the steering
-  // persistence write; dropping the projection in that gap makes the row
-  // flash and disappear before the next refresh restores it.
-  const steering = current.steering?.filter((message) => !userIds.has(message.id));
-  const steeringChanged = steering?.length !== current.steering?.length;
-  const steps = current.steps.filter((step) => {
+  let steps = current.steps.filter((step) => {
     if (step.text?.text.length) return true;
     if (step.thinking && !assistantIds.has(step.stepId)) return true;
     const toolsCovered = step.tools.every((tool) => {
@@ -555,22 +563,22 @@ export function reconcileTerminalLiveTurn(
     });
     return !toolsCovered;
   });
-  if (steps.length === current.steps.length && !steeringChanged) return current;
-  if (steps.length === 0 && current.terminal && (steering?.length ?? 0) === 0) return undefined;
-  const retainedStepIds = new Set(steps.map((step) => step.stepId));
-  const settledAssistantStepIds = new Set(current.settledAssistantStepIds ?? []);
-  for (const step of current.steps) {
-    if (!retainedStepIds.has(step.stepId) && assistantIds.has(step.stepId)) {
-      settledAssistantStepIds.add(step.stepId);
-    }
+  // Once persisted turn_state records the terminal handoff, the transcript is
+  // authoritative for accepted steering; retaining the live copy would leave
+  // a duplicate or a nacked ghost instruction on screen.
+  const steeringSettled = current.terminal === true
+    && transcriptReachedTerminal
+    && liveSteeringMessages(current).length > 0;
+  if (steeringSettled) {
+    steps = steps.map((step) => {
+      if (!step.leadingSteering) return step;
+      const { leadingSteering: _leadingSteering, ...withoutSteering } = step;
+      return withoutSteering;
+    });
   }
-  const withSettledSteps = settledAssistantStepIds.size > 0
-    ? { ...current, settledAssistantStepIds: [...settledAssistantStepIds], steps }
-    : { ...current, steps };
-  if (!steeringChanged) return withSettledSteps;
-  const { steering: _coveredSteering, ...withoutCoveredSteering } = withSettledSteps;
-  return {
-    ...withoutCoveredSteering,
-    ...(steering && steering.length > 0 ? { steering } : {}),
-  };
+  if (steps.length === current.steps.length && !steeringSettled) return current;
+  if (steps.length === 0 && current.terminal) return undefined;
+  if (!steeringSettled) return { ...current, steps };
+  const { pendingSteering: _pendingSteering, ...withoutSteering } = current;
+  return { ...withoutSteering, steps };
 }

@@ -8,14 +8,11 @@ import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
 import { PromptAnchorRail } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
-import type {
-  DeepResearchClientProgress,
-  ProviderType,
-  SessionSummary,
-  ShellRunUpdate,
-  StoredMessage,
-} from '@maka/core';
-import { isDeepResearchSession } from '@maka/core';
+import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
+import type { ProviderType } from '@maka/core/llm-connections';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { ShellRunUpdate } from '@maka/core/events';
+import { isDeepResearchSession } from '@maka/core/explore-agent';
 import { Button, ButtonGroup, ChatMessageList, EmptyState, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
@@ -42,10 +39,17 @@ import { SessionContextLayer } from './session-context-layer.js';
 // inside; module scope only saves threading it through the shell.
 const turnSizeIndex = createTurnSizeIndex();
 
+export interface LiveContentActivationSnapshot {
+  turnId: string;
+  entries: ReadonlyMap<string, string>;
+}
+
 export function ChatView(props: {
   messages: StoredMessage[];
   messageLoading?: boolean;
   liveTurn?: LiveTurnProjection;
+  /** Live display content already present when the host activated this conversation surface. */
+  initialLiveContentSnapshot?: LiveContentActivationSnapshot;
   shellRunUpdates?: readonly ShellRunUpdate[];
   /** Called once the streaming bubble has displayed the final text and can hand off to history. */
   onStreamingSettled?(messageId?: string): void;
@@ -162,7 +166,7 @@ export function ChatView(props: {
    * chat view only scrolls/highlights the already-rendered turn.
    */
   scrollTargetTurn?: { turnId: string; nonce: number };
-  scrollBehavior?: ScrollBehavior;
+  scrollBehavior: ScrollBehavior;
   /**
    * PR109f: when the active session is a branched session
    * (`parentSessionId` set on its summary), show a banner above the
@@ -412,6 +416,7 @@ export function ChatView(props: {
     sessionId,
     turnIds: orderedTurnIds,
     scrollRef,
+    scrollBehavior: props.scrollBehavior,
     targetTurnId: props.scrollTargetTurn?.turnId,
     seededGeometry,
   });
@@ -596,6 +601,7 @@ export function ChatView(props: {
         <PromptAnchorRail
           turns={promptRailTurns}
           scrollRef={scrollRef}
+          scrollBehavior={props.scrollBehavior}
           onNavigateFallback={revealTurn}
           mountedTurnsRevision={mountStart}
         />
@@ -656,6 +662,10 @@ export function ChatView(props: {
                               onStreamingSettled: props.onStreamingSettled,
                               runningStatus: props.runningStatus,
                               providerRetry: props.liveTurn?.providerRetry,
+                              initialLiveContent: props.liveTurn?.turnId
+                                === props.initialLiveContentSnapshot?.turnId
+                                ? props.initialLiveContentSnapshot?.entries
+                                : undefined,
                             }
                           : undefined
                       }
@@ -685,7 +695,7 @@ export function ChatView(props: {
                       ) : (
                         /* No turn here means no `startedAt`, so this one shows
                            the working phrase without a clock. */
-                        props.runningStatus && <TurnRunningStatus />
+                        (props.runningStatus && <TurnRunningStatus />)
                       )}
                     </div>
                     <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />

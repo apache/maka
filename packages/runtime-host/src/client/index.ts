@@ -2,6 +2,7 @@ export {
   connectRuntimeHost,
   connectExistingRuntimeHost,
   connectRemoteRuntimeHost,
+  normalizeRemoteRuntimeHostUrl,
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
   type ConnectRuntimeHostInput,
@@ -15,10 +16,36 @@ export {
   type DirectRequestOperationKey,
 } from './connection.js';
 export {
+  LOCAL_RUNTIME_HOST_PROFILE,
+  RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
+  createClientRuntimeHostProfileCatalog,
+  createFileRuntimeHostProfileCatalog,
+  createRuntimeHostProfileCredentialStore,
+  connectRemoteRuntimeHostProfile,
+  decodeRuntimeHostProfileDocument,
+  remoteRuntimeHostUnavailableError,
+  sameResolvedRuntimeHostProfileTarget,
+  type RemoteRuntimeHostProfile,
+  type RuntimeHostRemoteTransport,
+  type ResolvedRuntimeHostProfile,
+  type RuntimeHostProfile,
+  type RuntimeHostProfileCatalog,
+  type RuntimeHostProfileCredentialStore,
+  type RuntimeHostProfileDocument,
+} from './host-profile.js';
+export {
   createRuntimeHostReconnectingConnection,
   isRuntimeHostReconnectingConnection,
   type RuntimeHostReconnectingConnection,
 } from './reconnecting-connection.js';
+export {
+  openRuntimeHostSshTunnel,
+  type RuntimeHostSshInteraction,
+  type RuntimeHostSshProcess,
+  type RuntimeHostSshProcessFactory,
+  type RuntimeHostSshTunnel,
+  type RuntimeHostSshTunnelInput,
+} from './ssh-tunnel.js';
 export {
   RuntimeHostPermanentReconnectError,
   startRuntimeHostReconnectLifecycle,
@@ -33,9 +60,15 @@ export {
 } from './session-subscription.js';
 export { waitForRuntimeHostReady } from './wait-for-ready.js';
 export {
+  RuntimeHostStartupError,
+  runtimeHostStartupError,
+  type RuntimeHostStartupFailureReason,
+} from './startup-error.js';
+export {
   RuntimeHostCatalogReadError,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
+  readRuntimeHostProjectDetails,
   readRuntimeHostResources,
   readRuntimeHostProjects,
   readRuntimeHostSessions,
@@ -46,9 +79,16 @@ export {
 } from './catalog-reader.js';
 export {
   connectOrSpawnRuntimeHost,
+  connectOwnedRuntimeHost,
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
+  type ConnectOwnedRuntimeHostResult,
 } from './connect-or-spawn.js';
+export { runHostedExecution, type RunHostedExecutionInput } from './hosted-execution.js';
+export {
+  configureHostedExecutionTarget,
+  type HostedExecutionTargetInput,
+} from './hosted-execution-target.js';
 export { type ClientCapabilityProvider } from './client-capability.js';
 export {
   startRuntimeHostCapabilityProviderService,

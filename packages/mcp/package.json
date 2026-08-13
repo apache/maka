@@ -17,6 +17,12 @@
   },
   "dependencies": {
     "@maka/core": "0.1.0",
-    "@modelcontextprotocol/sdk": "^1.24.3"
+    "@modelcontextprotocol/client": "2.0.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/server-legacy": "2.0.0"
   }
 }

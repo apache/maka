@@ -1,11 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import type {
-  GoalCheckpoint,
-  GoalControlLease,
-  GoalTurnAdmission,
-  GoalTurnOutcome,
-} from '@maka/runtime';
-import type { SessionManager } from '@maka/runtime';
+import type { GoalCheckpoint, GoalControlLease } from '@maka/runtime/goal-state';
+import type { GoalTurnAdmission, GoalTurnOutcome } from '@maka/runtime/goal-continuation';
+import type { SessionManager } from '@maka/runtime/session-manager';
 import type {
   HostedExecutionAuthority,
   HostedExecutionSnapshot,

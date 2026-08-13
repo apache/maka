@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import type { ArtifactRecord } from '@maka/core';
+import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { estimateRuntimeEventsTokens } from './context-budget-helpers.js';
 import {

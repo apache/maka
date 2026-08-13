@@ -1,12 +1,14 @@
-import type { TaskStatus, UiCatalog, UiLocale } from '@maka/core';
+import type { TaskStatus } from '@maka/core/task-ledger';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export interface SharedUiCopy {
   capabilityAudit: {
     ariaLabel: string;
     needsAuthorization: (count: number) => string;
     sourceErrors: (count: number) => string;
-    failedAutomations: (count: number) => string;
-    skippedAutomations: (count: number) => string;
+    failedScheduledTasks: (count: number) => string;
+    skippedScheduledTasks: (count: number) => string;
   };
   markdown: {
     invalidInternalLink: string;
@@ -56,7 +58,7 @@ export interface SharedUiCopy {
       title: string;
       description: string;
       selectorLabel: (module: string) => string;
-      planReminders: string;
+      scheduledTasks: string;
       dailyReview: string;
     };
   };
@@ -111,8 +113,8 @@ const SHARED_UI_COPY = {
       ariaLabel: '能力风险提示',
       needsAuthorization: (count) => `${count} 个来源等待授权`,
       sourceErrors: (count) => `${count} 个来源异常`,
-      failedAutomations: (count) => `${count} 个自动化上次失败`,
-      skippedAutomations: (count) => `${count} 个自动化上次跳过`,
+      failedScheduledTasks: (count) => `${count} 个定时任务上次失败`,
+      skippedScheduledTasks: (count) => `${count} 个定时任务上次跳过`,
     },
     markdown: {
       invalidInternalLink: '内部链接无效',
@@ -160,9 +162,9 @@ const SHARED_UI_COPY = {
       },
       automations: {
         title: '定时任务',
-        description: '安排计划提醒，并回顾本机对话中的工作进展。',
+        description: '安排定时任务，并回顾本机对话中的工作进展。',
         selectorLabel: (module) => `定时任务内容：${module}`,
-        planReminders: '计划提醒',
+        scheduledTasks: '定时任务',
         dailyReview: '每日回顾',
       },
     },
@@ -200,8 +202,8 @@ const SHARED_UI_COPY = {
       ariaLabel: 'Capability risks',
       needsAuthorization: (count) => `${count} ${count === 1 ? 'source' : 'sources'} awaiting authorization`,
       sourceErrors: (count) => `${count} ${count === 1 ? 'source has' : 'sources have'} errors`,
-      failedAutomations: (count) => `${count} ${count === 1 ? 'automation failed' : 'automations failed'} last run`,
-      skippedAutomations: (count) => `${count} ${count === 1 ? 'automation was' : 'automations were'} skipped last run`,
+      failedScheduledTasks: (count) => `${count} scheduled ${count === 1 ? 'task failed' : 'tasks failed'} last run`,
+      skippedScheduledTasks: (count) => `${count} scheduled ${count === 1 ? 'task was' : 'tasks were'} skipped last run`,
     },
     markdown: {
       invalidInternalLink: 'Invalid internal link',
@@ -249,9 +251,9 @@ const SHARED_UI_COPY = {
       },
       automations: {
         title: 'Scheduled tasks',
-        description: 'Schedule reminders and review progress from local conversations.',
+        description: 'Schedule tasks and review progress from local conversations.',
         selectorLabel: (module) => `Scheduled task content: ${module}`,
-        planReminders: 'Plan reminders',
+        scheduledTasks: 'Scheduled tasks',
         dailyReview: 'Daily review',
       },
     },

@@ -1,4 +1,4 @@
-import type { SandboxBoundaryRequestEvent } from '@maka/core';
+import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 
 import { SandboxBoundaryPrompt } from '../src/sandbox-boundary-prompt.js';

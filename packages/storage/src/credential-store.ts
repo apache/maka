@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { withFileUpdateLock } from './file-update-lock.js';
 
 /**
  * Pure-Node credential store. Shared by the desktop app and any
- * headless consumer (CLI / eval harness / third party) that runs the
+ * non-desktop consumer (CLI / third party) that runs the
  * runtime outside Electron.
  *
  * At rest this is plaintext JSON behind 0600 file perms (file-first;
@@ -31,7 +32,8 @@ type StoredCredentialKind =
   | 'botToken'
   | 'botAppSecret'
   | 'proxyPassword'
-  | 'tavilyApiKey';
+  | 'tavilyApiKey'
+  | 'runtimeHostAccess';
 export type CredentialKind =
   | 'api_key'
   | 'oauth_token'
@@ -39,7 +41,8 @@ export type CredentialKind =
   | 'bot_token'
   | 'app_secret'
   | 'proxy_password'
-  | 'tavily_api_key';
+  | 'tavily_api_key'
+  | 'runtime_host_access';
 
 /** Current on-disk schema version. Unknown versions fail closed on read. */
 export const CREDENTIAL_SCHEMA_VERSION = 1;
@@ -264,10 +267,7 @@ async function chmodStrict(path: string, mode: number): Promise<void> {
   await chmod(path, mode);
 }
 
-// A contended acquire polls this often, then fails loud after the timeout.
-const LOCK_POLL_MS = 25;
 const LOCK_TIMEOUT_MS = 10_000;
-const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Serialize a read-modify-write across processes / store instances that share
@@ -300,31 +300,8 @@ export async function withCredentialFileLock<T>(
   fn: () => Promise<T>,
   timeoutMs: number = LOCK_TIMEOUT_MS,
 ): Promise<T> {
-  const lockPath = `${targetPath}.lock`;
-  // mkdir (the acquire below) is atomic but needs its parent to exist; harden it
-  // to 0700 the same way the writer does so the lock dir never sits loose.
   await ensureSecretDir(dirname(targetPath));
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      await mkdir(lockPath);
-      break;
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'EEXIST') throw error;
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `credentials.json is locked by another process (${lockPath}). ` +
-            'If no other process is using it, remove that directory and retry.',
-        );
-      }
-      await delay(LOCK_POLL_MS);
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    await rm(lockPath, { recursive: true, force: true });
-  }
+  return withFileUpdateLock(targetPath, fn, timeoutMs);
 }
 
 const STORED_CREDENTIAL_KINDS = [
@@ -335,6 +312,7 @@ const STORED_CREDENTIAL_KINDS = [
   'botAppSecret',
   'proxyPassword',
   'tavilyApiKey',
+  'runtimeHostAccess',
 ] as const satisfies readonly StoredCredentialKind[];
 
 function toStoredKind(kind: CredentialKind): StoredCredentialKind {
@@ -353,5 +331,7 @@ function toStoredKind(kind: CredentialKind): StoredCredentialKind {
       return 'proxyPassword';
     case 'tavily_api_key':
       return 'tavilyApiKey';
+    case 'runtime_host_access':
+      return 'runtimeHostAccess';
   }
 }

@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react';
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   BundledSkillCatalogEntry,
   ManagedSkillSourceEntry,

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { ICON_SIZE, ChevronRight } from '@maka/ui/icons';
-import type { BotChannelSettings, BotProvider } from '@maka/core';
-import type { BotStatus } from '@maka/runtime';
+import type { BotChannelSettings, BotProvider } from '@maka/core/bot-chat-settings';
+import type { BotStatus } from '@maka/runtime/bots';
 import { BOT_PROVIDERS } from '@maka/core/settings';
 import { EmptyState, Item, StatusDot } from '@astryxdesign/core';
 import { Button, RelativeTime, useUiLocale, Banner } from '@maka/ui';
@@ -76,7 +76,7 @@ export function BotChatOverview(props: {
           {activeChannels.length === 0 ? (
             // Section-local absence (DESIGN.md §10 tier 1): no icon, no
             // description — the catalog below is the way forward.
-            <EmptyState isCompact title={copy.empty} />
+            (<EmptyState isCompact title={copy.empty} />)
           ) : activeChannels.map((entry) => (
             <Item
               key={entry.provider}
@@ -85,13 +85,13 @@ export function BotChatOverview(props: {
               startContent={<BotBrandLogo provider={entry.provider} />}
               label={(
                 // a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).
-                <span className="settingsRemoteAccessItemTitle" aria-label={copy.manageAria(botCopy.providers[entry.provider].label, entry.copy.label)}>
+                (<span className="settingsRemoteAccessItemTitle" aria-label={copy.manageAria(botCopy.providers[entry.provider].label, entry.copy.label)}>
                   {botCopy.providers[entry.provider].label}
                   <span className="settingsStatus">
                     <StatusDot variant={dotForStatus(entry.copy.tone)} label={entry.copy.label} />
                     <span>{entry.copy.label}</span>
                   </span>
-                </span>
+                </span>)
               )}
               description={(
                 <span className="settingsRemoteAccessItemDescription" id={`settings-remote-access-${entry.provider}-summary`}>

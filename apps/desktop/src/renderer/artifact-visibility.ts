@@ -1,4 +1,4 @@
-import type { ArtifactDescriptor, ArtifactSource } from '@maka/core';
+import type { ArtifactDescriptor, ArtifactSource } from '@maka/core/artifacts';
 
 const USER_VISIBLE_ARTIFACT_SOURCES = {
   tool_result: false,

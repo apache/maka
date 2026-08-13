@@ -276,6 +276,8 @@ export interface ContextBudgetDiagnostic {
   unarchivedToolResults?: number;
   archivePlaceholderReasonCounts?: Record<string, number>;
   activePrunedToolResults?: number;
+  activeSupersededToolResults?: number;
+  activeDuplicateToolResults?: number;
   activeArchiveFailures?: number;
   activeEstimatedTokensSaved?: number;
   semanticCompactEnabled?: boolean;

@@ -24,7 +24,8 @@ import {
   type PlanTurnStartInput,
   type PlanTurnStartResult,
   type SessionCatalogChangedFrame,
-  type SessionCwdRelocateInput,
+  type ScheduledTaskChangedFrame,
+  type SessionWorkspaceRelocateInput,
   type SessionRecapGenerateInput,
   type SessionRecapGenerateResult,
   type SessionUpdateResult,
@@ -117,6 +118,7 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
   readonly #configurationListeners = new Set<(revision: number) => void>();
   readonly #projectListeners = new Set<(revision: number) => void>();
   readonly #sessionListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
+  readonly #scheduledTaskListeners = new Set<(frame: ScheduledTaskChangedFrame) => void>();
   readonly #lifecycle: RuntimeHostReconnectLifecycle<RuntimeHostConnection>;
   #lastConnection: RuntimeHostConnection;
   #listenerDisposers: (() => void)[] = [];
@@ -203,11 +205,11 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
     return this.#request('context.compact', input, timeoutMs);
   }
 
-  relocateSessionCwd(
-    input: SessionCwdRelocateInput,
+  relocateSessionWorkspace(
+    input: SessionWorkspaceRelocateInput,
     timeoutMs?: number,
   ): Promise<SessionUpdateResult> {
-    return this.#request('session.cwd.relocate', input, timeoutMs);
+    return this.#request('session.workspace.relocate', input, timeoutMs);
   }
 
   generateSessionRecap(
@@ -308,6 +310,11 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
     return () => this.#sessionListeners.delete(listener);
   }
 
+  subscribeScheduledTaskChanges(listener: (frame: ScheduledTaskChangedFrame) => void): () => void {
+    this.#scheduledTaskListeners.add(listener);
+    return () => this.#scheduledTaskListeners.delete(listener);
+  }
+
   close(): Promise<void> {
     this.#unbindListeners();
     return this.#lifecycle.close();
@@ -391,6 +398,9 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
       }),
       connection.subscribeSessionCatalogChanges((frame: SessionCatalogChangedFrame) => {
         notify(this.#sessionListeners, frame);
+      }),
+      connection.subscribeScheduledTaskChanges((frame: ScheduledTaskChangedFrame) => {
+        notify(this.#scheduledTaskListeners, frame);
       }),
     ];
   }

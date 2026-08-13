@@ -3,143 +3,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import type { AgentRunHeader, RuntimeEvent, StoredMessage } from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
-import {
-  createSessionTranscriptReader,
-  mergeMessageUpserts,
-} from '../server/session-transcript-reader.js';
-
-test('merges delayed active assistant rows at database anchors instead of the transcript tail', () => {
-  const stored: StoredMessage[] = [
-    { type: 'user', id: 'prompt', turnId: 'turn-1', ts: 1, text: 'prompt' },
-    {
-      type: 'turn_state',
-      id: 'state',
-      turnId: 'turn-1',
-      ts: 2,
-      status: 'running',
-      partialOutputRetained: false,
-    },
-    {
-      type: 'tool_call',
-      id: 'tool-before',
-      turnId: 'turn-1',
-      stepId: 'assistant-before',
-      ts: 4,
-      toolName: 'Bash',
-      args: {},
-    },
-    {
-      type: 'tool_result',
-      id: 'durable-result-before',
-      turnId: 'turn-1',
-      ts: 5,
-      toolUseId: 'tool-before',
-      isError: false,
-      content: { kind: 'text', text: 'done' },
-    },
-    {
-      type: 'user',
-      id: 'steer-1',
-      turnId: 'turn-1',
-      ts: 7,
-      text: 'answer in English',
-      steeringEventId: 'steer-event-1',
-    },
-    {
-      type: 'tool_call',
-      id: 'tool-between',
-      turnId: 'turn-1',
-      stepId: 'assistant-between',
-      ts: 9,
-      toolName: 'Read',
-      args: {},
-    },
-    {
-      type: 'user',
-      id: 'steer-2',
-      turnId: 'turn-1',
-      ts: 11,
-      text: 'answer in Chinese',
-      steeringEventId: 'steer-event-2',
-    },
-  ];
-  const active: StoredMessage[] = [
-    { type: 'user', id: 'prompt', turnId: 'turn-1', ts: 1, text: 'prompt' },
-    {
-      type: 'assistant',
-      id: 'assistant-before',
-      turnId: 'turn-1',
-      ts: 3,
-      text: 'before first steer',
-      modelId: 'fixture',
-    },
-    stored[2]!,
-    {
-      type: 'tool_result',
-      id: 'canonical-result-before',
-      turnId: 'turn-1',
-      ts: 5,
-      toolUseId: 'tool-before',
-      isError: false,
-      content: { kind: 'text', text: 'done' },
-    },
-    stored[4]!,
-    {
-      type: 'assistant',
-      id: 'assistant-between',
-      turnId: 'turn-1',
-      ts: 8,
-      text: 'between the two steers',
-      modelId: 'fixture',
-    },
-    stored[5]!,
-    {
-      type: 'assistant',
-      id: 'assistant-before-second-steer',
-      turnId: 'turn-1',
-      ts: 10,
-      text: 'still before second steer',
-      modelId: 'fixture',
-    },
-    stored[6]!,
-    {
-      type: 'assistant',
-      id: 'assistant-after',
-      turnId: 'turn-1',
-      ts: 12,
-      text: 'after second steer',
-      modelId: 'fixture',
-    },
-  ];
-
-  assert.deepEqual(
-    mergeMessageUpserts(stored, active).map((message) =>
-      message.type === 'assistant'
-        ? message.text
-        : message.type === 'user'
-          ? message.text
-          : message.type === 'tool_result'
-            ? `${message.type}:${message.id}`
-            : message.type,
-    ),
-    [
-      'prompt',
-      'turn_state',
-      'before first steer',
-      'tool_call',
-      'tool_result:canonical-result-before',
-      'answer in English',
-      'between the two steers',
-      'tool_call',
-      'still before second steer',
-      'answer in Chinese',
-      'after second steer',
-    ],
-  );
-});
+import { createSessionTranscriptReader } from '../server/session-transcript-reader.js';
 
 test('projects canonical active text and thinking snapshots over Session history', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-session-transcript-'));
@@ -318,7 +186,6 @@ test('projects canonical active text and thinking snapshots over Session history
     const completed = messages.at(-1);
     assert.equal(completed?.type, 'assistant');
     if (completed?.type === 'assistant') assert.equal(completed.text, 'final text');
-    await stores.sessionStore.close?.();
   } finally {
     await owner.close();
     await rm(base, { recursive: true, force: true });

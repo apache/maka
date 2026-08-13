@@ -37,7 +37,7 @@ exists / broken hierarchy) · **polish** (off-scale px, density).
 | Surface | Gaps | Status |
 |---------|------|--------|
 | `ModulePage` (Layout/Header/Content/Panel) | Vendor layout | already aligned |
-| Skills / MCP / Plan reminders / Daily review | EmptyState + List + Toolbar | already aligned |
+| Skills / MCP / Scheduled tasks / Daily review | EmptyState + List + Toolbar | already aligned |
 | Module list skeleton rows | `min-height: 42px` off rhythm (not page-bar) | **fixed → 36** |
 
 ### Shell / chat chrome

@@ -3,16 +3,15 @@ import type { IpcMainInvokeEvent } from "electron";
 import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import {
   deriveTurnRecords,
-  SIDE_CONVERSATION_SESSION_LABEL,
-  SKILL_INVOCATION_TOKEN_SOURCE,
-  type ActiveInteractionRequestEvent,
-  type AttachmentRef,
-  type PermissionMode,
-  type SandboxBoundaryResponse,
   type SessionChangedEvent,
   type SessionChangedReason,
   type StoredMessage,
-} from "@maka/core";
+} from '@maka/core/session';
+import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
+import { type ActiveInteractionRequestEvent, type AttachmentRef } from '@maka/core/events';
+import { type PermissionMode } from '@maka/core/permission';
+import { type SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
 import {
   resolveAttachmentRefs,
@@ -180,7 +179,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         });
         attachments = await resolveAttachmentRefs({
           files,
-          cwd: session.cwd,
+          cwd: session.workspace.hostCwd,
           sessionId,
           workspaceFiles: "snapshot",
           resizeImage: deps.resizeImage,

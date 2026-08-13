@@ -44,7 +44,7 @@
  * Purely presentational: a value control fed by host-injected props.
  */
 
-import type { ProjectRecord } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { useMemo } from 'react';
 import { ICON_SIZE, AlertTriangle, Check, FolderOpen, Plus, X } from './icons.js';
@@ -57,10 +57,10 @@ export interface WorkspacePickerModel {
   pending?: boolean;
   projects: readonly ProjectRecord[];
   selectedProjectId?: string | null;
-  onAdd(): void;
+  onAdd?(): void;
   onSelectProject(projectId: string): void;
-  onRelink(projectId: string): void;
-  onSelectNoProject(): void;
+  onRelink?(projectId: string): void;
+  onSelectNoProject?(): void;
 }
 
 export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }) {
@@ -122,45 +122,44 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
                 // the model and thinking menus' current values.
                 endContent={
                   missing ? (
-                    <span className="maka-workspace-picker-status">{copy.relink}</span>
+                    <span className="maka-workspace-picker-status">
+                      {wp.onRelink ? copy.relink : copy.unavailable}
+                    </span>
                   ) : project.id === wp.selectedProjectId ? (
                     <Check size={ICON_SIZE.control} aria-hidden="true" />
                   ) : undefined
                 }
-                isDisabled={locked}
                 onClick={() => {
-                  if (missing) wp.onRelink(project.id);
+                  if (missing) wp.onRelink?.(project.id);
                   else wp.onSelectProject(project.id);
                 }}
+                isDisabled={locked || (missing && !wp.onRelink)}
               />
             );
           })}
         </div>
       ) : null}
-      {/* Both actions carry an icon so every row shares one text axis. Without
-          them the two labels started at the icon column while the projects'
-          text started past it, which read as a broken list rather than as a
-          separate group. The × also says what its row means: not using a
-          project is a deliberate way to work, not a missing setting. */}
-      <div role="group">
-        <DropdownMenuItem
+      {/* Available target-level actions carry an icon so every row shares one
+          text axis. Their absence is authority, not a disabled local action. */}
+      {wp.onAdd || wp.onSelectNoProject ? <div role="group">
+        {wp.onAdd ? <DropdownMenuItem
           icon={<Plus size={ICON_SIZE.meta} aria-hidden="true" />}
           label={copy.addProject}
           isDisabled={locked}
           onClick={() => {
-            wp.onAdd();
+            wp.onAdd?.();
           }}
-        />
-        <DropdownMenuItem
+        /> : null}
+        {wp.onSelectNoProject ? <DropdownMenuItem
           icon={<X size={ICON_SIZE.meta} aria-hidden="true" />}
           label={copy.noProject}
           endContent={wp.selectedProjectId === null ? <Check size={ICON_SIZE.control} aria-hidden="true" /> : undefined}
           isDisabled={locked}
           onClick={() => {
-            wp.onSelectNoProject();
+            wp.onSelectNoProject?.();
           }}
-        />
-      </div>
+        /> : null}
+      </div> : null}
     </DropdownMenu>
   );
 }

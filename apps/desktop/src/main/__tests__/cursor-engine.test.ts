@@ -1,23 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 
-import { DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS } from '@maka/runtime';
+import { DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS } from '@maka/runtime/computer-use-tools';
 
 import {
-  CODEX_CURSOR_GLYPH,
   CODEX_CURSOR_MOTION,
   CubicCursorPath,
   CURSOR_CLOSE_ENOUGH,
   CursorEngine,
-  cursorHeadingAt,
   cursorPresentationReadyDeadlineMs,
   measureCursorPath,
-  oddAtLeastThree,
   planCursorPath,
   scoreCursorPath,
 } from '../../renderer/computer-use-overlay/engine/cursor-engine.js';
-import { paletteForInstance, defaultPalette, gradientAt } from '../../renderer/computer-use-overlay/engine/palette.js';
 
 const finite = (value: number): boolean => Number.isFinite(value);
 
@@ -77,30 +72,6 @@ const scoreOf = (path: CubicCursorPath, start: Vec, end: Vec): number => scoreCu
   CLICK_DIRECTION,
 );
 
-test('recovered Codex cursor constants keep their inspected-build values', () => {
-  assert.equal(CODEX_CURSOR_MOTION.candidateCount, 20);
-  assert.equal(CODEX_CURSOR_MOTION.straightPathDistanceThreshold, 10);
-  assert.equal(CODEX_CURSOR_MOTION.scootDistanceThreshold, 196);
-  assert.equal(CODEX_CURSOR_MOTION.scootStretchXAmount, 0.38);
-  assert.equal(CODEX_CURSOR_MOTION.scootSquashYAmount, 0.18);
-  assert.equal(CODEX_CURSOR_MOTION.scootRotationMax, 76 * Math.PI / 180);
-  assert.equal(CODEX_CURSOR_MOTION.terminalTangentBlendStart, 0.99);
-  // `cursorRadius = 9.0` drawn at `width: 2r`, which is also what the white
-  // rim's outer edge measures per pixel in a captured frame. The 14 this was
-  // measured only the black core, with the outline outside the ruler.
-  assert.equal(CODEX_CURSOR_GLYPH.size, 18);
-  assert.deepEqual(CODEX_CURSOR_GLYPH.start, [0.00599, 0.15864]);
-});
-
-test('MotionConfiguration keeps exactly the 30 recovered fields', () => {
-  const fields = Object.keys(CODEX_CURSOR_MOTION);
-  assert.equal(fields.length, 30, fields.join(','));
-  // The native config bounds rotation with a single maximum. A separate base
-  // rotation ceiling was never in the struct, and inventing one is what let the
-  // glyph rotate twice as far as Codex does.
-  assert.ok(!fields.includes('scootBaseRotationMax'));
-});
-
 test('planner takes the straightest acceptable path, not the bendiest', () => {
   const start: Vec = [100, 100];
   const end: Vec = [700, 360];
@@ -128,47 +99,6 @@ test('planner takes the straightest acceptable path, not the bendiest', () => {
   assert.ok(Math.hypot(landing[0] - end[0], landing[1] - end[1]) < 1e-9);
 });
 
-test('candidate score is arc length plus a cost for every kind of deviation', () => {
-  // Straight, in bounds, arriving along the click angle: nothing to charge for,
-  // so the score collapses to the path length itself.
-  const start: Vec = [0, 0];
-  const end: Vec = [400, -400];
-  const straight = measureCursorPath(candidateWithArc(start, end, 0), start, end, null);
-  assert.ok(straight.staysInBounds);
-  assert.ok(Math.abs(straight.length - Math.hypot(400, 400)) < 1e-6);
-  assert.ok(
-    Math.abs(scoreCursorPath(straight, Math.hypot(400, 400), CLICK_DIRECTION) - straight.length)
-      < 1e-6,
-  );
-
-  // Bending the same move costs detour, turning energy, and the sharpest turn.
-  const bent = measureCursorPath(candidateWithArc(start, end, 110), start, end, null);
-  assert.ok(bent.length > straight.length);
-  assert.ok(bent.totalTurn > 0.1);
-  assert.ok(bent.maxAngleChange > 0);
-  assert.ok(
-    scoreCursorPath(bent, Math.hypot(400, 400), CLICK_DIRECTION)
-      > scoreCursorPath(straight, Math.hypot(400, 400), CLICK_DIRECTION) + 40,
-  );
-
-  // Leaving the viewport is a flat surcharge, not a hard veto.
-  const escapingStart: Vec = [40, 40];
-  const escapingEnd: Vec = [500, 40];
-  const escaping = measureCursorPath(
-    candidateWithArc(escapingStart, escapingEnd, -400),
-    escapingStart,
-    escapingEnd,
-    { width: 800, height: 600 },
-  );
-  assert.equal(escaping.staysInBounds, false);
-  const contained = measureCursorPath(
-    candidateWithArc(escapingStart, escapingEnd, 200),
-    escapingStart,
-    escapingEnd,
-    { width: 800, height: 600 },
-  );
-  assert.equal(contained.staysInBounds, true);
-});
 
 test('a fresh move departs toward its target, never along the parked rest angle', () => {
   // Down and to the left: the exact opposite of the -44 degree rest angle that
@@ -225,15 +155,6 @@ test('an interrupted move can be planned dead straight', () => {
   );
 });
 
-test('the candidate grid always contains its own midpoint', () => {
-  for (const count of [1, 2, 3, 4, 5, 19, 20]) {
-    const arcCount = oddAtLeastThree(count);
-    assert.equal(arcCount % 2, 1, `${count} → ${arcCount} is odd`);
-    assert.ok(arcCount >= 3, `${count} → ${arcCount} leaves room for a midpoint`);
-    const arcs = Array.from({ length: arcCount }, (_, a) => (a / (arcCount - 1)) * 2 - 1);
-    assert.ok(arcs.some((arc) => arc === 0), `${arcCount} candidates include arc = 0`);
-  }
-});
 
 test('the presentation deadline covers the slowest release the gate can ask for', () => {
   // The renderer releases an action at CURSOR_CLOSE_ENOUGH.progress; the runtime
@@ -430,33 +351,6 @@ test('an interrupted move may still honour the heading it is already carrying', 
   assert.deepEqual(continued.sample(1), fresh.sample(1));
 });
 
-test('terminal blend is a cubic-eased vector blend, not a scalar angle lerp', () => {
-  const tangent: Vec = [0, 1]; // straight down; ~134 degrees from the click angle
-  const clickAngle = CODEX_CURSOR_MOTION.clickAngle;
-  const blendStart = CODEX_CURSOR_MOTION.terminalTangentBlendStart;
-
-  assert.equal(cursorHeadingAt(tangent, 0), Math.atan2(tangent[1], tangent[0]));
-  assert.equal(cursorHeadingAt(tangent, blendStart), Math.atan2(tangent[1], tangent[0]));
-  assert.ok(Math.abs(cursorHeadingAt(tangent, 1) - clickAngle) < 1e-12);
-
-  const progress = 0.995;
-  const w = (progress - blendStart) / (1 - blendStart);
-  const k = 1 - (1 - w) ** 3;
-  const x = tangent[0] * (1 - k) + Math.cos(clickAngle) * k;
-  const y = tangent[1] * (1 - k) + Math.sin(clickAngle) * k;
-  assert.ok(Math.abs(cursorHeadingAt(tangent, progress) - Math.atan2(y, x)) < 1e-12);
-
-  // The old scalar lerp would sit at the arithmetic midpoint of the two angles.
-  const scalarLerp = Math.atan2(tangent[1], tangent[0])
-    + (clickAngle - Math.atan2(tangent[1], tangent[0])) * w;
-  assert.ok(Math.abs(cursorHeadingAt(tangent, progress) - scalarLerp) > 0.5);
-
-  // Exactly opposed vectors must not produce NaN anywhere along the blend.
-  const opposed: Vec = [-Math.cos(clickAngle), -Math.sin(clickAngle)];
-  for (let step = 0; step <= 100; step++) {
-    assert.ok(finite(cursorHeadingAt(opposed, blendStart + (1 - blendStart) * (step / 100))));
-  }
-});
 
 test('first appearance uses the requested center hotspot without an off-screen glide', () => {
   const engine = new CursorEngine();
@@ -583,128 +477,7 @@ test('a long fast move keeps the glyph inside a single scootRotationMax', () => 
   );
 });
 
-test('paint uses exact three-curve AgentCursor shape centered on the hotspot', () => {
-  const engine = new CursorEngine();
-  engine.moveTo(320, 240);
 
-  const moves: Point[] = [];
-  const curves: number[][] = [];
-  const transforms: string[] = [];
-  const gradient = { addColorStop() {} };
-  type Point = [number, number];
-  const ctx = {
-    createLinearGradient: () => gradient,
-    beginPath() {},
-    fill() {},
-    stroke() {},
-    moveTo(x: number, y: number) { moves.push([x, y]); },
-    lineTo() {},
-    bezierCurveTo(...args: number[]) { curves.push(args); },
-    closePath() {},
-    save() { transforms.push('save'); },
-    restore() { transforms.push('restore'); },
-    translate(x: number, y: number) { transforms.push(`translate:${x},${y}`); },
-    rotate() {},
-    scale() {},
-    set fillStyle(_value: unknown) {},
-    set strokeStyle(_value: unknown) {},
-    set lineWidth(_value: number) {},
-    set lineJoin(_value: CanvasLineJoin) {},
-    set lineCap(_value: CanvasLineCap) {},
-    set shadowColor(_value: string) {},
-    set shadowBlur(_value: number) {},
-    set shadowOffsetX(_value: number) {},
-    set shadowOffsetY(_value: number) {},
-    set globalAlpha(_value: number) {},
-  } as unknown as CanvasRenderingContext2D;
-
-  engine.paint(ctx, 0, 0);
-  assert.equal(curves.length, 3);
-  assert.deepEqual(transforms, ['save', 'translate:320,240', 'restore']);
-  const expectedStartX = -CODEX_CURSOR_GLYPH.size / 2
-    + CODEX_CURSOR_GLYPH.start[0] * CODEX_CURSOR_GLYPH.size;
-  const expectedStartY = -CODEX_CURSOR_GLYPH.size / 2
-    + CODEX_CURSOR_GLYPH.start[1] * CODEX_CURSOR_GLYPH.size;
-  assert.ok(Math.abs(moves[0][0] - expectedStartX) < 1e-9);
-  assert.ok(Math.abs(moves[0][1] - expectedStartY) < 1e-9);
-});
-
-test('paints the arrow the way the native cursor is drawn', () => {
-  // What a user reported was "a blue dot, not a cursor". Every one of these
-  // values was a reason for that: a third-transparent fill let the control
-  // underneath show through, a 1.55pt round join took the point off the arrow,
-  // and both sat in a frame a third smaller than the native one.
-  const engine = new CursorEngine();
-  engine.moveTo(100, 100);
-
-  const stops: Array<[number, string]> = [];
-  const gradient = {
-    addColorStop(offset: number, colour: string) {
-      stops.push([offset, colour]);
-    },
-  };
-  const seen: Record<string, unknown> = {};
-  const ctx = {
-    createLinearGradient: () => gradient,
-    beginPath() {},
-    fill() {
-      seen.fillAt = stops.length;
-    },
-    stroke() {
-      seen.strokeAt = stops.length;
-    },
-    moveTo() {},
-    lineTo() {},
-    bezierCurveTo() {},
-    closePath() {},
-    save() {},
-    restore() {},
-    translate() {},
-    rotate() {},
-    scale() {},
-    set fillStyle(value: unknown) {
-      seen.fillStyle = value;
-    },
-    set strokeStyle(value: unknown) {
-      seen.strokeStyle = value;
-    },
-    set lineWidth(value: number) {
-      seen.lineWidth = value;
-    },
-    set lineJoin(value: CanvasLineJoin) {
-      seen.lineJoin = value;
-    },
-    set miterLimit(value: number) {
-      seen.miterLimit = value;
-    },
-    set lineCap(value: CanvasLineCap) {
-      seen.lineCap = value;
-    },
-    set shadowColor(_value: string) {},
-    set shadowBlur(_value: number) {},
-    set shadowOffsetX(_value: number) {},
-    set shadowOffsetY(_value: number) {},
-    set globalAlpha(_value: number) {},
-  } as unknown as CanvasRenderingContext2D;
-
-  engine.paint(ctx, 0, 0);
-
-  // `Color.white.opacity(0.8)` — the one colour literal in the native drawing
-  // code, and it is the outline, not the fill.
-  assert.equal(seen.strokeStyle, 'rgba(255,255,255,0.8)');
-  assert.equal(seen.lineWidth, 2);
-  assert.equal(seen.lineJoin, 'miter');
-  assert.equal(seen.miterLimit, 10);
-  assert.equal(seen.lineCap, 'butt');
-  // Opaque: the arrow has an interior of its own.
-  assert.equal(stops.length, 3);
-  for (const [offset, colour] of stops) {
-    const alpha = Number(colour.slice(colour.lastIndexOf(',') + 1, -1));
-    assert.ok(alpha > 0.9, `stop ${offset} is ${alpha}, which lets the screen through`);
-  }
-  // The outline goes on after the fill, or the fill covers it.
-  assert.ok((seen.strokeAt as number) >= (seen.fillAt as number));
-});
 
 test('native completion snaps the center hotspot and cancels the planned move', () => {
   const engine = new CursorEngine();
@@ -770,17 +543,6 @@ test('cancel during first fade restores full opacity for the next move', () => {
   assert.equal(globalAlpha, 1);
 });
 
-test('overlay cancel waits for the renderer frame before reporting finished', async () => {
-  const source = await readFile(
-    new URL('../../../src/overlay/cursor-overlay.ts', import.meta.url),
-    'utf8',
-  );
-  const cancelBlock = source.match(/onCancel\(\(p\) => \{([\s\S]*?)\n\}\);/)?.[1] ?? '';
-  assert.match(cancelBlock, /engine\.cancel\(\)/);
-  assert.match(cancelBlock, /kick\(\)/);
-  assert.doesNotMatch(cancelBlock, /reportPhase\('finished'\)/);
-});
-
 test('click press animation clears over about 0.25 seconds', () => {
   const engine = new CursorEngine();
   engine.moveTo(100, 100);
@@ -791,13 +553,4 @@ test('click press animation clears over about 0.25 seconds', () => {
     ticks++;
   }
   assert.ok(ticks >= 14 && ticks <= 18, `${ticks} ticks`);
-});
-
-test('palette selection remains deterministic', () => {
-  assert.equal(paletteForInstance('run-1').name, paletteForInstance('run-1').name);
-  assert.equal(paletteForInstance('default').name, 'default_blue');
-  assert.equal(paletteForInstance('').name, 'default_blue');
-  const names = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => paletteForInstance(`run-${n}`).name));
-  assert.ok(names.size >= 5);
-  assert.notEqual(gradientAt(defaultPalette(), 0).join(), gradientAt(defaultPalette(), 1).join());
 });

@@ -1,20 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import {
   buildDefaultContextBudgetPolicy,
   resolveContextBudgetCapacity,
 } from '../context-budget-policy.js';
 
 describe('mid-turn history compact policy env plumbing', () => {
-  test('defaults on: the runtime derives midTurn with the shared reserve when history compaction is enabled', () => {
-    const policy = buildDefaultContextBudgetPolicy(connection(), {
-      env: { MAKA_CONTEXT_HISTORY_COMPACT: 'on' },
-    });
-    assert.equal(policy?.historyCompact?.enabled, true);
-    assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 16_384 });
-  });
-
   test('defaults on with no compaction env at all (the runtime, not the surface, owns it)', () => {
     const policy = buildDefaultContextBudgetPolicy(connection(), { env: {} });
     assert.equal(policy?.historyCompact?.enabled, true);
@@ -67,13 +59,6 @@ describe('window-bounded reserve derivation (issue #882 PR 3 review P2)', () => 
     assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 2048 });
   });
 
-  test('keeps the classic 16384 reserve for large windows (>= 64K unchanged)', () => {
-    const policy = buildDefaultContextBudgetPolicy(connection(), { env: {} });
-    // claude-sonnet-4-5 metadata window is 200_000: 200_000 / 4 caps at 16_384.
-    assert.equal(policy?.maxHistoryEstimatedTokens, 200_000 - 16_384);
-    assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 16_384 });
-  });
-
   test('uses the official Agent Plan default-model window instead of the unknown-model fallback', () => {
     const policy = buildDefaultContextBudgetPolicy(agentPlanConnection(), { env: {} });
     assert.equal(policy?.maxHistoryEstimatedTokens, 256_000 - 16_384);
@@ -122,6 +107,7 @@ describe('tool-result prune policy env plumbing', () => {
     assert.deepEqual(policy?.activeToolResultPrune, {
       enabled: true,
       maxCurrentResultEstimatedTokens: 2_048,
+      minSupersededResultEstimatedTokens: 256,
       minStepNumber: 1,
     });
     assert.deepEqual(policy?.staleToolResultPrune, {
@@ -135,6 +121,7 @@ describe('tool-result prune policy env plumbing', () => {
     const policy = buildDefaultContextBudgetPolicy(connection(), {
       env: {
         MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MAX_ESTIMATED_TOKENS: '4096',
+        MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MIN_SUPERSEDED_TOKENS: '384',
         MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MIN_STEP_NUMBER: '3',
         MAKA_CONTEXT_STALE_TOOL_RESULT_MAX_TOKENS: '8192',
         MAKA_CONTEXT_MIN_RECENT_TURNS: '4',
@@ -142,6 +129,7 @@ describe('tool-result prune policy env plumbing', () => {
       },
     });
     assert.equal(policy?.activeToolResultPrune?.maxCurrentResultEstimatedTokens, 4_096);
+    assert.equal(policy?.activeToolResultPrune?.minSupersededResultEstimatedTokens, 384);
     assert.equal(policy?.activeToolResultPrune?.minStepNumber, 3);
     assert.equal(policy?.staleToolResultPrune?.maxResultEstimatedTokens, 8_192);
     assert.equal(policy?.staleToolResultPrune?.minRecentTurnsFull, 5);

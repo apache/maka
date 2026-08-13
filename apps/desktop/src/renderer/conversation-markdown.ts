@@ -1,4 +1,5 @@
-import type { StoredMessage, UiLocale } from '@maka/core';
+import type { StoredMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { userFacingText } from '@maka/core/session';
 import { redactSecrets } from '@maka/ui';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';

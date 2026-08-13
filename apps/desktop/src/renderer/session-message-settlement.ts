@@ -1,4 +1,4 @@
-import type { StoredMessage } from '@maka/core';
+import type { StoredMessage } from '@maka/core/session';
 
 /**
  * Read-model settlement shared by the main chat and the quote companion.

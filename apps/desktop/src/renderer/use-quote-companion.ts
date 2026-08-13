@@ -10,16 +10,15 @@ import {
 } from '@maka/ui';
 import type {
   SandboxBoundaryRequestEvent,
-  SandboxBoundaryResponse,
-  PermissionMode,
   QuoteRef,
   SessionEvent,
-  SessionSummary,
-  StoredMessage,
-  UiLocale,
   UserQuestionRequestEvent,
-  UserQuestionResponse,
-} from '@maka/core';
+} from '@maka/core/events';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { PermissionMode } from '@maka/core/permission';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { RendererIngestInput } from '../preload/bridge-contract.js';
 import {
   abandonPendingCompanionCopy,

@@ -5,7 +5,15 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { createConnectionStore, createFileCredentialStore, createSettingsStore } from '@maka/storage';
+import {
+  createProjectCatalog,
+  createSettingsStore,
+} from '@maka/storage';
+import {
+  resolveStorageRoot,
+  tryAcquireInteractiveRootOwner,
+} from '@maka/storage/root-authority';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
 
@@ -49,31 +57,66 @@ export async function waitForInvocableSkills(
  * backend (BackendRegistry override in main); this only satisfies the UI
  * readiness gates. Kept in the fixture so test data stays out of production main.
  */
-async function seedE2eConnection(
-  userDataDir: string,
-  extraConnectionCount = 0,
-): Promise<void> {
+async function seedE2eConnection(userDataDir: string): Promise<void> {
   const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
-  const connections = createConnectionStore(workspaceRoot);
-  const credentials = createFileCredentialStore(workspaceRoot);
-  await connections.create({
-    slug: 'e2e',
-    name: 'E2E',
-    providerType: 'anthropic',
-    defaultModel: 'claude-sonnet-4-5-20250929',
-  });
-  await credentials.setSecret('e2e', 'api_key', 'e2e-placeholder');
-  for (let index = 0; index < extraConnectionCount; index += 1) {
-    const slug = `e2e-extra-${index + 1}`;
-    await connections.create({
-      slug,
-      name: `E2E Extra ${index + 1}`,
-      providerType: 'anthropic',
-      defaultModel: `claude-e2e-${index + 1}`,
+  const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  if (!owner) throw new Error('E2E fixture could not acquire its isolated Runtime Host root');
+  try {
+    const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    const created = await stores.connectionCatalog.create({
+      expectedCatalogRevision: catalog.revision,
+      connection: {
+        slug: 'e2e',
+        name: 'E2E',
+        providerType: 'anthropic',
+        enabled: true,
+        enabledModelIds: ['claude-sonnet-4-5-20250929'],
+      },
     });
-    await credentials.setSecret(slug, 'api_key', 'e2e-placeholder');
+    if (created.kind !== 'committed') {
+      throw new Error(`E2E connection seed was not committed: ${created.kind}`);
+    }
+    const connection = created.snapshot.connections.find(({ slug }) => slug === 'e2e');
+    if (!connection) throw new Error('E2E connection seed is missing from the committed catalog');
+    const credential = await stores.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: 'e2e-placeholder',
+    });
+    if (credential.kind !== 'committed') {
+      throw new Error(`E2E credential seed was not committed: ${credential.kind}`);
+    }
+    const modelFetch = await stores.operations.beginModelFetch(connection.connectionId);
+    if (modelFetch.kind !== 'ready') {
+      throw new Error(`E2E model inventory seed could not start: ${modelFetch.kind}`);
+    }
+    const modelInventory = await stores.operations.completeModelFetch(modelFetch.ticket, {
+      models: [{ id: 'claude-sonnet-4-5-20250929' }],
+      source: 'fallback',
+      fetchedAt: 0,
+    });
+    if (modelInventory.kind !== 'committed') {
+      throw new Error(`E2E model inventory seed was not committed: ${modelInventory.kind}`);
+    }
+    const defaultTarget = await stores.connectionCatalog.setDefaultTarget({
+      expectedCatalogRevision: modelInventory.snapshot.revision,
+      target: {
+        connectionId: connection.connectionId,
+        modelId: 'claude-sonnet-4-5-20250929',
+      },
+    });
+    if (defaultTarget.kind !== 'committed') {
+      throw new Error(`E2E default target seed was not committed: ${defaultTarget.kind}`);
+    }
+  } finally {
+    await owner.close();
   }
-  await connections.setDefault('e2e');
 }
 
 async function seedE2eLocale(userDataDir: string, locale: 'zh' | 'en'): Promise<void> {
@@ -131,12 +174,8 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
       `---\nname: Workspace Only\ndescription: Maka workspace suggestion.\n---\n# Workspace Only`,
       'utf8',
     ),
-    writeFile(
-      path.join(workspaceRoot, 'last-project-path.json'),
-      JSON.stringify({ projectPath: projectRoot }),
-      'utf8',
-    ),
   ]);
+  await seedCurrentProject(workspaceRoot, projectRoot);
 }
 
 async function seedE2eGitReviewProject(
@@ -174,11 +213,22 @@ async function seedE2eGitReviewProject(
       ),
     ),
   );
-  await writeFile(
-    path.join(workspaceRoot, 'last-project-path.json'),
-    JSON.stringify({ projectPath: projectRoot }),
-    'utf8',
-  );
+  await seedCurrentProject(workspaceRoot, projectRoot);
+}
+
+async function seedCurrentProject(workspaceRoot: string, projectRoot: string): Promise<void> {
+  const storageRoot = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const catalog = createProjectCatalog(workspaceRoot);
+  try {
+    const project = await catalog.register(projectRoot);
+    await writeFile(
+      path.join(workspaceRoot, 'project-preferences.json'),
+      JSON.stringify({ version: 1, selections: { [storageRoot.rootId]: project.id } }),
+      'utf8',
+    );
+  } finally {
+    catalog.close();
+  }
 }
 
 /**
@@ -198,7 +248,6 @@ async function withE2eWindow(
     showWindow,
     invocableSkills,
     gitReviewExtraFiles,
-    extraConnectionCount,
   }: {
     seed: boolean;
     readinessSelector: string;
@@ -210,7 +259,6 @@ async function withE2eWindow(
     showWindow?: boolean;
     invocableSkills?: boolean;
     gitReviewExtraFiles?: number;
-    extraConnectionCount?: number;
   },
   use: (page: Page, context: { userDataDir: string }) => Promise<void>,
 ): Promise<void> {
@@ -223,7 +271,7 @@ async function withE2eWindow(
   const mainLogs: string[] = [];
   const rendererLogs: string[] = [];
   try {
-    if (seed) await seedE2eConnection(userDataDir, extraConnectionCount);
+    if (seed) await seedE2eConnection(userDataDir);
     if (invocableSkills) await seedE2eInvocableSkills(userDataDir);
     if (gitReviewExtraFiles !== undefined) {
       await seedE2eGitReviewProject(userDataDir, gitReviewExtraFiles);
@@ -287,24 +335,13 @@ async function withE2eWindow(
 
 export const test = base.extend<{
   window: Page;
-  artifactPaneWindow: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
+  linkColorWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
-  },
-  artifactPaneWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '.maka-artifact-list',
-        e2eFixtureScenario: 'artifact-pane',
-        locale: 'zh',
-      },
-      use,
-    );
   },
   gitReviewWindow: async ({}, use) => {
     await withE2eWindow(
@@ -329,6 +366,13 @@ export const test = base.extend<{
       readinessSelector: COMPOSER_INPUT,
       locale: 'zh',
       invocableSkills: true,
+    }, use);
+  },
+  linkColorWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '.settingsBotConfigDocLink',
+      e2eFixtureScenario: 'settings-bots-onboarding',
     }, use);
   },
 });

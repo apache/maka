@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { ShellRunUpdate } from '@maka/core';
-import type { ShellRunPtySnapshot } from '@maka/runtime';
+import type { ShellRunUpdate } from '@maka/core/events';
+import type { ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   handleReconnectableRead,

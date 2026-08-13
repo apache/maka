@@ -1,4 +1,6 @@
-import type { DailyReviewArchive, UiCatalog, UiLocale } from '@maka/core';
+import type { DailyReviewArchive } from '@maka/core/daily-review';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type ArchiveSectionKey = keyof DailyReviewArchive['sections'];
 

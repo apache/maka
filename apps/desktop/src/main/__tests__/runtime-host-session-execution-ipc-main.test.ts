@@ -5,10 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { IpcMain } from "electron";
-import {
-  SIDE_CONVERSATION_SESSION_LABEL,
-  type AttachmentRef,
-} from "@maka/core";
+import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
+import { type AttachmentRef } from '@maka/core/events';
 import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import type { SessionCatalogProjection } from "@maka/runtime-host/protocol";
 import { createAttachmentApprovalRegistry } from "../attachment-approval.js";
@@ -871,7 +869,7 @@ function observerWithSnapshot(): RuntimeHostSessionObserver {
 }
 
 function observerWithTranscript(
-  transcript: readonly import("@maka/core").StoredMessage[],
+  transcript: readonly import('@maka/core/session').StoredMessage[],
 ): RuntimeHostSessionObserver {
   let finishEvents!: () => void;
   const eventsFinished = new Promise<void>((resolve) => {
@@ -906,6 +904,7 @@ function observerWithTranscript(
           },
           interactions: { pending: [] },
         },
+        activeAssistantStreams: [],
         transcript: Promise.resolve([...transcript]),
         events: waitForEnd(eventsFinished),
         async close() {
@@ -989,7 +988,10 @@ function session(cwd = "/workspace"): SessionCatalogProjection {
   return {
     id: "session-1",
     revision: 1,
-    cwd,
+    workspace: {
+      target: { kind: 'host_path', path: cwd },
+      hostCwd: cwd,
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: "Session",

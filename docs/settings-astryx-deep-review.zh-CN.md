@@ -115,7 +115,7 @@
    Badge;彩色药丸只保留真正的计数/枚举 `Token`。
 4. **逐页清理 C4/C5/C6**(按第三节清单),记忆页单独做(动作收纳进
    `MoreMenu`、条目行化)。
-5. **验证闭环**:四组合(zh/en × light/dark)截图全过;check-dead-css 归零
+5. **验证闭环**:四组合(zh/en × light/dark)截图全过;dead CSS review 归零
    (预计再删 memory.css/permission.css/health.css 大半);typecheck + 全检查。
 
 预计削减:settings 专属 CSS 从 ~1900 行降到 <600 行;页面代码同步变薄。

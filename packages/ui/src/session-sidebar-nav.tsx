@@ -1,4 +1,4 @@
-import type { PlanReminder } from '@maka/core';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
 import {
   AlertCircle,
   Archive,
@@ -20,7 +20,7 @@ import { Tooltip } from '@astryxdesign/core/Tooltip';
 
 export function SessionSidebarNav(props: {
   selection: NavSelection;
-  planReminders?: PlanReminder[];
+  scheduledTasks?: ScheduledTask[];
   moduleMemory?: NavModuleMemory;
   onSelect(selection: NavSelection): void;
   onNew(): void;
@@ -32,9 +32,9 @@ export function SessionSidebarNav(props: {
   const automationsActive = props.selection.section === 'automations';
   const activeSessionFilter =
     props.selection.section === 'sessions' ? props.selection.filter : undefined;
-  const moduleMemory = props.moduleMemory ?? { extensions: 'skills', automations: 'plan-reminders' };
-  const activePlanReminderCount = (props.planReminders ?? []).filter(
-    (reminder) => reminder.status !== 'completed',
+  const moduleMemory = props.moduleMemory ?? { extensions: 'skills', automations: 'scheduled-tasks' };
+  const activeScheduledTaskCount = (props.scheduledTasks ?? []).filter(
+    (task) => task.status === 'active',
   ).length;
 
   // Always SideNavItem — expanded and collapsed. Astryx collapse context turns
@@ -82,8 +82,8 @@ export function SessionSidebarNav(props: {
         onClick={() => props.onSelect({ section: 'extensions', module: moduleMemory.extensions })}
       />
       <SideNavItem
-        label={activePlanReminderCount > 0
-          ? copy.pendingReminders(activePlanReminderCount)
+        label={activeScheduledTaskCount > 0
+          ? copy.pendingTasks(activeScheduledTaskCount)
           : copy.automations}
         icon={Timer}
         size="md"

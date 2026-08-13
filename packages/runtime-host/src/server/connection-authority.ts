@@ -1,5 +1,6 @@
 import {
   HOST_OPERATION_SPECS,
+  operationAllowsRemoteOwner,
   operationUsesHostPaths,
   type AccessCredentialPrincipalKind,
   type ClientCapabilityClientFrame,
@@ -54,11 +55,7 @@ export function authorizeRuntimeHostOperation(
   authority: RuntimeHostConnectionAuthority,
   frame: RequestFrame,
 ): boolean {
-  if (
-    (frame.operation === 'access.credential.issue' ||
-      frame.operation === 'access.credential.revoke') &&
-    authority.principalKind !== 'local_owner'
-  ) {
+  if (authority.principalKind !== 'local_owner' && !operationAllowsRemoteOwner(frame.operation)) {
     return false;
   }
   if (authority.operationGrants !== 'all' && !authority.operationGrants.includes(frame.operation)) {

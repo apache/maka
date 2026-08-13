@@ -55,7 +55,7 @@ import { Section } from '@astryxdesign/core/Section';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
-import type { SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
 import { QuoteCompanionPanel } from './quote-companion-panel';
 import {
   type SessionWorkbarTab,

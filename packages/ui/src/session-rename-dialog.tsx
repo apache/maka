@@ -30,7 +30,7 @@ export interface SessionRenameTarget {
  * dialog is what those actions already look like.
  *
  * One button, no 取消: the header's close control and Escape are already two
- * ways out, which is the convention `PlanReminderFormDialog` set.
+ * ways out, which is the convention `ScheduledTaskFormDialog` set.
  */
 export function SessionRenameDialog(props: {
   target: SessionRenameTarget;

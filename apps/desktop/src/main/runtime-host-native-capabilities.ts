@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
-import type { ComputerUseToolSet, MakaTool } from "@maka/runtime";
+import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   createOAuthPresentationClientProvider,
   type ClientCapabilityProvider,
@@ -9,7 +10,10 @@ import type {
   ClientCapabilityCallFrame,
   ClientCapabilityCallResult,
   ClientCapabilityContentBlock,
+  ClientCapabilityHostPathAccess,
   ClientCapabilityOffer,
+  ClientCapabilityServiceCallFrame,
+  ClientCapabilityServiceOffer,
 } from "@maka/runtime-host/protocol";
 import { toJSONSchema, z } from "zod";
 
@@ -45,6 +49,15 @@ export interface DesktopNativeCapabilityProviderInput {
   ) => void | Promise<void>;
   readonly oauthPresentation?: OAuthPresentationBackend;
   readonly additionalGroups?: () => readonly DesktopCapabilityGroup[];
+  readonly additionalServices?: () => readonly DesktopCapabilityService[];
+}
+
+export interface DesktopCapabilityService extends ClientCapabilityServiceOffer {
+  call(
+    method: string,
+    input: Record<string, unknown>,
+    options: { readonly signal: AbortSignal },
+  ): Promise<Record<string, unknown>>;
 }
 
 export interface DesktopNativeCapabilityProvider extends ClientCapabilityProvider {
@@ -53,25 +66,31 @@ export interface DesktopNativeCapabilityProvider extends ClientCapabilityProvide
   close(): Promise<void>;
 }
 
+interface DesktopNativeCapabilityProviderOptions {
+  readonly releaseResourcesOnClose?: boolean;
+  readonly hostPathAccess?: ClientCapabilityHostPathAccess;
+  readonly clientCwd?: string;
+  readonly isTargetValid?: () => boolean;
+  readonly onSessionUsed?: (sessionId: string) => void;
+  readonly onComputerUseTurnUsed?: (sessionId: string, turnId: string) => void;
+  readonly onClosed?: () => void;
+}
+
 /** Adapt Desktop-owned Maka tools to the open Client Capability protocol. */
 export function createDesktopNativeCapabilityProvider(
   input: DesktopNativeCapabilityProviderInput,
-  providerOptions: {
-    readonly releaseResourcesOnClose?: boolean;
-    readonly onSessionUsed?: (sessionId: string) => void;
-    readonly onComputerUseTurnUsed?: (
-      sessionId: string,
-      turnId: string,
-    ) => void;
-    readonly onClosed?: () => void;
-  } = {},
+  providerOptions: DesktopNativeCapabilityProviderOptions = {},
 ): DesktopNativeCapabilityProvider {
   const groups = capabilityGroups(input);
-  const offers = Object.freeze(groups.map(capabilityOffer));
+  const hostPathAccess = providerOptions.hostPathAccess ?? "cwd";
+  const offers = Object.freeze(
+    groups.map((group) => capabilityOffer(group, hostPathAccess)),
+  );
   const bindings = indexBindings(groups);
   const oauthPresentation = input.oauthPresentation
     ? createOAuthPresentationClientProvider(input.oauthPresentation)
     : undefined;
+  const services = indexServices(oauthPresentation?.services?.() ?? [], input.additionalServices?.() ?? []);
   const releaseSessionResources = [
     input.releaseBrowserSession,
     input.releaseComputerUseSession,
@@ -98,10 +117,13 @@ export function createDesktopNativeCapabilityProvider(
 
   return {
     offers: () => offers,
-    services: () => oauthPresentation?.services?.() ?? [],
+    services: () => [...services.values()].map(({ serviceId, version }) => ({ serviceId, version })),
     call: (frame, options) => {
       if (closed)
         throw new Error("Desktop native capability provider is closed");
+      if (providerOptions.isTargetValid?.() === false) {
+        throw new Error("Desktop native capability target is no longer valid");
+      }
       const binding = bindings.get(bindingKey(frame));
       if (!binding) throw new Error("Desktop native capability is not offered");
 
@@ -128,9 +150,14 @@ export function createDesktopNativeCapabilityProvider(
     callService: (frame, options) => {
       if (closed)
         throw new Error("Desktop native capability provider is closed");
-      if (!oauthPresentation?.callService) {
-        throw new Error("Desktop native capability service is not offered");
+      if (providerOptions.isTargetValid?.() === false) {
+        throw new Error("Desktop native capability target is no longer valid");
       }
+      const service = services.get(serviceKey(frame));
+      if (service?.kind === "additional") {
+        return invokeAdditionalService(service.value, frame, options);
+      }
+      if (!oauthPresentation?.callService) throw new Error("Desktop native capability service is not offered");
       return oauthPresentation.callService(frame, options);
     },
     abortSession: async (sessionId) => {
@@ -145,6 +172,43 @@ export function createDesktopNativeCapabilityProvider(
     },
     close,
   };
+}
+
+type IndexedService =
+  | { readonly kind: "oauth"; readonly serviceId: string; readonly version: string }
+  | { readonly kind: "additional"; readonly serviceId: string; readonly version: string; readonly value: DesktopCapabilityService };
+
+function indexServices(
+  oauth: readonly ClientCapabilityServiceOffer[],
+  additional: readonly DesktopCapabilityService[],
+): Map<string, IndexedService> {
+  const services = new Map<string, IndexedService>();
+  for (const service of oauth) {
+    services.set(serviceKey(service), { kind: "oauth", ...service });
+  }
+  for (const service of additional) {
+    const key = serviceKey(service);
+    if (services.has(key)) throw new Error(`Duplicate Desktop capability service: ${key}`);
+    services.set(key, { kind: "additional", ...service, value: service });
+  }
+  return services;
+}
+
+function serviceKey(
+  service: Pick<ClientCapabilityServiceOffer, "serviceId" | "version">,
+): string {
+  return `${service.serviceId}\0${service.version}`;
+}
+
+async function invokeAdditionalService(
+  service: DesktopCapabilityService,
+  frame: ClientCapabilityServiceCallFrame,
+  options: Parameters<NonNullable<ClientCapabilityProvider["callService"]>>[1],
+): Promise<Record<string, unknown>> {
+  options.signal.throwIfAborted();
+  await options.accept();
+  options.signal.throwIfAborted();
+  return service.call(frame.method, frame.input, { signal: options.signal });
 }
 
 async function closeProvider(
@@ -216,18 +280,19 @@ async function invokeNativeTool(
   binding: NativeToolBinding,
   frame: ClientCapabilityCallFrame,
   options: Parameters<NonNullable<ClientCapabilityProvider["call"]>>[1],
-  providerOptions: {
-    readonly onSessionUsed?: (sessionId: string) => void;
-    readonly onComputerUseTurnUsed?: (
-      sessionId: string,
-      turnId: string,
-    ) => void;
-  },
+  providerOptions: DesktopNativeCapabilityProviderOptions,
   invocation: AbortController,
   usedSessionIds: Set<string>,
 ): Promise<ClientCapabilityCallResult> {
-  if (frame.cwd === undefined) {
-    throw new Error("Desktop native capability requires Host cwd context");
+  const hostPathAccess = providerOptions.hostPathAccess ?? "cwd";
+  if (hostPathAccess === "none" && frame.cwd !== undefined) {
+    throw new Error("Desktop native capability does not accept a Host path");
+  }
+  const cwd = hostPathAccess === "cwd"
+    ? frame.cwd ?? providerOptions.clientCwd
+    : providerOptions.clientCwd;
+  if (cwd === undefined) {
+    throw new Error("Desktop native capability requires an execution cwd");
   }
   const signal = AbortSignal.any([options.signal, invocation.signal]);
   signal.throwIfAborted();
@@ -244,7 +309,7 @@ async function invokeNativeTool(
   const output = await binding.tool.impl(args, {
     sessionId: frame.sessionId,
     turnId: frame.turnId,
-    cwd: frame.cwd,
+    cwd,
     toolCallId: frame.toolCallId,
     abortSignal: signal,
     emitOutput() {},
@@ -268,12 +333,15 @@ function abortInvocations(
   return settling;
 }
 
-function capabilityOffer(group: DesktopCapabilityGroup): ClientCapabilityOffer {
+function capabilityOffer(
+  group: DesktopCapabilityGroup,
+  hostPathAccess: ClientCapabilityHostPathAccess,
+): ClientCapabilityOffer {
   return Object.freeze({
     offerId: group.offerId,
     version: CAPABILITY_VERSION,
     affinity: "session",
-    hostPathAccess: "cwd",
+    hostPathAccess,
     label: group.label,
     description: group.description,
     tools: Object.freeze(
@@ -395,9 +463,6 @@ function projectContentPart(
         );
       }
       return projectBinaryContent(part.data.data, part.mediaType);
-    case "file-data":
-    case "image-data":
-      return projectBinaryContent(part.data, part.mediaType);
     default:
       throw new Error(
         `Desktop native capability cannot return ${part.type} content`,

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets, type UiLocale } from '@maka/core';
+import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
+import { type UiLocale } from '@maka/core/ui-locale';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';

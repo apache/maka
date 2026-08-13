@@ -2,12 +2,9 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
-import type {
-  BotIncomingMessage,
-  BotRegistry,
-  ComputerUseToolSet,
-  MakaTool,
-} from '@maka/runtime';
+import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
+import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import type { ClientCapabilityProvider, RuntimeHostConnection } from '@maka/runtime-host/client';
 import type {
   ClientCapabilityCallFrame,
@@ -486,8 +483,10 @@ function deps(
     resizeImage: async (bytes) => bytes,
     nativeCapabilities,
     botRegistry: {} as BotRegistry,
-    resolveBotCreateTarget: async () => ({ cwd: '/workspace' }),
-    resolveSessionCreateProject: async () => ({ cwd: '/workspace' }),
+    resolveBotCreateTarget: async () => ({
+      workspace: { kind: 'host_path', path: '/workspace' },
+    }),
+    resolveSessionCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
     emitSessionsChanged() {},
     emitModeChanged() {},
     completeComputerUseTurn() {},
@@ -824,7 +823,10 @@ function session(id: string): SessionCatalogProjection {
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: id,

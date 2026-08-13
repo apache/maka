@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ProjectRecord } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
 import {
   ProjectArchivedError,
   type ProjectCatalog,
@@ -20,6 +20,7 @@ import {
   type ProjectCatalogQueryInput,
   type ProjectCatalogQueryResult,
   type ProjectCatalogRevision,
+  type ProjectCatalogView,
 } from '../protocol/index.js';
 import type { ProjectCatalogOperationHandlerMap } from './operation-dispatcher.js';
 import type { HostProjectCatalogChangeService } from './project-catalog-change-service.js';
@@ -44,12 +45,13 @@ export class HostProjectCatalogCoordinator {
     input: ProjectCatalogQueryInput,
   ): Promise<OperationOutcome<'project.catalog.query'>> {
     try {
-      const projects = (await this.catalog.list()).map(projectProject);
-      const items = projectCatalogItems(projects);
+      const records = await this.catalog.list();
+      const items = projectCatalogItems(records, input.view);
       const revision = catalogRevision(items);
       if (input.kind === 'list_continue' && input.revision !== revision) {
         return successQuery({
           kind: 'revision_changed',
+          view: input.view,
           expected: input.revision,
           actual: revision,
         });
@@ -62,7 +64,7 @@ export class HostProjectCatalogCoordinator {
       ) {
         return queryFailure('invalid_request', 'Project catalog cursor is invalid');
       }
-      return successQuery(createPage(revision, projects.length, items, offset));
+      return successQuery(createPage(input.view, revision, records.length, items, offset));
     } catch {
       return queryFailure('persistence_failed', 'Project catalog is unavailable');
     }
@@ -101,37 +103,24 @@ export class HostProjectCatalogCoordinator {
   async #applyMutation(input: ProjectCatalogMutateInput): Promise<ProjectCatalogMutateResult> {
     switch (input.kind) {
       case 'register':
-        return projectResult((await this.catalog.register(input.path)).id);
-      case 'select': {
-        const selected = await this.catalog.select(input.projectId);
-        return {
-          kind: 'selection',
-          projectId: selected.project.id,
-          path: selected.path,
-        };
-      }
-      case 'touch':
-        return projectResult(
-          (await this.catalog.touch(input.projectId, input.path === null ? undefined : input.path))
-            .id,
-        );
+        return projectResult(await this.catalog.register(input.path));
       case 'relink': {
         const result = await this.catalog.relinkWithSessions(input.projectId, input.path);
         for (const sessionId of result.updatedSessionIds) this.sessionChanges.publish(sessionId);
-        return projectResult(result.project.id);
+        return projectResult(result.project);
       }
       case 'rename':
-        return projectResult((await this.catalog.rename(input.projectId, input.name)).id);
+        return projectResult(await this.catalog.rename(input.projectId, input.name));
       case 'archive':
-        return projectResult((await this.catalog.archive(input.projectId)).id);
+        return projectResult(await this.catalog.archive(input.projectId));
       case 'restore':
-        return projectResult((await this.catalog.restore(input.projectId)).id);
+        return projectResult(await this.catalog.restore(input.projectId));
     }
   }
 }
 
-function projectResult(projectId: string): ProjectCatalogMutateResult {
-  return { kind: 'project', projectId };
+function projectResult(project: ProjectRecord): ProjectCatalogMutateResult {
+  return { kind: 'project', project: projectProject(project) };
 }
 
 function projectProject(project: ProjectRecord): ProjectCatalogProject {
@@ -139,39 +128,52 @@ function projectProject(project: ProjectRecord): ProjectCatalogProject {
     id: project.id,
     aliases: [...(project.aliases ?? [])],
     name: project.name,
-    locations: project.locations.map((location) => ({ ...location })),
+    locationCount: project.locations.length,
     archivedAt: project.archivedAt ?? null,
     available: project.available,
-    preferredPath: project.preferredPath ?? null,
   });
 }
 
-function projectCatalogItems(projects: readonly ProjectCatalogProject[]): ProjectCatalogPageItem[] {
-  return projects.flatMap((project, projectIndex): ProjectCatalogPageItem[] => [
-    {
-      kind: 'project',
-      projectIndex,
-      id: project.id,
-      name: project.name,
-      aliasCount: project.aliases.length,
-      locationCount: project.locations.length,
-      archivedAt: project.archivedAt,
-      available: project.available,
-      preferredPath: project.preferredPath,
-    },
-    ...project.aliases.map((alias, itemIndex) => ({
-      kind: 'alias' as const,
-      projectIndex,
-      itemIndex,
-      alias,
-    })),
-    ...project.locations.map((location, itemIndex) => ({
-      kind: 'location' as const,
-      projectIndex,
-      itemIndex,
-      location,
-    })),
-  ]);
+function projectCatalogItems(
+  records: readonly ProjectRecord[],
+  view: ProjectCatalogView,
+): ProjectCatalogPageItem[] {
+  return records.flatMap((record, projectIndex): ProjectCatalogPageItem[] => {
+    const project = projectProject(record);
+    const preferredLocationIndex = record.preferredPath
+      ? record.locations.findIndex((location) => location.path === record.preferredPath)
+      : -1;
+    if (record.preferredPath && preferredLocationIndex < 0) {
+      throw new Error('Project preferred location is missing from its catalog record');
+    }
+    return [
+      {
+        kind: 'project',
+        projectIndex,
+        id: project.id,
+        name: project.name,
+        aliasCount: project.aliases.length,
+        locationCount: project.locationCount,
+        preferredLocationIndex: preferredLocationIndex < 0 ? null : preferredLocationIndex,
+        archivedAt: project.archivedAt,
+        available: project.available,
+      },
+      ...project.aliases.map((alias, itemIndex) => ({
+        kind: 'alias' as const,
+        projectIndex,
+        itemIndex,
+        alias,
+      })),
+      ...(view === 'summary'
+        ? []
+        : record.locations.map((location, itemIndex) => ({
+            kind: 'location' as const,
+            projectIndex,
+            itemIndex,
+            location: { path: location.path, isWorktree: location.isWorktree },
+          }))),
+    ];
+  });
 }
 
 function catalogRevision(items: readonly ProjectCatalogPageItem[]): ProjectCatalogRevision {
@@ -179,6 +181,7 @@ function catalogRevision(items: readonly ProjectCatalogPageItem[]): ProjectCatal
 }
 
 function createPage(
+  view: ProjectCatalogView,
   revision: ProjectCatalogRevision,
   projectCount: number,
   items: readonly ProjectCatalogPageItem[],
@@ -192,6 +195,7 @@ function createPage(
     const nextOffset = index + 1;
     const candidate: ProjectCatalogQueryResult = {
       kind: 'page',
+      view,
       revision,
       projectCount,
       items: [...pageItems, item],
@@ -206,6 +210,7 @@ function createPage(
   const nextOffset = offset + pageItems.length;
   return {
     kind: 'page',
+    view,
     revision,
     projectCount,
     items: pageItems,

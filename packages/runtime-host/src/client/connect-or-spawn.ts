@@ -18,7 +18,14 @@ import {
   type ConnectRuntimeHostResult,
   type RuntimeHostConnection,
 } from './connection.js';
-import { launchDetachedRuntimeHostCandidate, type CandidateLauncher } from './launcher.js';
+import {
+  launchDetachedRuntimeHostCandidate,
+  launchOwnedRuntimeHostCandidate,
+  type CandidateLauncher,
+  type OwnedCandidateAttempt,
+} from './launcher.js';
+import type { CandidateStartupFailure } from '../candidate-startup-failure.js';
+import { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
 
 const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
 const DEFAULT_BACKOFF_MIN_MS = 20;
@@ -30,12 +37,13 @@ export interface ConnectOrSpawnRuntimeHostInput {
   surface: ClientSurface;
   protocol: ProtocolRange;
   compositionId: string;
+  generation?: string;
+  takeoverHostEpoch?: string;
   clientInstanceId?: string;
   electionDeadlineMs?: number;
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   candidateEntrypoint: string | URL;
-  legacyConfigurationRoot?: string;
   signal?: AbortSignal;
 }
 
@@ -50,19 +58,93 @@ const defaultDependencies: ConnectOrSpawnRuntimeHostDependencies = {
 };
 
 export type ConnectOrSpawnRuntimeHostResult =
-  | { kind: 'connected'; connection: RuntimeHostConnection }
-  | { kind: 'incompatible'; handshake: HostIncompatible }
+  | {
+      kind: 'connected';
+      connection: RuntimeHostConnection;
+      registration: Extract<ConnectRuntimeHostResult, { kind: 'connected' }>['registration'];
+    }
+  | Extract<ConnectRuntimeHostResult, { kind: 'upgrade_required' }>
+  | Extract<ConnectRuntimeHostResult, { kind: 'incompatible' }>
   | {
       kind: 'failed';
       reason: 'composition_mismatch';
       requiredCompositionId: string;
     }
-  | { kind: 'failed'; reason: 'startup_timeout' | 'host_unresponsive' };
+  | {
+      kind: 'failed';
+      reason: CandidateStartupFailure['reason'] | 'startup_timeout' | 'host_unresponsive';
+    };
 
 export async function connectOrSpawnRuntimeHost(
   input: ConnectOrSpawnRuntimeHostInput,
 ): Promise<ConnectOrSpawnRuntimeHostResult> {
   return connectOrSpawnRuntimeHostWithDependencies(input, defaultDependencies);
+}
+
+export type ConnectOwnedRuntimeHostResult =
+  | { kind: 'connected'; connection: RuntimeHostConnection; host: OwnedCandidateAttempt }
+  | Exclude<ConnectOrSpawnRuntimeHostResult, { kind: 'connected' }>
+  | { kind: 'failed'; reason: 'existing_host' };
+
+interface ConnectOwnedRuntimeHostDependencies {
+  launchCandidate: typeof launchOwnedRuntimeHostCandidate;
+}
+
+const defaultOwnedDependencies: ConnectOwnedRuntimeHostDependencies = {
+  launchCandidate: launchOwnedRuntimeHostCandidate,
+};
+
+export async function connectOwnedRuntimeHost(
+  input: Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'>,
+): Promise<ConnectOwnedRuntimeHostResult> {
+  return connectOwnedRuntimeHostWithDependencies(input, defaultOwnedDependencies);
+}
+
+export async function connectOwnedRuntimeHostWithDependencies(
+  input: Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'>,
+  dependencies: ConnectOwnedRuntimeHostDependencies,
+): Promise<ConnectOwnedRuntimeHostResult> {
+  let launch: ReturnType<typeof launchOwnedRuntimeHostCandidate> | undefined;
+  let connection: RuntimeHostConnection | undefined;
+  try {
+    const result = await connectOrSpawnRuntimeHostWithDependencies(
+      {
+        ...input,
+        candidateEntrypoint: new URL('../execution-candidate-main.js', import.meta.url),
+      },
+      {
+        launchCandidate(candidate) {
+          launch ??= dependencies.launchCandidate({
+            ...candidate,
+            idleGraceMs: 0,
+          });
+          return launch;
+        },
+        random: Math.random,
+      },
+    );
+    const host = await launch?.spawned;
+    if (result.kind !== 'connected' || !host) {
+      if (result.kind === 'connected') await result.connection.close();
+      await host?.settle(1_000);
+      return result.kind === 'connected' ? { kind: 'failed', reason: 'existing_host' } : result;
+    }
+    const ownedConnection = result.connection;
+    connection = ownedConnection;
+    const diagnostics = await abortable(() => ownedConnection.queryHostDiagnostics(), input.signal);
+    if (diagnostics.pid !== host.pid) {
+      await connection.close();
+      connection = undefined;
+      await host.settle(1_000);
+      return { kind: 'failed', reason: 'existing_host' };
+    }
+    return { kind: 'connected', connection: ownedConnection, host };
+  } catch {
+    await connection?.close().catch(() => undefined);
+    const host = await launch?.spawned.catch(() => undefined);
+    await host?.settle(1_000);
+    return { kind: 'failed', reason: 'host_unresponsive' };
+  }
 }
 
 export async function connectOrSpawnRuntimeHostWithDependencies(
@@ -95,6 +177,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   let nextCandidateAt = startedAt;
   let backoffMs = DEFAULT_BACKOFF_MIN_MS;
   let sawUnresponsiveEndpoint = false;
+  let startupFailure: CandidateStartupFailure | undefined;
 
   while (performance.now() < deadline) {
     input.signal?.throwIfAborted();
@@ -104,6 +187,10 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       surface: input.surface,
       protocol: input.protocol,
       compositionId: input.compositionId,
+      ...(input.generation === undefined ? {} : { generation: input.generation }),
+      ...(input.takeoverHostEpoch === undefined
+        ? {}
+        : { takeoverHostEpoch: input.takeoverHostEpoch }),
       clientInstanceId,
       connectTimeoutMs: input.connectTimeoutMs,
       handshakeTimeoutMs: input.handshakeTimeoutMs,
@@ -113,16 +200,39 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       if (result.endpointConnected) sawUnresponsiveEndpoint = true;
       break;
     }
-    if (result.kind === 'connected') return { kind: 'connected', connection: result.connection };
+    if (result.kind === 'connected') {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) {
+        await result.connection.close().catch(() => undefined);
+        break;
+      }
+      try {
+        await waitForRuntimeHostReady(
+          result.connection,
+          Math.max(1, Math.ceil(remaining)),
+          input.signal,
+        );
+        return result;
+      } catch {
+        await result.connection.close().catch(() => undefined);
+      }
+      input.signal?.throwIfAborted();
+      sawUnresponsiveEndpoint = true;
+    }
+    if (result.kind === 'upgrade_required') return result;
     if (result.kind === 'unavailable' && result.reason === 'handshake_failed') {
       sawUnresponsiveEndpoint = true;
     }
     if (isBlockingIncompatibility(result)) {
-      return { kind: 'incompatible', handshake: result.handshake };
+      return result;
     }
 
     const now = performance.now();
-    if (shouldLaunchCandidate(result) && now >= nextCandidateAt) {
+    if (
+      shouldLaunchCandidate(result) &&
+      startupFailure?.reason !== 'stored_data_incompatible' &&
+      now >= nextCandidateAt
+    ) {
       try {
         const remaining = deadline - performance.now();
         if (remaining <= 0) break;
@@ -130,11 +240,15 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           rootPath: capability.canonicalPath,
           expectedRootId: capability.rootId,
           entrypoint: input.candidateEntrypoint,
-          ...(input.legacyConfigurationRoot === undefined
-            ? {}
-            : { legacyConfigurationRoot: input.legacyConfigurationRoot }),
+          initialConnectionTimeoutMs: Math.ceil(remaining),
+          ...(input.generation === undefined ? {} : { generation: input.generation }),
         });
-        await settleBeforeDeadline(launch.spawned, deadline, input.signal);
+        const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
+        void attempt.startupFailure?.then((failure) => {
+          if (failure && (!startupFailure || failure.reason === 'stored_data_incompatible')) {
+            startupFailure = failure;
+          }
+        });
       } catch {
         // A failed Candidate attempt is ordinary election evidence; discovery continues.
       }
@@ -148,6 +262,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
     await sleep(Math.min(remaining, Math.max(1, Math.round(backoffMs * jitter))), input.signal);
     backoffMs = Math.min(DEFAULT_BACKOFF_MAX_MS, backoffMs * 2);
   }
+  if (startupFailure) return { kind: 'failed', reason: startupFailure.reason };
   return {
     kind: 'failed',
     reason: sawUnresponsiveEndpoint ? 'host_unresponsive' : 'startup_timeout',

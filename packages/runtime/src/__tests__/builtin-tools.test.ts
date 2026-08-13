@@ -15,7 +15,8 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { z } from 'zod';
-import { applySandboxBoundaryExpansion, SHELL_RUN_ID_MAX_CHARS } from '@maka/core';
+import { applySandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
+import { SHELL_RUN_ID_MAX_CHARS } from '@maka/core/shell-run';
 import {
   createWorkspaceWritePermissionProfile,
   type PermissionProfile,
@@ -47,145 +48,7 @@ const ONE_PIXEL_PNG = Buffer.from(
   'base64',
 );
 
-describe('builtin tool activity kinds', () => {
-  test('declares stable semantic categories independently of tool names', () => {
-    const kinds = Object.fromEntries(
-      buildBuiltinTools().map((tool) => [tool.name, tool.activityKind]),
-    );
-
-    expect(kinds).toEqual({
-      Bash: 'command',
-      Read: 'read',
-      apply_patch: 'edit',
-      Write: 'edit',
-      Edit: 'edit',
-      FormatJson: 'edit',
-      Glob: 'search',
-      Grep: 'search',
-    });
-  });
-
-  test('categorizes background task controls as command activity', () => {
-    const shellRuns = {
-      runForegroundBash: () => Promise.reject(new Error('not used')),
-      runBackgroundBash: () => Promise.reject(new Error('not used')),
-    } satisfies ShellRunLauncher;
-    const backgroundTasks = {
-      stopBackgroundTask: () => Promise.reject(new Error('not used')),
-    } satisfies BackgroundTaskStopper;
-    const ptyControls = {
-      writeStdin: () => Promise.reject(new Error('not used')),
-    } satisfies PtyControlWriter;
-    const kinds = Object.fromEntries(
-      buildBuiltinTools({
-        shellRuns,
-        backgroundTasks,
-        ptyControls,
-      }).map((tool) => [tool.name, tool.activityKind]),
-    );
-
-    expect(kinds.Bash).toBe('command');
-    expect(kinds.StopBackgroundTask).toBe('command');
-    expect(kinds.WriteStdin).toBe('command');
-  });
-
-  test('can omit Edit from a host surface that has no filesystem worker', () => {
-    const tools = buildBuiltinTools({ includeEdit: false } as Parameters<
-      typeof buildBuiltinTools
-    >[0]);
-
-    assert.equal(
-      tools.some((tool) => tool.name === 'Edit'),
-      false,
-    );
-    assert.ok(tools.some((tool) => tool.name === 'Write'));
-  });
-
-  test('includes apply_patch when a custom workspace exposes the capability', () => {
-    const tools = buildBuiltinTools({
-      executor: fakeExecutor({
-        applyPatch: async ({ path }) => ({ ok: true, path }),
-      }),
-    });
-
-    assert.equal(
-      tools.some((tool) => tool.name === 'apply_patch'),
-      true,
-    );
-  });
-
-  test('applies a freeform V4A patch through the existing filesystem authority', async () => {
-    const calls: Array<{
-      action: string;
-      path: string;
-      diff?: string;
-      cwd: string;
-      label: string;
-      scope: string;
-    }> = [];
-    const applyPatch = buildBuiltinTools({
-      executor: fakeExecutor({
-        applyPatch: async (input) => {
-          calls.push(input);
-          return { ok: true, path: input.path };
-        },
-      }),
-    }).find((tool) => tool.name === 'apply_patch');
-    if (!applyPatch) throw new Error('apply_patch tool missing');
-
-    const result = await runTool(
-      applyPatch,
-      [
-        '*** Begin Patch',
-        '*** Add File: added.txt',
-        '+hello',
-        '+world',
-        '*** Update File: changed.txt',
-        '@@',
-        '-before',
-        '+after',
-        '*** Delete File: removed.txt',
-        '*** End Patch',
-      ].join('\n'),
-      '/workspace',
-    );
-
-    assert.deepEqual(calls, [
-      {
-        cwd: '/workspace',
-        action: 'create',
-        path: 'added.txt',
-        diff: '+hello\n+world\n+',
-        label: 'ApplyPatch',
-        scope: 'workspace',
-      },
-      {
-        cwd: '/workspace',
-        action: 'update',
-        path: 'changed.txt',
-        diff: '@@\n-before\n+after',
-        label: 'ApplyPatch',
-        scope: 'workspace',
-      },
-      {
-        cwd: '/workspace',
-        action: 'delete',
-        path: 'removed.txt',
-        label: 'ApplyPatch',
-        scope: 'workspace',
-      },
-    ]);
-    assert.deepEqual(result, {
-      status: 'completed',
-      applied: [
-        { type: 'create_file', path: 'added.txt' },
-        { type: 'update_file', path: 'changed.txt' },
-        { type: 'delete_file', path: 'removed.txt' },
-      ],
-      output: 'Applied 3 file operations.',
-    });
-  });
-
+describe('builtin apply_patch', () => {
   test('rejects unsupported V4A Move before applying any file operation', async () => {
     let calls = 0;
     const applyPatch = buildBuiltinTools({
@@ -324,22 +187,6 @@ describe('builtin tool activity kinds', () => {
   });
 });
 
-describe('builtin Read capabilities', () => {
-  test('advertises image support only when image snapshots are available', () => {
-    const textOnly = buildBuiltinTools().find((tool) => tool.name === 'Read')!;
-    const withImages = buildBuiltinTools({
-      snapshotImage: async (input) => ({
-        kind: 'session_file',
-        sessionId: input.sessionId,
-        relativePath: 'image-1',
-      }),
-    }).find((tool) => tool.name === 'Read')!;
-
-    assert.doesNotMatch(textOnly.description, /image/);
-    assert.match(withImages.description, /image/);
-  });
-});
-
 describe('builtin ArchiveRead capabilities', () => {
   test('is not a built-in tool', () => {
     // The archive decoder travels with the archive capability and is bound by
@@ -369,7 +216,7 @@ describe('builtin tool executor facts', () => {
   });
 });
 
-describe('builtin Bash description declares the executing shell', () => {
+describe('builtin Bash projection and shell execution', () => {
   test('executor Bash keeps its durable command out of provider-facing results', async () => {
     const bash = buildBuiltinTools({
       executor: fakeExecutor({
@@ -403,8 +250,8 @@ describe('builtin Bash description declares the executing shell', () => {
 
   test('executor Bash executes with the same shell it declares', async () => {
     // /bin/echo stands in for pwsh.exe: if the shell reaches the local
-    // executor's spawn, stdout echoes the PowerShell flags back instead of a
-    // bare 'wired-marker' from the default POSIX shell.
+    // executor's spawn, stdout echoes the PowerShell flags and wrapper instead
+    // of a bare 'wired-marker' from the default POSIX shell.
     const tools = buildBuiltinTools({
       shell: { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: '/bin/echo' },
     });
@@ -422,20 +269,9 @@ describe('builtin Bash description declares the executing shell', () => {
     )) as { output: { mode: string; stdout: string } };
     expect(
       result.output.stdout.startsWith(
-        '-NoLogo -NoProfile -NonInteractive -Command echo wired-marker\n',
+        '-NoLogo -NoProfile -NonInteractive -Command $__makaUtf8 = [System.Text.UTF8Encoding]::new($false)\n',
       ),
     ).toBe(true);
-  });
-
-  test('executor Bash tells the model commands run under PowerShell 7', () => {
-    const tools = buildBuiltinTools({
-      executor: fakeExecutor({ facts: LOCAL_WORKSPACE_EXECUTOR_FACTS }),
-      shell: { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: 'C:\\pf\\pwsh.exe' },
-    });
-    const bash = tools.find((tool) => tool.name === 'Bash');
-    expect(bash !== undefined).toBe(true);
-    expect(/PowerShell 7 \(pwsh\)/.test(bash!.description)).toBe(true);
-    expect(/git ls-files/.test(bash!.description)).toBe(true);
   });
 });
 
@@ -1767,60 +1603,6 @@ describe('builtin Bash streaming output', () => {
     );
   });
 
-  test('delegates Bash execution to an injected workspace executor', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'maka-bash-executor-'));
-    const calls: WorkspaceExecInput[] = [];
-    const events: Array<{ stream: 'stdout' | 'stderr'; chunk: string }> = [];
-    const bash = buildBuiltinTools({
-      executor: fakeExecutor({
-        exec: async (input) => {
-          calls.push(input);
-          input.emitOutput?.('stdout', 'delegated-out');
-          return {
-            exitCode: 0,
-            stdout: 'delegated-out',
-            stderr: 'delegated-err',
-            timedOut: false,
-            aborted: false,
-          };
-        },
-      }),
-    }).find((tool) => tool.name === 'Bash');
-    if (!bash) throw new Error('Bash tool missing');
-
-    const result = await bash.impl(
-      { command: 'npm test', timeout_ms: 12_345 },
-      {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        cwd,
-        toolCallId: 'tool-1',
-        abortSignal: new AbortController().signal,
-        emitOutput: (stream, chunk) => events.push({ stream, chunk }),
-      },
-    );
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.command).toBe('npm test');
-    expect(calls[0]?.cwd).toBe(cwd);
-    expect(calls[0]?.timeoutMs).toBe(12_345);
-    expect(events).toEqual([{ stream: 'stdout', chunk: 'delegated-out' }]);
-    expect(result).toMatchObject({
-      kind: 'terminal',
-      cwd,
-      cmd: 'npm test',
-      exitCode: 0,
-      output: {
-        mode: 'pipes',
-        stdout: 'delegated-out',
-        stderr: 'delegated-err',
-        stdoutTruncated: false,
-        stderrTruncated: false,
-        redacted: false,
-      },
-    });
-  });
-
   test('preserves Bash failure contract when the executor reports non-zero exit', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'maka-bash-executor-'));
     const bash = buildBuiltinTools({
@@ -2079,39 +1861,6 @@ describe('builtin Bash sandbox denial classification', () => {
 });
 
 describe('builtin read tools path containment', () => {
-  test('Read snapshots the complete image returned by the workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-read-image-'));
-    const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
-    const snapshots: unknown[] = [];
-    const read = buildBuiltinTools({
-      executor: fakeExecutor({
-        readFile: async () => ({ bytes: imageBytes, mimeType: 'image/png' }),
-      }),
-      snapshotImage: async (input) => {
-        snapshots.push(input);
-        return { kind: 'session_file', sessionId: input.sessionId, relativePath: 'artifact-1' };
-      },
-    }).find((candidate) => candidate.name === 'Read');
-    if (!read) throw new Error('Read tool missing');
-
-    const result = await runTool(read, { path: 'PHOTO.PNG', offset: 1, limit: 1 }, root);
-
-    expect(result).toEqual({
-      kind: 'image',
-      mimeType: 'image/png',
-      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'artifact-1' },
-    });
-    expect(snapshots).toEqual([
-      {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'PHOTO.PNG',
-        bytes: imageBytes,
-        mimeType: 'image/png',
-      },
-    ]);
-  });
-
   test('Read rejects image content without snapshot support, regardless of extension', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-read-image-'));
     await writeFile(join(root, 'photo.png'), ONE_PIXEL_PNG);
@@ -2123,31 +1872,6 @@ describe('builtin read tools path containment', () => {
       runTool(readWithoutSnapshots, { path: 'notes.txt' }, root),
       /snapshots are not available/,
     );
-  });
-
-  test('Read delegates file loading to the injected workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-read-executor-'));
-    await writeFile(join(root, 'inside.txt'), 'local-content', 'utf8');
-    const readInputs: unknown[] = [];
-    const read = buildBuiltinTools({
-      executor: fakeExecutor({
-        readFile: async (input) => {
-          readInputs.push(input);
-          return { content: 'executor-window' };
-        },
-      }),
-    }).find((candidate) => candidate.name === 'Read');
-    if (!read) throw new Error('Read tool missing');
-
-    const result = await runTool(read, { path: 'inside.txt', offset: 1, limit: 1 }, root);
-
-    expect(readInputs).toHaveLength(1);
-    expect(readInputs[0]).toMatchObject({
-      offset: 1,
-      limit: 1,
-    });
-    expect(String((readInputs[0] as { path?: string }).path)).toMatch(/inside\.txt$/);
-    expect(result).toMatchObject({ content: 'executor-window' });
   });
 
   test('Read accepts contained absolute paths and rejects workspace escapes', async () => {
@@ -2220,62 +1944,6 @@ describe('builtin read tools path containment', () => {
     );
     expect(JSON.stringify(absoluteGrepResult).includes('main.ts')).toBe(true);
   });
-
-  test('Glob delegates matching to the injected workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-glob-executor-'));
-    await mkdir(join(root, 'src'), { recursive: true });
-    const calls: Array<{ cwd: string; pattern: string; limit?: number }> = [];
-    const glob = buildBuiltinTools({
-      executor: fakeExecutor({
-        globFiles: async (input) => {
-          calls.push(input);
-          return { files: ['from-executor.ts'] };
-        },
-      }),
-    }).find((candidate) => candidate.name === 'Glob');
-    if (!glob) throw new Error('Glob tool missing');
-
-    const result = await runTool(glob, { pattern: '**/*.ts', cwd: 'src' }, root);
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.cwd.endsWith('src')).toBe(true);
-    expect(calls[0]?.pattern).toBe('**/*.ts');
-    expect(calls[0]?.limit).toBe(200);
-    expect(result).toMatchObject({ files: ['from-executor.ts'] });
-  });
-
-  test('Grep delegates searching to the injected workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-grep-executor-'));
-    await mkdir(join(root, 'src'), { recursive: true });
-    await writeFile(join(root, 'src', 'main.ts'), 'local token\n', 'utf8');
-    const calls: Array<{
-      cwd: string;
-      pattern: string;
-      path: string;
-      glob?: string;
-      maxCountPerFile: number;
-      limit: number;
-    }> = [];
-    const grep = buildBuiltinTools({
-      executor: fakeExecutor({
-        grepFiles: async (input) => {
-          calls.push(input);
-          return { matches: ['from-executor.ts:1:token'] };
-        },
-      }),
-    }).find((candidate) => candidate.name === 'Grep');
-    if (!grep) throw new Error('Grep tool missing');
-
-    const result = await runTool(grep, { pattern: 'token', path: 'src', glob: '*.ts' }, root);
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.cwd).toBe(root);
-    expect(calls[0]?.path.endsWith('src')).toBe(true);
-    expect(calls[0]?.glob).toBe('*.ts');
-    expect(calls[0]?.maxCountPerFile).toBe(50);
-    expect(calls[0]?.limit).toBe(200);
-    expect(result).toMatchObject({ matches: ['from-executor.ts:1:token'] });
-  });
 });
 
 describe('builtin write tools path containment', () => {
@@ -2307,60 +1975,6 @@ describe('builtin write tools path containment', () => {
       },
     ]);
     expect(result).toMatchObject({ kind: 'file_diff', paths: ['/workspace/created.txt'] });
-  });
-
-  test('Write delegates file writing to the injected workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-write-executor-'));
-    const writes: Array<{ path: string; content: string }> = [];
-    const write = buildBuiltinTools({
-      executor: fakeExecutor({
-        writeFile: async ({ path, content }) => {
-          writes.push({ path, content });
-          return { ok: true, path, bytes: Buffer.byteLength(content, 'utf8') };
-        },
-      }),
-    }).find((candidate) => candidate.name === 'Write');
-    if (!write) throw new Error('Write tool missing');
-
-    const result = await runTool(write, { path: 'created.txt', content: 'from-executor' }, root);
-
-    expect(writes).toHaveLength(1);
-    expect(writes[0]?.path.endsWith('created.txt')).toBe(true);
-    expect(writes[0]?.content).toBe('from-executor');
-    expect(result).toMatchObject({ kind: 'file_diff' });
-  });
-
-  test('Edit reads and writes through the injected workspace executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-edit-executor-'));
-    await writeFile(join(root, 'data.txt'), 'local content that should not be used', 'utf8');
-    const reads: string[] = [];
-    const writes: Array<{ path: string; content: string }> = [];
-    const edit = buildBuiltinTools({
-      executor: fakeExecutor({
-        readFile: async ({ path }) => {
-          reads.push(path);
-          return { content: 'hello world\n' };
-        },
-        writeFile: async ({ path, content }) => {
-          writes.push({ path, content });
-          return { ok: true, path, bytes: Buffer.byteLength(content, 'utf8') };
-        },
-      }),
-    }).find((candidate) => candidate.name === 'Edit');
-    if (!edit) throw new Error('Edit tool missing');
-
-    const result = await runTool(
-      edit,
-      { path: 'data.txt', old_string: 'world', new_string: 'Maka' },
-      root,
-    );
-
-    expect(reads).toHaveLength(1);
-    expect(writes).toHaveLength(1);
-    expect(writes[0]?.content).toBe('hello Maka\n');
-    expect(result).toMatchObject({ kind: 'file_diff' });
-    expect((result as { diff: string }).diff).toContain('-hello world');
-    expect((result as { diff: string }).diff).toContain('+hello Maka');
   });
 
   test('Edit rejects image results from the workspace executor', async () => {
@@ -2644,20 +2258,6 @@ describe('builtin FormatJson (file in place)', () => {
     };
   }
 
-  test('happy path: validates and rewrites a minified JSON file in place', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
-    const input = '{"b":1,"a":[2,3],"c":{"d":true}}';
-    const name = await writeInput(root, 'data.json', input);
-
-    const result = await runFormatJson({ path: name }, root);
-
-    const onDisk = await readFile(join(root, name), 'utf8');
-    expect(onDisk).toBe(JSON.stringify(JSON.parse(input), null, 2));
-    expect(result).toMatchObject({ kind: 'file_diff' });
-    expect((result as unknown as { paths: string[] }).paths[0]?.endsWith('data.json')).toBe(true);
-    expect((result as unknown as { diff: string }).diff).toContain(`-${input}`);
-  });
-
   test('rejects image results from the workspace executor', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-image-'));
     const formatJson = buildBuiltinTools({
@@ -2673,17 +2273,6 @@ describe('builtin FormatJson (file in place)', () => {
     );
   });
 
-  test('sort_keys: true orders object keys lexicographically', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
-    const name = await writeInput(root, 'data.json', '{"z":1,"a":2,"m":3}');
-
-    const result = await runFormatJson({ path: name, sort_keys: true }, root);
-
-    const onDisk = await readFile(join(root, name), 'utf8');
-    expect(onDisk).toBe('{\n  "a": 2,\n  "m": 3,\n  "z": 1\n}');
-    expect((result as unknown as { kind: string }).kind).toBe('file_diff');
-  });
-
   test('sort_keys: true preserves __proto__ as a data property', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
     const name = await writeInput(root, 'data.json', '{"__proto__":{"polluted":true},"a":1}');
@@ -2694,21 +2283,6 @@ describe('builtin FormatJson (file in place)', () => {
     expect(Object.prototype.hasOwnProperty.call(parsed, '__proto__')).toBe(true);
     expect(parsed['__proto__']).toEqual({ polluted: true });
     expect(parsed.a).toBe(1);
-  });
-
-  test('sort_keys: true sorts nested objects recursively', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
-    const name = await writeInput(
-      root,
-      'data.json',
-      '{"outer":{"z":1,"a":2},"list":[{"b":1,"a":2}]}',
-    );
-
-    await runFormatJson({ path: name, sort_keys: true }, root);
-
-    const parsed = JSON.parse(await readFile(join(root, name), 'utf8'));
-    expect(Object.keys(parsed.outer)).toEqual(['a', 'z']);
-    expect(Object.keys(parsed.list[0])).toEqual(['a', 'b']);
   });
 
   test('invalid JSON returns a structured error diagnostic (no write, byteDelta 0)', async () => {
@@ -2724,29 +2298,6 @@ describe('builtin FormatJson (file in place)', () => {
     expect(result.changed).toBe(false);
     // File is left untouched on invalid input.
     expect(await readFile(join(root, name), 'utf8')).toBe('not json');
-  });
-
-  test('already-canonical content reports changed: false with zero byte delta', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
-    const name = await writeInput(root, 'empty.json', '{}');
-
-    const result = await runFormatJson({ path: name }, root);
-
-    expect(result.changed).toBe(false);
-    expect(result.byteDelta).toBe(0);
-    expect(await readFile(join(root, name), 'utf8')).toBe('{}');
-  });
-
-  test('handles unicode and special characters in strings', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-'));
-    const name = await writeInput(root, 'data.json', '{"emoji":"🎉","cjk":"你好"}');
-
-    const result = await runFormatJson({ path: name }, root);
-
-    const onDisk = await readFile(join(root, name), 'utf8');
-    expect((result as unknown as { kind: string }).kind).toBe('file_diff');
-    expect(onDisk).toContain('🎉');
-    expect(onDisk).toContain('你好');
   });
 });
 

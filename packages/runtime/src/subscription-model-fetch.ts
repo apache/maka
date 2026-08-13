@@ -1,4 +1,4 @@
-import { redactSecrets } from '@maka/core';
+import { redactSecrets } from '@maka/core/redaction';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import {
   GITHUB_COPILOT_API_VERSION,

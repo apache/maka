@@ -1,4 +1,4 @@
-import type { SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
 import type { NavSelection } from '@maka/ui';
 
 export function sessionMatchesNavSelection(

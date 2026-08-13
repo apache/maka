@@ -1,4 +1,5 @@
-import { type ToolResultContent, type UiLocale } from '@maka/core';
+import { type ToolResultContent } from '@maka/core/events';
+import { type UiLocale } from '@maka/core/ui-locale';
 import { ICON_SIZE, Check, Copy } from '../icons.js';
 import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
 import { previewVariants } from '../primitives/chat.js';

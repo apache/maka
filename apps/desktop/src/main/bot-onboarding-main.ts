@@ -1,23 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
+import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
+import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import type {
-  AppSettings,
-  BotChannelSettings,
   BotOnboardingBrand,
   BotOnboardingProvider,
   BotOnboardingSnapshot,
   BotOnboardingStartInput,
   BotOnboardingState,
-  UpdateAppSettingsInput,
-} from '@maka/core';
-import {
-  generalizedErrorMessageChinese,
-  isBotOnboardingBrand,
-  isBotOnboardingProvider,
-  redactSecrets,
-} from '@maka/core';
-import type { BotRegistry } from '@maka/runtime';
-import { proxiedFetch } from '@maka/runtime';
+} from '@maka/core/bot-onboarding';
+import { generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
+import { isBotOnboardingBrand, isBotOnboardingProvider } from '@maka/core/bot-onboarding';
+import type { BotRegistry } from '@maka/runtime/bots';
+import { proxiedFetch } from '@maka/runtime/bots';
 import type { SettingsStore } from '@maka/storage';
 import { createQQBindTask, pollQQBindTask } from './qq-bot-scan-login.js';
 import { fetchWeChatQrcode, pollWeChatQrcodeStatus } from './wechat-scan-login.js';
@@ -164,7 +159,7 @@ export class BotOnboardingService {
       );
       this.assertCurrent(session);
       session.opaqueToken = result.opaqueToken;
-      session.qrCodeDataUrl = result.qrCodeDataUrl ?? await renderQrCode(result.qrValue ?? '');
+      session.qrCodeDataUrl = result.qrCodeDataUrl ?? (await renderQrCode(result.qrValue ?? ''));
       session.verificationUrl = result.verificationUrl;
       session.pollIntervalMs = clampPollInterval(result.pollIntervalMs);
       session.expiresAt = this.now() + Math.max(1, result.expiresInSeconds) * 1_000;

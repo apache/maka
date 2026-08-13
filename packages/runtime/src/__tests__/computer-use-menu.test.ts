@@ -132,16 +132,6 @@ test('a menu cut short by the executor says so, and a menu merely unopened does 
   assert.doesNotMatch(renderObservationForModel(observation()), /truncated=true\(this menu/);
 });
 
-test('an observation with no menu bar renders as it did before menus existed', () => {
-  const base = observation();
-  const text = renderObservationForModel({
-    ...base,
-    elements: base.elements.slice(0, 3),
-  });
-  assert.doesNotMatch(text, /menu_bar=/);
-  assert.match(text, /elements=3$/m);
-});
-
 test('a wrapper around exactly one thing is collapsed, and its child keeps its id', () => {
   // `mergeSingleItemGroups`, which is one of the thirteen transforms Codex's own
   // renderer runs. Measured here: VS Code 172 of 985 elements, Calculator 4 of

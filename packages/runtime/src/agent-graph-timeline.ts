@@ -2,13 +2,14 @@ import { Buffer } from 'node:buffer';
 import type {
   AgentGraphIntentAdmissionState,
   AgentGraphScheduleUpdateSource,
-  AgentGraphSupervisorWakeStatus,
+} from '@maka/core/agent-graph-schedule';
+import type { AgentGraphSupervisorWakeStatus } from '@maka/core/agent-graph-supervisor-wake';
+import type {
   AgentGraphTimelineMetadataSnapshot,
   AgentGraphTimelineMetadataStore,
-  AgentRunHeader,
-  AgentRunStore,
-  RuntimeEventStore,
-} from '@maka/core';
+} from '@maka/core/agent-graph-timeline';
+import type { AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import { stableHash } from './request-shape.js';
 import {
   readCommittedAgentGraphProjectionWithRuns,

@@ -3,10 +3,9 @@ import { test } from 'node:test';
 import {
   ExternalSessionAdapterRegistry,
   type ExternalSessionAdapter,
-  type SessionHeader,
-  type StoredMessage,
-} from '@maka/core';
-import { headerToSummary } from '@maka/runtime';
+} from '@maka/core/external-session';
+import { type SessionHeader, type StoredMessage } from '@maka/core/session';
+import { headerToSummary } from '@maka/runtime/session-manager';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
 import { EXTERNAL_SESSION_RESULT_MAX_BYTES } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
@@ -49,6 +48,28 @@ test('discovers detected adapters and pages bounded source summaries', async () 
   if (!second.ok) assert.fail('Expected the second catalog page');
   assert.equal(second.result.sessions.length, 4);
   assert.equal(second.result.nextCursor, null);
+});
+
+test('resolves a Project filter before calling the Host adapter', async () => {
+  const adapter = adapterFixture();
+  const filters: unknown[] = [];
+  adapter.listSessions = async (input) => {
+    filters.push(input);
+    return [];
+  };
+  const fixture = coordinatorFixture([adapter]);
+
+  const result = await fixture.coordinator.handlers['external-session.catalog.query'](
+    {
+      adapterId: 'codex',
+      workspace: { kind: 'project', projectId: 'project-1' },
+      includeArchived: true,
+    },
+    context,
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(filters, [{ cwd: '/resolved-project', includeArchived: true }]);
 });
 
 test('stops catalog pages before the encoded result limit', async () => {
@@ -296,6 +317,23 @@ function coordinatorFixture(
       adapters: new ExternalSessionAdapterRegistry(adapters),
       admission,
       sessions: store,
+      workspaceResolver: {
+        resolve: async (target) =>
+          target.kind === 'host_path'
+            ? { target, cwd: target.path, projectId: null }
+            : {
+                target,
+                cwd: '/resolved-project',
+                projectId: target.projectId,
+                project: {
+                  id: target.projectId,
+                  name: 'Project',
+                  locations: [{ path: '/resolved-project', isWorktree: false }],
+                  available: true,
+                  preferredPath: '/resolved-project',
+                },
+              },
+      },
       resolveTarget: async () => ({
         backend: 'ai-sdk',
         llmConnectionSlug: 'default',

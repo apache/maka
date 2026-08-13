@@ -1,3 +1,4 @@
+import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/fake-backend';
 import { expect, test, COMPOSER_INPUT } from './fixtures';
 
 test('shows only slash commands executable in the current session state', async ({
@@ -109,8 +110,10 @@ test('dispatches a staged slash command instead of steering it into a running tu
   invocableSkillsWindow: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
-  await composer.fill('keep streaming '.repeat(80));
+  const runningPrompt = FAKE_HOLD_OPEN_PROMPT;
+  await composer.fill(runningPrompt);
   await composer.press('Enter');
+  await expect(page.locator('.maka-user-message', { hasText: runningPrompt })).toBeVisible();
   await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
 
   await composer.fill('/compact explain');
@@ -131,4 +134,5 @@ test('dispatches a staged slash command instead of steering it into a running tu
 
   await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(1);
   await expect(page.getByText(/Acknowledged steering: \/compact explain/)).toBeVisible();
+  await page.getByRole('button', { name: '停止' }).click();
 });

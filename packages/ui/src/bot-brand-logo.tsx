@@ -9,7 +9,7 @@
 //   used only to identify the matching bot delivery channel in-product,
 //   not to imply endorsement.
 
-import type { BotProvider } from '@maka/core';
+import type { BotProvider } from '@maka/core/bot-chat-settings';
 import type { CSSProperties, ReactElement, ReactNode } from 'react';
 
 export interface BotBrandLogoProps {

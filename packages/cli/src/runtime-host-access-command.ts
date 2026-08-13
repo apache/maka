@@ -4,6 +4,7 @@ import {
 } from '@maka/runtime-host/client';
 import {
   isOperationKey,
+  REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type AccessCredentialPrincipalKind,
   type OperationKey,
@@ -21,7 +22,22 @@ export interface RuntimeHostAccessIssueOptions {
   readonly operationGrants: readonly string[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
+  readonly preset?: RuntimeHostAccessPreset;
 }
+
+export type RuntimeHostAccessPreset = 'desktop-client' | 'terminal-client';
+
+export interface ResolvedRuntimeHostAccessIssue {
+  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly operationGrants: readonly OperationKey[];
+  readonly canPublishClientCapabilities: boolean;
+  readonly canUseHostPaths: boolean;
+}
+
+const CLIENT_CAPABILITY_PUBLICATION_OPERATIONS = new Set<OperationKey>([
+  'client.capability.replace',
+  'client.capability.unregister',
+]);
 
 export interface RuntimeHostAccessRevokeOptions {
   readonly rootPath: string;
@@ -31,15 +47,15 @@ export interface RuntimeHostAccessRevokeOptions {
 export async function runRuntimeHostAccessIssueCli(
   options: RuntimeHostAccessIssueOptions,
 ): Promise<number> {
-  const operationGrants = requireOperationGrants(options.operationGrants);
+  const resolved = resolveRuntimeHostAccessIssue(options);
   const connection = await connectLocalOwner(options.rootPath);
   try {
     const result = await connection.request('access.credential.issue', {
-      principalKind: options.principalKind,
+      principalKind: resolved.principalKind,
       principalId: options.principalId,
-      operationGrants,
-      canPublishClientCapabilities: options.canPublishClientCapabilities,
-      canUseHostPaths: options.canUseHostPaths,
+      operationGrants: resolved.operationGrants,
+      canPublishClientCapabilities: resolved.canPublishClientCapabilities,
+      canUseHostPaths: resolved.canUseHostPaths,
     });
     const credential = await consumeAccessCredentialDelivery(
       options.rootPath,
@@ -52,6 +68,30 @@ export async function runRuntimeHostAccessIssueCli(
   } finally {
     await connection.close();
   }
+}
+
+export function resolveRuntimeHostAccessIssue(
+  options: RuntimeHostAccessIssueOptions,
+): ResolvedRuntimeHostAccessIssue {
+  if (!options.preset) {
+    return {
+      principalKind: options.principalKind,
+      operationGrants: requireOperationGrants(options.operationGrants),
+      canPublishClientCapabilities: options.canPublishClientCapabilities,
+      canUseHostPaths: options.canUseHostPaths,
+    };
+  }
+  const canPublishClientCapabilities = options.preset === 'desktop-client';
+  const operationGrants = REMOTE_OWNER_OPERATION_GRANTS.filter(
+    (operation) =>
+      canPublishClientCapabilities || !CLIENT_CAPABILITY_PUBLICATION_OPERATIONS.has(operation),
+  );
+  return {
+    principalKind: 'remote_owner',
+    operationGrants,
+    canPublishClientCapabilities,
+    canUseHostPaths: false,
+  };
 }
 
 export async function runRuntimeHostAccessRevokeCli(

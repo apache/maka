@@ -1,9 +1,5 @@
-import {
-  parseGraphCommand,
-  parseSwarmCommand,
-  type ParsedGraphCommand,
-  type ParsedSwarmCommand,
-} from '@maka/core';
+import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
+import { parseSwarmCommand, type ParsedSwarmCommand } from '@maka/core/swarm-command';
 import { parseSideChatCommand, type SideChatCommand } from './side-chat-command.js';
 
 export type DesktopSlashCommand =

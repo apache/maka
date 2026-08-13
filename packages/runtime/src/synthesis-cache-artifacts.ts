@@ -1,4 +1,4 @@
-import type { ArtifactRecord, ArtifactSource } from '@maka/core';
+import type { ArtifactRecord, ArtifactSource } from '@maka/core/artifacts';
 import { estimateTokens } from './context-budget-helpers.js';
 import {
   buildSynthesisCacheBlocksFromHydratedArchives,
@@ -13,13 +13,12 @@ import type {
 } from './ai-sdk-compaction-contract.js';
 
 /**
- * The synthesis-cache persistence glue lives here (rather than on a desktop or
- * headless surface) so every embedder shares one implementation — mirroring the
+ * The synthesis-cache persistence glue lives here so every host shares one
+ * implementation — mirroring the
  * sibling `history-compact-artifacts` module. It is typed against the
  * *structural* artifact-store contract below instead of importing
  * `@maka/storage`, keeping runtime storage-agnostic; `@maka/storage`'s
- * `ArtifactStore` satisfies this interface, so desktop and headless both pass
- * their real store unchanged.
+ * `ArtifactStore` satisfies this interface.
  */
 export interface SynthesisCacheArtifactStore {
   create(input: {

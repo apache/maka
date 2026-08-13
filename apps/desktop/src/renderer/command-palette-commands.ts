@@ -26,15 +26,11 @@ import {
   Wifi,
   type LucideIcon,
 } from '@maka/ui/icons';
-import type {
-  ChatDefaultPermissionMode,
-  LlmConnection,
-  PermissionMode,
-  SessionSummary,
-  SettingsSection,
-  ThemePreference,
-  UiLocale,
-} from '@maka/core';
+import type { ChatDefaultPermissionMode, SettingsSection, ThemePreference } from '@maka/core/settings';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { PermissionMode } from '@maka/core/permission';
+import type { SessionSummary } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy } from './locales/shell-copy.js';
 import { SETTINGS_NAV } from './settings/settings-nav.js';
@@ -133,7 +129,7 @@ export function buildCommandList(args: {
    * `search` module nav id is intentionally omitted here.
    */
   onSelectModule?(selection: NavSelection): void;
-  onStartPlanReminder?(): void;
+  onStartScheduledTask?(): void;
 }): Command[] {
   const copy = getShellCopy(args.locale).commandPalette;
   const staticCopy = (id: keyof typeof copy.commands) => copy.commands[id];
@@ -170,15 +166,15 @@ export function buildCommandList(args: {
           },
         ]
       : []),
-    ...(args.onStartPlanReminder
+    ...(args.onStartScheduledTask
       ? [
           {
-          id: 'action:new-plan-reminder',
+          id: 'action:new-scheduled-task',
           kind: 'action' as const,
-            ...staticCopy('action:new-plan-reminder'),
+            ...staticCopy('action:new-scheduled-task'),
           Icon: Clock,
-            keywords: [...copy.staticKeywords['action:new-plan-reminder']],
-          run: args.onStartPlanReminder,
+            keywords: [...copy.staticKeywords['action:new-scheduled-task']],
+          run: args.onStartScheduledTask,
           },
         ]
       : []),
@@ -246,7 +242,7 @@ export function buildCommandList(args: {
       ...staticCopy('nav:automations'),
       Icon: Clock,
       keywords: [...copy.staticKeywords['nav:automations']],
-      run: () => select({ section: 'automations', module: 'plan-reminders' }),
+      run: () => select({ section: 'automations', module: 'scheduled-tasks' }),
     });
     cmds.push({
       id: 'nav:skills',

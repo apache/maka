@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
+import { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
 import {
-  ShellRunProcessManager,
   ShellRunPtyControlClosedError,
   type ShellRunBashInput,
-} from '@maka/runtime';
+} from '@maka/runtime/shell-run-contract';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   openInteractiveShellRunStoreForWrite,

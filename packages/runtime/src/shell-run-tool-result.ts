@@ -1,16 +1,20 @@
 import type {
   PtyShellOutput,
-  ShellRunCompactResult,
   ShellOutput,
   ShellRunOperation,
   ShellRunRecord,
+  ShellRunStatus,
+} from '@maka/core/shell-run';
+import type {
+  ShellRunCompactResult,
   ShellRunSnapshotResult,
   ShellRunStateResult,
-  ShellRunStatus,
   ShellRunUpdate,
   ToolResultContent,
-} from '@maka/core';
-import { encodedTerminalInputActionsByteLength, isActiveShellRunStatus } from '@maka/core';
+} from '@maka/core/events';
+import { encodedTerminalInputActionsByteLength } from '@maka/core/terminal-input';
+
+import { isActiveShellRunStatus } from '@maka/core/shell-run';
 
 import { shellRunResourceRef, type ShellRunWriteInput } from './shell-run-contract.js';
 import { truncateToolOutput } from './tool-output.js';

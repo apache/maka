@@ -10,7 +10,7 @@ import { isPathInside } from '../path-containment.js';
  * matching project files, and renders `<workspace-instructions>` blocks for the
  * system prompt. Project files remain owned by the project; the global files
  * remain owned by the user config directory. This module is the shared
- * read-only boundary for desktop, headless, and CLI entry points.
+ * read-only boundary for Runtime hosts and CLI entry points.
  *
  * Moved here from apps/desktop/src/main/workspace-instructions.ts so the CLI/TUI
  * can inject the same project-instruction fragment as the desktop app without

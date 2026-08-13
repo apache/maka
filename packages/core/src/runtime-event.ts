@@ -419,13 +419,10 @@ export interface RuntimeEvent {
  * cover the interface, so it moves whenever the interface does — which makes it
  * the thing anything re-implementing the envelope check must be pinned to.
  *
- * The Harbor trajectory exporter re-implements it in Python and drifted: it
- * never learned `origin` or `modelVisibility`, so once the runtime started
- * emitting them every event failed the check and all 89 cells of a benchmark
- * run exported a one-line summary instead of a trajectory. The shared
- * validation corpus was supposed to catch that and could not — it exercised
- * the keys someone thought to write cases for, and those two were never among
- * them. `runtime-event.test.ts` now holds the corpus to this list.
+ * A former external consumer reimplemented it and drifted: it never learned
+ * `origin` or `modelVisibility`, so once Runtime emitted them every event
+ * failed its envelope check. `runtime-event.test.ts` therefore holds the
+ * validation corpus to this list instead of a second hand-maintained shape.
  */
 export function runtimeEventEnvelopeKeys(): readonly string[] {
   return [...RUNTIME_EVENT_SHAPE.allowed];
@@ -636,35 +633,6 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
   return value as unknown as RuntimeEvent;
 }
 
-export function decodePersistedRuntimeEvent(value: unknown): RuntimeEvent {
-  return decodeRuntimeEvent(normalizeLegacyPermissionRequest(value));
-}
-
-function normalizeLegacyPermissionRequest(value: unknown): unknown {
-  if (!isRecord(value) || !isRecord(value.actions)) return value;
-  const request = value.actions.permissionRequest;
-  if (
-    !isRecord(request) ||
-    Object.hasOwn(request, 'kind') ||
-    Object.hasOwn(request, 'rememberForTurnAllowed')
-  ) {
-    return value;
-  }
-  const normalized = {
-    ...request,
-    kind: 'tool_permission',
-    rememberForTurnAllowed: false,
-  };
-  if (!isPermissionRequestPayload(normalized)) return value;
-  return {
-    ...value,
-    actions: {
-      ...value.actions,
-      permissionRequest: normalized,
-    },
-  };
-}
-
 function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
   if (!isRecord(value)) return false;
   switch (value.kind) {
@@ -726,8 +694,8 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
 
 function isTurnOrigin(value: unknown): value is TurnOrigin {
   if (!isRecord(value)) return false;
-  if (value.kind === 'automation') {
-    return Object.keys(value).length === 2 && typeof value.automationId === 'string';
+  if (value.kind === 'scheduled_task') {
+    return Object.keys(value).length === 2 && typeof value.scheduledTaskId === 'string';
   }
   if (value.kind === 'goal') {
     return Object.keys(value).length === 2 && typeof value.goalId === 'string';

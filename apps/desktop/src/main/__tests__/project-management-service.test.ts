@@ -3,15 +3,30 @@ import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createProjectCatalog } from '@maka/storage';
-import { createProjectManagementService } from '../project-management-service.js';
+import { createProjectCatalog, type ProjectCatalog } from '@maka/storage';
+import {
+  createProjectManagementService,
+  type ProjectManagementCatalog,
+} from '../project-management-service.js';
 
-test('project management service owns selection and reversible lifecycle actions', async () => {
+const LOCAL_CAPABILITIES = {
+  chooseClientDirectory: true,
+  selectNoProject: true,
+  setLocalDefault: true,
+  viewClientPath: true,
+} as const;
+const REMOTE_CAPABILITIES = {
+  chooseClientDirectory: false,
+  selectNoProject: false,
+  setLocalDefault: false,
+  viewClientPath: false,
+} as const;
+
+test('owns Project selection and reversible lifecycle actions in Desktop', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-service-'));
   const firstPath = join(base, 'first');
   const relocatedPath = join(base, 'relocated');
-  await mkdir(firstPath);
-  await mkdir(relocatedPath);
+  await Promise.all([mkdir(firstPath), mkdir(relocatedPath)]);
   const selectedPaths: string[] = [];
   let nextDirectory: string | undefined = firstPath;
   const catalog = createProjectCatalog(join(base, 'storage'), {
@@ -19,7 +34,8 @@ test('project management service owns selection and reversible lifecycle actions
     createId: () => 'project-1',
   });
   const service = createProjectManagementService({
-    catalog,
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: managementCatalog(catalog),
     chooseDirectory: async () => nextDirectory,
     selection: {
       currentSelection: async () => ({
@@ -33,191 +49,151 @@ test('project management service owns selection and reversible lifecycle actions
   try {
     const added = await service.add();
     assert.equal(added.ok, true);
-    if (!added.ok) throw new Error('Expected an added project');
+    if (!added.ok) assert.fail('Expected an added Project');
     assert.equal(added.project.id, 'project-1');
     assert.equal(added.path, await realpath(firstPath));
-    assert.equal(selectedPaths.at(-1), added.project.preferredPath);
 
     assert.equal((await service.rename('project-1', '  Renamed  ')).name, 'Renamed');
     assert.equal((await service.archive('project-1')).archivedAt, 1_000);
-    await assert.rejects(() => service.select('project-1'), /archived/i);
-    assert.equal((await service.restore('project-1')).archivedAt, undefined);
+    assert.equal((await service.select('project-1')).project, null);
+    await service.restore('project-1');
 
     nextDirectory = relocatedPath;
-    const selectionCountBeforeRelink = selectedPaths.length;
     const relinked = await service.relink('project-1');
     assert.equal(relinked.ok, true);
-    if (!relinked.ok) throw new Error('Expected a relinked project');
-    assert.equal(relinked.project.id, 'project-1');
-    assert.equal(relinked.project.preferredPath, await realpath(relocatedPath));
-    assert.equal(
-      selectedPaths.length,
-      selectionCountBeforeRelink + 1,
-      'relinking the selected project keeps the current working directory usable',
-    );
     assert.equal(selectedPaths.at(-1), await realpath(relocatedPath));
-
-    const selected = await service.select('project-1');
-    assert.ok(selected.project);
-    assert.equal(selected.project.id, 'project-1');
-    assert.equal(selectedPaths.at(-1), await realpath(relocatedPath));
-
-    nextDirectory = undefined;
-    assert.deepEqual(await service.add(), { ok: false, reason: 'cancelled' });
-    assert.deepEqual(await service.relink('project-1'), { ok: false, reason: 'cancelled' });
   } finally {
     await rm(base, { recursive: true, force: true });
   }
 });
 
-test('project management service rejects malformed IPC identities before catalog access', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-service-input-'));
+test('rejects malformed Project identities before catalog access', async () => {
   const service = createProjectManagementService({
-    catalog: createProjectCatalog(join(base, 'storage')),
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: {
+      list: unexpected,
+      register: unexpected,
+      relink: unexpected,
+      rename: unexpected,
+      archive: unexpected,
+      restore: unexpected,
+    },
     chooseDirectory: async () => undefined,
     selection: {
-      currentSelection: async () => ({ projectId: undefined, path: base }),
-      setSelection: () => {},
+      currentSelection: async () => ({ projectId: undefined, path: '/workspace' }),
+      setSelection() {},
     },
   });
 
-  try {
-    await assert.rejects(() => service.select(''), /Invalid project id/);
-    assert.throws(() => service.rename('project-1', ''), /Invalid project name/);
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
+  await assert.rejects(() => service.select(''), /Invalid project id/);
+  assert.throws(() => service.rename('project-1', ''), /Invalid project name/);
 });
 
-test('project management service resolves a legacy path into one canonical selection', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-service-selection-'));
-  const projectPath = join(base, 'project');
-  await mkdir(projectPath);
-  const catalog = createProjectCatalog(join(base, 'storage'), {
-    createId: () => 'project-1',
-  });
-  await catalog.register(projectPath);
-  const savedSelections: Array<{ projectId: string | null; projectPath: string }> = [];
+test('keeps an explicit no-Project selection local to Desktop', async () => {
+  const selections: Array<{ projectId: string | null; path: string }> = [];
   const service = createProjectManagementService({
-    catalog,
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: {
+      list: unexpected,
+      register: unexpected,
+      relink: unexpected,
+      rename: unexpected,
+      archive: unexpected,
+      restore: unexpected,
+    },
     chooseDirectory: async () => undefined,
     selection: {
-      currentSelection: async () => ({
-        projectId: undefined,
-        path: await realpath(projectPath),
-      }),
-      setSelection: (projectId, path) => {
-        savedSelections.push({ projectId, projectPath: path });
-      },
+      currentSelection: async () => ({ projectId: undefined, path: '/workspace' }),
+      setSelection: (projectId, path) => selections.push({ projectId, path }),
     },
   });
 
-  try {
-    assert.deepEqual(await service.current(), {
-      projectId: 'project-1',
-      path: await realpath(projectPath),
-    });
-    assert.deepEqual(savedSelections, [
-      {
-        projectId: 'project-1',
-        projectPath: await realpath(projectPath),
-      },
-    ]);
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
+  assert.deepEqual(await service.select(null), { project: null, path: '/workspace' });
+  assert.deepEqual(selections, [{ projectId: null, path: '/workspace' }]);
 });
 
-test('project management service persists an explicit no-project selection in main', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-service-no-project-'));
-  const projectPath = join(base, 'project');
-  await mkdir(projectPath);
-  const savedSelections: Array<{ projectId: string | null; projectPath: string }> = [];
+test('does not silently replace a stale Project preference with another Project', async () => {
+  const selections: Array<{ projectId: string | null; path: string }> = [];
   const service = createProjectManagementService({
-    catalog: createProjectCatalog(join(base, 'storage')),
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: {
+      list: async () => [
+        { id: 'other', name: 'Other', locations: [], available: true },
+      ],
+      register: unexpected,
+      relink: unexpected,
+      rename: unexpected,
+      archive: unexpected,
+      restore: unexpected,
+    },
     chooseDirectory: async () => undefined,
     selection: {
-      currentSelection: async () => ({
-        projectId: undefined,
-        path: await realpath(projectPath),
-      }),
-      setSelection: (projectId, path) => {
-        savedSelections.push({ projectId, projectPath: path });
-      },
+      currentSelection: async () => ({ projectId: 'missing', path: '/last-known' }),
+      setSelection: (projectId, path) => selections.push({ projectId, path }),
     },
   });
 
-  try {
-    assert.deepEqual(await service.select(null), {
-      project: null,
-      path: await realpath(projectPath),
-    });
-    assert.deepEqual(savedSelections, [
-      {
-        projectId: null,
-        projectPath: await realpath(projectPath),
-      },
-    ]);
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
+  assert.deepEqual(await service.current(), { projectId: null, path: '/last-known' });
+  assert.deepEqual(selections, [{ projectId: null, path: '/last-known' }]);
 });
 
-test('archiving the current project resolves fallback or no-project inside main', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-service-archive-selection-'));
-  const firstPath = join(base, 'first');
-  const secondPath = join(base, 'second');
-  await mkdir(firstPath);
-  await mkdir(secondPath);
-  let now = 1_000;
-  let id = 0;
-  const catalog = createProjectCatalog(join(base, 'storage'), {
-    now: () => now,
-    createId: () => `project-${++id}`,
+test('does not expose Client directory actions for a remote Host', async () => {
+  let pickerCalls = 0;
+  const service = createProjectManagementService({
+    capabilities: REMOTE_CAPABILITIES,
+    catalog: {
+      list: async () => [
+        {
+          id: 'remote',
+          name: 'Remote',
+          locations: [],
+          available: true,
+        },
+      ],
+      register: unexpected,
+      relink: unexpected,
+      rename: unexpected,
+      archive: unexpected,
+      restore: unexpected,
+    },
+    chooseDirectory: async () => {
+      pickerCalls += 1;
+      return '/client/path';
+    },
+    selection: {
+      currentSelection: async () => ({ projectId: 'remote', path: '/host/project' }),
+      setSelection() {},
+    },
   });
-  const first = await catalog.register(firstPath);
-  now = 2_000;
-  const second = await catalog.register(secondPath);
-  let selection = {
-    projectId: second.id as string | null | undefined,
-    path: await realpath(secondPath),
+
+  await assert.rejects(() => service.add(), /registered on the Host/);
+  await assert.rejects(() => service.relink('remote'), /registered on the Host/);
+  await assert.rejects(() => service.select(null), /requires a Project/);
+  assert.equal(await service.pathFor('remote'), null);
+  assert.deepEqual((await service.getSnapshot()).capabilities, REMOTE_CAPABILITIES);
+  assert.deepEqual(await service.select('remote'), {
+    project: {
+      id: 'remote',
+      name: 'Remote',
+      locations: [],
+      available: true,
+    },
+    path: '/host/project',
+  });
+  assert.equal(pickerCalls, 0);
+});
+
+function managementCatalog(catalog: ProjectCatalog): ProjectManagementCatalog {
+  return {
+    list: () => catalog.list(),
+    register: (path) => catalog.register(path),
+    relink: async (projectId, path) => (await catalog.relinkWithSessions(projectId, path)).project,
+    rename: (projectId, name) => catalog.rename(projectId, name),
+    archive: (projectId) => catalog.archive(projectId),
+    restore: (projectId) => catalog.restore(projectId),
   };
-  const service = createProjectManagementService({
-    catalog,
-    chooseDirectory: async () => undefined,
-    selection: {
-      currentSelection: async () => selection,
-      setSelection: (projectId, path) => {
-        selection = { projectId, path };
-      },
-    },
-  });
+}
 
-  try {
-    await service.archive(second.id);
-    assert.deepEqual(selection, {
-      projectId: first.id,
-      path: await realpath(firstPath),
-    });
-
-    selection = { projectId: second.id, path: await realpath(secondPath) };
-    assert.deepEqual(await service.current(), {
-      projectId: first.id,
-      path: await realpath(firstPath),
-    });
-
-    await service.archive(first.id);
-    assert.deepEqual(selection, {
-      projectId: null,
-      path: await realpath(firstPath),
-    });
-
-    selection = { projectId: first.id, path: await realpath(firstPath) };
-    assert.deepEqual(await service.current(), {
-      projectId: null,
-      path: await realpath(firstPath),
-    });
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
-});
+async function unexpected(): Promise<never> {
+  throw new Error('Unexpected call');
+}

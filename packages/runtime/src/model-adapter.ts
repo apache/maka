@@ -38,6 +38,7 @@ import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.
 import {
   classifyError,
   errorPresentationFromClass,
+  providerFailureSummary,
   providerRetryMetadata,
 } from './provider-error-classification.js';
 import {
@@ -321,7 +322,7 @@ export class ModelAdapter {
           }
         } catch (error) {
           succeeded = false;
-          yield { kind: 'error', failure: normalizeModelFailure(error) };
+          yield { kind: 'error', failure: normalizeProviderFailure(error) };
         } finally {
           if (!continuation.lane) return;
           if (!succeeded) {
@@ -459,7 +460,7 @@ export class ModelAdapter {
   }
 
   normalizeFailure(error: unknown): ModelFailure {
-    return normalizeModelFailure(error);
+    return normalizeProviderFailure(error);
   }
 
   classifyError(error: unknown): string {
@@ -483,10 +484,9 @@ export class ModelAdapter {
       // An upstream that drops the connection mid-answer lands here: it yields
       // no error part and throws nothing, so these are the only signal that it
       // happened. Calling them `end_turn` asserts the model said its piece —
-      // the one thing we know we cannot claim. A benchmark cell recorded
+      // the one thing we know we cannot claim. A recorded run once reached
       // `status: completed` on exactly this shape while its agent was still
-      // mid-task, caught only because the proxy noticed the terminal SSE event
-      // never arrived.
+      // mid-task, caught only because the terminal SSE event never arrived.
       //
       // These are reached when nothing else named the stop: the SDK buckets
       // every reason it does not recognize into `other` too, and
@@ -783,7 +783,7 @@ function translateChunk(
       return [{ kind: 'tool-call', toolCall }];
     }
     case 'error':
-      return [{ kind: 'error', failure: normalizeModelFailure(chunk.error) }];
+      return [{ kind: 'error', failure: normalizeProviderFailure(chunk.error) }];
     default:
       return [];
   }
@@ -849,6 +849,17 @@ function normalizeModelFailure(error: unknown): ModelFailure {
     ...(retry.retryAfterMs !== undefined ? { retryAfterMs: retry.retryAfterMs } : {}),
     ...(code !== undefined ? { code } : {}),
     message: presentation.message ?? generalizedErrorMessage(error),
+  };
+}
+
+function normalizeProviderFailure(error: unknown): ModelFailure {
+  if (isModelFailure(error)) return error;
+  const summary = providerFailureSummary(error);
+  const failure = normalizeModelFailure(error);
+  return {
+    ...failure,
+    ...(summary?.code !== undefined ? { code: summary.code } : {}),
+    ...(failure.kind === 'unknown' && summary !== undefined ? { message: summary.message } : {}),
   };
 }
 

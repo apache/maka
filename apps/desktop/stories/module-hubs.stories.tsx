@@ -1,8 +1,9 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { DailyReviewArchive, DailyReviewSummary, PlanReminder } from '@maka/core';
+import type { DailyReviewArchive, DailyReviewSummary } from '@maka/core/daily-review';
+import type { ScheduledTask, ScheduledTaskRun } from '@maka/core/scheduled-task';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import {
-  AutomationsPage,
+  ScheduledTasksPage,
   DailyReviewPage,
   getSharedUiCopy,
   ModuleHubSelector,
@@ -30,20 +31,20 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30);
-const PLAN_NOW = Date.now();
+const TASK_NOW = Date.now();
 const noop = () => {};
 const CONFIGURED_CRON_LAST_RUN = {
   id: 'run-1',
-  at: PLAN_NOW - 86_400_000,
-  status: 'triggered',
+  at: TASK_NOW - 86_400_000,
+  outcome: 'ok',
   message: '已生成进度摘要。',
-} as const;
+} satisfies ScheduledTaskRun;
 const CONFIGURED_COMPLETED_LAST_RUN = {
   id: 'run-done',
-  at: PLAN_NOW - 2 * 86_400_000,
-  status: 'triggered',
+  at: TASK_NOW - 2 * 86_400_000,
+  outcome: 'ok',
   message: '已发送。',
-} as const;
+} satisfies ScheduledTaskRun;
 
 const INSTALLED_SKILLS: SkillEntry[] = [
   {
@@ -192,181 +193,174 @@ const BUNDLED_SKILLS: NonNullable<ComponentProps<typeof SkillsPage>['bundledSkil
   },
 ];
 
-const CONFIGURED_REMINDERS: PlanReminder[] = [
+type StoryScheduledTask = Omit<
+  ScheduledTask,
+  'lastFireAt' | 'maxFires' | 'expiresAt' | 'createdBy' | 'lastError'
+>;
+
+function storyScheduledTask(task: StoryScheduledTask): ScheduledTask {
+  return {
+    ...task,
+    lastFireAt: task.runs[0]?.at ?? null,
+    maxFires: null,
+    expiresAt: null,
+    createdBy: { kind: 'user' },
+    lastError: task.runs[0]?.outcome === 'failed' ? task.runs[0].message : null,
+  };
+}
+
+const CONFIGURED_TASKS: ScheduledTask[] = ([
   {
-    id: 'plan-weekly',
+    id: 'task-weekly',
     title: '每周发布风险复盘',
-    note: '聚合本周未解决的发布风险项。',
-    schedule: { kind: 'recurring', startAt: PLAN_NOW - 7 * 86_400_000, recurrence: 'weekly' },
-    delivery: { channel: 'local' },
-    status: 'scheduled',
-    enabled: true,
-    createdAt: PLAN_NOW - 14 * 86_400_000,
-    updatedAt: PLAN_NOW - 2 * 86_400_000,
-    nextRunAt: PLAN_NOW + 2 * 86_400_000,
+    intent: { kind: 'text', body: '聚合本周未解决的发布风险项。' },
+    schedule: { kind: 'calendar', anchorAt: TASK_NOW - 7 * 86_400_000, recurrence: 'weekly' },
+    effect: { kind: 'notify', channel: 'local' },
+    status: 'active',
+    createdAt: TASK_NOW - 14 * 86_400_000,
+    updatedAt: TASK_NOW - 2 * 86_400_000,
+    nextFireAt: TASK_NOW + 2 * 86_400_000,
     runs: [],
-    runCount: 0,
+    fireCount: 0,
   },
   {
-    id: 'plan-cron',
+    id: 'task-cron',
     title: '工作日早 9 点同步进度',
-    note: '',
-    schedule: { kind: 'cron', startAt: PLAN_NOW - 30 * 86_400_000, expression: '0 9 * * 1-5' },
-    delivery: { channel: 'local' },
-    status: 'scheduled',
-    enabled: true,
-    createdAt: PLAN_NOW - 30 * 86_400_000,
-    updatedAt: PLAN_NOW - 30 * 86_400_000,
-    nextRunAt: PLAN_NOW + 18 * 3_600_000,
-    lastRun: CONFIGURED_CRON_LAST_RUN,
+    intent: { kind: 'text', body: '' },
+    schedule: { kind: 'cron', startAt: TASK_NOW - 30 * 86_400_000, expression: '0 9 * * 1-5' },
+    effect: { kind: 'notify', channel: 'local' },
+    status: 'active',
+    createdAt: TASK_NOW - 30 * 86_400_000,
+    updatedAt: TASK_NOW - 30 * 86_400_000,
+    nextFireAt: TASK_NOW + 18 * 3_600_000,
     runs: [CONFIGURED_CRON_LAST_RUN],
-    runCount: 1,
+    fireCount: 1,
   },
   {
-    id: 'plan-paused',
+    id: 'task-paused',
     title: '一次性补一次截图基线',
-    note: '发布前再补一轮稳定基线。',
-    schedule: { kind: 'once', runAt: PLAN_NOW + 3 * 86_400_000 },
-    delivery: { channel: 'local' },
+    intent: { kind: 'text', body: '发布前再补一轮稳定基线。' },
+    schedule: { kind: 'once', runAt: TASK_NOW + 3 * 86_400_000 },
+    effect: { kind: 'notify', channel: 'local' },
     status: 'paused',
-    enabled: false,
-    createdAt: PLAN_NOW - 5 * 86_400_000,
-    updatedAt: PLAN_NOW - 86_400_000,
+    createdAt: TASK_NOW - 5 * 86_400_000,
+    updatedAt: TASK_NOW - 86_400_000,
+    nextFireAt: null,
     runs: [],
-    runCount: 0,
+    fireCount: 0,
   },
   {
-    id: 'plan-completed',
+    id: 'task-completed',
     title: '发布日提醒',
-    note: '',
-    schedule: { kind: 'once', runAt: PLAN_NOW - 2 * 86_400_000 },
-    delivery: { channel: 'local' },
+    intent: { kind: 'text', body: '' },
+    schedule: { kind: 'once', runAt: TASK_NOW - 2 * 86_400_000 },
+    effect: { kind: 'notify', channel: 'local' },
     status: 'completed',
-    enabled: false,
-    createdAt: PLAN_NOW - 10 * 86_400_000,
-    updatedAt: PLAN_NOW - 2 * 86_400_000,
-    lastRun: CONFIGURED_COMPLETED_LAST_RUN,
+    createdAt: TASK_NOW - 10 * 86_400_000,
+    updatedAt: TASK_NOW - 2 * 86_400_000,
+    nextFireAt: null,
     runs: [CONFIGURED_COMPLETED_LAST_RUN],
-    runCount: 1,
+    fireCount: 1,
   },
   // The blocked row rides along with the healthy ones rather than in a story of
   // its own: a page whose whole job is scanning a list is only honest about the
   // attention state when that state has neighbours to stand out from. Same
   // reason ExtensionsMcpConfigured shows one healthy and one failed server.
   {
-    id: 'plan-delivery-blocked',
+    id: 'task-delivery-blocked',
     title: '发送每日客户反馈摘要',
-    note: '汇总过去 24 小时的反馈并投递到项目群。',
-    schedule: { kind: 'cron', startAt: PLAN_NOW - 30 * 86_400_000, expression: '0 18 * * 1-5' },
-    delivery: { channel: 'bot', platform: 'telegram', chatId: 'project-room' },
-    status: 'scheduled',
-    enabled: true,
-    createdAt: PLAN_NOW - 30 * 86_400_000,
-    updatedAt: PLAN_NOW - 60 * 60_000,
-    nextRunAt: PLAN_NOW + 8 * 60 * 60_000,
-    lastRun: {
-      id: 'run-blocked',
-      at: PLAN_NOW - 60 * 60_000,
-      status: 'blocked',
-      message: 'Telegram 投递不可用：机器人已被移出目标群聊。',
-      blockReason: 'bot_delivery_unavailable',
-    },
+    intent: { kind: 'text', body: '汇总过去 24 小时的反馈并投递到项目群。' },
+    schedule: { kind: 'cron', startAt: TASK_NOW - 30 * 86_400_000, expression: '0 18 * * 1-5' },
+    effect: { kind: 'notify', channel: 'bot', platform: 'telegram', chatId: 'project-room' },
+    status: 'active',
+    createdAt: TASK_NOW - 30 * 86_400_000,
+    updatedAt: TASK_NOW - 60 * 60_000,
+    nextFireAt: TASK_NOW + 8 * 60 * 60_000,
     runs: [
       {
         id: 'run-blocked',
-        at: PLAN_NOW - 60 * 60_000,
-        status: 'blocked',
+        at: TASK_NOW - 60 * 60_000,
+        outcome: 'blocked',
         message: 'Telegram 投递不可用：机器人已被移出目标群聊。',
-        blockReason: 'bot_delivery_unavailable',
       },
     ],
-    runCount: 12,
+    fireCount: 12,
   },
-  // Eighth reminder: the list's own control bar (search / sort / filter) only
+  // Eighth task: the list's own control bar (search / sort / filter) only
   // appears at eight, so without this row the story could never show it — and
   // the controls are the widest thing the page's header carries.
   {
-    id: 'plan-monthly-audit',
+    id: 'task-monthly-audit',
     title: '每月依赖许可证审计',
-    note: '核对新引入依赖的许可证与来源。',
-    schedule: { kind: 'recurring', startAt: PLAN_NOW - 40 * 86_400_000, recurrence: 'monthly' },
-    delivery: { channel: 'local' },
-    status: 'scheduled',
-    enabled: true,
-    createdAt: PLAN_NOW - 40 * 86_400_000,
-    updatedAt: PLAN_NOW - 9 * 86_400_000,
-    nextRunAt: PLAN_NOW + 6 * 86_400_000,
+    intent: { kind: 'text', body: '核对新引入依赖的许可证与来源。' },
+    schedule: { kind: 'calendar', anchorAt: TASK_NOW - 40 * 86_400_000, recurrence: 'monthly' },
+    effect: { kind: 'notify', channel: 'local' },
+    status: 'active',
+    createdAt: TASK_NOW - 40 * 86_400_000,
+    updatedAt: TASK_NOW - 9 * 86_400_000,
+    nextFireAt: TASK_NOW + 6 * 86_400_000,
     runs: [],
-    runCount: 0,
+    fireCount: 0,
   },
   {
-    id: 'plan-standup',
+    id: 'task-standup',
     title: '每日站会前汇总阻塞项',
-    note: '',
-    schedule: { kind: 'cron', startAt: PLAN_NOW - 20 * 86_400_000, expression: '30 9 * * 1-5' },
-    delivery: { channel: 'local' },
-    status: 'scheduled',
-    enabled: true,
-    createdAt: PLAN_NOW - 20 * 86_400_000,
-    updatedAt: PLAN_NOW - 3 * 86_400_000,
-    nextRunAt: PLAN_NOW + 20 * 3_600_000,
+    intent: { kind: 'text', body: '' },
+    schedule: { kind: 'cron', startAt: TASK_NOW - 20 * 86_400_000, expression: '30 9 * * 1-5' },
+    effect: { kind: 'notify', channel: 'local' },
+    status: 'active',
+    createdAt: TASK_NOW - 20 * 86_400_000,
+    updatedAt: TASK_NOW - 3 * 86_400_000,
+    nextFireAt: TASK_NOW + 20 * 3_600_000,
     runs: [],
-    runCount: 0,
+    fireCount: 0,
   },
   {
-    id: 'plan-quarter-close',
+    id: 'task-quarter-close',
     title: '季度收尾清点未归档会话',
-    note: '把仍未归档的会话列成一张清单。',
-    schedule: { kind: 'once', runAt: PLAN_NOW + 21 * 86_400_000 },
-    delivery: { channel: 'local' },
+    intent: { kind: 'text', body: '把仍未归档的会话列成一张清单。' },
+    schedule: { kind: 'once', runAt: TASK_NOW + 21 * 86_400_000 },
+    effect: { kind: 'notify', channel: 'local' },
     status: 'paused',
-    enabled: false,
-    createdAt: PLAN_NOW - 11 * 86_400_000,
-    updatedAt: PLAN_NOW - 4 * 86_400_000,
+    createdAt: TASK_NOW - 11 * 86_400_000,
+    updatedAt: TASK_NOW - 4 * 86_400_000,
+    nextFireAt: null,
     runs: [],
-    runCount: 0,
+    fireCount: 0,
   },
-];
+] satisfies StoryScheduledTask[]).map(storyScheduledTask);
 
-const LONG_CONTENT_REMINDERS: PlanReminder[] = [
+const LONG_CONTENT_TASKS: ScheduledTask[] = ([
   {
-    id: 'plan-hostile-content',
+    id: 'task-hostile-content',
     title: '每周一早上汇总所有仍未关闭、缺少明确负责人或预计完成日期、并且已经连续两个工作日没有更新的跨团队发布阻塞项',
-    note: '从工程、设计、法务与运营项目中读取发布风险，保留原始链接、负责人、最后更新时间和下一步；如果投递目标不可用，必须在本地提醒中完整说明失败原因，而不是静默跳过。',
+    intent: { kind: 'text', body: '从工程、设计、法务与运营项目中读取发布风险，保留原始链接、负责人、最后更新时间和下一步；如果投递目标不可用，必须在本地提醒中完整说明失败原因，而不是静默跳过。' },
     schedule: {
       kind: 'cron',
-      startAt: PLAN_NOW - 90 * 86_400_000,
+      startAt: TASK_NOW - 90 * 86_400_000,
       expression: '15 8 * * 1',
     },
-    delivery: {
+    effect: {
+      kind: 'notify',
       channel: 'bot',
       platform: 'telegram',
       chatId: 'release-coordination-room-with-an-intentionally-hostile-identifier',
     },
-    status: 'scheduled',
-    enabled: true,
-    createdAt: PLAN_NOW - 90 * 86_400_000,
-    updatedAt: PLAN_NOW - 2 * 60 * 60_000,
-    nextRunAt: PLAN_NOW + 5 * 86_400_000,
-    lastRun: {
-      id: 'run-long',
-      at: PLAN_NOW - 2 * 86_400_000,
-      status: 'blocked',
-      message: '隐私浏览正在进行，因此本轮任务没有读取工作区或向外部群聊投递。',
-      blockReason: 'incognito_active',
-    },
+    status: 'active',
+    createdAt: TASK_NOW - 90 * 86_400_000,
+    updatedAt: TASK_NOW - 2 * 60 * 60_000,
+    nextFireAt: TASK_NOW + 5 * 86_400_000,
     runs: [
       {
         id: 'run-long',
-        at: PLAN_NOW - 2 * 86_400_000,
-        status: 'blocked',
+        at: TASK_NOW - 2 * 86_400_000,
+        outcome: 'blocked',
         message: '隐私浏览正在进行，因此本轮任务没有读取工作区或向外部群聊投递。',
-        blockReason: 'incognito_active',
       },
     ],
-    runCount: 37,
+    fireCount: 37,
   },
-];
+] satisfies StoryScheduledTask[]).map(storyScheduledTask);
 
 const DAILY_REVIEW_SUMMARY: DailyReviewSummary = {
   day: { fromMs: Date.UTC(2026, 6, 1), toMs: Date.UTC(2026, 6, 2) },
@@ -651,17 +645,17 @@ function ExtensionsMcpSurface() {
   );
 }
 
-function ScheduledPlanRemindersSurface(props: { reminders?: PlanReminder[] }) {
+function ScheduledTasksSurface(props: { tasks?: ScheduledTask[] }) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.automations;
   return (
     <ModuleSurface agentsView="cron">
-      <AutomationsPage
+      <ScheduledTasksPage
         hubHeader={{
           title: copy.title,
           subtitle: copy.description,
-          badge: <ModuleHubSelector hub="automations" value="plan-reminders" onChange={() => {}} />,
+          badge: <ModuleHubSelector hub="automations" value="scheduled-tasks" onChange={() => {}} />,
         }}
-        reminders={props.reminders ?? []}
+        tasks={props.tasks ?? []}
         keepSystemAwake={false}
         onKeepSystemAwakeChange={async () => {}}
         onRefresh={noop}
@@ -912,26 +906,26 @@ export const ExtensionsMcpNarrow: Story = {
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 
-// Real path: sidebar → 定时任务 → 计划提醒, before any reminder exists.
-export const ScheduledPlanReminders: Story = {
-  render: () => <ScheduledPlanRemindersSurface />,
+// Real path: sidebar → 定时任务 → 定时任务, before any task exists.
+export const ScheduledTasks: Story = {
+  render: () => <ScheduledTasksSurface />,
 };
 
-// Real path: sidebar → 定时任务 → 计划提醒, with recurring, paused, completed and
-// delivery-blocked reminders in one list.
+// Real path: sidebar → 定时任务 → 定时任务, with recurring, paused, completed and
+// delivery-blocked tasks in one list.
 //
 // 保持系统唤醒 has no story: it is persisted page state the page itself never
 // renders, so a story for it would show pixels identical to this one. The state
 // lives on the settings menu item rather than this page.
-export const ScheduledPlanRemindersConfigured: Story = {
-  render: () => <ScheduledPlanRemindersSurface reminders={CONFIGURED_REMINDERS} />,
+export const ScheduledTasksConfigured: Story = {
+  render: () => <ScheduledTasksSurface tasks={CONFIGURED_TASKS} />,
 };
 
-// Real path: sidebar → 定时任务 → 计划提醒 → click a task row, which opens the
+// Real path: sidebar → 定时任务 → 定时任务 → click a task row, which opens the
 // inspector where every per-task control now lives. Wide only: below 1024px the
 // page drops the inspector rather than squeeze two columns into one.
-export const ScheduledPlanRemindersInspector: Story = {
-  render: () => <ScheduledPlanRemindersSurface reminders={CONFIGURED_REMINDERS} />,
+export const ScheduledTasksInspector: Story = {
+  render: () => <ScheduledTasksSurface tasks={CONFIGURED_TASKS} />,
   play: async ({ canvasElement }) => {
     const row = await waitForStoryButton(
       canvasElement,
@@ -942,9 +936,9 @@ export const ScheduledPlanRemindersInspector: Story = {
   },
 };
 
-// Real path: sidebar → 定时任务 → 计划提醒, with user-authored content at storage limits.
-export const ScheduledPlanRemindersLongContent: Story = {
-  render: () => <ScheduledPlanRemindersSurface reminders={LONG_CONTENT_REMINDERS} />,
+// Real path: sidebar → 定时任务 → 定时任务, with user-authored content at storage limits.
+export const ScheduledTasksLongContent: Story = {
+  render: () => <ScheduledTasksSurface tasks={LONG_CONTENT_TASKS} />,
 };
 
 // Real path: sidebar → 定时任务 → 每日回顾, with reviews already generated.

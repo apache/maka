@@ -56,7 +56,7 @@
 import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import type { ToolOutputChunk } from './materialize.js';
 import { redactSecrets } from './redact.js';
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 /**

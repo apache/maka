@@ -1,11 +1,11 @@
+import { buildWebSearchTool } from '@maka/runtime/web-search-tool';
 import {
-  buildWebSearchTool,
   createProxiedFetchTransport,
-  queryTavily,
-  type MakaTool,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
-} from '@maka/runtime';
+} from '@maka/runtime/network/scoped-fetch-transport';
+import { queryTavily } from '@maka/runtime/tavily-search';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
 import type { WebSearchResponse } from '@maka/core/web-search';
 import type {
   ResolveWebSearchExecutionInput,

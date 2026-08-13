@@ -7,27 +7,32 @@ import type { SessionHeader } from '@maka/core/session';
 import type { ModelCallKind } from '@maka/core/usage-stats/types';
 import {
   buildPricingLookup,
-  buildProviderOptions,
-  buildSessionRecapMessages,
-  buildSessionTitlePrompt,
-  cleanGeneratedSessionTitle,
-  createProxiedFetchTransport,
-  generateToolFreeModelCall,
-  generateProviderPrefixModelCall,
-  modelUsesAnthropicMessages,
-  getAIModel,
   llmCallUsageFields,
   recordLlmCallStrict,
+} from '@maka/runtime/telemetry';
+import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import { buildSessionRecapMessages } from '@maka/runtime/session-recap';
+import {
+  buildSessionTitlePrompt,
+  cleanGeneratedSessionTitle,
   SESSION_TITLE_GENERATION_TIMEOUT_MS,
-  type BackendFactoryContext,
-  type GoalEvaluatorResource,
-  type ModelMessage,
+} from '@maka/runtime/session-title';
+import {
+  createProxiedFetchTransport,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
+} from '@maka/runtime/network/scoped-fetch-transport';
+import {
+  generateToolFreeModelCall,
+  generateProviderPrefixModelCall,
   type ToolFreeModelCallContent,
-  type MemoryExtractionSourceSnapshot,
   ProviderPrefixModelCallUnavailableError,
-} from '@maka/runtime';
+} from '@maka/runtime/tool-free-model-call';
+import { modelUsesAnthropicMessages } from '@maka/runtime/model-runtime';
+import { type BackendFactoryContext } from '@maka/runtime/session-manager';
+import { type GoalEvaluatorResource } from '@maka/runtime/goal-evaluator';
+import { type ModelMessage } from '@maka/runtime/model-protocol';
+import { type MemoryExtractionSourceSnapshot } from '@maka/runtime/memory-extraction';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import type { InteractiveUsageStoresWriter } from '@maka/storage/usage-stores';
 import {
@@ -37,6 +42,7 @@ import {
   type HostOAuthExecutionBinding,
 } from './oauth-execution-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
+import { resolveAdmittedConnectionModel } from './connection-model-admission.js';
 
 export interface HostGoalEvaluatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
@@ -770,8 +776,9 @@ export async function resolveExecutionTarget(
     throw new AuxiliaryModelCallConfigurationError('Runtime Host model provider is not executable');
   }
   const model = header.model.trim();
-  const modelInfo = resolved.connection.models.find((candidate) => candidate.id === model);
-  if (!model || !resolved.connection.enabledModelIds.includes(model) || !modelInfo) {
+  const discovered = resolved.connection.models.some((candidate) => candidate.id === model);
+  const modelInfo = resolveAdmittedConnectionModel(resolved.connection, model);
+  if (!model || !modelInfo) {
     throw new AuxiliaryModelCallConfigurationError(
       'Runtime Host Session model is not enabled by its canonical connection',
     );
@@ -789,7 +796,9 @@ export async function resolveExecutionTarget(
     providerType: resolved.connection.providerType,
     ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
     defaultModel: model,
-    models: [...resolved.connection.models],
+    models: discovered
+      ? [...resolved.connection.models]
+      : [...resolved.connection.models, modelInfo],
     ...(resolved.connection.relayModelProfiles === undefined
       ? {}
       : { relayModelProfiles: resolved.connection.relayModelProfiles }),

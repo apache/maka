@@ -26,10 +26,8 @@ const TYPECHECK_ONLY_FILES = new Set([
 
 const WINDOWS_BASELINE_FILES = new Set([
   '.github/workflows/windows-baseline.yml',
-  'scripts/windows-baseline-workflow.test.mjs',
   'scripts/windows-process-identity.ps1',
   'scripts/windows-smoke.mjs',
-  'scripts/windows-smoke.test.mjs',
 ]);
 
 /**
@@ -47,7 +45,7 @@ export function isWindowsStorageSensitivePath(path) {
   return WINDOWS_STORAGE_SENSITIVE_PATH.test(normalized);
 }
 
-const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host', 'packages/headless']);
+const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host']);
 
 // Scripts the Electron e2e job runs. Editing one of these changes what that
 // job verifies, so it has to re-run — a unit test on the runner is not
@@ -118,32 +116,6 @@ function isE2eProductPath(path) {
   return false;
 }
 
-const EXTENDED_SCRIPT_FILES = new Set([
-  'scripts/cu-process-restart-e2e.mjs',
-  'scripts/cu-process-restart-harness.test.mjs',
-  'scripts/cu-provider-matrix.mjs',
-  'scripts/cu-provider-matrix.test.mjs',
-  'scripts/cu-real-model-fixture.mjs',
-  'scripts/cu-real-model-launcher.mjs',
-  'scripts/cu-real-model-launcher.test.mjs',
-  'scripts/macos-arm64-release.test.mjs',
-  'scripts/measure-session-bundle.mjs',
-  'scripts/measure-session-bundle.test.mjs',
-  'scripts/package-macos-arm64.mjs',
-  'scripts/npm-spawn.mjs',
-  'scripts/package-windows-x64.mjs',
-  // Shared by both platform verifiers, so a change here reaches the macOS
-  // release path even when nothing macOS-specific was touched.
-  'scripts/verify-packaged-app.mjs',
-  'scripts/verify-macos-arm64-dmg.mjs',
-  'scripts/verify-windows-x64.mjs',
-  'scripts/windows-x64-release.test.mjs',
-]);
-
-// The release config is loaded only by the release workflow, so nothing else in
-// CI would notice an option electron-builder rejects.
-const RELEASE_CONFIG_FILES = new Set(['apps/desktop/electron-builder.config.mjs']);
-
 const STORAGE_STRESS_FILES = new Set([
   'packages/storage/src/agent-run-store.ts',
   'packages/storage/src/git-workspace-service.ts',
@@ -151,7 +123,6 @@ const STORAGE_STRESS_FILES = new Set([
   'packages/storage/src/root-authority.ts',
   'packages/storage/src/operational-state-store.ts',
   'packages/storage/src/sqlite-artifact-schema.ts',
-  'packages/storage/src/sqlite-automation-schema.ts',
   'packages/storage/src/sqlite-core-execution-schema.ts',
   'packages/storage/src/sqlite-runtime-schema.ts',
   'packages/storage/src/sqlite-session-metadata-schema.ts',
@@ -188,7 +159,12 @@ export function loadWorkspaceGraph(repoRoot = defaultRepoRoot, readFile = readFi
       ...Object.keys(manifest.optionalDependencies ?? {}),
       ...Object.keys(manifest.peerDependencies ?? {}),
     ]);
-    return { dir, name: manifest.name, dependencyNames };
+    return {
+      dir,
+      name: manifest.name,
+      dependencyNames,
+      hasDistTests: typeof manifest.scripts?.['test:dist'] === 'string',
+    };
   });
   const dirByName = new Map(entries.map(({ dir, name }) => [name, dir]));
   const dependents = new Map(dirs.map((dir) => [dir, new Set()]));
@@ -198,7 +174,11 @@ export function loadWorkspaceGraph(repoRoot = defaultRepoRoot, readFile = readFi
       if (dependencyDir) dependents.get(dependencyDir)?.add(entry.dir);
     }
   }
-  return { dirs, dependents };
+  return {
+    dirs,
+    dependents,
+    testDirs: new Set(entries.filter((entry) => entry.hasDistTests).map((entry) => entry.dir)),
+  };
 }
 
 export function reverseDependencyClosure(seedDirs, graph) {
@@ -215,11 +195,14 @@ export function reverseDependencyClosure(seedDirs, graph) {
   return graph.dirs.filter((dir) => selected.has(dir));
 }
 
-function workspaceLanes(workspaces) {
+function workspaceLanes(workspaces, graph) {
+  const testDirs = graph.testDirs ?? new Set(workspaces);
   return {
-    headless: workspaces.includes('packages/headless'),
-    runtimeHost: workspaces.includes('packages/runtime-host'),
-    standardWorkspaces: workspaces.filter((dir) => !DEDICATED_WORKSPACE_LANES.has(dir)),
+    runtimeHost:
+      workspaces.includes('packages/runtime-host') && testDirs.has('packages/runtime-host'),
+    standardWorkspaces: workspaces.filter(
+      (dir) => testDirs.has(dir) && !DEDICATED_WORKSPACE_LANES.has(dir),
+    ),
   };
 }
 
@@ -235,7 +218,6 @@ export function planTests(changedFiles, options = {}) {
       e2e: true,
       full: true,
       runtimeSandbox: graph.dirs.includes('packages/cli'),
-      scriptMode: 'full',
       // A complete functional suite is still the default release/main gate.
       // Stress multipliers and native child-process lock probes run only when
       // their owning storage seam changes; making --full imply stress turned
@@ -246,13 +228,12 @@ export function planTests(changedFiles, options = {}) {
       windowsRuntime: true,
       windowsStorage: true,
       workspaces,
-      ...workspaceLanes(workspaces),
+      ...workspaceLanes(workspaces, graph),
     };
   }
 
   const directWorkspaces = new Set();
   let code = false;
-  let scriptMode = 'none';
   let unknownCode = false;
   for (const path of files) {
     // Catalog/config changes are fully exercised by Storybook's build + render
@@ -263,12 +244,6 @@ export function planTests(changedFiles, options = {}) {
       code = true;
       continue;
     }
-    if (RELEASE_CONFIG_FILES.has(path)) {
-      code = true;
-      directWorkspaces.add('apps/desktop');
-      if (scriptMode === 'none') scriptMode = 'fast';
-      continue;
-    }
     const workspace = graph.dirs.find((dir) => path === dir || path.startsWith(`${dir}/`));
     if (workspace) {
       code = true;
@@ -277,11 +252,6 @@ export function planTests(changedFiles, options = {}) {
     }
     if (path.startsWith('scripts/')) {
       code = true;
-      scriptMode = EXTENDED_SCRIPT_FILES.has(path)
-        ? 'extended'
-        : scriptMode === 'none'
-          ? 'fast'
-          : scriptMode;
       continue;
     }
     if (path.startsWith('skills/')) {
@@ -325,7 +295,6 @@ export function planTests(changedFiles, options = {}) {
     // the cli workspace runs in the dependency closure, not only for direct
     // cli/runtime edits (e.g. a storage-only change still selects cli via runtime).
     runtimeSandbox: workspaces.includes('packages/cli'),
-    scriptMode,
     storageStress,
     // Storybook build + smoke: catalog/harness only. Not every desktop/ui/core
     // PR — product ship gates are typecheck, unit, and Electron e2e. See
@@ -335,7 +304,7 @@ export function planTests(changedFiles, options = {}) {
     windowsRuntime,
     windowsStorage,
     workspaces,
-    ...workspaceLanes(workspaces),
+    ...workspaceLanes(workspaces, graph),
   };
 }
 
@@ -344,10 +313,8 @@ export function formatGitHubOutputs(plan) {
     `code=${plan.code}`,
     `e2e=${plan.e2e}`,
     `full=${plan.full}`,
-    `headless=${plan.headless}`,
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
-    `script_mode=${plan.scriptMode}`,
     `storage_stress=${plan.storageStress}`,
     `storybook=${plan.storybook}`,
     `unit=${plan.workspaces.length > 0}`,

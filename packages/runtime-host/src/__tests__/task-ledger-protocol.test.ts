@@ -8,7 +8,6 @@ import {
   encodeTaskLedgerTask,
   encodeTaskLedgerQueryResult,
   TASK_LEDGER_CURSOR_MAX_BYTES,
-  TASK_LEDGER_OPERATION_SPECS,
   TASK_LEDGER_PAGE_MAX_BYTES,
   TASK_LEDGER_PAGE_MAX_ITEMS,
   type TaskLedgerQueryResult,
@@ -18,58 +17,6 @@ const revision = `sha256:${'a'.repeat(64)}` as const;
 const nextRevision = `sha256:${'b'.repeat(64)}` as const;
 
 describe('Task Ledger protocol', () => {
-  test('declares the closed ready query and decodes all input branches', () => {
-    const spec = TASK_LEDGER_OPERATION_SPECS['task.ledger.query'];
-    assert.equal(spec.mode, 'query');
-    assert.equal(spec.availability, 'ready');
-    assert.deepEqual(spec.errors, [
-      'host_not_ready',
-      'host_draining',
-      'operation_unavailable',
-      'invalid_request',
-      'not_found',
-      'internal_failure',
-    ]);
-
-    for (const input of [
-      { kind: 'list_start', sessionId: 'session-1' },
-      { kind: 'list_continue', sessionId: 'session-1', revision, cursor: 'opaque:2' },
-      { kind: 'get', sessionId: 'session-1', taskRef: 'T1.2' },
-    ] as const) {
-      assert.deepEqual(decodeTaskLedgerQueryInput(input), input);
-    }
-  });
-
-  test('round-trips every result branch and the current child-session owner', () => {
-    const task = validTask(0, {
-      owner: {
-        actor: 'child_agent',
-        sessionId: 'child-session-1',
-        agentId: 'child-1',
-        runId: 'run-1',
-        turnId: 'turn-1',
-      },
-      resumeTrust: 'needs_revalidation',
-    });
-    const results: TaskLedgerQueryResult[] = [
-      {
-        kind: 'page',
-        sessionId: 'session-1',
-        revision,
-        tasks: [task],
-        nextCursor: 'opaque:2',
-      },
-      { kind: 'revision_changed', expected: revision, actual: nextRevision },
-      { kind: 'task', sessionId: 'session-1', revision, task },
-      { kind: 'task', sessionId: 'session-1', revision, task: null },
-    ];
-
-    for (const result of results) {
-      const encoded = encodeTaskLedgerQueryResult(result);
-      assert.deepEqual(decodeTaskLedgerQueryResult(encoded), encoded);
-    }
-  });
-
   test('rejects unknown fields and invalid current Task DTO values', () => {
     const task = validTask();
     for (const invalid of [
@@ -108,57 +55,6 @@ describe('Task Ledger protocol', () => {
         cursor: '0',
       }),
     );
-  });
-
-  test('projects legacy evidence-incomplete tasks to conservative resume trust', () => {
-    for (const task of [
-      validTask(0, { status: 'blocked' }),
-      validTask(1, { status: 'failed' }),
-      validTask(2, { status: 'completed' }),
-    ]) {
-      assert.equal(encodeTaskLedgerTask(task).resumeTrust, 'needs_revalidation');
-    }
-
-    const task = validTask(3, {
-      status: 'completed',
-      resumeTrust: 'needs_revalidation',
-    });
-    const result = {
-      kind: 'task' as const,
-      sessionId: 'session-1',
-      revision,
-      task,
-    };
-    assert.deepEqual(decodeTaskLedgerQueryResult(encodeTaskLedgerQueryResult(result)), result);
-
-    const untrustedTask = validTask(4, {
-      status: 'completed',
-      resumeTrust: 'untrusted',
-    });
-    const untrustedResult = {
-      kind: 'task' as const,
-      sessionId: 'session-1',
-      revision,
-      task: untrustedTask,
-    };
-    assert.deepEqual(encodeTaskLedgerTask(untrustedTask), untrustedTask);
-    assert.deepEqual(
-      decodeTaskLedgerQueryResult(encodeTaskLedgerQueryResult(untrustedResult)),
-      untrustedResult,
-    );
-
-    for (const resumeTrust of [undefined, 'trusted'] as const) {
-      const result = {
-        kind: 'task' as const,
-        sessionId: 'session-1',
-        revision,
-        task: validTask(5, {
-          status: 'completed',
-          ...(resumeTrust === undefined ? {} : { resumeTrust }),
-        }),
-      };
-      assertInvalid(() => decodeTaskLedgerQueryResult(result));
-    }
   });
 
   test('projects producer text once and accepts only wire-canonical DTOs', () => {

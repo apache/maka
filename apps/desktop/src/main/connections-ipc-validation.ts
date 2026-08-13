@@ -1,10 +1,9 @@
 import {
   normalizeConnectionBaseUrl,
-  normalizeOptionalRequestBodyOverlay,
-  normalizeRequestHeaders,
   type CreateConnectionInput,
   type UpdateConnectionInput,
-} from '@maka/core';
+} from '@maka/core/llm-connections';
+import { normalizeOptionalRequestBodyOverlay, normalizeRequestHeaders } from '@maka/core/runtime-policy';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
 

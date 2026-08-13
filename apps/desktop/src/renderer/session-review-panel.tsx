@@ -7,12 +7,9 @@ import { HStack, VStack } from '@astryxdesign/core/Layout';
 import { Section } from '@astryxdesign/core/Section';
 import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { Text } from '@astryxdesign/core/Text';
-import {
-  displayRedactSecrets,
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-  type GitReviewReadResult,
-} from '@maka/core';
+import { redactSecrets as displayRedactSecrets } from '@maka/core/display-redaction';
+import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { type GitReviewReadResult } from '@maka/core/git-review';
 import { DiffCodePreview, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, GitBranch } from '@maka/ui/icons';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
@@ -198,11 +195,11 @@ export function SessionReviewPanel(props: {
         {empty ? (
           /* Panel empty (DESIGN.md §10 tier 2): the whole panel is empty, so it
              carries icon and description, not the compact form. */
-          <EmptyState
+          (<EmptyState
             icon={<GitBranch size={ICON_SIZE.empty} aria-hidden />}
             title={copy.empty}
             description={copy.emptyHelp}
-          />
+          />)
         ) : null}
         {gitFiles.length > 0 ? (
           <div className="maka-session-review-list">

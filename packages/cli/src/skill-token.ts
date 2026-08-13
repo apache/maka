@@ -13,7 +13,7 @@
  * skill-invocation module.
  */
 
-import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 
 export interface SkillInvocationToken {
   /** The id-or-name captured after the `/skill:` prefix, exactly as typed. */

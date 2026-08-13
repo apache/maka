@@ -9,8 +9,6 @@ export {
   normalizeSessionHeader,
   projectSessionCatalogMessages,
 } from './session-store.js';
-export { importLegacySessionsOnce } from './legacy-session-import.js';
-export type { LegacySessionImportResult } from './legacy-session-import.js';
 export type {
   CreateStableSessionRequest,
   CreateStableSessionResult,
@@ -87,11 +85,6 @@ export type {
 } from './artifact-store.js';
 export * from './artifact-attachments.js';
 export * from './provider-request-capture-artifact.js';
-export { createSqlitePlanReminderStore } from './plan-reminder-store.js';
-export type {
-  PlanReminderStore,
-  SqlitePlanReminderStore,
-} from './plan-reminder-store.js';
 export { applyPlanEvent, createSqlitePlanStore } from './plan-store.js';
 export type {
   CreatePlanStoreOptions,
@@ -120,9 +113,7 @@ export {
 } from './deep-research-authority.js';
 export type { InteractiveDeepResearchStoreWriter } from './deep-research-authority.js';
 export * from './config-transfer.js';
-export * from './automation-store.js';
 export * from './daily-review-authority.js';
-export * from './automation-authority.js';
 export * from './sqlite-runtime-store.js';
 export * from './runtime-event-persistence.js';
 export * from './operational-state-store.js';
@@ -133,7 +124,6 @@ export * from './memory-bundle-store.js';
 export * from './long-term-memory-store.js';
 export * from './project-catalog.js';
 export * from './project-catalog-authority.js';
-export * from './project-session-backfill.js';
 export * from './git-worktree-child-executor.js';
 export * from './managed-workspace-owner.js';
 export * from './pet-pack-store.js';
@@ -143,3 +133,6 @@ export * from './session-bundle-manifest.js';
 export * from './session-bundle-canonical-tree.js';
 export * from './session-bundle-ustar.js';
 export * from './session-bundle-file-service.js';
+export * from './managed-secret-store.js';
+export * from './activation-secret-injector.js';
+export * from './encrypted-file-managed-secret-store.js';

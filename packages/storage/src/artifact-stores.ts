@@ -31,8 +31,6 @@ const writerBrand: unique symbol = Symbol('InteractiveArtifactStoreWriter');
 const writers = new WeakSet<object>();
 const writerByLease = new WeakMap<object, InteractiveArtifactStoreWriter>();
 const writerOpeningByLease = new WeakMap<object, Promise<InteractiveArtifactStoreWriter>>();
-const headlessWriterByLease = new WeakMap<object, HeadlessArtifactStoreWriter>();
-const headlessWriterOpeningByLease = new WeakMap<object, Promise<HeadlessArtifactStoreWriter>>();
 
 export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmentReader {
   readonly kind: 'interactive';
@@ -54,13 +52,6 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   deleteUserArtifactInSession: ArtifactAuthorityStore['deleteUserArtifactInSession'];
   close(): void;
 }
-
-export type HeadlessArtifactStoreWriter = Readonly<
-  Pick<
-    ArtifactAuthorityStore,
-    'create' | 'list' | 'get' | 'readText' | 'readBinary' | 'readDurableAttachmentBinary'
-  > & { close(): void }
->;
 
 export function authenticateInteractiveArtifactStoreWriter(
   store: InteractiveArtifactStoreWriter,
@@ -102,69 +93,6 @@ export async function openInteractiveArtifactStoreForWrite(
   } finally {
     if (writerOpeningByLease.get(lease) === pending) writerOpeningByLease.delete(lease);
   }
-}
-
-export async function openHeadlessArtifactStoreForWrite(
-  lease: StorageRootLease<'headless', 'write'>,
-): Promise<HeadlessArtifactStoreWriter> {
-  await assertStorageRootLease(lease, 'headless', 'write');
-  const existing = headlessWriterByLease.get(lease);
-  if (existing) return existing;
-  const opening = headlessWriterOpeningByLease.get(lease);
-  if (opening) return opening;
-
-  const pending = Promise.resolve().then(async () => {
-    const leaseBoundWriterLockAuthority = await prepareArtifactWriterLockAuthorityForLease(
-      lease,
-      'headless',
-    );
-    const assertAuthority = createStorageRootLeaseIdentityGuard(lease, 'headless', 'write');
-    const authority = createSqliteArtifactStoreWriteAuthority(lease.canonicalPath, {
-      assertAuthority,
-      leaseBoundWriterLockAuthority,
-    });
-    const run = <T>(operation: () => Promise<T>) =>
-      runWithStorageRootLease(lease, 'headless', 'write', operation);
-    await run(() => authority.recover());
-    const recoveredExisting = headlessWriterByLease.get(lease);
-    if (recoveredExisting) return recoveredExisting;
-    const facade = createHeadlessWriterFacade(lease, authority);
-    headlessWriterByLease.set(lease, facade);
-    return facade;
-  });
-  headlessWriterOpeningByLease.set(lease, pending);
-  try {
-    return await pending;
-  } finally {
-    if (headlessWriterOpeningByLease.get(lease) === pending) {
-      headlessWriterOpeningByLease.delete(lease);
-    }
-  }
-}
-
-function createHeadlessWriterFacade(
-  lease: StorageRootLease<'headless', 'write'>,
-  authority: ArtifactStoreWriteAuthority,
-): HeadlessArtifactStoreWriter {
-  const { store } = authority;
-  const run = <T>(operation: () => Promise<T>) =>
-    runWithStorageRootLease(lease, 'headless', 'write', operation);
-  const facade: HeadlessArtifactStoreWriter = Object.freeze({
-    create: (input) => {
-      const acceptedInput = snapshotCreateInput(input);
-      return run(() => store.create(acceptedInput));
-    },
-    list: (sessionId, options) => run(() => store.list(sessionId, options)),
-    get: (artifactId) => run(() => store.get(artifactId)),
-    readText: (artifactId, options) => run(() => store.readText(artifactId, options)),
-    readBinary: (artifactId, options) => run(() => store.readBinary(artifactId, options)),
-    readDurableAttachmentBinary: (input) => run(() => store.readDurableAttachmentBinary(input)),
-    close: () => {
-      if (headlessWriterByLease.get(lease) === facade) headlessWriterByLease.delete(lease);
-      authority.close();
-    },
-  });
-  return facade;
 }
 
 function createWriterFacade(

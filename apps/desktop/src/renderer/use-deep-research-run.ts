@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { DeepResearchClientProgress } from '@maka/core';
+import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
 
 export function useDeepResearchRun(
   sessionId: string | undefined,

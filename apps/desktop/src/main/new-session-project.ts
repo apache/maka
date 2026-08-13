@@ -1,105 +1,59 @@
-import { isProjectPathMismatchError, type ProjectCatalog } from '@maka/storage';
+import type { ProjectCatalog } from '@maka/storage';
+import type { WorkspaceTarget } from '@maka/runtime-host/protocol';
 
-export type SessionProjectInput = {
+export interface DesktopSessionWorkspaceInput {
   readonly cwd?: string;
   readonly projectId?: string | null;
-};
+}
 
-export async function resolveDesktopSessionSelection<T extends SessionProjectInput>(
-  input: T,
-  selection: {
-    current(): Promise<{
-      projectId: string | null | undefined;
-      path: string;
-    }>;
-    select(
-      projectId: unknown,
-    ): Promise<{ project: { id: string } | null; path: string }>;
-    /**
-     * Settings -> 偏好 -> 项目 -> 默认项目, or undefined for "no preference".
-     * Optional so the pure-selection callers and tests that predate the
-     * setting keep their two-argument shape.
-     */
-    defaultProjectId?(): Promise<string | undefined>;
-  },
-): Promise<T & { cwd: string; projectId?: string | null }> {
-  if (input.cwd) return { ...input, cwd: input.cwd };
+interface DesktopSessionWorkspaceSelection {
+  current(): Promise<{ projectId: string | null | undefined; path: string }>;
+  select(projectId: unknown): Promise<{ project: { id: string } | null; path: string }>;
+  defaultProjectId?(): Promise<string | undefined>;
+}
 
-  // An explicit project id is this conversation's own choice (the composer
-  // picker) and outranks the configured default -- that override is the whole
-  // reason the picker still exists once a default is set.
-  if (input.projectId !== undefined) {
-    const selected = await selection.select(input.projectId);
-    return {
-      ...input,
-      cwd: selected.path,
-      projectId: selected.project?.id ?? null,
-    };
+export async function resolveDesktopSessionWorkspace(
+  input: DesktopSessionWorkspaceInput,
+  selection: DesktopSessionWorkspaceSelection,
+  catalog: Pick<ProjectCatalog, 'register'>,
+  options: { readonly allowHostPath?: boolean } = {},
+): Promise<WorkspaceTarget> {
+  if (input.cwd) {
+    if (input.projectId === null) {
+      if (options.allowHostPath === false) throw remoteProjectRequired();
+      return { kind: 'host_path', path: input.cwd };
+    }
+    if (typeof input.projectId === 'string') {
+      return { kind: 'project', projectId: input.projectId };
+    }
+    if (options.allowHostPath === false) throw remoteProjectRequired();
+    return { kind: 'project', projectId: (await catalog.register(input.cwd)).id };
   }
 
-  // No per-conversation choice: the configured default wins over the
-  // last-used project. A default that only applied when nothing was
-  // remembered would be a default in name only, since something is almost
-  // always remembered.
+  if (input.projectId !== undefined) {
+    if (input.projectId === null) {
+      if (options.allowHostPath === false) throw remoteProjectRequired();
+      return { kind: 'host_path', path: (await selection.current()).path };
+    }
+    const selected = await selection.select(input.projectId);
+    if (!selected.project) throw new Error(`Project does not exist: ${input.projectId}`);
+    return { kind: 'project', projectId: selected.project.id };
+  }
+
   const configuredDefault = await selection.defaultProjectId?.();
   if (configuredDefault !== undefined) {
-    try {
-      const selected = await selection.select(configuredDefault);
-      if (selected.project) {
-        return { ...input, cwd: selected.path, projectId: selected.project.id };
-      }
-    } catch {
-      // Archived, unavailable, or deleted since it was chosen. Creating the
-      // session still has to succeed, so fall through to the last-used
-      // project; the settings page is where that degradation is reported,
-      // because a toast at session-create time would blame the wrong action.
-    }
+    const selected = await selection.select(configuredDefault);
+    if (selected.project) return { kind: 'project', projectId: selected.project.id };
   }
 
-  const selected = await selection.current();
-  return {
-    ...input,
-    cwd: selected.path,
-    projectId: selected.projectId,
-  };
-}
-
-export async function resolveNewSessionProjectInput<T extends SessionProjectInput & { cwd: string }>(
-  input: T,
-  catalog: Pick<ProjectCatalog, 'list' | 'register' | 'touch'>,
-): Promise<T & { cwd: string; projectId?: string | null }> {
-  if (input.projectId === null) return input;
-
-  if (input.projectId) {
-    const requestedId = input.projectId;
-    const project = (await catalog.list()).find(
-      (candidate) => candidate.id === requestedId || candidate.aliases?.includes(requestedId),
-    );
-    if (!project) throw projectMismatch(requestedId);
-    if (project.archivedAt !== undefined) throw new Error(`Project is archived: ${requestedId}`);
-    if (!project.available) throw new Error(`Project is unavailable: ${requestedId}`);
-    try {
-      const touched = await catalog.touch(project.id, input.cwd);
-      return {
-        ...input,
-        cwd: touched.preferredPath ?? input.cwd,
-        projectId: touched.id,
-      };
-    } catch (error) {
-      if (!isProjectPathMismatchError(error)) throw error;
-      throw projectMismatch(requestedId);
-    }
+  const current = await selection.current();
+  if (typeof current.projectId === 'string') {
+    return { kind: 'project', projectId: current.projectId };
   }
-
-  const project = await catalog.register(input.cwd);
-  if (project.archivedAt !== undefined) throw new Error(`Project is archived: ${project.id}`);
-  return {
-    ...input,
-    cwd: project.preferredPath ?? input.cwd,
-    projectId: project.id,
-  };
+  if (options.allowHostPath === false) throw remoteProjectRequired();
+  return { kind: 'host_path', path: current.path };
 }
 
-function projectMismatch(projectId: string): Error {
-  return new Error(`Project does not match the selected directory: ${projectId}`);
+function remoteProjectRequired(): Error {
+  return new Error('Select a project from the remote Runtime Host first');
 }

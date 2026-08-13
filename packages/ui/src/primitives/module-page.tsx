@@ -1,6 +1,6 @@
 // packages/ui/src/primitives/module-page.tsx
 //
-// The ONE shell every module page (计划提醒 / 每日回顾 / …) renders into.
+// The ONE shell every module page (定时任务 / 每日回顾 / …) renders into.
 //
 // Built on Astryx `Layout` rather than a hand-rolled grid, following the
 // `incident-console` page template — the vendor's archetype for exactly this

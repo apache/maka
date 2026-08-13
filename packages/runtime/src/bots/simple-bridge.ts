@@ -1,4 +1,5 @@
-import type { BotAttachmentKind, BotChannelSettings } from '@maka/core';
+import type { BotAttachmentKind } from '@maka/core/bot-events';
+import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type { BotPlatform, BotSendOptions, BotStatus, SendCapable } from './types.js';
@@ -226,12 +227,6 @@ export const __TEST__ = {
   normalizeTelegramReplyToMessageId,
   isAllowedUser,
   classifyTelegramSendResponse,
-  TELEGRAM_RETRY_MIN_MS,
-  TELEGRAM_RETRY_MAX_MS,
-  ephemeralDelayFromOptions,
-  EPHEMERAL_REPLY_MIN_MS,
-  EPHEMERAL_REPLY_MAX_MS,
-  telegramAttachmentKind,
 };
 
 export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {

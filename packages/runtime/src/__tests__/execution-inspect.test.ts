@@ -8,16 +8,11 @@ import type {
   AgentRunEventType,
   AgentRunHeader,
   EmittedAgentRunEvent,
-  RuntimeEvent,
-} from '@maka/core';
+} from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionStore } from '@maka/storage';
 import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
-import {
-  inspectAgentRunDocument,
-  inspectSessionDocument,
-  renderAgentRunInspectTree,
-  renderSessionInspectTree,
-} from '../execution-inspect.js';
+import { inspectAgentRunDocument, renderAgentRunInspectTree } from '../execution-inspect.js';
 
 describe('versioned execution inspect documents', () => {
   test('reports unknown tool outcomes without copying Runtime payloads', async () => {
@@ -85,57 +80,6 @@ describe('versioned execution inspect documents', () => {
         renderAgentRunInspectTree(document),
         /outcome and external side effects are unknown/,
       );
-    });
-  });
-
-  test('projects a Session as bounded AgentRun documents without reading messages', async () => {
-    await withWorkspace(async (root) => {
-      const sessionStore = createSessionStore(root);
-      const runStore = createSqliteAgentRunStore(root);
-      const runtimeStore = createWorkspaceRuntimeStore(root);
-      const session = await sessionStore.create({
-        cwd: '/tmp/workspace',
-        name: 'Inspectable session',
-        backend: 'fake',
-        llmConnectionSlug: 'fake',
-        model: 'fake-model',
-        permissionMode: 'ask',
-        revisionRootSessionId: 'root-session',
-        revisionParentSessionId: 'previous-version',
-        revisionOfTurnId: 'turn-edited',
-        revisionIndex: 2,
-        revisionState: 'committed',
-      });
-      const header = runHeader(session.id);
-      await runStore.createRun(header);
-      await runStore.appendEvent(session.id, RUN_ID, runEvent(session.id, 'run_completed'));
-      await runtimeStore.appendRuntimeEvent(
-        session.id,
-        RUN_ID,
-        runtimeEvent(session.id, 'terminal', {
-          role: 'system',
-          author: 'system',
-          status: 'completed',
-          actions: { endInvocation: true },
-        }),
-      );
-
-      const document = await inspectSessionDocument(
-        { readHeader: (id) => sessionStore.readHeaderSnapshot(id) },
-        runStore,
-        runtimeStore,
-        session.id,
-      );
-
-      assert.equal(document.schemaVersion, 'maka.session_inspect.v1');
-      assert.equal(document.session.name, 'Inspectable session');
-      assert.equal(document.session.revisionRootSessionId, 'root-session');
-      assert.equal(document.session.revisionParentSessionId, 'previous-version');
-      assert.equal(document.session.revisionOfTurnId, 'turn-edited');
-      assert.equal(document.session.revisionIndex, 2);
-      assert.equal(document.session.revisionState, 'committed');
-      assert.equal(document.agentRuns[0]?.agentRun.agentRunId, RUN_ID);
-      assert.match(renderSessionInspectTree(document), /Runtime Events runtime_event:run-1 0–0/);
     });
   });
 });

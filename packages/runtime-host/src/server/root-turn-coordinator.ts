@@ -16,24 +16,29 @@ import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import {
-  agentGraphIdForRootSession,
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
+  RuntimeMessageAuthorityInvariantError,
+  type RuntimeMessageRunIdentity,
+} from '@maka/runtime/message-authority';
+import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
-  RuntimeMessageAuthorityInvariantError,
-  RuntimeRegenerateTurnError,
-  RuntimeOwnerCleanupError,
+} from '@maka/runtime/interaction-authority';
+import { RuntimeRegenerateTurnError, type SessionManager } from '@maka/runtime/session-manager';
+import { RuntimeOwnerCleanupError } from '@maka/runtime/runtime-kernel';
+import {
   parseSkillInvocationTokens,
-  skillInvocationInlineReferences,
   type PreparedSkillInvocationMessage,
+} from '@maka/runtime/skill-invocation';
+import { skillInvocationInlineReferences } from '@maka/runtime/skill-invocation-receipt';
+import {
   type RuntimeContinuation,
   type SafeBoundaryContinuationPlan,
-  type RuntimeMessageRunIdentity,
-  type SessionManager,
-} from '@maka/runtime';
+} from '@maka/runtime/runtime-resume';
 import {
   authenticateExecutionStoresWriter,
   isSessionNotFoundError,
@@ -126,6 +131,7 @@ interface ActiveRootTurn {
   completionObserver?: HostedExecutionCompletionObserver;
   completion: ValueDeferred<HostedExecutionCompletion>;
   observedCompletion?: HostedExecutionCompletion;
+  observationSettled?: Promise<void>;
   startSettled: Deferred;
   done: Promise<void>;
   residency: RuntimeHostResidency;
@@ -287,7 +293,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     private readonly requestHostDrain: () => void,
     private readonly clientCapabilities: HostClientCapabilityCoordinator | undefined,
     private readonly resolveExecutionObserver: () => HostedExecutionObserver,
-    private readonly assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
+    private readonly assertScheduledTaskRecoveryAdmission?: (
+      admission: RootTurnAdmission,
+    ) => Promise<void>,
     attachmentValidator?: HostTurnAttachmentValidator,
     prepareSkillInvocation?: HostSkillInvocationPreparer,
   ) {
@@ -306,8 +314,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       rootAdmissions: this.rootAdmissionOwner,
       projection: this.executionProjection,
       runtime: this.manager,
-      ...(this.assertAutomationRecoveryAdmission
-        ? { assertAutomationAdmission: this.assertAutomationRecoveryAdmission }
+      ...(this.assertScheduledTaskRecoveryAdmission
+        ? { assertScheduledTaskAdmission: this.assertScheduledTaskRecoveryAdmission }
         : {}),
     });
     for (const plan of plans) {
@@ -833,7 +841,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   stopRoot(
     identity: RuntimeMessageRunIdentity,
     input: {
-      source?: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor';
+      source?: 'stop_button' | 'graph_supervisor';
       mode?: BackendStopMode;
     } = {},
   ): Promise<void> {
@@ -865,7 +873,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   stopSession(
     sessionId: string,
     input: {
-      source?: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor';
+      source?: 'stop_button' | 'graph_supervisor';
       mode?: BackendStopMode;
     } = {},
   ): Promise<void> {
@@ -916,7 +924,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   async stopAgentGraphSupervisor(
     sessionId: string,
     input: {
-      source?: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor';
+      source?: 'stop_button' | 'graph_supervisor';
       mode?: BackendStopMode;
     } = {},
   ): Promise<void> {
@@ -1751,7 +1759,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     commitQueueFence: () => QueueFenceResult,
     admission: SessionAdmissionLease,
     stopInput: {
-      source?: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor';
+      source?: 'stop_button' | 'graph_supervisor';
       mode?: BackendStopMode;
     } = {},
   ): Promise<DeclaredStopFence | undefined> {
@@ -2139,6 +2147,12 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       this.requestHostDrain();
       throw commandFailure;
     } finally {
+      this.observeExecutionCompletion(active, {
+        kind: 'authority_error',
+        execution: active,
+        reason: 'Runtime root Turn ended without a canonical completion.',
+      });
+      await active.observationSettled?.catch(() => this.requestHostDrain());
       let releaseRootOwnership = active.messageTransitionCommitted;
       if (!active.messageTransitionCommitted) {
         try {
@@ -2156,11 +2170,6 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         this.#executions.release(active);
         active.residency.release();
       }
-      this.observeExecutionCompletion(active, {
-        kind: 'authority_error',
-        execution: active,
-        reason: 'Runtime root Turn ended without a canonical completion.',
-      });
       active.completion.resolve(active.observedCompletion!);
       this.#executions.publish(active);
     }
@@ -2172,7 +2181,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   ): void {
     if (active.observedCompletion) return;
     active.observedCompletion = completion;
-    active.completionObserver?.(completion);
+    const settlement = active.completionObserver?.(completion);
+    if (settlement) active.observationSettled = Promise.resolve(settlement);
   }
 
   private async interruptPlanAfterUnsuccessfulTurn(
@@ -2289,7 +2299,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   private async deliverRuntimeStopIntent(
     sessionId: string,
     input: {
-      source?: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor';
+      source?: 'stop_button' | 'graph_supervisor';
       mode?: BackendStopMode;
     } = { source: 'stop_button' },
   ): Promise<void> {
@@ -2734,7 +2744,9 @@ function isRuntimeSessionTransientEvent(
 ): event is RuntimeSessionTransientEvent {
   return (
     event.type === 'text_delta' ||
+    event.type === 'text_complete' ||
     event.type === 'thinking_delta' ||
+    event.type === 'thinking_complete' ||
     event.type === 'tool_start' ||
     event.type === 'tool_output_delta' ||
     event.type === 'tool_progress' ||

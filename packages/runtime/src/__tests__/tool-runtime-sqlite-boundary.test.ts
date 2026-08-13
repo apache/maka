@@ -4,12 +4,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import {
-  createGenesisExecutionBoundary,
-  type LlmConnection,
-  type SessionEvent,
-  type SessionHeader,
-} from '@maka/core';
+import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
+import { type LlmConnection } from '@maka/core/llm-connections';
+import { type SessionEvent } from '@maka/core/events';
+import { type SessionHeader } from '@maka/core/session';
+import type { McpToolBinding } from '@maka/core/mcp';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
@@ -18,6 +17,81 @@ import type { InvocationContext } from '../invocation-context.js';
 import { MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN, ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime with real SQLite boundary', () => {
+  it('replays raw MCP model arguments without persisting the execution binding', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-mcp-args-'));
+    const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+    const opaqueBinding = 'internal-binding-never-persist' as McpToolBinding;
+    try {
+      let providerCalls = 0;
+      const [tool] = buildMcpTools({
+        toolSnapshot: () => ({
+          revision: 1,
+          tools: [
+            {
+              descriptor: {
+                serverId: 'fixture',
+                name: 'echo',
+                inputSchema: {
+                  type: 'object',
+                  properties: { value: { type: 'string' } },
+                  required: ['value'],
+                },
+              },
+              binding: opaqueBinding,
+            },
+          ],
+        }),
+        callTool: async (binding, args) => {
+          providerCalls += 1;
+          assert.equal(binding, opaqueBinding);
+          assert.deepEqual(args, { value: 'runtime' });
+          return { content: [{ type: 'text', text: 'ok' }] };
+        },
+      });
+      assert.ok(tool);
+      const runtime = createTestToolRuntime({
+        sessionId: 'session-1',
+        header: header(),
+        connection: connection(),
+        modelId: 'model-1',
+        appendMessage: async () => {},
+        newId: nextId(),
+        now: nextNow(),
+        getPermissionPauseTarget: () => null,
+        runId: 'run-1',
+        invocationId: 'invocation-1',
+        runtimeCommitSink: store,
+      });
+
+      await runtime.settleToolCall({
+        tool,
+        turnId: 'turn-1',
+        toolCallId: 'provider-call-1',
+        input: { value: 'runtime' },
+        abortSignal: new AbortController().signal,
+        eventSink: { push: () => {}, pushAndWaitUntilConsumed: async () => {} },
+      });
+
+      assert.equal(providerCalls, 1);
+      const events = await store.readImmutableRuntimeEvents('session-1', 'run-1');
+      const prepared = events.find((event) => event.content?.kind === 'function_call');
+      assert.deepEqual(
+        prepared?.content?.kind === 'function_call' ? prepared.content.args : undefined,
+        { value: 'runtime' },
+      );
+      const replayCall = buildRuntimeEventModelReplayPlan(events).items.find(
+        (item) => item.kind === 'tool_call',
+      );
+      assert.deepEqual(replayCall?.kind === 'tool_call' ? replayCall.input : undefined, {
+        value: 'runtime',
+      });
+      assert.doesNotMatch(JSON.stringify(events), /internal-binding-never-persist/u);
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('persists a boundary-blocked Client Capability without an orphan response', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-client-capability-reject-'));
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
@@ -25,19 +99,25 @@ describe('ToolRuntime with real SQLite boundary', () => {
       let implementationCalls = 0;
       const [clientTool] = buildMcpTools(
         {
-          tools: () => [
-            {
-              serverId: 'desktop_computer_use',
-              name: 'maka_computer',
-              description: 'Client-owned Computer Use',
-              inputSchema: {
-                type: 'object',
-                properties: { action: { const: 'list_apps' } },
-                required: ['action'],
-                additionalProperties: false,
+          toolSnapshot: () => ({
+            revision: 1,
+            tools: [
+              {
+                descriptor: {
+                  serverId: 'desktop_computer_use',
+                  name: 'maka_computer',
+                  description: 'Client-owned Computer Use',
+                  inputSchema: {
+                    type: 'object',
+                    properties: { action: { const: 'list_apps' } },
+                    required: ['action'],
+                    additionalProperties: false,
+                  },
+                },
+                binding: 'client-capability-binding' as McpToolBinding,
               },
-            },
-          ],
+            ],
+          }),
           callTool: async () => {
             implementationCalls += 1;
             return { content: [{ type: 'text', text: 'ok' }] };

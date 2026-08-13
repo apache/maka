@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { CapabilityAuditReport } from '@maka/core';
+import type { CapabilityAuditReport } from '@maka/core/capability-audit';
 import { CapabilityAuditStrip } from '../src/capability-audit-strip.js';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -7,9 +7,9 @@ import { CapabilityAuditStrip } from '../src/capability-audit-strip.js';
 //
 // This file had four stories and three of them rendered nothing. The strip
 // reports by exception — `capabilityAuditIssues` returns [] and the component
-// returns null unless a source needs auth or is erroring, or an automation
+// returns null unless a source needs auth or is erroring, or a scheduled task
 // failed or was skipped — and `report()` defaults all four of those counts to
-// 0. So `SkillsFocusHealthy`, `AutomationsFocusHealthy` and `Empty` were blank
+// 0. So the former healthy-focus and empty stories were blank
 // panels carrying confident "Real path:" sentences that described behavior the
 // component lost when it stopped summarizing healthy state. The app state they
 // named is "this strip is not on the page", which needs no story.
@@ -32,7 +32,7 @@ function report(input: Partial<CapabilityAuditReport['summary']>): CapabilityAud
     checkedAt: NOW,
     sources: [],
     skills: [],
-    automations: [],
+    scheduledTasks: [],
     summary: {
       sourceCount: 0,
       readySourceCount: 0,
@@ -43,11 +43,11 @@ function report(input: Partial<CapabilityAuditReport['summary']>): CapabilityAud
       enabledSkillCount: 0,
       skillsWithDeclaredTools: 0,
       declaredToolKindCount: 0,
-      automationCount: 0,
-      enabledAutomationCount: 0,
-      executableAutomationCount: 0,
-      failedAutomationCount: 0,
-      skippedAutomationCount: 0,
+      scheduledTaskCount: 0,
+      enabledScheduledTaskCount: 0,
+      executableScheduledTaskCount: 0,
+      failedScheduledTaskCount: 0,
+      skippedScheduledTaskCount: 0,
       ...input,
     },
   };
@@ -64,7 +64,7 @@ function report(input: Partial<CapabilityAuditReport['summary']>): CapabilityAud
  *
  * What this frame does not reproduce: the 900px centred column, which is
  * Astryx LayoutContent's own box. Width measurements taken here do not
- * transfer to the app; the strip's internal rhythm does. The plan-reminder
+ * transfer to the app; the strip's internal rhythm does. The scheduled-task
  * page mounts the same component inside `.maka-module-page-body` — a
  * different padded block in the same kind of column — and the same caveat
  * applies there.
@@ -78,12 +78,12 @@ function ModulePage(props: { children: React.ReactNode }) {
 }
 
 // Real path: sidebar → 扩展 → 技能, once something needs attention — a managed
-// skill source waiting for auth or erroring, an automation whose last run failed
+// skill source waiting for auth or erroring, a scheduled task whose last run failed
 // or was skipped. The strip renders exactly one warning line naming what is
 // wrong. With all four of those counts at zero it returns null and the page
 // carries no strip, so that state has no story: it has no pixels.
 //
-// 定时任务 → 计划提醒 reaches the same component in a different frame; see
+// 定时任务 → 定时任务 reaches the same component in a different frame; see
 // ModulePage above for what that changes and why it is not a second story.
 export const WithRisks: Story = {
   render: () => (
@@ -98,11 +98,11 @@ export const WithRisks: Story = {
           enabledSkillCount: 7,
           skillsWithDeclaredTools: 6,
           declaredToolKindCount: 5,
-          automationCount: 6,
-          enabledAutomationCount: 5,
-          executableAutomationCount: 4,
-          failedAutomationCount: 1,
-          skippedAutomationCount: 1,
+          scheduledTaskCount: 6,
+          enabledScheduledTaskCount: 5,
+          executableScheduledTaskCount: 4,
+          failedScheduledTaskCount: 1,
+          skippedScheduledTaskCount: 1,
         })}
       />
     </ModulePage>

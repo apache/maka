@@ -8,9 +8,9 @@ import {
   WORKSPACE_AUTHORITY_SESSION_ID,
   buildWorkspaceBaselineAuthorityEvents,
   workspaceAuthorityIdentity,
-  type RuntimeEvent,
   type WorkspaceBaselineAuthorityInput,
-} from '@maka/core';
+} from '@maka/core/workspace-version-authority';
+import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createConversationOperationalStateStore } from '../conversation-operational-state.js';
 import {

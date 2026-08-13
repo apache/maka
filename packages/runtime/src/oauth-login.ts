@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { base64urlEncode } from '@maka/core';
+import { base64urlEncode } from '@maka/core/oauth-subscription';
 import type { OAuthSubscriptionTokens } from './subscription-credentials.js';
 import {
   OAUTH_MAX_TOKEN_CHARS,

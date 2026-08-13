@@ -1,7 +1,6 @@
 import {
   createDefaultRuntimePolicy,
   decodeCanonicalRuntimePolicy,
-  decodeLegacyRuntimePolicyV1,
   normalizeRuntimePolicyMutation,
   type MutateRuntimePolicyInput,
   type MutateRuntimePolicyResult,
@@ -49,17 +48,13 @@ export class RuntimePolicyDocumentOwner {
       'revision',
       'policy',
     ]);
-    if (document.schemaVersion !== 1 && document.schemaVersion !== SCHEMA_VERSION) {
+    if (document.schemaVersion !== SCHEMA_VERSION) {
       throw codecError('invalid_document', `${FILE} has an unsupported schema version`);
     }
     return {
       schemaVersion: SCHEMA_VERSION,
       revision: revision(document.revision, `${FILE}.revision`, 'invalid_document'),
-      policy: decodePersistedDomain(() =>
-        document.schemaVersion === 1
-          ? decodeLegacyRuntimePolicyV1(document.policy)
-          : decodeCanonicalRuntimePolicy(document.policy),
-      ),
+      policy: decodePersistedDomain(() => decodeCanonicalRuntimePolicy(document.policy)),
     };
   }
 

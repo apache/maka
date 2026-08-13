@@ -3,7 +3,9 @@
 // exercised directly from the desktop test runner. Behavioural tests live
 // in `provider-connection-status.test.ts`.
 
-import type { LlmConnection, UiLocale } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
 import type { StatusSemantic } from '@maka/ui';
 

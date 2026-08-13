@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { htmlToMarkdown } from '@jackwener/opencli/utils';
-import type { MakaTool } from '@maka/runtime';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   type BrowserPageRun,
   type TakeoverMode,

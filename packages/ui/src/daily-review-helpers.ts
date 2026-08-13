@@ -22,9 +22,11 @@ import type {
   DailyReviewArchiveSummary,
   DailyReviewRange,
   DailyReviewSummary,
-  UiLocale,
-} from '@maka/core';
-import { generalizedErrorMessage, generalizedErrorMessageChinese, uiLocaleToIntlLocale } from '@maka/core';
+} from '@maka/core/daily-review';
+
+import type { UiLocale } from '@maka/core/ui-locale';
+import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import { getDailyReviewCopy } from './daily-review-copy.js';
 
 export function dailyReviewScopeKey(offsetDays: number, range: DailyReviewRange): string {

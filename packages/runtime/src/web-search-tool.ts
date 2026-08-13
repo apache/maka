@@ -6,7 +6,7 @@ import {
   normalizeWebSearchQuery,
   type WebSearchErrorReason,
   type WebSearchResponse,
-} from '@maka/core';
+} from '@maka/core/web-search';
 import type { MakaTool } from './tool-runtime.js';
 
 const WEB_SEARCH_TOOL_NAME = 'WebSearch';

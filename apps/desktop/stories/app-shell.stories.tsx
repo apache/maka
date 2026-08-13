@@ -1,7 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
-import type { ProjectRecord, SessionSummary, StoredMessage } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
   ChatSurfaceLayout,
   ChatView,
@@ -163,6 +164,7 @@ const conversation: StoredMessage[] = [
 
 const baseChatProps: ChatViewProps = {
   messages: conversation,
+  scrollBehavior: 'smooth',
   activeSession,
   activeConnectionLabel: 'Anthropic',
   activeModel: 'claude-sonnet-4-5',
@@ -409,7 +411,7 @@ function ComposedShell(props: {
             // Same two wrappers the renderer puts between the detail panel and
             // the chat column (app-shell.tsx). `.mainColumn` owns composer
             // padding, so a story without it measures its own box.
-            <div className="maka-detail-with-artifacts">
+            (<div className="maka-detail-with-artifacts">
               <div className="mainColumn">
               <ChatSurfaceLayout
                 composer={
@@ -431,7 +433,7 @@ function ComposedShell(props: {
                 />
               </ChatSurfaceLayout>
               </div>
-            </div>
+            </div>)
           )}
         </AppShellDetailPanel>
       </AstryxAppShell>
@@ -730,7 +732,7 @@ const multiStepConversation: StoredMessage[] = [
   },
 ];
 
-// A scheduled automation injects this turn; the transcript marks that
+// A ScheduledTask injects this turn; the transcript marks that
 // provenance above the user bubble instead of impersonating typed input.
 // Migrated here from the deleted chat-surface catalog (#1853): the marker is a
 // transcript detail, and rendering an eighth shell around it would be the
@@ -739,16 +741,16 @@ const multiStepConversation: StoredMessage[] = [
 // interactions. The provenance contract now lives where it runs, in
 // packages/ui/src/__tests__/host-origin-presentation.test.tsx; CI mounts this
 // story without autoplay.
-const automationTurn: StoredMessage[] = [
+const scheduledTaskTurn: StoredMessage[] = [
   {
-    ...user('msg-user-automation', 'turn-automation', 6, '生成今日项目回顾'),
-    origin: { kind: 'automation', automationId: 'daily-review' },
+    ...user('msg-user-scheduled-task', 'turn-scheduled-task', 6, '生成今日项目回顾'),
+    origin: { kind: 'scheduled_task', scheduledTaskId: 'daily-review' },
   },
-  assistant('msg-assistant-automation', 'turn-automation', 5, '今日项目回顾已生成。'),
+  assistant('msg-assistant-scheduled-task', 'turn-scheduled-task', 5, '今日项目回顾已生成。'),
 ];
 
 // Real path: a long session that has accumulated reasoning, several native
-// Astryx tool calls and long prose, an automation-triggered turn, with an image
+// Astryx tool calls and long prose, a ScheduledTask-triggered turn, with an image
 // staged in the composer and thinking set to medium. Each part is individually
 // reachable; they are stacked into one screen on purpose, as the canonical
 // visual-acceptance scaffold for the transcript. Open this first, then the
@@ -757,7 +759,7 @@ export const NativeConversation: Story = {
   render: () => (
     <ComposedShell
       chat={{
-        messages: [...longConversation, ...multiStepConversation, ...automationTurn],
+        messages: [...longConversation, ...multiStepConversation, ...scheduledTaskTurn],
         memoryActive: true,
         onOpenMemorySettings: noop,
       }}

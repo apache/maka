@@ -1,29 +1,4 @@
-/**
- * Onboarding state machine (PR110a).
- *
- * Derives the first-run readiness state of a workspace from connections,
- * sessions, and per-connection secret availability. A legacy defaultSlug may
- * order valid candidates, but it is never an activation requirement. Pure &
- * sync — never reads credential store, fs, or
- * IPC. Caller is responsible for resolving async inputs (per-slug
- * `hasSecret` lookup) before calling.
- *
- * @kenji + @xuan PR110a review gates (locked):
- *
- *  1. Reuse send-path readiness criteria via
- *     `isConnectionReady()` — do not reimplement.
- *  2. `OnboardingState` is the **derived projection** of
- *     `(connections, sessions, secrets)`. It is NOT
- *     persisted; the renderer recomputes it on every change.
- *  3. `OnboardingMilestone` is the **persisted** companion (in
- *     settings.json). Its validator rejects extra fields, non-finite
- *     timestamps, negative timestamps, and entries with BOTH
- *     `completedAt` and `skippedAt`.
- *
- * Mapping (`ChatConfigurationReason` → `OnboardingState.kind`) is encoded
- * directly in `deriveOnboardingState()` because activation considers every
- * enabled model on every real connection before choosing a repair path.
- */
+/** Pure onboarding projection; persisted milestones are validated separately below. */
 
 import {
   isConnectionReady,
@@ -34,45 +9,7 @@ import { connectionEnabledModelIds, type LlmConnection } from './llm-connections
 import type { SessionSummary } from './session.js';
 export { hasSettledInitialOnboarding } from './onboarding-milestone.js';
 
-// ============================================================================
-// OnboardingState (derived; never persisted)
-// ============================================================================
-
-/**
- * The single piece of state the onboarding UI uses to decide what to
- * show. Each variant maps to a single user-actionable fix path.
- *
- * Locked PR110a variants (extend with care — every new variant needs
- * a UI fix path AND a derivation test case):
- *
- *  - `needs_connection` — no real connections exist at all. Fix:
- *    walk the user through the add-provider flow.
- *  - `needs_connection_credentials` — a connection is missing a usable
- *    secret (API key / OAuth credential).
- *    Fix: open the credential-entry flow for the named slug.
- *  - `needs_model` — a credential-ready connection has no enabled,
- *    chat-capable model. Fix: open model management for the named slug.
- *  - `ready_empty` — fully configured, no sessions yet. #1433: this is
- *    no longer an onboarding surface — the ordinary empty chat state
- *    with its Composer takes over, and the hero renders nothing. Its
- *    connection/model pair is the readiness-checked first-task candidate;
- *    the configured connection default leads when it remains usable.
- *  - `ready_with_history` — fully configured, ≥1 session in the
- *    workspace (including archived / aborted — they are still user
- *    history and onboarding must not regress to blank slate). It retains the
- *    same readiness evidence, but does not activate first-task selection.
- *  - `blocked: all_connections_unhealthy` — real connections exist
- *    but NONE can be made ready by a per-connection fix (for example, all
- *    disabled or runtime-unwired).
- *    Fix: show a "fix your connections" hint pointing at Settings.
- *
- * Note: `blocked.reason` carries only `all_connections_unhealthy` in
- * the v1 enum. The shape `{ kind: 'blocked'; reason: ... }` is
- * preserved for future-proofing (e.g. provider outage detection).
- * `no_real_connection` is intentionally NOT a derived state — the
- * only-fake case rolls back to `needs_connection` because the fix
- * path is the same as having zero connections (add a real one).
- */
+/** Derived UI state; every non-ready variant identifies one actionable repair path. */
 export type OnboardingState =
   | { kind: 'needs_connection' }
   | { kind: 'needs_connection_credentials'; connectionSlug: string }
@@ -101,29 +38,14 @@ export interface DeriveOnboardingStateInput {
   secrets: Readonly<Record<string, boolean>>;
 }
 
-/**
- * Derive the current `OnboardingState` from inputs. Pure function —
- * same input always produces the same output.
- *
- * Derivation order:
- *  1. No real connections at all → `needs_connection`.
- *  2. Walk every enabled model through the shared send-readiness authority;
- *     the first valid pair → `ready_empty` / `ready_with_history`.
- *  3. Classify the first actionable connection as
- *     `needs_connection_credentials` or `needs_model`.
- *  4. Fall-through: real connections exist but none can be made
- *     ready by a per-connection fix → `blocked: all_connections_unhealthy`.
- */
+/** Derive onboarding from the same connection readiness authority used by sends. */
 export function deriveOnboardingState(input: DeriveOnboardingStateInput): OnboardingState {
   const realConns = input.connections
     .filter((connection) => isRealConnection(connection))
     .map(normalizeOpenAiCodexConnection);
   if (realConns.length === 0) return { kind: 'needs_connection' };
 
-  // A persisted workspace default is only a compatibility preference now, not
-  // an activation gate. Every enabled model is validated by the same readiness
-  // authority used by sessions:create; the returned pair lets the Composer use
-  // that verdict without reimplementing credential readiness in the renderer.
+  // The workspace default orders valid candidates but is not an activation gate.
   const preferred = input.defaultSlug
     ? realConns.find((connection) => connection.slug === input.defaultSlug)
     : undefined;
@@ -177,37 +99,11 @@ export function deriveOnboardingState(input: DeriveOnboardingStateInput): Onboar
   return { kind: 'blocked', reason: 'all_connections_unhealthy' };
 }
 
-/**
- * Whether the workspace has any user history. Archived and aborted
- * sessions ARE history (PR110a contract gate).
- *
- * SessionSummary in V0.2 has no `deletedAt` field — deletion is
- * implemented by removing the session directory from disk, so any
- * SessionSummary the caller passes in is by definition "not deleted".
- */
 function hasHistory(sessions: ReadonlyArray<SessionSummary>): boolean {
   return sessions.length > 0;
 }
 
-// ============================================================================
-// OnboardingMilestone (persisted in settings.json)
-// ============================================================================
-
-/**
- * Closed enum of milestones the onboarding flow can track. Adding a
- * new milestone requires extending this list AND the matching UI
- * surface that drives it. The rule runs both ways: #1433 deleted the
- * first-run task-suggestion cards, so the four
- * `first_run_suggestion_*` ids went with them rather than lingering
- * as a list nothing reads. Removal is safe for already-persisted
- * settings — `sanitizeOnboardingMilestones()` drops ids outside this
- * enum instead of rejecting the file.
- *
- * Persisted in `settings.json` (new `onboarding` section, PR110b).
- * Renderer must NEVER persist anything else under a milestone — see
- * the `sanitizeOnboardingMilestones()` validator for the full
- * field-set gate.
- */
+/** Closed milestone ids persisted in settings. */
 export const ONBOARDING_MILESTONE_IDS = [
   'initial_onboarding',
   'first_chat_sent',
@@ -226,25 +122,10 @@ export interface OnboardingMilestone {
   skippedAt?: number;
 }
 
-/**
- * Type guard with strict schema validation. Rejects:
- *   - non-object / null / array input
- *   - `id` that is not a known `OnboardingMilestoneId`
- *   - non-finite or negative timestamps (`NaN`, `Infinity`, `-1`, strings)
- *   - entries with BOTH `completedAt` and `skippedAt` set
- *   - any extra fields beyond `{ id, completedAt, skippedAt }`
- *
- * @kenji + @xuan PR110a review gate: any future leak of prompt text
- * / provider error / user content into a milestone must fail this
- * gate. Don't relax it.
- */
+/** Strict milestone schema gate; extra fields prevent private content persistence. */
 export function isOnboardingMilestone(value: unknown): value is OnboardingMilestone {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  // Plain-object check per @kenji + @xuan PR110a review. Rejects
-  // `Date`, `RegExp`, `Map`, `Set`, and any other object whose
-  // prototype isn't `Object.prototype` or `null` (Object.create(null)).
-  // Without this guard, `new Date()` would pass the typeof check and
-  // we'd start digging into its own keys.
+  // Reject class instances and other non-record objects.
   const proto = Object.getPrototypeOf(value);
   if (proto !== null && proto !== Object.prototype) return false;
   const record = value as Record<string, unknown>;
@@ -271,40 +152,7 @@ export function isOnboardingMilestone(value: unknown): value is OnboardingMilest
   return true;
 }
 
-/**
- * Settings read-path sanitizer. Accepts the raw value from
- * `settings.json`, drops invalid entries, and returns the valid ones.
- *
- * Strategy per @kenji + @xuan PR110a review: "drop invalid entries,
- * keep valid ones" — better than fail-empty because a single bad
- * entry should not erase the user's whole milestone progress.
- *
- * Returns an empty array if the input is not an array at all.
- *
- * **Dedup policy: last-valid-entry wins, deterministic.** If a
- * milestone id appears more than once after invalid entries are
- * dropped, the LAST valid occurrence's VALUE survives, but the
- * RESULTING ARRAY POSITION is the FIRST-seen index of that id.
- *
- * Worked example:
- *   input:  [{ id: A, completedAt: 1 },
- *            { id: B, completedAt: 10 },
- *            { id: A, completedAt: 2 }]
- *   output: [{ id: A, completedAt: 2 },   // value from last A,
- *                                         //   position from first A
- *            { id: B, completedAt: 10 }]
- *
- * Rationale (@kenji PR110a review): milestone is a user-progress
- * snapshot, not an audit log; later entries reflect newer state. A
- * `{ id }` placeholder followed by `{ id, completedAt: T }` must
- * produce `completedAt: T` — anything else loses the terminal
- * transition. Stable first-seen position protects consumers from
- * re-orderings every time the user updates a single milestone.
- *
- * The settings WRITE path (PR110b) is responsible for upserting
- * milestones in place, so legitimate progressions never produce
- * duplicates that reach this sanitizer.
- */
+/** Drop invalid milestones and dedupe by last value while preserving first-seen order. */
 export function sanitizeOnboardingMilestones(raw: unknown): OnboardingMilestone[] {
   if (!Array.isArray(raw)) return [];
   // Map.set updates the value but preserves the original insertion

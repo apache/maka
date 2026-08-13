@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { SessionSummary, StoredMessage } from '@maka/core';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
   SNIPPET_MAX_CODE_POINTS,
   TOOL_RESULT_SCAN_CAP_BYTES,
@@ -8,7 +8,6 @@ import {
   collectSearchableText,
   findMatch,
   foldForMatch,
-  formatSearchResultSummary,
   runThreadSearch,
 } from '../search/thread-search.js';
 
@@ -386,11 +385,4 @@ describe('thread search text projection', () => {
     for (const message of excluded) assert.equal(collectSearchableText(message), undefined);
   });
 
-  it('labels searchable message types without leaking raw enum names', () => {
-    assert.equal(formatSearchResultSummary(userMessage('hello')), '用户消息');
-    assert.equal(formatSearchResultSummary(assistantMessage('hello')), '助手回复');
-    assert.equal(formatSearchResultSummary(toolCall('list files')), '工具调用：Shell command');
-    assert.equal(formatSearchResultSummary(toolResult({ ok: true })), '工具结果：成功');
-    assert.equal(formatSearchResultSummary(toolResult({ ok: false }, true)), '工具结果：失败');
-  });
 });

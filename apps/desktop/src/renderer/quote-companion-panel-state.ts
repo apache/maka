@@ -1,4 +1,4 @@
-import type { QuoteRef } from '@maka/core';
+import type { QuoteRef } from '@maka/core/events';
 
 export interface StagedCompanionQuote {
   id: string;

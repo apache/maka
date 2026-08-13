@@ -3,8 +3,8 @@
  *
  * Main-session system prompts used to be built only from functional fragments
  * (personalization, skills, AGENTS.md, memory, …) and never opened with a
- * product identity — unlike sub-agents (agent-catalog.ts) and headless, which
- * already have default prompts. This closes that gap.
+ * product identity. This closes that gap while leaving sub-agent identities to
+ * the agent catalog.
  *
  * The assembler is deliberately order-agnostic: it only prepends the identity,
  * drops empty fragments, and joins. It does NOT impose a fixed fragment order,

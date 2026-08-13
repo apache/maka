@@ -1,4 +1,4 @@
-import type { OsPermissionId, OsPermissionState } from '@maka/core';
+import type { OsPermissionId, OsPermissionState } from '@maka/core/capabilities';
 
 export function mapMediaAccessStatus(status: string): OsPermissionState {
   switch (status) {

@@ -1,5 +1,7 @@
-import type { AgentRunHeader, AgentRunStore, RuntimeEvent, RuntimeEventStore } from '@maka/core';
-import { isSessionInlineRun } from '@maka/core';
+import type { AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import { isSessionInlineRun } from '@maka/core/agent-run';
 import { stableHash, stableStringify } from './request-shape.js';
 import { compareAgentGraphIdentity } from './stream-graph-identity.js';
 

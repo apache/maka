@@ -1,99 +1,50 @@
-import { readFile, stat, writeFile } from 'node:fs/promises';
-import { resolveProjectRoot } from '@maka/runtime';
+import { randomUUID } from 'node:crypto';
+import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { resolveProjectRoot } from '@maka/runtime/system-prompt/project-context';
 
 export interface CurrentProjectSelection {
   projectId: string | null | undefined;
   path: string;
 }
 
-/**
- * Owns the "current project root" selection shared across the app/window,
- * git, workspace-search, and session-entry IPC surfaces. Project management
- * updates the project id and path together, and
- * every other surface reads that same selection snapshot.
- *
- * Extracted from the former `registerIpc()` closures so the state has one owner
- * once the handlers are split across modules.
- */
 export interface ProjectRootController {
-  /** Resolve the effective project root (selected → persisted → fallback). */
   current(): Promise<string>;
-  /** Resolve the selected project association and its effective root together. */
   currentSelection(): Promise<CurrentProjectSelection>;
-  /** Validate + resolve an explicit renderer-supplied path without selecting it. */
   resolveExplicit(
     projectPath: unknown,
   ): Promise<
     | { ok: true; projectPath: string }
     | { ok: false; reason: 'invalid-path' | 'not-found' }
   >;
-  /** Adopt a project association and resolved root as one persisted selection. */
-  setSelection(projectId: string | null, projectPath: string): void;
+  setSelection(projectId: string | null, projectPath: string): Promise<void>;
 }
 
 export interface ProjectRootControllerDeps {
-  /** Absolute path of the JSON file that persists the last selected project. */
-  lastProjectPathFile: string;
-  /** Roots probed (in order) when nothing is selected or persisted. */
-  fallbackRoots: () => string[];
+  readonly rootId: string;
+  readonly preferenceFile: string;
+  readonly fallbackRoots: () => string[];
 }
+
+interface ProjectPreferenceFile {
+  readonly version: 1;
+  readonly selections: Readonly<Record<string, string | null>>;
+}
+
+const preferenceWriteTails = new Map<string, Promise<void>>();
 
 export function createProjectRootController(
   deps: ProjectRootControllerDeps,
 ): ProjectRootController {
   let selectedProject: CurrentProjectSelection | null = null;
+  const initialSelection = loadInitialSelection(deps);
 
-  async function loadPersistedProjectRoot(): Promise<CurrentProjectSelection | null> {
-    try {
-      const raw = await readFile(deps.lastProjectPathFile, 'utf8');
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      if (typeof parsed.projectPath === 'string' && parsed.projectPath) {
-        await stat(parsed.projectPath);
-        return {
-          projectId:
-            typeof parsed.projectId === 'string' || parsed.projectId === null
-              ? parsed.projectId
-              : undefined,
-          path: await resolveProjectRoot([parsed.projectPath]),
-        };
-      }
-    } catch {
-      // File missing, invalid, or points at a deleted directory.
-    }
-    return null;
-  }
-  const persistedProjectRootPromise = loadPersistedProjectRoot();
-
-  async function saveLastProjectPath(
-    projectPath: string,
-    projectId: string | null | undefined,
-  ): Promise<void> {
-    try {
-      await writeFile(
-        deps.lastProjectPathFile,
-        JSON.stringify({
-          projectPath,
-          ...(projectId !== undefined ? { projectId } : {}),
-        }),
-        'utf8',
-      );
-    } catch {
-      // Best-effort; failure should not block the selection.
-    }
+  async function currentSelection(): Promise<CurrentProjectSelection> {
+    if (selectedProject) return selectedProject;
+    return (selectedProject = await initialSelection);
   }
 
   async function current(): Promise<string> {
     return (await currentSelection()).path;
-  }
-
-  async function currentSelection(): Promise<CurrentProjectSelection> {
-    if (selectedProject) return selectedProject;
-    const persistedProjectRoot = await persistedProjectRootPromise;
-    if (persistedProjectRoot) return (selectedProject = persistedProjectRoot);
-    return {
-      projectId: undefined,
-      path: await resolveProjectRoot(deps.fallbackRoots()),
-    };
   }
 
   async function resolveExplicit(projectPath: unknown): Promise<
@@ -111,10 +62,97 @@ export function createProjectRootController(
     return { ok: true, projectPath: await resolveProjectRoot([projectPath]) };
   }
 
-  function setSelection(projectId: string | null, projectPath: string): void {
+  function setSelection(projectId: string | null, projectPath: string): Promise<void> {
     selectedProject = { projectId, path: projectPath };
-    void saveLastProjectPath(projectPath, projectId);
+    return persistSelection(deps, projectId);
   }
 
   return { current, currentSelection, resolveExplicit, setSelection };
+}
+
+async function loadInitialSelection(
+  deps: ProjectRootControllerDeps,
+): Promise<CurrentProjectSelection> {
+  const fallbackPath = await resolveProjectRoot(deps.fallbackRoots());
+  const preference = await readPreference(deps.preferenceFile, deps.rootId);
+  return { projectId: preference, path: fallbackPath };
+}
+
+async function persistSelection(
+  deps: ProjectRootControllerDeps,
+  projectId: string | null,
+): Promise<void> {
+  await savePreference(deps, projectId);
+}
+
+async function readPreference(file: string, rootId: string): Promise<string | null | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(file, 'utf8')) as Partial<ProjectPreferenceFile>;
+    if (parsed.version !== 1 || !parsed.selections || typeof parsed.selections !== 'object') {
+      return undefined;
+    }
+    const value = parsed.selections[rootId];
+    return typeof value === 'string' || value === null ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function savePreference(
+  deps: ProjectRootControllerDeps,
+  projectId: string | null,
+): Promise<boolean> {
+  return enqueuePreferenceWrite(deps.preferenceFile, async () => {
+    try {
+      const current = await readPreferenceFile(deps.preferenceFile);
+      await writePreferenceFile(deps.preferenceFile, {
+        version: 1,
+        selections: { ...current.selections, [deps.rootId]: projectId },
+      });
+      return true;
+    } catch {
+      // Selection persistence is best-effort and never blocks the active window.
+      return false;
+    }
+  });
+}
+
+function enqueuePreferenceWrite<Result>(
+  file: string,
+  operation: () => Promise<Result>,
+): Promise<Result> {
+  const previous = preferenceWriteTails.get(file) ?? Promise.resolve();
+  const result = previous.then(operation, operation);
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  preferenceWriteTails.set(file, tail);
+  void tail.then(() => {
+    if (preferenceWriteTails.get(file) === tail) preferenceWriteTails.delete(file);
+  });
+  return result;
+}
+
+async function writePreferenceFile(file: string, value: ProjectPreferenceFile): Promise<void> {
+  const temporaryFile = `${file}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryFile, JSON.stringify(value), { encoding: 'utf8', flag: 'wx' });
+    await rename(temporaryFile, file);
+  } catch (error) {
+    await rm(temporaryFile, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function readPreferenceFile(file: string): Promise<ProjectPreferenceFile> {
+  try {
+    const parsed = JSON.parse(await readFile(file, 'utf8')) as Partial<ProjectPreferenceFile>;
+    if (parsed.version === 1 && parsed.selections && typeof parsed.selections === 'object') {
+      return { version: 1, selections: parsed.selections as Record<string, string | null> };
+    }
+  } catch {
+    // Start a new preference file below.
+  }
+  return { version: 1, selections: {} };
 }

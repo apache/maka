@@ -3,11 +3,9 @@ import {
   type AgentRunHeader,
   type RootExecutionDescriptor,
 } from '@maka/core/agent-run';
-import {
-  classifyTerminalRuntimeLedger,
-  RuntimeMessageAuthorityInvariantError,
-} from '@maka/runtime';
+import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-authority';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
+import { readCanonicalTurnSnapshot } from './canonical-turn-snapshot.js';
 import type { HostedExecutionRef, HostedExecutionSnapshot } from './hosted-execution-authority.js';
 
 export class HostedExecutionProjectionReader {
@@ -18,57 +16,12 @@ export class HostedExecutionProjectionReader {
     knownRun?: AgentRunHeader,
   ): Promise<HostedExecutionSnapshot> {
     const run = knownRun ?? (await this.readRunIfPresent(execution.sessionId, execution.runId));
-    if (!run) return { ...execution, status: 'admitted' };
-    if (run.turnId !== execution.turnId) {
+    if (run && run.turnId !== execution.turnId) {
       throw new RuntimeMessageAuthorityInvariantError(
         `Hosted execution ${execution.turnId} does not match Run ${execution.runId}`,
       );
     }
-
-    const [runEvents, runtimeEvents] = await Promise.all([
-      this.stores.agentRunStore.readEvents(execution.sessionId, execution.runId),
-      this.stores.runtimeEventStore.readImmutableRuntimeEvents(
-        execution.sessionId,
-        execution.runId,
-      ),
-    ]);
-    const terminal = classifyTerminalRuntimeLedger(run, runtimeEvents);
-    if (terminal.kind === 'fact') {
-      const fact = terminal.fact;
-      if (fact.runStatus === 'completed') {
-        return {
-          ...execution,
-          status: 'completed',
-          terminalEventId: fact.terminalEvent.id,
-        };
-      }
-      if (fact.runStatus === 'failed') {
-        if (!fact.failureClass) throw new Error('Failed terminal fact has no failure class');
-        return {
-          ...execution,
-          status: 'failed',
-          terminalEventId: fact.terminalEvent.id,
-          failureClass: fact.failureClass,
-        };
-      }
-      if (!fact.abortSource) throw new Error('Cancelled terminal fact has no abort source');
-      return {
-        ...execution,
-        status: 'cancelled',
-        terminalEventId: fact.terminalEvent.id,
-        abortSource: fact.abortSource,
-      };
-    }
-    if (terminal.kind !== 'none') {
-      throw new Error('Runtime ledger does not contain one canonical terminal fact');
-    }
-    if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
-      throw new Error('Terminal Run header has no canonical terminal RuntimeEvent');
-    }
-    if (run.status !== 'created' && !runEvents.some((event) => event.type === 'run_started')) {
-      throw new Error('Non-created Run has no durable start fact');
-    }
-    return { ...execution, status: run.status };
+    return readCanonicalTurnSnapshot(this.stores, execution, run);
   }
 
   async readRunIfPresent(sessionId: string, runId: string): Promise<AgentRunHeader | undefined> {
@@ -131,7 +84,7 @@ function assertRunMatchesExecution(
       return;
     case 'regenerate':
     case 'context_compact':
-    case 'automation':
+    case 'scheduled_task':
     case 'goal':
     case 'agent_graph_supervisor_wake':
     case 'safe_boundary_continuation':
@@ -172,7 +125,7 @@ function assertTrustedAgentIdentity(
         | 'external_message'
         | 'regenerate'
         | 'context_compact'
-        | 'automation'
+        | 'scheduled_task'
         | 'goal'
         | 'agent_graph_supervisor_wake'
         | 'safe_boundary_continuation';

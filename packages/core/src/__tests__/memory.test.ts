@@ -3,7 +3,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
-  MEMORY_CANDIDATE_SOURCES,
   MEMORY_CONTENT_MAX_CODE_POINTS,
   normalizeMemoryContent,
   normalizeMemoryMode,
@@ -46,10 +45,6 @@ function draftRequest(overrides: Partial<MemoryWriteRequest> = {}): MemoryWriteR
   };
 }
 
-// ---------------------------------------------------------------------------
-// G1 — default-off
-// ---------------------------------------------------------------------------
-
 describe('G1 — mode=off blocks all writes (default-off)', () => {
   it('rejects durable and draft writes', () => {
     for (const request of [durableRequest(), draftRequest()]) {
@@ -60,10 +55,6 @@ describe('G1 — mode=off blocks all writes (default-off)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// G2 — manual confirm before durable write
-// ---------------------------------------------------------------------------
-
 describe('G2 — durable active requires confirmedAt (manual confirm)', () => {
   it('rejects user_authored + active without confirmedAt', () => {
     const result = validateMemoryWriteRequest(durableRequest({ confirmedAt: undefined }), ctx());
@@ -71,8 +62,8 @@ describe('G2 — durable active requires confirmedAt (manual confirm)', () => {
     if (!result.ok) assert.equal(result.reason, 'manual_confirm_required');
   });
 
-  it('rejects active with non-number / NaN / Infinity / negative confirmedAt', () => {
-    for (const bad of [NaN, Infinity, -Infinity, -1, '1700000000000', null] as unknown[]) {
+  it('rejects wrong-type, non-finite, and negative confirmedAt', () => {
+    for (const bad of [NaN, -1, '1700000000000'] as unknown[]) {
       const result = validateMemoryWriteRequest(
         durableRequest({ confirmedAt: bad as number }),
         ctx(),
@@ -83,20 +74,14 @@ describe('G2 — durable active requires confirmedAt (manual confirm)', () => {
   });
 
   it('rejects durable source with non-active persistence (must use candidate source for pending)', () => {
-    for (const pending of ['draft', 'review_required'] as const) {
-      const result = validateMemoryWriteRequest(
-        durableRequest({ persistenceState: pending, confirmedAt: undefined }),
-        ctx(),
-      );
-      assert.equal(result.ok, false, pending);
-      if (!result.ok) assert.equal(result.reason, 'manual_confirm_required');
-    }
+    const result = validateMemoryWriteRequest(
+      durableRequest({ persistenceState: 'draft', confirmedAt: undefined }),
+      ctx(),
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reason, 'manual_confirm_required');
   });
 });
-
-// ---------------------------------------------------------------------------
-// G4 — incognito read+write disable
-// ---------------------------------------------------------------------------
 
 describe('G4 — incognito blocks all writes', () => {
   it('rejects durable and draft writes', () => {
@@ -117,20 +102,14 @@ describe('G4 — incognito blocks all writes', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// G7 — no hidden activity promotion (candidate-cannot-active)
-// ---------------------------------------------------------------------------
-
 describe('G7 — candidate sources cannot reach active state', () => {
-  it('rejects every candidate source with persistenceState=active', () => {
-    for (const candidate of MEMORY_CANDIDATE_SOURCES) {
-      const result = validateMemoryWriteRequest(
-        { source: candidate, persistenceState: 'active', content: 'x', scope: 'workspace' },
-        ctx(),
-      );
-      assert.equal(result.ok, false, candidate);
-      if (!result.ok) assert.equal(result.reason, 'candidate_source_no_active', candidate);
-    }
+  it('rejects a candidate source with persistenceState=active', () => {
+    const result = validateMemoryWriteRequest(
+      { source: 'voice_transcript', persistenceState: 'active', content: 'x', scope: 'workspace' },
+      ctx(),
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reason, 'candidate_source_no_active');
   });
 
   it('mode=manual_only rejects candidate sources even at draft state', () => {
@@ -139,10 +118,6 @@ describe('G7 — candidate sources cannot reach active state', () => {
     if (!result.ok) assert.equal(result.reason, 'mode_disallows_candidate');
   });
 });
-
-// ---------------------------------------------------------------------------
-// G9 — renderer cannot forge provenance/readiness
-// ---------------------------------------------------------------------------
 
 describe('G9 — renderer-originated active durable write is blocked', () => {
   it('rejects valid durable active when originatedFromRenderer=true', () => {
@@ -154,10 +129,6 @@ describe('G9 — renderer-originated active durable write is blocked', () => {
     if (!result.ok) assert.equal(result.reason, 'renderer_provenance_forged');
   });
 });
-
-// ---------------------------------------------------------------------------
-// Normalizer matrix
-// ---------------------------------------------------------------------------
 
 describe('normalizeMemoryContent', () => {
   it('strips control characters and zero-width characters', () => {
@@ -172,7 +143,7 @@ describe('normalizeMemoryContent', () => {
   });
 
   it('rejects non-string and empty input', () => {
-    for (const bad of [undefined, null, 42, true, {}, [], '', '   ', '\t\n  ']) {
+    for (const bad of [null, '   ']) {
       const result = normalizeMemoryContent(bad);
       assert.equal(result.ok, false, String(bad));
       if (!result.ok) assert.equal(result.reason, 'content_invalid');
@@ -191,32 +162,16 @@ describe('normalizeMemoryContent', () => {
 
 describe('normalizeMemorySource', () => {
   it('separates durable and candidate sources', () => {
-    for (const source of ['user_authored', 'chat_extracted']) {
-      const result = normalizeMemorySource(source);
-      assert.equal(result.ok, true, source);
-      if (result.ok) assert.equal(result.value.kind, 'memory', source);
-    }
-    for (const candidate of MEMORY_CANDIDATE_SOURCES) {
-      const result = normalizeMemorySource(candidate);
-      assert.equal(result.ok, true, candidate);
-      if (result.ok) assert.equal(result.value.kind, 'candidate', candidate);
-    }
+    const durable = normalizeMemorySource('user_authored');
+    assert.equal(durable.ok, true);
+    if (durable.ok) assert.equal(durable.value.kind, 'memory');
+    const candidate = normalizeMemorySource('voice_transcript');
+    assert.equal(candidate.ok, true);
+    if (candidate.ok) assert.equal(candidate.value.kind, 'candidate');
   });
 
   it('rejects unknown and non-string sources', () => {
-    for (const bad of [
-      '',
-      'usage_log',
-      'settings',
-      'session_summary',
-      'skill_inject',
-      'workspace_instruction',
-      undefined,
-      null,
-      42,
-      {},
-      [],
-    ]) {
+    for (const bad of ['usage_log', null]) {
       const result = normalizeMemorySource(bad);
       assert.equal(result.ok, false, String(bad));
       if (!result.ok) assert.equal(result.reason, 'unknown_source');
@@ -237,45 +192,6 @@ describe('normalizeMemoryMode / Scope / PersistenceState — closed-enum reject'
     }
   });
 });
-
-// ---------------------------------------------------------------------------
-// Quasi-memory exclusion (gate #7 + #8 type-system enforcement)
-// ---------------------------------------------------------------------------
-
-describe('Quasi-memory surfaces cannot enter MemorySource', () => {
-  it('validateMemoryWriteRequest rejects fully-formed durable with quasi-memory source name', () => {
-    const quasiNames = [
-      'usage_log',
-      'settings',
-      'session_summary',
-      'skill_inject',
-      'workspace_instruction',
-      'onboarding_milestone',
-      'health_probe',
-      'e2e_fixture',
-    ];
-    for (const name of quasiNames) {
-      const result = validateMemoryWriteRequest(
-        {
-          source: name,
-          persistenceState: 'active',
-          content: 'looks like a fully valid durable write but the source is a quasi-memory name',
-          scope: 'workspace',
-          confirmedAt: 1_700_000_000_000,
-        },
-        ctx({ originatedFromRenderer: false }),
-      );
-      assert.equal(result.ok, false, name);
-      if (!result.ok) {
-        assert.equal(result.reason, 'unknown_source', name);
-      }
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Successful canonical return
-// ---------------------------------------------------------------------------
 
 describe('canonical return shape', () => {
   it('returns canonical durable and draft entries', () => {

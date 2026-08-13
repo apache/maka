@@ -7,7 +7,7 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import type { ContextDiagnostics } from '@maka/runtime';
+import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 
 export interface MakaSessionMoveResult {

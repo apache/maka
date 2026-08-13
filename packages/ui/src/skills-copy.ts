@@ -1,4 +1,4 @@
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type { ManagedSkillCategory, SkillEntry } from './module-panel-types.js';
 
 type ManagedUpdateStatus = NonNullable<SkillEntry['managedUpdateStatus']>;

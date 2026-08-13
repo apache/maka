@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import type { StoredMessage } from '@maka/core';
+import type { StoredMessage } from '@maka/core/session';
 import { createArrivalBottomPin, type ArrivalBottomPin } from './arrival-bottom-pin.js';
 import { createTurnSizeWarmup } from './turn-size-warmup.js';
 
@@ -9,7 +9,7 @@ export function useChatScroll(input: {
   hasTurns: boolean;
   messages: readonly StoredMessage[];
   target?: { turnId: string; nonce: number };
-  behavior?: ScrollBehavior;
+  behavior: ScrollBehavior;
   /**
    * #2052: false while the progressive mount is still filling the transcript.
    * The warm-up snapshots the `.maka-turn` NodeList once, so starting it
@@ -146,7 +146,7 @@ export function useChatScroll(input: {
       const targetElement = element as HTMLElement;
       targetElement.setAttribute('tabindex', '-1');
       targetElement.scrollIntoView({
-        behavior: input.behavior ?? 'smooth',
+        behavior: input.behavior,
         block: 'center',
       });
       targetElement.focus({ preventScroll: true });

@@ -4,12 +4,13 @@ import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from '@ai-sdk/pr
 import {
   createExternalExecutionBoundary,
   createManagedExecutionBoundary,
-  createWorkspaceWritePermissionProfile,
-  type LlmConnection,
   type SandboxBoundaryRequest,
-  type SessionEvent,
-  type SessionHeader,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
+import { type LlmConnection } from '@maka/core/llm-connections';
+import { type SessionEvent } from '@maka/core/events';
+import { type SessionHeader } from '@maka/core/session';
+import type { McpToolBinding } from '@maka/core/mcp';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import { z } from 'zod';
 import type { AiSdkBackendInput } from '../ai-sdk-backend.js';
@@ -117,13 +118,19 @@ test('denies a nested MCP call before invoking its provider', async () => {
   let pendingRequest: SandboxBoundaryRequest | undefined;
   let providerCalls = 0;
   const tools = buildMcpTools({
-    tools: () => [
-      {
-        serverId: 'catalog',
-        name: 'lookup',
-        inputSchema: { type: 'object' },
-      },
-    ],
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [
+        {
+          descriptor: {
+            serverId: 'catalog',
+            name: 'lookup',
+            inputSchema: { type: 'object' },
+          },
+          binding: 'catalog-lookup' as McpToolBinding,
+        },
+      ],
+    }),
     callTool: async () => {
       providerCalls += 1;
       return { content: [] };
@@ -422,20 +429,26 @@ test('routes active MCP tools through the nested Runtime path', async () => {
     signal: AbortSignal | undefined;
   }> = [];
   const tools = buildMcpTools({
-    tools: () => [
-      {
-        serverId: 'catalog',
-        name: 'lookup',
-        description: 'Look up a catalog item',
-        inputSchema: {
-          $schema: 'https://json-schema.org/draft/2020-12/schema',
-          type: 'object',
-          properties: { id: { type: 'string' } },
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [
+        {
+          descriptor: {
+            serverId: 'catalog',
+            name: 'lookup',
+            description: 'Look up a catalog item',
+            inputSchema: {
+              $schema: 'https://json-schema.org/draft/2020-12/schema',
+              type: 'object',
+              properties: { id: { type: 'string' } },
+            },
+          },
+          binding: 'catalog-lookup' as McpToolBinding,
         },
-      },
-    ],
-    callTool: async (serverId, toolName, input, options) => {
-      calls.push({ serverId, toolName, input, signal: options?.signal });
+      ],
+    }),
+    callTool: async (_binding, input, options) => {
+      calls.push({ serverId: 'catalog', toolName: 'lookup', input, signal: options?.signal });
       return { content: [{ type: 'text', text: 'ok' }], structuredContent: { id: input.id } };
     },
   });
@@ -472,20 +485,26 @@ test('routes active MCP tools through the nested Runtime path', async () => {
 test('rejects invalid MCP arguments before nested Runtime dispatch', async () => {
   let implementationCalls = 0;
   const tools = buildMcpTools({
-    tools: () => [
-      {
-        serverId: 'catalog',
-        name: 'lookup',
-        description: 'Look up a catalog item',
-        inputSchema: {
-          $schema: 'https://json-schema.org/draft-07/schema#',
-          type: 'object',
-          properties: { id: { type: 'string' } },
-          required: ['id'],
-          additionalProperties: false,
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [
+        {
+          descriptor: {
+            serverId: 'catalog',
+            name: 'lookup',
+            description: 'Look up a catalog item',
+            inputSchema: {
+              $schema: 'https://json-schema.org/draft-07/schema#',
+              type: 'object',
+              properties: { id: { type: 'string' } },
+              required: ['id'],
+              additionalProperties: false,
+            },
+          },
+          binding: 'catalog-lookup' as McpToolBinding,
         },
-      },
-    ],
+      ],
+    }),
     callTool: async () => {
       implementationCalls += 1;
       return { content: [{ type: 'text', text: 'unexpected' }] };

@@ -1,5 +1,5 @@
 import { useInsertionEffect, useMemo, type ReactNode } from 'react';
-import { parseUnifiedDiffRows } from '@maka/core';
+import { parseUnifiedDiffRows } from '@maka/core/unified-diff';
 import { ensureHighlightStyles, type TokenLine } from '@astryxdesign/core';
 import { previewVariants } from '../primitives/chat.js';
 import { diffSyntaxTokens } from './diff-syntax.js';

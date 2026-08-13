@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { LlmConnection, SessionSummary } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionSummary } from '@maka/core/session';
 import { createAppShellSessionSettingsActions } from '../../renderer/app-shell-session-settings-actions.js';
 
 function deferred<T>() {

@@ -10,7 +10,6 @@ import {
   MAX_AUTOMATIC_MERMAID_TOTAL_SOURCE_LENGTH,
 } from '../markdown-body.js';
 import { MakaUriContext, Markdown } from '../markdown.js';
-import { AstryxLocaleProvider } from '../astryx-i18n.js';
 import { LocaleProvider } from '../locale-context.js';
 import {
   createMermaidConfig,
@@ -27,6 +26,15 @@ it('keeps raw HTML inert instead of expanding the Markdown trust surface', () =>
   assert.doesNotMatch(markup, /<details/);
 });
 
+it('keeps a lazy live stream behind the display cursor', () => {
+  const markup = renderToStaticMarkup(createElement(Markdown, {
+    text: 'live output that has not reached the display cursor',
+    streaming: true,
+  }));
+
+  assert.doesNotMatch(markup, /live output/);
+});
+
 it('redacts secrets before even the lazy Markdown fallback reaches the rendered tree', () => {
   const markup = renderToStaticMarkup(createElement(Markdown, {
     text: 'Authorization: Bearer sk-live-1234567890abcdef',
@@ -36,23 +44,7 @@ it('redacts secrets before even the lazy Markdown fallback reaches the rendered 
   assert.match(markup, /&lt;redacted&gt;/);
 });
 
-it('renders Markdown through the Astryx document surface', () => {
-  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: '# Heading\n\nparagraph',
-  }));
 
-  assert.match(markup, /<div[^>]*role="document"/);
-  assert.match(markup, /<h1[^>]*>Heading<\/h1>/);
-});
-
-it('declares one stable migration scope around Astryx Markdown', () => {
-  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: 'paragraph',
-  }));
-
-  assert.match(markup, /^<div data-maka-contract="markdown"/);
-  assert.match(markup, /<div[^>]*role="document"/);
-});
 
 it('preserves allowlisted Maka navigation links through sanitization', () => {
   const markup = renderToStaticMarkup(
@@ -74,29 +66,6 @@ it('preserves allowlisted Maka navigation links through sanitization', () => {
   assert.match(markup, /<button\b/);
   assert.match(markup, /data-maka-uri-kind="settings"/);
   assert.doesNotMatch(markup, /Blocked URL/);
-});
-
-it('uses the localized Astryx external-link affordance for safe URLs', () => {
-  const markup = renderToStaticMarkup(
-    createElement(
-      LocaleProvider,
-      {
-        locale: 'zh',
-        children: createElement(
-          AstryxLocaleProvider,
-          null,
-          createElement(MarkdownBody, {
-            text: '[项目仓库](https://github.com/maka-agent/maka-agent)',
-          }),
-        ),
-      },
-    ),
-  );
-
-  assert.match(markup, /<a\b/);
-  assert.match(markup, /target="_blank"/);
-  assert.match(markup, /rel="noopener noreferrer"/);
-  assert.match(markup, />（在新标签页中打开）</);
 });
 
 it('keeps non-allowlisted external schemes inert', () => {
@@ -164,43 +133,6 @@ it('does not treat navigation and communication schemes as image resources', () 
   }
 });
 
-it('keeps allowlisted images and image-like code intact', () => {
-  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: [
-      '![safe](https://example.com/image.png)',
-      '',
-      'badge ![inline-safe](https://example.com/badge.png) stays inline',
-      '',
-      '`![literal](file:///Users/example/private.png)`',
-    ].join('\n'),
-  }));
-
-  assert.equal(markup.match(/<img\b/g)?.length, 2);
-  assert.match(markup, /src="https:\/\/example\.com\/image\.png"/);
-  assert.match(markup, /src="https:\/\/example\.com\/badge\.png" alt="inline-safe" style="display:inline-block"/);
-  assert.match(markup, /!\[literal\]\(file:\/\/\/Users\/example\/private\.png\)/);
-});
-
-
-it('routes settled Mermaid fences to the lazy diagram surface', () => {
-  const markup = renderToStaticMarkup(
-    createElement(
-      LocaleProvider,
-      {
-        locale: 'en',
-        children: createElement(MarkdownBody, {
-          text: ['```mermaid', 'flowchart LR', 'A --> B', '```'].join('\n'),
-        }),
-      },
-    ),
-  );
-
-  assert.match(markup, /data-maka-contract="mermaid"/);
-  assert.match(markup, /data-maka-mermaid-state="loading"/);
-  assert.match(markup, /Rendering Mermaid diagram/);
-  assert.match(markup, /flowchart LR/);
-});
-
 it('defers Mermaid fences beyond the per-Markdown automatic diagram budget', () => {
   const fence = (index: number) => [
     '```mermaid',
@@ -266,28 +198,44 @@ it('pins Mermaid security and complexity limits for untrusted assistant output',
   assert.equal(config.theme, 'dark');
 });
 
-it('keeps incomplete syntax literal after the stream settles', () => {
+it('keeps a new stream behind the display cursor on its first render', () => {
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: 'Hello **world',
-  }));
-
-  assert.match(markup, /Hello \*\*world/);
-});
-
-it('does not reveal the unreached tail on the first streaming render', () => {
-  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: 'visible start and unreached tail',
+    text: 'new output that has not been presented yet',
     streaming: true,
   }));
 
-  assert.doesNotMatch(markup, /unreached tail/);
+  assert.doesNotMatch(markup, /new output that has not been presented yet/);
 });
 
-it('keeps the lazy fallback behind the streaming display cursor', () => {
-  const markup = renderToStaticMarkup(createElement(Markdown, {
-    text: 'visible start and lazy unreached tail',
+it('shows only the restored prefix on its first streaming render', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: '**output restored** with a new delta',
     streaming: true,
+    settledText: '**output restored**',
   }));
 
-  assert.doesNotMatch(markup, /lazy unreached tail/);
+  assert.match(markup, /<strong[^>]*>output restored<\/strong>/);
+  assert.doesNotMatch(markup, /new delta/);
+});
+
+it('settles only the verified prefix when restored content was rewritten', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: 'prefix <redacted> NEW',
+    streaming: true,
+    settledText: 'prefix sk-123456789012345',
+  }));
+
+  assert.match(markup, />prefix </);
+  assert.doesNotMatch(markup, /redacted|NEW/);
+});
+
+it('never settles half of a rewritten Unicode code point', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: 'same 😃 NEW',
+    streaming: true,
+    settledText: 'same 😀 old',
+  }));
+
+  assert.match(markup, />same </);
+  assert.doesNotMatch(markup, /😃|NEW|�/u);
 });

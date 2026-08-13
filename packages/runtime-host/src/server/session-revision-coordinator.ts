@@ -13,11 +13,11 @@ import {
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
   createConversationCopySlice,
-  isArchivedToolResultPlaceholder,
   prepareConversationRuntimeLedgerCopy,
   type ConversationRuntimeLedgerCopyPlan,
-  type SessionManager,
-} from '@maka/runtime';
+} from '@maka/runtime/conversation-copy';
+import { isArchivedToolResultPlaceholder } from '@maka/runtime/context-budget';
+import { type SessionManager } from '@maka/runtime/session-manager';
 import {
   authenticateInteractiveArtifactStoreWriter,
   type InteractiveArtifactStoreWriter,
@@ -74,7 +74,10 @@ export interface HostSessionRevisionCoordinatorOptions {
   readonly manager: SessionManager;
   readonly admission: SessionAdmissionGate;
   readonly continuity: SessionContinuityCoordinator;
-  readonly graph: Pick<import('@maka/runtime').AgentGraphCoordinator, 'readSessionState'>;
+  readonly graph: Pick<
+    import('@maka/runtime/stream-graph-coordinator').AgentGraphCoordinator,
+    'readSessionState'
+  >;
   readonly isSessionActive: (sessionId: string) => boolean;
   readonly requestDrain: () => void;
 }

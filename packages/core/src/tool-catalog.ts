@@ -10,7 +10,7 @@
  * each surface owns an independent hosts record so affinity edits cannot bleed.
  */
 
-export const TOOL_HOST_IDS = ['desktop', 'cli', 'headless', 'runtime-host'] as const;
+export const TOOL_HOST_IDS = ['desktop', 'cli', 'runtime-host'] as const;
 export type ToolHostId = (typeof TOOL_HOST_IDS)[number];
 
 /** Whether a host product surface may bind the pack. Not a runtime enable flag. */
@@ -44,7 +44,6 @@ function desktopOnlyHosts(): Readonly<Record<ToolHostId, ToolHostSupport>> {
   return Object.freeze({
     desktop: 'supported',
     cli: 'unsupported',
-    headless: 'unsupported',
     'runtime-host': 'unsupported',
   } satisfies Record<ToolHostId, ToolHostSupport>);
 }
@@ -53,7 +52,6 @@ function allHosts(): Readonly<Record<ToolHostId, ToolHostSupport>> {
   return Object.freeze({
     desktop: 'supported',
     cli: 'supported',
-    headless: 'supported',
     'runtime-host': 'supported',
   } satisfies Record<ToolHostId, ToolHostSupport>);
 }
@@ -102,7 +100,7 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     { name: 'MakaSettingsGet', effects: ['read'] as const },
     { name: 'MakaSettingsUpdate', effects: ['write'] as const },
     { name: 'ExploreAgent' },
-    { name: 'Automation' },
+    { name: 'ScheduledTask' },
     { name: 'GoalSet' },
     { name: 'GoalClear' },
     { name: 'GoalStatus' },
@@ -114,9 +112,6 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     { name: 'task_get' },
     { name: 'memory_remember' },
     { name: 'memory_extract' },
-    // Legacy task-ledger aliases still registered on some hosts
-    { name: 'TaskCreate' },
-    { name: 'TaskUpdate' },
     // browser surface
     { name: 'browser_navigate' },
     { name: 'browser_snapshot' },

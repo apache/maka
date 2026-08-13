@@ -9,38 +9,6 @@ import {
 } from '../protocol/index.js';
 
 describe('Session retirement protocol', () => {
-  test('declares exact ready-only lifecycle and remove commands', () => {
-    assert.equal(HOST_OPERATION_SPECS['session.lifecycle.set'].mode, 'command');
-    assert.equal(HOST_OPERATION_SPECS['session.lifecycle.set'].availability, 'ready');
-    assert.equal(HOST_OPERATION_SPECS['session.remove'].mode, 'command');
-    assert.equal(HOST_OPERATION_SPECS['session.remove'].availability, 'ready');
-
-    assert.deepEqual(
-      decodeClientFrame({
-        requestId: 'request-archive',
-        operation: 'session.lifecycle.set',
-        input: { sessionId: 'session-1', state: 'archived' },
-      }),
-      {
-        requestId: 'request-archive',
-        operation: 'session.lifecycle.set',
-        input: { sessionId: 'session-1', state: 'archived' },
-      },
-    );
-    assert.deepEqual(
-      decodeClientFrame({
-        requestId: 'request-remove',
-        operation: 'session.remove',
-        input: { sessionId: 'session-1', expectedRevision: 3 },
-      }),
-      {
-        requestId: 'request-remove',
-        operation: 'session.remove',
-        input: { sessionId: 'session-1', expectedRevision: 3 },
-      },
-    );
-  });
-
   test('rejects open shapes, invalid states, and mismatched result identities', () => {
     assert.throws(
       () =>
@@ -117,36 +85,16 @@ describe('Session retirement protocol', () => {
       },
     );
   });
-
-  test('correlates unsupported legacy lifecycle results without inventing lifecycle fields', () => {
-    const legacy = {
-      kind: 'unsupported_legacy_record' as const,
-      id: 'session-1',
-      revision: 2,
-      reason: 'not_wire_representable' as const,
-    };
-    assert.doesNotThrow(() =>
-      HOST_OPERATION_SPECS['session.lifecycle.set'].assertOutputForInput?.(
-        { sessionId: 'session-1', state: 'archived' },
-        legacy,
-      ),
-    );
-    assert.throws(
-      () =>
-        HOST_OPERATION_SPECS['session.lifecycle.set'].assertOutputForInput?.(
-          { sessionId: 'session-2', state: 'archived' },
-          legacy,
-        ),
-      isInvalidFrame,
-    );
-  });
 });
 
 function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionCatalogProjection {
   return {
     id: 'session-1',
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: 'Session',

@@ -1,4 +1,4 @@
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type ReasonCopy = { title: string; description: string };
 

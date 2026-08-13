@@ -3,11 +3,14 @@
 [![docs](https://img.shields.io/badge/docs-English-blue?logo=googletranslate&logoColor=white)](./CONTRIBUTING.md)
 
 - [从哪里开始](#从哪里开始)
+- [公开决策](#公开决策)
+- [人类责任与 AI 归因](#人类责任与-ai-归因)
+- [审查与 fast path](#审查与-fast-path)
+- [来源与许可](#来源与许可)
 - [快速开始](#快速开始)
 - [开发](#开发)
 - [分支命名](#分支命名)
 - [Pull Request](#pull-request)
-- [许可](#许可)
 
 ## 从哪里开始
 
@@ -20,7 +23,7 @@
 - 文档
 - 环境相关问题的修复
 
-产品功能与界面改动不一样：请先开 issue 把方向谈定，再动手实现。维护者直接落地功能，是因为他们本身在设定方向；外部贡献者先确认可以避免白做。
+涉及项目方向、治理或重大产品决策时，请在实现前遵循下文的公开决策流程。
 
 想找活干，可以从这些标签入手：
 
@@ -32,6 +35,36 @@
 想认领某个 issue，在下面留言，维护者可能会指派给你。
 
 提 issue 建议走 **Bug report** 或 **Feature request** 模板——它们会问出让一个 issue 可被处理所需的上下文。安全问题请走 [SECURITY.md](./SECURITY.md) 的私密流程，不要开公开 issue。
+
+## 公开决策
+
+项目方向、治理和重大产品决策应在实施前公开讨论并记录理由。ASF 开发邮件列表可用后，项目级决策应转移到那里。实现层面的技术决策可以在 PR 中讨论，前提是相关理由公开且可供审查。
+
+## 人类责任与 AI 归因
+
+每项贡献都必须有一名 human contributor of record。此人负责审阅工作、决定提交，并对其准确性、来源、许可和任何适用的 ICLA 声明负责。Agent 可以准备改动，但不得使用 ASF 凭据或向 ASF 仓库 push commit。
+
+生成式工具对代码、文档、分析或项目立场作出实质贡献时，必须披露。人类确定事实和立场后，工具仅做翻译、措辞整理、自动补全或拼写修正时，无需披露。自动发送的消息必须表明身份。
+
+AI 创作了贡献中的实质部分时，Maka 项目政策要求在目标分支的最终 commit 中记录工具名称：
+
+```text
+Generated-by: <tool>
+```
+
+这个 trailer 必须在 squash 或 amend 后保留。
+
+## 审查与 fast path
+
+对用户可见行为的重大变更、公开契约、安全、许可、发布或治理变更，必须由另一名人类进行独立审查。AI review 不算独立人工审查。这项要求不同于每项贡献都必须具备的 human contributor of record。
+
+只有在改动影响较低、容易回退、不影响上述受保护领域且必要检查通过时，贡献才能在没有独立人工审查的情况下自行合并。贡献者必须记录为何适用 fast path。测试、CI、文档和机械修改可能符合条件，但文件类型本身不能豁免审查。
+
+## 来源与许可
+
+只提交你有权贡献的内容。记录第三方来源、许可和必要署名。正确性审查不能证明内容来源。对于 AI 生成的实质内容，应检查工具的输出条款；如果输出较大或来源可疑，还应扫描是否与第三方材料匹配。遵循当前的 [ASF 生成式工具指南](https://www.apache.org/legal/generative-tooling.html)。
+
+提交贡献即表示你同意你的贡献以 [Apache License 2.0](./LICENSE) 授权。
 
 ## 快速开始
 
@@ -63,7 +96,7 @@ npm --workspace maka-agent exec -- maka          # TUI
 npm --workspace maka-agent exec -- maka run "…"  # 非交互地跑一个 Turn
 ```
 
-Headless 的命令见 [`packages/headless/README.md`](./packages/headless/README.md)。
+Eval 的命令与 contract 见 [`packages/eval`](./packages/eval)。
 
 ### 构建
 
@@ -71,7 +104,7 @@ Headless 的命令见 [`packages/headless/README.md`](./packages/headless/README
 
 ```
 code-mode → core → storage → mcp → runtime → runtime-host
-          → computer-use → headless → maka-agent → ui → desktop
+          → computer-use → eval → maka-agent → ui → desktop
 ```
 
 只有依赖都已构建好时，单独构建某个 workspace 才会成功——拿过期的 `@maka/core` 去编译 `@maka/runtime`，产生的类型错误看起来会像是你刚写的代码有问题。拿不准就从根目录构建。
@@ -92,7 +125,6 @@ npm --workspace @maka/desktop run build:renderer  # 渲染层
 ```sh
 npm test                                 # 全部 workspace
 npm --workspace @maka/core test          # 单个 workspace
-npm run test:scripts                     # 仓库脚本
 npm --workspace @maka/desktop run e2e    # Playwright
 ```
 
@@ -142,7 +174,7 @@ CI 里名为 `typecheck` 的 job 会在 `bash -e` 下跑完上面全部命令，
 <type>(<scope>): <summary>
 ```
 
-`<type>` 就是[分支命名](#分支命名)那一套。`<scope>` 是改动的 workspace 或区域——`desktop`、`ui`、`runtime`、`headless`、`settings`、`runtime-host`、`storage`、`core`、`cli`、`deps`、`computer-use`、`scripts`、`release`、`windows`、`e2e`、`security` 等——`git log` 里能看到实际在用的集合。
+`<type>` 就是[分支命名](#分支命名)那一套。`<scope>` 是改动的 workspace 或区域——`desktop`、`ui`、`runtime`、`eval`、`settings`、`runtime-host`、`storage`、`core`、`cli`、`deps`、`computer-use`、`scripts`、`release`、`windows`、`e2e`、`security` 等——`git log` 里能看到实际在用的集合。
 
 ```
 fix(desktop): classify provider action errors from the unwrapped IPC message
@@ -153,7 +185,3 @@ test(core): pin the shared validation corpus to every envelope value domain
 **界面改动。** 请附改动前后的截图或录屏。视觉变化没法从 diff 判断。
 
 **描述写短，用你自己的话。** 长篇的生成式说明会拖慢评审。用自己的话说清改了什么、为什么；如果这需要很多段落，多半是这个 PR 太大了。
-
-## 许可
-
-提交贡献即表示你同意你的贡献以 [Apache License 2.0](./LICENSE) 授权。

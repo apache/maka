@@ -12,36 +12,22 @@ import {
 } from '../protocol/index.js';
 
 describe('Session catalog protocol', () => {
-  test('declares closed ready-only query and mutation operations', () => {
-    assert.deepEqual(
-      Object.fromEntries(
-        (
-          [
-            'session.catalog.query',
-            'session.create',
-            'session.metadata.update',
-            'session.configuration.update',
-            'session.cwd.relocate',
-            'session.read_marker.set',
-            'session.execution_boundary.query',
-          ] as const
-        ).map((operation) => [
-          operation,
-          {
-            mode: HOST_OPERATION_SPECS[operation].mode,
-            availability: HOST_OPERATION_SPECS[operation].availability,
-          },
-        ]),
-      ),
-      {
-        'session.catalog.query': { mode: 'query', availability: 'ready' },
-        'session.create': { mode: 'command', availability: 'ready' },
-        'session.metadata.update': { mode: 'command', availability: 'ready' },
-        'session.configuration.update': { mode: 'command', availability: 'ready' },
-        'session.cwd.relocate': { mode: 'command', availability: 'ready' },
-        'session.read_marker.set': { mode: 'command', availability: 'ready' },
-        'session.execution_boundary.query': { mode: 'query', availability: 'ready' },
-      },
+  test('identifies Session creation inputs that expose Host paths', () => {
+    assert.equal(
+      HOST_OPERATION_SPECS['session.create'].usesHostPaths?.({
+        sessionId: 'project-session',
+        workspace: { kind: 'project', projectId: 'project-1' },
+        modelTarget: { kind: 'default' },
+      }),
+      false,
+    );
+    assert.equal(
+      HOST_OPERATION_SPECS['session.create'].usesHostPaths?.({
+        sessionId: 'path-session',
+        workspace: { kind: 'host_path', path: '/workspace' },
+        modelTarget: { kind: 'default' },
+      }),
+      true,
     );
   });
 
@@ -111,8 +97,7 @@ describe('Session catalog protocol', () => {
         operation: 'session.create',
         input: {
           sessionId: 'session-1',
-          cwd: '/workspace',
-          projectId: null,
+          workspace: { kind: 'project', projectId: 'project-1' },
           name: 'Session',
           labels: ['catalog'],
           modelTarget: {
@@ -131,8 +116,7 @@ describe('Session catalog protocol', () => {
         operation: 'session.create',
         input: {
           sessionId: 'session-1',
-          cwd: '/workspace',
-          projectId: null,
+          workspace: { kind: 'project', projectId: 'project-1' },
           name: 'Session',
           labels: ['catalog'],
           modelTarget: {
@@ -151,22 +135,20 @@ describe('Session catalog protocol', () => {
     assert.deepEqual(
       decodeClientFrame({
         requestId: 'request-3',
-        operation: 'session.cwd.relocate',
+        operation: 'session.workspace.relocate',
         input: {
           sessionId: 'session-1',
           expectedRevision: 2,
-          cwd: '/workspace/next',
-          projectId: 'project-2',
+          workspace: { kind: 'host_path', path: '/workspace/next' },
         },
       }),
       {
         requestId: 'request-3',
-        operation: 'session.cwd.relocate',
+        operation: 'session.workspace.relocate',
         input: {
           sessionId: 'session-1',
           expectedRevision: 2,
-          cwd: '/workspace/next',
-          projectId: 'project-2',
+          workspace: { kind: 'host_path', path: '/workspace/next' },
         },
       },
     );
@@ -259,7 +241,7 @@ describe('Session catalog protocol', () => {
       operation: 'session.create',
       input: {
         sessionId: 'session-name',
-        cwd: '/workspace',
+        workspace: { kind: 'host_path', path: '/workspace' },
         name,
         modelTarget: { kind: 'default' },
       },
@@ -275,7 +257,7 @@ describe('Session catalog protocol', () => {
           operation: 'session.create',
           input: {
             sessionId: 'session-name-overflow',
-            cwd: '/workspace',
+            workspace: { kind: 'host_path', path: '/workspace' },
             name: '🦊'.repeat(81),
             modelTarget: { kind: 'default' },
           },
@@ -290,7 +272,7 @@ describe('Session catalog protocol', () => {
       operation: 'session.create',
       input: {
         sessionId: 'session-mode',
-        cwd: '/workspace',
+        workspace: { kind: 'host_path', path: '/workspace' },
         mode: 'deep_research',
         modelTarget: { kind: 'default' },
       },
@@ -306,7 +288,7 @@ describe('Session catalog protocol', () => {
           operation: 'session.create',
           input: {
             sessionId: 'session-invalid-mode',
-            cwd: '/workspace',
+            workspace: { kind: 'host_path', path: '/workspace' },
             mode: 'unknown',
             modelTarget: { kind: 'default' },
           },
@@ -370,6 +352,20 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('rejects a Host path projection whose target and cwd disagree', () => {
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          workspace: {
+            target: { kind: 'host_path', path: '/workspace' },
+            hostCwd: '/different-workspace',
+          },
+        }),
+      isProtocolError,
+    );
+  });
+
   test('bounds pages and preserves revision-pinned continuation results', () => {
     const sessions = Array.from({ length: SESSION_CATALOG_PAGE_MAX_ITEMS }, (_, index) =>
       projection({ id: `session-${index}` }),
@@ -396,27 +392,16 @@ describe('Session catalog protocol', () => {
     };
     assert.deepEqual(decodeSessionCatalogQueryResult(changed), changed);
   });
-
-  test('decodes only the closed unsupported legacy record shape', () => {
-    const unsupported = {
-      kind: 'unsupported_legacy_record' as const,
-      id: 'session-1',
-      revision: 2,
-      reason: 'not_wire_representable' as const,
-    };
-    assert.deepEqual(decodeSessionCatalogItem(unsupported), unsupported);
-    assert.throws(
-      () => decodeSessionCatalogItem({ ...unsupported, projectId: 'hidden' }),
-      isProtocolError,
-    );
-  });
 });
 
 function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionCatalogProjection {
   return {
     id: 'session-1',
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 2,
     name: 'Session',

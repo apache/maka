@@ -5,7 +5,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { StoredMessage } from '@maka/core';
+import type { StoredMessage } from '@maka/core/session';
 import { renderConversationMarkdown } from '../../renderer/conversation-markdown.js';
 
 describe('renderConversationMarkdown', () => {

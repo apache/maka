@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ProjectRecord, UiLocale } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type { DesktopProjectCapabilities } from '../preload/bridge-contract.js';
 import {
   createAppShellProjectActions,
   type AppShellProjectActions,
@@ -12,6 +14,13 @@ type RefBox<T> = { current: T };
 type ToastApi = {
   success(title: string, description?: string): void;
   error(title: string, description?: string): void;
+};
+
+const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
+  chooseClientDirectory: false,
+  selectNoProject: false,
+  setLocalDefault: false,
+  viewClientPath: false,
 };
 
 /**
@@ -37,12 +46,14 @@ export function useAppShellProjectContext(options: {
 }): AppShellProjectActions & {
   projectInfo: RendererAppInfo | null;
   projects: ProjectRecord[];
+  projectCapabilities: DesktopProjectCapabilities;
   selectedProjectId: string | null | undefined;
   currentProjectId: string | null | undefined;
   currentProject: ProjectRecord | undefined;
   projectPickerPending: boolean;
   projectPickerPendingRef: RefBox<boolean>;
   projectPickerRequestRef: RefBox<number>;
+  clearRuntimeHostProjectState(): void;
 } {
   const {
     uiLocale,
@@ -56,6 +67,8 @@ export function useAppShellProjectContext(options: {
   const [appInfo, setAppInfo] = useState<RendererAppInfo | null>(null);
   const [sessionProjectInfo, setSessionProjectInfo] = useState<SessionProjectInfoState | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [projectCapabilities, setProjectCapabilities] =
+    useState<DesktopProjectCapabilities>(NO_PROJECT_CAPABILITIES);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null | undefined>(undefined);
   const [projectPickerPending, setProjectPickerPending] = useState(false);
   const projectPickerPendingRef = useRef(false);
@@ -66,10 +79,11 @@ export function useAppShellProjectContext(options: {
     let refreshGeneration = 0;
     const refresh = () => {
       const generation = ++refreshGeneration;
-      return Promise.all([window.maka.projects.list(), window.maka.app.info()]).then(
-        ([next, info]) => {
+      return Promise.all([window.maka.projects.getSnapshot(), window.maka.app.info()]).then(
+        ([snapshot, info]) => {
           if (cancelled || generation !== refreshGeneration) return;
-          setProjects(next);
+          setProjects([...snapshot.projects]);
+          setProjectCapabilities(snapshot.capabilities);
           setAppInfo({
             projectId: info.projectId,
             projectPath: info.projectPath,
@@ -91,7 +105,7 @@ export function useAppShellProjectContext(options: {
   }, []);
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || !projectCapabilities.viewClientPath) return;
     let cancelled = false;
     void window.maka.app.sessionProjectInfo(sessionId).then(
       (info) => {
@@ -105,7 +119,7 @@ export function useAppShellProjectContext(options: {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, sessionCwd]);
+  }, [sessionId, sessionCwd, projectCapabilities.viewClientPath]);
 
   const resolvedSessionProjectInfo =
     sessionId &&
@@ -130,24 +144,39 @@ export function useAppShellProjectContext(options: {
     setSessionProjectInfo,
     setProjectPickerPending,
     setProjects,
+    setProjectCapabilities,
     setSelectedProjectId,
     selectedProjectId,
     projects,
+    projectCapabilities,
     projectInfo,
     sessionId,
     onProjectSelected,
     toastApi,
   });
 
+  function clearRuntimeHostProjectState(): void {
+    projectPickerRequestRef.current += 1;
+    projectPickerPendingRef.current = false;
+    setProjectPickerPending(false);
+    setProjects([]);
+    setProjectCapabilities(NO_PROJECT_CAPABILITIES);
+    setAppInfo(null);
+    setSessionProjectInfo(null);
+    setSelectedProjectId(undefined);
+  }
+
   return {
     projectInfo,
     projects,
+    projectCapabilities,
     selectedProjectId,
     currentProjectId,
     currentProject,
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
+    clearRuntimeHostProjectState,
     ...actions,
   };
 }

@@ -6,6 +6,7 @@ import {
 } from '@maka/core/execution-inspect';
 import {
   isSessionTrace,
+  isTurnTrace,
   SESSION_TRACE_SCHEMA_VERSION,
   type SessionTraceCoverage,
   type TraceTotals,
@@ -64,6 +65,7 @@ export type ExecutionInspectQueryInput =
       readonly agentRunId: string;
     }
   | { readonly kind: 'session_trace_start'; readonly sessionId: string }
+  | { readonly kind: 'turn_trace'; readonly sessionId: string; readonly turnId: string }
   | {
       readonly kind: 'session_trace_continue';
       readonly sessionId: string;
@@ -74,6 +76,11 @@ export type ExecutionInspectQueryInput =
 export type ExecutionInspectQueryResult =
   | { readonly kind: 'session'; readonly document: SessionInspectDocument }
   | { readonly kind: 'agent_run'; readonly document: AgentRunInspectDocument }
+  | {
+      readonly kind: 'turn_trace';
+      readonly sessionId: string;
+      readonly turn: TurnTrace;
+    }
   | {
       readonly kind: 'session_trace_page';
       readonly schemaVersion: typeof SESSION_TRACE_SCHEMA_VERSION;
@@ -182,9 +189,17 @@ export function decodeExecutionInspectQueryInput(value: unknown): ExecutionInspe
     value,
     'execution.inspect.query input',
     ['kind', 'sessionId'],
-    ['agentRunId', 'revision', 'offset'],
+    ['agentRunId', 'turnId', 'revision', 'offset'],
   );
   const sessionId = requireEntityId(record.sessionId, 'inspect Session id');
+  if (record.kind === 'turn_trace') {
+    requireExactRecord(record, 'Turn trace query', ['kind', 'sessionId', 'turnId']);
+    return {
+      kind: 'turn_trace',
+      sessionId,
+      turnId: requireEntityId(record.turnId, 'trace Turn id'),
+    };
+  }
   if (record.kind === 'session_trace_start') {
     requireExactRecord(record, 'Session trace start query', ['kind', 'sessionId']);
     return { kind: 'session_trace_start', sessionId };
@@ -240,8 +255,17 @@ export function decodeExecutionInspectQueryResult(value: unknown): ExecutionInsp
       'nextOffset',
       'expectedRevision',
       'actualRevision',
+      'turn',
     ],
   );
+  if (shaped.kind === 'turn_trace') {
+    const record = requireExactRecord(shaped, 'Turn trace result', ['kind', 'sessionId', 'turn']);
+    const sessionId = requireEntityId(record.sessionId, 'trace Session id');
+    if (!isTurnTrace(record.turn)) {
+      throw invalidProtocolFrame('Invalid Turn trace');
+    }
+    return { kind: 'turn_trace', sessionId, turn: record.turn };
+  }
   if (shaped.kind === 'session_trace_revision_changed') {
     const record = requireExactRecord(shaped, 'Session trace revision changed result', [
       'kind',
@@ -370,6 +394,16 @@ function assertQueryOutputForInput(
   input: ExecutionInspectQueryInput,
   output: ExecutionInspectQueryResult,
 ): void {
+  if (input.kind === 'turn_trace') {
+    if (
+      output.kind !== 'turn_trace' ||
+      output.sessionId !== input.sessionId ||
+      output.turn.turnId !== input.turnId
+    ) {
+      throw invalidProtocolFrame('Turn trace result changed request identity');
+    }
+    return;
+  }
   if (input.kind === 'session_trace_start' || input.kind === 'session_trace_continue') {
     if (output.kind === 'session_trace_revision_changed') {
       if (input.kind !== 'session_trace_continue' || output.expectedRevision !== input.revision) {

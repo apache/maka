@@ -1,5 +1,5 @@
 import type { StatusSemantic } from '@maka/ui';
-import type { LocalMemoryState } from '@maka/core';
+import type { LocalMemoryState } from '@maka/core/local-memory';
 import type { MemorySettingsCopy } from '../locales/settings-memory-copy';
 
 export function filterLocalMemoryEntries(

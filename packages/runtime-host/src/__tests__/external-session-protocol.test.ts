@@ -10,28 +10,20 @@ import {
 } from '../protocol/index.js';
 
 describe('external Session protocol', () => {
-  test('declares three bounded ready-only operations', () => {
-    assert.deepEqual(
-      Object.fromEntries(
-        (
-          [
-            'external-session.source.query',
-            'external-session.catalog.query',
-            'external-session.import',
-          ] as const
-        ).map((operation) => [
-          operation,
-          {
-            mode: HOST_OPERATION_SPECS[operation].mode,
-            availability: HOST_OPERATION_SPECS[operation].availability,
-          },
-        ]),
-      ),
-      {
-        'external-session.source.query': { mode: 'query', availability: 'ready' },
-        'external-session.catalog.query': { mode: 'query', availability: 'ready' },
-        'external-session.import': { mode: 'command', availability: 'ready' },
-      },
+  test('identifies external Session queries that expose Host paths', () => {
+    assert.equal(
+      HOST_OPERATION_SPECS['external-session.catalog.query'].usesHostPaths?.({
+        adapterId: 'codex',
+        workspace: { kind: 'project', projectId: 'project-1' },
+      }),
+      false,
+    );
+    assert.equal(
+      HOST_OPERATION_SPECS['external-session.catalog.query'].usesHostPaths?.({
+        adapterId: 'codex',
+        workspace: { kind: 'host_path', path: '/workspace' },
+      }),
+      true,
     );
   });
 
@@ -55,7 +47,7 @@ describe('external Session protocol', () => {
         input: {
           adapterId: 'codex',
           includeArchived: true,
-          cwd: '/workspace',
+          workspace: { kind: 'project', projectId: 'project-1' },
           cursor: '16',
         },
       }),
@@ -65,7 +57,7 @@ describe('external Session protocol', () => {
         input: {
           adapterId: 'codex',
           includeArchived: true,
-          cwd: '/workspace',
+          workspace: { kind: 'project', projectId: 'project-1' },
           cursor: '16',
         },
       },
@@ -118,7 +110,7 @@ describe('external Session protocol', () => {
           sessions: Array.from({ length: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1 }, (_, index) => ({
             id: `source-${index}`,
             name: `Session ${index}`,
-            cwd: '/workspace',
+            hostCwd: '/workspace',
           })),
           nextCursor: null,
         }),

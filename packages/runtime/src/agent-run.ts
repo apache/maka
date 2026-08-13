@@ -3,18 +3,18 @@ import type {
   AgentRunHeader,
   AgentRunStore,
   EmittedAgentRunEvent,
-  RuntimeEvent,
-  RuntimeEventStore,
-  RunCompositionSnapshot,
-  ToolBoundaryProtocol,
-} from '@maka/core';
+} from '@maka/core/agent-run';
+import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { RunCompositionSnapshot } from '@maka/core/run-composition';
+import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
+import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
+import { isSessionInlineRun } from '@maka/core/agent-run';
+import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import {
-  decodeRunCompositionSnapshot,
-  DurableStoreWriteError,
-  isSessionInlineRun,
-  isTerminalRuntimeEvent,
-} from '@maka/core';
-import { ToolLedgerRejectionError } from '@maka/core/tool-ledger-scanner';
+  ToolLedgerCorruptionError,
+  ToolLedgerRejectionError,
+} from '@maka/core/tool-ledger-scanner';
 import { Buffer } from 'node:buffer';
 import { isDeepStrictEqual } from 'node:util';
 import { redactSecrets } from '@maka/core/redaction';
@@ -1236,8 +1236,8 @@ export class AgentRun {
         : {}),
       ...(this.input.userInput.agentId ? { agentId: this.input.userInput.agentId } : {}),
       ...(this.input.userInput.agentName ? { agentName: this.input.userInput.agentName } : {}),
-      ...(this.input.userInput.origin?.kind === 'automation'
-        ? { automationId: this.input.userInput.origin.automationId }
+      ...(this.input.userInput.origin?.kind === 'scheduled_task'
+        ? { scheduledTaskId: this.input.userInput.origin.scheduledTaskId }
         : {}),
       ...(this.input.userInput.origin?.kind === 'goal'
         ? { goalId: this.input.userInput.origin.goalId }
@@ -1526,13 +1526,23 @@ export class AgentRun {
     if (this.terminalRunHeaderCommitted) return;
     const runStore = this.input.runStore;
     const runtimeEventStore = this.input.runtimeEventStore;
-    if (
-      !runStore ||
-      !this.runStoreAvailable ||
-      !runtimeEventStore ||
-      !this.runtimeEventStoreAvailable
-    )
-      return;
+    if (!runStore || !runtimeEventStore) return;
+    // A latched RuntimeEvent store normally keeps the skip below: the latch
+    // marks a write failure, and a transient one leaves the run non-terminal
+    // on purpose so startup recovery repairs it with its own bookkeeping.
+    // A corruption latch is the exception (#2313). The health scan refuses
+    // tool-bearing appends only, so the terminal event is a write the
+    // damaged ledger would have taken, and no recovery pass will ever be
+    // safer than landing it now: the run must be able to say it ended. The
+    // latch itself stays closed, nothing else may write; the terminal
+    // durability barrier below doubles as the scoped probe, and if even
+    // that write is refused the silent skip stands.
+    let corruptionRecovery = false;
+    if (!this.runtimeEventStoreAvailable) {
+      if (!(this.runtimeEventStoreFailure instanceof ToolLedgerCorruptionError)) return;
+      corruptionRecovery = true;
+    }
+    if (!this.runStoreAvailable) return;
     const fallbackStatus =
       this.stopped || finalStatus?.status === 'aborted' ? 'cancelled' : 'failed';
     const fallbackFailureClass = 'missing_terminal_event';
@@ -1542,19 +1552,42 @@ export class AgentRun {
       const terminalClaim = this.terminalClaim;
       const terminalEvent = terminalClaim?.event;
       if (!terminalEvent) throw new Error('terminal RuntimeEvent claim is missing');
-      await terminalClaim.write;
+      try {
+        await terminalClaim.write;
+      } catch (error) {
+        // Under a corruption latch the claimed event's write is the stale
+        // latched failure, not the barrier's own verdict: clear it so
+        // commitOrCreateTerminalRunFact lands the same claimed fact fresh
+        // (#2313). On a store that was never latched the failure is live
+        // and keeps propagating exactly as before.
+        if (!corruptionRecovery) throw error;
+        terminalClaim.write = undefined;
+      }
       // Re-check after the await, not only at entry. Two callers — a stop
       // settling the claim and the stream's own finalize — can both pass the
       // entry guard and then queue behind the same write. The claim slot
       // dedupes the RuntimeEvent, but the run-store projection would append a
       // second terminal AgentRunEvent for the one run.
       if (this.terminalRunHeaderCommitted) return;
-      if (this.continuationActive) {
+      // On the recovery path the claimed event's write never committed, so
+      // the boundary named after that commit must wait for the durability
+      // barrier inside commitOrCreateTerminalRunFact; firing it here would
+      // let a crash leave a durable continuation start without the terminal
+      // fact it is contracted to follow.
+      const deferContinuationBoundary = corruptionRecovery && !terminalClaim.write;
+      if (this.continuationActive && !deferContinuationBoundary) {
         await this.input.continuationFailpoint?.('after_terminal_event_committed');
       }
       const commit = commitOrCreateTerminalRunFact({
         runStore,
         runtimeEventStore,
+        ...(this.continuationActive && deferContinuationBoundary
+          ? {
+              afterTerminalDurable: async () => {
+                await this.input.continuationFailpoint?.('after_terminal_event_committed');
+              },
+            }
+          : {}),
         newId: this.input.newId,
         sessionId: this.sessionId,
         runId: this.runId,
@@ -1587,6 +1620,14 @@ export class AgentRun {
         await this.enqueueTraceWriteFailure(result.headerCommitError, 'commit terminal run header');
       }
     } catch (error) {
+      if (corruptionRecovery) {
+        // The scoped barrier lost its bet: the ledger refused even the
+        // terminal fact. The latch never lifted, so there is nothing to
+        // restore; record the failure and keep the finalize path's
+        // historical silence for a store that stays broken.
+        await this.enqueueTraceWriteFailure(error, 'commit terminal run header');
+        return;
+      }
       this.runStoreAvailable = false;
       await this.enqueueTraceWriteFailure(error, 'commit terminal run header');
       throw error;
@@ -1710,17 +1751,24 @@ export class AgentRun {
       // Only that one class is exempt. A store that went away keeps latching:
       // nothing this run emits next can land.
       //
-      // `ToolLedgerCorruptionError` also keeps latching, but be precise about
-      // what that buys, because it is less than it looks. A damaged ledger
-      // refuses TOOL facts only — the health scan sits behind
-      // `isToolLedgerBearingEvent` — so this run's terminal event, which bears
-      // no tool fact, is a write the corrupt store would have taken. The latch
-      // is what keeps it out, and the run ends at `running` with no terminal
-      // fact: #2234's own shape, for the already-damaged population. Held here
-      // deliberately rather than fixed in passing — a run that cannot write its
-      // tool facts should arguably still be allowed to say it ended, but that
-      // is a behaviour change on a path this commit does not otherwise touch.
-      // Tracked in #2313; the corrupt-ledger test pins the current price.
+      // `ToolLedgerCorruptionError` also keeps latching, and that is the
+      // right economy for THIS path: stream writes stay fail-closed against
+      // a damaged ledger. What the latch must not cost is the terminal fact
+      // (#2313): the health scan gates only tool-bearing appends, so the
+      // terminal event is a write the damaged ledger would have taken.
+      // `commitTerminalRun` therefore carries the one exception: under a
+      // corruption latch it still attempts the terminal durability barrier
+      // (the barrier is its own scoped probe), so the run says it ended
+      // while everything routed through here keeps failing closed.
+      if (error instanceof RunSealedError) {
+        // A refusal that is correct in itself (#2311): the run already owns
+        // its terminal fact, and a straggler from the still-draining stream
+        // is by definition not part of it. Neither the store nor this run's
+        // durable history is at fault, so no latch and no trace-write
+        // failure; a caller that asked for the rejection still receives it.
+        if (options.rethrow) throw error;
+        return;
+      }
       if (!(error instanceof ToolLedgerRejectionError)) {
         this.runtimeEventStoreAvailable = false;
         this.runtimeEventStoreFailure = error;

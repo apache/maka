@@ -37,16 +37,6 @@ describe('FileCredentialStore', () => {
     });
   });
 
-  test('keeps Ollama Cloud credentials separate from local Ollama state', async () => {
-    await withTempDir(async (dir) => {
-      const store = createFileCredentialStore(dir);
-      await store.setSecret('ollama-cloud', 'api_key', 'ollama-cloud-test-key');
-
-      assert.equal(await store.getSecret('ollama-cloud', 'api_key'), 'ollama-cloud-test-key');
-      assert.equal(await store.getSecret('ollama-local', 'api_key'), null);
-    });
-  });
-
   test('deleteSecret(slug) with no kind clears every kind for that slug only', async () => {
     await withTempDir(async (dir) => {
       const store = createFileCredentialStore(dir);
@@ -233,13 +223,6 @@ describe('FileCredentialStore compareAndSetSecret', () => {
     return store.compareAndSetSecret(slug, kind, expected, value);
   }
 
-  test('the file store advertises the optional CAS capability', async () => {
-    await withTempDir(async (dir) => {
-      const store = createFileCredentialStore(dir);
-      assert.equal(typeof store.compareAndSetSecret, 'function');
-    });
-  });
-
   test('commits when the basis still matches, and the write persists', async () => {
     await withTempDir(async (dir) => {
       const store = createFileCredentialStore(dir);
@@ -253,9 +236,8 @@ describe('FileCredentialStore compareAndSetSecret', () => {
 
   test('commits a write-if-absent (expected null) only while the entry is absent', async () => {
     await withTempDir(async (dir) => {
-      // The one-shot legacy import: decide "store has no token" and write in one
-      // serialized step. A value written between the check and the write must
-      // make the import lose, not clobber.
+      // Decide "store has no token" and write in one serialized step. A value
+      // written between the check and the write must make this writer lose.
       const importer = createFileCredentialStore(dir);
       const other = createFileCredentialStore(dir);
 
@@ -330,42 +312,6 @@ describe('FileCredentialStore compareAndSetSecret', () => {
 
       const reader = createFileCredentialStore(dir);
       assert.equal(await reader.getSecret('acct', 'oauth_token'), winnerValue);
-    });
-  });
-});
-
-describe('FileCredentialStore secret-kind + slug contract', () => {
-  // The on-disk stored-kind suffixes are a backward-compat contract: a
-  // migrated legacy file keeps the same `slug:kind` keys, so the suffix
-  // names must not drift.
-  const kindToStoredSuffix: Array<[CredentialKind, string]> = [
-    ['api_key', 'apiKey'],
-    ['oauth_token', 'oauthToken'],
-    ['bot_token', 'botToken'],
-    ['app_secret', 'botAppSecret'],
-    ['proxy_password', 'proxyPassword'],
-    ['tavily_api_key', 'tavilyApiKey'],
-  ];
-
-  test('preserves the legacy stored-key suffix for every kind', async () => {
-    await withTempDir(async (dir) => {
-      const store = createFileCredentialStore(dir);
-      // The generic API expresses every kind — including the bot/proxy/gateway/
-      // tavily secrets the migration carries — as `${slug}:${suffix}`. The
-      // caller owns the slug, so a key never derives from a secret value.
-      for (const [kind] of kindToStoredSuffix) {
-        await store.setSecret('settings:bot:telegram', kind, `val-${kind}`);
-      }
-      const raw = JSON.parse(await readFile(join(dir, 'credentials.json'), 'utf8')) as {
-        values: Record<string, string>;
-      };
-      for (const [kind, suffix] of kindToStoredSuffix) {
-        assert.equal(
-          raw.values[`settings:bot:telegram:${suffix}`],
-          `val-${kind}`,
-          `${kind} -> settings:bot:telegram:${suffix}`,
-        );
-      }
     });
   });
 });

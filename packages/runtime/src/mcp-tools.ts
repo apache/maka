@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { jsonSchema } from 'ai';
-import type { McpCallResult, McpToolDescriptor } from '@maka/core/mcp';
+import type { McpCallResult, McpToolBinding, McpToolSnapshot } from '@maka/core/mcp';
 import type { ToolCategory } from '@maka/core/permission';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
 import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
@@ -15,14 +15,9 @@ const MAX_SUMMARIZED_BLOCKS = 100;
 const TRUNCATION_MARKER = '\n…[truncated by Maka]';
 
 export interface McpToolProvider {
-  tools(): readonly McpToolDescriptor[];
-  bindTool?(
-    serverId: string,
-    toolName: string,
-  ): (args: Record<string, unknown>, options: McpToolCallOptions) => Promise<McpCallResult>;
+  toolSnapshot(): McpToolSnapshot;
   callTool(
-    serverId: string,
-    toolName: string,
+    binding: McpToolBinding,
     args: Record<string, unknown>,
     options: McpToolCallOptions,
   ): Promise<McpCallResult>;
@@ -53,7 +48,8 @@ export function buildMcpTools(
   options: BuildMcpToolsOptions = {},
 ): MakaTool[] {
   const names = new Map<string, string>();
-  return provider.tools().map((descriptor) => {
+  const snapshot = provider.toolSnapshot();
+  return snapshot.tools.map(({ descriptor, binding }) => {
     const identity = `${descriptor.serverId}\0${descriptor.name}`;
     const name = mcpProxyToolName(descriptor.serverId, descriptor.name);
     const collision = names.get(name);
@@ -61,10 +57,6 @@ export function buildMcpTools(
       throw new Error(`MCP proxy tool name collision: ${name}`);
     }
     names.set(name, identity);
-    const callTool =
-      provider.bindTool?.(descriptor.serverId, descriptor.name) ??
-      ((args: Record<string, unknown>, callOptions: McpToolCallOptions) =>
-        provider.callTool(descriptor.serverId, descriptor.name, args, callOptions));
     return {
       name,
       description:
@@ -96,7 +88,7 @@ export function buildMcpTools(
             throw new Error('MCP network access denied');
           }
         }
-        return callTool(asArguments(args), {
+        return provider.callTool(binding, asArguments(args), {
           signal: context.abortSignal,
           timeoutMs: options.callTimeoutMs,
           context: {

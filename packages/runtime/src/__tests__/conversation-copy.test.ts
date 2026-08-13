@@ -3,15 +3,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type {
-  AgentRunHeader,
-  AgentRunStore,
-  EmittedAgentRunEvent,
-  RuntimeEvent,
-  RuntimeEventStore,
-  StoredMessage,
-} from '@maka/core';
-import { decodeCanonicalToolResultContent, isSessionInlineRun } from '@maka/core';
+import type { AgentRunHeader, AgentRunStore, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { StoredMessage } from '@maka/core/session';
+import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { isSessionInlineRun } from '@maka/core/agent-run';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   createSqliteAgentRunStore,
@@ -451,71 +448,6 @@ test('conversation copy rewrites owned references without changing opaque tool p
   );
 });
 
-test('conversation copy turn closure includes legacy children but excludes later continuations', async () => {
-  const runs = [
-    agentRunHeader({
-      runId: 'run-parent',
-      turnId: 'turn-parent',
-    }),
-    agentRunHeader({
-      runId: 'run-child',
-      turnId: 'turn-child',
-      parentRunId: 'run-parent',
-    }),
-    agentRunHeader({
-      runId: 'run-grandchild',
-      turnId: 'turn-grandchild',
-      parentRunId: 'run-child',
-    }),
-    agentRunHeader({
-      runId: 'run-continuation',
-      turnId: 'turn-after-boundary',
-      parentRunId: 'run-parent',
-      continuationSource: {
-        sourceInvocationId: 'invocation-parent',
-        sourceRunId: 'run-parent',
-        sourceTurnId: 'turn-parent',
-        sourceRuntimeEventHighWater: 1,
-      },
-    }),
-  ];
-
-  const plan = await prepareConversationRuntimeLedgerCopy({
-    sourceSessionId: 'session-source',
-    sourceEvents: [],
-    copiedMessages: [
-      {
-        type: 'user',
-        id: 'message-parent',
-        turnId: 'turn-parent',
-        ts: 1,
-        text: 'retain this turn',
-      },
-    ],
-    runStore: {
-      listSessionRuns: async () => runs,
-      readEvents: async () => [],
-    },
-    runtimeEventStore: {
-      readRuntimeEvents: async (_sessionId, runId) => {
-        const run = runs.find((candidate) => candidate.runId === runId);
-        assert.ok(run);
-        return [
-          runtimeEvent({
-            id: `terminal-${runId}`,
-            runId,
-            invocationId: run.invocationId,
-            turnId: run.turnId,
-            status: 'completed',
-          }),
-        ];
-      },
-    },
-  });
-
-  assert.deepEqual(plan.copyTurnIds, ['turn-parent', 'turn-child', 'turn-grandchild']);
-});
-
 test('conversation copy rejects continuation authority selected through the child-run closure', async () => {
   const parent = agentRunHeader({ runId: 'run-parent', turnId: 'turn-parent' });
   const child = agentRunHeader({
@@ -563,42 +495,6 @@ test('conversation copy rejects continuation authority selected through the chil
             }),
           ];
         },
-      },
-    }),
-    /typed identity rewriting/i,
-  );
-});
-
-test('conversation copy rejects legacy v1 continuation-start events', async () => {
-  const run = agentRunHeader({ runId: 'run-v1', turnId: 'turn-v1' });
-  await assert.rejects(
-    prepareConversationRuntimeLedgerCopy({
-      sourceSessionId: 'session-source',
-      sourceEvents: [],
-      copiedMessages: [
-        { type: 'user', id: 'message-v1', turnId: run.turnId, ts: 1, text: 'retain' },
-      ],
-      runStore: {
-        listSessionRuns: async () => [run],
-        readEvents: async () => [],
-      },
-      runtimeEventStore: {
-        readRuntimeEvents: async () => [
-          runtimeEvent({
-            id: 'v1-start',
-            runId: run.runId,
-            invocationId: run.invocationId,
-            turnId: run.turnId,
-            actions: { stateDelta: { continuationStart: true } },
-          }),
-          runtimeEvent({
-            id: 'v1-terminal',
-            runId: run.runId,
-            invocationId: run.invocationId,
-            turnId: run.turnId,
-            status: 'completed',
-          }),
-        ],
       },
     }),
     /typed identity rewriting/i,

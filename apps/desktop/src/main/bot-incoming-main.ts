@@ -4,13 +4,13 @@ import {
   botDisplayLabel,
   botSourceEventKey,
   formatBotMessageForSession,
-  generalizedErrorMessage,
   isPlaintextHelpCommand,
   isPlaintextResetCommand,
   nonTextMessageAck,
   plaintextHelpReply,
-} from '@maka/core';
-import type { BotIncomingMessage, BotRegistry } from '@maka/runtime';
+} from '@maka/core/bot-events';
+import { generalizedErrorMessage } from '@maka/core/redaction';
+import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import type { BotSessionAdapter, BotSessionTurnResult } from './bot-session-adapter.js';
 import { isBotSessionUnavailableError } from './bot-session-adapter.js';
 import { isSessionWorkspaceUnavailableError } from './project-context-root.js';

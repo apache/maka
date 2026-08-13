@@ -14,23 +14,22 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Backend architecture](../ARCHITECTURE.md) ([中文](../ARCHITECTURE.zh-CN.md))
 - [Desktop architecture](../apps/desktop/README.md)
 - [Renderer architecture](../apps/desktop/src/renderer/README.md)
-- [Headless usage and isolation](../packages/headless/README.md)
+- [Evaluation kernel](../packages/eval/README.md)
 - [Runtime package](../packages/runtime/README.md)
 - [UI package architecture](../packages/ui/README.md)
 - [Security policy](../SECURITY.md)
 
 ## Current contracts
 
-### Runtime and Headless
+### Runtime and Eval
 
 - [Deep Research durable workspace](./deep-research-durable-workspace.md)
 - [Session task ledger lifecycle](./session-task-ledger-lifecycle.md)
-- [Execution identity and evidence spine](./execution-evidence-spine.md)
 - [Runtime resume architecture](./architecture/runtime-resume-architecture.md) ([中文](./architecture/runtime-resume-architecture.zh-CN.md))
 - [Runtime Host architecture](./architecture/runtime-host-architecture.md) ([中文](./architecture/runtime-host-architecture.zh-CN.md))
+- [Remote Runtime Host setup](./runtime-host-remote-access.md) ([中文](./runtime-host-remote-access.zh-CN.md))
 - [Runtime resume extraction ledger](./architecture/runtime-resume-extraction-ledger.zh-CN.md)
 - [Runtime resume Phase 3–4 implementation route](./architecture/runtime-resume-phase3-phase4-workspace-checkpoint-design.zh-CN.md)
-- [AHE target protocol and evidence export](./ahe-target-protocol.md)
 - [Skill catalog policy](./skill-catalog-policy.md)
 - [Agent Swarm](./agent-swarm.md)
 - [Agent Graph stream scheduling](./architecture/agent-graph-stream-scheduling-draft.md) ([中文](./architecture/agent-graph-stream-scheduling-draft.zh-CN.md))

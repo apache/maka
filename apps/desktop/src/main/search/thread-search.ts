@@ -34,19 +34,16 @@
  *   - No `maka://session` URI construction.
  */
 
-import {
-  collapseSessionRevisions,
-  normalizeSearchLimit,
-  normalizeSearchQuery,
-  redactSecrets,
-  validateWorkspacePrivacyContext,
-} from '@maka/core';
-import type {
-  SearchErrorReason,
-  SearchResult,
-  SessionSummary,
-  StoredMessage,
-} from '@maka/core';
+import { collapseSessionRevisions } from '@maka/core/session-revisions';
+
+import { normalizeSearchLimit, normalizeSearchQuery } from '@maka/core/search';
+
+import { redactSecrets } from '@maka/core/redaction';
+
+import { validateWorkspacePrivacyContext } from '@maka/core/incognito';
+import type { SearchErrorReason, SearchResult } from '@maka/core/search';
+
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 
 /** Max scan bytes per ToolResultMessage.content (JSON-serialized). */
 export const TOOL_RESULT_SCAN_CAP_BYTES = 10_240;

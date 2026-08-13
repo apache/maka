@@ -50,7 +50,9 @@ export type RuntimeSessionTransientEvent = Extract<
   {
     type:
       | 'text_delta'
+      | 'text_complete'
       | 'thinking_delta'
+      | 'thinking_complete'
       | 'tool_start'
       | 'tool_output_delta'
       | 'tool_progress'
@@ -72,7 +74,7 @@ interface SessionProjectionState {
   canonical: CanonicalSessionProjection;
   revision: number;
   subscribers: Map<string, Subscriber>;
-  assistantPrefixes: Map<string, ActiveAssistantPrefix>;
+  assistantStreams: Map<string, ActiveAssistantStream>;
   /**
    * Latest live tool_result_preview per toolUseId for the active turn.
    * Replace semantics; cleared on tool_result and terminal publication.
@@ -85,11 +87,12 @@ interface SessionProjectionState {
   terminalPublicationFence?: TerminalPublicationFence;
 }
 
-interface ActiveAssistantPrefix {
+interface ActiveAssistantStream {
   turnId: string;
   messageId: string;
   kind: SessionAssistantDelta['kind'];
   text: string;
+  completedParts?: string[];
 }
 
 interface TerminalPublicationFence {
@@ -497,7 +500,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         state.canonical = canonical;
         state.revision = nextRevision;
         delete state.terminalPublicationFence;
-        state.assistantPrefixes.clear();
+        state.assistantStreams.clear();
         state.toolResultPreviews.clear();
         this.#broadcastProjection(state, snapshot);
         if (state.subscribers.size === 0) this.#sessions.delete(sessionId);
@@ -545,10 +548,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       if (event.type === 'text_delta' || event.type === 'thinking_delta') {
         const kind: SessionAssistantDelta['kind'] =
           event.type === 'text_delta' ? 'text' : 'thinking';
-        const prefixKey = assistantPrefixKey(kind, event.messageId);
-        const current = state.assistantPrefixes.get(prefixKey);
+        const prefixKey = assistantStreamKey(kind, event.messageId);
+        const current = state.assistantStreams.get(prefixKey);
         const startOffset = current?.text.length ?? 0;
-        state.assistantPrefixes.set(prefixKey, {
+        state.assistantStreams.set(prefixKey, {
           turnId: event.turnId,
           messageId: event.messageId,
           kind,
@@ -556,6 +559,62 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         });
         for (const subscriber of state.subscribers.values()) {
           this.#enqueueAssistantDelta(subscriber, sessionId, runId, event, kind, startOffset);
+        }
+        return;
+      }
+      if (event.type === 'text_complete' || event.type === 'thinking_complete') {
+        if (event.type === 'thinking_complete') {
+          const prefixKey = assistantStreamKey('thinking', event.messageId);
+          const current = state.assistantStreams.get(prefixKey) ?? {
+            kind: 'thinking' as const,
+            turnId: event.turnId,
+            messageId: event.messageId,
+            text: '',
+          };
+          current.completedParts = [...(current.completedParts ?? []), event.text];
+          state.assistantStreams.set(prefixKey, current);
+          return;
+        }
+
+        const thinkingKey = assistantStreamKey('thinking', event.messageId);
+        const thinking = state.assistantStreams.get(thinkingKey);
+        if (thinking) {
+          const finalThinking = thinking.completedParts?.join('') ?? thinking.text;
+          for (const subscriber of state.subscribers.values()) {
+            this.#enqueueAssistantCompletion(
+              subscriber,
+              sessionId,
+              runId,
+              thinking,
+              'thinking',
+              finalThinking,
+            );
+          }
+          state.assistantStreams.delete(thinkingKey);
+        }
+
+        const textKey = assistantStreamKey('text', event.messageId);
+        const text = state.assistantStreams.get(textKey);
+        if (text || event.text.length > 0) {
+          const current =
+            text ??
+            ({
+              kind: 'text',
+              turnId: event.turnId,
+              messageId: event.messageId,
+              text: '',
+            } satisfies ActiveAssistantStream);
+          for (const subscriber of state.subscribers.values()) {
+            this.#enqueueAssistantCompletion(
+              subscriber,
+              sessionId,
+              runId,
+              current,
+              'text',
+              event.text,
+            );
+          }
+          state.assistantStreams.delete(textKey);
         }
         return;
       }
@@ -702,6 +761,9 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             subscriptionId,
             nextSequence: firstSequence,
             snapshot: committed.value,
+            activeAssistantStreams: [...committed.state.assistantStreams.values()].map(
+              ({ kind, turnId, messageId }) => ({ kind, turnId, messageId }),
+            ),
           },
         };
       });
@@ -753,7 +815,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           connectionId,
           subscriptionId: subscriber.subscriptionId,
           sessionId: subscriber.sessionId,
-          messages: mergeActiveAssistantPrefixes(messages, state?.assistantPrefixes.values()),
+          messages: mergeActiveAssistantStreams(messages, state?.assistantStreams.values()),
         });
       } catch {
         return {
@@ -859,6 +921,61 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     kind: SessionAssistantDelta['kind'],
     startOffset: number,
   ): void {
+    this.#enqueueAssistantText(subscriber, sessionId, runId, event, kind, startOffset, event.text);
+  }
+
+  #enqueueAssistantCompletion(
+    subscriber: Subscriber,
+    sessionId: string,
+    runId: string,
+    current: Pick<ActiveAssistantStream, 'turnId' | 'messageId' | 'text'>,
+    kind: SessionAssistantDelta['kind'],
+    finalText: string,
+  ): void {
+    const extendsPrefix = finalText.startsWith(current.text);
+    const suffix = extendsPrefix ? finalText.slice(current.text.length) : finalText;
+    if (suffix) {
+      this.#enqueueAssistantText(
+        subscriber,
+        sessionId,
+        runId,
+        current,
+        kind,
+        extendsPrefix ? current.text.length : 0,
+        suffix,
+        !extendsPrefix,
+      );
+    }
+    if (subscriber.phase !== 'open') return;
+    this.#enqueue(subscriber, {
+      kind: 'subscription.session_delta',
+      hostEpoch: this.#hostEpoch,
+      subscriptionId: subscriber.subscriptionId,
+      sequence: subscriber.nextSequence,
+      sessionId,
+      delta: {
+        kind,
+        turnId: current.turnId,
+        runId,
+        messageId: current.messageId,
+        startOffset: finalText.length,
+        text: '',
+        ...(!extendsPrefix && finalText.length === 0 ? { reset: true as const } : {}),
+        complete: true,
+      },
+    });
+  }
+
+  #enqueueAssistantText(
+    subscriber: Subscriber,
+    sessionId: string,
+    runId: string,
+    event: Pick<ActiveAssistantStream, 'turnId' | 'messageId' | 'text'>,
+    kind: SessionAssistantDelta['kind'],
+    startOffset: number,
+    text: string,
+    reset = false,
+  ): void {
     let chunk = '';
     let rawBytes = 0;
     let wireBytes = 0;
@@ -876,10 +993,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         messageId: event.messageId,
         startOffset: startOffset + emittedCharacters,
         text,
+        ...(reset && emittedCharacters === 0 ? { reset: true } : {}),
       },
     });
     let wireLimit = wireTextByteLimit(frame(''));
-    for (const character of event.text) {
+    for (const character of text) {
       const rawCharacterBytes = Buffer.byteLength(character, 'utf8');
       const wireCharacterBytes = jsonStringContentBytes(character);
       if (
@@ -1027,7 +1145,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         canonical,
         revision: 1,
         subscribers: new Map(),
-        assistantPrefixes: new Map(),
+        assistantStreams: new Map(),
         toolResultPreviews: new Map(),
       };
       this.#sessions.set(sessionId, state);
@@ -1035,6 +1153,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     }
     const changed = !isDeepStrictEqual(state.canonical, canonical);
     if (changed) {
+      if (state.canonical.rootTurn?.runId !== canonical.rootTurn?.runId) {
+        state.assistantStreams.clear();
+        state.toolResultPreviews.clear();
+      }
       const nextRevision = state.revision + 1;
       const value = createSessionContinuitySnapshot(canonical, nextRevision);
       state.canonical = canonical;
@@ -1081,13 +1203,13 @@ function slowConsumerFrameBytes(subscriber: Subscriber, hostEpoch: string): numb
   }).byteLength;
 }
 
-function assistantPrefixKey(kind: SessionAssistantDelta['kind'], messageId: string): string {
+function assistantStreamKey(kind: SessionAssistantDelta['kind'], messageId: string): string {
   return `${kind}\0${messageId}`;
 }
 
-function mergeActiveAssistantPrefixes(
+function mergeActiveAssistantStreams(
   messages: readonly StoredMessage[],
-  prefixes: Iterable<ActiveAssistantPrefix> | undefined,
+  prefixes: Iterable<ActiveAssistantStream> | undefined,
 ): readonly StoredMessage[] {
   const activePrefixes = prefixes ? [...prefixes] : [];
   if (activePrefixes.length === 0) return messages;
@@ -1104,14 +1226,14 @@ function mergeActiveAssistantPrefixes(
     }
     let nextMessage: StoredMessage;
     if (prefix.kind === 'text') {
-      const text = mergeAssistantPrefix(message.text, prefix.text);
+      const text = reconcileAssistantText(message.text, prefix.text);
       if (text === message.text) continue;
       nextMessage = { ...message, text };
     } else {
       if (!message.thinking) {
         throw new Error('Active thinking prefix has no matching transcript content');
       }
-      const text = mergeAssistantPrefix(message.thinking.text, prefix.text);
+      const text = reconcileAssistantText(message.thinking.text, prefix.text);
       if (text === message.thinking.text) continue;
       nextMessage = { ...message, thinking: { ...message.thinking, text } };
     }
@@ -1121,10 +1243,14 @@ function mergeActiveAssistantPrefixes(
   return merged ?? messages;
 }
 
-function mergeAssistantPrefix(durable: string, active: string): string {
+function reconcileAssistantText(durable: string, active: string): string {
   if (active.startsWith(durable)) return active;
   if (durable.startsWith(active)) return durable;
-  throw new Error('Active assistant prefix conflicts with the durable transcript');
+  // Persistence is authoritative once it contains a final value. The live
+  // stream may still retain an earlier draft until its completion event enters
+  // this lane; a non-prefix durable value therefore replaces that draft during
+  // transcript catch-up instead of making the snapshot unavailable.
+  return durable;
 }
 
 function transcriptSubscriptionNotFound(): OperationOutcome<'session.transcript.query'> {
@@ -1189,7 +1315,10 @@ function jsonStringContentBytes(value: string): number {
 }
 
 function projectToolEvent(
-  event: Exclude<RuntimeSessionTransientEvent, { type: 'text_delta' | 'thinking_delta' }>,
+  event: Exclude<
+    RuntimeSessionTransientEvent,
+    { type: 'text_delta' | 'thinking_delta' | 'text_complete' | 'thinking_complete' }
+  >,
 ): SessionToolEvent {
   const identity = {
     id: event.id,

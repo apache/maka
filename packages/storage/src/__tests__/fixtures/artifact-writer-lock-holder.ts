@@ -10,9 +10,9 @@ import {
   withLeaseBoundArtifactWriterLock,
 } from '../../artifact-writer-lock.js';
 import {
-  createHeadlessRootLease,
   prepareArtifactWriterLockAuthorityForLease,
   resolveExistingStorageRoot,
+  tryAcquireInteractiveRootOwner,
 } from '../../root-authority.js';
 
 const [workspaceRoot, modeOrTransientResidueSessionId, modeArgument] = process.argv.slice(2);
@@ -63,16 +63,21 @@ async function runLockHolder(
 async function runAuthorityLockHolder(workspaceRoot: string, rootId: string): Promise<void> {
   const capability = await resolveExistingStorageRoot({
     path: workspaceRoot,
-    kind: 'headless',
+    kind: 'interactive',
     expectedRootId: rootId,
   });
-  const lease = createHeadlessRootLease(capability, 'write');
-  const authority = await prepareArtifactWriterLockAuthorityForLease(lease, 'headless');
-  await withLeaseBoundArtifactWriterLock(authority, async () => {
-    await send({ type: 'locked' });
-    await waitForRelease();
-  });
-  await send({ type: 'released' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  if (!owner) throw new Error('interactive storage root is already owned');
+  try {
+    const authority = await prepareArtifactWriterLockAuthorityForLease(owner.lease, 'interactive');
+    await withLeaseBoundArtifactWriterLock(authority, async () => {
+      await send({ type: 'locked' });
+      await waitForRelease();
+    });
+    await send({ type: 'released' });
+  } finally {
+    await owner.close();
+  }
 }
 
 async function runPublicWriter(workspaceRoot: string, sessionId: string): Promise<void> {

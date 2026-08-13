@@ -123,7 +123,7 @@ describe('Plan Mode tool surface', () => {
         tool('Bash', 'shell_unsafe'),
         tool('Browser', 'browser'),
         tool('CustomTool'),
-        tool('Automation'),
+        tool('ScheduledTask'),
         tool('GoalSet'),
         tool('ExploreAgent', 'subagent'),
         tool('AskUserQuestion'),

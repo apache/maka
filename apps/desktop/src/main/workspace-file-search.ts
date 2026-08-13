@@ -1,7 +1,7 @@
 import { execFile, type ExecFileException } from 'node:child_process';
 import { readdir } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
-import { resolveProjectGitInfo } from '@maka/runtime';
+import { resolveProjectGitInfo } from '@maka/runtime/system-prompt/project-context';
 
 /**
  * workspace-file-search.ts — local-only workspace file listing for the composer

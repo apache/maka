@@ -22,21 +22,22 @@ import {
 import { type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
+import { projectRevisionLinkedSessionTree } from '@maka/core/session-revisions';
 import {
-  projectRevisionLinkedSessionTree,
   slashCommandsForSurface,
-  type QueueEnqueueOutcome,
-  type SessionSummary,
-  type ShellRunUpdate,
   type SlashCommandIdForSurface,
-} from '@maka/core';
+} from '@maka/core/slash-command-catalog';
+import { type QueueEnqueueOutcome, type ShellRunUpdate } from '@maka/core/events';
+import { type SessionSummary } from '@maka/core/session';
 import {
   buildForeignSessionHandoffMessage,
   foreignSessionHandoffDisplayText,
   foreignSourceLabel,
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
-import type { ContextDiagnostics, GoalTurnOutcome, SessionActivityLease } from '@maka/runtime';
+import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
+import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
+import type { SessionActivityLease } from '@maka/runtime/goal-turn-lifecycle';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
   MakaForeignSessionReader,
@@ -47,14 +48,10 @@ import type {
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
 import { AUTO_RECAP_DISPLAY_LIMIT_BYTES, shouldAutoRecap } from './session-recap.js';
-import type { InvocableSkillEntry } from '@maka/runtime';
+import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
-import {
-  parseGraphCommand,
-  parseSwarmCommand,
-  type ParsedGraphCommand,
-  type ParsedSwarmCommand,
-} from '@maka/core';
+import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
+import { parseSwarmCommand, type ParsedSwarmCommand } from '@maka/core/swarm-command';
 import {
   inspectSessionResumeAvailability,
   type MakaAttachedSessionTurn,
@@ -131,6 +128,13 @@ export interface MakaPiTuiInput {
   /** Maximum context tokens for the active model, for the statusline ctx segment. */
   modelContextWindow?: number;
   terminal?: Terminal;
+  /**
+   * Whether turns and control actions publish terminal taskbar progress.
+   * Defaults off on native Windows and Windows Terminal sessions because its
+   * OSC 9;4 keepalive can make Explorer's taskbar unresponsive. Injectable so
+   * tests cross the same policy seam without depending on their host platform.
+   */
+  taskbarProgress?: boolean;
   /** Starts the CLI process-exit deadline after terminal restore, before outer cleanup. */
   onProcessExit?: (exitCode: number, error?: Error) => void;
   /**
@@ -182,6 +186,8 @@ export interface MakaPiTuiInput {
    * The Session driver owns validation and durable relocation.
    */
   resumeCwd?: string;
+  /** Whether a failed startup resume may continue with a fresh Session. */
+  resumeFailure?: 'start_fresh' | 'exit';
   /**
    * Read-only store of sessions from other coding agents (Claude Code,
    * Codex). When present, the session picker lists foreign sessions for the
@@ -189,10 +195,39 @@ export interface MakaPiTuiInput {
    * fresh Maka session seeded with it. Omitting it hides the feature.
    */
   foreignSessions?: MakaForeignSessionReader;
+  /** Initial Session picker scope when Session paths are not Client-local. */
+  sessionListScope?: 'current' | 'all';
+  /** Whether editor path completion may inspect the Client filesystem. */
+  clientPathAuthority?: 'local' | 'none';
+}
+
+interface TaskbarProgressEnvironment {
+  readonly platform: NodeJS.Platform;
+  readonly override?: string;
+  readonly windowsTerminalSession?: string;
+}
+
+export function resolveTaskbarProgress(
+  setting: boolean | undefined,
+  environment: TaskbarProgressEnvironment = {
+    platform: process.platform,
+    override: process.env.MAKA_TASKBAR_PROGRESS,
+    windowsTerminalSession: process.env.WT_SESSION,
+  },
+): boolean {
+  if (setting !== undefined) return setting;
+  const forced = environment.override?.trim().toLowerCase();
+  if (forced === '1' || forced === 'true') return true;
+  if (forced === '0' || forced === 'false') return false;
+  return environment.platform !== 'win32' && environment.windowsTerminalSession === undefined;
 }
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const terminal = input.terminal ?? new ProcessTerminal();
+  const taskbarProgress = resolveTaskbarProgress(input.taskbarProgress);
+  const setTaskbarProgress = (active: boolean): void => {
+    if (taskbarProgress) terminal.setProgress(active);
+  };
   const tui = new TUI(terminal);
   const state = createMakaPiTranscriptState();
   let cwd = input.cwd;
@@ -213,7 +248,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     input.modelChoices?.find(
       (choice) => choice.connectionSlug === connectionSlug && choice.model === model,
     )?.thinkingLevels ?? (providerType ? thinkingVariantsForModel(providerType, model) : []);
-  let sessionListScope: 'current' | 'all' = 'current';
+  let sessionListScope: 'current' | 'all' = input.sessionListScope ?? 'current';
   let busy = false;
   let closed = false;
   let currentActivityCompletion: Promise<void> | undefined;
@@ -517,7 +552,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     busy = true;
     const activity = beginActivity();
     editor.disableSubmit = true;
-    terminal.setProgress(true);
+    setTaskbarProgress(true);
     attention.controlStarted();
     requestRender();
     let sessionActivity: SessionActivityLease | undefined;
@@ -533,7 +568,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       busy = false;
       activity.finish();
       editor.disableSubmit = false;
-      terminal.setProgress(false);
+      setTaskbarProgress(false);
       attention.controlEnded();
       requestRender();
       startPendingAttachedTurn();
@@ -558,7 +593,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     shellRunElapsedTicker.dispose();
     stopTurnElapsedTicker();
     stopFallbackRetry();
-    terminal.setProgress(false);
+    setTaskbarProgress(false);
     // Drop the busy / attention title marker so the tab is not handed back to
     // the shell still marked busy when the session exits.
     attention.reset();
@@ -985,7 +1020,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     interruptRequested = false;
     lastTurnEscapeAt = 0;
     editor.disableSubmit = false;
-    terminal.setProgress(true);
+    setTaskbarProgress(true);
     attention.promptTurnStarted();
     requestRender();
 
@@ -997,7 +1032,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       stopTurnElapsedTicker();
       interruptRequested = false;
       editor.disableSubmit = false;
-      terminal.setProgress(false);
+      setTaskbarProgress(false);
       attention.promptTurnEnded();
       // A turn ending is activity too — resets the idle clock the next
       // submission's auto-recap check measures against.
@@ -2604,7 +2639,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   refreshEditorCwd = (nextCwd) => {
     editor.setAutocompleteProvider(
-      new MakaAutocompleteProvider(nextCwd, slashCommands, () => listSkillsCached()),
+      new MakaAutocompleteProvider(
+        input.clientPathAuthority === 'none' ? undefined : nextCwd,
+        slashCommands,
+        () => listSkillsCached(),
+      ),
     );
   };
   refreshEditorCwd(cwd);
@@ -2798,6 +2837,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         await switchSession(input.resumeSessionId!, input.resumeCwd);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (input.resumeFailure === 'exit') {
+          handleProcessExit(
+            1,
+            new Error(`Could not resume session ${input.resumeSessionId}: ${message}`),
+          );
+          return;
+        }
         const recoveryHint =
           input.resumeCwd === undefined && message.startsWith('Session cwd no longer exists:')
             ? ` Retry with: maka --resume ${input.resumeSessionId} --cwd <new-path>.`

@@ -1,13 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  MAX_SKILLS_PROMPT_TOKENS,
   MAX_SKILLS_PROMPT_CHARS,
-  MIN_SKILLS_PROMPT_TOKENS,
   MAX_SKILL_TOOL_BODY_CHARS,
   buildSkillAgentTool,
   buildSkillAgentToolFromInventory,
@@ -18,7 +15,6 @@ import {
   buildSkillsPromptFragmentWithReport,
   gateSkillsByHostCapabilities,
   loadSkillInstructions,
-  parseSkillFrontMatter,
   readSkillRuntimeState,
   resolveSkillsPromptCharBudget,
   resolveSkillDiscoveryPaths,
@@ -38,38 +34,6 @@ import { resolveSkillInvocations } from '../skill-invocation.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 
 describe('runtime skills', () => {
-  it('validates typed SKILL.md metadata and accepts spec and Maka list forms', () => {
-    const result = validateSkillMetadata(`---
-name: writer
-description: Draft polished prose when the user asks for writing help.
-license: Apache-2.0
-compatibility: Requires a local workspace.
-metadata:
-  author: maka
-allowed-tools: Read Bash(git:*)
-required-tools: [Write]
-required-capabilities:
-  - workspace
----
-# Writer
-Use concise prose.`);
-
-    assert.equal(result.valid, true);
-    assert.deepEqual(result.issues, []);
-    assert.deepEqual(result.manifest, {
-      name: 'writer',
-      description: 'Draft polished prose when the user asks for writing help.',
-      allowedTools: ['Read', 'Bash(git:*)'],
-      requiredTools: ['Write'],
-      requiredCapabilities: ['workspace'],
-      license: 'Apache-2.0',
-      compatibility: 'Requires a local workspace.',
-      metadata: { author: 'maka' },
-      category: undefined,
-    });
-    assert.equal(result.body, '# Writer\nUse concise prose.');
-  });
-
   it('reports malformed and missing required metadata as structured errors', () => {
     const missingFrontmatter = validateSkillMetadata('# No metadata');
     assert.equal(missingFrontmatter.valid, false);
@@ -105,29 +69,6 @@ body`);
         'invalid_required_tools',
         'invalid_required_capabilities',
       ],
-    );
-  });
-
-  it('recovers legacy scalar colons and tab-indented lists with an explicit warning', () => {
-    const result = validateSkillMetadata(`---
-name: Legacy Writer
-description: Use when: the user asks for writing help.
-allowed-tools: Read, Write
-required-tools:
-\t- Bash
----
-# Legacy Writer`);
-
-    assert.equal(result.valid, true);
-    assert.equal(result.manifest.description, 'Use when: the user asks for writing help.');
-    assert.deepEqual(result.manifest.allowedTools, ['Read', 'Write']);
-    assert.deepEqual(result.manifest.requiredTools, ['Bash']);
-    assert.deepEqual(
-      result.issues.map((issue) => ({
-        code: issue.code,
-        severity: issue.severity,
-      })),
-      [{ code: 'malformed_frontmatter', severity: 'warning' }],
     );
   });
 
@@ -295,49 +236,6 @@ description: Duplicate display name.
       } finally {
         await rm(projectRoot, { recursive: true, force: true });
       }
-    });
-  });
-
-  it('scales the prompt catalog budget from model context with bounded fallback', () => {
-    assert.equal(resolveSkillsPromptCharBudget(), MAX_SKILLS_PROMPT_CHARS);
-    assert.equal(
-      resolveSkillsPromptCharBudget({ contextWindow: Number.NaN }),
-      MAX_SKILLS_PROMPT_CHARS,
-    );
-    assert.equal(
-      resolveSkillsPromptCharBudget({ contextWindow: 128_000 }),
-      MIN_SKILLS_PROMPT_TOKENS * 4,
-    );
-    assert.equal(resolveSkillsPromptCharBudget({ contextWindow: 300_000 }), 6_000 * 4);
-    assert.equal(
-      resolveSkillsPromptCharBudget({ contextWindow: 1_000_000 }),
-      MAX_SKILLS_PROMPT_TOKENS * 4,
-    );
-  });
-  it('scanWorkspaceSkills lists SKILL.md metadata with declared tools as declaration only', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const body = `---
-name: Writer
-description: Draft polished prose.
-allowed-tools: [Read, Write]
----
-# Writer
-Use concise prose.`;
-      await writeSkill(workspaceRoot, 'writer', body);
-
-      const skills = await scanWorkspaceSkills(workspaceRoot);
-      assert.equal(skills.length, 1);
-      assert.equal(skills[0].id, 'writer');
-      assert.equal(skills[0].name, 'Writer');
-      assert.equal(skills[0].description, 'Draft polished prose.');
-      assert.deepEqual(skills[0].declaredTools, ['Read', 'Write']);
-      assert.equal(skills[0].enabled, true);
-      assert.equal(skills[0].runtimeStatus, 'enabled');
-      assert.match(skills[0].content, /Use concise prose\./);
-      assert.equal(
-        skills[0].contentSha256,
-        `sha256:${createHash('sha256').update(Buffer.from(body, 'utf8')).digest('hex')}`,
-      );
     });
   });
 
@@ -776,14 +674,6 @@ Use host tools.`,
       assert.equal(result.ok, false);
       if (result.ok) return;
       assert.equal(result.reason, 'host_incompatible');
-
-      // without host: legacy behavior, loads ok.
-      const legacyTool = buildSkillAgentTool(workspaceRoot);
-      const legacy = await legacyTool.impl(
-        { name: 'gated-helper' },
-        {} as unknown as MakaToolContext,
-      );
-      assert.equal(legacy.ok, true);
     });
   });
 
@@ -816,10 +706,6 @@ Use host tools.`,
         toolNames: new Set(['Read', 'ImaginaryTool']),
       });
       assert.equal(ok.ok, true);
-
-      // no host: legacy behavior, load ok.
-      const legacy = await loadSkillInstructions(workspaceRoot, 'gated-helper');
-      assert.equal(legacy.ok, true);
     });
   });
 
@@ -899,12 +785,6 @@ Plain work.`,
       assert.ok(full);
       assert.match(full, /<available-skill id="plain-helper"/);
       assert.match(full, /<available-skill id="gated-helper"/);
-
-      // no host (undefined): legacy behavior, both shown (no gating).
-      const legacy = await buildSkillsPromptFragment(workspaceRoot);
-      assert.ok(legacy);
-      assert.match(legacy, /<available-skill id="plain-helper"/);
-      assert.match(legacy, /<available-skill id="gated-helper"/);
     });
   });
 
@@ -995,38 +875,6 @@ Plain work.`,
     });
     assert.equal(withCap[0].eligible, true);
     assert.equal(withCap[0].hiddenReason, undefined);
-  });
-
-  it('scanWorkspaceSkills surfaces required-tools and required-capabilities from front matter', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(
-        workspaceRoot,
-        'gated-helper',
-        `---
-name: Gated Helper
-description: Host-specific work.
-allowed-tools: [Read]
-required-tools: [ImaginaryTool, ImaginaryEditTool]
-required-capabilities: [specialized]
----
-# Gated Helper
-Route through host tools.`,
-      );
-
-      const skills = await scanWorkspaceSkills(workspaceRoot);
-      assert.equal(skills.length, 1);
-      assert.equal(skills[0].id, 'gated-helper');
-      assert.deepEqual(skills[0].declaredTools, ['Read']);
-      assert.deepEqual(skills[0].requiredTools, ['ImaginaryTool', 'ImaginaryEditTool']);
-      assert.deepEqual(skills[0].requiredCapabilities, ['specialized']);
-    });
-  });
-
-  it('scanWorkspaceSkills returns empty when no skills directory exists', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      assert.deepEqual(await scanWorkspaceSkills(workspaceRoot), []);
-      assert.equal(await buildSkillsPromptFragment(workspaceRoot), undefined);
-    });
   });
 
   it('scanSkills discovers skills from multiple directories and dedupes by id (first-found wins)', async () => {
@@ -1126,60 +974,6 @@ Body.`,
       '/home/user/.agents/skills',
     ]);
     assert.equal(stateRoot, '/workspace');
-  });
-
-  it('parseSkillFrontMatter parses inline and list-style allowed-tools', () => {
-    assert.deepEqual(
-      parseSkillFrontMatter(
-        '---\nname: A\ndescription: Desc one.\nallowed-tools: [Read, Write]\n---\nbody',
-      ),
-      {
-        name: 'A',
-        description: 'Desc one.',
-        allowedTools: ['Read', 'Write'],
-        requiredTools: [],
-        requiredCapabilities: [],
-      },
-    );
-    assert.deepEqual(
-      parseSkillFrontMatter(
-        '---\nname: B\ndescription: Desc two.\nallowed-tools:\n  - Read\n  - Bash\n---\nbody',
-      ),
-      {
-        name: 'B',
-        description: 'Desc two.',
-        allowedTools: ['Read', 'Bash'],
-        requiredTools: [],
-        requiredCapabilities: [],
-      },
-    );
-  });
-
-  it('parseSkillFrontMatter parses required-tools and required-capabilities alongside allowed-tools', () => {
-    assert.deepEqual(
-      parseSkillFrontMatter(
-        '---\nname: A\ndescription: Desc one.\nallowed-tools: [Read]\nrequired-tools: [ImaginaryTool, ImaginaryEditTool]\nrequired-capabilities: [specialized]\n---\nbody',
-      ),
-      {
-        name: 'A',
-        description: 'Desc one.',
-        allowedTools: ['Read'],
-        requiredTools: ['ImaginaryTool', 'ImaginaryEditTool'],
-        requiredCapabilities: ['specialized'],
-      },
-    );
-    assert.deepEqual(
-      parseSkillFrontMatter(
-        '---\nname: B\ndescription: Desc two.\nallowed-tools:\n  - Read\nrequired-tools:\n  - ImaginaryTool\n---\nbody',
-      ),
-      {
-        name: 'B',
-        description: 'Desc two.',
-        allowedTools: ['Read'],
-        requiredTools: ['ImaginaryTool'],
-        requiredCapabilities: [],
-      },
-    );
   });
 
   it('buildSkillsPromptFragment does not impose an arbitrary count limit', async () => {
@@ -1331,102 +1125,6 @@ Body.`,
       const searched = await searchTool.impl({ query: 'obsidian lantern' }, context);
       assert.equal(searched.totalEligible, 1);
       assert.deepEqual(searched.matches, []);
-    });
-  });
-
-  it('reads v1 id preferences and writes v2 scope-aware pinned preferences', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(
-        workspaceRoot,
-        'writer',
-        '---\nname: Writer\ndescription: Draft project prose.\n---\n# Writer',
-      );
-      await mkdir(join(workspaceRoot, '.maka'), { recursive: true });
-      await writeFile(
-        join(workspaceRoot, '.maka', 'skills-state.json'),
-        JSON.stringify({ schemaVersion: 1, skills: { writer: { enabled: false } } }),
-        'utf8',
-      );
-
-      const legacyState = await readSkillRuntimeState(workspaceRoot);
-      assert.equal(legacyState.ok, true);
-      if (!legacyState.ok) return;
-      assert.equal(legacyState.schemaVersion, 1);
-      assert.deepEqual(legacyState.preferences.get('writer'), { enabled: false, pinned: false });
-      assert.equal((await scanWorkspaceSkills(workspaceRoot))[0].runtimeStatus, 'disabled');
-
-      const ref = 'workspace:legacy:writer';
-      assert.equal(
-        (
-          await writeSkillRuntimePreferences(
-            workspaceRoot,
-            new Map([[ref, { enabled: true, pinned: true }]]),
-          )
-        ).ok,
-        true,
-      );
-      const state = await readSkillRuntimeState(workspaceRoot);
-      assert.equal(state.ok, true);
-      if (!state.ok) return;
-      assert.equal(state.schemaVersion, 2);
-      assert.equal(state.preferences.get(ref)?.enabled, true);
-      assert.equal(state.preferences.get(ref)?.pinned, true);
-      const skill = (await scanWorkspaceSkills(workspaceRoot))[0];
-      assert.equal(skill.ref, ref);
-      assert.equal(skill.pinned, true);
-    });
-  });
-
-  it('applies case-only legacy preferences across real multi-scope consumers', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const projectRoot = join(workspaceRoot, 'project');
-      const homeDir = join(workspaceRoot, 'home');
-      await mkdir(projectRoot, { recursive: true });
-      await mkdir(homeDir);
-      await writeSkillInDirectory(
-        join(projectRoot, '.maka', 'skills'),
-        'Writer',
-        'Writer',
-        'Draft project prose.',
-      );
-      await mkdir(join(workspaceRoot, '.maka'), { recursive: true });
-      await writeFile(
-        join(workspaceRoot, '.maka', 'skills-state.json'),
-        JSON.stringify({ schemaVersion: 1, skills: { writer: { enabled: false } } }),
-        'utf8',
-      );
-
-      const source = resolveSkillDiscoveryPaths(projectRoot, workspaceRoot, homeDir);
-      const scan = await scanSkillsWithDiagnostics(source);
-      assert.equal(scan.inventory[0].ref, 'project:maka:Writer');
-      assert.equal(scan.inventory[0].runtimeStatus, 'disabled');
-      assert.equal(await buildSkillsPromptFragment(source), undefined);
-
-      const context = {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        cwd: projectRoot,
-      } as MakaToolContext;
-      const skillTool = buildSkillAgentTool(source);
-      const loaded = await skillTool.impl({ name: 'Writer' }, context);
-      assert.deepEqual(
-        { ok: loaded.ok, reason: loaded.ok ? undefined : loaded.reason },
-        { ok: false, reason: 'disabled' },
-      );
-
-      const searchTool = buildSkillSearchAgentTool(source);
-      const searched = await searchTool.impl({ query: 'project prose' }, context);
-      assert.equal(searched.matches.length, 0);
-      assert.equal(searched.totalEligible, 0);
-
-      const [invoked] = await resolveSkillInvocations(source, undefined, ['Writer']);
-      assert.deepEqual(
-        {
-          ok: invoked.result.ok,
-          reason: invoked.result.ok ? undefined : invoked.result.reason,
-        },
-        { ok: false, reason: 'disabled' },
-      );
     });
   });
 

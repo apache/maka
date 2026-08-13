@@ -1,4 +1,4 @@
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getToolActivityCopy } from './copy.js';
 
 export const TOOL_LINE_CAP = 500;

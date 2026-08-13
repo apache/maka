@@ -14,8 +14,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { generateText } from 'ai';
-import type { LlmConnection } from '@maka/core';
-import { getAIModel, testConnection } from '@maka/runtime';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import { getAIModel } from '@maka/runtime/model-factory';
+
+import { testConnection } from '@maka/runtime/test-connection';
 
 describe('opencode-free anonymous runtime', () => {
   test('omits Authorization and posts to zen/v1 with the model id (empty key, no secret)', async () => {

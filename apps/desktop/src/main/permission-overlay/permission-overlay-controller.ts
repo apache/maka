@@ -20,8 +20,8 @@
  * `node --test` with no Electron runtime and no real timers.
  */
 
-import type { DragGrantPermissionId } from '@maka/core';
-import { isDragGrantPermissionId } from '@maka/core';
+import type { DragGrantPermissionId } from '@maka/core/capabilities';
+import { isDragGrantPermissionId } from '@maka/core/capabilities';
 
 // The id list lives in @maka/core so the Permission Center row and this
 // flow cannot disagree about which permissions the gesture applies to.

@@ -1,4 +1,7 @@
-import type { SandboxBoundaryExpansion, SandboxBoundarySettlement } from '@maka/core';
+import type {
+  SandboxBoundaryExpansion,
+  SandboxBoundarySettlement,
+} from '@maka/core/sandbox-boundary';
 import { z } from 'zod';
 
 import { sandboxBoundaryExpansionSchema } from './sandbox-boundary-declaration.js';

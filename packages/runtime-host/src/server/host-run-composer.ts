@@ -1,12 +1,13 @@
-import type { RunCompositionSourceRevision } from '@maka/core';
+import type { RunCompositionSourceRevision } from '@maka/core/run-composition';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { RuntimePolicySnapshot } from '@maka/core/runtime-policy';
-import type {
-  AiSdkBackendInput,
-  BackendFactoryContext,
-  MakaTool,
-  ToolAvailabilityConfig,
-} from '@maka/runtime';
+import type { AiSdkBackendInput } from '@maka/runtime/ai-sdk-backend';
+
+import type { BackendFactoryContext } from '@maka/runtime/session-manager';
+
+import type { MakaTool } from '@maka/runtime/tool-runtime';
+
+import type { ToolAvailabilityConfig } from '@maka/runtime/tool-availability';
 
 export interface HostModelPromptContext {
   readonly sessionId: string;

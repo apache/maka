@@ -1,4 +1,5 @@
-import type { ShellRunUpdate, StoredMessage } from '@maka/core';
+import type { ShellRunUpdate } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
   applyShellRunOverlayEntry,

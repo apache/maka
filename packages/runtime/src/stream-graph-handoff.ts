@@ -1,4 +1,4 @@
-import type { RuntimeEvent } from '@maka/core';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { AgentGraphRecord } from './stream-graph-projection.js';
 import type { AgentGraphScheduleWorkView } from './stream-graph-supervisor-tools.js';
 

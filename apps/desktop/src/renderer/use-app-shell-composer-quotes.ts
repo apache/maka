@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { QuoteRef } from '@maka/core';
+import type { QuoteRef } from '@maka/core/events';
 import {
   appendPending,
   clearPending,
@@ -69,5 +69,9 @@ export function useAppShellComposerQuotes(options: { draftKey: string }) {
     setPendingByKey((map) => clearPending(map, ownerKey));
   }
 
-  return { pendingQuotes, addQuote, removeQuote, removeQuotesByRefs, clearQuotes };
+  function clearAllQuotes(): void {
+    setPendingByKey({});
+  }
+
+  return { pendingQuotes, addQuote, removeQuote, removeQuotesByRefs, clearQuotes, clearAllQuotes };
 }

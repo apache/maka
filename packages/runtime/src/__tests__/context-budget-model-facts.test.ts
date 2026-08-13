@@ -31,29 +31,6 @@ test('invalid zero input limits do not disable the context-window fallback', () 
   assert.equal(resolveSelectedModelContextWindow(connection, undefined), 1_000);
 });
 
-test('access-path context windows remain authoritative for the real Codex models', () => {
-  const limits = [
-    ['gpt-5.5', 272_000],
-    ['gpt-5.6-sol', 372_000],
-  ] as const;
-
-  for (const [modelId, expected] of limits) {
-    assert.equal(
-      resolveSelectedModelContextWindow(
-        {
-          slug: 'openai-codex',
-          providerType: 'openai-codex',
-          defaultModel: modelId,
-          models: [{ id: modelId }],
-        },
-        undefined,
-      ),
-      expected,
-      `${modelId} must use its Codex access-path limit instead of the generated input limit`,
-    );
-  }
-});
-
 test('a relay user declaration remains ahead of runtime and static model facts', () => {
   const connection = {
     slug: 'relay',

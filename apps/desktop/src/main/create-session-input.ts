@@ -16,21 +16,24 @@
  * assertable by regex over the handler's source.
  */
 
-import type {
-  AppSettings,
-  CollaborationMode,
-  OrchestrationMode,
-  PermissionMode,
-  SessionStartMode,
-} from '@maka/core';
-import {
-  DEFAULT_SESSION_NAME,
-  isChatDefaultPermissionMode,
-  isCollaborationMode,
-  isOrchestrationMode,
-  isSessionStartMode,
-  sessionStartModeSpec,
-} from '@maka/core';
+import type { AppSettings } from '@maka/core/settings';
+
+import type { CollaborationMode } from '@maka/core/collaboration';
+
+import type { OrchestrationMode } from '@maka/core/orchestration';
+
+import type { PermissionMode } from '@maka/core/permission';
+
+import type { SessionStartMode } from '@maka/core/explore-agent';
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
+
+import { isChatDefaultPermissionMode } from '@maka/core/settings';
+
+import { isCollaborationMode } from '@maka/core/collaboration';
+
+import { isOrchestrationMode } from '@maka/core/orchestration';
+
+import { isSessionStartMode, sessionStartModeSpec } from '@maka/core/explore-agent';
 
 import { resolveDefaultPermissionMode } from './permission-mode-default.js';
 

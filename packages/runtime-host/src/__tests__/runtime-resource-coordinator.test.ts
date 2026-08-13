@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from '@maka/core/shell-run';
 import {
-  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
   type ShellRunSnapshotResult,
   type ShellRunStateResult,
   type ShellRunUpdate,
-} from '@maka/core';
-import type { ShellRunBashInput, ShellRunWriteInput } from '@maka/runtime';
+} from '@maka/core/events';
+import type { ShellRunBashInput, ShellRunWriteInput } from '@maka/runtime/shell-run-contract';
 import { SessionNotFoundError } from '@maka/storage';
 import { RUNTIME_RESOURCE_RESULT_MAX_BYTES } from '../protocol/runtime-resource.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';

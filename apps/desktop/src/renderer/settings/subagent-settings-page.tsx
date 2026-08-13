@@ -19,13 +19,12 @@ import {
   SUBAGENT_PRESET_DESCRIPTION_MAX_CHARS,
   SUBAGENT_PRESET_ID_MAX_CHARS,
   SUBAGENT_PRESET_NAME_MAX_CHARS,
-  type AppSettings,
-  type LlmConnection,
   type SubagentPreset,
   type SubagentProfile,
-  type ThinkingLevel,
-  type UpdateAppSettingsResult,
-} from '@maka/core';
+} from '@maka/core/subagent-settings';
+import { type AppSettings, type UpdateAppSettingsResult } from '@maka/core/settings';
+import { type LlmConnection } from '@maka/core/llm-connections';
+import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
@@ -229,7 +228,7 @@ export function SubagentSettingsPage(props: {
       >
         {presets.length === 0 ? (
           // The empty state owns the only call to action on an empty page.
-          <EmptyState
+          (<EmptyState
             icon={<Workflow size={ICON_SIZE.empty} />}
             title={copy.section.emptyTitle}
             description={copy.section.emptyDescription}
@@ -242,7 +241,7 @@ export function SubagentSettingsPage(props: {
                 onClick={openCreate}
               />
             )}
-          />
+          />)
         ) : presets.map((preset) => {
           const availability = subagentPresetAvailability(preset, props.connections);
           // Only a route the main agent cannot take earns a badge: 已停用 is

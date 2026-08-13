@@ -1,5 +1,6 @@
-import { humanizeBotStatusReason, type BotChannelSettings, type BotReadinessState } from '@maka/core';
-import type { BotStatus } from '@maka/runtime';
+import { humanizeBotStatusReason } from '@maka/core/bot-events';
+import { type BotChannelSettings, type BotReadinessState } from '@maka/core/bot-chat-settings';
+import type { BotStatus } from '@maka/runtime/bots';
 
 export function deriveBotChannelViewState(input: {
   channel: BotChannelSettings;

@@ -136,17 +136,6 @@ jobs:
           Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/inventory.log"
           exit $exitCode
 
-      - id: scripts
-        name: Run repository script tests
-        if: always() && steps.install.outcome == 'success'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          npm.cmd run test:scripts *> "$env:WINDOWS_BASELINE_LOG_DIR/script-tests.log"
-          $exitCode = $LASTEXITCODE
-          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/script-tests.log"
-          exit $exitCode
-
       - id: smoke
         name: Run CLI and Electron startup smoke
         if: always() && steps.build.outcome == 'success'
@@ -179,11 +168,29 @@ jobs:
           }
           exit $exitCode
 
+      - id: runtime_powershell_encoding
+        name: Run Runtime PowerShell UTF-8 gates
+        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_runtime == 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          node.exe --test --test-force-exit --test-timeout=15000 --test-reporter=tap --test-concurrency=1 --test-name-pattern="preserves CJK PowerShell output through pipes|preserves CJK PowerShell output through a real PTY" packages/runtime/dist/__tests__/shell-run-manager.test.js 2>&1 |
+            Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/runtime-powershell-utf8.log"
+          $exitCode = $LASTEXITCODE
+          $output = Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/runtime-powershell-utf8.log"
+          if ($exitCode -eq 0 -and ($output -notcontains '# tests 2' -or $output -notcontains '# pass 2')) {
+            Write-Error 'Runtime PowerShell UTF-8 gate did not run exactly two passing tests'
+            exit 1
+          }
+          exit $exitCode
+
       # Full packages/storage test:dist is ~10 minutes on windows-latest and
       # mostly duplicates the Linux unit lane. Baseline keeps process/path/
-      # lock/crash-sensitive gates here; crash-recovery patterns stay in the
-      # dedicated step below. Bump concurrency carefully — several suites spawn
-      # child processes and fight for disk under high fan-out.
+      # lock-sensitive gates here. Release-blocking crash evidence belongs to
+      # windows-recovery.yml, so this diagnostic lane does not duplicate it.
+      # Bump concurrency carefully — several suites spawn child processes and
+      # fight for disk under high fan-out.
       - id: storage
         name: Run Windows storage path and lock gates
         if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_storage == 'true'
@@ -194,8 +201,6 @@ jobs:
           $storageGates = @(
             'packages/storage/dist/__tests__/root-authority.test.js',
             'packages/storage/dist/__tests__/sqlite-recovery-concurrency.test.js',
-            'packages/storage/dist/__tests__/sqlite-runtime-crash.test.js',
-            'packages/storage/dist/__tests__/sqlite-long-term-memory-crash.test.js',
             'packages/storage/dist/__tests__/artifact-writer-lock.test.js',
             'packages/storage/dist/__tests__/write-queue.test.js',
             'packages/storage/dist/__tests__/marker-file.test.js',
@@ -207,18 +212,6 @@ jobs:
             @storageGates `
             2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
           exit $LASTEXITCODE
-
-      - id: managed_workspace_crash
-        name: Run managed workspace crash recovery gates
-        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_storage == 'true'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $env:MAKA_STORAGE_STRESS = '1'
-          node.exe --test --test-concurrency=1 --test-name-pattern="real process crash|real crash|real-process crash|crash after baseline ref publication" packages/storage/dist/__tests__/managed-workspace-baseline.test.js packages/storage/dist/__tests__/git-workspace-service.test.js *> "$env:WINDOWS_BASELINE_LOG_DIR/managed-workspace-crash.log"
-          $exitCode = $LASTEXITCODE
-          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/managed-workspace-crash.log"
-          exit $exitCode
 
       # Full suite is evidence-only: nightly + manual dispatch. Do not run on
       # ordinary PRs — Linux unit already covers the package, and the full
@@ -334,11 +327,10 @@ jobs:
           | Install | ${{ steps.install.outcome }} |
           | Build | ${{ steps.build.outcome }} |
           | Skip inventory | ${{ steps.inventory.outcome }} |
-          | Script tests | ${{ steps.scripts.outcome }} |
           | CLI / Electron smoke | ${{ steps.smoke.outcome }} |
           | Storage path/lock gates | ${{ steps.storage.outcome }} |
           | Runtime PTY input | ${{ steps.runtime_pty_input.outcome }} |
-          | Managed workspace crash recovery | ${{ steps.managed_workspace_crash.outcome }} |
+          | Runtime PowerShell UTF-8 | ${{ steps.runtime_powershell_encoding.outcome }} |
           | Full storage suite (nightly/manual) | ${{ steps.storage_full.outcome }} |
           | Residual processes | ${{ steps.processes.outcome }} |
 

@@ -1,7 +1,9 @@
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { LlmConnection, SessionHeader } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+
+import type { SessionHeader } from '@maka/core/session';
 
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 

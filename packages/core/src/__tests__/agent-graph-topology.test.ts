@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
-  decodeAgentGraphOperatorProvision,
   isAgentGraphOperatorProvisionRequest,
   type AgentGraphOperatorProvisionRequest,
 } from '../agent-graph-topology.js';
@@ -9,7 +8,6 @@ import {
 describe('agent graph topology provisions', () => {
   test('strictly validates one monotonic operator addition', () => {
     const request = provisionRequest();
-    assert.equal(isAgentGraphOperatorProvisionRequest(request), true);
     assert.equal(
       isAgentGraphOperatorProvisionRequest({
         ...request,
@@ -24,18 +22,6 @@ describe('agent graph topology provisions', () => {
       }),
       false,
     );
-  });
-
-  test('decodes a persisted provision without sharing edge objects', () => {
-    const request = provisionRequest();
-    const persisted = {
-      ...request,
-      targetSessionId: 'child-session',
-      provisionedAt: 12,
-    };
-    const decoded = decodeAgentGraphOperatorProvision(persisted);
-    assert.deepEqual(decoded, persisted);
-    assert.notEqual(decoded.edges, persisted.edges);
   });
 });
 

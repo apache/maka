@@ -3,7 +3,11 @@ import { access, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
-import { compilePermissionProfile, type PermissionMode, type PermissionProfile } from '@maka/core';
+import { compilePermissionProfile } from '@maka/core/permission-profile-compiler';
+
+import { type PermissionMode } from '@maka/core/permission';
+
+import { type PermissionProfile } from '@maka/core/permission-profile';
 
 import type { FilesystemWorkerLaunchSpecProvider } from '../filesystem-worker/launch-spec.js';
 import type { SandboxManager } from './sandbox-manager.js';

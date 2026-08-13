@@ -1,5 +1,6 @@
 import type { SelectorDivider, SelectorOptionData } from '@astryxdesign/core/Selector';
-import type { ProviderType, UiLocale } from '@maka/core';
+import type { ProviderType } from '@maka/core/llm-connections';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   type ModelMenuGroup,
   modelChoiceDescription,

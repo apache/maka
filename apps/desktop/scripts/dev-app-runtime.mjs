@@ -74,7 +74,7 @@ const RUNTIME_SCHEMA_VERSION = 7;
 const DEV_ENV_SCHEMA_VERSION = 1;
 
 export const developmentAppPath = DEV_APP;
-export const developmentExecutablePath = DEV_EXECUTABLE;
+const developmentExecutablePath = DEV_EXECUTABLE;
 
 export async function resolveMacosDevelopmentLaunch(env = process.env) {
   if (!shouldUseMacosDevelopmentApp(process.platform, env)) return null;

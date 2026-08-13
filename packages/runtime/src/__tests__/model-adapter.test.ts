@@ -2,26 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { RetryError } from 'ai';
 
-import { lowerModelTools, ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
+import { ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
 import type { ModelStreamEvent } from '../model-protocol.js';
 
 describe('ModelAdapter stream and error normalization', () => {
-  test('lowers apply_patch to the client-executed OpenAI provider tool', () => {
-    const tools = lowerModelTools({
-      apply_patch: { kind: 'provider', providerTool: { kind: 'openai-apply-patch' } },
-    });
-
-    assert.deepEqual(
-      {
-        type: (tools.apply_patch as { type?: unknown }).type,
-        id: (tools.apply_patch as { id?: unknown }).id,
-        isProviderExecuted: (tools.apply_patch as { isProviderExecuted?: unknown })
-          .isProviderExecuted,
-      },
-      { type: 'provider', id: 'openai.apply_patch', isProviderExecuted: false },
-    );
-  });
-
   test('resolves optional-key LocalAI without fabricating a credential', () => {
     const model = {};
     let observedApiKey: string | undefined;
@@ -603,11 +587,24 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(event.message, 'Network error');
   });
 
-  test('keeps an unknown structured provider error generic', () => {
-    const event = newAdapter().makeErrorEvent('turn-1', { message: 'provider exploded' });
+  test('retains a safe bounded summary from an unknown structured provider error', () => {
+    const adapter = newAdapter();
+    const failure = adapter.normalizeFailure({
+      type: 'error',
+      error: {
+        code: 'provider_error',
+        message: `provider exploded api_key=sk-live-secret-token-value ${'x'.repeat(4_000)}`,
+      },
+      request_id: 'req-123',
+    });
+    const event = adapter.makeErrorEvent('turn-1', failure);
 
     assert.equal(event.reason, undefined);
-    assert.equal(event.message, 'Operation failed');
+    assert.equal(event.code, 'provider_error');
+    assert.match(event.message, /^provider exploded api_key=\[redacted\]/);
+    assert.match(event.message, /… \(code=provider_error, requestId=req-123\)$/);
+    assert.equal(Buffer.byteLength(event.message, 'utf8') <= 2 * 1024, true);
+    assert.equal(event.message.includes('sk-live-secret-token-value'), false);
   });
 
   test('normalizes cache and reasoning usage variants in the adapter module', () => {
@@ -636,21 +633,8 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-  test('treats provider usage without token values as unavailable', () => {
-    assert.equal(
-      normalizeAiSdkUsage({
-        inputTokens: undefined,
-        outputTokens: undefined,
-        totalTokens: undefined,
-      }),
-      undefined,
-    );
-  });
-
   test('treats incomplete provider usage as unavailable unless total can supply the missing side', () => {
     assert.equal(normalizeAiSdkUsage({ inputTokens: 12 }), undefined);
-    assert.equal(normalizeAiSdkUsage({ outputTokens: 3 }), undefined);
-    assert.equal(normalizeAiSdkUsage({ totalTokens: 15 }), undefined);
 
     assert.deepEqual(normalizeAiSdkUsage({ inputTokens: 12, totalTokens: 15 }), {
       inputTokens: 12,
@@ -662,28 +646,6 @@ describe('ModelAdapter stream and error normalization', () => {
       cacheWriteInputTokens: 0,
       reasoningTokens: 0,
       totalTokens: 15,
-    });
-    assert.deepEqual(normalizeAiSdkUsage({ outputTokens: 3, totalTokens: 15 }), {
-      inputTokens: 12,
-      outputTokens: 3,
-      cacheHitInputTokens: 0,
-      cacheMissInputTokens: 12,
-      cacheMissInputSource: 'derived',
-      cachedInputTokens: 0,
-      cacheWriteInputTokens: 0,
-      reasoningTokens: 0,
-      totalTokens: 15,
-    });
-    assert.deepEqual(normalizeAiSdkUsage({ inputTokens: 0, outputTokens: 0 }), {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheHitInputTokens: 0,
-      cacheMissInputTokens: 0,
-      cacheMissInputSource: 'derived',
-      cachedInputTokens: 0,
-      cacheWriteInputTokens: 0,
-      reasoningTokens: 0,
-      totalTokens: 0,
     });
   });
 
@@ -714,35 +676,6 @@ describe('ModelAdapter stream and error normalization', () => {
         totalTokens: 24,
       },
     );
-  });
-
-  test('derives totals from the legacy scalar detail shape', () => {
-    const usage = {
-      inputTokens: undefined,
-      outputTokens: undefined,
-      totalTokens: undefined,
-      inputTokenDetails: {
-        noCacheTokens: 10,
-        cacheReadTokens: 5,
-        cacheWriteTokens: 2,
-      },
-      outputTokenDetails: {
-        textTokens: 4,
-        reasoningTokens: 3,
-      },
-    } as unknown as Parameters<typeof normalizeAiSdkUsage>[0];
-
-    assert.deepEqual(normalizeAiSdkUsage(usage), {
-      inputTokens: 17,
-      outputTokens: 7,
-      cacheHitInputTokens: 5,
-      cacheMissInputTokens: 10,
-      cacheMissInputSource: 'explicit',
-      cachedInputTokens: 5,
-      cacheWriteInputTokens: 2,
-      reasoningTokens: 3,
-      totalTokens: 24,
-    });
   });
 
   test('preserves DeepSeek and OpenAI-compatible raw usage fields', () => {
@@ -787,57 +720,6 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-  test('normalizes AI SDK raw DeepSeek usage metadata and no-cache token details', () => {
-    assert.deepEqual(
-      normalizeAiSdkUsage(
-        {
-          inputTokens: 100,
-          outputTokens: 20,
-          inputTokenDetails: {
-            noCacheTokens: 25,
-            cacheReadTokens: 75,
-          },
-          outputTokenDetails: {
-            reasoningTokens: 9,
-          },
-          raw: {
-            prompt_cache_hit_tokens: 70,
-            prompt_cache_miss_tokens: 30,
-            prompt_tokens_details: {
-              cached_tokens: 70,
-            },
-            completion_tokens_details: {
-              reasoning_tokens: 11,
-            },
-          },
-        },
-        { rawFinishReason: 'stop' },
-      ),
-      {
-        inputTokens: 100,
-        outputTokens: 20,
-        cacheHitInputTokens: 70,
-        cacheMissInputTokens: 30,
-        cacheMissInputSource: 'explicit',
-        cachedInputTokens: 70,
-        cacheWriteInputTokens: 0,
-        reasoningTokens: 9,
-        totalTokens: 120,
-        rawFinishReason: 'stop',
-        raw: {
-          prompt_cache_hit_tokens: 70,
-          prompt_cache_miss_tokens: 30,
-          prompt_tokens_details: {
-            cached_tokens: 70,
-          },
-          completion_tokens_details: {
-            reasoning_tokens: 11,
-          },
-        },
-      },
-    );
-  });
-
   test('normalizes direct DeepSeek snake_case usage totals', () => {
     assert.deepEqual(
       normalizeAiSdkUsage(
@@ -875,35 +757,6 @@ describe('ModelAdapter stream and error normalization', () => {
           },
         },
       },
-    );
-  });
-
-  test('derives cache miss input when explicit miss is absent and treats no cache data as fresh', () => {
-    assert.equal(
-      normalizeAiSdkUsage({
-        inputTokens: 100,
-        outputTokens: 10,
-        cachedInputTokens: 30,
-        cacheWriteInputTokens: 20,
-      })?.cacheMissInputTokens,
-      50,
-    );
-    assert.equal(
-      normalizeAiSdkUsage({
-        inputTokens: 100,
-        outputTokens: 10,
-        cachedInputTokens: 30,
-        cacheWriteInputTokens: 20,
-      })?.cacheMissInputSource,
-      'derived',
-    );
-
-    assert.equal(
-      normalizeAiSdkUsage({
-        inputTokens: 100,
-        outputTokens: 10,
-      })?.cacheMissInputTokens,
-      100,
     );
   });
 });

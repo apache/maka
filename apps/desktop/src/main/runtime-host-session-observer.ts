@@ -1,13 +1,7 @@
-import type {
-  ActiveInteractionRequestEvent,
-  SessionChangedReason,
-  SessionEvent,
-  StoredMessage,
-} from "@maka/core";
-import type {
-  AgentGraphClientChangedEvent,
-  ShellRunPtyDataEvent,
-} from "@maka/runtime";
+import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
+import type { SessionChangedReason, StoredMessage } from '@maka/core/session';
+import type { AgentGraphClientChangedEvent } from '@maka/runtime/stream-graph-coordinator';
+import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
 import {
   RuntimeHostSessionProjector,
   isRuntimeHostTerminalTurn as isTerminalTurn,
@@ -533,6 +527,7 @@ export class RuntimeHostSessionObserver {
       subscription.snapshot,
       subscription.transcript,
       this.#now,
+      subscription.activeAssistantStreams,
     );
     const replacement =
       previousSnapshot

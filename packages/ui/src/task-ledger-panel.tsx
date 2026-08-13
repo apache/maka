@@ -1,6 +1,6 @@
 import { useMemo, type CSSProperties, type ReactNode } from 'react';
 import { Banner, Collapsible, EmptyState, IconButton, Spinner } from '@astryxdesign/core';
-import type { Task, TaskStatus } from '@maka/core';
+import type { Task, TaskStatus } from '@maka/core/task-ledger';
 import {
   ICON_SIZE,
   AlertCircle,

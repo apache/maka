@@ -10,6 +10,21 @@ if (process.argv.includes('--crash-secret-tail')) {
   process.stderr.write('token=sk-live-secret-token-value');
   process.exit(24);
 }
+if (process.argv.includes('--crash-hostile-stderr')) {
+  process.stderr.write(`${'x'.repeat(1_998)}sk`);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  process.stderr.write('-live-secret-token-value\r\u2028\u206a\n');
+  process.stderr.write(`${'z'.repeat(10_000)}\n`);
+  process.stderr.write('after\u2029line\n');
+  process.stderr.write('sk-live-\u001b12345678\n');
+  process.stderr.write('AWS_SECRET_ACCESS_KEY\\\n=environment-secret\n');
+  process.stderr.write('aws configure set aws_secret_access_key \\\ncontinued-secret\n');
+  process.exit(25);
+}
+if (process.argv.includes('--crash-many-stderr-lines')) {
+  process.stderr.write('x\n'.repeat(1_000));
+  process.exit(26);
+}
 if (process.argv.includes('--slow-start')) {
   await new Promise((resolve) => setTimeout(resolve, 30_000));
 }

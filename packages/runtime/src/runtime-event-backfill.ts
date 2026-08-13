@@ -1,15 +1,14 @@
+import type { AgentRunHeader } from '@maka/core/agent-run';
 import type {
-  AgentRunHeader,
   PermissionDecisionMessage,
-  RuntimeEvent,
-  RuntimeEventStatus,
   StoredMessage,
   TokenUsageMessage,
   ToolCallMessage,
   ToolResultMessage,
   TurnStateMessage,
-} from '@maka/core';
-import { createRuntimeEventId } from '@maka/core';
+} from '@maka/core/session';
+import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
+import { createRuntimeEventId } from '@maka/core/runtime-event';
 
 export const RUNTIME_EVENT_BACKFILL_STATE_KEY = 'makaRuntimeRecovery';
 

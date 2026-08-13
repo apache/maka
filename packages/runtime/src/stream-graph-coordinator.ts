@@ -1,20 +1,20 @@
+import type { AgentGraphClientProjectionStore } from '@maka/core/agent-graph-client-projection';
+import type { AgentGraphIntentClaim } from '@maka/core/agent-graph-control';
 import type {
-  AgentGraphClientProjectionStore,
-  AgentGraphIntentClaim,
   AgentGraphScheduleControlStore,
-  AgentGraphTimelineMetadataStore,
   AgentGraphScheduleUpdate,
-  AgentGraphOperatorProvision,
-  AgentRunStore,
-  RuntimeEventStore,
-  SessionHeader,
-} from '@maka/core';
+} from '@maka/core/agent-graph-schedule';
+import type { AgentGraphTimelineMetadataStore } from '@maka/core/agent-graph-timeline';
+import type { AgentGraphOperatorProvision } from '@maka/core/agent-graph-topology';
+import type { AgentRunStore } from '@maka/core/agent-run';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { SessionHeader } from '@maka/core/session';
 import {
   AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
   AgentGraphClientProjectionConflictError,
   AgentGraphClientTerminalCursorError,
-  decodeAgentGraphIntentClaim,
-} from '@maka/core';
+} from '@maka/core/agent-graph-client-projection';
+import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
 import type { MakaTool } from './tool-runtime.js';
 import type { SessionManager } from './session-manager.js';
 import { readCommittedAgentGraphProjection } from './stream-graph-projection.js';
@@ -195,6 +195,7 @@ export class AgentGraphCoordinator {
   readonly #input: AgentGraphCoordinatorInput;
   readonly #drivers = new Map<string, GraphDriver>();
   readonly #clientSubscriptions = new Set<AgentGraphClientSubscription>();
+  #drainTask: Promise<unknown[]> | undefined;
   #closed = false;
 
   constructor(input: AgentGraphCoordinatorInput) {
@@ -566,15 +567,15 @@ export class AgentGraphCoordinator {
     this.#notifyClientChanged(driver, 'stopped');
   }
 
-  async close(): Promise<void> {
+  beginDrain(): void {
     if (this.#closed) return;
     this.#closed = true;
     for (const driver of this.#drivers.values()) {
       driver.closed = true;
       driver.abortController?.abort();
     }
-    const results = await Promise.allSettled(
-      [...this.#drivers.values()].map(async (driver) => {
+    this.#drainTask = Promise.allSettled(
+      [...this.#drivers.values()].map(async (driver): Promise<void> => {
         const failures: unknown[] = [];
         if (driver.stopTask) {
           try {
@@ -596,12 +597,16 @@ export class AgentGraphCoordinator {
         if (driver.lastError !== undefined) failures.push(driver.lastError);
         throwCollectedFailures(`Failed to close agent graph ${driver.graphId}`, failures);
       }),
-    );
-    this.#clientSubscriptions.clear();
-    throwCollectedFailures(
-      'Failed to close one or more agent graph coordinators',
+    ).then((results) =>
       results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : [])),
     );
+  }
+
+  async close(): Promise<void> {
+    this.beginDrain();
+    const failures = await (this.#drainTask ?? Promise.resolve([]));
+    this.#clientSubscriptions.clear();
+    throwCollectedFailures('Failed to close one or more agent graph coordinators', failures);
   }
 
   async #drive(driver: GraphDriver): Promise<void> {

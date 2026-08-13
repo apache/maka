@@ -11,7 +11,7 @@
  */
 
 import { WebSocket } from 'undici';
-import type { BotChannelSettings } from '@maka/core';
+import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import { proxiedFetch } from './proxied-fetch.js';
 import type { BotPlatform, BotSendOptions, BotStatus, SendCapable } from './types.js';
@@ -28,7 +28,7 @@ const DISCORD_GATEWAY_VERSION = 10;
 const DISCORD_INTENT_GUILD_MESSAGES = 1 << 9;
 const DISCORD_INTENT_DIRECT_MESSAGES = 1 << 12;
 const DISCORD_INTENT_MESSAGE_CONTENT = 1 << 15;
-export const DISCORD_INTENTS =
+const DISCORD_INTENTS =
   DISCORD_INTENT_GUILD_MESSAGES | DISCORD_INTENT_DIRECT_MESSAGES | DISCORD_INTENT_MESSAGE_CONTENT;
 
 const RECONNECT_DELAY_MIN_MS = 1_000;
@@ -93,7 +93,7 @@ export function decideDiscordClose(code: number, explicitlyStopped: boolean): Di
  * Pure helper: compute the next backoff delay given the attempt count.
  * Exponential up to RECONNECT_DELAY_MAX_MS.
  */
-export function reconnectBackoffMs(attempts: number): number {
+function reconnectBackoffMs(attempts: number): number {
   const exp = Math.min(2 ** attempts, RECONNECT_DELAY_MAX_MS / RECONNECT_DELAY_MIN_MS);
   return Math.min(RECONNECT_DELAY_MIN_MS * exp, RECONNECT_DELAY_MAX_MS);
 }
@@ -618,12 +618,10 @@ export function splitDiscordContent(text: string): string[] {
 
 export const __TEST__ = {
   decideDiscordClose,
-  reconnectBackoffMs,
   buildDiscordSendBody,
   normalizeDiscordReplyToMessageId,
   normalizeDiscordChannelId,
   classifyDiscordSendResponse,
   discordMessageToEvent,
   splitDiscordContent,
-  DISCORD_INTENTS,
 };

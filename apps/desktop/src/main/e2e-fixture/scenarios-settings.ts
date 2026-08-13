@@ -1,11 +1,13 @@
 import { join } from 'node:path';
-import type {
-  DailyReviewArchive,
-  LlmConnection,
-  E2eFixtureScenario,
-} from '@maka/core';
+import type { DailyReviewArchive } from '@maka/core/daily-review';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { E2eFixtureScenario } from '@maka/core/e2e-fixture';
 import { createDefaultSettings } from '@maka/core/settings';
-import { createSqlitePlanReminderStore } from '@maka/storage';
+import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
+import {
+  resolveStorageRoot,
+  tryAcquireInteractiveRootOwner,
+} from '@maka/storage/root-authority';
 import { writeJson } from './seed-helpers.js';
 import { createDailyReviewArchiveStore } from '../daily-review-archive-store.js';
 
@@ -67,17 +69,6 @@ export async function writeConnections(workspaceRoot: string, now: number, scena
       updatedAt: now - 4 * 60_000,
     },
     {
-      slug: 'relay-fallback',
-      name: 'Fallback Relay Fixture',
-      providerType: 'openai-compatible',
-      baseUrl: 'https://relay.example.test/v1',
-      defaultModel: 'relay-static-model',
-      enabled: true,
-      modelSource: 'fallback',
-      createdAt: now - 3_500_000,
-      updatedAt: now - 3_500_000,
-    },
-    {
       slug: 'empty-fetched',
       name: 'Fetched Empty Fixture',
       providerType: 'openai-compatible',
@@ -93,61 +84,8 @@ export async function writeConnections(workspaceRoot: string, now: number, scena
       createdAt: now - 3_400_000,
       updatedAt: now - 15 * 60_000,
     },
-    {
-      slug: 'needs-reauth',
-      name: 'Needs Reauth Fixture',
-      providerType: 'anthropic',
-      defaultModel: 'claude-sonnet-4-5-20250929',
-      enabled: true,
-      models: [model('claude-sonnet-4-5-20250929', { vision: true, reasoning: true, functionCalling: true }, 200_000)],
-      modelSource: 'fetched',
-      modelsFetchedAt: now - 3 * 3_600_000,
-      lastTestStatus: 'needs_reauth',
-      lastTestAt: new Date(now - 10 * 60_000).toISOString(),
-      lastTestMessage: '鉴权失败',
-      createdAt: now - 3_300_000,
-      updatedAt: now - 10 * 60_000,
-    },
-    {
-      slug: 'broken-provider',
-      name: 'Broken Provider Fixture',
-      providerType: 'openai',
-      defaultModel: 'gpt-4o-mini',
-      enabled: true,
-      models: [model('gpt-4o-mini', { vision: true, functionCalling: true }, 128_000)],
-      modelSource: 'fetched',
-      modelsFetchedAt: now - 4 * 3_600_000,
-      lastTestStatus: 'error',
-      lastTestAt: new Date(now - 8 * 60_000).toISOString(),
-      lastTestMessage: '模型服务返回错误',
-      createdAt: now - 3_200_000,
-      updatedAt: now - 8 * 60_000,
-    },
   ];
-  if (scenario === 'oauth-relogin') {
-    // A openai-codex (OAuth) connection whose last test came back
-    // needs_reauth. Its detail sheet must offer an inline 登录 / 重新登录
-    // button (driven by the shared OAuth login flow) instead of the old dead
-    // prose. Credential presence for OAuth connections is resolved through the
-    // subscription token store (empty here), so the button reads 登录; the
-    // hasSecret===true → 重新登录 label is pinned by the detail-sheet contract.
-    connections.push({
-      slug: 'codex-subscription',
-      name: 'OpenAI Codex Fixture',
-      providerType: 'openai-codex',
-      defaultModel: 'gpt-5.5',
-      enabled: true,
-      models: [model('gpt-5.5', { reasoning: true, functionCalling: true }, 200_000)],
-      modelSource: 'fetched',
-      modelsFetchedAt: now - 6 * 60_000,
-      lastTestStatus: 'needs_reauth',
-      lastTestAt: new Date(now - 6 * 60_000).toISOString(),
-      lastTestMessage: '需要重新登录',
-      createdAt: now - 3_100_000,
-      updatedAt: now - 6 * 60_000,
-    });
-  }
-  const focusSlug = connectionFocusSlug(scenario);
+  const focusSlug = scenario === 'fetched-empty' ? 'empty-fetched' : null;
   const ordered = focusSlug
     ? [
         ...connections.filter((connection) => connection.slug === focusSlug),
@@ -160,21 +98,6 @@ export async function writeConnections(workspaceRoot: string, now: number, scena
   });
 }
 
-function connectionFocusSlug(scenario: E2eFixtureScenario): string | null {
-  switch (scenario) {
-    case 'fallback-source':
-      return 'relay-fallback';
-    case 'fetched-empty':
-      return 'empty-fetched';
-    case 'oauth-relogin':
-      return 'codex-subscription';
-    case 'connection-error':
-      return 'broken-provider';
-    default:
-      return null;
-  }
-}
-
 function model(
   id: string,
   capabilities: NonNullable<LlmConnection['models']>[number]['capabilities'],
@@ -183,64 +106,76 @@ function model(
   return { id, capabilities, contextWindow };
 }
 
-export async function writePlanReminders(workspaceRoot: string, now: number): Promise<void> {
+export async function writeScheduledTasks(workspaceRoot: string, now: number): Promise<void> {
   const scheduledRunAt = Date.UTC(2026, 11, 18, 3, 0, 0);
   const pausedRunAt = Date.UTC(2026, 11, 20, 3, 0, 0);
   // The panel's default 创建时间倒序 sort keys on `createdAt` and only falls
   // back to a status/next-run comparator on ties. Four back-to-back
-  // `create()` calls land in the same millisecond, so every reminder tied
+  // `create()` calls land in the same millisecond, so every task tied
   // and the fallback decided the order — which made any position-based
-  // assertion in `plan-reminders.spec.ts` vary between runs. Seed one
+  // assertion in `scheduled-tasks.spec.ts` vary between runs. Seed one
   // explicit minute apart, oldest first, so 创建时间倒序 has a single answer.
   const createdAt = (index: number): number => now - (4 - index) * 60_000;
-  const store = createSqlitePlanReminderStore(workspaceRoot);
-  try {
-    await store.create(
+  const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  if (!owner) throw new Error('Unable to acquire the ScheduledTask fixture root');
+  const store = await openInteractiveScheduledTaskStoreForWrite(owner.lease);
+  const create = (
+    title: string,
+    intentBody: string,
+    schedule: Record<string, unknown>,
+    at: number,
+  ) =>
+    store.create(
       {
-        title: '同步项目风险',
-        note: '提醒我整理 Sidebar gate、搜索接入和计划任务剩余风险。',
-        runAt: scheduledRunAt,
+        title,
+        intentBody,
+        schedule,
+        effect: { kind: 'notify', channel: 'local' },
+        createdBy: { kind: 'user' },
       },
+      at,
+    );
+  try {
+    await create(
+      '同步项目风险',
+      '提醒我整理 Sidebar gate、搜索接入和计划任务剩余风险。',
+      { kind: 'once', runAt: scheduledRunAt },
       createdAt(0),
     );
-    const paused = await store.create(
-      {
-        title: '暂停的发布检查',
-        note: '用户可以先暂停提醒，恢复后继续按原时间触发。',
-        runAt: pausedRunAt,
-      },
+    const paused = await create(
+      '暂停的发布检查',
+      '用户可以先暂停提醒，恢复后继续按原时间触发。',
+      { kind: 'once', runAt: pausedRunAt },
       createdAt(1),
     );
-    await store.setEnabled(paused.id, false);
-    const weekly = await store.create(
-      {
-        title: '每周竞品动态追踪',
-        note: '汇总同类 AI 工具的近期产品变化，提醒我复盘可对标的交互。',
-        runAt: scheduledRunAt,
-        recurrence: 'cron',
-        cronExpression: '0 10 * * 1',
-      },
+    await store.pause(paused.id, createdAt(1) + 1);
+    const weekly = await create(
+      '每周竞品动态追踪',
+      '汇总同类 AI 工具的近期产品变化，提醒我复盘可对标的交互。',
+      { kind: 'cron', startAt: scheduledRunAt, expression: '0 10 * * 1' },
       createdAt(2),
     );
-    await store.markTriggered(weekly.id, {
+    const weeklyClaim = await store.claimNow(weekly.id, scheduledRunAt);
+    await store.settleFire(weeklyClaim.id, {
       at: scheduledRunAt,
-      status: 'triggered',
+      outcome: 'ok',
       message: '已生成本周竞品动态摘要',
     });
-    const completed = await store.create(
-      {
-        title: '已触发的本地提醒',
-        runAt: scheduledRunAt,
-      },
+    const completed = await create(
+      '已触发的本地提醒',
+      '',
+      { kind: 'once', runAt: scheduledRunAt },
       createdAt(3),
     );
-    await store.markTriggered(completed.id, {
+    const completedClaim = await store.claimNow(completed.id, scheduledRunAt);
+    await store.settleFire(completedClaim.id, {
       at: scheduledRunAt,
-      status: 'triggered',
-      message: '计划提醒已触发',
+      outcome: 'ok',
+      message: '定时任务已触发',
     });
     // The list's search / sort / filter controls only appear at eight
-    // reminders, and they are the widest thing the page header carries — the
+    // tasks, and they are the widest thing the page header carries — the
     // narrow-window geometry test has nothing to measure below that count.
     // These four carry no state any other test reads. They are seeded OLDER
     // than the four above so 创建时间倒序 keeps those four in the first four
@@ -251,13 +186,16 @@ export async function writePlanReminders(workspaceRoot: string, now: number): Pr
       '季度收尾清点未归档会话',
       '发布前跑一轮回归',
     ].entries()) {
-      await store.create(
-        { title, runAt: scheduledRunAt + (index + 1) * 86_400_000 },
+      await create(
+        title,
+        '',
+        { kind: 'once', runAt: scheduledRunAt + (index + 1) * 86_400_000 },
         now - (8 - index) * 60_000,
       );
     }
   } finally {
     store.close();
+    await owner.close();
   }
 }
 

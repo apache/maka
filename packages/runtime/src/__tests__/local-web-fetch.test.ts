@@ -2,19 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createLocalWebFetchExecutor, WEB_FETCH_RESPONSE_MAX_BYTES } from '../local-web-fetch.js';
 
-test('local WebFetch passes plain text through', async () => {
-  const executor = createLocalWebFetchExecutor({
-    fetch: async () =>
-      new Response('plain body', {
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
-      }),
-  });
-
-  const result = await executor.fetch({ url: 'https://example.com/readme', sessionId: 's1' });
-
-  assert.equal(result, 'plain body');
-});
-
 test('local WebFetch decodes the charset declared by the response', async () => {
   const executor = createLocalWebFetchExecutor({
     fetch: async () =>

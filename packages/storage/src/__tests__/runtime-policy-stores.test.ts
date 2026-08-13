@@ -1,16 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import {
-  lstat,
-  mkdtemp,
-  open,
-  readFile,
-  readdir,
-  rm,
-  stat,
-  symlink,
-  writeFile,
-} from 'node:fs/promises';
+import { lstat, mkdtemp, open, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -28,7 +18,6 @@ import {
 } from '@maka/core/runtime-policy';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import {
-  createHeadlessRootLease,
   resolveStorageRoot,
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
@@ -46,79 +35,6 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe('runtime policy stores', () => {
-  test('upgrades a version-one policy with an empty canonical subagent catalog', async () => {
-    await withInteractiveOwner(async ({ root, stores }) => {
-      const { subagents: _subagents, ...legacyPolicy } = createDefaultRuntimePolicy();
-      await writeFile(
-        join(root, 'runtime-policy.json'),
-        `${JSON.stringify({ schemaVersion: 1, revision: 3, policy: legacyPolicy })}\n`,
-      );
-
-      const snapshot = await stores.runtimePolicy.getSnapshot();
-      assert.equal(snapshot.revision, 3);
-      assert.deepEqual(snapshot.policy.subagents, { presets: [] });
-      const committed = await stores.runtimePolicy.mutate({
-        expectedRevision: 3,
-        operation: { kind: 'set_subagents', value: { presets: [] } },
-      });
-      assert.equal(committed.kind, 'committed');
-      const persisted = JSON.parse(await readFile(join(root, 'runtime-policy.json'), 'utf8')) as {
-        schemaVersion: number;
-      };
-      assert.equal(persisted.schemaVersion, 2);
-    });
-  });
-
-  test('commits an agent settings patch as one canonical policy revision', async () => {
-    await withInteractiveOwner(async ({ stores }) => {
-      const result = await stores.runtimePolicy.mutate({
-        expectedRevision: 0,
-        operation: {
-          kind: 'patch_agent_settings',
-          value: {
-            personalization: { displayName: 'Maka' },
-            memory: { agentReadEnabled: true },
-            privacy: { incognitoActive: true },
-            webSearch: { enabled: true },
-          },
-        },
-      });
-
-      assert.equal(result.kind, 'committed');
-      if (result.kind !== 'committed') return;
-      assert.equal(result.snapshot.revision, 1);
-      assert.deepEqual(result.snapshot.policy.personalization, {
-        displayName: 'Maka',
-        assistantTone: '',
-      });
-      assert.deepEqual(result.snapshot.policy.memory, {
-        enabled: true,
-        agentReadEnabled: true,
-      });
-      assert.equal(result.snapshot.policy.privacy.incognitoActive, true);
-      assert.deepEqual(result.snapshot.policy.webSearch, {
-        enabled: true,
-        defaultProvider: 'model',
-      });
-    });
-  });
-
-  test('seeds the canonical inventory for fallback-only providers', async () => {
-    await withInteractiveOwner(async ({ stores }) => {
-      const connection = await createConnection(stores, 0, {
-        ...connectionDraft('opencode-free', 'opencode-free', 'OpenCode Free'),
-        enabledModelIds: ['big-pickle'],
-      });
-
-      assert.deepEqual(
-        connection.models,
-        PROVIDER_DEFAULTS['opencode-free'].fallbackModels.map((id) => ({ id })),
-      );
-      assert.equal(connection.modelSource, 'fallback');
-      assert.equal(connection.modelsFetchedAt, 0);
-    });
-  });
-
   test('persists extra request bodies and resolves custom headers as secret execution material', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(stores, 0, {
@@ -2274,17 +2190,6 @@ describe('runtime policy stores', () => {
     });
   });
 
-  test('resolves WebFetch independently of the WebSearch feature gate', async () => {
-    await withInteractiveOwner(async ({ stores }) => {
-      const resolved = await stores.operations.resolveWebFetchExecution();
-
-      assert.equal(resolved.kind, 'ready');
-      if (resolved.kind !== 'ready') return;
-      assert.equal(resolved.networkProxy.enabled, false);
-      assert.deepEqual(resolved.secretMaterial, {});
-    });
-  });
-
   test('blocks WebFetch while privacy mode is active', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const policy = await stores.runtimePolicy.mutate({
@@ -2744,23 +2649,12 @@ describe('runtime policy stores', () => {
     });
   });
 
-  test('rejects headless leases, forged facades, and operations after interactive lease close', async () => {
-    await withTempDir(async (base) => {
-      const headlessRoot = join(base, 'headless');
-      const headless = await resolveStorageRoot({ path: headlessRoot, kind: 'headless' });
-      const before = await snapshotRoot(headlessRoot);
-      await assert.rejects(
-        () =>
-          openInteractiveRuntimePolicyStoresForWrite(
-            createHeadlessRootLease(headless, 'write') as unknown as StorageRootLease<
-              'interactive',
-              'write'
-            >,
-          ),
-        isInvalidLease,
-      );
-      assert.deepEqual(await snapshotRoot(headlessRoot), before);
-    });
+  test('rejects forged leases, forged facades, and operations after interactive lease close', async () => {
+    await assert.rejects(
+      () =>
+        openInteractiveRuntimePolicyStoresForWrite({} as StorageRootLease<'interactive', 'write'>),
+      isInvalidLease,
+    );
 
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -2949,27 +2843,4 @@ async function withTempDir(run: (base: string) => Promise<void>): Promise<void> 
   } finally {
     await rm(base, { recursive: true, force: true });
   }
-}
-
-async function snapshotRoot(root: string): Promise<readonly RootSnapshotEntry[]> {
-  const names = (await readdir(root)).sort();
-  return Promise.all(
-    names.map(async (name) => {
-      const path = join(root, name);
-      const metadata = await stat(path);
-      return {
-        name,
-        size: metadata.size,
-        mtimeMs: metadata.mtimeMs,
-        contents: metadata.isFile() ? await readFile(path, 'utf8') : null,
-      };
-    }),
-  );
-}
-
-interface RootSnapshotEntry {
-  readonly name: string;
-  readonly size: number;
-  readonly mtimeMs: number;
-  readonly contents: string | null;
 }

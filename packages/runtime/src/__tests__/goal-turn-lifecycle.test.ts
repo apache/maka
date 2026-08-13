@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { SessionEvent } from '@maka/core';
+import type { SessionEvent } from '@maka/core/events';
 import {
   SessionActivityRegistry,
   drainGoalTurn,

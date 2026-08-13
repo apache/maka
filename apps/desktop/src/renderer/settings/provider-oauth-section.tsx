@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Banner, HStack, Text, VStack } from '@astryxdesign/core';
-import { type ProviderType } from '@maka/core';
+import { type ProviderType } from '@maka/core/llm-connections';
 import {
   Badge,
   Button,

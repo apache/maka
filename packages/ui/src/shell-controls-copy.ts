@@ -1,4 +1,4 @@
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type ShellControlsCopy = {
   shared: {
@@ -23,7 +23,7 @@ type ShellControlsCopy = {
     settings: string;
     updateDownloaded(version: string): string;
     updateFailed(version: string): string;
-    pendingReminders(count: number): string;
+    pendingTasks(count: number): string;
   };
   search: {
     title: string;
@@ -60,7 +60,7 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       settings: '设置',
       updateDownloaded: (version: string) => `新版本 ${version} 已下载，重启后安装`,
       updateFailed: (version: string) => `新版本 ${version} 更新失败，点击重试或手动下载`,
-      pendingReminders: (count: number) => `定时任务，${count} 个未完成提醒`,
+      pendingTasks: (count: number) => `定时任务，${count} 个未完成任务`,
     },
     search: {
       title: '搜索',
@@ -95,7 +95,7 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       settings: 'Settings',
       updateDownloaded: (version: string) => `Update ${version} downloaded. Restart to install.`,
       updateFailed: (version: string) => `Update ${version} failed. Click to retry or download manually.`,
-      pendingReminders: (count: number) => `Scheduled tasks, ${count} unfinished ${count === 1 ? 'reminder' : 'reminders'}`,
+      pendingTasks: (count: number) => `Scheduled tasks, ${count} unfinished ${count === 1 ? 'task' : 'tasks'}`,
     },
     search: {
       title: 'Search',

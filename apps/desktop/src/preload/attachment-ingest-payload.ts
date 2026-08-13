@@ -1,4 +1,4 @@
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core';
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 
 export type IngestInput =
   | { approvalId: string; name: string; mimeType?: string }

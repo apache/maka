@@ -3,7 +3,7 @@
 What Maka's Computer Use mirror copies from Codex, where each fact came from,
 and the four places Maka deliberately does something else. It keeps confirmed
 native facts separate from implementation inference, the same way
-[codex-cursor-reverse-engineering.md](./codex-cursor-reverse-engineering.md)
+[computer-use-cursor-provenance.md](./computer-use-cursor-provenance.md)
 does.
 
 ## Inspected artifacts

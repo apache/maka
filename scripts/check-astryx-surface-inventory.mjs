@@ -58,7 +58,7 @@ async function main() {
     'apps/desktop/src/renderer/settings/settings-modal.tsx',
     'packages/ui/src/skills-panel.tsx',
     'apps/desktop/src/renderer/mcp-page.tsx',
-    'packages/ui/src/plan-reminder-panel.tsx',
+    'packages/ui/src/scheduled-task-panel.tsx',
     'packages/ui/src/daily-review-panel.tsx',
     'packages/ui/src/primitives/module-page.tsx',
   ];

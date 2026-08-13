@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { userEvent, within } from 'storybook/test';
-import type { ProviderType, ThinkingLevel } from '@maka/core';
+import type { ProviderType } from '@maka/core/llm-connections';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { NewChatModelPicker, ThinkingLevelSelector } from '../src/chat-model-switcher.js';
 import {
   modelChoiceValue,

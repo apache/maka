@@ -1,6 +1,7 @@
 import { app, nativeImage, powerMonitor, screen } from 'electron';
-import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core';
-import type { AppSettings, UiLocale } from '@maka/core';
+import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core/ui-locale';
+import type { AppSettings } from '@maka/core/settings';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
 import { buildBrowserTools } from './browser/browser-tools.js';
 import {

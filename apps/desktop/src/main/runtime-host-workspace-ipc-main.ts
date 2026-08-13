@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises';
-import type { GitReviewMutationAction, GitReviewSource } from '@maka/core';
+import type { GitReviewMutationAction, GitReviewSource } from '@maka/core/git-review';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import { mutateGitReview, readGitReview } from './git-review-main.js';
 import {
@@ -10,9 +10,16 @@ import {
 type WorkspaceClient = Pick<DesktopRuntimeHostClient, 'getSession'>;
 
 export function registerRuntimeHostWorkspaceIpc(
-  input: { readonly ipcMain: ReconnectableReadIpcMain; readonly client: WorkspaceClient },
+  input: {
+    readonly ipcMain: ReconnectableReadIpcMain;
+    readonly client: WorkspaceClient;
+    readonly allowLocalWorkspace?: boolean;
+  },
 ): void {
   handleReconnectableRead(input.ipcMain, 'git-review:read', async (_event, raw: unknown) => {
+    if (input.allowLocalWorkspace === false) {
+      return { ok: false as const, reason: 'workspace_unavailable' as const };
+    }
     const request = readRequest(raw);
     const cwd = await sessionWorkspace(input.client, request.sessionId);
     if (!cwd) return { ok: false as const, reason: 'workspace_unavailable' as const };
@@ -20,6 +27,9 @@ export function registerRuntimeHostWorkspaceIpc(
   });
 
   input.ipcMain.handle('git-review:mutate', async (_event, raw: unknown) => {
+    if (input.allowLocalWorkspace === false) {
+      return { ok: false as const, reason: 'git_failed' as const };
+    }
     const request = mutateRequest(raw);
     const cwd = await sessionWorkspace(input.client, request.sessionId);
     if (!cwd) return { ok: false as const, reason: 'git_failed' as const };
@@ -36,8 +46,8 @@ export function registerRuntimeHostWorkspaceIpc(
 async function sessionWorkspace(client: WorkspaceClient, sessionId: string): Promise<string | null> {
   const session = await client.getSession(sessionId);
   if (!session) throw new Error(`No such Session: ${sessionId}`);
-  const workspace = await stat(session.cwd).catch(() => null);
-  return workspace?.isDirectory() ? session.cwd : null;
+  const workspace = await stat(session.workspace.hostCwd).catch(() => null);
+  return workspace?.isDirectory() ? session.workspace.hostCwd : null;
 }
 
 function readRequest(value: unknown): {

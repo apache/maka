@@ -1,10 +1,10 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { defaultEnabledModelIdsWhenOmitted } from '@maka/core';
+import { defaultEnabledModelIdsWhenOmitted } from '@maka/core/llm-connections';
 import {
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
-  migrateConnectionV1ToV2,
+  normalizePersistedConnection,
   reconcileConnectionAfterEnabledModelsChange,
   persistedBaseUrl,
   reconcileConnectionAfterModelFetch,
@@ -33,13 +33,7 @@ export interface ConnectionStore {
   remove(slug: string): Promise<void>;
   getDefault(): Promise<string | null>;
   setDefault(slug: string | null): Promise<void>;
-  /**
-   * Resolve the default connection in a SINGLE read snapshot (slug + connection
-   * come from the same file read, so a concurrent write cannot tear them apart)
-   * and tolerate an unrelated invalid entry (a stale record that fails
-   * migration is skipped, not allowed to strand a valid default). Returns null
-   * when there is no default, or when the default entry itself is unusable.
-   */
+  /** Resolve the default connection from one fail-closed file snapshot. */
   getDefaultConnection(): Promise<LlmConnection | null>;
 }
 
@@ -62,7 +56,7 @@ export function createConnectionStore(workspaceRoot: string): ConnectionStore {
 /**
  * Construct a store rooted at an explicit `llm-connections.json` file path
  * rather than a workspace directory. Use this when the caller already holds
- * the full file path (e.g. headless honoring the MAKA_CONNECTIONS_PATH file-path
+ * the full file path (e.g. a host honoring a connections file-path
  * contract); prefer {@link createConnectionStore} when you have the workspace
  * root, since desktop/CLI share that root across stores.
  */
@@ -415,7 +409,7 @@ class FileConnectionStore implements ConnectionStore {
   }
 
   async getDefaultConnection(): Promise<LlmConnection | null> {
-    const snapshot = await this.readDefaultSnapshot();
+    const snapshot = await this.read();
     if (!snapshot.defaultSlug) return null;
     return snapshot.connections.find((c) => c.slug === snapshot.defaultSlug) ?? null;
   }
@@ -428,43 +422,7 @@ class FileConnectionStore implements ConnectionStore {
     try {
       const raw = JSON.parse(await readFile(this.path, 'utf8')) as unknown;
       const parsed = normalizeConnectionsFile(raw);
-      const connections = parsed.connections.map((connection) =>
-        migrateConnectionV1ToV2(connection),
-      );
-      return {
-        defaultSlug: normalizeDefaultSlug(parsed.defaultSlug, connections),
-        connections,
-      };
-    } catch (error) {
-      if ((error as { code?: string }).code === 'ENOENT') return emptyConnectionsFile();
-      throw error;
-    }
-  }
-
-  /**
-   * Read-only snapshot for default resolution. Mirrors {@link readUnlocked}
-   * but with a deliberately different fault contract: an entry that fails
-   * {@link migrateConnectionV1ToV2} is DROPPED, not thrown. {@link readUnlocked}
-   * (used by every write path) stays fail-closed so a corrupt file never
-   * silently feeds a write; this path only answers "is there a usable
-   * default?", where an unrelated stale entry must not strand a valid default
-   * and silently switch the consumer to hardcoded fallback.
-   *
-   * The default entry itself still has to migrate cleanly: if the configured
-   * default is the broken one, there genuinely is no usable default.
-   */
-  private async readDefaultSnapshot(): Promise<ConnectionsFile> {
-    try {
-      const raw = JSON.parse(await readFile(this.path, 'utf8')) as unknown;
-      const parsed = normalizeConnectionsFile(raw);
-      const connections: LlmConnection[] = [];
-      for (const entry of parsed.connections) {
-        try {
-          connections.push(migrateConnectionV1ToV2(entry));
-        } catch {
-          // Skip an un-migratable entry rather than failing the whole read.
-        }
-      }
+      const connections = parsed.connections.map(normalizePersistedConnection);
       return {
         defaultSlug: normalizeDefaultSlug(parsed.defaultSlug, connections),
         connections,

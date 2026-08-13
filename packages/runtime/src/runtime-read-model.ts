@@ -1,12 +1,10 @@
-import type {
-  AgentRunHeader,
-  AgentRunStore,
-  RuntimeEvent,
-  RuntimeEventStore,
-  StoredMessage,
-  TurnRecord,
-} from '@maka/core';
-import { deriveTurnRecords, isSessionInlineRun, isTerminalRuntimeEvent } from '@maka/core';
+import type { AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { StoredMessage, TurnRecord } from '@maka/core/session';
+import { deriveTurnRecords } from '@maka/core/session';
+import { isSessionInlineRun } from '@maka/core/agent-run';
+import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type {
   CanonicalPermissionOutcomeReader,
   CanonicalPermissionOutcomeRecord,

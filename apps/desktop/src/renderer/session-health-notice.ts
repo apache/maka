@@ -21,12 +21,11 @@
  * connection, the reminder is noise and stays silent.
  */
 
-import {
-  type LlmConnection,
-  type SessionSendProjection,
-  type SessionSendProjectionSession,
-  type UiLocale,
-} from '@maka/core';
+import { type LlmConnection } from '@maka/core/llm-connections';
+
+import { type SessionSendProjection, type SessionSendProjectionSession } from '@maka/core/session-send-projection';
+
+import { type UiLocale } from '@maka/core/ui-locale';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
 export interface SessionHealthNoticeInput {

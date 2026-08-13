@@ -2,18 +2,22 @@ import { randomBytes } from 'node:crypto';
 import { constantTimeStringEqual, parsePastedAuthorization } from '@maka/core/oauth-subscription';
 import {
   buildOAuthLoginAuthorization,
-  createProxiedFetchTransport,
-  exchangeCodexDeviceAuthorizationCode,
   exchangeOAuthAuthorizationCode,
-  fetchClaudeSubscriptionUsage,
-  OAuthDeviceAuthorizationExpiredError,
   OAuthTokenEndpointError,
+} from '@maka/runtime/oauth-login';
+import { createProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
+import {
+  exchangeCodexDeviceAuthorizationCode,
   pollCodexDeviceAuthorization,
-  pollXaiDeviceAuthorization,
-  serializeOAuthSubscriptionTokens,
   startCodexDeviceAuthorization,
+} from '@maka/runtime/codex-oauth-enrollment';
+import { fetchClaudeSubscriptionUsage } from '@maka/runtime/claude-subscription-usage';
+import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provider-contracts';
+import {
+  pollXaiDeviceAuthorization,
   startXaiDeviceAuthorization,
-} from '@maka/runtime';
+} from '@maka/runtime/xai-oauth-enrollment';
+import { serializeOAuthSubscriptionTokens } from '@maka/runtime/subscription-credentials';
 import {
   RuntimePolicyStoreError,
   type RuntimePolicyStoresWriter,

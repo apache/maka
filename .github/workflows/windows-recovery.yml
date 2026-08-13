@@ -1,0 +1,81 @@
+name: Windows recovery
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: windows-recovery-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  windows_recovery:
+    name: windows_recovery
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm.cmd ci
+
+      - name: Build test artifacts
+        run: npm.cmd run build:test
+
+      - name: Verify SQLite crash recovery
+        shell: pwsh
+        run: |
+          node.exe --test --test-concurrency=1 `
+            packages/storage/dist/__tests__/sqlite-runtime-crash.test.js `
+            packages/storage/dist/__tests__/sqlite-long-term-memory-crash.test.js
+
+      - name: Verify Runtime continuation recovery
+        shell: pwsh
+        run: |
+          node.exe --test --test-concurrency=1 `
+            packages/runtime/dist/__tests__/runtime-resume-crash.test.js `
+            packages/runtime/dist/__tests__/runtime-continuation-crash.test.js
+
+      - name: Verify Runtime Host owner-death recovery
+        shell: pwsh
+        run: |
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            --test-name-pattern="owner death|a killed Host is recovered exactly once" `
+            packages/runtime-host/dist/__tests__/artifact-two-client-uds.test.js `
+            packages/runtime-host/dist/__tests__/execution-host-queue.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/runtime-host-recovery.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/runtime-host-recovery.tap"
+          if ($output -notcontains '# tests 2' -or $output -notcontains '# pass 2' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Runtime Host recovery gate did not run exactly two passing tests'
+            exit 1
+          }
+
+      - name: Verify managed workspace crash recovery
+        shell: pwsh
+        run: |
+          $env:MAKA_STORAGE_STRESS = '1'
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            --test-name-pattern="real process crash|real crash|real-process crash|crash after baseline ref publication" `
+            packages/storage/dist/__tests__/managed-workspace-baseline.test.js `
+            packages/storage/dist/__tests__/git-workspace-service.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/managed-workspace-recovery.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/managed-workspace-recovery.tap"
+          if ($output -notcontains '# tests 12' -or $output -notcontains '# pass 12' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Managed workspace recovery gate did not run exactly twelve passing tests'
+            exit 1
+          }

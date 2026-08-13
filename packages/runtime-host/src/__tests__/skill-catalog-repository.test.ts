@@ -8,7 +8,7 @@ import {
   BUNDLED_SKILL_CATALOG,
   buildStarterSkillTemplate,
   createManagedSkillLock,
-} from '@maka/runtime';
+} from '@maka/runtime/skills';
 import {
   decodeHostFrame,
   isSkillCatalogProjectRootLexicallyAbsolute,
@@ -22,6 +22,7 @@ import type {
 import {
   SkillCatalogRepository,
   SkillCatalogRepositoryError,
+  type SkillCatalogLocalContext,
   type SkillCatalogRepositoryOptions,
 } from '../server/skill-catalog-repository.js';
 import {
@@ -94,7 +95,6 @@ test('continuation pages are pinned to a freshly scanned revision', async () => 
   );
   const continued = await repository.query({
     kind: 'continue',
-    context: { projectRoot: fixture.project },
     view: 'governance',
     revision: first.revision,
     cursor: first.nextCursor,
@@ -125,7 +125,6 @@ test('continuation rejects a cursor at the exact end of the current view', async
   await assert.rejects(
     repository.query({
       kind: 'continue',
-      context: { projectRoot: fixture.project },
       view: 'governance',
       revision: page.revision,
       cursor: endCursor,
@@ -187,6 +186,46 @@ test('governance context status contains structural facts without synthetic budg
   }
 });
 
+test('removed bundled sources lose provenance trust without disabling the local copy', async () => {
+  const fixture = await createFixture();
+  const id = 'retired-bundled-skill';
+  const content = skillBody('Retired Bundled Skill', 'installed by an older Maka release');
+  const skillDirectory = await createSkill(join(fixture.root, 'skills'), id, content);
+  await writeFile(
+    join(skillDirectory, 'skill.lock.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      id,
+      sourceType: 'bundled',
+      sourceName: 'maka-bundled',
+      sourceVersion: '1',
+      contentSha256: sha256(content),
+      installedAt: '2026-07-01T00:00:00.000Z',
+    })}\n`,
+  );
+  const repository = fixture.repository();
+
+  const governance = await start(repository, fixture.project, 'governance');
+  const installed = governanceItem(governance, `workspace:legacy:${id}`);
+  assert.equal(installed.validationStatus, 'metadata_error');
+  assert.deepEqual(installed.validationCodes, ['unsupported_schema']);
+  assert.equal(installed.runtimeStatus, 'enabled');
+  assert.equal(installed.enabled, true);
+
+  const invocable = await repository.queryInvocable(
+    { kind: 'start' },
+    { projectRoot: fixture.project },
+    { toolNames: new Set(['Read']) },
+  );
+  assert.equal(invocable.kind, 'page');
+  if (invocable.kind !== 'page') return;
+  assert.deepEqual(
+    invocable.items.map((item) => item.id),
+    [id],
+  );
+  assert.equal(await readFile(join(skillDirectory, 'SKILL.md'), 'utf8'), content);
+});
+
 test('bounds oversized metadata with an explicit diagnostic and encodable mutation result', async () => {
   const fixture = await createFixture();
   const sourceId = 'oversized-metadata';
@@ -200,7 +239,6 @@ test('bounds oversized metadata with an explicit diagnostic and encodable mutati
   }
 
   const committed = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: initial.revision,
     mutation: { kind: 'install', sourceType: 'managed', sourceId },
   });
@@ -214,7 +252,7 @@ test('bounds oversized metadata with an explicit diagnostic and encodable mutati
     requestId: 'metadata-projection',
     operation: 'skill.catalog.mutate' as const,
     ok: true as const,
-    result: committed,
+    result: { ...committed, resolvedWorkspace: workspaceProjection(fixture.project) },
   };
   assert.deepEqual(decodeHostFrame(frame), frame);
 
@@ -235,7 +273,6 @@ test('external project sources are read-only while Data Root preferences use dur
   const external = governanceItem(first, 'project:agents:external');
 
   const rejected = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: first.revision,
     mutation: { kind: 'delete', ref: external.ref },
   });
@@ -243,7 +280,6 @@ test('external project sources are read-only while Data Root preferences use dur
   assert.match(await readFile(join(skillPath, 'SKILL.md'), 'utf8'), /External/);
 
   const committed = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: first.revision,
     mutation: { kind: 'set_enabled', ref: external.ref, enabled: false },
   });
@@ -254,187 +290,6 @@ test('external project sources are read-only while Data Root preferences use dur
   assert.equal(state.schemaVersion, 2);
   assert.equal(state.skills[external.ref]?.enabled, false);
   assert.match(await readFile(join(skillPath, 'SKILL.md'), 'utf8'), /External/);
-});
-
-test('v1 snapshots use effective migration facts and same-value mutations persist schema v2', async () => {
-  const fixture = await createFixture();
-  await createSkill(
-    join(fixture.project, '.maka', 'skills'),
-    'external',
-    skillBody('External', 'migration target'),
-  );
-  await mkdir(join(fixture.root, '.maka'), { recursive: true });
-  const statePath = join(fixture.root, '.maka', 'skills-state.json');
-  const v1 = `${JSON.stringify({
-    schemaVersion: 1,
-    skills: { external: { enabled: false } },
-  })}\n`;
-  await writeFile(statePath, v1);
-  const repository = fixture.repository();
-  const v1Page = await start(repository, fixture.project, 'governance');
-  assert.equal(governanceItem(v1Page, 'project:maka:external').needsReview, false);
-
-  await writeFile(
-    statePath,
-    stateFile('project:maka:external', false, false, '2026-01-01T00:00:00.000Z'),
-  );
-  const v2Page = await start(repository, fixture.project, 'governance');
-  assert.equal(v2Page.revision, v1Page.revision);
-
-  await writeFile(statePath, v1);
-  const migrationPage = await start(repository, fixture.project, 'governance');
-  const migrated = await repository.mutate({
-    context: { projectRoot: fixture.project },
-    expectedRevision: migrationPage.revision,
-    mutation: { kind: 'set_enabled', ref: 'project:maka:external', enabled: false },
-  });
-  assert.equal(migrated.kind, 'committed');
-  const durable = JSON.parse(await readFile(statePath, 'utf8')) as {
-    schemaVersion: number;
-    skills: Record<string, { enabled: boolean }>;
-  };
-  assert.equal(durable.schemaVersion, 2);
-  assert.equal(durable.skills['project:maka:external']?.enabled, false);
-  assert.equal('external' in durable.skills, false);
-});
-
-test('v1 ambiguous preferences project effective needs-review state', async () => {
-  const fixture = await createFixture();
-  await createSkill(
-    join(fixture.project, '.maka', 'skills'),
-    'shared',
-    skillBody('Project Shared', 'project'),
-  );
-  await createSkill(
-    join(fixture.root, 'skills'),
-    'shared',
-    skillBody('Workspace Shared', 'workspace'),
-  );
-  await mkdir(join(fixture.root, '.maka'), { recursive: true });
-  await writeFile(
-    join(fixture.root, '.maka', 'skills-state.json'),
-    `${JSON.stringify({
-      schemaVersion: 1,
-      skills: { shared: { enabled: false } },
-    })}\n`,
-  );
-
-  const page = await start(fixture.repository(), fixture.project, 'governance');
-  assert.equal(governanceItem(page, 'project:maka:shared').needsReview, true);
-  assert.equal(governanceItem(page, 'workspace:legacy:shared').needsReview, true);
-});
-
-test('v1 case-only duplicates share legacy defaults and clear review through explicit refs', async () => {
-  const fixture = await createFixture();
-  await createSkill(
-    join(fixture.project, '.maka', 'skills'),
-    'Shared',
-    skillBody('Project Shared', 'project'),
-  );
-  await createSkill(
-    join(fixture.root, 'skills'),
-    'shared',
-    skillBody('Workspace Shared', 'workspace'),
-  );
-  await mkdir(join(fixture.root, '.maka'), { recursive: true });
-  const statePath = join(fixture.root, '.maka', 'skills-state.json');
-  await writeFile(
-    statePath,
-    `${JSON.stringify({
-      schemaVersion: 1,
-      skills: { Shared: { enabled: false } },
-    })}\n`,
-  );
-  const repository = fixture.repository();
-  const initial = await start(repository, fixture.project, 'governance');
-  const projectSkill = governanceItem(initial, 'project:maka:Shared');
-  const workspaceSkill = governanceItem(initial, 'workspace:legacy:shared');
-  assert.equal(projectSkill.enabled, false);
-  assert.equal(workspaceSkill.enabled, false);
-  assert.equal(projectSkill.needsReview, true);
-  assert.equal(workspaceSkill.needsReview, true);
-  const initialModel = await repository.readCanonicalModelInventory({
-    projectRoot: fixture.project,
-  });
-  assert.equal(initialModel.inventory.find((skill) => skill.id === 'Shared')?.enabled, false);
-  assert.equal(initialModel.inventory.find((skill) => skill.id === 'shared')?.enabled, false);
-
-  const first = await repository.mutate({
-    context: { projectRoot: fixture.project },
-    expectedRevision: initial.revision,
-    mutation: { kind: 'set_enabled', ref: projectSkill.ref, enabled: false },
-  });
-  assert.equal(first.kind, 'committed');
-  if (first.kind !== 'committed') return;
-  assert.equal(first.entry?.needsReview, true);
-
-  const second = await repository.mutate({
-    context: { projectRoot: fixture.project },
-    expectedRevision: first.revision,
-    mutation: { kind: 'set_enabled', ref: workspaceSkill.ref, enabled: false },
-  });
-  assert.equal(second.kind, 'committed');
-  if (second.kind !== 'committed') return;
-  assert.equal(second.entry?.needsReview, false);
-  const durable = JSON.parse(await readFile(statePath, 'utf8')) as {
-    skills: Record<string, { enabled: boolean }>;
-    migration?: { needsReview: string[] };
-  };
-  assert.deepEqual(Object.keys(durable.skills).sort(), [
-    'project:maka:Shared',
-    'workspace:legacy:shared',
-  ]);
-  assert.equal(durable.migration, undefined);
-});
-
-test('a zero-match v1 preference persisted by Host enters review on future case-only scopes', async () => {
-  const fixture = await createFixture();
-  await createSkill(
-    join(fixture.project, '.maka', 'skills'),
-    'anchor',
-    skillBody('Anchor', 'preference mutation target'),
-  );
-  await mkdir(join(fixture.root, '.maka'), { recursive: true });
-  const statePath = join(fixture.root, '.maka', 'skills-state.json');
-  await writeFile(
-    statePath,
-    `${JSON.stringify({
-      schemaVersion: 1,
-      skills: { Future: { enabled: false } },
-    })}\n`,
-  );
-  const repository = fixture.repository();
-  const initial = await start(repository, fixture.project, 'governance');
-  const persisted = await repository.mutate({
-    context: { projectRoot: fixture.project },
-    expectedRevision: initial.revision,
-    mutation: { kind: 'set_pinned', ref: 'project:maka:anchor', pinned: true },
-  });
-  assert.equal(persisted.kind, 'committed');
-  const durable = JSON.parse(await readFile(statePath, 'utf8')) as {
-    schemaVersion: number;
-    skills: Record<string, { enabled: boolean }>;
-  };
-  assert.equal(durable.schemaVersion, 2);
-  assert.equal(durable.skills.Future?.enabled, false);
-
-  await createSkill(
-    join(fixture.project, '.maka', 'skills'),
-    'FUTURE',
-    skillBody('Project Future', 'future project copy'),
-  );
-  await createSkill(
-    join(fixture.home, '.agents', 'skills'),
-    'future',
-    skillBody('User Future', 'future user copy'),
-  );
-  const conflicted = await start(repository, fixture.project, 'governance');
-  const projectFuture = governanceItem(conflicted, 'project:maka:FUTURE');
-  const userFuture = governanceItem(conflicted, 'user:agents:future');
-  assert.equal(projectFuture.enabled, false);
-  assert.equal(userFuture.enabled, false);
-  assert.equal(projectFuture.needsReview, true);
-  assert.equal(userFuture.needsReview, true);
 });
 
 test('noncanonical external ids remain wire-safe governance entries', async () => {
@@ -464,13 +319,12 @@ test('noncanonical external ids remain wire-safe governance entries', async () =
     requestId: 'noncanonical-external-id',
     operation: 'skill.catalog.query' as const,
     ok: true as const,
-    result: page,
+    result: { ...page, resolvedWorkspace: workspaceProjection(fixture.project) },
   };
   assert.deepEqual(decodeHostFrame(frame), frame);
 
   assert.deepEqual(
     await repository.mutate({
-      context: { projectRoot: fixture.project },
       expectedRevision: page.revision,
       mutation: { kind: 'set_enabled', ref: control.ref, enabled: false },
     }),
@@ -492,7 +346,6 @@ test('noncanonical external ids remain wire-safe governance entries', async () =
   );
 
   const disabled = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: page.revision,
     mutation: {
       kind: 'set_enabled',
@@ -531,6 +384,7 @@ test('repository preserves filesystem-safe ids and codec preserves the 256-byte 
   const boundaryPage = {
     ...page,
     items: [{ ...filesystemItem, id: boundaryId }],
+    resolvedWorkspace: workspaceProjection(fixture.project),
   };
   const queryFrame = {
     requestId: 'display-id-boundary-query',
@@ -553,7 +407,6 @@ test('repository preserves filesystem-safe ids and codec preserves the 256-byte 
   );
 
   const committed = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: page.revision,
     mutation: { kind: 'set_enabled', ref: filesystemRef, enabled: false },
   });
@@ -564,7 +417,7 @@ test('repository preserves filesystem-safe ids and codec preserves the 256-byte 
     requestId: 'display-id-boundary-mutation',
     operation: 'skill.catalog.mutate' as const,
     ok: true as const,
-    result: committed,
+    result: { ...committed, resolvedWorkspace: workspaceProjection(fixture.project) },
   };
   assert.deepEqual(decodeHostFrame(mutationFrame), mutationFrame);
 
@@ -623,7 +476,6 @@ test('starter creation uses the shared template and reuses the lowest valid star
   const repository = fixture.repository();
   const initial = await start(repository, fixture.project, 'governance');
   const created = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: initial.revision,
     mutation: { kind: 'create_starter' },
   });
@@ -636,7 +488,6 @@ test('starter creation uses the shared template and reuses the lowest valid star
   );
 
   const repeated = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: created.revision,
     mutation: { kind: 'create_starter' },
   });
@@ -652,7 +503,6 @@ test('invalid starter ids remain occupied when selecting the lowest available or
   const repository = fixture.repository();
   const initial = await start(repository, fixture.project, 'governance');
   const created = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: initial.revision,
     mutation: { kind: 'create_starter' },
   });
@@ -673,7 +523,6 @@ test('empty publication targets occupy starter ids and participate in revision',
   const occupied = await start(repository, fixture.project, 'governance');
 
   const created = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: occupied.revision,
     mutation: { kind: 'create_starter' },
   });
@@ -703,14 +552,12 @@ test('root-owned rejected and empty placeholders can be deleted and reinstalled'
   assert.equal(empty.manageable, true);
 
   const deletedRejected = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: initial.revision,
     mutation: { kind: 'delete', ref: rejected.ref },
   });
   assert.equal(deletedRejected.kind, 'committed');
   if (deletedRejected.kind !== 'committed') return;
   const deletedEmpty = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: deletedRejected.revision,
     mutation: { kind: 'delete', ref: empty.ref },
   });
@@ -718,7 +565,6 @@ test('root-owned rejected and empty placeholders can be deleted and reinstalled'
   if (deletedEmpty.kind !== 'committed') return;
 
   const installed = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: deletedEmpty.revision,
     mutation: { kind: 'install', sourceType: 'bundled', sourceId: source.id },
   });
@@ -743,7 +589,6 @@ test('delete revision covers nested references, scripts, assets, and empty direc
 
   await writeFile(join(directory, 'assets', 'added.txt'), 'added\n');
   const addedConflict = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: snapshot.revision,
     mutation: { kind: 'delete', ref: 'workspace:legacy:tree-skill' },
   });
@@ -753,7 +598,6 @@ test('delete revision covers nested references, scripts, assets, and empty direc
   const changedSnapshot = await start(repository, fixture.project, 'governance');
   await writeFile(join(directory, 'scripts', 'run.sh'), 'echo changed\n');
   const changedConflict = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: changedSnapshot.revision,
     mutation: { kind: 'delete', ref: 'workspace:legacy:tree-skill' },
   });
@@ -763,7 +607,6 @@ test('delete revision covers nested references, scripts, assets, and empty direc
   const referenceSnapshot = await start(repository, fixture.project, 'governance');
   await writeFile(join(directory, 'references', 'notes.txt'), 'changed\n');
   const referenceConflict = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: referenceSnapshot.revision,
     mutation: { kind: 'delete', ref: 'workspace:legacy:tree-skill' },
   });
@@ -786,7 +629,6 @@ test('starter creation reuses the lowest ordinal valid Data Root starter', async
   const repository = fixture.repository();
   const initial = await start(repository, fixture.project, 'governance');
   const result = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: initial.revision,
     mutation: { kind: 'create_starter' },
   });
@@ -808,7 +650,6 @@ test('managed preview is bounded and hash-bound, then a force update commits the
 
   const initial = await start(repository, fixture.project, 'managed_sources');
   const installed = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: initial.revision,
     mutation: { kind: 'install', sourceType: 'managed', sourceId },
   });
@@ -820,7 +661,6 @@ test('managed preview is bounded and hash-bound, then a force update commits the
   await writeFile(installedPath, localContent);
   const modified = await start(repository, fixture.project, 'governance');
   const preview = await repository.previewUpdate({
-    context: { projectRoot: fixture.project },
     expectedRevision: modified.revision,
     ref: `workspace:legacy:${sourceId}`,
   });
@@ -836,7 +676,6 @@ test('managed preview is bounded and hash-bound, then a force update commits the
   assert.ok(Buffer.byteLength(JSON.stringify(preview), 'utf8') <= 48 * 1024);
 
   const updated = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: preview.revision,
     mutation: {
       kind: 'update_managed',
@@ -876,7 +715,6 @@ test('Host previews, updates, and recovers the canonical Desktop managed-install
   });
   const snapshot = await start(repository, fixture.project, 'governance');
   const preview = await repository.previewUpdate({
-    context: { projectRoot: fixture.project },
     expectedRevision: snapshot.revision,
     ref: `workspace:legacy:${sourceId}`,
   });
@@ -884,7 +722,6 @@ test('Host previews, updates, and recovers the canonical Desktop managed-install
 
   await assert.rejects(
     repository.mutate({
-      context: { projectRoot: fixture.project },
       expectedRevision: snapshot.revision,
       mutation: {
         kind: 'update_managed',
@@ -927,7 +764,6 @@ test('managed install and update reject source changes after their revision snap
   const initial = await start(repository, fixture.project, 'managed_sources');
   replacement = versionTwo;
   const racedInstall = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: initial.revision,
     mutation: { kind: 'install', sourceType: 'managed', sourceId },
   });
@@ -938,7 +774,6 @@ test('managed install and update reject source changes after their revision snap
 
   const versionTwoSnapshot = await start(repository, fixture.project, 'managed_sources');
   const installed = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: versionTwoSnapshot.revision,
     mutation: { kind: 'install', sourceType: 'managed', sourceId },
   });
@@ -950,7 +785,6 @@ test('managed install and update reject source changes after their revision snap
   const versionThreeSnapshot = await start(repository, fixture.project, 'governance');
   replacement = versionFour;
   const racedUpdate = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: versionThreeSnapshot.revision,
     mutation: {
       kind: 'update_managed',
@@ -978,7 +812,6 @@ test('managed install and update reject malformed UTF-8 sources before writing',
   const malformedInstallSnapshot = await start(repository, fixture.project, 'managed_sources');
   assert.deepEqual(
     await repository.mutate({
-      context: { projectRoot: fixture.project },
       expectedRevision: malformedInstallSnapshot.revision,
       mutation: { kind: 'install', sourceType: 'managed', sourceId },
     }),
@@ -989,7 +822,6 @@ test('managed install and update reject malformed UTF-8 sources before writing',
   await writeFile(sourcePath, versionOne);
   const validSnapshot = await start(repository, fixture.project, 'managed_sources');
   const installed = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: validSnapshot.revision,
     mutation: { kind: 'install', sourceType: 'managed', sourceId },
   });
@@ -999,7 +831,6 @@ test('managed install and update reject malformed UTF-8 sources before writing',
   const malformedUpdateSnapshot = await start(repository, fixture.project, 'governance');
   assert.deepEqual(
     await repository.mutate({
-      context: { projectRoot: fixture.project },
       expectedRevision: malformedUpdateSnapshot.revision,
       mutation: {
         kind: 'update_managed',
@@ -1033,7 +864,6 @@ test('non-force managed update preserves a local edit made after its snapshot', 
   });
   const initial = await start(repository, fixture.project, 'managed_sources');
   const installed = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: initial.revision,
     mutation: { kind: 'install', sourceType: 'managed', sourceId },
   });
@@ -1043,7 +873,6 @@ test('non-force managed update preserves a local edit made after its snapshot', 
   const snapshot = await start(repository, fixture.project, 'governance');
   editBeforeRead = true;
   const result = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: snapshot.revision,
     mutation: {
       kind: 'update_managed',
@@ -1077,7 +906,6 @@ test('revision covers exact managed lock and baseline bytes and rejects post-sna
   });
   const initial = await start(repository, fixture.project, 'managed_sources');
   const installed = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: initial.revision,
     mutation: { kind: 'install', sourceType: 'managed', sourceId },
   });
@@ -1103,7 +931,6 @@ test('revision covers exact managed lock and baseline bytes and rejects post-sna
   const updateSnapshot = await start(repository, fixture.project, 'governance');
   editBaselineBeforeRead = true;
   const raced = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: updateSnapshot.revision,
     mutation: {
       kind: 'update_managed',
@@ -1130,7 +957,6 @@ test('malformed installed artifacts retain raw revision hashes but cannot enter 
   const repository = fixture.repository();
   const initial = await start(repository, fixture.project, 'managed_sources');
   const installed = await repository.mutate({
-    context: { projectRoot: fixture.project },
     expectedRevision: initial.revision,
     mutation: { kind: 'install', sourceType: 'managed', sourceId },
   });
@@ -1156,14 +982,12 @@ test('malformed installed artifacts retain raw revision hashes but cannot enter 
   await writeFile(installedPath, currentA);
   const skillA = await start(repository, fixture.project, 'governance');
   const previewA = await repository.previewUpdate({
-    context: { projectRoot: fixture.project },
     expectedRevision: skillA.revision,
     ref: `workspace:legacy:${sourceId}`,
   });
   assert.deepEqual(previewA, { kind: 'rejected', reason: 'metadata_error' });
   assert.deepEqual(
     await repository.mutate({
-      context: { projectRoot: fixture.project },
       expectedRevision: skillA.revision,
       mutation: {
         kind: 'update_managed',
@@ -1181,7 +1005,6 @@ test('malformed installed artifacts retain raw revision hashes but cannot enter 
   await writeFile(installedPath, currentB);
   const skillB = await start(repository, fixture.project, 'governance');
   const previewB = await repository.previewUpdate({
-    context: { projectRoot: fixture.project },
     expectedRevision: skillB.revision,
     ref: `workspace:legacy:${sourceId}`,
   });
@@ -1199,7 +1022,6 @@ test('install rejects invalid and case-only workspace occupants', async () => {
   const invalidSnapshot = await start(invalidRepository, invalidFixture.project, 'bundled');
   assert.deepEqual(
     await invalidRepository.mutate({
-      context: { projectRoot: invalidFixture.project },
       expectedRevision: invalidSnapshot.revision,
       mutation: { kind: 'install', sourceType: 'bundled', sourceId: source.id },
     }),
@@ -1212,7 +1034,6 @@ test('install rejects invalid and case-only workspace occupants', async () => {
   const emptySnapshot = await start(emptyRepository, emptyFixture.project, 'bundled');
   assert.deepEqual(
     await emptyRepository.mutate({
-      context: { projectRoot: emptyFixture.project },
       expectedRevision: emptySnapshot.revision,
       mutation: { kind: 'install', sourceType: 'bundled', sourceId: source.id },
     }),
@@ -1233,7 +1054,6 @@ test('install rejects invalid and case-only workspace occupants', async () => {
   assert.equal(caseProjection?.kind === 'bundled' && caseProjection.installed, true);
   assert.deepEqual(
     await caseRepository.mutate({
-      context: { projectRoot: caseFixture.project },
       expectedRevision: caseSnapshot.revision,
       mutation: { kind: 'install', sourceType: 'bundled', sourceId: source.id },
     }),
@@ -1291,7 +1111,6 @@ test('durable transaction uncertainty is not reported as success and the next sc
 
   await assert.rejects(
     repository.mutate({
-      context: { projectRoot: fixture.project },
       expectedRevision: initial.revision,
       mutation: { kind: 'install', sourceType: 'bundled', sourceId: source.id },
     }),
@@ -1319,7 +1138,37 @@ interface Fixture {
   repository(
     transactionOptions?: SkillCatalogTransactionOptions,
     testHooks?: SkillCatalogRepositoryOptions['testHooks'],
-  ): SkillCatalogRepository;
+  ): TestSkillCatalogRepository;
+}
+
+class TestSkillCatalogRepository extends SkillCatalogRepository {
+  constructor(
+    options: SkillCatalogRepositoryOptions,
+    private readonly context: SkillCatalogLocalContext,
+  ) {
+    super(options);
+  }
+
+  override query(
+    input: Parameters<SkillCatalogRepository['query']>[0],
+    context?: SkillCatalogLocalContext,
+  ) {
+    return super.query(input, context ?? this.context);
+  }
+
+  override mutate(
+    input: Parameters<SkillCatalogRepository['mutate']>[0],
+    context?: SkillCatalogLocalContext,
+  ) {
+    return super.mutate(input, context ?? this.context);
+  }
+
+  override previewUpdate(
+    input: Parameters<SkillCatalogRepository['previewUpdate']>[0],
+    context?: SkillCatalogLocalContext,
+  ) {
+    return super.previewUpdate(input, context ?? this.context);
+  }
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -1341,13 +1190,16 @@ async function createFixture(): Promise<Fixture> {
     home,
     sources,
     repository(transactionOptions, testHooks) {
-      return new SkillCatalogRepository({
-        runWithRoot,
-        homeDirectory: home,
-        managedSourcesRoot: sources,
-        ...(transactionOptions ? { transactionOptions } : {}),
-        ...(testHooks ? { testHooks } : {}),
-      });
+      return new TestSkillCatalogRepository(
+        {
+          runWithRoot,
+          homeDirectory: home,
+          managedSourcesRoot: sources,
+          ...(transactionOptions ? { transactionOptions } : {}),
+          ...(testHooks ? { testHooks } : {}),
+        },
+        { projectRoot: project },
+      );
     },
   };
 }
@@ -1407,12 +1259,25 @@ function stateFile(ref: string, enabled: boolean, pinned: boolean, updatedAt: st
   })}\n`;
 }
 
+function workspaceProjection(projectRoot: string) {
+  return {
+    target: { kind: 'host_path' as const, path: projectRoot },
+    hostCwd: projectRoot,
+  };
+}
+
 async function start(
-  repository: SkillCatalogRepository,
+  repository: TestSkillCatalogRepository,
   projectRoot: string,
   view: 'governance' | 'bundled' | 'managed_sources',
 ): Promise<Extract<SkillCatalogQueryResult, { kind: 'page' }>> {
-  const result = await repository.query({ kind: 'start', context: { projectRoot }, view });
+  const result = await repository.query(
+    {
+      kind: 'start',
+      view,
+    },
+    { projectRoot },
+  );
   assert.equal(result.kind, 'page');
   return result as Extract<SkillCatalogQueryResult, { kind: 'page' }>;
 }

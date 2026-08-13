@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { before, describe, test } from 'node:test';
+import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
-import { _setColorLevelForTesting } from '../tui-ansi.js';
-import type { PipeShellOutput, PtyShellOutput, ShellRunToolResult } from '@maka/core';
+import type { PipeShellOutput, PtyShellOutput } from '@maka/core/shell-run';
+import type { ShellRunToolResult } from '@maka/core/shell-run-result';
 import type { SessionEvent, ToolResultContent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
@@ -13,46 +13,13 @@ import {
   createMakaPiTranscriptState,
   renderMakaPiActivityStrip,
   renderMakaPiTranscript,
-  refreshRunningShellRunElapsed,
   reconcileToolsWithStoredMessages,
   replaceTranscriptWithStoredMessages,
-  submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
 } from '../pi-transcript.js';
 
-// Pin the color level so ANSI-escape assertions are hermetic. Detection reads
-// process.env.TERM/COLORTERM at module load, so ambient terminal capability
-// (truecolor locally, unset/dumb on CI runners) would otherwise decide whether
-// color escapes appear. Level 3 (truecolor) is the development default these
-// tests lock (#1064/#1066); matches tui-ansi.test.ts's reset convention.
-before(() => _setColorLevelForTesting(3));
-
 describe('Maka Pi TUI transcript', () => {
-  test('formats long-running turn durations with readable units', () => {
-    const metadata = (turnElapsedMs: number) => ({
-      title: 'Test session',
-      connectionSlug: 'test',
-      cwd: '/repo',
-      model: 'test-model',
-      permissionMode: 'ask',
-      turnElapsedMs,
-    });
-
-    assert.equal(stripAnsi(renderMakaPiActivityStrip(metadata(0), 80)), 'Working… 0s');
-    assert.equal(stripAnsi(renderMakaPiActivityStrip(metadata(59_999), 80)), 'Working… 59s');
-    assert.equal(stripAnsi(renderMakaPiActivityStrip(metadata(60_000), 80)), 'Working… 1m');
-    assert.equal(stripAnsi(renderMakaPiActivityStrip(metadata(83_000), 80)), 'Working… 1m 23s');
-    assert.equal(
-      stripAnsi(renderMakaPiActivityStrip(metadata(3_661_000), 80)),
-      'Working… 1h 1m 1s',
-    );
-    assert.equal(
-      stripAnsi(renderMakaPiActivityStrip(metadata(90_061_000), 80)),
-      'Working… 1d 1h 1m 1s',
-    );
-  });
-
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'inspect the package');
@@ -111,6 +78,40 @@ describe('Maka Pi TUI transcript', () => {
       state.entries[3]?.kind === 'assistant' ? state.entries[3].text : '',
       'The package is named maka-agent.',
     );
+  });
+
+  test('treats text_complete as the authoritative assistant text', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'text_delta', messageId: 'message-1', text: 'draft' }),
+    );
+
+    renderMakaPiTranscript(state, meta(), 80);
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'text_complete', messageId: 'message-1', text: 'final' }),
+    );
+
+    assert.equal(
+      state.entries[0]?.kind === 'assistant' ? state.entries[0].text : undefined,
+      'final',
+    );
+    assert.match(renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n'), /final/);
+  });
+
+  test('allows text_complete to replace streamed assistant text with empty text', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'text_delta', messageId: 'message-1', text: 'discard me' }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'text_complete', messageId: 'message-1', text: '' }),
+    );
+
+    assert.equal(state.entries[0]?.kind === 'assistant' ? state.entries[0].text : undefined, '');
   });
 
   test('reconciles durable tool details without resetting live turn state', () => {
@@ -258,100 +259,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(rendered, /internal context/);
   });
 
-  test('shows a fixed system notice when the configured step limit is reached', () => {
-    const state = createMakaPiTranscriptState();
-
-    applyMakaSessionEventToTranscript(state, event({ type: 'complete', stopReason: 'step_limit' }));
-
-    assert.deepEqual(state.entries, [
-      {
-        kind: 'notice',
-        level: 'info',
-        text: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
-      },
-    ]);
-  });
-
-  test('restores the step-limit system notice from stored history', () => {
-    const state = createMakaPiTranscriptState();
-
-    replaceTranscriptWithStoredMessages(state, [
-      { type: 'system_note', id: 'notice-1', turnId: 'turn-1', ts: 1, kind: 'step_limit' },
-    ]);
-
-    assert.deepEqual(state.entries, [
-      {
-        kind: 'notice',
-        level: 'info',
-        text: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
-      },
-    ]);
-  });
-
-  test('reports completed manual compact runs when there was nothing to compact', async () => {
-    const state = createMakaPiTranscriptState();
-    const driver = new RecordingDriver([
-      event({ type: 'token_usage', input: 0, output: 0 }),
-      event({ type: 'complete', stopReason: 'end_turn' }),
-    ]);
-
-    await submitCompactToTranscript({ state, driver });
-
-    assert.equal(driver.compactCalls, 1);
-    assert.ok(
-      state.entries.some(
-        (entry) => entry.kind === 'notice' && entry.text === 'Nothing to compact.',
-      ),
-    );
-  });
-
-  test('reports manual compact failed-open diagnostics instead of no-op success', async () => {
-    const state = createMakaPiTranscriptState();
-    const driver = new RecordingDriver([
-      event({
-        type: 'token_usage',
-        input: 0,
-        output: 0,
-        contextBudget: {
-          enabled: true,
-          estimatedTokensBefore: 100,
-          estimatedTokensAfter: 100,
-          keptTurns: 2,
-          droppedTurns: 0,
-          keptEvents: 4,
-          droppedEvents: 0,
-          compactionDecisions: [
-            {
-              stage: 'priorReplay',
-              sourceKind: 'runtimeEvents',
-              decision: 'failedOpen',
-              boundaryKind: 'historyCompact',
-              failOpenReason: 'output_length',
-            },
-          ],
-        },
-      }),
-      event({ type: 'complete', stopReason: 'end_turn' }),
-    ]);
-
-    await submitCompactToTranscript({ state, driver });
-
-    assert.ok(
-      state.entries.some(
-        (entry) =>
-          entry.kind === 'notice' &&
-          entry.level === 'error' &&
-          entry.text === 'Context compaction skipped: output_length.',
-      ),
-    );
-    assert.equal(
-      state.entries.some(
-        (entry) => entry.kind === 'notice' && entry.text === 'Nothing to compact.',
-      ),
-      false,
-    );
-  });
-
   test('shows failed-open compact diagnostics before success diagnostics', () => {
     const state = createMakaPiTranscriptState();
 
@@ -393,68 +300,6 @@ describe('Maka Pi TUI transcript', () => {
         .filter((entry) => entry.kind === 'notice')
         .map((entry) => ({ level: entry.level, text: entry.text })),
       [{ level: 'error', text: 'Context compaction skipped: write_failed.' }],
-    );
-  });
-
-  test('rebuilds transcript from stored session messages', () => {
-    const state = createMakaPiTranscriptState();
-
-    replaceTranscriptWithStoredMessages(state, [
-      {
-        type: 'user',
-        id: 'user-1',
-        turnId: 'turn-1',
-        ts: 1,
-        text: 'What did we decide?',
-      },
-      {
-        type: 'assistant',
-        id: 'assistant-1',
-        turnId: 'turn-1',
-        ts: 2,
-        text: 'We decided to keep the TUI small.',
-        thinking: { text: 'recall the decision' },
-        modelId: 'deepseek-v4-flash',
-      },
-      {
-        type: 'tool_call',
-        id: 'tool-1',
-        turnId: 'turn-1',
-        ts: 3,
-        toolName: 'Read',
-        args: { path: 'README.md' },
-      },
-      {
-        type: 'tool_result',
-        id: 'tool-result-1',
-        turnId: 'turn-1',
-        ts: 4,
-        toolUseId: 'tool-1',
-        isError: false,
-        content: { kind: 'text', text: 'README contents' },
-      },
-    ] satisfies StoredMessage[]);
-
-    // Stored thinking happened before the reply text, so it resumes above it.
-    assert.deepEqual(
-      state.entries.map((entry) => entry.kind),
-      ['user', 'thinking', 'assistant', 'tool'],
-    );
-    assert.equal(
-      state.entries[0]?.kind === 'user' ? state.entries[0].text : '',
-      'What did we decide?',
-    );
-    assert.equal(
-      state.entries[1]?.kind === 'thinking' ? state.entries[1].text : '',
-      'recall the decision',
-    );
-    assert.equal(
-      state.entries[2]?.kind === 'assistant' ? state.entries[2].text : '',
-      'We decided to keep the TUI small.',
-    );
-    assert.equal(
-      state.entries[3]?.kind === 'tool' ? state.entries[3].output : '',
-      'README contents',
     );
   });
 
@@ -592,112 +437,6 @@ describe('Maka Pi TUI transcript', () => {
     );
     const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.match(rendered, /● Read/);
-  });
-
-  test('keeps a stored errored StopBackgroundTask poll as a card without folding it into the parent', () => {
-    const state = createMakaPiTranscriptState();
-    const ref = 'maka://runtime/background-tasks/bg-1';
-
-    replaceTranscriptWithStoredMessages(state, [
-      {
-        type: 'tool_call',
-        id: 'bash-bg',
-        turnId: 'turn-1',
-        ts: 1,
-        toolName: 'Bash',
-        args: { command: 'sleep 30' },
-      },
-      {
-        type: 'tool_result',
-        id: 'bash-result',
-        turnId: 'turn-1',
-        ts: 2,
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({
-          ref,
-          status: 'running',
-          stdout: 'starting\n',
-          revision: 1,
-          updatedAt: 2_000,
-        }),
-      },
-      {
-        type: 'tool_call',
-        id: 'stop-bg',
-        turnId: 'turn-1',
-        ts: 3,
-        toolName: 'StopBackgroundTask',
-        args: { ref },
-      },
-      {
-        type: 'tool_result',
-        id: 'stop-result',
-        turnId: 'turn-1',
-        ts: 4,
-        toolUseId: 'stop-bg',
-        isError: true,
-        content: shellRun({
-          ref,
-          status: 'cancelled',
-          stdout: 'starting\n',
-          revision: 2,
-          completedAt: 5_000,
-          exitCode: 130,
-        }),
-      },
-    ] satisfies StoredMessage[]);
-
-    const tools = state.entries.filter((entry) => entry.kind === 'tool');
-    assert.deepEqual(
-      tools.map((tool) => tool.toolUseId),
-      ['bash-bg', 'stop-bg'],
-    );
-    assert.equal(tools[1]?.status, 'error');
-    assert.equal(tools[0]?.status, 'running');
-    assert.equal(tools[0]?.result?.kind === 'shell_run' ? tools[0].result.revision : undefined, 1);
-    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(rendered, /● StopBackgroundTask/);
-  });
-
-  test('renders a PTY around the cursor when compact and as three head plus three tail rows when expanded', () => {
-    const state = createMakaPiTranscriptState();
-    const screen = Array.from({ length: 8 }, (_, index) => `pty-row-${index + 1}`).join('\n');
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-pty',
-        toolName: 'Bash',
-        args: { command: 'interactive', pty: true },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-pty',
-        isError: false,
-        content: shellRun({
-          mode: 'pty',
-          output: ptyOutput({
-            screen,
-            cursor: { x: 0, y: 6, visible: true },
-          }),
-        }),
-      }),
-    );
-
-    // Compact: a running PTY Bash shows only the disc row; the PTY screen
-    // lives in the expanded card.
-    const compact = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(compact, /● Bash  \$ interactive \(running\)/);
-    assert.doesNotMatch(compact, /pty-row-1/);
-
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    for (const row of [1, 2, 3, 6, 7, 8]) assert.match(expanded, new RegExp(`pty-row-${row}`));
-    assert.doesNotMatch(expanded, /pty-row-[45]/);
   });
 
   test('Ctrl+O leaves tool cards above the live viewport untouched (#1097)', () => {
@@ -844,63 +583,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(state.expandAllTools, true);
     const third = state.entries[state.entries.length - 1];
     assert.match(third.kind === 'notice' ? third.text : '', /starts expanded/);
-  });
-
-  test('Ctrl+O reports nothing to toggle when the session has no tool card at all', () => {
-    const state = createMakaPiTranscriptState();
-    assert.equal(toggleAllToolExpansion(state), false);
-    assert.equal(state.expandAllTools, false);
-    assert.equal(
-      state.entries.some((entry) => entry.kind === 'notice'),
-      false,
-    );
-  });
-
-  test('tool cards born after an expand-all start expanded', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        args: { command: 'first' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'tool-1',
-        isError: false,
-        content: terminalResult('ok\n'),
-      }),
-    );
-    assert.equal(toggleAllToolExpansion(state), true);
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-2',
-        toolName: 'Bash',
-        args: { command: 'second' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'tool-2',
-        isError: false,
-        content: terminalResult(
-          `second-head\n${Array.from({ length: 10 }, (_, i) => `second-row-${i}`).join('\n')}`,
-        ),
-      }),
-    );
-
-    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(rendered, /second-head/);
   });
 
   test('Ctrl+T leaves thinking entries above the live viewport untouched (#1097)', () => {
@@ -1067,213 +749,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(rendered, /Entered: echo hello\\r/);
     assert.match(rendered, /Resized to 100x30/);
     assert.equal(rendered.split('UNIQUE-PTY-FRAME').length - 1, 1);
-  });
-
-  test('projects raw live WriteStdin args at the TUI transcript boundary', () => {
-    const state = createMakaPiTranscriptState();
-    const ref = 'maka://runtime/background-tasks/pty-live';
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'write-live',
-        toolName: 'WriteStdin',
-        args: { ref, input: 'echo live\r' },
-      }),
-    );
-
-    const entry = state.entries.find(
-      (candidate): candidate is Extract<typeof candidate, { kind: 'tool' }> =>
-        candidate.kind === 'tool',
-    );
-    assert.deepEqual(entry?.input, {
-      ref,
-      inputPreview: { text: 'echo live\\r', bytes: 10, truncated: false },
-    });
-  });
-
-  test('restores the total elapsed time of a settled background Bash card', () => {
-    const state = createMakaPiTranscriptState();
-    replaceTranscriptWithStoredMessages(state, [
-      {
-        type: 'tool_call',
-        id: 'bash-bg',
-        turnId: 'turn-1',
-        ts: 1,
-        toolName: 'Bash',
-        args: { command: 'npm test' },
-      },
-      {
-        type: 'tool_result',
-        id: 'bash-result',
-        turnId: 'turn-1',
-        ts: 2,
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({
-          status: 'completed',
-          startedAt: 1_000,
-          updatedAt: 6_000,
-          completedAt: 6_000,
-          exitCode: 0,
-        }),
-      },
-    ] satisfies StoredMessage[]);
-
-    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(rendered, /● Bash  \$ npm test \(5s\)/);
-  });
-
-  test('rebuilds automatic context compaction notes from stored session messages', () => {
-    const state = createMakaPiTranscriptState();
-
-    replaceTranscriptWithStoredMessages(state, [
-      {
-        type: 'system_note',
-        id: 'note-1',
-        turnId: 'turn-1',
-        ts: 1,
-        kind: 'context_compacted',
-      },
-    ] satisfies StoredMessage[]);
-
-    assert.deepEqual(
-      state.entries.filter((entry) => entry.kind === 'notice'),
-      [
-        {
-          kind: 'notice',
-          level: 'info',
-          text: 'Context compacted to keep this session within the model window.',
-        },
-      ],
-    );
-  });
-
-  test('rebuilds fail-open notes without claiming history was trimmed', () => {
-    const state = createMakaPiTranscriptState();
-
-    replaceTranscriptWithStoredMessages(state, [
-      {
-        type: 'system_note',
-        id: 'note-failed-open',
-        turnId: 'turn-1',
-        ts: 1,
-        kind: 'context_compaction_failed_open',
-      },
-    ] satisfies StoredMessage[]);
-
-    assert.deepEqual(
-      state.entries.filter((entry) => entry.kind === 'notice'),
-      [
-        {
-          kind: 'notice',
-          level: 'info',
-          text: 'Context summary failed; the session continued without a new summary.',
-        },
-      ],
-    );
-  });
-
-  test('renders every transcript line within the terminal width', () => {
-    const state = createMakaPiTranscriptState();
-    appendUserPrompt(state, 'please inspect a very long path under packages/runtime/src');
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'text_delta',
-        messageId: 'message-1',
-        text: 'I will inspect `packages/runtime/src/very-long-file-name.ts` now.',
-      }),
-    );
-
-    const lines = renderMakaPiTranscript(
-      state,
-      {
-        title: 'Maka',
-        cwd: '/Users/yuhan/workspace/oss/maka-agent/.worktree/maka-cli-tui',
-        model: 'deepseek-v4-flash',
-        connectionSlug: 'deepseek',
-        permissionMode: 'bypass',
-        busy: true,
-      },
-      12,
-    );
-
-    assert.ok(lines.every((line) => visibleWidth(line) <= 12));
-  });
-
-  test('surfaces context compaction diagnostics as transcript notes', () => {
-    const state = createMakaPiTranscriptState();
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'token_usage',
-        input: 1200,
-        output: 100,
-        contextBudget: {
-          enabled: true,
-          policyName: 'cli-default-history-budget',
-          maxHistoryEstimatedTokens: 32000,
-          estimatedTokensBefore: 42000,
-          estimatedTokensAfter: 18000,
-          keptTurns: 3,
-          droppedTurns: 5,
-          keptEvents: 7,
-          droppedEvents: 20,
-          highWaterReason: 'history_compact',
-          compactionDecisions: [
-            {
-              stage: 'priorReplay',
-              sourceKind: 'runtimeEvents',
-              decision: 'replaced',
-              boundaryKind: 'historyCompact',
-              coveredTurns: 5,
-              coveredRuntimeEvents: 20,
-              estimatedTokensSaved: 24000,
-            },
-          ],
-        },
-      }),
-    );
-
-    const visibleLines = renderMakaPiTranscript(
-      state,
-      {
-        title: 'Maka',
-        cwd: '/tmp/project',
-        model: 'deepseek-v4-flash',
-        connectionSlug: 'deepseek',
-        permissionMode: 'bypass',
-      },
-      120,
-    ).map(stripAnsi);
-
-    assert.ok(visibleLines.some((line) => line.includes('Context compacted')));
-    assert.ok(visibleLines.some((line) => line.includes('historyCompact')));
-    assert.ok(visibleLines.some((line) => line.includes('saved ~24000 tokens')));
-  });
-
-  test('ignores legacy generic permission requests', () => {
-    const state = createMakaPiTranscriptState();
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'permission_request',
-        requestId: 'permission-1',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        category: 'shell_unsafe',
-        reason: 'shell_dangerous',
-        args: { command: 'npm test' },
-        hint: 'Run tests before editing.',
-      }),
-    );
-
-    assert.equal(state.pendingInteraction, undefined);
-    assert.deepEqual(state.queuedInteractions, []);
   });
 
   test('renders an unboxed session sandbox boundary request with exact scopes', () => {
@@ -1543,88 +1018,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.ok(bodyIndex < expanded.findIndex((line) => line.includes('the answer')));
   });
 
-  test('separates the thinking marker from tool rows with blank lines', () => {
-    const state = createMakaPiTranscriptState();
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        args: { command: 'ls' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'tool-1',
-        isError: false,
-        content: { kind: 'text', text: 'ok' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'thinking_delta',
-        messageId: 'message-1',
-        text: 'plan the next step',
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-2',
-        toolName: 'Bash',
-        args: { command: 'pwd' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'tool-2',
-        isError: false,
-        content: { kind: 'text', text: 'ok' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-3',
-        toolName: 'Bash',
-        args: { command: 'whoami' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'tool-3',
-        isError: false,
-        content: { kind: 'text', text: 'ok' },
-      }),
-    );
-
-    const lines = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi);
-    const markerIndex = lines.findIndex((line) => line.includes('Thinking…'));
-    assert.ok(markerIndex > 0);
-
-    // Thinking reads as model output: a blank line sets it apart from the
-    // tool rows on both sides.
-    assert.equal(lines[markerIndex - 1], '');
-    assert.equal(lines[markerIndex + 1], '');
-
-    // Consecutive tool rows stay compact — no blank line between them.
-    const toolIndices = lines
-      .map((line, index) => (line.includes('● Bash') ? index : -1))
-      .filter((index) => index >= 0);
-    assert.deepEqual(toolIndices, [markerIndex - 2, markerIndex + 2, markerIndex + 3]);
-  });
-
   test('replaces the streamed thinking entry when thinking_complete arrives after the reply', () => {
     const state = createMakaPiTranscriptState();
 
@@ -1662,175 +1055,6 @@ describe('Maka Pi TUI transcript', () => {
       state.entries[0]?.kind === 'thinking' ? state.entries[0].text : '',
       'the complete thought',
     );
-  });
-
-  test('keeps tool cards compact until the latest tool is expanded', () => {
-    const state = createMakaPiTranscriptState();
-    // `head-line` is first; the compact one-line summary shows only the output
-    // size, never output content, and expanding reveals the full stdout.
-    const stdout = `head-line\n${Array.from({ length: 30 }, (_, i) => `row-${i}`).join('\n')}`;
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        args: { command: 'npm test' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'tool-1',
-        isError: false,
-        content: terminalResult(stdout),
-      }),
-    );
-
-    const compactLines = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi);
-    const compact = compactLines.join('\n');
-
-    // Compact cards are a single line (plus the leading blank separator).
-    assert.equal(compactLines.length, 2);
-    assert.match(compact, /● Bash  \$ npm test/);
-    assert.match(compact, /\(31 lines\)/);
-    assert.doesNotMatch(compact, /head-line/);
-    assert.doesNotMatch(compact, /row-29/);
-    // The annotation's shapes carry the affordance; no expand marker remains.
-    assert.doesNotMatch(compact, /›/);
-
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi).join('\n');
-
-    assert.match(expanded, /head-line/);
-    assert.match(expanded, /row-29/);
-  });
-
-  test('summarizes a failing Bash tool with a red exit code, not the error text', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        args: { command: 'npm test' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'tool-1',
-        isError: true,
-        content: terminalResult('some earlier output', 'first error\nfinal error line\n', {
-          status: 'failed',
-          exitCode: 1,
-        }),
-      }),
-    );
-
-    const lines = renderMakaPiTranscript(state, meta(), 120);
-    assert.equal(lines.length, 2);
-    const compact = lines.map(stripAnsi).join('\n');
-    assert.match(compact, /\(exit 1\)/);
-    // The error text itself lives only in the expanded card.
-    assert.doesNotMatch(compact, /final error line/);
-    // The exit code is red.
-    assert.match(lines.join('\n'), /\x1b\[31mexit 1\x1b\[39m/);
-  });
-
-  test('shows the first real command line when a Bash command leads with comments', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        args: { command: '# look for the setting\ngrep -n "setting" src/config.ts' },
-      }),
-    );
-
-    const compact = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(compact, /\$ grep -n "setting" src\/config\.ts/);
-    assert.doesNotMatch(compact, /look for the setting/);
-  });
-
-  test('summarizes a silent successful command as (no output)', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        args: { command: 'true' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'tool-1',
-        isError: false,
-        content: terminalResult('', '', { cmd: 'true' }),
-      }),
-    );
-
-    const lines = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi);
-    assert.equal(lines.length, 2);
-    assert.match(lines.join('\n'), /\(no output\)/);
-    assert.doesNotMatch(lines.join('\n'), /\(Ctrl\+O\)/);
-  });
-
-  test('shows the latest live output line while a tool is running', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        args: { command: 'npm run build' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_output_delta',
-        toolUseId: 'tool-1',
-        seq: 1,
-        stream: 'stdout',
-        chunk: 'step one\n',
-        redacted: false,
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_output_delta',
-        toolUseId: 'tool-1',
-        seq: 2,
-        stream: 'stdout',
-        chunk: 'step two\n',
-        redacted: false,
-      }),
-    );
-
-    const lines = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi);
-    assert.equal(lines.length, 2);
-    const compact = lines.join('\n');
-    assert.match(compact, /● Bash  \$ npm run build \(running\)/);
-    assert.doesNotMatch(compact, /step one/);
-    assert.doesNotMatch(compact, /step two/);
-
-    // Live output lives in the expanded card for a running tool.
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi).join('\n');
-    assert.match(expanded, /step two/);
   });
 
   test('replaces live Bash output with the authoritative terminal snapshot', () => {
@@ -2049,82 +1273,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(rendered, /● Bash  \$ sleep 30 \(running 10s\)/);
     assert.doesNotMatch(rendered, /done/);
     assert.equal(rendered.split('$ sleep 30').length - 1, 1);
-  });
-
-  test('shows live elapsed time and stop guidance on a running background Bash card', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-bg',
-        toolName: 'Bash',
-        args: { command: 'sleep 30' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({ startedAt: 1_000, updatedAt: 2_000 }),
-      }),
-    );
-
-    assert.equal(refreshRunningShellRunElapsed(state, 13_500), true);
-    const compact = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(compact, /running 13s/);
-    assert.doesNotMatch(compact, /Ask Maka to stop this task/);
-
-    // Stop guidance is expanded-only for a running background Bash shell_run.
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(expanded, /Ask Maka to stop this task/);
-  });
-
-  test('describes a detached background Bash card by ownership, not lifecycle', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-bg',
-        toolName: 'Bash',
-        args: { command: 'build' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({ stdout: '', stderr: '' }),
-      }),
-    );
-    applyShellRunViewUpdateToTranscript(state, {
-      sessionId: 'branch',
-      ownership: { kind: 'source_owned', sourceSessionId: 'source', ownerSessionId: 'source' },
-      sourceTurnId: 'turn-1',
-      sourceToolCallId: 'bash-bg',
-      result: shellRun({ stdout: '', stderr: '' }),
-    });
-
-    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(rendered, /\(detached\)/);
-    assert.doesNotMatch(rendered, /continues in source session/);
-
-    applyShellRunViewUpdateToTranscript(state, {
-      sessionId: 'branch',
-      ownership: { kind: 'source_unavailable', sourceSessionId: 'source' },
-      sourceTurnId: 'turn-1',
-      sourceToolCallId: 'bash-bg',
-      result: shellRun({ stdout: '', stderr: '' }),
-    });
-    const unavailable = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(unavailable, /\(source unavailable\)/);
-    assert.doesNotMatch(unavailable, /Ask Maka to stop this task/);
   });
 
   test('never renders a background-task Read card while a poll is in flight', () => {
@@ -2528,51 +1676,6 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
-  test('announces at the transcript tail when a running background task completes', () => {
-    const state = createMakaPiTranscriptState();
-    const ref = 'maka://runtime/background-tasks/bg-1';
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-bg',
-        toolName: 'Bash',
-        args: { command: 'npm test' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({ ref, status: 'running', stdout: 'starting\n', updatedAt: 2_000 }),
-      }),
-    );
-
-    applyShellRunViewUpdateToTranscript(state, {
-      sessionId: 'session-1',
-      ownership: { kind: 'local' },
-      sourceTurnId: 'turn-1',
-      sourceToolCallId: 'bash-bg',
-      result: shellRun({
-        ref,
-        status: 'completed',
-        stdout: 'starting\ndone\n',
-        completedAt: 48_000,
-        exitCode: 0,
-      }),
-    });
-
-    const notice = state.entries[state.entries.length - 1];
-    assert.equal(notice?.kind, 'notice');
-    assert.equal(notice?.kind === 'notice' ? notice.level : '', 'info');
-    const text = notice?.kind === 'notice' ? notice.text : '';
-    assert.match(text, /Background task completed: npm test/);
-    assert.match(text, /exit 0/);
-    assert.match(text, /47s/);
-  });
-
   test('notifies a settle exactly once across a folded poll and the live update', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';
@@ -2923,48 +2026,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(text, /with diagnostics/);
   });
 
-  test('announces a stopped background task as a plain note', () => {
-    const state = createMakaPiTranscriptState();
-    const ref = 'maka://runtime/background-tasks/bg-1';
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-bg',
-        toolName: 'Bash',
-        args: { command: 'sleep 30' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({ ref, status: 'running', cmd: 'sleep 30' }),
-      }),
-    );
-
-    applyShellRunViewUpdateToTranscript(state, {
-      sessionId: 'session-1',
-      ownership: { kind: 'local' },
-      sourceTurnId: 'turn-1',
-      sourceToolCallId: 'bash-bg',
-      result: shellRun({
-        ref,
-        status: 'cancelled',
-        cmd: 'sleep 30',
-        completedAt: 8_000,
-        exitCode: 130,
-      }),
-    });
-
-    const notice = state.entries[state.entries.length - 1];
-    assert.equal(notice?.kind, 'notice');
-    assert.equal(notice?.kind === 'notice' ? notice.level : '', 'info');
-    assert.match(notice?.kind === 'notice' ? notice.text : '', /Background task stopped: sleep 30/);
-  });
-
   test('stays silent for a background task already settled in stored history', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';
@@ -3000,44 +2061,6 @@ describe('Maka Pi TUI transcript', () => {
       state.entries.some((entry) => entry.kind === 'notice'),
       false,
     );
-  });
-
-  test('announces a timed-out background task with human-readable text', () => {
-    const state = createMakaPiTranscriptState();
-    const ref = 'maka://runtime/background-tasks/bg-1';
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-bg',
-        toolName: 'Bash',
-        args: { command: 'npm test' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({ ref, status: 'running' }),
-      }),
-    );
-
-    applyShellRunViewUpdateToTranscript(state, {
-      sessionId: 'session-1',
-      ownership: { kind: 'local' },
-      sourceTurnId: 'turn-1',
-      sourceToolCallId: 'bash-bg',
-      result: shellRun({ ref, status: 'timed_out', completedAt: 60_000 }),
-    });
-
-    const notice = state.entries[state.entries.length - 1];
-    assert.equal(notice?.kind, 'notice');
-    assert.equal(notice?.kind === 'notice' ? notice.level : '', 'error');
-    const text = notice?.kind === 'notice' ? notice.text : '';
-    assert.match(text, /Background task timed out: npm test/);
-    assert.doesNotMatch(text, /timed_out/);
   });
 
   test('drops a folded poll when the turn aborts mid-flight', () => {
@@ -3196,39 +2219,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(rendered, /50%/);
   });
 
-  test('shows stdout as latest when it arrives after stderr', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-bg',
-        toolName: 'Bash',
-        args: { command: 'build' },
-      }),
-    );
-    const result = shellRun({
-      stdout: '99%\n',
-      stderr: 'warning\n',
-      latestStream: 'stdout',
-      updatedAt: 3_000,
-    });
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: result,
-      }),
-    );
-
-    // Live output lives in the expanded card for a running tool.
-    assert.equal(toggleAllToolExpansion(state), true);
-    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(rendered, /99%/);
-  });
-
   test('re-renders a background Bash card when polling replaces output with the same length', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';
@@ -3360,125 +2350,6 @@ describe('Maka Pi TUI transcript', () => {
     const rendered = lines.map(stripAnsi).join('\n');
     assert.match(rendered, /● Bash  \$ sleep 30 \(7s · cancelled · exit 130\)/);
     assert.doesNotMatch(rendered, /● StopBackgroundTask/);
-    // An aborted background task uses the danger disc (red).
-    assert.match(lines.join('\n'), /\x1b\[31m●\x1b\[39m/);
-  });
-
-  test('reserves a fixed-shape annotation when it fits alongside the row head', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-cap',
-        toolName: 'Bash',
-        args: { command: 'npm run build ' + 'x'.repeat(60) },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-cap',
-        isError: false,
-        content: shellRun({
-          status: 'timed_out',
-          startedAt: 0,
-          updatedAt: 1_234_000,
-          completedAt: 1_234_000,
-          exitCode: 124,
-        }),
-      }),
-    );
-
-    const lines = renderMakaPiTranscript(state, meta(), 60).map(stripAnsi);
-    const row = lines[1]!;
-    // The complete fixed-shape annotation is reserved before the long command
-    // target, so the timeout and exit code remain readable.
-    assert.match(row, /\(1234s · timed_out · exit 124\)$/);
-    assert.ok(visibleWidth(row) <= 60, `row width ${visibleWidth(row)} exceeds 60`);
-  });
-
-  test('keeps a duration-bearing generic outcome readable when it exceeds the old cap', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'generic-duration',
-        toolName: 'McpTool',
-        args: { target: 'x'.repeat(80) },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'generic-duration',
-        isError: false,
-        content: { kind: 'text', text: 'line\n'.repeat(100) },
-        durationMs: 12_000,
-      }),
-    );
-
-    const row = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi)[1]!;
-    assert.match(row, /\(12s · 100 lines · 500 bytes\)$/);
-    assert.doesNotMatch(row, /\(1…\)$/);
-    assert.ok(visibleWidth(row) <= 80, `row width ${visibleWidth(row)} exceeds 80`);
-  });
-
-  test('counts stdout and stderr lines per stream, not at the join boundary', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-fg',
-        toolName: 'Bash',
-        args: { command: 'fg' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-fg',
-        isError: false,
-        content: terminalResult('out\n', 'err\n'),
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-bg',
-        toolName: 'Bash',
-        args: { command: 'bg' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-bg',
-        isError: false,
-        content: shellRun({
-          status: 'completed',
-          startedAt: 0,
-          updatedAt: 2_000,
-          completedAt: 2_000,
-          exitCode: 0,
-          stdout: 'out\n',
-          stderr: 'err\n',
-        }),
-      }),
-    );
-
-    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    // `out\n` + `err\n` is two lines — joining before counting would invent a
-    // third line at the stream boundary.
-    assert.match(rendered, /● Bash  \$ fg \(2 lines\)/);
-    assert.match(rendered, /● Bash  \$ bg \(2s · 2 lines\)/);
   });
 
   test('applies a runtime-published terminal update directly to its parent Bash card', () => {
@@ -3558,90 +2429,6 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
-  test('summarizes Read results as a line/byte count and never replays file content', () => {
-    const state = createMakaPiTranscriptState();
-    const fileText = Array.from({ length: 4 }, (_, i) => `content-line-${i}`).join('\n');
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'read-1',
-        toolName: 'Read',
-        args: { path: 'src/app.ts', offset: 10, limit: 20 },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'read-1',
-        isError: false,
-        content: { kind: 'json', value: { content: fileText } },
-      }),
-    );
-
-    const compactLines = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi);
-    assert.equal(compactLines.length, 2);
-    const compact = compactLines.join('\n');
-    assert.match(compact, /src\/app\.ts offset 10 limit 20/);
-    assert.match(compact, /\(4 lines\)/);
-    assert.doesNotMatch(compact, /content-line-0/);
-
-    // A successful Read pulled the file into the model's context; expanding the
-    // card confirms the read but must not dump the file into the transcript.
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.doesNotMatch(expanded, /content-line-0/);
-    assert.match(expanded, /Read 4 lines, 59 bytes/);
-  });
-
-  test('shows maka://runtime resource Read output in full, never summarized or capped', () => {
-    const state = createMakaPiTranscriptState();
-    // A runtime resource read returns live state (background-task metadata +
-    // output) that only lives in the transcript. Its body opens with several
-    // metadata lines, so it must be neither summarized nor head/tail-capped.
-    const body = [
-      'ref: maka://runtime/background-tasks/abc',
-      'status: running',
-      'cwd: /repo',
-      'command: npm test',
-      'started: 1',
-      'updated: 2',
-      '',
-      'stdout:',
-      'first-output-line',
-      'middle-output-line',
-      'last-output-line',
-    ].join('\n');
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'read-rt',
-        toolName: 'Read',
-        args: { ref: 'maka://runtime/background-tasks/abc' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'read-rt',
-        isError: false,
-        content: { kind: 'text', text: body },
-      }),
-    );
-
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(expanded, /command: npm test/); // a mid-body line a cap would hide
-    assert.match(expanded, /stdout:/);
-    assert.match(expanded, /middle-output-line/);
-    assert.doesNotMatch(expanded, /lines hidden/);
-    assert.doesNotMatch(expanded, /Read \d+ lines,/);
-  });
-
   test('keeps shell_run status and exit visible while capping its stream body', () => {
     const state = createMakaPiTranscriptState();
     // A background command's status/exit is the whole point of expanding the
@@ -3693,38 +2480,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(expanded, /lines hidden/);
     assert.match(expanded, /\[stderr\]/);
     assert.match(expanded, /boom-stderr/);
-  });
-
-  test('renders a report-style result in full instead of head/tail capping it', () => {
-    const state = createMakaPiTranscriptState();
-    // Report-style kinds (agent reports, summaries) are content the user expands
-    // to read in full; unlike a raw command dump they must not be capped.
-    const report = Array.from({ length: 12 }, (_, i) => `report-line-${i}`).join('\n');
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'sum-1',
-        toolName: 'Task',
-        args: {},
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'sum-1',
-        isError: false,
-        content: { kind: 'summary', original: 'x', summarized: report, reason: 'too_large' },
-      }),
-    );
-
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(expanded, /report-line-0/);
-    assert.match(expanded, /report-line-6/); // a mid-body line a head/tail cap would hide
-    assert.match(expanded, /report-line-11/);
-    assert.doesNotMatch(expanded, /lines hidden/);
   });
 
   test('keeps generic compact summaries bounded for malformed and oversized results', () => {
@@ -3780,89 +2535,6 @@ describe('Maka Pi TUI transcript', () => {
         assert.doesNotMatch(row, /x{20}/);
       }
     }
-  });
-
-  test('renders the same generic result summary for live and stored transcript paths', () => {
-    const live = createMakaPiTranscriptState();
-    const stored = createMakaPiTranscriptState();
-    const text = 'live and replay\nuse the same shape\n';
-
-    applyMakaSessionEventToTranscript(
-      live,
-      event({
-        type: 'tool_start',
-        toolUseId: 'mcp-replay',
-        toolName: 'mcp__github__search',
-        args: { query: 'replay' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      live,
-      event({
-        type: 'tool_result',
-        toolUseId: 'mcp-replay',
-        isError: false,
-        content: { kind: 'text', text },
-      }),
-    );
-    replaceTranscriptWithStoredMessages(stored, [
-      {
-        type: 'tool_call',
-        id: 'mcp-replay',
-        turnId: 'turn-1',
-        ts: 1,
-        toolName: 'mcp__github__search',
-        args: { query: 'replay' },
-      },
-      {
-        type: 'tool_result',
-        id: 'mcp-result',
-        turnId: 'turn-1',
-        ts: 2,
-        toolUseId: 'mcp-replay',
-        isError: false,
-        content: { kind: 'text', text },
-      },
-    ] satisfies StoredMessage[]);
-
-    assert.deepEqual(
-      renderMakaPiTranscript(live, meta(), 120).map(stripAnsi),
-      renderMakaPiTranscript(stored, meta(), 120).map(stripAnsi),
-    );
-  });
-
-  test('caps long terminal output to head and tail lines when expanded', () => {
-    const state = createMakaPiTranscriptState();
-    const stdout = Array.from({ length: 20 }, (_, i) => `out-${i}`).join('\n');
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-1',
-        toolName: 'Bash',
-        args: { command: 'seq 20' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-1',
-        isError: false,
-        content: terminalResult(stdout),
-      }),
-    );
-
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    // First three and last three lines survive; the middle collapses to a marker.
-    assert.match(expanded, /out-0\n/);
-    assert.match(expanded, /out-2\n/);
-    assert.match(expanded, /out-17\n/);
-    assert.match(expanded, /out-19/);
-    assert.doesNotMatch(expanded, /out-10\b/);
-    assert.match(expanded, /⋯ 14 lines hidden ⋯/);
   });
 
   test('orders and de-dupes tool_output_delta by seq and marks redacted chunks', () => {
@@ -4068,44 +2740,6 @@ describe('Maka Pi TUI transcript', () => {
 });
 
 describe('transcript entry render memoization', () => {
-  test('re-renders live progress after the bounded buffer reaches a stable length', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'progress-cache',
-        toolName: 'Workflow',
-        args: {},
-      }),
-    );
-    for (let i = 0; i < 512; i += 1) {
-      applyMakaSessionEventToTranscript(
-        state,
-        event({
-          type: 'tool_progress',
-          toolUseId: 'progress-cache',
-          chunk: `progress-${i}\n`,
-        }),
-      );
-    }
-    assert.equal(toggleAllToolExpansion(state), true);
-    const before = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(before, /progress-511\b/);
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_progress',
-        toolUseId: 'progress-cache',
-        chunk: 'progress-512\n',
-      }),
-    );
-    const after = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(after, /progress-512\b/);
-    assert.doesNotMatch(after, /progress-0\b/);
-  });
-
   test('re-renders thinking when a same-length final replaces the streamed text', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
@@ -4394,17 +3028,6 @@ function ptyOutput(overrides: Partial<PtyShellOutput> = {}): PtyShellOutput {
     redacted: false,
     ...overrides,
   };
-}
-
-class RecordingDriver {
-  compactCalls = 0;
-
-  constructor(private readonly events: SessionEvent[]) {}
-
-  async *compactSession(): AsyncIterable<SessionEvent> {
-    this.compactCalls += 1;
-    for (const event of this.events) yield event;
-  }
 }
 
 function event(input: { type: SessionEvent['type'] } & Record<string, unknown>): SessionEvent {

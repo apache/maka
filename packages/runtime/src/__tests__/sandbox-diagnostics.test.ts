@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { createDangerFullAccessPermissionProfile } from '@maka/core';
-
 import { MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
 import {
@@ -14,47 +12,6 @@ import { renderSandboxTurnTailPrompt } from '../system-prompt/sandbox-context-pr
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 
 describe('sandbox diagnostics', () => {
-  test('reports the effective profile and both active macOS enforcement capabilities', async () => {
-    const provider = createSandboxDiagnosticsProvider({
-      platform: 'darwin',
-      sandboxManager: new SandboxManager([new MacosSeatbeltBackend()]),
-      getFilesystemWorkerLaunchSpec: async () => ({
-        ok: true,
-        spec: {
-          program: '/runtime/node',
-          args: ['/runtime/worker.js'],
-          env: {},
-          runtimeReadableRoots: ['/runtime/worker.js'],
-          executableRoots: ['/runtime'],
-        },
-      }),
-      isExecutable: async () => true,
-      canonicalizePath: async (path) => path,
-    });
-
-    const snapshot = await provider.resolve({ mode: 'ask', cwd: '/workspace' });
-
-    assert.deepEqual(snapshot.profile, {
-      name: 'workspace-write',
-      type: 'managed',
-      fileSystem: 'workspace-write',
-      network: 'restricted',
-      cwd: '/workspace',
-      workspaceRoots: ['/workspace'],
-      protectedMetadata: [],
-    });
-    assert.deepEqual(snapshot.capabilities.command, {
-      status: 'available',
-      backend: 'macos-seatbelt',
-      selectionReason: 'platform_sandbox_selected',
-    });
-    assert.deepEqual(snapshot.capabilities.filesystem, {
-      status: 'available',
-      backend: 'macos-seatbelt',
-      selectionReason: 'platform_sandbox_selected',
-    });
-  });
-
   test('keeps typed selection and filesystem-worker failure reasons', async () => {
     const unsupported = createSandboxDiagnosticsProvider({
       platform: 'win32',
@@ -82,27 +39,6 @@ describe('sandbox diagnostics', () => {
       selectionReason: 'platform_sandbox_selected',
       failure: { stage: 'launch', reason: 'filesystem_worker_unavailable' },
     });
-  });
-
-  test('reports unrestricted profiles as not requiring a Maka sandbox', async () => {
-    const provider = createSandboxDiagnosticsProvider({
-      platform: 'darwin',
-      canonicalizePath: async (path) => path,
-    });
-    const snapshot = await provider.resolve({
-      mode: 'bypass',
-      cwd: '/workspace',
-      permissionProfile: createDangerFullAccessPermissionProfile(),
-    });
-
-    assert.equal(snapshot.profile.name, 'danger-full-access');
-    assert.equal(snapshot.profile.network, 'enabled');
-    assert.deepEqual(snapshot.capabilities.command, {
-      status: 'not_required',
-      backend: 'none',
-      selectionReason: 'sandbox_not_required',
-    });
-    assert.deepEqual(snapshot.capabilities.filesystem, snapshot.capabilities.command);
   });
 
   test('removes paths from durable trace projection but renders them in the turn tail', async () => {

@@ -1,23 +1,20 @@
 import type {
   AppSettings,
-  BotProvider,
   SettingsTestResult,
   SettingsTestResultCode,
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
-} from "@maka/core";
-import {
-  botDisplayLabel,
-  generalizedErrorMessage,
-  redactSecrets,
-} from "@maka/core";
+} from '@maka/core/settings';
+import type { BotProvider } from '@maka/core/bot-chat-settings';
+import { botDisplayLabel } from '@maka/core/bot-events';
+import { generalizedErrorMessage, redactSecrets } from '@maka/core/redaction';
 import {
   SENSITIVE_PLACEHOLDER,
   maskSensitive,
   type TestProxyResult,
 } from "@maka/core/settings/network-settings";
-import type { BotTestResult } from "@maka/runtime";
-import { collectPersonalizationWarnings } from "@maka/runtime";
+import type { BotTestResult } from '@maka/runtime/bots';
+import { collectPersonalizationWarnings } from '@maka/runtime/system-prompt/personalization-prompt';
 import { getTavilyCredentialSource } from "./web-search/credentials.js";
 
 export function proxyTestFailure(result: TestProxyResult): {

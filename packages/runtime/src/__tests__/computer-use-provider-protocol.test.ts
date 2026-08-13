@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, describe, test } from 'node:test';
-import type {
-  AgentRunHeader,
-  LlmConnection,
-  SessionEvent,
-  SessionHeader,
-  StoredMessage,
-} from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+
+import type { LlmConnection } from '@maka/core/llm-connections';
+
+import type { SessionEvent } from '@maka/core/events';
+
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
@@ -1247,9 +1247,4 @@ function readBody(request: IncomingMessage): Promise<string> {
     request.on('end', () => resolve(body));
     request.on('error', reject);
   });
-}
-
-function respondJson(response: ServerResponse, status: number, body: unknown) {
-  response.writeHead(status, { 'content-type': 'application/json' });
-  response.end(JSON.stringify(body));
 }

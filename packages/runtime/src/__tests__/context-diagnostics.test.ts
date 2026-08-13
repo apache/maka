@@ -8,7 +8,7 @@ import type {
   AgentRunHeader,
   AgentRunStore,
   EmittedAgentRunEvent,
-} from '@maka/core';
+} from '@maka/core/agent-run';
 import { createSqliteAgentRunStore } from '@maka/storage';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 
@@ -70,39 +70,6 @@ test('ignores non-inline child runs when reading session context', async () => {
     turnCount: 3,
     estimatedTokens: 77,
   });
-});
-
-test('groups the completed request segments into explicit local estimates', async () => {
-  const store = runStore([
-    {
-      header: runHeader('run-1', 1),
-      events: [
-        attemptEvent('run-1', 'attempt-1', 10, 'completed', 'model', 610, 1_000, [
-          { kind: 'system_prompt', index: 0, cacheable: true, hash: 'system', bytes: 400 },
-          { kind: 'tool_schema', index: 0, cacheable: true, hash: 'tool', bytes: 800 },
-          { kind: 'message', index: 0, cacheable: true, hash: 'message', bytes: 1_200 },
-          {
-            kind: 'provider_options',
-            index: 0,
-            cacheable: false,
-            hash: 'options',
-            bytes: 40,
-          },
-        ]),
-      ],
-    },
-  ]);
-
-  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
-
-  assert.equal(diagnostics.status, 'available');
-  if (diagnostics.status !== 'available') return;
-  assert.deepEqual(diagnostics.segments, [
-    { kind: 'system_instructions', bytes: 400, estimatedTokens: 100 },
-    { kind: 'tool_definitions', bytes: 800, estimatedTokens: 200 },
-    { kind: 'messages', bytes: 1_200, estimatedTokens: 300 },
-    { kind: 'other', bytes: 40, estimatedTokens: 10 },
-  ]);
 });
 
 test('reports that no completed request exists instead of inferring session values', async () => {

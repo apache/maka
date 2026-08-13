@@ -1,10 +1,11 @@
-import type { AppSettings, LocalMemoryState } from '@maka/core';
+import type { AppSettings } from '@maka/core/settings';
+import type { LocalMemoryState } from '@maka/core/local-memory';
 import {
   LOCAL_MEMORY_PROMPT_MAX_CHARS,
   LOCAL_MEMORY_PROMPT_TRUNCATION_MARKER,
   buildLocalMemoryPromptBody,
   parseLocalMemoryMarkdown,
-} from '@maka/core';
+} from '@maka/core/local-memory';
 import { redactSecrets } from '@maka/ui';
 import { filterLocalMemoryEntries, localMemoryPromptPreviewBlockedReason } from './memory-settings-labels.js';
 import { getMemorySettingsCopy, type MemorySettingsCopy } from '../locales/settings-memory-copy.js';

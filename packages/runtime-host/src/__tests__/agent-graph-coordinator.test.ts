@@ -3,22 +3,19 @@ import { describe, test } from 'node:test';
 import {
   AgentGraphClientOperationError,
   agentGraphIdForRootSession,
+  type AgentGraphClientChangedListener,
+  type AgentGraphCoordinator,
+} from '@maka/runtime/stream-graph-coordinator';
+import {
   decodeAgentGraphTerminalCursor,
   type AgentGraphClientActivity,
-  type AgentGraphClientChangedListener,
   type AgentGraphClientSnapshot as RuntimeAgentGraphClientSnapshot,
-  type AgentGraphCoordinator,
   type AgentGraphOperatorInspection as RuntimeAgentGraphOperatorInspection,
-} from '@maka/runtime';
-import {
-  AGENT_GRAPH_RESULT_MAX_BYTES,
-  decodeAgentGraphClientSnapshot,
-  decodeAgentGraphOperatorInspection,
-} from '../protocol/index.js';
+} from '@maka/runtime/stream-graph-read-model';
+import { AGENT_GRAPH_RESULT_MAX_BYTES, decodeAgentGraphClientSnapshot } from '../protocol/index.js';
 import {
   HostAgentGraphCoordinator,
   projectAgentGraphClientSnapshot,
-  projectAgentGraphOperatorInspection,
 } from '../server/agent-graph-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
@@ -208,51 +205,6 @@ describe('Host Agent Graph coordinator', () => {
     assert.ok(projected.terminalHistory.nextCursor);
     const cursor = decodeAgentGraphTerminalCursor(projected.terminalHistory.nextCursor!);
     assert.equal(cursor.recordId, projected.terminalHistory.records.at(-1)?.recordId);
-  });
-
-  test('bounds a large operator inspection without changing its identity', () => {
-    const snapshot = graphSnapshot();
-    const source = operatorInspection(snapshot);
-    source.inboundEdges = Array.from({ length: 100 }, (_, index) => ({
-      edgeId: `edge-in-${index}`,
-      fromOperatorId: `upstream-${index}`,
-      toOperatorId: 'operator-1',
-    }));
-    source.outboundEdges = Array.from({ length: 100 }, (_, index) => ({
-      edgeId: `edge-out-${index}`,
-      fromOperatorId: 'operator-1',
-      toOperatorId: `downstream-${index}`,
-    }));
-    source.recentRecords = Array.from({ length: 128 }, (_, index) => activity(index));
-
-    const projected = projectAgentGraphOperatorInspection(source);
-    assert.ok(Buffer.byteLength(JSON.stringify(projected), 'utf8') <= AGENT_GRAPH_RESULT_MAX_BYTES);
-    assert.equal(projected.operator.operatorId, 'operator-1');
-    assert.equal(
-      projected.inboundEdges.length + projected.omitted.inboundEdges,
-      source.inboundEdges.length,
-    );
-    assert.equal(
-      projected.outboundEdges.length + projected.omitted.outboundEdges,
-      source.outboundEdges.length,
-    );
-    assert.equal(
-      projected.recentRecords.length + projected.omitted.records,
-      source.recentRecords.length,
-    );
-    assert.deepEqual(
-      projected.inboundEdges.map((edge) => edge.edgeId),
-      source.inboundEdges
-        .slice(source.inboundEdges.length - projected.inboundEdges.length)
-        .map((edge) => edge.edgeId),
-    );
-    assert.deepEqual(
-      projected.recentRecords.map((record) => record.recordId),
-      source.recentRecords
-        .slice(source.recentRecords.length - projected.recentRecords.length)
-        .map((record) => record.recordId),
-    );
-    assert.doesNotThrow(() => decodeAgentGraphOperatorInspection(projected));
   });
 
   test('projects only allowlisted Runtime fields onto the wire', () => {

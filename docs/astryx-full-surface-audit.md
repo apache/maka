@@ -29,7 +29,7 @@ Aligned core: app-shell family, chat-message-surface, chat-composer-region, chat
 
 ### Modules / packages/ui
 
-Aligned: skills-panel, plan-reminder-*, daily-review-panel, module-pages, composer, chat-view (loading now Spinner), prompt rail, quote chip, session sidebar/history/list, search-modal, model/permission pickers, mermaid, toast, tool-activity shell.
+Aligned: skills-panel, scheduled-task-*, daily-review-panel, module-pages, composer, chat-view (loading now Spinner), prompt rail, quote chip, session sidebar/history/list, search-modal, model/permission pickers, mermaid, toast, tool-activity shell.
 
 ## Fixed in this pass
 

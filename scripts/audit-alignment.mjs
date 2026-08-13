@@ -26,7 +26,7 @@ const FIXTURES = [
   ['module-skills', '.maka-module-main'],
   ['module-mcp', '.maka-module-main'],
   ['module-daily-review', '.maka-module-main'],
-  ['plan-reminders', '.maka-module-main'],
+  ['scheduled-tasks', '.maka-module-main'],
   ['settings-general', '.settingsSurface'],
   ['fetched-empty', '.settingsSurface'],
   ['settings-data', '.settingsSurface'],

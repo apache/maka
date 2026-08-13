@@ -1,11 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type {
-  SessionSummary,
-  SubagentSessionParent,
-  SubagentSessionRuntime,
-  SubagentSessionSpawn,
-} from '../session.js';
+import type { SessionSummary, SubagentSessionParent, SubagentSessionSpawn } from '../session.js';
 import {
   childSessionsForParent,
   isLinkedSubagentSession,
@@ -27,18 +22,6 @@ const relation: SubagentSessionParent = {
     toolCallId: 'tool-call',
   },
   lifecycle: 'foreground',
-};
-
-const runtime: SubagentSessionRuntime = {
-  schemaVersion: 1,
-  definitionVersion: 1,
-  agentId: 'local-read',
-  agentName: 'Local Read',
-  profile: 'local_read',
-  systemPrompt: 'Read the assigned workspace task.',
-  toolNames: ['Read', 'Glob', 'Grep'],
-  categoryPolicy: { read: 'allow' },
-  permissionCeiling: 'ask',
 };
 
 const spawn: SubagentSessionSpawn = {
@@ -94,34 +77,6 @@ describe('subagent session parent relation', () => {
     );
     assert.equal(isSubagentSessionParent({ ...relation, parentSessionId: 'bad\nid' }), false);
     assert.equal(isSubagentSessionParent({ ...relation, unexpected: true }), false);
-  });
-
-  test('strictly decodes current runtime snapshots and optional legacy permission ceilings', () => {
-    assert.equal(isSubagentSessionRuntime(runtime), true);
-    const { permissionCeiling: _legacyPermissionCeiling, ...currentRuntime } = runtime;
-    assert.equal(isSubagentSessionRuntime(currentRuntime), true);
-    assert.equal(isSubagentSessionRuntime({ ...runtime, toolNames: ['Read', 'Read'] }), false);
-    assert.equal(isSubagentSessionRuntime({ ...runtime, definitionVersion: 0 }), false);
-    assert.equal(
-      isSubagentSessionRuntime({ ...runtime, categoryPolicy: { unknown: 'allow' } }),
-      false,
-    );
-    assert.equal(isSubagentSessionRuntime({ ...runtime, permissionCeiling: 'invalid' }), false);
-    assert.equal(isSubagentSessionRuntime({ ...runtime, unexpected: true }), false);
-    assert.deepEqual(subagentSessionRuntimeSummary(runtime), {
-      schemaVersion: 1,
-      definitionVersion: 1,
-      agentId: 'local-read',
-      agentName: 'Local Read',
-      profile: 'local_read',
-      toolNames: ['Read', 'Glob', 'Grep'],
-      permissionCeiling: 'ask',
-    });
-
-    assert.equal(isPermissionModeWithinCeiling('explore', 'ask'), true);
-    assert.equal(isPermissionModeWithinCeiling('ask', 'ask'), true);
-    assert.equal(isPermissionModeWithinCeiling('execute', 'ask'), false);
-    assert.equal(isPermissionModeWithinCeiling('bypass', 'execute'), false);
   });
 
   test('strictly decodes the initial child-spawn identity', () => {

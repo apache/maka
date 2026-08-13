@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core';
-import { getAIModel } from '@maka/runtime';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import { getAIModel } from '@maka/runtime/model-factory';
 import { createOpenAiResponsesPlaintextReasoningTransport } from '../openai-responses-plaintext-reasoning-transport.js';
 
 function conn(providerType: LlmConnection['providerType']): LlmConnection {

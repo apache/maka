@@ -159,15 +159,6 @@ function copilotModelsResponse(): Response {
   });
 }
 
-function createGitHubCopilotAccountRecord(token: string) {
-  return {
-    access_token: token,
-    refresh_token: token,
-    expires_at: Number.MAX_SAFE_INTEGER,
-    base_url: 'https://api.githubcopilot.com',
-  };
-}
-
 function memoryCredentialStore() {
   return {
     getSecret: async () => null,

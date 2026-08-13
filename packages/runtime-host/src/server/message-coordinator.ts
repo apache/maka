@@ -13,7 +13,7 @@ import {
   type RuntimeMessageAuthority,
   type RuntimeMessageRunIdentity,
   type RuntimeMessageRunOwner,
-} from '@maka/runtime';
+} from '@maka/runtime/message-authority';
 import {
   normalizeRootTurnAdmissionPayload,
   type ImmutableSteeringMessageProof,
@@ -41,6 +41,7 @@ import {
   type TurnSnapshot,
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import { worstCaseFailedTurnSnapshot } from './canonical-turn-snapshot.js';
 import { worstCaseMessageQueueProjection } from './message-queue-capacity.js';
 import type { ConnectionContext, MessageOperationHandlerMap } from './operation-dispatcher.js';
 import { messageContentDigest } from './message-content-digest.js';
@@ -1591,13 +1592,7 @@ function interruptResultFits(
   const retracted = [...projection.steering, ...projection.followup]
     .filter((entry) => entry.state === 'queued')
     .map((entry): RetractedMessageSnapshot => ({ ...entry, state: 'retracted' }));
-  // Control characters maximize JSON expansion for the protocol-bounded string field.
-  const worstCaseTurn: TurnSnapshot = {
-    ...identity,
-    status: 'failed',
-    terminalEventId: 'x'.repeat(128),
-    failureClass: '\0'.repeat(128),
-  };
+  const worstCaseTurn = worstCaseFailedTurnSnapshot(identity);
   return fitsEncodedByteLimit(
     { queueRevision: Number.MAX_SAFE_INTEGER, retracted, turn: worstCaseTurn },
     MESSAGE_OPERATION_RESULT_MAX_BYTES,

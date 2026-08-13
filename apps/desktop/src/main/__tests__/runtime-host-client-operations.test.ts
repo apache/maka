@@ -321,23 +321,6 @@ test('treats empty configuration patches as read-only lookups', async () => {
   ]);
 });
 
-test('reads the bounded Host execution boundary summary', async () => {
-  const { client, requests } = clientWithResponses([
-    { kind: 'managed', access: 'read_only', revision: 4 },
-  ]);
-
-  assert.deepEqual(await client.readExecutionBoundary('session-1'), {
-    kind: 'managed',
-    access: 'read_only',
-    revision: 4,
-  });
-  assert.deepEqual(requests, [
-    {
-      operation: 'session.execution_boundary.query',
-      input: { sessionId: 'session-1' },
-    },
-  ]);
-});
 
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([
@@ -566,96 +549,6 @@ test('streams Artifact content without mixing chunk offsets or totals', async ()
   );
 });
 
-test('restarts paginated Session traces instead of mixing revisions', async () => {
-  const firstRevision = catalogRevision('a');
-  const secondRevision = catalogRevision('b');
-  const totals = {
-    durationMs: 0,
-    modelAttempts: 0,
-    retries: 0,
-    compactions: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    unpricedAttempts: 0,
-  };
-  const coverage = {
-    modelCalls: 'none' as const,
-    turnsMissingModelCalls: [],
-    unreadableRecords: 0,
-    turnsWithFewerModelCallsThanSteps: [],
-  };
-  const turn = {
-    turnId: 'turn-1',
-    runId: 'run-1',
-    startedAt: 1,
-    endedAt: 1,
-    durationMs: 0,
-    steps: [],
-    totals,
-  };
-  const { client, requests } = clientWithResponses([
-    {
-      kind: 'session_trace_page',
-      schemaVersion: 1,
-      sessionId: 'session-1',
-      revision: firstRevision,
-      offset: 0,
-      turns: [turn],
-      totals,
-      coverage,
-      nextOffset: 1,
-    },
-    {
-      kind: 'session_trace_revision_changed',
-      expectedRevision: firstRevision,
-      actualRevision: secondRevision,
-    },
-    {
-      kind: 'session_trace_page',
-      schemaVersion: 1,
-      sessionId: 'session-1',
-      revision: secondRevision,
-      offset: 0,
-      turns: [turn],
-      totals,
-      coverage,
-      nextOffset: null,
-    },
-  ]);
-
-  assert.deepEqual(await client.loadSessionTrace('session-1'), {
-    schemaVersion: 1,
-    sessionId: 'session-1',
-    turns: [turn],
-    totals,
-    coverage,
-  });
-  assert.deepEqual(
-    requests.map(({ input }) => (input as { kind: string }).kind),
-    ['session_trace_start', 'session_trace_continue', 'session_trace_start'],
-  );
-});
-
-test('fails explicitly when the Host cannot represent a legacy Session', async () => {
-  const { client } = clientWithResponses([
-    {
-      kind: 'session',
-      session: {
-        kind: 'unsupported_legacy_record',
-        id: 'legacy-session',
-        revision: 1,
-        reason: 'not_wire_representable',
-      },
-    },
-  ]);
-
-  await assert.rejects(
-    () => client.getSession('legacy-session'),
-    (error: unknown) =>
-      error instanceof DesktopRuntimeHostClientError && error.code === 'unsupported_session',
-  );
-});
-
 test('restarts Session sidecar reads when a paginated revision changes', async () => {
   const taskRevisionOne = catalogRevision('3');
   const taskRevisionTwo = catalogRevision('4');
@@ -846,7 +739,10 @@ function session(
   return {
     id,
     revision,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: id,

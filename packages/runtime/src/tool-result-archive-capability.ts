@@ -7,7 +7,7 @@
  * decoder tool therefore share one authority: a host either archives and can
  * read back, or does neither. Splitting them across backend options and tool
  * options made "writer on, decoder absent" representable, and it shipped twice
- * (#2025 on the headless surface, and the child-agent path).
+ * (#2025 and the child-agent path).
  *
  * Hosts supply only storage. The decoder travels with the capability and is
  * bound by the backend, so which host remembered to register a tool is no

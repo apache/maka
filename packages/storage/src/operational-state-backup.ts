@@ -16,14 +16,13 @@ import { dirname, relative, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 import { withArtifactWriterLock } from './artifact-writer-lock.js';
-import { decodeStoredMessageForRecovery } from './execution-record-codec.js';
+import { decodeStoredMessage } from './execution-record-codec.js';
 import {
   acquireOperationalStateDatabase,
   OPERATIONAL_STATE_DATABASE_NAME,
   OPERATIONAL_STATE_SCHEMA_VERSION,
 } from './operational-state-store.js';
 import { SQLITE_ARTIFACT_SCHEMA_VERSION } from './sqlite-artifact-schema.js';
-import { SQLITE_AUTOMATION_SCHEMA_VERSION } from './sqlite-automation-schema.js';
 import { SQLITE_CORE_EXECUTION_SCHEMA_VERSION } from './sqlite-core-execution-schema.js';
 import { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 import { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
@@ -347,7 +346,6 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         ['workflow', SQLITE_WORKFLOW_SCHEMA_VERSION],
         ['usage', SQLITE_USAGE_SCHEMA_VERSION],
         ['artifact', SQLITE_ARTIFACT_SCHEMA_VERSION],
-        ['automation', SQLITE_AUTOMATION_SCHEMA_VERSION],
         ['operational', OPERATIONAL_STATE_SCHEMA_VERSION],
       ]);
       const rows = database
@@ -374,7 +372,6 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         'runtime_workspace_epochs',
         'runtime_workspace_versions',
         'runtime_workspace_heads',
-        'headless_task_run_events',
         'session_metadata_schema',
         'session_metadata',
         'session_metadata_labels',
@@ -414,7 +411,8 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         'workflow_plan_events',
         'workflow_plan_projections',
         'workflow_deep_research_events',
-        'workflow_plan_reminders',
+        'workflow_scheduled_tasks',
+        'workflow_scheduled_task_fires',
         'workflow_quote_companion_cleanup',
         'workflow_daily_review_state',
         'workflow_daily_review_authority_state',
@@ -426,9 +424,6 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         'usage_pricing_authority',
         'usage_pricing_overrides',
         'artifact_records',
-        'automation_authority_state',
-        'automation_definitions',
-        'automation_pending_fires',
       ];
       const tableExists = database.prepare(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -495,7 +490,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         ) {
           throw new Error('session message index is invalid');
         }
-        const message = decodeStoredMessageForRecovery(JSON.parse(row.record_json));
+        const message = decodeStoredMessage(JSON.parse(row.record_json));
         if (
           message.id !== row.message_id ||
           message.type !== row.message_type ||

@@ -1,4 +1,4 @@
-import type { SessionHeader, StoredMessage } from '@maka/core';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import { header } from './seed-helpers.js';
 
 // Settings → 使用统计 fixture. `usageStats` aggregates `token_usage` + tool

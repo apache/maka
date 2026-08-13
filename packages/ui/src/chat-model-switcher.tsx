@@ -28,7 +28,9 @@ import {
   modelMenuGroups,
   modelChoiceValue,
 } from './chat-model-helpers.js';
-import { type ProviderType, type SessionSummary, type ThinkingLevel } from '@maka/core';
+import { type ProviderType } from '@maka/core/llm-connections';
+import { type SessionSummary } from '@maka/core/session';
+import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 

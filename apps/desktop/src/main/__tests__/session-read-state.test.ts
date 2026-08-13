@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { SessionSummary, StoredMessage } from '@maka/core';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
   applyLocalSessionRead,
   applySessionReadOverrides,

@@ -11,7 +11,7 @@
  * regardless of where the chat surface renders it.
  */
 import { useEffect, useState } from 'react';
-import type { GoalState, GoalStatus } from '@maka/runtime';
+import type { GoalState, GoalStatus } from '@maka/runtime/goal-state';
 
 const RUNNING_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set(['active', 'waiting', 'paused']);
 

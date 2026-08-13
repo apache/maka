@@ -1,11 +1,11 @@
 import {
   AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
-  type AgentRunHeader,
   type AgentGraphSupervisorWakeRecord,
   type AgentGraphSupervisorWakeStore,
-  type SessionEvent,
-  type UserMessageInput,
-} from '@maka/core';
+} from '@maka/core/agent-graph-supervisor-wake';
+import { type AgentRunHeader } from '@maka/core/agent-run';
+import { type SessionEvent } from '@maka/core/events';
+import { type UserMessageInput } from '@maka/core/runtime-inputs';
 import type {
   GoalTurnOutcome,
   SessionActivityLease,
@@ -333,10 +333,14 @@ export class AgentGraphSupervisorWakeCoordinator {
     });
   }
 
-  async close(): Promise<void> {
+  beginDrain(): void {
     if (this.#closed) return;
     this.#closed = true;
     this.#abortController.abort();
+  }
+
+  async close(): Promise<void> {
+    this.beginDrain();
     await this.waitForIdle();
     this.#sessionAbortControllers.clear();
     this.#tasksBySession.clear();

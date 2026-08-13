@@ -47,6 +47,6 @@ Acknowledged transitional states — not TODOs; track work in issues/PRs.
 ## Contracts & guardrails
 
 - Product design intent: `DESIGN.md`.
-- CSS cascade / layer / `!important` / dead-CSS / token rules: `docs/frontend-css-governance.md`. The dead-CSS check runs from the repo root via `check:release` (`scripts/check-dead-css.mjs --check`); its baseline is `scripts/check-dead-css-baseline.json`.
+- CSS cascade / layer / `!important` / dead-CSS / token rules: `docs/frontend-css-governance.md`.
 - Component state, ARIA, token, and copy behavior is owned by source and focused contract tests.
-- Where prose disagrees with code or behavioral tests, code and tests are the source of truth. CSS conventions are checked by review, focused `scripts/check-*.mjs` commands, and rendered-surface verification; the former source-scanning CSS contract suite has been removed. Build/test entry points are the npm scripts in the root `package.json` (see the top-level `README.md`).
+- Where prose disagrees with code or behavioral tests, code and tests are the source of truth. CSS conventions are checked by review and rendered-surface verification. Build/test entry points are the npm scripts in the root `package.json` (see the top-level `README.md`).

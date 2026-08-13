@@ -1,10 +1,8 @@
 import { existsSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
-import {
-  type RuntimeEvent,
-  type ToolRecoveryFactEnvelope,
-  type WorkspaceBaselineAuthorityInput,
-} from '@maka/core';
+import { type RuntimeEvent } from '@maka/core/runtime-event';
+import { type ToolRecoveryFactEnvelope } from '@maka/core/tool-recovery-fact';
+import { type WorkspaceBaselineAuthorityInput } from '@maka/core/workspace-version-authority';
 import { createRuntimeBoundaryCursor, runtimePrefixSegment } from '@maka/core/runtime-boundary';
 import { createSqliteRuntimeStore } from '../../sqlite-runtime-store.js';
 import { acquireOperationalStateDatabase } from '../../operational-state-store.js';

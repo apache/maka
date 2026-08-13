@@ -1,8 +1,5 @@
-import {
-  projectDeepResearchClientProgress,
-  type DeepResearchClientProgress,
-  type DeepResearchRun,
-} from '@maka/core';
+import { projectDeepResearchClientProgress } from '@maka/core/deep-research-client-progress';
+import { type DeepResearchClientProgress, type DeepResearchRun } from '@maka/core/deep-research-run';
 import type { DeepResearchQueryResult } from '@maka/runtime-host/protocol';
 
 export function projectEmbeddedDeepResearch(

@@ -1,4 +1,4 @@
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export type SettingsSharedCopy = {
   modalLabel: string;

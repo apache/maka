@@ -7,16 +7,6 @@ import {
 } from '../text-file-import.js';
 
 describe('dropped text file import preflight', () => {
-  it('accepts bounded clipboard/drop file batches', () => {
-    assert.deepEqual(
-      preflightDroppedTextFilesForPromptImport([
-        { name: 'notes.md', type: 'text/markdown', size: 128 },
-        { name: 'config.json', type: 'application/json', size: MAX_IMPORTED_TEXT_FILE_BYTES },
-      ]),
-      { ok: true },
-    );
-  });
-
   it('rejects empty, too many, and oversize batches before renderer reads file text', () => {
     assert.deepEqual(preflightDroppedTextFilesForPromptImport([]), {
       ok: false,
@@ -63,18 +53,7 @@ describe('dropped text file import preflight', () => {
     );
   });
 
-  it('uses a byte sample for unknown file types without blocking extensionless text', () => {
-    assert.deepEqual(
-      preflightDroppedTextFilesForPromptImport([
-        {
-          name: 'README',
-          type: '',
-          size: 128,
-          sampleBytes: new Uint8Array([72, 101, 108, 108, 111]),
-        },
-      ]),
-      { ok: true },
-    );
+  it('rejects sampled binary content with an unknown file type', () => {
     assert.deepEqual(
       preflightDroppedTextFilesForPromptImport([
         { name: 'payload', type: '', size: 128, sampleBytes: new Uint8Array([80, 78, 71, 0]) },

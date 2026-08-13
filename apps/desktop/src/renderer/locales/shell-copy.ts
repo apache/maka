@@ -1,20 +1,20 @@
-import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-  type UiCatalog,
-  type UiLocale,
-  type PermissionMode,
-  type ChatDefaultPermissionMode,
-  type SettingsSection,
-  type SlashCommandIdForSurface,
-  type ThinkingLevel,
-} from '@maka/core';
+import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+
+import { type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+
+import { type PermissionMode } from '@maka/core/permission';
+
+import { type ChatDefaultPermissionMode, type SettingsSection } from '@maka/core/settings';
+
+import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
+
+import { type ThinkingLevel } from '@maka/core/model-thinking';
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
   'action:side-chat',
   'action:new-deep-research',
-  'action:new-plan-reminder',
+  'action:new-scheduled-task',
   'action:open-settings',
   'action:keyboard-help',
   'theme:light',
@@ -60,14 +60,14 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
     '追问',
   ],
   'action:new-deep-research': ['deep', 'research', 'explore', 'readonly', '研究', '深度', '探索', '只读'],
-  'action:new-plan-reminder': ['plan', 'reminder', 'schedule', 'new', 'create', '计划', '提醒', '新建', '创建'],
+  'action:new-scheduled-task': ['plan', 'task', 'schedule', 'new', 'create', '计划', '提醒', '新建', '创建'],
   'action:open-settings': ['settings', 'preferences', '设置', 'options'],
   'action:keyboard-help': ['shortcuts', 'keyboard', 'help', '快捷键', '帮助'],
   'theme:light': ['light', 'theme', '浅色', '主题'],
   'theme:dark': ['dark', 'theme', '深色', 'night', '主题'],
   'theme:auto': ['auto', 'system', 'theme', '跟随', '系统', '主题'],
   'nav:sessions': ['sessions', 'chats', '会话', '对话', 'left'],
-  'nav:automations': ['automations', 'plan', 'reminder', 'schedule', 'cron', '定时任务', '计划', '提醒'],
+  'nav:automations': ['automations', 'plan', 'task', 'schedule', 'cron', '定时任务', '计划', '提醒'],
   'nav:skills': ['skills', '技能'],
   'nav:mcp': ['mcp', 'server', 'tools', '扩展', '工具'],
   'nav:daily-review': ['daily', 'review', 'today', '每日', '回顾', '今天'],
@@ -461,9 +461,9 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: '只读探索',
     group: '操作',
   },
-  'action:new-plan-reminder': {
-    label: '新建计划提醒',
-    hint: '打开计划表单',
+  'action:new-scheduled-task': {
+    label: '新建定时任务',
+    hint: '打开定时任务表单',
     group: '操作',
   },
   'action:open-settings': { label: '打开设置', hint: '⌘,', group: '操作' },
@@ -549,9 +549,9 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: 'Read-only exploration',
     group: 'Actions',
   },
-  'action:new-plan-reminder': {
-    label: 'New plan reminder',
-    hint: 'Open the reminder form',
+  'action:new-scheduled-task': {
+    label: 'New scheduled task',
+    hint: 'Open the task form',
     group: 'Actions',
   },
   'action:open-settings': {
@@ -632,7 +632,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
 const ZH_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   general: '通用',
   appearance: '外观',
-  projects: '项目',
+  projects: '工作区',
   models: '模型',
   subagents: '子 Agent',
   usage: '使用统计',
@@ -649,7 +649,7 @@ const ZH_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
 const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   general: 'General',
   appearance: 'Appearance',
-  projects: 'Projects',
+  projects: 'Workspace',
   models: 'Models',
   subagents: 'Subagents',
   usage: 'Usage',

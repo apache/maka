@@ -8,6 +8,7 @@ import {
 export interface WorkspaceSearchIpcDeps {
   ipcMain?: ReconnectableReadIpcMain;
   getProjectRoot(sessionId: unknown): Promise<string>;
+  allowLocalWorkspace?: boolean;
 }
 
 export function registerWorkspaceSearchIpc(deps: WorkspaceSearchIpcDeps): void {
@@ -17,6 +18,7 @@ export function registerWorkspaceSearchIpc(deps: WorkspaceSearchIpcDeps): void {
   // honor .gitignore + untracked via `git ls-files`; other trees fall back to
   // a bounded walk. See workspace-file-search.ts.
   handleReconnectableRead(ipcMain, 'workspace:searchFiles', async (_event, input: unknown) => {
+    if (deps.allowLocalWorkspace === false) return [];
     const request = (input ?? {}) as { query?: unknown; limit?: unknown; sessionId?: unknown };
     const projectPath = await deps.getProjectRoot(request.sessionId);
     return searchWorkspaceFiles(projectPath, { query: request.query, limit: request.limit });

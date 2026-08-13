@@ -3,7 +3,9 @@ import { describe, test } from 'node:test';
 import { z } from 'zod';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from '@ai-sdk/provider';
-import type { LlmConnection, SessionEvent, SessionHeader } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionEvent } from '@maka/core/events';
+import type { SessionHeader } from '@maka/core/session';
 import type { RunTraceEvent } from '../run-trace.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
@@ -47,7 +49,7 @@ const config: ToolAvailabilityConfig = {
 
 const agentConfig: ToolAvailabilityConfig = {
   economy: true,
-  groups: buildDeferredToolGroupsFromCatalog('headless', AGENT_TOOL_NAMES),
+  groups: buildDeferredToolGroupsFromCatalog('cli', AGENT_TOOL_NAMES),
 };
 
 function tools(implCalls: string[]): MakaTool[] {
@@ -914,12 +916,6 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
   for await (const _ of iterable) {
     void _;
   }
-}
-
-async function collect(iterable: AsyncIterable<SessionEvent>): Promise<SessionEvent[]> {
-  const events: SessionEvent[] = [];
-  for await (const event of iterable) events.push(event);
-  return events;
 }
 
 function header(permissionMode: SessionHeader['permissionMode'] = 'ask'): SessionHeader {

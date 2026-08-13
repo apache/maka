@@ -1,4 +1,4 @@
-import type { BotProvider, BotReadinessState } from '@maka/core';
+import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
 import type { BotMessageEvent, BotPlatform } from '@maka/core/bot-events';
 
 export type { BotPlatform };
