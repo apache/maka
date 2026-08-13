@@ -62,5 +62,5 @@ test('a transcript drag releases outside the window through its owning Turn', as
   await page.mouse.up();
 
   await expect(turn).toHaveAttribute('data-e2e-captured-pointer-up', 'true');
-  await expect(quoteLayer).toBeVisible({ timeout: 20_000 });
+  await expect(quoteLayer).toBeVisible();
 });

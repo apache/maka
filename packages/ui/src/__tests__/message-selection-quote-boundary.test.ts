@@ -82,3 +82,18 @@ test('capture loss cancels a changed gesture without showing a quote', () => {
   assert.equal(boundary.finishPointerSelection(1, 'cancel'), 'turn-a');
   assert.deepEqual(effects, ['hide', 'hide', 'hide']);
 });
+
+test('automatic capture loss after pointerup does not cancel the committed settle', () => {
+  const effects: string[] = [];
+  const boundary = createSelectionQuoteGestureBoundary({
+    hideAndCancel: () => effects.push('hide'),
+    scheduleSettle: () => effects.push('schedule'),
+  });
+
+  boundary.beginPointerSelection(1, 'turn-a');
+  boundary.selectionChanged();
+  assert.equal(boundary.finishPointerSelection(1, 'commit'), 'turn-a');
+  assert.equal(boundary.consumeCommittedPointer(1), true);
+  assert.equal(boundary.finishPointerSelection(1, 'cancel'), null);
+  assert.deepEqual(effects, ['hide', 'hide', 'schedule']);
+});

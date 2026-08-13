@@ -39,6 +39,7 @@ export interface SelectionQuoteGestureBoundary<Owner> {
   beginPointerSelection(pointerId: number, owner: Owner): boolean;
   selectionChanged(): void;
   finishPointerSelection(pointerId: number, disposition: SelectionQuoteGestureDisposition): Owner | null;
+  consumeCommittedPointer(pointerId: number): boolean;
   discardActivePointerSelection(): Owner | null;
 }
 
@@ -51,6 +52,7 @@ export function createSelectionQuoteGestureBoundary<Owner>(actions: {
   scheduleSettle(): void;
 }): SelectionQuoteGestureBoundary<Owner> {
   let active: { pointerId: number; owner: Owner; changed: boolean } | null = null;
+  let committedPointerId: number | null = null;
 
   function finish(
     pointerId: number,
@@ -59,7 +61,10 @@ export function createSelectionQuoteGestureBoundary<Owner>(actions: {
     if (!active || pointerId !== active.pointerId) return null;
     const completed = active;
     active = null;
-    if (disposition === 'commit' && completed.changed) actions.scheduleSettle();
+    if (disposition === 'commit') {
+      committedPointerId = pointerId;
+      if (completed.changed) actions.scheduleSettle();
+    }
     if (disposition === 'cancel') actions.hideAndCancel();
     return completed.owner;
   }
@@ -78,6 +83,11 @@ export function createSelectionQuoteGestureBoundary<Owner>(actions: {
     },
     finishPointerSelection(pointerId, disposition) {
       return finish(pointerId, disposition);
+    },
+    consumeCommittedPointer(pointerId) {
+      if (committedPointerId !== pointerId) return false;
+      committedPointerId = null;
+      return true;
     },
     discardActivePointerSelection() {
       if (!active) return null;
@@ -255,6 +265,12 @@ export function useMessageSelectionQuote(
       // Capture loss can happen without a physical release (capture transfer,
       // owner removal, or pointer lock), so it cancels rather than commits.
       const pointerId = (event as PointerEvent).pointerId;
+      // Chromium releases capture automatically after a normal pointerup.
+      // Depending on platform/compositor timing, the owner can still receive
+      // lostpointercapture after the document capture listener committed the
+      // gesture. That release is confirmation, not cancellation: cancelling
+      // here would clear the settle timer and suppress the quote layer.
+      if (gesture.consumeCommittedPointer(pointerId)) return;
       finishGesture(pointerId, 'cancel');
     }
 
