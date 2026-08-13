@@ -1,6 +1,7 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createCohere } from '@ai-sdk/cohere';
 import { createGoogle } from '@ai-sdk/google';
+import { createOpenResponses } from '@ai-sdk/open-responses';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenAICompatible, type MetadataExtractor } from '@ai-sdk/openai-compatible';
 import {
@@ -25,9 +26,8 @@ import {
   createOpenAiChatReasoningTransportState,
   type OpenAiChatReasoningTransportState,
 } from './openai-chat-reasoning-transport.js';
-import { createPlaintextOpenResponsesModel } from './open-responses-plaintext-model.js';
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
-import { anthropicV1BaseUrl, googleV1BetaBaseUrl } from './provider-urls.js';
+import { anthropicV1BaseUrl, googleV1BetaBaseUrl, openResponsesUrl } from './provider-urls.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
@@ -146,13 +146,12 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       }
       if (wire === 'openai-responses') {
         if (reasoningReplay.kind === 'open-responses-plaintext') {
-          return createPlaintextOpenResponsesModel({
-            providerName: openAiCompatibleProviderName(adapter, connection),
+          return createOpenResponses({
+            name: openAiCompatibleProviderName(adapter, connection),
             apiKey,
-            baseUrl: baseURL,
-            modelId,
+            url: openResponsesUrl(baseURL),
             fetch: requestFetch,
-          });
+          })(modelId);
         }
         return createOpenAI({
           apiKey,
@@ -514,19 +513,13 @@ function buildFamilyWire(
   // A Responses wire still has two distinct replay contracts. OpenAI's native
   // dialect uses encrypted content and therefore reads `openai` options;
   // `store: false` asks the SDK to include that replay token. Open Responses
-  // carries plaintext reasoning items and reads the compatible provider's own
-  // namespace. `getAIModel` selects the matching codec from the same resolved
-  // runtime, so a provider's effort cannot silently land in the wrong one.
+  // carries plaintext reasoning items; ModelAdapter passes the Session's
+  // selected effort through the AI SDK's top-level `reasoning` option.
   if (wire === 'openai-responses') {
     // Connection-aware: a relay model's declared variants count too.
     const reasons = thinkingVariantsForConnection(connection, modelId).length > 0;
     if (reasoningReplay.kind === 'open-responses-plaintext') {
-      if (!reasoningEffort) return {};
-      return {
-        [openAiCompatibleProviderOptionsKey(adapter, connection)]: {
-          reasoningEffort,
-        },
-      };
+      return {};
     }
     return {
       openai: {

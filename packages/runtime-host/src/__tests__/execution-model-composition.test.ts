@@ -99,7 +99,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:0e3389e330b8b8f0db1c7a8b8e2126325fe4c672d6eff279afcd3f9412e52271';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:ea1f293096e5e209ae49346f46b0e8ff9b54ae17452a5a23149ad7233afaeafc';
+  'sha256:c062194603f93b568da5ca59b865b316156b5f218ba854c291aa9582859b3de4';
 const execFileAsync = promisify(execFile);
 
 test('backend creation aborts a stalled canonical connection read', async () => {
@@ -886,10 +886,11 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
     assert.deepEqual(responsesToolNames(request?.body), [
       'ArchiveRead',
       'Bash',
+      'Edit',
       'Glob',
       'Grep',
       'Read',
-      'apply_patch',
+      'Write',
     ]);
     const bash = (tools as Array<Record<string, unknown>>).find((tool) => tool.name === 'Bash');
     assert.ok(bash);
@@ -3180,6 +3181,7 @@ function responsesToolNames(body: Record<string, unknown> | undefined): string[]
 }
 
 function responsesDeveloperPrompt(body: Record<string, unknown> | undefined): string | undefined {
+  if (typeof body?.instructions === 'string') return body.instructions;
   const input = Array.isArray(body?.input) ? body.input : [];
   const developer = input.find(
     (message): message is Record<string, unknown> =>

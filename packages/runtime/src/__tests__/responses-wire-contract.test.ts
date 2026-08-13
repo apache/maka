@@ -6,11 +6,10 @@ import { modelMetadataIdsForProvider } from '@maka/core/model-metadata';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
 import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
-import { z } from 'zod';
-import { routeApplyPatchTools } from '../apply-patch-profile.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 import { lowerModelTools } from '../model-adapter.js';
 import { openAiCodexCompactionMessages } from '../openai-codex-history-compactor.js';
+import { openResponsesUrl } from '../provider-urls.js';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
   return {
@@ -41,6 +40,18 @@ describe('responses wire contract', () => {
         providerType,
       );
     }
+  });
+
+  test('normalizes the upstream Open Responses endpoint exactly once', () => {
+    assert.equal(
+      openResponsesUrl('https://api.deepseek.com/v1'),
+      'https://api.deepseek.com/v1/responses',
+    );
+    assert.equal(
+      openResponsesUrl('https://api.deepseek.com/v1/responses'),
+      'https://api.deepseek.com/v1/responses',
+    );
+    assert.equal(openResponsesUrl('https://relay.example/'), 'https://relay.example/responses');
   });
 
   test('every encrypted Responses dialect asks for encrypted reasoning', () => {
@@ -302,279 +313,6 @@ describe('responses wire request body', () => {
     });
   });
 
-  test('sends DeepSeek-compatible freeform apply_patch calls and plain-text results', async () => {
-    let body: Record<string, unknown> | undefined;
-    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-      body = JSON.parse(String(init?.body));
-      return Response.json({
-        id: 'r',
-        object: 'response',
-        status: 'completed',
-        output: [],
-        usage: { input_tokens: 1, output_tokens: 1 },
-      });
-    }) as unknown as typeof globalThis.fetch;
-    const connection = conn('deepseek');
-    const model = getAIModel({
-      connection,
-      apiKey: 'test-key',
-      modelId: 'deepseek-v4-flash',
-      fetch,
-    });
-    const patch = '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch';
-    const runtime = resolveModelRuntime(connection, 'deepseek-v4-flash');
-    const [routedTool] = routeApplyPatchTools(
-      [
-        {
-          name: 'apply_patch',
-          description: 'Apply file changes',
-          parameters: z.object({}),
-          providerTool: { kind: 'openai-apply-patch' },
-          impl: async () => ({ status: 'completed' }),
-        },
-      ],
-      runtime.applyPatchProfile,
-    );
-    assert.ok(routedTool);
-    assert.ok(routedTool.providerTool);
-    assert.equal((routedTool.parameters as z.ZodType).safeParse(patch).success, true);
-    assert.deepEqual(
-      await routedTool.toModelOutput?.({
-        toolCallId: 'call-1',
-        input: patch,
-        output: { status: 'completed', output: 'Applied 1 file operation.' },
-      }),
-      { type: 'text', value: 'Applied 1 file operation.' },
-    );
-    const tools = lowerModelTools({
-      apply_patch: {
-        kind: 'provider',
-        providerTool: routedTool.providerTool,
-      },
-    });
-
-    await model.doGenerate({
-      prompt: [
-        {
-          role: 'assistant',
-          content: [
-            {
-              type: 'tool-call',
-              toolCallId: 'call-1',
-              toolName: 'apply_patch',
-              input: patch,
-            },
-          ],
-        },
-        {
-          role: 'tool',
-          content: [
-            {
-              type: 'tool-result',
-              toolCallId: 'call-1',
-              toolName: 'apply_patch',
-              output: { type: 'text', value: 'Applied 1 file operation.' },
-            },
-          ],
-        },
-      ],
-      tools: [{ ...(tools.apply_patch as object), name: 'apply_patch' } as never],
-      providerOptions: buildProviderOptions(connection, 'deepseek-v4-flash'),
-    });
-
-    assert.deepEqual((body?.tools as unknown[] | undefined)?.[0], {
-      type: 'custom',
-      name: 'apply_patch',
-    });
-    assert.deepEqual((body?.input as unknown[] | undefined)?.slice(-2), [
-      { type: 'custom_tool_call', call_id: 'call-1', name: 'apply_patch', input: patch },
-      {
-        type: 'custom_tool_call_output',
-        call_id: 'call-1',
-        output: 'Applied 1 file operation.',
-      },
-    ]);
-  });
-
-  test('returns streamed DeepSeek custom apply_patch calls through the model interface', async () => {
-    const patch = '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch';
-    const events = [
-      {
-        type: 'response.output_item.added',
-        output_index: 0,
-        sequence_number: 1,
-        item: {
-          type: 'custom_tool_call',
-          id: 'custom-1',
-          status: 'in_progress',
-          call_id: 'call-1',
-          name: 'apply_patch',
-          input: '',
-        },
-      },
-      {
-        type: 'response.custom_tool_call_input.delta',
-        output_index: 0,
-        sequence_number: 2,
-        item_id: 'custom-1',
-        delta: patch,
-      },
-      {
-        type: 'response.output_item.done',
-        output_index: 0,
-        sequence_number: 3,
-        item: {
-          type: 'custom_tool_call',
-          id: 'custom-1',
-          status: 'completed',
-          call_id: 'call-1',
-          name: 'apply_patch',
-          input: patch,
-        },
-      },
-      {
-        type: 'response.completed',
-        sequence_number: 4,
-        response: {
-          id: 'r',
-          object: 'response',
-          created_at: 0,
-          model: 'deepseek-v4-flash',
-          status: 'completed',
-          output: [],
-          usage: { input_tokens: 1, output_tokens: 1 },
-        },
-      },
-    ];
-    const fetch = (async () =>
-      new Response(
-        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
-        { status: 200, headers: { 'content-type': 'text/event-stream' } },
-      )) as unknown as typeof globalThis.fetch;
-    const model = getAIModel({
-      connection: conn('deepseek'),
-      apiKey: 'test-key',
-      modelId: 'deepseek-v4-flash',
-      fetch,
-    });
-
-    const { stream } = await model.doStream({
-      prompt: [{ role: 'user', content: [{ type: 'text', text: 'Delete old.txt' }] }],
-      tools: [
-        {
-          type: 'provider',
-          id: 'openai.custom',
-          name: 'apply_patch',
-          args: {},
-        },
-      ],
-    });
-    const parts = [];
-    for await (const part of stream) {
-      parts.push(part);
-    }
-
-    assert.deepEqual(
-      parts.filter((part) => part.type === 'tool-call'),
-      [
-        {
-          type: 'tool-call',
-          toolCallId: 'call-1',
-          toolName: 'apply_patch',
-          input: JSON.stringify(patch),
-        },
-      ],
-      JSON.stringify(parts),
-    );
-  });
-
-  test('returns streamed DeepSeek hosted web search calls and results', async () => {
-    const action = { type: 'search', queries: ['latest Maka'] };
-    let requestBody: Record<string, unknown> | undefined;
-    const events = [
-      {
-        type: 'response.output_item.added',
-        output_index: 0,
-        sequence_number: 1,
-        item: {
-          type: 'web_search_call',
-          id: 'search-1',
-          status: 'in_progress',
-        },
-      },
-      {
-        type: 'response.output_item.done',
-        output_index: 0,
-        sequence_number: 2,
-        item: {
-          type: 'web_search_call',
-          id: 'search-1',
-          status: 'completed',
-          action,
-        },
-      },
-      {
-        type: 'response.completed',
-        sequence_number: 3,
-        response: {
-          id: 'r',
-          object: 'response',
-          created_at: 0,
-          model: 'deepseek-v4-flash',
-          status: 'completed',
-          output: [],
-          usage: { input_tokens: 1, output_tokens: 1 },
-        },
-      },
-    ];
-    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-      requestBody = JSON.parse(String(init?.body));
-      return new Response(
-        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
-        { status: 200, headers: { 'content-type': 'text/event-stream' } },
-      );
-    }) as unknown as typeof globalThis.fetch;
-    const model = getAIModel({
-      connection: conn('deepseek'),
-      apiKey: 'test-key',
-      modelId: 'deepseek-v4-flash',
-      fetch,
-    });
-
-    const { stream } = await model.doStream({
-      prompt: [{ role: 'user', content: [{ type: 'text', text: 'Search.' }] }],
-      tools: [
-        {
-          type: 'provider',
-          id: 'openai.web_search',
-          name: 'WebSearch',
-          args: { searchContextSize: 'medium' },
-        },
-      ],
-    });
-    const parts = [];
-    for await (const part of stream) {
-      if (part.type === 'tool-call' || part.type === 'tool-result') parts.push(part);
-    }
-
-    assert.deepEqual(parts, [
-      {
-        type: 'tool-call',
-        toolCallId: 'search-1',
-        toolName: 'WebSearch',
-        input: '{}',
-        providerExecuted: true,
-      },
-      {
-        type: 'tool-result',
-        toolCallId: 'search-1',
-        toolName: 'WebSearch',
-        result: { action },
-      },
-    ]);
-    assert.deepEqual(requestBody?.tools, [{ type: 'web_search', search_context_size: 'medium' }]);
-  });
-
   test('DeepSeek uses plaintext Responses options without asking for encrypted content', async () => {
     let body: Record<string, unknown> | undefined;
     let headers: Headers | undefined;
@@ -602,12 +340,13 @@ describe('responses wire request body', () => {
     });
     await model.doGenerate({
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoning: 'xhigh',
       providerOptions: buildProviderOptions(connection, 'deepseek-v4-flash', 'max'),
     });
 
-    assert.equal(body?.store, false);
+    assert.equal(body?.store, undefined);
     assert.equal(body?.include, undefined);
-    assert.equal((body?.reasoning as { effort?: string } | undefined)?.effort, 'max');
+    assert.equal((body?.reasoning as { effort?: string } | undefined)?.effort, 'xhigh');
     assert.equal(headers?.has('x-maka-open-responses-reasoning-effort'), false);
   });
 

@@ -203,14 +203,10 @@ describe('buildProviderOptions: thinking level', () => {
       [...thinkingVariantsForModel('deepseek', 'deepseek-v4-flash')],
       ['high', 'max'],
     );
-    // DeepSeek V4 speaks the plaintext Open Responses dialect, so its effort
-    // stays in the DeepSeek namespace and no encrypted-content option leaks in.
-    assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'high'), {
-      deepseek: { reasoningEffort: 'high' },
-    });
-    assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'max'), {
-      deepseek: { reasoningEffort: 'max' },
-    });
+    // DeepSeek V4 speaks the plaintext Open Responses dialect. Its effort is
+    // a top-level AI SDK option, not providerOptions owned by Maka.
+    assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'high'), {});
+    assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'max'), {});
     assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'off'), {});
     assert.deepEqual([...thinkingVariantsForModel('zai-coding-plan', 'glm-5.1')], []);
     assert.deepEqual([...thinkingVariantsForModel('zai-coding-plan', 'glm-4.5-air')], []);
@@ -494,7 +490,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       { 'zai-coding-plan': { reasoningEffort: 'max' } },
     );
   });
-  test('deepseek uses its own namespace on both supported dialects', () => {
+  test('deepseek uses provider options only for the chat dialect', () => {
     const chatConnection: LlmConnection = {
       ...conn('deepseek', 'deepseek'),
       models: [{ id: 'deepseek-v4-pro', apiProtocol: 'openai-chat' }],
@@ -504,7 +500,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     });
     assert.deepEqual(
       buildProviderOptions(conn('deepseek', 'deepseek'), 'deepseek-v4-flash', 'high'),
-      { deepseek: { reasoningEffort: 'high' } },
+      {},
     );
   });
 

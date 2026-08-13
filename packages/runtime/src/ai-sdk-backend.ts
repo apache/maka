@@ -1090,6 +1090,7 @@ export class AiSdkBackend implements AgentBackend {
       modelId: input.modelId,
       modelFactory: input.modelFactory,
       providerOptions: input.providerOptions,
+      reasoningLevel: input.header.thinkingLevel,
       newId: this.newId,
       now: this.now,
       ...(input.openAiResponsesTransportState

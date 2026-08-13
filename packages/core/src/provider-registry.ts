@@ -840,7 +840,6 @@ const providerRegistry = {
       name: 'provider',
       supportsOpenAiResponses: true,
       responsesDialect: 'open-responses',
-      applyPatchProtocol: 'codex-v4a-freeform',
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',

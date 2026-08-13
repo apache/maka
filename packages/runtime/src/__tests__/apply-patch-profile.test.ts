@@ -3,12 +3,14 @@ import { describe, test } from 'node:test';
 import {
   normalizeApplyPatchReplayInput,
   resolveApplyPatchProfile,
+  routeApplyPatchTools,
 } from '../apply-patch-profile.js';
+import type { MakaTool } from '../tool-runtime.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 
 describe('ApplyPatch profile routing', () => {
   test('derives the effective profile from the provider adapter contract', () => {
-    assert.deepEqual(
+    assert.equal(
       resolveModelRuntime(
         {
           providerType: 'deepseek',
@@ -16,15 +18,34 @@ describe('ApplyPatch profile routing', () => {
         },
         'deepseek-v4-flash',
       ).applyPatchProfile,
-      { kind: 'codex-v4a-freeform' },
+      null,
     );
-    assert.deepEqual(
+    assert.equal(
       resolveModelRuntime({ providerType: 'deepseek' }, 'deepseek-v4-pro').applyPatchProfile,
-      { kind: 'codex-v4a-freeform' },
+      null,
     );
     assert.equal(
       resolveModelRuntime({ providerType: 'xai' }, 'deepseek-v4-flash').applyPatchProfile,
       null,
+    );
+  });
+
+  test('keeps portable Write/Edit when DeepSeek cannot carry custom ApplyPatch', () => {
+    const tool = (name: string, providerTool?: MakaTool['providerTool']): MakaTool => ({
+      name,
+      description: name,
+      parameters: {},
+      providerTool,
+      impl: async () => undefined,
+    });
+    const routed = routeApplyPatchTools(
+      [tool('Write'), tool('Edit'), tool('apply_patch', { kind: 'openai-apply-patch' })],
+      resolveModelRuntime({ providerType: 'deepseek' }, 'deepseek-v4-flash').applyPatchProfile,
+    );
+
+    assert.deepEqual(
+      routed.map(({ name }) => name),
+      ['Write', 'Edit'],
     );
   });
 

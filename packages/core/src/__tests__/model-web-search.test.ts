@@ -7,11 +7,11 @@ describe('hosted web search capability', () => {
   it('enables the implemented Responses path only for declared model families', () => {
     assert.deepEqual(resolveHostedWebSearchCapability('deepseek', undefined, 'deepseek-v4-flash'), {
       adapter: 'openai-responses',
-      implemented: true,
+      implemented: false,
     });
     assert.deepEqual(resolveHostedWebSearchCapability('deepseek', undefined, 'deepseek-v4-pro'), {
       adapter: 'openai-responses',
-      implemented: true,
+      implemented: false,
     });
     assert.equal(resolveHostedWebSearchCapability('deepseek', undefined, 'deepseek-chat'), null);
     assert.deepEqual(resolveHostedWebSearchCapability('openai', undefined, 'gpt-5.5'), {
@@ -101,7 +101,7 @@ describe('hosted web search capability', () => {
   it('keeps dual-wire providers on the configured connection protocol', () => {
     assert.deepEqual(resolveHostedWebSearchCapability('deepseek', undefined, 'deepseek-v4-flash'), {
       adapter: 'openai-responses',
-      implemented: true,
+      implemented: false,
     });
     assert.deepEqual(
       resolveHostedWebSearchCapability(

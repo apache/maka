@@ -116,7 +116,7 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     }
   });
 
-  test('replaces Write and Edit with freeform apply_patch for declared DeepSeek V4 Flash', async () => {
+  test('keeps Write and Edit when DeepSeek cannot carry custom apply_patch', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -143,9 +143,9 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
 
     const names = modelToolNames(model);
-    assert.equal(names.includes('apply_patch'), true);
-    assert.equal(names.includes('Write'), false);
-    assert.equal(names.includes('Edit'), false);
+    assert.equal(names.includes('apply_patch'), false);
+    assert.equal(names.includes('Write'), true);
+    assert.equal(names.includes('Edit'), true);
   });
 
   test('replays a durable apply_patch failure as native provider JSON', async () => {
@@ -217,7 +217,7 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     });
   });
 
-  test('replays a durable DeepSeek freeform apply_patch result as plain text', async () => {
+  test('preserves a durable DeepSeek apply_patch fact without inventing a custom wire', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -291,13 +291,17 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     const toolCall = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
       .find((message) => message.role === 'assistant')
       ?.content.find((part) => part.type === 'tool-call');
-    assert.equal(
-      toolCall?.input,
-      '*** Begin Patch\n*** Update File: file.txt\n@@\n-before\n+after\n*** End Patch',
-    );
+    assert.deepEqual(toolCall?.input, {
+      callId: 'call-1',
+      operation: {
+        type: 'update_file',
+        path: 'file.txt',
+        diff: '@@\n-before\n+after',
+      },
+    });
     assert.deepEqual(toolResult?.output, {
-      type: 'text',
-      value: 'Applied 1 file operation.',
+      type: 'json',
+      value: { status: 'completed', output: 'Applied 1 file operation.' },
     });
   });
 
@@ -12233,14 +12237,14 @@ describe('AiSdkBackend thinking persistence', () => {
 
   test('omits Responses reasoning without encrypted content from the wire request', async (t) => {
     for (const replayCase of [
-      { name: 'missing', openai: { itemId: 'rs_deepseek' } },
+      { name: 'missing', openai: { itemId: 'rs_openai' } },
       {
         name: 'null',
-        openai: { itemId: 'rs_deepseek', reasoningEncryptedContent: null },
+        openai: { itemId: 'rs_openai', reasoningEncryptedContent: null },
       },
       {
         name: 'empty string',
-        openai: { itemId: 'rs_deepseek', reasoningEncryptedContent: '' },
+        openai: { itemId: 'rs_openai', reasoningEncryptedContent: '' },
       },
     ] as const) {
       await t.test(replayCase.name, async () => {
@@ -12252,7 +12256,7 @@ describe('AiSdkBackend thinking persistence', () => {
             author: 'agent',
             content: {
               kind: 'thinking',
-              text: 'plaintext reasoning from DeepSeek',
+              text: 'display-only reasoning without an encrypted replay payload',
               providerOptions: { openai: replayCase.openai },
             },
             refs: { providerEventId: 'm1' },
@@ -12303,7 +12307,7 @@ describe('AiSdkBackend thinking persistence', () => {
                 id: 'response-current',
                 object: 'response',
                 created_at: 8,
-                model: 'deepseek-v4-flash',
+                model: 'gpt-5.5',
                 status: 'completed',
                 output: [],
                 usage: { input_tokens: 1, output_tokens: 1 },
@@ -12323,12 +12327,12 @@ describe('AiSdkBackend thinking persistence', () => {
           header: header(),
           appendMessage: async () => {},
           connection: {
-            slug: 'deepseek',
-            providerType: 'deepseek',
-            defaultModel: 'deepseek-v4-flash',
+            slug: 'openai',
+            providerType: 'openai',
+            defaultModel: 'gpt-5.5',
           },
-          apiKey: 'deepseek-test-token',
-          modelId: 'deepseek-v4-flash',
+          apiKey: 'openai-test-token',
+          modelId: 'gpt-5.5',
           modelFactory: (input) => getAIModel({ ...input, fetch }),
           tools: [],
           newId: idGenerator(),
@@ -12609,6 +12613,53 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.ok(
       assistant.content.some((part) => part.type === 'tool-call' && part.toolCallId === 'tool-1'),
     );
+  });
+
+  test('maps DeepSeek max reasoning to the upstream Open Responses xhigh level', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const events = [
+        { type: 'response.created', response: { id: 'response-current' } },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'response-current',
+            object: 'response',
+            created_at: 8,
+            model: 'deepseek-v4-flash',
+            status: 'completed',
+            output: [],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        },
+      ];
+      return new Response(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: { ...header(), thinkingLevel: 'max' },
+      appendMessage: async () => {},
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'deepseek-test-token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-current', text: 'think', context: [] }));
+
+    assert.deepEqual(requestBody?.reasoning, { effort: 'xhigh' });
+    assert.equal(requestBody?.include, undefined);
   });
 
   test('preserves every OpenAI Responses reasoning item through stream persistence and replay', async () => {
