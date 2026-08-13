@@ -1,6 +1,7 @@
 export const DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES = 128 * 1024;
 export const DESKTOP_TRANSCRIPT_SESSION_CACHE_MAX_BYTES = 20 * 1024 * 1024;
-export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 96 * 1024 * 1024;
+export const DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES = 64 * 1024 * 1024;
 
 export interface DesktopTranscriptFragment {
   readonly source: 'durable' | 'overlay';

@@ -8,6 +8,7 @@ import type {
 export interface DesktopTranscriptRangeController {
   readonly store: DesktopTranscriptRangeStore;
   ready(): Promise<void>;
+  waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean>;
   loadBefore(): Promise<void>;
   loadAround(sequence: number): Promise<void>;
   loadLatest(): Promise<void>;
@@ -30,6 +31,10 @@ export function createDesktopTranscriptRangeController(
     store,
     async ready() {
       await current();
+    },
+    async waitForDurableMessage(messageId, timeoutMs) {
+      await current();
+      return store.waitForDurableMessage(messageId, timeoutMs);
     },
     async loadBefore() {
       const range = store.range();
@@ -113,6 +118,7 @@ export class DesktopTranscriptRangeStore {
   #hasNewer = false;
   #ready = false;
   #batchChanged = false;
+  readonly #durableWaiters = new Set<() => void>();
 
   accept(batch: DesktopTranscriptBatch): boolean {
     if (batch.reset) this.#reset(batch);
@@ -151,6 +157,7 @@ export class DesktopTranscriptRangeStore {
     if (!batch.ready) return false;
     const committed = this.#batchChanged;
     this.#batchChanged = false;
+    for (const notify of this.#durableWaiters) notify();
     return committed;
   }
 
@@ -188,6 +195,23 @@ export class DesktopTranscriptRangeStore {
       if (record.message.id === messageId) return true;
     }
     return false;
+  }
+
+  waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean> {
+    if (this.hasDurableMessage(messageId)) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const finish = (found: boolean) => {
+        globalThis.clearTimeout(timeout);
+        this.#durableWaiters.delete(check);
+        resolve(found);
+      };
+      const check = () => {
+        if (this.hasDurableMessage(messageId)) finish(true);
+      };
+      const timeout = globalThis.setTimeout(() => finish(false), timeoutMs);
+      this.#durableWaiters.add(check);
+      check();
+    });
   }
 
   #reset(batch: DesktopTranscriptBatch): void {

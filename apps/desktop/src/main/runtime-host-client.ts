@@ -142,7 +142,7 @@ export interface DesktopRuntimeHostSession {
   readonly transcriptBootstrap: SessionTranscriptBootstrap;
   readonly events: AsyncIterable<SubscriptionFrame>;
   loadTranscript(): Promise<StoredMessage[]>;
-  loadTranscriptOverlay(): Promise<StoredMessage[]>;
+  loadTranscriptOverlay(maxMessageBytes?: number): Promise<StoredMessage[]>;
   decodeTranscriptPage(
     page: SessionTranscriptPage,
     maxMessageBytes?: number,
@@ -1481,8 +1481,8 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
     return this.#transcriptTask;
   }
 
-  loadTranscriptOverlay(): Promise<StoredMessage[]> {
-    return this.subscription.loadTranscriptOverlay(decodeStoredMessage);
+  loadTranscriptOverlay(maxMessageBytes?: number): Promise<StoredMessage[]> {
+    return this.subscription.loadTranscriptOverlay(decodeStoredMessage, maxMessageBytes);
   }
 
   decodeTranscriptPage(

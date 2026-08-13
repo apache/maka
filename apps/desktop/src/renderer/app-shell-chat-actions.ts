@@ -543,8 +543,19 @@ export function createAppShellChatActions(deps: {
   async function refreshMessages(sessionId: string, options: RefreshMessagesOptions = {}): Promise<boolean> {
     try {
       if (activeIdRef.current !== sessionId) return false;
-      const range = transcriptRangeRef.current?.store;
-      if (!range) return false;
+      const controller = transcriptRangeRef.current;
+      if (!controller) return false;
+      await controller.ready();
+      if (activeIdRef.current !== sessionId || transcriptRangeRef.current !== controller) return false;
+      const requiredMessageId = options.requiredAssistantMessageId;
+      if (
+        requiredMessageId !== undefined &&
+        !controller.store.hasDurableMessage(requiredMessageId) &&
+        !(await controller.waitForDurableMessage(requiredMessageId, 480))
+      ) {
+        return false;
+      }
+      const range = controller.store;
       const snapshot = range.snapshot();
       if (snapshot.sessionId !== sessionId) return false;
       const next = [...snapshot.messages];
@@ -556,8 +567,7 @@ export function createAppShellChatActions(deps: {
         delete updated[sessionId];
         return updated;
       });
-      return options.requiredAssistantMessageId === undefined ||
-        range.hasDurableMessage(options.requiredAssistantMessageId);
+      return requiredMessageId === undefined || range.hasDurableMessage(requiredMessageId);
     } catch (error) {
       if (activeIdRef.current === sessionId) {
         const message = messageRefreshErrorMessage(error, uiLocale);

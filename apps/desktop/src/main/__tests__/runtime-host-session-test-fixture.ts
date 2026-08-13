@@ -14,7 +14,7 @@ export function runtimeHostSessionFixture(input: {
   readonly transcript: Promise<StoredMessage[]>;
   readonly events: AsyncIterable<SubscriptionFrame>;
   readonly transcriptBootstrap?: DesktopRuntimeHostSession['transcriptBootstrap'];
-  loadTranscriptOverlay?(): Promise<StoredMessage[]>;
+  loadTranscriptOverlay?(maxMessageBytes?: number): Promise<StoredMessage[]>;
   decodeTranscriptPage?: DesktopRuntimeHostSession['decodeTranscriptPage'];
   loadTranscriptPage?: DesktopRuntimeHostSession['loadTranscriptPage'];
   close(): Promise<void>;

@@ -502,16 +502,23 @@ export function useActiveSessionEvents(options: {
       }),
     }));
     const openTranscript = (signal: AbortSignal) =>
-      window.maka.transcripts.open(activeId, (batch) => {
-        if (disposed) return;
-        try {
-          if (transcript.accept(batch)) {
-            applyTranscript(activeId, transcript, () => disposed);
+      window.maka.transcripts.open(
+        activeId,
+        (batch) => {
+          if (disposed) return;
+          try {
+            if (transcript.accept(batch)) {
+              applyTranscript(activeId, transcript, () => disposed);
+            }
+          } catch (error) {
+            applyReadError(activeId, error, () => disposed);
           }
-        } catch (error) {
-          applyReadError(activeId, error, () => disposed);
-        }
-      }, signal);
+        },
+        (cancel) => {
+          if (signal.aborted) cancel();
+          else signal.addEventListener('abort', cancel, { once: true });
+        },
+      );
     const controller = createDesktopTranscriptRangeController(transcript, openTranscript);
     void controller.ready().catch((error) => {
       applyReadError(activeId, error, () => disposed);

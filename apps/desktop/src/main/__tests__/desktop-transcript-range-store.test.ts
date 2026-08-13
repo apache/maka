@@ -10,7 +10,10 @@ import {
   createDesktopTranscriptRangeController,
   DesktopTranscriptRangeStore,
 } from '../../renderer/desktop-transcript-range-store.js';
-import { mergeSettledMessages } from '../../renderer/session-message-settlement.js';
+import {
+  mergeSettledMessages,
+  readSettledMessages,
+} from '../../renderer/session-message-settlement.js';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 
@@ -25,6 +28,40 @@ test('merges a settled tail without dropping earlier messages', () => {
     settled,
     latest,
   ]);
+});
+
+test('cancels settlement while transcript open is pending', async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  let cancelled = false;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      maka: {
+        transcripts: {
+          open: async (
+            _sessionId: string,
+            _handler: unknown,
+            registerCancellation: (cancel: () => void) => void,
+          ) => new Promise<never>((_resolve, reject) => {
+            registerCancellation(() => {
+              cancelled = true;
+              reject(new Error('open cancelled'));
+            });
+          }),
+        },
+      },
+    },
+  });
+  const controller = new AbortController();
+  try {
+    const settling = readSettledMessages('session-1', { signal: controller.signal });
+    controller.abort();
+    await assert.rejects(settling, /settlement was cancelled/);
+    assert.equal(cancelled, true);
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  }
 });
 
 test('moves a fragmented overlay record to durable storage without duplicating it', () => {
@@ -167,6 +204,49 @@ test('keeps a bounded contiguous window while moving between history and the tai
   assert.ok(replica.residentBytes <= maxResidentBytes);
 });
 
+test('retains one supported oversized record without treating the cache budget as a record limit', async () => {
+  const message = assistantMessage('x'.repeat(4_096));
+  const durable = { identity: 0, message };
+  const page = {
+    kind: 'page' as const,
+    sessionId: 'session-1',
+    source: 'durable' as const,
+    direction: 'older' as const,
+    throughSequence: 0,
+    rawBytes: 1,
+    fragments: [],
+    nextCursor: null,
+  };
+  const maxMessageBytes = 8 * 1024;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 0,
+      overlayMessageCount: 0,
+      durable: page,
+      overlay: { ...page, source: 'overlay' },
+    },
+    loadTranscriptOverlay: async (limit) => {
+      assert.equal(limit, maxMessageBytes);
+      return [];
+    },
+    decodeTranscriptPage: async (_candidate, limit) => {
+      assert.equal(limit, maxMessageBytes);
+      return { messages: [durable], nextCursor: null };
+    },
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes: 256,
+    maxMessageBytes,
+  });
+
+  assert.deepEqual(replica.snapshot().durable, [{ sequence: 0, message }]);
+  assert.ok(replica.residentBytes > 256);
+});
+
 test('reopens a failed transcript range with a fresh generation', async () => {
   const store = new DesktopTranscriptRangeStore();
   let attempts = 0;
@@ -199,6 +279,34 @@ test('reopens a failed transcript range with a fresh generation', async () => {
   await controller.reload();
   assert.equal(store.range().generation, 'reloaded');
   await controller.close();
+});
+
+test('waits for the required durable message on the current transcript generation', async () => {
+  const store = new DesktopTranscriptRangeStore();
+  const identity = {
+    sessionId: 'session-1',
+    generation: 'generation-1',
+    hostEpoch: 'host-1',
+  };
+  for (const batch of encodeDesktopTranscriptSnapshot({
+    ...identity,
+    durableThrough: null,
+    durable: [],
+    overlay: [],
+    hasOlder: false,
+    hasNewer: false,
+  })) store.accept(batch);
+  const waiting = store.waitForDurableMessage('assistant-1', 100);
+  for (const batch of encodeDesktopTranscriptChange(identity, {
+    durableThrough: 0,
+    durableUpserts: [{ sequence: 0, message: assistantMessage('complete') }],
+    evictedDurableSequences: [],
+    completedOverlayMessageIds: [],
+    hasOlder: false,
+    hasNewer: false,
+  })) store.accept(batch);
+
+  assert.equal(await waiting, true);
 });
 
 test('cancels a transcript open that is still waiting for a Host', async () => {

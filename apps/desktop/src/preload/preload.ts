@@ -705,7 +705,7 @@ const makaBridge = {
       return subscribeActiveRuntimeHostEvent('sessions:active-interactions-changed', handler);
     },
     listTurns(sessionId: string): Promise<TurnRecord[]> {
-      return ipcRenderer.invoke('sessions:listTurns', sessionId);
+      return invokeActiveRuntimeHost('sessions:listTurns', sessionId);
     },
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void> {
       return invokeActiveRuntimeHost('sessions:regenerateTurn', sessionId, input);
@@ -838,9 +838,8 @@ const makaBridge = {
     async open(
       sessionId: string,
       handler: (batch: DesktopTranscriptBatch) => void,
-      signal?: AbortSignal,
+      registerCancellation?: (cancel: () => void) => void,
     ): Promise<DesktopTranscriptHandle> {
-      signal?.throwIfAborted();
       const consumerId = crypto.randomUUID();
       const channel = `sessions:transcript:${consumerId}`;
       let generation: string | undefined;
@@ -855,24 +854,32 @@ const makaBridge = {
         if (batch.generation === generation) handler(batch);
       };
       ipcRenderer.on(channel, listener);
+      const openDispatch = activeRuntimeHostRef().then((scope) => ({
+        completion: ipcRenderer.invoke(
+          'sessions:transcript:open',
+          scope,
+          sessionId,
+          consumerId,
+        ) as Promise<DesktopTranscriptOpenResult>,
+      }));
       let closeTask: Promise<void> | undefined;
       const requestClose = () => {
         if (closed) return;
         closed = true;
         ipcRenderer.off(channel, listener);
-        closeTask = ipcRenderer.invoke('sessions:transcript:close', consumerId);
+        closeTask = releaseSessionObservation(openDispatch, () =>
+          ipcRenderer.invoke('sessions:transcript:close', consumerId),
+        );
         void closeTask.catch(() => undefined);
       };
-      signal?.addEventListener('abort', requestClose, { once: true });
+      registerCancellation?.(requestClose);
       let opened: DesktopTranscriptOpenResult;
       try {
-        opened = await ipcRenderer.invoke('sessions:transcript:open', sessionId, consumerId);
+        opened = await openDispatch.then(({ completion }) => completion);
       } catch (error) {
         closed = true;
         ipcRenderer.off(channel, listener);
         throw error;
-      } finally {
-        signal?.removeEventListener('abort', requestClose);
       }
       if (closed) throw new Error('Desktop transcript open was cancelled');
       generation ??= opened.generation;
@@ -881,7 +888,7 @@ const makaBridge = {
         anchorSequence: number | null,
         maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
       ): Promise<void> =>
-        ipcRenderer.invoke(operation, {
+        invokeActiveRuntimeHost(operation, {
           consumerId,
           generation,
           anchorSequence,

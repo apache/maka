@@ -62,7 +62,6 @@ export interface RuntimeHostSessionExecutionIpcDeps {
   observer: RuntimeHostSessionObserver;
   observations: Pick<
     RuntimeHostSessionObservationRegistry,
-    | 'closeTranscript'
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
     | 'observe'
@@ -152,12 +151,6 @@ export function registerRuntimeHostSessionExecutionIpc(
   ipcMain.handle('sessions:transcript:load-around', async (event, input: unknown) => {
     await deps.observations.loadTranscriptAround(
       normalizeTranscriptRangeRequest(input),
-      event.sender.id,
-    );
-  });
-  ipcMain.handle('sessions:transcript:close', async (event, consumerId: unknown) => {
-    await deps.observations.closeTranscript(
-      requiredId(consumerId, 'Transcript consumer'),
       event.sender.id,
     );
   });

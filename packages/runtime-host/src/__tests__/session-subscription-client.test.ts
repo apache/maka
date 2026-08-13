@@ -512,6 +512,34 @@ test('loads and releases only the active overlay', async () => {
   assert.equal(releases, 1);
 });
 
+test('rejects an oversized active overlay before releasing it', async () => {
+  const overlay = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'active',
+  };
+  const bytes = Buffer.from(JSON.stringify(overlay), 'utf8');
+  let releases = 0;
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-overlay-limit', overlayBootstrap(bytes)),
+    async () => undefined,
+    async () => {
+      throw new Error('durable transcript must not be read');
+    },
+    async () => {
+      releases += 1;
+    },
+  );
+
+  await assert.rejects(
+    subscription.loadTranscriptOverlay(decodeStoredMessage, bytes.byteLength - 1),
+    RangeError,
+  );
+  assert.equal(releases, 0);
+});
+
 test('releases a materialized overlay through the connection-bound control operation', async () => {
   const message = Buffer.from(
     JSON.stringify({

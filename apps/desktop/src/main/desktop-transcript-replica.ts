@@ -6,11 +6,15 @@ import {
 } from '@maka/runtime-host/adapter';
 import { RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
 import type { SessionTranscriptPage } from '@maka/runtime-host/protocol';
-import { DESKTOP_TRANSCRIPT_SESSION_CACHE_MAX_BYTES } from '../preload/transcript-contract.js';
+import {
+  DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_SESSION_CACHE_MAX_BYTES,
+} from '../preload/transcript-contract.js';
 import type { DesktopRuntimeHostSession } from './runtime-host-client.js';
 
 export interface DesktopTranscriptReplicaOptions {
   readonly generation?: string;
+  readonly maxMessageBytes?: number;
   readonly maxResidentBytes?: number;
   readonly onChange?: (
     replica: DesktopTranscriptReplica,
@@ -53,6 +57,7 @@ export class DesktopTranscriptReplica {
   readonly hostEpoch: string;
   readonly #handle: DesktopRuntimeHostSession;
   readonly #maxResidentBytes: number;
+  readonly #maxMessageBytes: number;
   readonly #onChange: (
     replica: DesktopTranscriptReplica,
     change: DesktopTranscriptReplicaChange,
@@ -79,6 +84,7 @@ export class DesktopTranscriptReplica {
     this.hostEpoch = handle.hostEpoch;
     this.#maxResidentBytes =
       options.maxResidentBytes ?? DESKTOP_TRANSCRIPT_SESSION_CACHE_MAX_BYTES;
+    this.#maxMessageBytes = options.maxMessageBytes ?? DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES;
     this.#onChange = options.onChange ?? (() => undefined);
     this.#durableThrough = handle.transcriptBootstrap.throughSequence;
     this.#targetThrough = this.#durableThrough;
@@ -91,10 +97,10 @@ export class DesktopTranscriptReplica {
   ): Promise<DesktopTranscriptReplica> {
     const replica = new DesktopTranscriptReplica(handle, options);
     const [overlay, durable] = await Promise.all([
-      handle.loadTranscriptOverlay(),
+      handle.loadTranscriptOverlay(replica.#maxMessageBytes),
       handle.decodeTranscriptPage(
         handle.transcriptBootstrap.durable,
-        replica.#maxResidentBytes,
+        replica.#maxMessageBytes,
       ),
     ]);
     replica.#installOverlay(overlay);
@@ -183,7 +189,7 @@ export class DesktopTranscriptReplica {
       anchorSequence: anchor,
       maxBytes,
     });
-    const decoded = await this.#handle.decodeTranscriptPage(page, this.#maxResidentBytes);
+    const decoded = await this.#handle.decodeTranscriptPage(page, this.#maxMessageBytes);
     this.#assertOpen();
     this.#acceptRange(decoded.messages);
     if (
@@ -223,7 +229,7 @@ export class DesktopTranscriptReplica {
       anchorSequence: sequence + 1,
       maxBytes,
     });
-    const decoded = await this.#handle.decodeTranscriptPage(page, this.#maxResidentBytes);
+    const decoded = await this.#handle.decodeTranscriptPage(page, this.#maxMessageBytes);
     this.#assertOpen();
     this.#acceptRange(decoded.messages);
     if (
@@ -314,7 +320,7 @@ export class DesktopTranscriptReplica {
           anchorSequence: cursor === null ? anchorSequence : null,
           maxBytes: 512 * 1024,
         });
-        const decoded = await this.#handle.decodeTranscriptPage(page, this.#maxResidentBytes);
+        const decoded = await this.#handle.decodeTranscriptPage(page, this.#maxMessageBytes);
         this.#assertOpen();
         if (!this.#resident) return;
         if (decoded.messages.length === 0 && decoded.nextCursor !== null) {
@@ -441,6 +447,7 @@ export class DesktopTranscriptReplica {
       if (this.#residentBytes <= budget) break;
       const entry = this.#durable.get(sequence);
       if (!entry) continue;
+      if (this.#durable.size === 1 && entry.encodedBytes > budget) break;
       this.#durable.delete(sequence);
       this.#residentBytes -= entry.encodedBytes;
       if (edge === 'oldest') this.#hasOlder = true;

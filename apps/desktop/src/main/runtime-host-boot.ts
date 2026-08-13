@@ -1081,6 +1081,12 @@ function registerPersistentClientIpc(): void {
     }
     await owner?.unobserveSession(observerId);
   });
+  ipcMain.handle('sessions:transcript:close', async (event, consumerId: unknown) => {
+    if (typeof consumerId !== 'string' || consumerId.length === 0 || consumerId.length > 256) {
+      throw new Error('Invalid transcript consumer identity');
+    }
+    await owner?.closeTranscript(consumerId, event.sender.id);
+  });
   ipcMain.handle("runtime-host:activeIdentity", () => {
     const scope = activeRuntimeHostRef();
     if (!scope) throw new Error("Desktop Runtime Host identity is unavailable");

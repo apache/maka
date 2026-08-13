@@ -46,7 +46,10 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap | null;
   loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
-  loadTranscriptOverlay<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
+  loadTranscriptOverlay<T>(
+    decodeMessage: (value: unknown) => T,
+    maxMessageBytes?: number,
+  ): Promise<T[]>;
   decodeTranscriptPage<T>(
     page: SessionTranscriptPage,
     decodeMessage: (value: unknown) => T,
@@ -169,7 +172,10 @@ export class ClientSessionSubscription
     return this.#transcriptTask.then((messages) => messages.map(decodeMessage));
   }
 
-  loadTranscriptOverlay<T>(decodeMessage: (value: unknown) => T): Promise<T[]> {
+  loadTranscriptOverlay<T>(
+    decodeMessage: (value: unknown) => T,
+    maxMessageBytes = Number.MAX_SAFE_INTEGER,
+  ): Promise<T[]> {
     this.#assertTranscriptReadable();
     const bootstrap = this.transcriptBootstrap;
     if (!bootstrap) {
@@ -180,7 +186,7 @@ export class ClientSessionSubscription
         ),
       );
     }
-    return this.#consumeTranscriptOverlay(bootstrap).then((messages) =>
+    return this.#consumeTranscriptOverlay(bootstrap, maxMessageBytes).then((messages) =>
       messages.map((entry) => decodeMessage(entry.value)),
     );
   }
@@ -301,6 +307,7 @@ export class ClientSessionSubscription
 
   #consumeTranscriptOverlay(
     bootstrap: SessionTranscriptBootstrap,
+    maxMessageBytes = Number.MAX_SAFE_INTEGER,
   ): Promise<Array<{ identity: number; value: unknown }>> {
     if (this.#overlayConsumed && !this.#overlayTask) {
       return Promise.reject(
@@ -311,7 +318,7 @@ export class ClientSessionSubscription
       );
     }
     this.#overlayTask ??= (async () => {
-      const overlay = await this.#loadTranscriptSource(bootstrap.overlay);
+      const overlay = await this.#loadTranscriptSource(bootstrap.overlay, maxMessageBytes);
       assertCompleteIdentities(
         overlay,
         bootstrap.overlayMessageCount === 0 ? null : bootstrap.overlayMessageCount - 1,
@@ -341,6 +348,7 @@ export class ClientSessionSubscription
 
   async #loadTranscriptSource(
     initial: SessionTranscriptPage,
+    maxMessageBytes = Number.MAX_SAFE_INTEGER,
   ): Promise<Array<{ identity: number; value: unknown }>> {
     this.#assertTranscriptPage(initial, {
       source: initial.source,
@@ -348,7 +356,11 @@ export class ClientSessionSubscription
       throughSequence: initial.throughSequence,
       maxBytes: Math.max(1, initial.rawBytes),
     });
-    const assembler = new TranscriptFragmentAssembler(initial.source, initial.direction);
+    const assembler = new TranscriptFragmentAssembler(
+      initial.source,
+      initial.direction,
+      maxMessageBytes,
+    );
     assembler.accept(initial.fragments);
     let cursor = initial.nextCursor;
     while (cursor !== null) {
