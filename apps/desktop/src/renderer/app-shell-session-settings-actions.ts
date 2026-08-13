@@ -68,6 +68,19 @@ export function createAppShellSessionSettingsActions(deps: {
     return next;
   }
 
+  function modelLabel(connectionSlug: string, model: string): string {
+    const connection = connections.find((entry) => entry.slug === connectionSlug);
+    const displayName = connection?.models?.find((entry) => entry.id === model)?.displayName?.trim();
+    return displayName || model;
+  }
+
+  function modelEndpointLabel(connectionSlug: string, model: string, includeConnection: boolean): string {
+    const label = modelLabel(connectionSlug, model);
+    if (!includeConnection) return label;
+    const connection = connections.find((entry) => entry.slug === connectionSlug);
+    return `${label} (${connection?.name ?? connectionSlug})`;
+  }
+
   async function setPermissionMode(mode: PermissionMode) {
     if (mode !== 'ask' && mode !== 'bypass') return;
     const sessionId = activeIdRef.current;
@@ -123,6 +136,7 @@ export function createAppShellSessionSettingsActions(deps: {
   async function setSessionModel(input: { llmConnectionSlug: string; model: string }) {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
+    const previous = sessionsRef.current.find((session) => session.id === sessionId);
     if (pendingSessionModelChangesRef.current.has(sessionId)) return;
     pendingSessionModelChangesRef.current.add(sessionId);
     setPendingSessionModelBySession((current) => ({
@@ -132,9 +146,18 @@ export function createAppShellSessionSettingsActions(deps: {
     try {
       const next = await window.maka.sessions.setModel(sessionId, input);
       setSessions((prev) => prev.map((session) => (session.id === next.id ? next : session)));
-      const connection = connections.find((entry) => entry.slug === next.llmConnectionSlug);
       if (activeIdRef.current === sessionId) {
-        toastApi.success(copy.modelSwitchedTitle, `${connection?.name ?? next.llmConnectionSlug} · ${next.model}`);
+        const connectionChanged = previous?.llmConnectionSlug !== next.llmConnectionSlug;
+        const to = modelEndpointLabel(next.llmConnectionSlug, next.model, connectionChanged);
+        toastApi.success(
+          copy.modelSwitchedTitle,
+          previous
+            ? copy.modelSwitchedDescription(
+                modelEndpointLabel(previous.llmConnectionSlug, previous.model, connectionChanged),
+                to,
+              )
+            : to,
+        );
       }
       saveComposerDefaults({ model: input });
       await refreshSessions();
