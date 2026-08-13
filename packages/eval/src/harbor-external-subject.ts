@@ -617,7 +617,7 @@ async function startMeteringProxy(
       if (projected.model) requestModels.add(projected.model);
       for (const name of projected.toolNames) observedToolNames.add(name);
       const target = joinUpstream(upstreamBaseUrl, request.url ?? '/');
-      const headers = new Headers();
+      const headers: Record<string, string> = {};
       for (const [name, value] of Object.entries(request.headers)) {
         if (
           value === undefined ||
@@ -626,10 +626,10 @@ async function startMeteringProxy(
           )
         )
           continue;
-        headers.set(name, Array.isArray(value) ? value.join(', ') : value);
+        headers[name] = Array.isArray(value) ? value.join(', ') : value;
       }
-      if (anthropic) headers.set('x-api-key', upstreamKey);
-      else headers.set('authorization', `Bearer ${upstreamKey}`);
+      if (anthropic) headers['x-api-key'] = upstreamKey;
+      else headers.authorization = `Bearer ${upstreamKey}`;
       const upstream = await undiciFetch(target, {
         method: request.method,
         headers,
