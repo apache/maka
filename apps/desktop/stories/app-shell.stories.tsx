@@ -447,6 +447,39 @@ export const DefaultLayout: Story = {
   render: () => <ComposedShell />,
 };
 
+// Real path: a user selected a different model and sent the next message. The
+// Runtime records the actual A -> B transition on that admitted turn, and the
+// transcript places it immediately before the user's message.
+export const ModelChanged: Story = {
+  render: () => (
+    <ComposedShell
+      chat={{
+        messages: [
+          ...conversation,
+          {
+            type: 'system_note',
+            id: 'model-change',
+            turnId: 'turn-model-change',
+            ts: NOW - 2 * 60_000,
+            kind: 'model_change',
+            data: {
+              from: { connectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
+              to: { connectionSlug: 'openai-main', model: 'gpt-5.1' },
+            },
+          },
+          user('msg-model-change-user', 'turn-model-change', 2, '继续检查剩余的失败用例。'),
+          assistant(
+            'msg-model-change-assistant',
+            'turn-model-change',
+            1,
+            '剩余失败与本次改动无关，可以继续收尾。',
+          ),
+        ],
+      }}
+    />
+  ),
+};
+
 // Real path: the updater finishes downloading in the background (autoDownload
 // is on) → the footer's settings row grows an accent update button. Discovery
 // and download show nothing, so this is the first moment the shell says
