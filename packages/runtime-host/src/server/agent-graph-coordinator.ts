@@ -29,9 +29,11 @@ import {
   AGENT_GRAPH_MAX_STOPPED_TARGETS,
   AGENT_GRAPH_MAX_TERMINAL_ACTIVITY,
   AGENT_GRAPH_MAX_WORK,
+  AGENT_GRAPH_EPOCH_PAGE_SIZE,
   AGENT_GRAPH_RESULT_MAX_BYTES,
   type AgentGraphClientOperator,
   type AgentGraphClientSnapshot,
+  type AgentGraphEpochListInput,
   type AgentGraphOperatorInspection,
   type AgentGraphOperatorQueryInput,
   type AgentGraphQueryInput,
@@ -43,7 +45,13 @@ import type { SessionContinuityCoordinator } from './session-continuity-coordina
 
 type AgentGraphAuthority = Pick<
   AgentGraphCoordinator,
-  'currentGraphId' | 'getSnapshot' | 'inspectOperator' | 'subscribeAll'
+  | 'currentGraphId'
+  | 'getGraphSnapshot'
+  | 'getSnapshot'
+  | 'inspectGraphOperator'
+  | 'inspectOperator'
+  | 'listGraphEpochPage'
+  | 'subscribeAll'
 >;
 
 type GraphContinuity = Pick<SessionContinuityCoordinator, 'enqueueAgentGraphChanged'>;
@@ -65,6 +73,7 @@ type GraphQueryFailureCode =
 /** Client-facing Runtime Host adapter over the durable Agent Graph read model. */
 export class HostAgentGraphCoordinator {
   readonly handlers: AgentGraphOperationHandlerMap = {
+    'agent.graph.epochs.query': (input) => this.#queryEpochs(input),
     'agent.graph.query': (input) => this.#query(input),
     'agent.graph.operator.query': (input) => this.#queryOperator(input),
     'agent.graph.stop': (input) => this.#stop(input),
@@ -93,9 +102,10 @@ export class HostAgentGraphCoordinator {
 
   async #query(input: AgentGraphQueryInput): Promise<OperationOutcome<'agent.graph.query'>> {
     try {
-      const snapshot = await this.#authority.getSnapshot(input.rootSessionId, {
-        ...(input.terminalCursor ? { terminalCursor: input.terminalCursor } : {}),
-      });
+      const options = input.terminalCursor ? { terminalCursor: input.terminalCursor } : {};
+      const snapshot = input.graphId
+        ? await this.#authority.getGraphSnapshot(input.rootSessionId, input.graphId, options)
+        : await this.#authority.getSnapshot(input.rootSessionId, options);
       return { ok: true, result: projectSnapshot(snapshot) };
     } catch (error) {
       return graphQueryFailure(error);
@@ -106,11 +116,40 @@ export class HostAgentGraphCoordinator {
     input: AgentGraphOperatorQueryInput,
   ): Promise<OperationOutcome<'agent.graph.operator.query'>> {
     try {
-      const inspection = await this.#authority.inspectOperator(
-        input.rootSessionId,
-        input.operatorId,
-      );
+      const inspection = input.graphId
+        ? await this.#authority.inspectGraphOperator(
+            input.rootSessionId,
+            input.graphId,
+            input.operatorId,
+          )
+        : await this.#authority.inspectOperator(input.rootSessionId, input.operatorId);
       return { ok: true, result: projectInspection(inspection) };
+    } catch (error) {
+      return graphQueryFailure(error);
+    }
+  }
+
+  async #queryEpochs(
+    input: AgentGraphEpochListInput,
+  ): Promise<OperationOutcome<'agent.graph.epochs.query'>> {
+    try {
+      const page = await this.#authority.listGraphEpochPage(input.rootSessionId, {
+        ...(input.beforeEpoch === undefined ? {} : { beforeEpoch: input.beforeEpoch }),
+        limit: AGENT_GRAPH_EPOCH_PAGE_SIZE,
+      });
+      return {
+        ok: true,
+        result: {
+          rootSessionId: input.rootSessionId,
+          epochs: page.epochs.map((binding) => ({
+            epoch: binding.epoch,
+            graphId: binding.graphId,
+            createdAt: binding.createdAt,
+            current: binding.epoch === page.currentEpoch,
+          })),
+          nextBeforeEpoch: page.nextBeforeEpoch,
+        },
+      };
     } catch (error) {
       return graphQueryFailure(error);
     }

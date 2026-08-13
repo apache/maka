@@ -2751,6 +2751,56 @@ export class SqliteSessionMetadataStore {
     return rows.map(decodeAgentGraphEpochBinding);
   }
 
+  async readAgentGraphEpochByGraphId(graphId: string): Promise<AgentGraphEpochBinding | undefined> {
+    this.assertOpen();
+    assertGraphLookupIdentity(graphId, 'graph id');
+    return this.readAgentGraphEpochByGraphIdSync(graphId);
+  }
+
+  async listAgentGraphEpochPage(request: {
+    rootSessionId: string;
+    beforeEpoch?: number;
+    limit: number;
+  }): Promise<{ epochs: AgentGraphEpochBinding[]; nextBeforeEpoch: number | null }> {
+    this.assertOpen();
+    assertSafeSessionId(request.rootSessionId);
+    if (
+      !Number.isSafeInteger(request.limit) ||
+      request.limit < 1 ||
+      request.limit > 128 ||
+      (request.beforeEpoch !== undefined &&
+        (!Number.isSafeInteger(request.beforeEpoch) || request.beforeEpoch < 1))
+    ) {
+      throw new Error('Invalid Agent Graph epoch page request');
+    }
+    const rows = this.db
+      .prepare(
+        `
+        SELECT
+          schema_version AS schemaVersion,
+          root_session_id AS rootSessionId,
+          epoch,
+          graph_id AS graphId,
+          created_at AS createdAt
+        FROM agent_graph_epochs
+        WHERE root_session_id = ? AND epoch < ?
+        ORDER BY epoch DESC
+        LIMIT ?
+      `,
+      )
+      .all(
+        request.rootSessionId,
+        request.beforeEpoch ?? Number.MAX_SAFE_INTEGER,
+        request.limit + 1,
+      ) as unknown as AgentGraphEpochRow[];
+    const hasMore = rows.length > request.limit;
+    const epochs = rows.slice(0, request.limit).map(decodeAgentGraphEpochBinding);
+    return {
+      epochs,
+      nextBeforeEpoch: hasMore ? (epochs.at(-1)?.epoch ?? null) : null,
+    };
+  }
+
   async purgeAgentGraphEpochs(rootSessionId: string): Promise<number> {
     this.assertOpen();
     assertSafeSessionId(rootSessionId);

@@ -157,7 +157,13 @@ test('two Clients query and control one Agent graph through Session invalidation
 
 type GraphAuthority = Pick<
   AgentGraphCoordinator,
-  'currentGraphId' | 'getSnapshot' | 'inspectOperator' | 'subscribeAll'
+  | 'currentGraphId'
+  | 'getGraphSnapshot'
+  | 'getSnapshot'
+  | 'inspectGraphOperator'
+  | 'inspectOperator'
+  | 'listGraphEpochPage'
+  | 'subscribeAll'
 >;
 
 class FakeAgentGraphAuthority implements GraphAuthority {
@@ -169,11 +175,35 @@ class FakeAgentGraphAuthority implements GraphAuthority {
     return this.#snapshot.graphId;
   }
 
+  async listGraphEpochPage() {
+    return {
+      epochs: [
+        {
+          schemaVersion: 1 as const,
+          rootSessionId: ROOT_SESSION_ID,
+          epoch: 1,
+          graphId: this.#snapshot.graphId,
+          createdAt: 0,
+        },
+      ],
+      nextBeforeEpoch: null,
+      currentEpoch: 1,
+    };
+  }
+
   async getSnapshot(): Promise<AgentGraphClientSnapshot> {
     return structuredClone(this.#snapshot);
   }
 
+  async getGraphSnapshot(): Promise<AgentGraphClientSnapshot> {
+    return structuredClone(this.#snapshot);
+  }
+
   async inspectOperator(): Promise<AgentGraphOperatorInspection> {
+    return inspection(this.#snapshot);
+  }
+
+  async inspectGraphOperator(): Promise<AgentGraphOperatorInspection> {
     return inspection(this.#snapshot);
   }
 

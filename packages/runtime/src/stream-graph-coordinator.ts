@@ -1,6 +1,7 @@
 import type { AgentGraphClientProjectionStore } from '@maka/core/agent-graph-client-projection';
 import type { AgentGraphIntentClaim } from '@maka/core/agent-graph-control';
 import type { AgentGraphEpochBinding, AgentGraphEpochStore } from '@maka/core/agent-graph-epoch';
+import type { AgentGraphEpochPage } from '@maka/core/agent-graph-epoch';
 import type {
   AgentGraphScheduleControlStore,
   AgentGraphScheduleUpdate,
@@ -250,67 +251,34 @@ export class AgentGraphCoordinator {
     rootSessionId: string,
     options: AgentGraphClientSnapshotOptions = {},
   ): Promise<AgentGraphClientSnapshot> {
-    await this.#assertRootGraphReader(rootSessionId);
     const graphId = await this.currentGraphId(rootSessionId);
+    return this.getGraphSnapshot(rootSessionId, graphId, options);
+  }
+
+  async getGraphSnapshot(
+    rootSessionId: string,
+    graphId: string,
+    options: AgentGraphClientSnapshotOptions = {},
+  ): Promise<AgentGraphClientSnapshot> {
+    await this.#assertGraphBelongsToRoot(rootSessionId, graphId);
     let before: ReturnType<typeof decodeAgentGraphTerminalCursor> | undefined;
     try {
       before = options.terminalCursor
         ? decodeAgentGraphTerminalCursor(options.terminalCursor)
         : undefined;
-    } catch {
+    } catch (error) {
       throw new AgentGraphClientOperationError(
         'invalid_request',
-        'Agent graph terminal cursor is invalid',
+        error instanceof Error ? error.message : 'Invalid agent graph terminal cursor',
       );
     }
     if (before && before.graphId !== graphId) {
       throw new AgentGraphClientOperationError(
         'invalid_request',
-        'Agent graph terminal cursor belongs to another root Session',
+        'Agent graph terminal cursor belongs to another graph',
       );
     }
-    const record = await this.#readOrRebuildClientProjection(rootSessionId, graphId);
-    const snapshot = decodeMaterializedAgentGraphClientSnapshot(record.payload, {
-      rootSessionId,
-      graphId,
-      snapshotVersion: record.snapshotVersion,
-    });
-    let terminalPage: Awaited<
-      ReturnType<AgentGraphClientProjectionStore['listAgentGraphClientTerminalActivities']>
-    >;
-    try {
-      terminalPage = await this.#input.controlStore.listAgentGraphClientTerminalActivities(
-        graphId,
-        {
-          limit: AGENT_GRAPH_CLIENT_TERMINAL_PAGE_SIZE,
-          ...(before
-            ? {
-                before: {
-                  eventTime: before.eventTime,
-                  recordId: before.recordId,
-                },
-              }
-            : {}),
-        },
-      );
-    } catch (error) {
-      if (error instanceof AgentGraphClientTerminalCursorError) {
-        throw new AgentGraphClientOperationError('invalid_request', error.message);
-      }
-      throw error;
-    }
-    snapshot.terminalHistory = materializedAgentGraphTerminalHistoryPage(
-      graphId,
-      terminalPage.records.map((activity) =>
-        decodeMaterializedAgentGraphClientActivity(activity.payload, {
-          graphId,
-          recordId: activity.recordId,
-          eventTime: activity.eventTime,
-        }),
-      ),
-      terminalPage.hasMore,
-    );
-    return snapshot;
+    return this.#readSnapshot(rootSessionId, graphId, before);
   }
 
   async readSessionState(rootSessionId: string): Promise<'absent' | 'live' | 'terminal'> {
@@ -321,21 +289,44 @@ export class AgentGraphCoordinator {
     rootSessionId: string,
     graphId: string,
   ): Promise<'absent' | 'live' | 'terminal'> {
-    if (!(await this.listGraphIds(rootSessionId)).includes(graphId)) {
-      throw new AgentGraphClientOperationError(
-        'not_found',
-        `Agent graph ${graphId} does not belong to root Session ${rootSessionId}`,
-      );
-    }
+    await this.#assertGraphBelongsToRoot(rootSessionId, graphId);
     return this.#readSessionStateForGraph(rootSessionId, graphId);
   }
 
-  async listGraphIds(rootSessionId: string): Promise<readonly string[]> {
+  async listGraphEpochs(rootSessionId: string): Promise<readonly AgentGraphEpochBinding[]> {
     requireRootSessionId(rootSessionId);
-    if (!this.#input.epochStore) return [agentGraphIdForRootSession(rootSessionId)];
     const current = await this.currentGraphEpoch(rootSessionId);
+    if (!this.#input.epochStore) return [current];
     const epochs = await this.#input.epochStore.listAgentGraphEpochs(rootSessionId);
-    return epochs.length > 0 ? epochs.map(({ graphId }) => graphId) : [current.graphId];
+    return epochs.length > 0 ? epochs : [current];
+  }
+
+  async listGraphEpochPage(
+    rootSessionId: string,
+    options: { readonly beforeEpoch?: number; readonly limit: number },
+  ): Promise<AgentGraphEpochPage & { readonly currentEpoch: number }> {
+    requireRootSessionId(rootSessionId);
+    const current = await this.currentGraphEpoch(rootSessionId);
+    if (!this.#input.epochStore) {
+      return {
+        epochs:
+          options.beforeEpoch === undefined || current.epoch < options.beforeEpoch ? [current] : [],
+        nextBeforeEpoch: null,
+        currentEpoch: current.epoch,
+      };
+    }
+    const page = await this.#input.epochStore.listAgentGraphEpochPage({
+      rootSessionId,
+      ...options,
+    });
+    if (page.epochs.length > 0 || options.beforeEpoch !== undefined) {
+      return { ...page, currentEpoch: current.epoch };
+    }
+    return { epochs: [current], nextBeforeEpoch: null, currentEpoch: current.epoch };
+  }
+
+  async listGraphIds(rootSessionId: string): Promise<readonly string[]> {
+    return (await this.listGraphEpochs(rootSessionId)).map(({ graphId }) => graphId);
   }
 
   async hasLiveSessionState(rootSessionId: string): Promise<boolean> {
@@ -369,8 +360,16 @@ export class AgentGraphCoordinator {
     rootSessionId: string,
     operatorId: string,
   ): Promise<AgentGraphOperatorInspection> {
-    await this.#assertRootGraphReader(rootSessionId);
     const graphId = await this.currentGraphId(rootSessionId);
+    return this.inspectGraphOperator(rootSessionId, graphId, operatorId);
+  }
+
+  async inspectGraphOperator(
+    rootSessionId: string,
+    graphId: string,
+    operatorId: string,
+  ): Promise<AgentGraphOperatorInspection> {
+    await this.#assertGraphBelongsToRoot(rootSessionId, graphId);
     await this.#readOrRebuildClientProjection(rootSessionId, graphId);
     const materialized = await this.#input.controlStore.readAgentGraphClientProjectionWithOperator(
       graphId,
@@ -825,10 +824,7 @@ export class AgentGraphCoordinator {
       const expectedSnapshotVersion =
         (await this.#input.controlStore.readAgentGraphClientProjection(graphId))?.snapshotVersion ??
         null;
-      const input = await this.#readClientModelInput(rootSessionId);
-      if (input.graphId !== graphId) {
-        throw new Error(`Agent graph rebuild resolved ${input.graphId}, expected ${graphId}`);
-      }
+      const input = await this.#readClientModelInputForGraph(rootSessionId, graphId);
       try {
         return await this.#commitClientProjection(
           input,
@@ -955,7 +951,11 @@ export class AgentGraphCoordinator {
       const existing = await this.#input.controlStore.readAgentGraphClientProjection(
         driver.graphId,
       );
-      const input = await this.#readClientModelInput(driver.rootSessionId, projected);
+      const input = await this.#readClientModelInputForGraph(
+        driver.rootSessionId,
+        driver.graphId,
+        projected,
+      );
       try {
         await this.#commitClientProjection(
           input,
@@ -1253,6 +1253,70 @@ export class AgentGraphCoordinator {
     );
     if (snapshot.scheduleRevision === 0) return 'absent';
     return !snapshot.closed || snapshot.status === 'closing' ? 'live' : 'terminal';
+  }
+
+  async #assertGraphBelongsToRoot(rootSessionId: string, graphId: string): Promise<void> {
+    await this.#assertRootGraphReader(rootSessionId);
+    const current = await this.currentGraphEpoch(rootSessionId);
+    const binding =
+      current.graphId === graphId
+        ? current
+        : await this.#input.epochStore?.readAgentGraphEpochByGraphId(graphId);
+    if (!binding || binding.rootSessionId !== rootSessionId) {
+      throw new AgentGraphClientOperationError(
+        'not_found',
+        `Agent graph ${graphId} does not belong to root Session ${rootSessionId}`,
+      );
+    }
+  }
+
+  async #readSnapshot(
+    rootSessionId: string,
+    graphId: string,
+    before?: ReturnType<typeof decodeAgentGraphTerminalCursor>,
+  ): Promise<AgentGraphClientSnapshot> {
+    const record = await this.#readOrRebuildClientProjection(rootSessionId, graphId);
+    const snapshot = decodeMaterializedAgentGraphClientSnapshot(record.payload, {
+      rootSessionId,
+      graphId,
+      snapshotVersion: record.snapshotVersion,
+    });
+    let terminalPage: Awaited<
+      ReturnType<AgentGraphClientProjectionStore['listAgentGraphClientTerminalActivities']>
+    >;
+    try {
+      terminalPage = await this.#input.controlStore.listAgentGraphClientTerminalActivities(
+        graphId,
+        {
+          limit: AGENT_GRAPH_CLIENT_TERMINAL_PAGE_SIZE,
+          ...(before
+            ? {
+                before: {
+                  eventTime: before.eventTime,
+                  recordId: before.recordId,
+                },
+              }
+            : {}),
+        },
+      );
+    } catch (error) {
+      if (error instanceof AgentGraphClientTerminalCursorError) {
+        throw new AgentGraphClientOperationError('invalid_request', error.message);
+      }
+      throw error;
+    }
+    snapshot.terminalHistory = materializedAgentGraphTerminalHistoryPage(
+      graphId,
+      terminalPage.records.map((activity) =>
+        decodeMaterializedAgentGraphClientActivity(activity.payload, {
+          graphId,
+          recordId: activity.recordId,
+          eventTime: activity.eventTime,
+        }),
+      ),
+      terminalPage.hasMore,
+    );
+    return snapshot;
   }
 
   async #driver(rootSessionId: string): Promise<GraphDriver> {

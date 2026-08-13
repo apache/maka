@@ -73,6 +73,38 @@ describe('SQLite Agent Graph epochs', () => {
         { epoch: 2, graphId: 'agent_graph_2' },
       ],
     );
+    assert.equal((await store.readAgentGraphEpochByGraphId('agent_graph_1'))?.epoch, 1);
+    assert.deepEqual(await store.listAgentGraphEpochPage({ rootSessionId: 'root-1', limit: 1 }), {
+      epochs: [
+        {
+          schemaVersion: 1,
+          rootSessionId: 'root-1',
+          epoch: 2,
+          graphId: 'agent_graph_2',
+          createdAt: 100,
+        },
+      ],
+      nextBeforeEpoch: 2,
+    });
+    assert.deepEqual(
+      await store.listAgentGraphEpochPage({
+        rootSessionId: 'root-1',
+        beforeEpoch: 2,
+        limit: 1,
+      }),
+      {
+        epochs: [
+          {
+            schemaVersion: 1,
+            rootSessionId: 'root-1',
+            epoch: 1,
+            graphId: 'agent_graph_1',
+            createdAt: 0,
+          },
+        ],
+        nextBeforeEpoch: null,
+      },
+    );
     store.close();
   });
 

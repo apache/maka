@@ -32,6 +32,7 @@ export const AGENT_GRAPH_MAX_INSPECTION_WORK = 32;
 export const AGENT_GRAPH_MAX_INSPECTION_CLAIMS = 32;
 export const AGENT_GRAPH_MAX_INSPECTION_ACTIVATIONS = 32;
 export const AGENT_GRAPH_MAX_INSPECTION_RECORDS = 32;
+export const AGENT_GRAPH_EPOCH_PAGE_SIZE = 32;
 
 const AGENT_GRAPH_INSTRUCTION_PREVIEW_MAX_BYTES = 2 * 1024;
 const AGENT_GRAPH_REASON_MAX_BYTES = 12 * 1024;
@@ -300,11 +301,31 @@ export interface AgentGraphOperatorInspection {
 
 export interface AgentGraphQueryInput {
   readonly rootSessionId: string;
+  readonly graphId?: string;
   readonly terminalCursor?: string;
+}
+
+export interface AgentGraphEpochListInput {
+  readonly rootSessionId: string;
+  readonly beforeEpoch?: number;
+}
+
+export interface AgentGraphEpochSummary {
+  readonly epoch: number;
+  readonly graphId: string;
+  readonly createdAt: number;
+  readonly current: boolean;
+}
+
+export interface AgentGraphEpochListResult {
+  readonly rootSessionId: string;
+  readonly epochs: readonly AgentGraphEpochSummary[];
+  readonly nextBeforeEpoch: number | null;
 }
 
 export interface AgentGraphOperatorQueryInput {
   readonly rootSessionId: string;
+  readonly graphId?: string;
   readonly operatorId: string;
 }
 
@@ -318,6 +339,34 @@ export interface AgentGraphStopResult {
 }
 
 export const AGENT_GRAPH_OPERATION_SPECS = {
+  'agent.graph.epochs.query': defineOperation<
+    AgentGraphEpochListInput,
+    AgentGraphEpochListResult,
+    (typeof QUERY_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: QUERY_ERRORS,
+    decodeInput: decodeAgentGraphEpochListInput,
+    decodeOutput: decodeAgentGraphEpochListResult,
+    assertOutputForInput: (input, output) => {
+      assertRootIdentity(input.rootSessionId, output);
+      if (input.beforeEpoch === undefined) {
+        if (output.epochs.filter((entry) => entry.current).length !== 1) {
+          throw invalidProtocolFrame(
+            'Agent graph first epoch page must identify the current epoch',
+          );
+        }
+      } else {
+        if (output.epochs.some((entry) => entry.current)) {
+          throw invalidProtocolFrame('Agent graph historical epoch pages cannot be current');
+        }
+        if (output.epochs.some((entry) => entry.epoch >= input.beforeEpoch!)) {
+          throw invalidProtocolFrame('Agent graph epoch page did not advance its cursor');
+        }
+      }
+    },
+  }),
   'agent.graph.query': defineOperation<
     AgentGraphQueryInput,
     AgentGraphClientSnapshot,
@@ -328,7 +377,12 @@ export const AGENT_GRAPH_OPERATION_SPECS = {
     errors: QUERY_ERRORS,
     decodeInput: decodeAgentGraphQueryInput,
     decodeOutput: decodeAgentGraphClientSnapshot,
-    assertOutputForInput: (input, output) => assertRootIdentity(input.rootSessionId, output),
+    assertOutputForInput: (input, output) => {
+      assertRootIdentity(input.rootSessionId, output);
+      if (input.graphId !== undefined && input.graphId !== output.graphId) {
+        throw invalidProtocolFrame('Agent graph result changed request graph identity');
+      }
+    },
   }),
   'agent.graph.operator.query': defineOperation<
     AgentGraphOperatorQueryInput,
@@ -342,6 +396,9 @@ export const AGENT_GRAPH_OPERATION_SPECS = {
     decodeOutput: decodeAgentGraphOperatorInspection,
     assertOutputForInput: (input, output) => {
       assertRootIdentity(input.rootSessionId, output);
+      if (input.graphId !== undefined && input.graphId !== output.graphId) {
+        throw invalidProtocolFrame('Agent graph operator result changed request graph identity');
+      }
       if (output.operator.operatorId !== input.operatorId) {
         throw invalidProtocolFrame('Agent graph operator result changed request identity');
       }
@@ -366,10 +423,13 @@ export function decodeAgentGraphQueryInput(value: unknown): AgentGraphQueryInput
     value,
     'agent.graph.query input',
     ['rootSessionId'],
-    ['terminalCursor'],
+    ['graphId', 'terminalCursor'],
   );
   return {
     rootSessionId: requireEntityId(record.rootSessionId, 'rootSessionId'),
+    ...(record.graphId === undefined
+      ? {}
+      : { graphId: requireOpaqueIdentity(record.graphId, 'graphId') }),
     ...(record.terminalCursor === undefined
       ? {}
       : { terminalCursor: requireCursor(record.terminalCursor) }),
@@ -377,14 +437,93 @@ export function decodeAgentGraphQueryInput(value: unknown): AgentGraphQueryInput
 }
 
 export function decodeAgentGraphOperatorQueryInput(value: unknown): AgentGraphOperatorQueryInput {
-  const record = requireExactRecord(value, 'agent.graph.operator.query input', [
-    'rootSessionId',
-    'operatorId',
-  ]);
+  const record = requireShapedRecord(
+    value,
+    'agent.graph.operator.query input',
+    ['rootSessionId', 'operatorId'],
+    ['graphId'],
+  );
   return {
     rootSessionId: requireEntityId(record.rootSessionId, 'rootSessionId'),
+    ...(record.graphId === undefined
+      ? {}
+      : { graphId: requireOpaqueIdentity(record.graphId, 'graphId') }),
     operatorId: requireOpaqueIdentity(record.operatorId, 'operatorId'),
   };
+}
+
+export function decodeAgentGraphEpochListInput(value: unknown): AgentGraphEpochListInput {
+  const record = requireShapedRecord(
+    value,
+    'agent.graph.epochs.query input',
+    ['rootSessionId'],
+    ['beforeEpoch'],
+  );
+  const beforeEpoch =
+    record.beforeEpoch === undefined ? undefined : requireCount(record.beforeEpoch, 'beforeEpoch');
+  if (beforeEpoch === 0) throw invalidProtocolFrame('Invalid beforeEpoch');
+  return {
+    rootSessionId: requireEntityId(record.rootSessionId, 'rootSessionId'),
+    ...(beforeEpoch === undefined ? {} : { beforeEpoch }),
+  };
+}
+
+export function decodeAgentGraphEpochListResult(value: unknown): AgentGraphEpochListResult {
+  requireEncodedByteLimit(value, 'agent.graph.epochs.query result', AGENT_GRAPH_RESULT_MAX_BYTES);
+  const record = requireExactRecord(value, 'agent graph epoch list', [
+    'rootSessionId',
+    'epochs',
+    'nextBeforeEpoch',
+  ]);
+  const result = {
+    rootSessionId: requireEntityId(record.rootSessionId, 'rootSessionId'),
+    epochs: decodeArray(
+      record.epochs,
+      'agent graph epochs',
+      AGENT_GRAPH_EPOCH_PAGE_SIZE,
+      (entry) => {
+        const epoch = requireExactRecord(entry, 'agent graph epoch', [
+          'epoch',
+          'graphId',
+          'createdAt',
+          'current',
+        ]);
+        const epochNumber = requireCount(epoch.epoch, 'epoch');
+        if (epochNumber === 0) throw invalidProtocolFrame('Invalid epoch');
+        return {
+          epoch: epochNumber,
+          graphId: requireOpaqueIdentity(epoch.graphId, 'graphId'),
+          createdAt: requireCount(epoch.createdAt, 'createdAt'),
+          current: requireBoolean(epoch.current, 'current'),
+        };
+      },
+    ),
+    nextBeforeEpoch: decodeOptionalEpochCursor(record.nextBeforeEpoch),
+  };
+  assertUnique(result.epochs, (entry) => String(entry.epoch), 'agent graph epoch');
+  assertUnique(result.epochs, (entry) => entry.graphId, 'agent graph identity');
+  if (result.epochs.filter((entry) => entry.current).length > 1) {
+    throw invalidProtocolFrame('Agent graph epoch list identifies multiple current epochs');
+  }
+  for (let index = 1; index < result.epochs.length; index += 1) {
+    if (result.epochs[index - 1]!.epoch - 1 !== result.epochs[index]!.epoch) {
+      throw invalidProtocolFrame('Agent graph epoch page must be contiguous and newest-first');
+    }
+  }
+  if (result.epochs.some((entry) => entry.current) && !result.epochs[0]?.current) {
+    throw invalidProtocolFrame('Agent graph current epoch must be first');
+  }
+  if (result.nextBeforeEpoch !== null && result.nextBeforeEpoch !== result.epochs.at(-1)?.epoch) {
+    throw invalidProtocolFrame('Agent graph epoch cursor must continue after the oldest result');
+  }
+  return result;
+}
+
+function decodeOptionalEpochCursor(value: unknown): number | null {
+  if (value === null) return null;
+  const cursor = requireCount(value, 'nextBeforeEpoch');
+  if (cursor === 0) throw invalidProtocolFrame('Invalid nextBeforeEpoch');
+  return cursor;
 }
 
 export function decodeAgentGraphStopInput(value: unknown): AgentGraphStopInput {

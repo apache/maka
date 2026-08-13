@@ -511,6 +511,8 @@ describe('host-managed agent graph coordinator', () => {
           throw new Error('unexpected epoch advance');
         },
         listAgentGraphEpochs: async () => [],
+        readAgentGraphEpochByGraphId: async () => undefined,
+        listAgentGraphEpochPage: async () => ({ epochs: [], nextBeforeEpoch: null }),
       },
       runtime: {
         provisionAgentGraphOperator: async () => {
@@ -797,17 +799,20 @@ describe('host-managed agent graph coordinator', () => {
     }
   });
 
-  test('keeps completed graph snapshots readable after the root Session is archived', async () => {
-    let projection:
-      | {
-          schemaVersion: 1;
-          graphId: string;
-          rootSessionId: string;
-          snapshotVersion: string;
-          payload: unknown;
-          materializedAt: number;
-        }
-      | undefined;
+  test('rebuilds an exact historical graph projection without falling through to current', async () => {
+    const historicalGraphId = agentGraphIdForRootSession('root-session');
+    const currentGraphId = agentGraphIdForRootSessionEpoch('root-session', 2);
+    const projections = new Map<
+      string,
+      {
+        schemaVersion: 1;
+        graphId: string;
+        rootSessionId: string;
+        snapshotVersion: string;
+        payload: unknown;
+        materializedAt: number;
+      }
+    >();
     const coordinator = new AgentGraphCoordinator({
       sessionStore: {
         listForRecovery: async () => [],
@@ -820,26 +825,71 @@ describe('host-managed agent graph coordinator', () => {
       },
       runStore: { listSessionRuns: async () => [] },
       runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      epochStore: {
+        resolveCurrentAgentGraphEpoch: async () => ({
+          schemaVersion: 1,
+          rootSessionId: 'root-session',
+          epoch: 2,
+          graphId: currentGraphId,
+          createdAt: 2,
+        }),
+        listAgentGraphEpochs: async () => [
+          {
+            schemaVersion: 1 as const,
+            rootSessionId: 'root-session',
+            epoch: 1,
+            graphId: historicalGraphId,
+            createdAt: 1,
+          },
+          {
+            schemaVersion: 1,
+            rootSessionId: 'root-session',
+            epoch: 2,
+            graphId: currentGraphId,
+            createdAt: 2,
+          },
+        ],
+        readAgentGraphEpochByGraphId: async (graphId: string) =>
+          graphId === historicalGraphId
+            ? {
+                schemaVersion: 1 as const,
+                rootSessionId: 'root-session',
+                epoch: 1,
+                graphId: historicalGraphId,
+                createdAt: 1,
+              }
+            : graphId === currentGraphId
+              ? {
+                  schemaVersion: 1 as const,
+                  rootSessionId: 'root-session',
+                  epoch: 2,
+                  graphId: currentGraphId,
+                  createdAt: 2,
+                }
+              : undefined,
+        listAgentGraphEpochPage: async () => ({ epochs: [], nextBeforeEpoch: null }),
+      },
       controlStore: {
         listAgentGraphOperatorProvisions: async () => [],
         listAgentGraphScheduleUpdates: async () => [],
         listAgentGraphIntentClaims: async () => [],
         listAgentGraphClientClaimAdmissions: async () => [],
-        readAgentGraphClientProjection: async () => projection,
+        readAgentGraphClientProjection: async (graphId: string) => projections.get(graphId),
         commitAgentGraphClientProjection: async (request: {
           graphId: string;
           rootSessionId: string;
           snapshotVersion: string;
           snapshot: unknown;
         }) => {
-          projection = {
-            schemaVersion: 1,
+          const projection = {
+            schemaVersion: 1 as const,
             graphId: request.graphId,
             rootSessionId: request.rootSessionId,
             snapshotVersion: request.snapshotVersion,
             payload: request.snapshot,
             materializedAt: 1,
           };
+          projections.set(request.graphId, projection);
           return projection;
         },
         readAgentGraphClientOperatorProjection: async () => undefined,
@@ -852,8 +902,16 @@ describe('host-managed agent graph coordinator', () => {
       newId: randomUUID,
       rootSessionId: 'root-session',
     } as unknown as AgentGraphCoordinatorInput);
-    const snapshot = await coordinator.getSnapshot('root-session');
-    assert.equal(snapshot.status, 'empty');
+    const historical = await coordinator.getGraphSnapshot('root-session', historicalGraphId);
+    assert.equal(historical.graphId, historicalGraphId);
+    assert.equal(historical.status, 'empty');
+    const current = await coordinator.getSnapshot('root-session');
+    assert.equal(current.graphId, currentGraphId);
+    await assert.rejects(
+      coordinator.getGraphSnapshot('root-session', agentGraphIdForRootSession('another-root')),
+      (error: unknown) =>
+        error instanceof AgentGraphClientOperationError && error.code === 'not_found',
+    );
     await assert.rejects(
       coordinator.toolsForSession('root-session'),
       /Archived Sessions cannot supervise/,
