@@ -194,7 +194,7 @@ export class FakeBackend implements AgentBackend {
           }
           if (pending.length > 0) {
             const nextText = rewriteTarget
-              ? `${waitingPrefix}6 NEW`
+              ? `${waitingPrefix}6 NEW streamed after the remount`
               : `${waitingPrefix}\n\nAcknowledged steering: ${steered.join(' | ')}`;
             const delta = nextText.slice(waitingText.length);
             waitingText = nextText;
