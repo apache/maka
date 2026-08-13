@@ -109,6 +109,8 @@ import {
 export { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
 
 const SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE = 256;
+const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_MESSAGES = 1_024;
+const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 
 const require = createRequire(import.meta.url);
 const AGENT_GRAPH_CONTROL_DELETE_TABLES = [...SQLITE_AGENT_GRAPH_CONTROL_TABLES].reverse();
@@ -1649,6 +1651,8 @@ export class SqliteSessionMetadataStore {
       }
       const contributions = new Map<string, SessionTurnContribution>();
       let nextPosition: number | null = position;
+      let sourceMessages = 0;
+      let sourceBytes = 0;
       while (nextPosition <= fixedThrough) {
         const rows = this.db
           .prepare(
@@ -1670,7 +1674,21 @@ export class SqliteSessionMetadataStore {
         }
         for (const row of rows) {
           const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+          const recordBytes = storedMessageRecordBytes(row, sessionId, sequence);
+          if (
+            sourceMessages > 0 &&
+            (sourceMessages >= SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_MESSAGES ||
+              sourceBytes + recordBytes > SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_BYTES)
+          ) {
+            return {
+              throughSequence: fixedThrough,
+              contributions: [...contributions.values()],
+              nextPosition: sequence,
+            };
+          }
           const message = decodeStoredMessageRecordRow(this.db, sessionId, row);
+          sourceMessages += 1;
+          sourceBytes += recordBytes;
           if (!('turnId' in message) || typeof message.turnId !== 'string') {
             nextPosition = sequence + 1;
             continue;
@@ -4980,6 +4998,23 @@ interface StoredSessionMessagePayloadRow {
   readonly record_json?: unknown;
   readonly record_bytes?: unknown;
   readonly sha256?: unknown;
+}
+
+function storedMessageRecordBytes(
+  row: StoredSessionMessagePayloadRow,
+  sessionId: string,
+  sequence: number,
+): number {
+  if (row.record_bytes !== null) {
+    return requireTranscriptRecordByteLength(row.record_bytes, sessionId, sequence);
+  }
+  if (
+    typeof row.record_json !== 'string' ||
+    row.record_json === SQLITE_SESSION_MESSAGE_CHUNK_MARKER
+  ) {
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+  }
+  return Buffer.byteLength(row.record_json, 'utf8');
 }
 
 function decodeStoredMessageRecordRow(

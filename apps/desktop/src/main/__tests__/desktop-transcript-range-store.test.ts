@@ -10,8 +10,22 @@ import {
   createDesktopTranscriptRangeController,
   DesktopTranscriptRangeStore,
 } from '../../renderer/desktop-transcript-range-store.js';
+import { mergeSettledMessages } from '../../renderer/session-message-settlement.js';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
+
+test('merges a settled tail without dropping earlier messages', () => {
+  const earlier = assistantMessage('earlier', 'assistant-earlier');
+  const current = assistantMessage('partial', 'assistant-current');
+  const settled = assistantMessage('complete', current.id);
+  const latest = assistantMessage('latest', 'assistant-latest');
+
+  assert.deepEqual(mergeSettledMessages([earlier, current], [settled, latest]), [
+    earlier,
+    settled,
+    latest,
+  ]);
+});
 
 test('moves a fragmented overlay record to durable storage without duplicating it', () => {
   const message = assistantMessage('x'.repeat(DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES * 2));
@@ -21,20 +35,20 @@ test('moves a fragmented overlay record to durable storage without duplicating i
     hostEpoch: 'host-1',
   };
   const store = new DesktopTranscriptRangeStore();
-  const snapshot = encodeDesktopTranscriptSnapshot({
+  const snapshot = [...encodeDesktopTranscriptSnapshot({
     ...identity,
     durableThrough: null,
     durable: [],
     overlay: [message],
     hasOlder: false,
     hasNewer: false,
-  });
+  })];
 
   assert.ok(snapshot.length > 1);
   for (const [index, batch] of snapshot.entries()) {
     assert.ok(
       batch.fragments.reduce(
-        (total, fragment) => total + Buffer.from(fragment.data, 'base64').byteLength,
+        (total, fragment) => total + fragment.data.byteLength,
         0,
       ) <= DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
     );
@@ -43,14 +57,14 @@ test('moves a fragmented overlay record to durable storage without duplicating i
   assert.deepEqual(store.snapshot().messages, [message]);
   assert.equal(store.hasDurableMessage(message.id), false);
 
-  const change = encodeDesktopTranscriptChange(identity, {
+  const change = [...encodeDesktopTranscriptChange(identity, {
     durableThrough: 4,
     durableUpserts: [{ sequence: 4, message }],
     evictedDurableSequences: [],
     completedOverlayMessageIds: [message.id],
     hasOlder: true,
     hasNewer: false,
-  });
+  })];
   for (const batch of change) store.accept(batch);
   assert.deepEqual(store.snapshot().messages, [message]);
   assert.equal(store.hasDurableMessage(message.id), true);
@@ -61,7 +75,7 @@ test('moves a fragmented overlay record to durable storage without duplicating i
 
 test('drops stale transcript batches after a generation reset', () => {
   const store = new DesktopTranscriptRangeStore();
-  const oldBatches = encodeDesktopTranscriptSnapshot({
+  const oldBatches = [...encodeDesktopTranscriptSnapshot({
     sessionId: 'session-1',
     generation: 'old',
     hostEpoch: 'host-1',
@@ -70,9 +84,9 @@ test('drops stale transcript batches after a generation reset', () => {
     overlay: [],
     hasOlder: false,
     hasNewer: false,
-  });
+  })];
   const nextMessage = assistantMessage('new');
-  const nextBatches = encodeDesktopTranscriptSnapshot({
+  const nextBatches = [...encodeDesktopTranscriptSnapshot({
     sessionId: 'session-1',
     generation: 'next',
     hostEpoch: 'host-2',
@@ -81,11 +95,11 @@ test('drops stale transcript batches after a generation reset', () => {
     overlay: [],
     hasOlder: true,
     hasNewer: false,
-  });
+  })];
 
   for (const batch of oldBatches) store.accept(batch);
   for (const batch of nextBatches) store.accept(batch);
-  const staleChange = encodeDesktopTranscriptChange(
+  const staleChange = [...encodeDesktopTranscriptChange(
     { sessionId: 'session-1', generation: 'old', hostEpoch: 'host-1' },
     {
       durableThrough: 3,
@@ -95,7 +109,7 @@ test('drops stale transcript batches after a generation reset', () => {
       hasOlder: false,
       hasNewer: false,
     },
-  );
+  )];
   for (const batch of staleChange) assert.equal(store.accept(batch), false);
   assert.deepEqual(store.snapshot().messages, [nextMessage]);
 });

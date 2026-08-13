@@ -9,6 +9,7 @@ export interface DesktopTranscriptRangeController {
   readonly store: DesktopTranscriptRangeStore;
   ready(): Promise<void>;
   loadBefore(): Promise<void>;
+  loadAround(sequence: number): Promise<void>;
   loadLatest(): Promise<void>;
   reload(): Promise<void>;
   close(): Promise<void>;
@@ -34,6 +35,9 @@ export function createDesktopTranscriptRangeController(
       const range = store.range();
       if (!range.hasOlder) return;
       await (await current()).loadBefore(range.oldestSequence);
+    },
+    async loadAround(sequence) {
+      await (await current()).loadAround(sequence);
     },
     async loadLatest() {
       const range = store.range();
@@ -224,7 +228,7 @@ export class DesktopTranscriptRangeStore {
     ) {
       throw new Error('Desktop transcript fragment identity changed');
     }
-    const bytes = decodeBase64(fragment.data);
+    const bytes = fragment.data;
     if (
       fragment.byteOffset < 0 ||
       fragment.byteOffset + bytes.byteLength > fragment.totalBytes
@@ -293,11 +297,6 @@ export class DesktopTranscriptRangeStore {
       this.#newestSequence = Math.max(this.#newestSequence ?? sequence, sequence);
     }
   }
-}
-
-function decodeBase64(value: string): Uint8Array {
-  const decoded = atob(value);
-  return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {

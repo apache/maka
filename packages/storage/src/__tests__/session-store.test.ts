@@ -629,6 +629,40 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('bounds turn contribution source scanning independently of turn count', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-source-bound-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 1_025 }, (_, index) => ({
+          type: 'assistant' as const,
+          id: `assistant-${index}`,
+          turnId: 'turn-1',
+          ts: index,
+          text: 'x',
+          modelId: 'model-1',
+        })),
+      );
+
+      const first = await store.readTurnContributionsSnapshot(session.id, null, 0, 128);
+      assert.equal(first.nextPosition, 1_024);
+      assert.equal(first.contributions.length, 1);
+      const second = await store.readTurnContributionsSnapshot(
+        session.id,
+        first.throughSequence,
+        first.nextPosition!,
+        128,
+      );
+      assert.equal(second.nextPosition, null);
+      assert.equal(second.contributions.length, 1);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('clears unread when the current read marker is already the latest visible message', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-read-marker-'));
     const store = createSessionStore(root);

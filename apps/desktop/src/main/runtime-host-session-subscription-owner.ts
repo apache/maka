@@ -56,6 +56,7 @@ export class SessionRemovedSubscriptionError extends Error {
 export class RuntimeHostSessionSubscriptionOwner {
   readonly #deps: RuntimeHostSessionSubscriptionOwnerDeps;
   #attempt?: SubscriptionAttempt;
+  #candidate?: SubscriptionAttempt;
   #readyTask: Promise<void> = Promise.resolve();
   #refreshTask?: Promise<void>;
   #started = false;
@@ -93,26 +94,68 @@ export class RuntimeHostSessionSubscriptionOwner {
     if (this.#closed) return;
     this.#closed = true;
     const attempt = this.#attempt;
+    const candidate = this.#candidate;
     this.#attempt = undefined;
+    this.#candidate = undefined;
     attempt?.fail(ownerClosed());
+    candidate?.fail(ownerClosed());
     attempt?.replica?.close();
-    await attempt?.handle.close().catch(() => undefined);
+    candidate?.replica?.close();
+    await Promise.all([
+      attempt?.handle.close().catch(() => undefined),
+      candidate?.handle.close().catch(() => undefined),
+    ]);
   }
 
   async #refresh(): Promise<void> {
     await this.waitUntilReady();
     this.#assertOpen();
-    const attempt = this.#attempt;
-    if (!attempt) throw ownerClosed();
-    const task = this.#establish(attempt);
-    this.#replaceReadyTask(task);
-    await this.waitUntilReady();
+    const previous = this.#attempt;
+    if (!previous) throw ownerClosed();
+    let attempt: SubscriptionAttempt | undefined;
+    try {
+      const prepared = await this.#prepare();
+      attempt = prepared.attempt;
+      if (attempt.failure) throw attempt.failure;
+      await this.#deps.commit(prepared.prepared, false);
+      if (attempt.failure) throw attempt.failure;
+      if (this.#closed || this.#candidate !== attempt || this.#attempt !== previous) {
+        throw ownerClosed();
+      }
+      this.#candidate = undefined;
+      this.#attempt = attempt;
+      previous.replica?.close();
+      await previous.handle.close().catch(() => undefined);
+      while (attempt.pendingFrames.length > 0) {
+        const frame = attempt.pendingFrames.shift()!;
+        attempt.pendingFrameBytes -= Buffer.byteLength(JSON.stringify(frame), 'utf8');
+        await this.#deps.acceptFrame(frame);
+        if (attempt.failure) throw attempt.failure;
+      }
+      attempt.phase = 'active';
+    } catch (error) {
+      const failure = asError(error);
+      if (attempt && this.#attempt === attempt) {
+        this.#replaceReadyTask(this.#establish(attempt, failure));
+        await this.waitUntilReady();
+        return;
+      }
+      if (attempt && this.#candidate === attempt) this.#candidate = undefined;
+      attempt?.replica?.close();
+      await attempt?.handle.close().catch(() => undefined);
+      throw failure;
+    }
   }
 
   async #establish(failed?: SubscriptionAttempt, initialError?: Error): Promise<void> {
     let recoveryError = initialError;
     if (recoveryError) this.#deps.recoveryStarted(recoveryError);
     if (failed) {
+      const candidate = this.#candidate;
+      this.#candidate = undefined;
+      candidate?.fail(ownerClosed());
+      candidate?.replica?.close();
+      await candidate?.handle.close().catch(() => undefined);
       if (this.#attempt === failed) this.#attempt = undefined;
       failed.replica?.close();
       await failed.handle.close().catch(() => undefined);
@@ -141,6 +184,9 @@ export class RuntimeHostSessionSubscriptionOwner {
         if (attempt.failure) throw attempt.failure;
         await this.#deps.commit(prepared, recoveryError !== undefined);
         if (attempt.failure) throw attempt.failure;
+        if (this.#closed || this.#candidate !== attempt) throw ownerClosed();
+        this.#candidate = undefined;
+        this.#attempt = attempt;
         while (attempt.pendingFrames.length > 0) {
           const frame = attempt.pendingFrames.shift()!;
           attempt.pendingFrameBytes -= Buffer.byteLength(JSON.stringify(frame), 'utf8');
@@ -149,6 +195,7 @@ export class RuntimeHostSessionSubscriptionOwner {
         }
         attempt.phase = "active";
       } catch (error) {
+        if (this.#candidate === attempt) this.#candidate = undefined;
         if (this.#attempt === attempt) this.#attempt = undefined;
         attempt.replica?.close();
         await attempt.handle.close().catch(() => undefined);
@@ -195,7 +242,11 @@ export class RuntimeHostSessionSubscriptionOwner {
         fail(error);
       },
     };
-    this.#attempt = attempt;
+    if (this.#candidate) {
+      await handle.close().catch(() => undefined);
+      throw new Error('Runtime Host Session replacement is already preparing');
+    }
+    this.#candidate = attempt;
     void this.#pump(attempt);
 
     try {
@@ -209,7 +260,7 @@ export class RuntimeHostSessionSubscriptionOwner {
       if (loaded.kind === "failure") throw loaded.error;
       attempt.replica = loaded.replica;
       if (attempt.failure) throw attempt.failure;
-      if (this.#closed || this.#attempt !== attempt) throw ownerClosed();
+      if (this.#closed || this.#candidate !== attempt) throw ownerClosed();
       return {
         attempt,
         prepared: {
@@ -219,7 +270,7 @@ export class RuntimeHostSessionSubscriptionOwner {
         },
       };
     } catch (error) {
-      if (this.#attempt === attempt) this.#attempt = undefined;
+      if (this.#candidate === attempt) this.#candidate = undefined;
       attempt.replica?.close();
       await handle.close().catch(() => undefined);
       throw error;
@@ -229,7 +280,7 @@ export class RuntimeHostSessionSubscriptionOwner {
   async #pump(attempt: SubscriptionAttempt): Promise<void> {
     try {
       for await (const frame of attempt.handle.events) {
-        if (this.#closed || this.#attempt !== attempt) return;
+        if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) return;
         if (frame.kind === "subscription.closed") {
           throw subscriptionClosedError(frame.reason);
         }
@@ -254,7 +305,7 @@ export class RuntimeHostSessionSubscriptionOwner {
         throw new Error("Runtime Host Session subscription ended unexpectedly");
       }
     } catch (error) {
-      if (this.#closed || this.#attempt !== attempt) return;
+      if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) return;
       const failure = asError(error);
       if (attempt.phase === "preparing") {
         attempt.fail(failure);

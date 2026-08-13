@@ -8,7 +8,7 @@ export interface DesktopTranscriptFragment {
   readonly order: number | null;
   readonly byteOffset: number;
   readonly totalBytes: number;
-  readonly data: string;
+  readonly data: Uint8Array;
 }
 
 export interface DesktopTranscriptBatch {
@@ -88,12 +88,12 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
       !isSequence(fragment.byteOffset) ||
       !isSequence(fragment.totalBytes) ||
       (fragment.totalBytes as number) < 1 ||
-      typeof fragment.data !== 'string' ||
-      fragment.data.length > Math.ceil(DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES / 3) * 4
+      !(fragment.data instanceof Uint8Array) ||
+      fragment.data.byteLength > DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES
     ) {
       throw new Error('Invalid Desktop transcript fragment');
     }
-    const bytes = decodedBase64Bytes(fragment.data);
+    const bytes = fragment.data.byteLength;
     if (
       bytes < 1 ||
       (fragment.byteOffset as number) + bytes > (fragment.totalBytes as number)
@@ -110,14 +110,4 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
 
 function isSequence(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
-}
-
-function decodedBase64Bytes(value: string): number {
-  if (
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
-  ) {
-    throw new Error('Invalid Desktop transcript fragment encoding');
-  }
-  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
-  return (value.length / 4) * 3 - padding;
 }

@@ -7,6 +7,17 @@ export interface RefreshMessagesOptions {
   requiredAssistantMessageId?: string;
 }
 
+export function mergeSettledMessages(
+  current: readonly StoredMessage[],
+  incoming: readonly StoredMessage[],
+): StoredMessage[] {
+  const incomingById = new Map(incoming.map((message) => [message.id, message]));
+  const knownIds = new Set(current.map((message) => message.id));
+  return current
+    .map((message) => incomingById.get(message.id) ?? message)
+    .concat(incoming.filter((message) => !knownIds.has(message.id)));
+}
+
 export async function readSettledMessages(
   sessionId: string,
   options: RefreshMessagesOptions = {},

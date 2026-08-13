@@ -105,6 +105,12 @@ interface TranscriptConsumer {
   generation: string;
 }
 
+interface PendingTranscriptConsumer {
+  readonly targetId: number;
+  readonly cancelled: Promise<never>;
+  cancel(): void;
+}
+
 interface ObserverRegistration {
   readonly state: ObservedSessionState;
   readonly group: ObserverTargetGroup;
@@ -128,6 +134,7 @@ export class RuntimeHostSessionObserver {
   readonly #states = new Map<string, ObservedSessionState>();
   readonly #observers = new Map<string, ObserverRegistration>();
   readonly #transcriptConsumers = new Map<string, ObservedSessionState>();
+  readonly #pendingTranscriptConsumers = new Map<string, PendingTranscriptConsumer>();
   readonly #client: SessionObserverClient;
   readonly #emitSessionsChanged: RuntimeHostSessionObserverDeps["emitSessionsChanged"];
   readonly #emitSessionDomainChanged: (change: SessionDomainChange) => void;
@@ -174,18 +181,33 @@ export class RuntimeHostSessionObserver {
     target: RuntimeHostTranscriptTarget,
   ): Promise<DesktopTranscriptOpenResult> {
     this.#assertOpen();
-    if (this.#transcriptConsumers.has(consumerId)) {
+    if (
+      this.#transcriptConsumers.has(consumerId) ||
+      this.#pendingTranscriptConsumers.has(consumerId)
+    ) {
       throw new Error('Desktop transcript consumer identity was reused');
     }
     const state = this.#state(sessionId);
+    let cancel!: () => void;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      cancel = () => reject(new Error('Desktop transcript open was cancelled'));
+    });
+    void cancelled.catch(() => undefined);
+    const pending: PendingTranscriptConsumer = {
+      targetId: target.id,
+      cancelled,
+      cancel,
+    };
+    this.#pendingTranscriptConsumers.set(consumerId, pending);
     state.pendingTranscriptConsumers += 1;
     let replica: DesktopTranscriptReplica;
     let admitted = false;
     try {
-      await state.subscriptionOwner.waitUntilReady();
+      await Promise.race([state.subscriptionOwner.waitUntilReady(), cancelled]);
       if (!state.replica?.resident) {
-        await state.subscriptionOwner.refresh();
+        await Promise.race([state.subscriptionOwner.refresh(), cancelled]);
       }
+      if (this.#pendingTranscriptConsumers.get(consumerId) !== pending) await cancelled;
       replica = state.replica!;
       if (!replica?.resident) {
         throw new Error('Desktop transcript replica is unavailable');
@@ -195,6 +217,9 @@ export class RuntimeHostSessionObserver {
       }
       admitted = true;
     } finally {
+      if (this.#pendingTranscriptConsumers.get(consumerId) === pending) {
+        this.#pendingTranscriptConsumers.delete(consumerId);
+      }
       state.pendingTranscriptConsumers -= 1;
       if (!admitted) {
         this.#touchReplica(state);
@@ -256,6 +281,15 @@ export class RuntimeHostSessionObserver {
   }
 
   async closeTranscript(consumerId: string, targetId?: number): Promise<void> {
+    const pending = this.#pendingTranscriptConsumers.get(consumerId);
+    if (pending) {
+      if (targetId !== undefined && pending.targetId !== targetId) {
+        throw new Error('Desktop transcript consumer belongs to another renderer');
+      }
+      this.#pendingTranscriptConsumers.delete(consumerId);
+      pending.cancel();
+      return;
+    }
     const state = this.#transcriptConsumers.get(consumerId);
     const consumer = state?.transcriptConsumers.get(consumerId);
     if (!state || !consumer) return;
@@ -419,6 +453,9 @@ export class RuntimeHostSessionObserver {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    const pendingTranscripts = [...this.#pendingTranscriptConsumers.values()];
+    this.#pendingTranscriptConsumers.clear();
+    for (const pending of pendingTranscripts) pending.cancel();
     const states = [...this.#states.values()];
     this.#states.clear();
     this.#observers.clear();
@@ -943,7 +980,7 @@ export class RuntimeHostSessionObserver {
 
   #sendTranscriptBatches(
     consumer: TranscriptConsumer,
-    batches: readonly DesktopTranscriptBatch[],
+    batches: Iterable<DesktopTranscriptBatch>,
   ): void {
     const channel = transcriptChannel(consumer.consumerId);
     for (const batch of batches) consumer.target.send(channel, batch);

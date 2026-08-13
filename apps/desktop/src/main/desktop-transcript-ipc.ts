@@ -29,7 +29,7 @@ interface TranscriptBatchContent {
 
 export function encodeDesktopTranscriptSnapshot(
   snapshot: DesktopTranscriptReplicaSnapshot,
-): DesktopTranscriptBatch[] {
+): Iterable<DesktopTranscriptBatch> {
   return encodeDesktopTranscriptBatches(snapshot, {
     durableThrough: snapshot.durableThrough,
     durable: snapshot.durable,
@@ -45,7 +45,7 @@ export function encodeDesktopTranscriptSnapshot(
 export function encodeDesktopTranscriptChange(
   identity: TranscriptBatchIdentity,
   change: DesktopTranscriptReplicaChange,
-): DesktopTranscriptBatch[] {
+): Iterable<DesktopTranscriptBatch> {
   return encodeDesktopTranscriptBatches(identity, {
     durableThrough: change.durableThrough,
     durable: change.durableUpserts,
@@ -58,40 +58,31 @@ export function encodeDesktopTranscriptChange(
   });
 }
 
-function encodeDesktopTranscriptBatches(
+function* encodeDesktopTranscriptBatches(
   identity: TranscriptBatchIdentity,
   content: TranscriptBatchContent,
-): DesktopTranscriptBatch[] {
-  const fragments = [
-    ...content.durable.flatMap((entry) =>
-      encodeMessage('durable', entry.sequence, null, entry.message),
-    ),
-    ...content.overlay.flatMap((message, order) =>
-      encodeMessage('overlay', message.id, order, message),
-    ),
-  ];
-  const batches: DesktopTranscriptBatch[] = [];
-  let fragmentIndex = 0;
+): Iterable<DesktopTranscriptBatch> {
+  const fragments = encodeMessages(content);
+  let fragment = fragments.next();
   let evictedIndex = 0;
   let completedIndex = 0;
   let first = true;
   while (
-    fragmentIndex < fragments.length ||
+    !fragment.done ||
     evictedIndex < content.evictedDurableSequences.length ||
     completedIndex < content.completedOverlayMessageIds.length ||
     first
   ) {
     const batchFragments: DesktopTranscriptFragment[] = [];
     let rawBytes = 0;
-    while (fragmentIndex < fragments.length) {
-      const fragment = fragments[fragmentIndex]!;
-      const bytes = Buffer.from(fragment.data, 'base64').byteLength;
+    while (!fragment.done) {
+      const bytes = fragment.value.data.byteLength;
       if (batchFragments.length > 0 && rawBytes + bytes > DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES) {
         break;
       }
-      batchFragments.push(fragment);
+      batchFragments.push(fragment.value);
       rawBytes += bytes;
-      fragmentIndex += 1;
+      fragment = fragments.next();
     }
     const evictedDurableSequences = content.evictedDurableSequences.slice(
       evictedIndex,
@@ -115,10 +106,10 @@ function encodeDesktopTranscriptBatches(
       completedIndex += 1;
     }
     const ready =
-      fragmentIndex === fragments.length &&
+      fragment.done === true &&
       evictedIndex === content.evictedDurableSequences.length &&
       completedIndex === content.completedOverlayMessageIds.length;
-    batches.push({
+    yield {
       ...identity,
       durableThrough: content.durableThrough,
       fragments: batchFragments,
@@ -128,31 +119,37 @@ function encodeDesktopTranscriptBatches(
       hasNewer: content.hasNewer,
       reset: content.reset && first,
       ready,
-    });
+    };
     first = false;
   }
-  return batches;
 }
 
-function encodeMessage(
+function* encodeMessages(content: TranscriptBatchContent): Generator<DesktopTranscriptFragment> {
+  for (const entry of content.durable) {
+    yield* encodeMessage('durable', entry.sequence, null, entry.message);
+  }
+  for (const [order, message] of content.overlay.entries()) {
+    yield* encodeMessage('overlay', message.id, order, message);
+  }
+}
+
+function* encodeMessage(
   source: 'durable' | 'overlay',
   identity: number | string,
   order: number | null,
   message: StoredMessage,
-): DesktopTranscriptFragment[] {
+): Generator<DesktopTranscriptFragment> {
   const bytes = Buffer.from(JSON.stringify(message), 'utf8');
-  const fragments: DesktopTranscriptFragment[] = [];
   for (let byteOffset = 0; byteOffset < bytes.byteLength; ) {
     const end = Math.min(byteOffset + DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES, bytes.byteLength);
-    fragments.push({
+    yield {
       source,
       identity,
       order,
       byteOffset,
       totalBytes: bytes.byteLength,
-      data: bytes.subarray(byteOffset, end).toString('base64'),
-    });
+      data: Uint8Array.from(bytes.subarray(byteOffset, end)),
+    };
     byteOffset = end;
   }
-  return fragments;
 }

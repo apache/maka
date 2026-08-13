@@ -16,6 +16,7 @@ import {
   type RuntimeHostSessionObserverTarget,
   type RuntimeHostTranscriptTarget,
 } from "../runtime-host-session-observer.js";
+import { RuntimeHostSessionSubscriptionOwner } from '../runtime-host-session-subscription-owner.js';
 import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
 
 test("joins an active Turn without losing or replaying assistant text", async () => {
@@ -437,6 +438,37 @@ test('restores transcript consumers across Host replacement', async () => {
     ['first', 'second', 'third'],
   );
   await observations.close();
+});
+
+test('cancels a transcript consumer while its replica is still preparing', async () => {
+  const transcript = deferred<StoredMessage[]>();
+  const events = new AsyncFrameQueue();
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: transcript.promise,
+          events,
+          async close() {
+            events.end();
+          },
+        }),
+    },
+    emitSessionsChanged() {},
+  });
+  const opening = observer.openTranscript('session-1', 'consumer-pending', {
+    id: 20,
+    send() {},
+    once() {},
+    off() {},
+  });
+  await Promise.resolve();
+
+  await observer.closeTranscript('consumer-pending', 20);
+  await assert.rejects(() => opening, /cancelled/);
+  transcript.resolve([]);
+  await observer.close();
 });
 
 test('advances the read marker when the visible durable tail advances', async () => {
@@ -892,6 +924,58 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
 
   await observer.unobserve("observer-1");
   await observer.close();
+});
+
+test('keeps the active subscription when a cold replica refresh fails', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  let opens = 0;
+  let firstCloses = 0;
+  let secondCloses = 0;
+  const accepted: SubscriptionFrame[] = [];
+  const owner = new RuntimeHostSessionSubscriptionOwner({
+    client: {
+      openSession: async () => {
+        opens += 1;
+        const first = opens === 1;
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: first ? Promise.resolve([]) : Promise.reject(new Error('refresh failed')),
+          events: first ? firstEvents : new AsyncFrameQueue(),
+          async close() {
+            if (first) {
+              firstCloses += 1;
+              firstEvents.end();
+            } else {
+              secondCloses += 1;
+            }
+          },
+        });
+      },
+    },
+    sessionId: 'session-1',
+    now: () => 0,
+    commit() {},
+    acceptFrame: (frame) => {
+      accepted.push(frame);
+    },
+    recoveryStarted() {},
+    recoveryCompleted() {},
+    recoveryFailed() {},
+    terminalFailure(error) {
+      throw error;
+    },
+  });
+  owner.start();
+  await owner.waitUntilReady();
+
+  await assert.rejects(() => owner.refresh(), /refresh failed/);
+  assert.equal(firstCloses, 0);
+  assert.equal(secondCloses, 1);
+  firstEvents.push(deltaFrame(1, 0, 'still live'));
+  await waitFor(() => accepted.length === 1);
+
+  await owner.close();
+  assert.equal(firstCloses, 1);
 });
 
 test("retries an initial subscription closed before commit and resyncs once", async () => {

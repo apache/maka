@@ -1077,11 +1077,11 @@ function AppShellContent({
     });
   }
 
-  function openSessionInChat(sessionId: string, turnId?: string): void {
+  function openSessionInChat(sessionId: string, turnId?: string, sequence?: number): void {
     setNavSelection({ section: 'sessions', filter: 'chats' });
     setActiveId(sessionId);
     if (turnId) {
-      setSearchScrollTarget({ sessionId, turnId, nonce: Date.now() });
+      setSearchScrollTarget({ sessionId, turnId, sequence, nonce: Date.now() });
     } else {
       setSearchScrollTarget(null);
     }
@@ -2327,6 +2327,38 @@ function AppShellContent({
     setSessionEventHealthBySession,
     toastApi,
   });
+  useEffect(() => {
+    const target = searchScrollTarget;
+    if (!target || target.sessionId !== activeId || target.sequence === undefined) return;
+    const sequence = target.sequence;
+    const controller = transcriptRangeRef.current;
+    if (!controller) return;
+    let disposed = false;
+    void controller.ready()
+      .then(() => controller.loadAround(sequence))
+      .then(() => {
+        if (
+          disposed ||
+          transcriptRangeRef.current !== controller ||
+          activeIdRef.current !== target.sessionId
+        ) return;
+        setMessages([...controller.store.snapshot().messages]);
+      })
+      .catch((error) => {
+        if (disposed || activeIdRef.current !== target.sessionId) return;
+        setMessageLoadErrorBySession((current) => ({
+          ...current,
+          [target.sessionId]: localizedShellErrorMessage(
+            error,
+            desktopConversationCopy.actions.operationFailedFallback,
+            uiLocale,
+          ),
+        }));
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [activeId, searchScrollTarget?.nonce]);
   useShellRunUpdates({ activeId, setShellRunUpdatesBySession });
   useSessionEventHealthPolling({
     activeId,
