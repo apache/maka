@@ -180,6 +180,12 @@ async function runHarnessAttempt(
     }
     await state.closeRelay();
   }
+  if (hasValue && finalizationEvidence && finalizationConfirmed(finalizationEvidence)) {
+    value = {
+      ...value!,
+      artifacts: [...value!.artifacts, ...(await collectedArtifactInventory(state.trialPath))],
+    };
+  }
   if (
     hasValue &&
     (state.transport.failure || cleanupAction || state.diagnostic?.category !== 'none')
@@ -703,7 +709,6 @@ async function readVerification(
     failureReason: score === null ? 'verifier produced no reward' : null,
     artifacts: [
       { kind: 'trial', framework: cell.executor.kind, trialName: state.trialName },
-      ...(await collectedArtifactInventory(state.trialPath)),
       ...(egressAudit
         ? [
             {
