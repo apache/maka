@@ -733,16 +733,16 @@ const makaBridge = {
       const unsubscribeEvents = subscribeActiveRuntimeHostEvent(channel, handler);
       const observerId = crypto.randomUUID();
       const scope = activeRuntimeHostRef();
-      const observing = scope.then((resolved) =>
-        ipcRenderer.invoke('sessions:observe', resolved, sessionId, observerId),
-      );
+      const observeDispatch = scope.then((resolved) => ({
+        completion: ipcRenderer.invoke('sessions:observe', resolved, sessionId, observerId),
+      }));
+      const observing = observeDispatch.then(({ completion }) => completion);
       const disposeSeedNotification = notifyWhenSeeded(observing, onSeeded);
       return () => {
         disposeSeedNotification();
         unsubscribeEvents();
-        void observing
-          .then(() => scope)
-          .then((resolved) => ipcRenderer.invoke('sessions:unobserve', resolved, observerId))
+        void observeDispatch
+          .then(() => ipcRenderer.invoke('sessions:unobserve', observerId))
           .catch(() => undefined);
       };
     },

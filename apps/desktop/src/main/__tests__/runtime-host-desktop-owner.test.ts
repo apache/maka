@@ -15,6 +15,7 @@ import {
   RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopOwner,
 } from '../runtime-host-desktop-owner.js';
+import type { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
 
 test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, async () => {
   const first = candidateHarness({ delayDisconnect: true });
@@ -311,6 +312,53 @@ test('restores the previous Runtime Host when a target switch fails', async () =
   assert.equal(rollbackConnecting?.epoch, activations[1]?.epoch);
   assert.equal(rollbackConnecting?.hostId, first.candidate.client.hostId);
   assert.deepEqual(fatalErrors, []);
+  await owner.close();
+});
+
+test('releases a Session observation while a failed target switch rolls back', async () => {
+  const first = candidateHarness();
+  const restored = candidateHarness();
+  const registries: RuntimeHostSessionObservationRegistry[] = [];
+  let switchStarted!: () => void;
+  let failSwitch!: () => void;
+  const switchingStarted = new Promise<void>((resolve) => {
+    switchStarted = resolve;
+  });
+  const switchFailure = new Promise<void>((resolve) => {
+    failSwitch = resolve;
+  });
+  let starts = 0;
+  const owner = await startRuntimeHostDesktopOwner(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (_input, observations) => {
+        starts += 1;
+        registries.push(observations);
+        if (starts === 2) {
+          switchStarted();
+          await switchFailure;
+          return { kind: 'failed', reason: 'host_unresponsive' };
+        }
+        return ready(starts === 1 ? first.candidate : restored.candidate);
+      },
+    },
+  );
+  const observations = registries[0];
+  assert.ok(observations);
+  const observing = observations.observe('session-1', 'observer-1', {
+    id: 1,
+    send() {},
+    once() {},
+    off() {},
+  });
+
+  const switching = owner.switchTarget(remoteTarget('offline'));
+  await switchingStarted;
+  await owner.unobserveSession('observer-1');
+  await assert.rejects(observing, /ended before it became ready/);
+  failSwitch();
+  await assert.rejects(switching, /stopped responding/);
+  assert.equal(registries[2], observations);
   await owner.close();
 });
 

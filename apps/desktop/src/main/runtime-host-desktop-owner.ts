@@ -26,6 +26,7 @@ export interface RuntimeHostDesktopOwner {
   current(): RuntimeHostDesktopTargetSnapshot | undefined;
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
   stopSession(ref: DesktopSessionRef): Promise<void>;
+  unobserveSession(observerId: string): Promise<void>;
   switchTarget(
     remote: DesktopRuntimeHostCandidateStartInput['remote'],
   ): Promise<void>;
@@ -141,6 +142,7 @@ export async function startRuntimeHostDesktopOwner(
 
 class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
   readonly #ipcMain: RuntimeHostReconnectingIpcMain;
+  readonly #observationRegistries = new Set<RuntimeHostSessionObservationRegistry>();
   #target: DesktopRuntimeHostTargetGeneration;
   #activeTarget: DesktopRuntimeHostTargetGeneration | undefined;
   #switchTail: Promise<void> = Promise.resolve();
@@ -180,7 +182,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     } catch (error) {
       this.#target.valid = false;
       this.#activeTarget = undefined;
-      await this.#target.observations.close();
+      await this.#closeObservations(this.#target.observations);
       this.#ipcMain.close();
       throw error;
     }
@@ -232,6 +234,14 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     });
   }
 
+  async unobserveSession(observerId: string): Promise<void> {
+    await Promise.all(
+      [...this.#observationRegistries].map((observations) =>
+        observations.unobserve(observerId),
+      ),
+    );
+  }
+
   switchTarget(
     remote: DesktopRuntimeHostCandidateStartInput['remote'],
   ): Promise<void> {
@@ -279,7 +289,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       await this.#target.lifecycle?.close();
     } finally {
       try {
-        await this.#target.observations.close();
+        await this.#closeObservations(this.#target.observations);
       } finally {
         this.#ipcMain.close();
       }
@@ -306,14 +316,14 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       readiness: 'connecting',
     });
     await previousTarget.lifecycle?.close();
-    if (!previousWasActive) await previousTarget.observations.close();
+    if (!previousWasActive) await this.#closeObservations(previousTarget.observations);
     if (this.#closed) throw new Error('Desktop Runtime Host owner is closed');
 
     try {
       nextTarget.lifecycle = await this.#startLifecycle(nextTarget, false);
     } catch (switchError) {
       nextTarget.valid = false;
-      await nextTarget.observations.close();
+      await this.#closeObservations(nextTarget.observations);
       if (!previousWasActive) {
         this.#publishState({
           epoch: nextTarget.epoch,
@@ -343,7 +353,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
         rollbackTarget.valid = false;
         this.#activeTarget = undefined;
         this.#ipcMain.deactivate(rollbackTarget.epoch);
-        await rollbackTarget.observations.close();
+        await this.#closeObservations(rollbackTarget.observations);
         const failure = new AggregateError(
           [switchError, rollbackError],
           'Runtime Host switch failed and the previous Host could not be restored',
@@ -361,7 +371,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       throw switchError;
     }
     this.#activate(nextTarget);
-    await previousTarget.observations.close();
+    await this.#closeObservations(previousTarget.observations);
   }
 
   async #startLifecycle(
@@ -493,6 +503,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     input: DesktopRuntimeHostCandidateStartInput,
     observations = new RuntimeHostSessionObservationRegistry((error) => input.onError?.(error)),
   ): DesktopRuntimeHostTargetGeneration {
+    this.#observationRegistries.add(observations);
     return {
       epoch: randomUUID(),
       input,
@@ -505,6 +516,14 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       observations,
       valid: true,
     };
+  }
+
+  async #closeObservations(observations: RuntimeHostSessionObservationRegistry): Promise<void> {
+    try {
+      await observations.close();
+    } finally {
+      this.#observationRegistries.delete(observations);
+    }
   }
 
   #activate(target: DesktopRuntimeHostTargetGeneration): void {

@@ -1073,6 +1073,12 @@ function requireScheduledTaskEffectString(value: unknown, label: string): string
 
 function registerPersistentClientIpc(): void {
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
+  ipcMain.handle("sessions:unobserve", async (_event, observerId: unknown) => {
+    if (typeof observerId !== "string" || observerId.length === 0 || observerId.length > 256) {
+      throw new Error("Invalid Session observer identity");
+    }
+    await owner?.unobserveSession(observerId);
+  });
   ipcMain.handle("runtime-host:activeIdentity", () => {
     const scope = activeRuntimeHostRef();
     if (!scope) throw new Error("Desktop Runtime Host identity is unavailable");
