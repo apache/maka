@@ -61,6 +61,9 @@ and egress audit logs are represented in attempt artifacts with byte counts and 
 The external wrapper persists up to 64 MiB of each subject's stdout and stderr under `/logs/agent`;
 after Harbor finalization, Eval inventories the complete trial `agent/` directory into the attempt
 so trajectory, metering, wrapper-state, and runtime-event files remain tied to the scored result.
+External CLI specs terminate option parsing or bind the prompt inside one option value so task text
+that begins with `-` cannot become a CLI flag. Relay results contain only bounded metering counts;
+the complete observed model and tool-name lists remain in the hashed metering artifact.
 The local image tag remains a machine deployment identity rather than a registry digest; digest
 pinning is tracked in issue #2953.
 

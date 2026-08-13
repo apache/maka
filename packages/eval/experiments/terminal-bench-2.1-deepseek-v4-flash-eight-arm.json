@@ -127,6 +127,7 @@
           "--dangerously-bypass-approvals-and-sandbox",
           "--model",
           "deepseek-v4-flash",
+          "--",
           "{{task.input}}"
         ]
       }
@@ -158,6 +159,7 @@
           "--dangerously-skip-permissions",
           "--model",
           "deepseek-v4-flash",
+          "--",
           "{{task.input}}"
         ]
       }
@@ -183,6 +185,7 @@
           "max",
           "--output-format",
           "stream-json",
+          "--",
           "{{task.input}}"
         ]
       }
@@ -254,8 +257,7 @@
           "{{task.cwd}}",
           "--disallowedTools",
           "WebSearch,WebFetch,FetchURL",
-          "--prompt",
-          "{{task.input}}"
+          "--prompt={{task.input}}"
         ]
       }
     },
@@ -287,7 +289,7 @@
           "deepseek-v4-flash",
           "--thinking",
           "max",
-          "{{task.input}}"
+          "Task instruction:\n{{task.input}}"
         ]
       }
     }

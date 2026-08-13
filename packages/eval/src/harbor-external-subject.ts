@@ -120,8 +120,8 @@ try {
         usageRequests: proxy.usageRequestCount(),
         usageComplete: proxy.usageComplete(),
         removedWebTools: proxy.removedWebToolCount(),
-        models: proxy.requestModels(),
-        toolNames: proxy.observedToolNames(),
+        modelCount: proxy.requestModels().length,
+        toolNameCount: proxy.observedToolNames().length,
       },
       fileArtifact('wrapper-state', statePath, profile),
       fileArtifact('provider-metering-snapshot', meteringPath, profile),
@@ -571,11 +571,9 @@ function streamArtifact(kind: string, profile: Profile, capture: StreamDiagnosti
     profile,
     path: capture.path,
     bytes: capture.observedBytes,
-    observedBytes: capture.observedBytes,
     persistedBytes: capture.persistedBytes,
     truncatedBytes: capture.truncatedBytes,
     sha256: capture.sha256,
-    observedSha256: capture.observedSha256,
     ...('classification' in capture &&
     capture.classification === 'record-too-large' &&
     'limitBytes' in capture
@@ -703,6 +701,9 @@ async function startMeteringProxy(
       admittedRequests,
       usageRequests,
       usageComplete: admittedRequests > 0 && usageRequests === admittedRequests,
+      removedWebTools,
+      models: [...requestModels].sort(),
+      toolNames: [...observedToolNames].sort(),
     })}\n`;
     snapshotWrite = snapshotWrite.then(() => writeFile(meteringPath, snapshot, { mode: 0o600 }));
     return snapshotWrite;

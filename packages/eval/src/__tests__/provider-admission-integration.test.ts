@@ -136,11 +136,69 @@ test('external trajectories are truncated at the persisted byte limit', async ()
   const result = await executePiWithTerminalRecord(65 * 1024 * 1024);
   const stdout = result.artifacts.find(({ kind }) => kind === 'stdout');
   assert.equal(stdout?.persistedBytes, 64 * 1024 * 1024);
-  assert.ok((stdout?.observedBytes ?? 0) > (stdout?.persistedBytes ?? 0));
-  assert.equal(
-    stdout?.truncatedBytes,
-    (stdout?.observedBytes ?? 0) - (stdout?.persistedBytes ?? 0),
+  assert.ok((stdout?.bytes ?? 0) > (stdout?.persistedBytes ?? 0));
+  assert.equal(stdout?.truncatedBytes, (stdout?.bytes ?? 0) - (stdout?.persistedBytes ?? 0));
+});
+
+test('unbounded tool diagnostics stay in the metering snapshot, not the relay frame', async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.end(
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2}}}\n\ndata: [DONE]\n\n',
+    );
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const root = await mkdtemp(join(tmpdir(), 'maka-bounded-relay-result-'));
+  const child = join(root, 'child.mjs');
+  const toolNames = Array.from({ length: 200 }, (_, index) => `tool_${index}`);
+  await writeFile(
+    child,
+    [
+      `const tools=${JSON.stringify(toolNames)}.map(name=>({type:'function',function:{name}}));`,
+      "await fetch(`${process.env.DEEPSEEK_BASE_URL}/responses`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'deepseek-v4-flash',tools})});",
+      "console.log(JSON.stringify({type:'step_finish'}));",
+      '',
+    ].join('\n'),
   );
+  try {
+    const wrapper = new URL('../harbor-external-subject.js', import.meta.url);
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [
+        wrapper.pathname,
+        'opencode',
+        `http://127.0.0.1:${address.port}`,
+        root,
+        process.execPath,
+        child,
+      ],
+      {
+        env: {
+          ...process.env,
+          OPENAI_API_KEY: 'upstream-test-key',
+          MAKA_EVAL_RESULT_TOKEN: RESULT_TOKEN,
+        },
+      },
+    );
+    const result = decodeResultFrame(stdout) as {
+      artifacts: Array<Record<string, unknown>>;
+    };
+    const metering = result.artifacts.find(({ kind }) => kind === 'provider-metering');
+    assert.equal(metering?.toolNameCount, toolNames.length);
+    assert.equal('toolNames' in (metering ?? {}), false);
+    const snapshot = JSON.parse(
+      await readFile(join(root, 'logs/agent/opencode.metering.json'), 'utf8'),
+    ) as { toolNames: string[] };
+    assert.deepEqual(snapshot.toolNames, [...toolNames].sort());
+  } finally {
+    server.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 async function executePiWithTerminalRecord(contentBytes: number): Promise<{
@@ -151,7 +209,6 @@ async function executePiWithTerminalRecord(contentBytes: number): Promise<{
     profile?: string;
     exitCode?: number;
     bytes?: number;
-    observedBytes?: number;
     persistedBytes?: number;
     truncatedBytes?: number;
     sha256?: string;
