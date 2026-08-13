@@ -1769,43 +1769,19 @@ export const Composer = forwardRef<
           sendActions={(
             <div className="maka-composer-right-controls" />
           )}
-          sendButton={props.streaming && props.onStreamingSubmit ? (
-            <div className="maka-composer-running-actions">
-              <IconButton
-                variant="ghost"
-                type="button"
-                isDisabled={props.stopPending}
-                label={props.stopPending ? copy.stopping : copy.stopLabel}
-                aria-busy={props.stopPending ? 'true' : undefined}
-                data-pending={props.stopPending ? 'true' : undefined}
-                onClick={() => {
-                  if (props.stopPending) return;
-                  void props.onStop();
-                }}
-                icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
-              />
-              <IconButton
-                variant="primary"
-                type="submit"
-                isDisabled={sendDisabled}
-                label={copy.steerLabel}
-                aria-busy={sendPending ? 'true' : undefined}
-                data-pending={sendPending ? 'true' : undefined}
-                tooltip={copy.steerLabel}
-                icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
-              />
-            </div>
-          ) : props.streaming ? (
-            <UiButton
-              variant="primary"
+          sendButton={props.streaming ? (
+            <IconButton
+              variant="ghost"
+              type="button"
               isDisabled={props.stopPending}
+              label={props.stopPending ? copy.stopping : copy.stopLabel}
+              aria-busy={props.stopPending ? 'true' : undefined}
+              data-pending={props.stopPending ? 'true' : undefined}
               onClick={() => {
                 if (props.stopPending) return;
                 void props.onStop();
               }}
-              aria-busy={props.stopPending ? 'true' : undefined}
-              data-pending={props.stopPending ? 'true' : undefined}
-              label={props.stopPending ? copy.stopping : copy.stopLabel}
+              icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
             />
           ) : (
             <IconButton
