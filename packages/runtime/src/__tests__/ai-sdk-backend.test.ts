@@ -79,6 +79,7 @@ import {
 import type { MemoryExtractionSourceSnapshot } from '../memory-extraction.js';
 import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
+import { getAIModel } from '../model-factory.js';
 
 describe('AiSdkBackend ApplyPatch routing', () => {
   test('advertises apply_patch only to supported native OpenAI models', async () => {
@@ -10809,88 +10810,176 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.ok(prompt.indexOf('reasoning about the tool result') < prompt.indexOf('tool-1'));
   });
 
-  test('does not replay plaintext Responses reasoning through the encrypted OpenAI shape', async () => {
-    const ctx = {
-      sessionId: 'session-1',
-      invocationId: 'inv-1',
-      runId: 'run-prev',
-      turnId: 'turn-prev',
-      now: () => 7,
-      newId: idGenerator(),
-    } as unknown as InvocationContext;
-    const memory = createSessionEventMapMemory();
-    const priorEvents: SessionEvent[] = [
+  test('omits Responses reasoning without encrypted content from the wire request', async (t) => {
+    for (const replayCase of [
+      { name: 'missing', openai: { itemId: 'rs_deepseek' } },
       {
-        type: 'tool_start',
-        id: 'e1',
-        turnId: 'turn-prev',
-        ts: 1,
-        toolUseId: 'tool-1',
-        toolName: 'Read',
-        args: { path: 'package.json' },
-        stepId: 'm1',
+        name: 'null',
+        openai: { itemId: 'rs_deepseek', reasoningEncryptedContent: null },
       },
       {
-        type: 'tool_result',
-        id: 'e2',
-        turnId: 'turn-prev',
-        ts: 2,
-        toolUseId: 'tool-1',
-        isError: false,
-        content: { kind: 'text', text: 'file contents' },
+        name: 'empty string',
+        openai: { itemId: 'rs_deepseek', reasoningEncryptedContent: '' },
       },
-      {
-        type: 'thinking_complete',
-        id: 'e3',
-        turnId: 'turn-prev',
-        ts: 3,
-        messageId: 'm1',
-        text: 'plaintext reasoning from DeepSeek',
-        providerOptions: { openai: { itemId: 'rs_deepseek' } },
-      },
-      {
-        type: 'text_complete',
-        id: 'e4',
-        turnId: 'turn-prev',
-        ts: 4,
-        messageId: 'm1',
-        text: '',
-      },
-    ];
-    const runtimeContext = priorEvents.map((event) =>
-      mapSessionEventToRuntimeEvent(event, ctx, memory),
-    );
-    const secondModel = completionModel();
-    const secondBackend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: {
-        slug: 'deepseek',
-        providerType: 'deepseek',
-        defaultModel: 'deepseek-v4-flash',
-      },
-      apiKey: 'deepseek-test-token',
-      modelId: 'deepseek-v4-flash',
-      modelFactory: () => secondModel,
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
+    ] as const) {
+      await t.test(replayCase.name, async () => {
+        const runtimeContext: RuntimeEvent[] = [
+          runtimeEvent({
+            id: 'e1',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'thinking',
+              text: 'plaintext reasoning from DeepSeek',
+              providerOptions: { openai: replayCase.openai },
+            },
+            refs: { providerEventId: 'm1' },
+          }),
+          runtimeEvent({
+            id: 'e2',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'text', text: 'answer before the tool call' },
+            refs: { providerEventId: 'm1' },
+          }),
+          runtimeEvent({
+            id: 'e3',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'tool-1',
+              name: 'Read',
+              args: { path: 'package.json' },
+            },
+            refs: { toolCallId: 'tool-1', stepId: 'm1' },
+          }),
+          runtimeEvent({
+            id: 'e4',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'tool-1',
+              name: 'Read',
+              result: { kind: 'text', text: 'file contents' },
+            },
+            refs: { toolCallId: 'tool-1' },
+          }),
+        ];
+        let requestBody: Record<string, unknown> | undefined;
+        const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+          requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          const events = [
+            { type: 'response.created', response: { id: 'response-current' } },
+            {
+              type: 'response.completed',
+              response: {
+                id: 'response-current',
+                object: 'response',
+                created_at: 8,
+                model: 'deepseek-v4-flash',
+                status: 'completed',
+                output: [],
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+            },
+          ];
+          const body = `${events
+            .map((event) => `data: ${JSON.stringify(event)}`)
+            .join('\n\n')}\n\ndata: [DONE]\n\n`;
+          return new Response(body, {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          });
+        }) as unknown as typeof globalThis.fetch;
+        const secondBackend = createTestAiSdkBackend({
+          sessionId: 'session-1',
+          header: header(),
+          appendMessage: async () => {},
+          connection: {
+            slug: 'deepseek',
+            providerType: 'deepseek',
+            defaultModel: 'deepseek-v4-flash',
+          },
+          apiKey: 'deepseek-test-token',
+          modelId: 'deepseek-v4-flash',
+          modelFactory: (input) => getAIModel({ ...input, fetch }),
+          tools: [],
+          newId: idGenerator(),
+          now: monotonicClock(),
+        });
 
-    await drain(
-      secondBackend.send({
-        turnId: 'turn-current',
-        text: 'follow up',
-        context: [],
-        runtimeContext,
-      }),
-    );
+        await drain(
+          secondBackend.send({
+            turnId: 'turn-current',
+            text: 'follow up',
+            context: [],
+            runtimeContext,
+          }),
+        );
 
-    const prompt = JSON.stringify(compactPrompt(secondModel));
-    assert.doesNotMatch(prompt, /plaintext reasoning from DeepSeek|rs_deepseek/);
-    assert.match(prompt, /"toolName":"Read"|"toolCallId":"tool-1"/);
-    assert.match(prompt, /file contents/);
+        const input = requestBody?.input;
+        assert.ok(Array.isArray(input));
+        assert.equal(
+          input.some((item) => item?.type === 'reasoning'),
+          false,
+        );
+        assert.deepEqual(
+          input.slice(0, 3).map((item) => {
+            assert.ok(item && typeof item === 'object' && !Array.isArray(item));
+            const record = item as Record<string, unknown>;
+            const content = Array.isArray(record.content) ? record.content : [];
+            const firstContent = content[0];
+            return {
+              type: record.type ?? (typeof record.role === 'string' ? 'message' : undefined),
+              role: record.role,
+              text:
+                firstContent && typeof firstContent === 'object' && !Array.isArray(firstContent)
+                  ? (firstContent as Record<string, unknown>).text
+                  : undefined,
+              callId: record.call_id,
+              name: record.name,
+              arguments: record.arguments,
+              output: record.output,
+            };
+          }),
+          [
+            {
+              type: 'message',
+              role: 'assistant',
+              text: 'answer before the tool call',
+              callId: undefined,
+              name: undefined,
+              arguments: undefined,
+              output: undefined,
+            },
+            {
+              type: 'function_call',
+              role: undefined,
+              text: undefined,
+              callId: 'tool-1',
+              name: 'Read',
+              arguments: '{"path":"package.json"}',
+              output: undefined,
+            },
+            {
+              type: 'function_call_output',
+              role: undefined,
+              text: undefined,
+              callId: 'tool-1',
+              name: undefined,
+              arguments: undefined,
+              output: '{"kind":"text","text":"file contents"}',
+            },
+          ],
+        );
+      });
+    }
   });
 
   test('OpenAI Responses reasoning from a tool step is replayed with its encrypted content', async () => {

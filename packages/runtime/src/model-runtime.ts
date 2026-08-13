@@ -163,7 +163,8 @@ function reasoningReplayContract(
     case 'openai-responses':
       // The native OpenAI serializer can replay only provider-issued encrypted
       // reasoning when store=false. Open Responses plaintext reasoning is read
-      // by a separate response transport, but has no request codec here yet.
+      // by a separate response transport, but has no request codec here yet;
+      // @ai-sdk/open-responses unlocks an open-responses-plaintext sibling.
       return { kind: 'openai-responses-encrypted' };
     case 'openai-chat':
       return adapter.kind === 'openai-compatible'
