@@ -48,13 +48,14 @@ import type {
 
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
 
-import type {
-  SessionHeader,
-  SessionConversationCopy,
-  SessionSummary,
-  StoredMessage,
-  TurnRecord,
-  UserMessage,
+import {
+  isSessionToolProfile,
+  type SessionHeader,
+  type SessionConversationCopy,
+  type SessionSummary,
+  type StoredMessage,
+  type TurnRecord,
+  type UserMessage,
 } from '@maka/core/session';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -937,6 +938,7 @@ function buildSessionHeader(
     llmConnectionSlug: input.llmConnectionSlug,
     connectionLocked: false,
     model: input.model ?? 'default',
+    ...(input.toolProfile !== undefined ? { toolProfile: input.toolProfile } : {}),
     permissionMode: input.permissionMode,
     collaborationMode: input.collaborationMode ?? 'agent',
     orchestrationMode: input.orchestrationMode ?? 'default',
@@ -989,6 +991,7 @@ export function normalizeSessionHeader(
     typeof header.llmConnectionSlug === 'string' &&
     typeof header.connectionLocked === 'boolean' &&
     typeof header.model === 'string' &&
+    (header.toolProfile === undefined || isSessionToolProfile(header.toolProfile)) &&
     isPermissionMode(header.permissionMode) &&
     isCollaborationMode(header.collaborationMode) &&
     isOrchestrationMode(header.orchestrationMode) &&

@@ -7,6 +7,7 @@ import type {
   BackendKind,
   SessionBlockedReason,
   SessionStatus,
+  SessionToolProfile,
   SubagentSessionParent,
   SubagentSessionRuntime,
   SubagentSessionSpawn,
@@ -37,6 +38,8 @@ export interface CreateSessionInput {
   model?: string;
   /** Per-model reasoning-depth variant; `undefined` = model default. */
   thinkingLevel?: ThinkingLevel;
+  /** Immutable versioned prompt/tool contract for this Session. */
+  toolProfile?: SessionToolProfile;
   permissionMode: PermissionMode;
   /** Defaults to `agent`. */
   collaborationMode?: CollaborationMode;

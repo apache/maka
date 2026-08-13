@@ -18,12 +18,21 @@ class RunTrialPolicyTest(unittest.TestCase):
         task = SimpleNamespace(config=SimpleNamespace(agent=agent))
         with patch.dict(
             os.environ,
-            {"MAKA_EVAL_EGRESS_ALLOWED_HOST": "maka-eval-mitmproxy"},
+            {
+                "MAKA_EVAL_EGRESS_REQUIRED": "1",
+                "MAKA_EVAL_EGRESS_ALLOWED_HOST": "maka-eval-mitmproxy",
+            },
             clear=False,
         ):
             MODULE.apply_subject_egress_policy(task)
         self.assertEqual(agent.network_mode, "allowlist")
         self.assertEqual(agent.allowed_hosts, ["maka-eval-mitmproxy"])
+
+    def test_required_egress_fails_closed_without_the_proxy_host(self) -> None:
+        task = SimpleNamespace(config=SimpleNamespace(agent=SimpleNamespace()))
+        with patch.dict(os.environ, {"MAKA_EVAL_EGRESS_REQUIRED": "1"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "proxy host is unavailable"):
+                MODULE.apply_subject_egress_policy(task)
 
 
 if __name__ == "__main__":

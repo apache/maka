@@ -1,10 +1,15 @@
 import { randomUUID } from 'node:crypto';
+import { isSessionToolProfile, type SessionToolProfile } from '@maka/core/session';
 import {
   decodeHostedExecutionProjection,
-  HOSTED_EXECUTION_TOOL_PROFILES,
   type HostedExecutionStartInput,
 } from '@maka/runtime-host/protocol';
 import type { JsonObject } from './experiment.js';
+import {
+  MAKA_RUNTIME_ARTIFACT_PATH,
+  MAKA_SUBJECT_STDERR_PATH,
+  MAKA_SUBJECT_STDOUT_PATH,
+} from './maka-artifacts.js';
 import type { NormalizedUsage } from './result.js';
 import type { SubjectAdapter, SubjectExecutionContext } from './runner.js';
 
@@ -28,16 +33,16 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
           permissionMode: config.permissionMode,
           collaborationMode: config.collaborationMode,
           orchestrationMode: config.orchestrationMode,
+          toolProfile: config.toolProfile,
         },
         content: { text: context.taskInput },
         maxSteps: positive(cell.budget.maxSteps, 'budget.maxSteps'),
-        toolProfile: config.toolProfile,
       };
       const payload = Buffer.from(
         JSON.stringify({
           rootPath: `${config.runtimeHostsPath}/${executionId}`,
+          artifactRoot: MAKA_RUNTIME_ARTIFACT_PATH,
           baseUrl: config.baseUrl,
-          webTools: config.webTools,
           hostSettlementTimeoutMs: config.hostSettlementTimeoutMs,
           execution: input,
         }),
@@ -66,7 +71,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
           durationMs: Date.now() - startedAt,
           status: 'failed' as const,
           failureReason: 'Maka subject exceeded the framework timeout',
-          artifacts: [],
+          artifacts: makaArtifacts(executionId, process),
         };
       }
       if (process.stdout.length === 0) {
@@ -97,7 +102,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
             projection.failureReason,
             'Maka execution did not settle',
           ),
-          artifacts: [],
+          artifacts: makaArtifacts(executionId, process),
         };
       }
       const result = (
@@ -109,7 +114,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
         durationMs: Date.now() - startedAt,
         status,
         failureReason,
-        artifacts: [],
+        artifacts: makaArtifacts(executionId, process),
       });
       if (process.exitCode !== 0) {
         return result('indeterminate', 'Maka execution shim did not settle cleanly');
@@ -184,6 +189,7 @@ function subjectFailure(
     status: cancelled ? ('indeterminate' as const) : ('infra_failed' as const),
     failureReason: cancelled ? 'Maka subject cancelled' : `Maka subject failed during ${stage}`,
     artifacts: [
+      ...makaArtifacts(undefined, process),
       {
         kind: 'subject-failure',
         stage,
@@ -200,20 +206,41 @@ function subjectFailure(
   };
 }
 
+function makaArtifacts(
+  executionId: string | undefined,
+  process?: Awaited<ReturnType<SubjectExecutionContext['execute']>>,
+): JsonObject[] {
+  return [
+    {
+      kind: 'maka-runtime-state',
+      path: MAKA_RUNTIME_ARTIFACT_PATH,
+      ...(executionId ? { executionId } : {}),
+    },
+    {
+      kind: 'subject-stdout',
+      path: MAKA_SUBJECT_STDOUT_PATH,
+      ...(process ? { bytes: Buffer.byteLength(process.stdout) } : {}),
+    },
+    {
+      kind: 'subject-stderr',
+      path: MAKA_SUBJECT_STDERR_PATH,
+    },
+  ];
+}
+
 interface MakaConfig {
   readonly nodePath: string;
   readonly shimPath: string;
   readonly runtimeHostsPath: string;
   readonly hostSettlementTimeoutMs: number;
   readonly baseUrl: string;
-  readonly webTools: 'enabled' | 'disabled';
   readonly connectionSlug: string;
   readonly model: string;
   readonly thinkingLevel: HostedExecutionStartInput['session']['thinkingLevel'];
   readonly permissionMode: HostedExecutionStartInput['session']['permissionMode'];
   readonly collaborationMode: HostedExecutionStartInput['session']['collaborationMode'];
   readonly orchestrationMode: HostedExecutionStartInput['session']['orchestrationMode'];
-  readonly toolProfile: NonNullable<HostedExecutionStartInput['toolProfile']>;
+  readonly toolProfile: SessionToolProfile;
 }
 
 function decodeConfig(value: JsonObject): MakaConfig {
@@ -231,21 +258,16 @@ function decodeConfig(value: JsonObject): MakaConfig {
     'hostSettlementTimeoutMs',
     'toolProfile',
   ];
-  if (Object.hasOwn(value, 'webTools')) fields.push('webTools');
   const config = exact(value, fields);
   if (!URL.canParse(String(config.baseUrl))) throw new Error('Maka baseUrl is invalid');
-  const webTools = config.webTools ?? 'enabled';
-  if (webTools !== 'enabled' && webTools !== 'disabled') {
-    throw new Error('Maka config.webTools is invalid');
-  }
   const hostSettlementTimeoutMs = positiveInteger(
     config.hostSettlementTimeoutMs,
     'Maka config.hostSettlementTimeoutMs',
   );
-  if (!(HOSTED_EXECUTION_TOOL_PROFILES as readonly unknown[]).includes(config.toolProfile)) {
+  if (!isSessionToolProfile(config.toolProfile)) {
     throw new Error('Maka config.toolProfile is invalid');
   }
-  return { ...config, webTools, hostSettlementTimeoutMs } as unknown as MakaConfig;
+  return { ...config, hostSettlementTimeoutMs } as unknown as MakaConfig;
 }
 
 function exact(value: unknown, fields: readonly string[]): Record<string, unknown> {

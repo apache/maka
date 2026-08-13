@@ -28,6 +28,7 @@ class EgressFilterTest(unittest.TestCase):
             "https://r.jina.ai/https://github.com/harbor-framework/terminal-bench-2-1": "jina_recursive:benchmark_repository",
             "https://r.jina.ai/https%253A%252F%252Fspylab.ai%252Fterminal-bench": "jina_recursive:terminal_bench_url",
             "https://example.test/search?q=TeRmInAlBeNcH": "terminal_bench_url",
+            "https://google.com/search?q=terminal+bench": "terminal_bench_url",
             "https://github.com/harbor-framework/terminal%252Dbench-2-1.git": "benchmark_repository",
         }
         for url, rule_id in blocked.items():

@@ -133,9 +133,12 @@ async def run_trial(framework: str, expected_version: str, config_file: Path) ->
 
 
 def apply_subject_egress_policy(task: object) -> None:
+    required = os.environ.get("MAKA_EVAL_EGRESS_REQUIRED") == "1"
     allowed_host = os.environ.get("MAKA_EVAL_EGRESS_ALLOWED_HOST")
-    if not allowed_host:
+    if not required:
         return
+    if not allowed_host:
+        raise RuntimeError("required Eval egress proxy host is unavailable")
     agent = task.config.agent
     agent.network_mode = "allowlist"
     agent.allowed_hosts = [allowed_host]

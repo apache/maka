@@ -1,6 +1,6 @@
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 
-export function disabledWebToolsRuntimePolicyDocument(proxyUrl?: string) {
+export function makaEvalRuntimePolicyDocument(proxyUrl?: string) {
   const policy = createDefaultRuntimePolicy();
   const proxy = proxyUrl ? new URL(proxyUrl) : undefined;
   return {
@@ -20,7 +20,6 @@ export function disabledWebToolsRuntimePolicyDocument(proxyUrl?: string) {
           }
         : {}),
       privacy: { incognitoActive: true },
-      webSearch: { ...policy.webSearch, enabled: false },
     },
   };
 }

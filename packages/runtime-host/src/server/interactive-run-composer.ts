@@ -10,6 +10,7 @@ import {
 import { activePlanExecution, type PlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
 import type { RuntimePolicySnapshot } from '@maka/core/runtime-policy';
+import type { SessionToolProfile } from '@maka/core/session';
 import {
   filterModelVisibleTaskLedgerTasks,
   renderTaskLedgerPromptText,
@@ -69,6 +70,10 @@ import type {
 import type { HostMemoryCoordinator } from './memory-coordinator.js';
 import type { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import type { CanonicalSkillInventorySnapshot } from './skill-catalog-repository.js';
+import {
+  hostedExecutionRunProfile,
+  projectHostedExecutionTools,
+} from './hosted-execution-tool-profile.js';
 
 const INTERACTIVE_RUN_COMPOSER_ID = 'maka.interactive';
 const INTERACTIVE_RUN_COMPOSER_REVISION = '1';
@@ -87,6 +92,7 @@ export interface InteractiveRunComposerInput {
   readonly sideConversation?: boolean;
   readonly boundTools?: readonly MakaTool[];
   readonly boundToolNames?: readonly string[];
+  readonly toolProfile?: SessionToolProfile;
   readonly skillBudget?: SkillCatalogBudgetOptions;
   readonly platform?: NodeJS.Platform;
   readonly shell?: string;
@@ -135,9 +141,10 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const routedCandidateTools = input.deepResearch
     ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
     : unscopedCandidateTools;
-  const candidateTools = input.boundToolNames
+  const boundCandidateTools = input.boundToolNames
     ? bindToolsByName(routedCandidateTools, input.boundToolNames)
     : routedCandidateTools;
+  const candidateTools = projectHostedExecutionTools(boundCandidateTools, input.toolProfile);
   const activeExecution = input.plan ? activePlanExecution(input.plan.state) : undefined;
   const selectedTools = input.plan
     ? selectCollaborationTools({
@@ -169,8 +176,17 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         ),
   );
   const childInstruction = input.childInstruction?.trim();
+  const runProfile = hostedExecutionRunProfile(input.toolProfile);
   const resolvedSystemPrompts = new Map<string, Promise<ResolvedRunPrompt>>();
   const resolveSystemPrompt = (context: HostModelPromptContext): Promise<ResolvedRunPrompt> => {
+    if (runProfile) {
+      return Promise.resolve(
+        Object.freeze({
+          text: runProfile.systemPrompt,
+          sourceRevisions: [],
+        }),
+      );
+    }
     const key = `${context.sessionId}\u0000${context.turnId}`;
     const cached = resolvedSystemPrompts.get(key);
     if (cached) return cached;
@@ -304,7 +320,6 @@ export interface InteractiveRunComposerFactoryInput
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly planStore?: PlanStore;
   readonly deepResearchTools?: readonly MakaTool[];
-  readonly resolveBoundToolNames?: (sessionId: string) => readonly string[] | undefined;
 }
 
 export function createInteractiveRunComposerFactory(
@@ -369,8 +384,12 @@ export function createInteractiveRunComposerFactory(
           ? { sideConversation: true }
           : {}),
         ...(boundTools ? { boundTools } : {}),
-        ...(!boundTools && input.resolveBoundToolNames
-          ? { boundToolNames: input.resolveBoundToolNames(backendContext.sessionId) }
+        ...(!boundTools && backendContext.header.toolProfile
+          ? {
+              boundToolNames: hostedExecutionRunProfile(backendContext.header.toolProfile)!
+                .toolNames,
+              toolProfile: backendContext.header.toolProfile,
+            }
           : {}),
         ...(clientCapabilities ? { clientCapabilities } : {}),
         ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),

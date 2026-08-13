@@ -26,13 +26,15 @@ The result kernel contains only score, normalized usage, attributable cost, dura
 
 The checked-in Terminal-Bench 2.1 four-arm cohort is `experiments/terminal-bench-2.1-deepseek-v4-flash-four-arm.json`. It freezes provider endpoints, framework version, container paths and read-only mount policy. Set each declared machine-path environment variable to its trusted prepared directory, and set the declared API-key credentials. Machine-local paths select artifacts; they do not alter experiment semantics and are not presented as a cryptographic identity scheme.
 
-Maka benchmark subjects also freeze a versioned Hosted Execution tool profile. The
-`headless-coding-v1` profile admits only `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, and
-`apply_patch` as agent-permission tool candidates. Provider-specific routing remains authoritative:
-DeepSeek Responses exposes `apply_patch` instead of `Write` and `Edit`. Runtime-owned `ArchiveRead`
-remains available when context budget pruning creates an archive placeholder. Long-term-memory
-triggers and product task, goal, scheduling, skill, interaction, background-control, and parent-agent
-tools are outside this profile and must not drift into a benchmark run.
+Maka benchmark subjects freeze a versioned Session profile. `headless-coding-v1` is persisted in
+the Session header, so later turns and backend rebuilds retain the same contract. It fixes the
+system prompt, disables product identity/personalization/skills/workspace-memory prompt fragments,
+admits only `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, and `apply_patch` as tool candidates,
+and exposes a foreground-only Bash schema without `run_in_background` or `pty`. Provider-specific
+routing remains authoritative: DeepSeek Responses exposes `apply_patch` instead of `Write` and
+`Edit`, and Runtime-owned `ArchiveRead` remains available for archived tool results. A real
+`hosted.execution.start` regression test pins SHA-256 hashes for the first main provider request's
+developer prompt and complete tool schema.
 
 Every benchmark subject removes `WebSearch`, `WebFetch`, and `FetchURL` from the provider-visible
 tool list. Maka enforces that through its Hosted Execution profile; external harnesses pass through
@@ -46,7 +48,11 @@ sidecar applies an nftables allowlist containing only that proxy service; direct
 therefore rejected even when a command unsets proxy variables or requests `--noproxy`. Harbor task
 download and verifier phases retain their native network policy. Build the pinned
 `maka-eval-egress-proxy:12.2.3` image from `harbor/egress-proxy/Dockerfile` before running the
-cohort. Collected Maka runtime files and egress audit logs are represented in attempt artifacts with
-byte counts and SHA-256 digests.
+cohort. This URL policy is a blocklist for known benchmark and public-solution contamination
+surfaces, not a complete defense against a deliberately invented lookup channel; the network
+namespace still forces all subject traffic through the audited proxy. Collected Maka runtime files
+and egress audit logs are represented in attempt artifacts with byte counts and SHA-256 digests.
+The local image tag remains a machine deployment identity rather than a registry digest; digest
+pinning is tracked separately.
 
 The experiment directory contains the frozen `experiment.json` and append-only attempt records. There is no second mutable results file. A leftover `.writer.lock` means the previous writer did not complete; remove it only after proving that no writer process remains.

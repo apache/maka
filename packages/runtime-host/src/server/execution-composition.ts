@@ -128,7 +128,7 @@ import {
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostInteractiveTurnCoordinator } from './interactive-turn-coordinator.js';
 import { ensureBootstrapRuntimePolicy } from './bootstrap-runtime-policy.js';
-import { HostedExecutionToolProfileRegistry } from './hosted-execution-tool-profile.js';
+import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
 import { MemoryExtractionSessionLane } from './memory-extraction-session-lane.js';
@@ -278,7 +278,6 @@ export async function createExecutionRuntimeHostComposition(
     });
     await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
-    const hostedExecutionToolProfiles = new HostedExecutionToolProfileRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
     const runtimePolicy = new HostRuntimePolicyCoordinator(
@@ -645,12 +644,11 @@ export async function createExecutionRuntimeHostComposition(
               parentAgentTools: childAgentTools.parentTools,
               childTools: childAgentTools.childTools,
               worktreePatchWriteBackAvailable: true,
-              resolveBoundToolNames: (sessionId) =>
-                hostedExecutionToolProfiles.toolNamesFor(sessionId),
             }),
-            ...(hostedExecutionToolProfiles.allowsMemoryExtractionFor(backendContext.sessionId)
-              ? { memoryExtraction }
-              : {}),
+            ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction ===
+            false
+              ? {}
+              : { memoryExtraction }),
             artifacts: openedArtifactStore,
             executionArtifacts,
             usage: openedUsageStores,
@@ -698,11 +696,18 @@ export async function createExecutionRuntimeHostComposition(
           openedPlanStore.readState(sessionId),
           runtimePolicyStores.runtimePolicy.getSnapshot(),
         ]);
+        const runProfile = hostedExecutionRunProfile(header.toolProfile);
         return createInteractiveRunComposer({
           runtimePolicy: runtimePolicySnapshot,
           skills,
           memory: requireMemory(memory),
           taskLedger,
+          ...(runProfile
+            ? {
+                boundToolNames: runProfile.toolNames,
+                toolProfile: header.toolProfile,
+              }
+            : {}),
           ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
           builtinTools,
           hostTools: [...hostTools, ...graphTools],
@@ -1245,10 +1250,7 @@ export async function createExecutionRuntimeHostComposition(
       },
     });
     const hostedExecutions = new HostHostedExecutionCoordinator(
-      (input, signal) =>
-        hostedExecutionToolProfiles.run(input.executionId, input.toolProfile, () =>
-          hostedExecutionRunner.run(input, signal),
-        ),
+      (input, signal) => hostedExecutionRunner.run(input, signal),
       context.requestDrain,
     );
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];

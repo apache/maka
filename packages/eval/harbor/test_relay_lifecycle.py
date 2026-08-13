@@ -22,12 +22,16 @@ class BaseAgent:
 
 class LocalEnvironment:
     async def upload_file(self, source, target):
+        if target.startswith("/logs/"):
+            return
         shutil.copyfile(source, target)
 
     async def download_file(self, source, target):
         shutil.copyfile(source, target)
 
     async def exec(self, command, cwd=None, timeout_sec=None):
+        if command.startswith("mkdir -p /logs/artifacts"):
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
         completed = await asyncio.to_thread(
             subprocess.run,
             command,
@@ -47,6 +51,8 @@ class SimultaneousEnvironment:
         self.finished = asyncio.Event()
 
     async def upload_file(self, source, target):
+        if target.startswith("/logs/"):
+            return
         shutil.copyfile(source, target)
 
     async def download_file(self, source, target):
@@ -114,6 +120,8 @@ class ScopeSetupFailureEnvironment:
                 stderr=None,
             )
         if command.startswith("rm -f --"):
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+        if command.startswith("mkdir -p /logs/artifacts"):
             return SimpleNamespace(return_code=0, stdout="", stderr="")
         raise AssertionError(f"unexpected command after scope setup failure: {command}")
 

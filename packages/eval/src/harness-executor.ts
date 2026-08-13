@@ -1,12 +1,18 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { chmod, lstat, mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
-import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experiment.js';
+import {
+  MAKA_RUNTIME_ARTIFACT_PATH,
+  MAKA_SUBJECT_STDERR_PATH,
+  MAKA_SUBJECT_STDOUT_PATH,
+} from './maka-artifacts.js';
 import {
   type ExecutorAttemptOutcome,
   type ExperimentExecutor,
@@ -615,7 +621,12 @@ function preparationEnvironment(
     ...inherited,
     MAKA_EVAL_FRAMEWORK: framework,
     PYTHONPATH: [relayPath, inherited.PYTHONPATH].filter(Boolean).join(delimiter),
-    ...(egressAllowedHost ? { MAKA_EVAL_EGRESS_ALLOWED_HOST: egressAllowedHost } : {}),
+    ...(egressAllowedHost
+      ? {
+          MAKA_EVAL_EGRESS_REQUIRED: '1',
+          MAKA_EVAL_EGRESS_ALLOWED_HOST: egressAllowedHost,
+        }
+      : {}),
     ...(networkPolicyPath ? { MAKA_EVAL_NETWORK_POLICY_PATH: networkPolicyPath } : {}),
   };
 }
@@ -686,6 +697,7 @@ async function readVerification(
     failureReason: score === null ? 'verifier produced no reward' : null,
     artifacts: [
       { kind: 'trial', framework: cell.executor.kind, trialName: state.trialName },
+      ...(await collectedArtifactInventory(state.trialPath)),
       ...(egressAudit
         ? [
             {
@@ -698,6 +710,48 @@ async function readVerification(
         : []),
     ],
   };
+}
+
+async function collectedArtifactInventory(trialPath: string): Promise<JsonObject[]> {
+  const root = join(trialPath, 'artifacts', 'logs', 'artifacts');
+  const files: JsonObject[] = [];
+  const targets = [
+    join(root, basename(MAKA_RUNTIME_ARTIFACT_PATH)),
+    join(root, basename(MAKA_SUBJECT_STDOUT_PATH)),
+    join(root, basename(MAKA_SUBJECT_STDERR_PATH)),
+  ];
+  for (const target of targets) {
+    await walkCollectedArtifacts(trialPath, target, files).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+  }
+  return files.sort((left, right) => String(left.path).localeCompare(String(right.path)));
+}
+
+async function walkCollectedArtifacts(
+  trialPath: string,
+  current: string,
+  files: JsonObject[],
+): Promise<void> {
+  const metadata = await lstat(current);
+  if (metadata.isSymbolicLink()) return;
+  if (metadata.isFile()) {
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(current)) hash.update(chunk as Buffer);
+    files.push({
+      kind: 'collected-artifact',
+      path: relative(trialPath, current).split(sep).join('/'),
+      bytes: metadata.size,
+      sha256: `sha256:${hash.digest('hex')}`,
+    });
+    return;
+  }
+  if (!metadata.isDirectory()) return;
+  for (const entry of await readdir(current, { withFileTypes: true })) {
+    const path = join(current, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    await walkCollectedArtifacts(trialPath, path, files);
+  }
 }
 
 interface HarnessOptions {

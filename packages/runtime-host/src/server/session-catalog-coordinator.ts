@@ -270,6 +270,7 @@ export class HostSessionCatalogCoordinator {
               llmConnectionSlug: model.connectionSlug,
               model: model.model,
               ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+              ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
               permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
               collaborationMode: input.collaborationMode ?? 'agent',
               orchestrationMode: input.orchestrationMode ?? 'default',
@@ -738,7 +739,7 @@ function createRequestFingerprint(
   prepared: PreparedSessionCreate,
 ): string {
   const identity = [
-    'session.create.v3',
+    'session.create.v4',
     input.sessionId,
     input.workspace.kind === 'project'
       ? ['project', input.workspace.projectId]
@@ -749,6 +750,7 @@ function createRequestFingerprint(
       ? ['default']
       : ['explicit', input.modelTarget.connectionSlug, input.modelTarget.model],
     input.thinkingLevel ?? null,
+    input.toolProfile ?? null,
     prepared.permissionMode ?? ['runtime_default'],
     input.collaborationMode ?? 'agent',
     input.orchestrationMode ?? 'default',

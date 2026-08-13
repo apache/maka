@@ -77,7 +77,6 @@
         "runtimeHostsPath": "/tmp/maka-runtime-hosts",
         "connectionSlug": "env-openai",
         "baseUrl": "https://api.deepseek.com",
-        "webTools": "disabled",
         "model": "deepseek-v4-flash",
         "thinkingLevel": "max",
         "permissionMode": "bypass",

@@ -174,6 +174,13 @@ export function isTurnStatus(value: unknown): value is TurnStatus {
 // Header (JSONL line 1)
 // ============================================================================
 
+export const SESSION_TOOL_PROFILES = ['headless-coding-v1'] as const;
+export type SessionToolProfile = (typeof SESSION_TOOL_PROFILES)[number];
+
+export function isSessionToolProfile(value: unknown): value is SessionToolProfile {
+  return typeof value === 'string' && (SESSION_TOOL_PROFILES as readonly string[]).includes(value);
+}
+
 export interface SessionHeader {
   // Identity
   id: string;
@@ -233,6 +240,8 @@ export interface SessionHeader {
   connectionLocked: boolean;
   /** Sticky session default model id, captured when the session is created. */
   model: string;
+  /** Immutable versioned prompt/tool contract for non-product execution surfaces. */
+  toolProfile?: SessionToolProfile;
   /** Per-model reasoning-depth variant; `undefined` = model default. Cleared on model switch. */
   thinkingLevel?: import('./model-thinking.js').ThinkingLevel;
   permissionMode: PermissionMode;

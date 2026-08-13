@@ -1,4 +1,6 @@
-import type { HostedExecutionToolProfile } from '../protocol/index.js';
+import type { SessionToolProfile } from '@maka/core/session';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
+import { z } from 'zod';
 
 const HEADLESS_CODING_V1_TOOL_NAMES = [
   'Bash',
@@ -10,55 +12,61 @@ const HEADLESS_CODING_V1_TOOL_NAMES = [
   'apply_patch',
 ] as const;
 
-interface HostedExecutionToolProfilePolicy {
+const HEADLESS_CODING_V1_SYSTEM_PROMPT = [
+  'Complete the task by acting with the available tools, not by narrating.',
+  'Prefer Read, Glob, and Grep for inspection, Edit and Write for file changes, and Bash for shell commands and tests.',
+  'Verify the result when practical.',
+  'Stop when the task is complete.',
+].join('\n');
+
+const HEADLESS_CODING_V1_BASH_DESCRIPTION =
+  'Run a foreground shell command in the session cwd. Use Bash for inspection, builds, tests, and task-local generation. Background execution and PTY sessions are unavailable in this profile.';
+
+const HEADLESS_CODING_V1_BASH_PARAMETERS = z
+  .object({
+    command: z.string().describe('The shell command to execute'),
+    timeout_ms: z.number().int().positive().max(600_000).optional(),
+  })
+  .strict();
+
+export interface HostedExecutionRunProfile {
   readonly toolNames: readonly string[];
+  readonly systemPrompt: string;
   readonly memoryExtraction: boolean;
 }
 
-function hostedExecutionToolProfilePolicy(
-  profile: HostedExecutionToolProfile,
-): HostedExecutionToolProfilePolicy {
+export function hostedExecutionRunProfile(
+  profile: SessionToolProfile | undefined,
+): HostedExecutionRunProfile | undefined {
+  if (profile === undefined) return undefined;
   if (profile === 'headless-coding-v1') {
     return {
       toolNames: HEADLESS_CODING_V1_TOOL_NAMES,
+      systemPrompt: HEADLESS_CODING_V1_SYSTEM_PROMPT,
       memoryExtraction: false,
     };
   }
   profile satisfies never;
-  throw new Error('Unknown Hosted execution tool profile');
+  throw new Error('Unknown Session tool profile');
 }
 
-export function hostedExecutionToolNames(profile: HostedExecutionToolProfile): readonly string[] {
-  return hostedExecutionToolProfilePolicy(profile).toolNames;
+export function hostedExecutionToolNames(profile: SessionToolProfile): readonly string[] {
+  return hostedExecutionRunProfile(profile)!.toolNames;
 }
 
-export class HostedExecutionToolProfileRegistry {
-  readonly #profiles = new Map<string, HostedExecutionToolProfile>();
-
-  async run<T>(
-    executionId: string,
-    profile: HostedExecutionToolProfile | undefined,
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    if (!profile) return await operation();
-    if (this.#profiles.has(executionId)) {
-      throw new Error('Hosted execution tool profile is already registered');
-    }
-    this.#profiles.set(executionId, profile);
-    try {
-      return await operation();
-    } finally {
-      this.#profiles.delete(executionId);
-    }
-  }
-
-  toolNamesFor(executionId: string): readonly string[] | undefined {
-    const profile = this.#profiles.get(executionId);
-    return profile ? hostedExecutionToolNames(profile) : undefined;
-  }
-
-  allowsMemoryExtractionFor(executionId: string): boolean {
-    const profile = this.#profiles.get(executionId);
-    return profile ? hostedExecutionToolProfilePolicy(profile).memoryExtraction : true;
-  }
+export function projectHostedExecutionTools(
+  tools: readonly MakaTool[],
+  profile: SessionToolProfile | undefined,
+): readonly MakaTool[] {
+  if (profile === undefined) return tools;
+  hostedExecutionRunProfile(profile);
+  return tools.map((tool) =>
+    tool.name === 'Bash'
+      ? {
+          ...tool,
+          description: HEADLESS_CODING_V1_BASH_DESCRIPTION,
+          parameters: HEADLESS_CODING_V1_BASH_PARAMETERS,
+        }
+      : tool,
+  );
 }

@@ -31,6 +31,8 @@ RESULT_FRAME_PREFIX = "MAKA-EVAL-RESULT-V1"
 SCOPE_ERROR_PREFIX = "MAKA-EVAL-SCOPE-ERROR-V1"
 RESULT_PAYLOAD_LIMIT_BYTES = 2 * 1024
 RESULT_CARRIER_LIMIT_BYTES = 64 * 1024
+SUBJECT_STDOUT_PATH = "/logs/artifacts/maka-subject.stdout.txt"
+SUBJECT_STDERR_PATH = "/logs/artifacts/maka-subject.stderr.txt"
 
 _host_teardown_requested = False
 
@@ -109,6 +111,7 @@ class RelayAgent(BaseAgent):
                 decision.result()
                 raise RelayTransportClosed("Maka Eval relay received control before execution")
             result = execution.result()
+            await _persist_subject_outputs(environment, result)
             stdout, diagnostic = _project_result(result, request)
             if diagnostic["category"] != "execution-scope-unavailable":
                 await _quiesce_scope(environment, cwd, scope_path)
@@ -146,6 +149,8 @@ class RelayAgent(BaseAgent):
                     result = await _settle_or_destroy(
                         environment, cwd, scope_path, execution, self._teardown_timeout
                     )
+                if result is not None:
+                    await _persist_subject_outputs(environment, result)
                 if (
                     result is not None
                     and not execution_reported
@@ -184,10 +189,20 @@ class RelayAgent(BaseAgent):
             raise
         except RelayTransportClosed:
             if request is not None and execution is not None:
-                await _settle_or_destroy(environment, cwd, scope_path, execution, self._teardown_timeout)
+                result = await _settle_or_destroy(
+                    environment, cwd, scope_path, execution, self._teardown_timeout
+                )
+                if result is not None:
+                    with contextlib.suppress(Exception):
+                        await _persist_subject_outputs(environment, result)
         except BaseException:
             if request is not None and execution is not None:
-                await _settle_or_destroy(environment, cwd, scope_path, execution, self._teardown_timeout)
+                result = await _settle_or_destroy(
+                    environment, cwd, scope_path, execution, self._teardown_timeout
+                )
+                if result is not None:
+                    with contextlib.suppress(Exception):
+                        await _persist_subject_outputs(environment, result)
             raise
         finally:
             if decision is not None and not decision.done():
@@ -264,9 +279,23 @@ async def _prepare_command(
         f"{{ echo $$ > {shlex.quote(scope_path)}; }} 2>/dev/null || "
         f"{{ printf {scope_error}; exit 111; }}; "
         f". {shlex.quote(container_path)}; command -p rm -f {shlex.quote(container_path)}; "
-        f"exec {subject}{output_redirect} 2>/dev/null"
+        f"exec {subject}{output_redirect}"
     )
     return f"setsid --wait sh -c {shlex.quote(inner)}"
+
+
+async def _persist_subject_outputs(environment: Any, result: Any) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        stdout = root / "stdout"
+        stderr = root / "stderr"
+        stdout.write_text(str(getattr(result, "stdout", "") or ""), encoding="utf-8")
+        stderr.write_text(str(getattr(result, "stderr", "") or ""), encoding="utf-8")
+        prepared = await environment.exec("mkdir -p /logs/artifacts && chmod 700 /logs/artifacts")
+        if prepared.return_code != 0:
+            raise RuntimeError("Maka Eval could not prepare subject artifact output")
+        await environment.upload_file(stdout, SUBJECT_STDOUT_PATH)
+        await environment.upload_file(stderr, SUBJECT_STDERR_PATH)
 
 
 def _decode_result_carrier(carrier: str, token: str) -> tuple[str, dict[str, Any]]:

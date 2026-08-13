@@ -9,7 +9,7 @@ import { FileAttemptStore } from '../attempt-store.js';
 import type { ExperimentCell, ExperimentSpec, JsonObject } from '../experiment.js';
 import { createExternalSubjectAdapter } from '../external-subject.js';
 import { createHarborExecutor } from '../harness-executor.js';
-import { disabledWebToolsRuntimePolicyDocument } from '../maka-runtime-policy.js';
+import { makaEvalRuntimePolicyDocument } from '../maka-runtime-policy.js';
 import { createMakaSubjectAdapter } from '../maka-subject.js';
 import {
   runExperiment,
@@ -780,7 +780,7 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   ) as {
     subjects: Array<{
       id: string;
-      config: { args?: string[]; webTools?: string; toolProfile?: string };
+      config: { args?: string[]; toolProfile?: string };
     }>;
     execution: { maxConcurrentTaskGroups: number };
     executor: {
@@ -836,7 +836,6 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   const pi = spec.subjects.find(({ id }) => id === 'pi')!;
   const maka = spec.subjects.find(({ id }) => id === 'maka')!;
   const zcode = spec.subjects.find(({ id }) => id === 'zcode')!;
-  assert.equal(maka.config.webTools, 'disabled');
   assert.equal(
     (maka.config as { hostSettlementTimeoutMs?: number }).hostSettlementTimeoutMs,
     120_000,
@@ -857,9 +856,8 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   assert.equal(pi.config.args?.includes('max'), true);
 });
 
-test('Maka web-tool policy removes both hosted search and fetch surfaces', () => {
-  const document = disabledWebToolsRuntimePolicyDocument();
-  assert.equal(document.policy.webSearch.enabled, false);
+test('Maka Eval policy enables privacy independently of the tool profile', () => {
+  const document = makaEvalRuntimePolicyDocument();
   assert.equal(document.policy.privacy.incognitoActive, true);
 });
 
@@ -1042,7 +1040,6 @@ function makaConfig() {
     shimPath: '/opt/maka/harbor-maka-subject.js',
     runtimeHostsPath: '/tmp/maka-runtime-hosts',
     baseUrl: 'https://provider.test/v1',
-    webTools: 'disabled',
     connectionSlug: 'provider',
     model: 'deepseek-v4-flash',
     thinkingLevel: 'max',

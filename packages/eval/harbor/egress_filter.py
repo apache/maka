@@ -14,7 +14,7 @@ MAX_DECODE_PASSES = 4
 MAX_AUDIT_BYTES = 1024 * 1024
 AUDIT_PATH = Path(os.environ.get("MAKA_EVAL_EGRESS_AUDIT", "/opt/maka-egress/hits.jsonl"))
 PERCENT_ESCAPE = re.compile(r"%(?![0-9a-fA-F]{2})")
-TERMINAL_BENCH = re.compile(r"terminal[-_.%/]*bench", re.IGNORECASE)
+TERMINAL_BENCH = re.compile(r"terminal[-_.%/+\s]*bench", re.IGNORECASE)
 
 
 def contamination_rule(raw_url: str) -> tuple[str, str, str] | None:

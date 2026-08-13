@@ -99,7 +99,6 @@
         "hostSettlementTimeoutMs": 120000,
         "connectionSlug": "env-deepseek",
         "baseUrl": "https://api.deepseek.com",
-        "webTools": "disabled",
         "model": "deepseek-v4-flash",
         "thinkingLevel": "max",
         "permissionMode": "bypass",
