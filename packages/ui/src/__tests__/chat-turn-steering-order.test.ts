@@ -43,3 +43,36 @@ test('renders steering where it arrived in the assistant timeline', () => {
     assert.equal(markup.split(text).length - 1, 1, `${text} should render exactly once`);
   }
 });
+
+test('renders the admitted model transition before its user message', () => {
+  const turn: TurnViewModel = {
+    turnId: 'turn-model-change',
+    status: 'failed',
+    partialOutputRetained: false,
+    modelChange: {
+      id: 'model-change',
+      ts: 1,
+      data: {
+        from: { connectionSlug: 'openai', model: 'gpt-5.5' },
+        to: { connectionSlug: 'anthropic', model: 'claude-opus' },
+      },
+    },
+    user: { id: 'user', role: 'user', text: 'continue here', ts: 1 },
+    tools: [],
+    notes: [],
+    startedAt: 1,
+    timeline: [],
+  };
+
+  const markup = renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(TurnView, { turn, failedReasonLabel: 'provider failure' }),
+    }),
+  );
+
+  const change = 'Model changed from gpt-5.5 (openai) to claude-opus (anthropic).';
+  const warning = 'Switching models mid-conversation may reduce performance.';
+  assert.equal(markup.indexOf(change) < markup.indexOf('continue here'), true);
+  assert.match(markup, new RegExp(`aria-label="${warning.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
+});

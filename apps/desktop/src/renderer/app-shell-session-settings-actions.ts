@@ -1,5 +1,4 @@
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
-import type { LlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
@@ -11,6 +10,7 @@ type BooleanRecordUpdater = (updater: (current: Record<string, boolean>) => Reco
 
 type ToastApi = {
   success(title: string, description?: string): void;
+  warning(title: string, description?: string): void;
   error(title: string, description?: string): void;
   confirm(input: {
     title: string;
@@ -30,7 +30,6 @@ export interface AppShellSessionSettingsActions {
 export function createAppShellSessionSettingsActions(deps: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
-  connections: readonly LlmConnection[];
   pendingPermissionModeChangesRef: RefBox<Set<string>>;
   pendingSessionModelChangesRef: RefBox<Set<string>>;
   refreshSessions: () => Promise<SessionSummary[]>;
@@ -47,7 +46,6 @@ export function createAppShellSessionSettingsActions(deps: {
   const {
     uiLocale,
     activeIdRef,
-    connections,
     pendingPermissionModeChangesRef,
     pendingSessionModelChangesRef,
     refreshSessions,
@@ -132,9 +130,13 @@ export function createAppShellSessionSettingsActions(deps: {
     try {
       const next = await window.maka.sessions.setModel(sessionId, input);
       setSessions((prev) => prev.map((session) => (session.id === next.id ? next : session)));
-      const connection = connections.find((entry) => entry.slug === next.llmConnectionSlug);
-      if (activeIdRef.current === sessionId) {
-        toastApi.success(copy.modelSwitchedTitle, `${connection?.name ?? next.llmConnectionSlug} · ${next.model}`);
+      const lastUsed = next.lastUsedModel;
+      if (
+        activeIdRef.current === sessionId &&
+        lastUsed &&
+        (lastUsed.connectionSlug !== next.llmConnectionSlug || lastUsed.model !== next.model)
+      ) {
+        toastApi.warning(copy.modelSwitchWarning);
       }
       saveComposerDefaults({ model: input });
       await refreshSessions();

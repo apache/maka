@@ -2577,6 +2577,47 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('compares every unsent model selection with the last model that carried a turn', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new LastUsedModelDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'model-a',
+      connectionSlug: 'provider',
+      permissionMode: 'ask',
+      terminal,
+    });
+    const warning = 'Switching models mid-conversation may reduce performance.';
+    const warningCount = () =>
+      plainTerminalOutput(terminal.screenOutput()).split(warning).length - 1;
+
+    terminal.input('/model model-b');
+    terminal.input('\r');
+    await waitFor(() => driver.models.length === 1);
+    await waitFor(() => warningCount() === 1);
+
+    // B was never used. Returning to the actual baseline A adds no warning.
+    terminal.input('/model model-a');
+    terminal.input('\r');
+    await waitFor(() => driver.models.length === 2);
+    assert.equal(warningCount(), 1);
+
+    // B and C both differ from A, so each unsent selection warns independently.
+    terminal.input('/model model-b');
+    terminal.input('\r');
+    await waitFor(() => driver.models.length === 3);
+    await waitFor(() => warningCount() === 2);
+    terminal.input('/model model-c');
+    terminal.input('\r');
+    await waitFor(() => driver.models.length === 4);
+    await waitFor(() => warningCount() === 3);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('cross-connection /model search matches by every required criterion', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -5916,6 +5957,12 @@ class SlashCommandDriver implements MakaSessionDriver {
   }
   getPermissionMode(): PermissionMode {
     return this.activeBoundaryDisplayMode ?? 'ask';
+  }
+}
+
+class LastUsedModelDriver extends SlashCommandDriver {
+  getLastUsedModel() {
+    return { connectionSlug: 'provider', model: 'model-a' };
   }
 }
 

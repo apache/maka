@@ -3,7 +3,7 @@ import type { QueueEnqueueOutcome, SessionEvent } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { SessionModelIdentity, SessionSummary, StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UserQuestionResponse } from '@maka/core/user-question';
@@ -84,6 +84,8 @@ export interface MakaSessionDriver {
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
   setModel(model: string, connectionSlug?: string): Promise<void>;
+  /** Runtime Host projection of the latest model that actually carried a turn. */
+  getLastUsedModel?(): SessionModelIdentity | undefined;
   setThinkingLevel(level: ThinkingLevel | undefined): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
   setOrchestrationMode?(mode: OrchestrationMode): Promise<void>;

@@ -885,7 +885,6 @@ function AppShellContent({
   } = useStableActions(createAppShellSessionSettingsActions, {
     uiLocale,
     activeIdRef,
-    connections,
     pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
     pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
     refreshSessions,

@@ -11,6 +11,12 @@
 .maka-page-header-content { min-width: 0; }
 .maka-page-header-heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
+.maka-model-change-divider-content { display: inline-flex; align-items: center; gap: 4px; }
+.maka-model-change-info { display: inline-flex; width: 18px; height: 18px; align-items: center; justify-content: center; border: 0; border-radius: 50%; padding: 0; color: var(--muted-foreground); background: transparent; cursor: help; }
+.maka-model-change-info:hover,
+.maka-model-change-info:focus-visible { color: var(--foreground); background: var(--state-hover-bg); }
+.maka-model-change-info:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 1px; }
+
 
 .maka-stat-tile { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; }
 /* Visual System 2.0 (T4): flat. DESIGN.md §5 says default surfaces are flat and

@@ -1,4 +1,5 @@
 import { Markdown } from '@earendil-works/pi-tui';
+import { decodeModelChangeNoteData } from '@maka/core/session';
 import type {
   ProviderRetryEvent,
   SandboxBoundaryRequestEvent,
@@ -1059,7 +1060,12 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
     case 'mode_change':
       return 'Permission mode changed.';
     case 'model_change':
-      return 'Model changed.';
+      try {
+        const change = decodeModelChangeNoteData(message.data);
+        return `Model changed from ${change.from.model} to ${change.to.model}.`;
+      } catch {
+        return 'Model changed.';
+      }
     case 'context_compacted':
       return 'Context compacted to keep this session within the model window.';
     case 'context_compaction_failed_open':

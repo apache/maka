@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { ICON_SIZE, AlertOctagon, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, AlertCircle, AlertOctagon, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortMarkerLabel } from './chat-display-helpers.js';
@@ -31,6 +31,7 @@ import {
   type ProviderRetryEvent,
   type QuoteRef,
 } from '@maka/core/events';
+import type { SessionModelIdentity } from '@maka/core/session';
 import {
   finalAssistantReplyText,
   type TurnTimelineItem,
@@ -76,6 +77,15 @@ export type ReadAttachmentBytes = (
   sessionId: string,
   relativePath: string,
 ) => Promise<{ ok: true; base64: string; mimeType: string } | { ok: false }>;
+
+function modelChangeLabel(
+  identity: SessionModelIdentity,
+  other: SessionModelIdentity,
+): string {
+  return identity.connectionSlug === other.connectionSlug
+    ? identity.model
+    : `${identity.model} (${identity.connectionSlug})`;
+}
 
 function legacySentSkillTokens(text: string) {
   const values = new Set(
@@ -444,6 +454,31 @@ export const TurnView = memo(function TurnView(props: {
             />
           ))}
         </Marker>
+      )}
+      {turn.modelChange && (
+        <ChatSystemMessage
+          variant="divider"
+          className="maka-model-change-divider"
+          aria-label={copy.systemAriaLabel}
+        >
+          <span className="maka-model-change-divider-content">
+            <span>
+              {copy.modelChanged(
+                modelChangeLabel(turn.modelChange.data.from, turn.modelChange.data.to),
+                modelChangeLabel(turn.modelChange.data.to, turn.modelChange.data.from),
+              )}
+            </span>
+            <Tooltip content={copy.modelSwitchWarning} focusTrigger="always" hasHoverIndication={false}>
+              <button
+                type="button"
+                className="maka-model-change-info"
+                aria-label={copy.modelSwitchWarning}
+              >
+                <AlertCircle size={ICON_SIZE.meta} aria-hidden="true" />
+              </button>
+            </Tooltip>
+          </span>
+        </ChatSystemMessage>
       )}
       {/* Host provenance keeps non-user prompts from impersonating the user.
           Durable ids stay in tooltips instead of the transcript body. */}

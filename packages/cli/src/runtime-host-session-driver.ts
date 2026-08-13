@@ -122,6 +122,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #model: string;
   #llmConnectionSlug: string;
   #thinkingLevel: ThinkingLevel | undefined;
+  #lastUsedModel: SessionSummary['lastUsedModel'];
   #permissionMode: PermissionMode;
   #activeBoundaryDisplayMode: PermissionMode | undefined;
   #orchestrationMode: OrchestrationMode;
@@ -357,6 +358,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#model = model;
     this.#llmConnectionSlug = nextConnection;
     this.#thinkingLevel = undefined;
+  }
+
+  getLastUsedModel(): SessionSummary['lastUsedModel'] {
+    return this.#lastUsedModel;
   }
 
   async setThinkingLevel(level: ThinkingLevel | undefined): Promise<void> {
@@ -762,6 +767,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#thinkingLevel = session.thinkingLevel;
     this.#permissionMode = session.permissionMode;
     this.#orchestrationMode = session.orchestrationMode;
+    this.#lastUsedModel = session.lastUsedModel;
   }
 
   async #loadConfiguration(sessionId: string): Promise<LoadedSessionConfiguration> {
@@ -1100,6 +1106,7 @@ export function runtimeHostSessionSummary(session: SessionCatalogProjection): Se
     llmConnectionSlug: session.llmConnectionSlug,
     connectionLocked: session.connectionLocked,
     model: session.model,
+    ...(session.lastUsedModel === undefined ? {} : { lastUsedModel: session.lastUsedModel }),
     ...(session.thinkingLevel === undefined ? {} : { thinkingLevel: session.thinkingLevel }),
     permissionMode: session.permissionMode,
     collaborationMode: session.collaborationMode,

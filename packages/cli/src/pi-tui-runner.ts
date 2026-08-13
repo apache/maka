@@ -1272,11 +1272,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     thinkingLevels =
       match?.thinkingLevels ??
       (providerType ? thinkingVariantsForModel(providerType, nextModel) : []);
-    state.entries.push({
-      kind: 'notice',
-      level: 'info',
-      text: `Model: ${nextModel}`,
-    });
+    const lastUsed = input.driver.getLastUsedModel?.();
+    if (lastUsed && (lastUsed.connectionSlug !== connectionSlug || lastUsed.model !== nextModel)) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: 'Switching models mid-conversation may reduce performance.',
+      });
+    }
     requestRender();
   };
 
@@ -1291,11 +1294,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     thinkingLevel = undefined;
     thinkingLevels =
       choice.thinkingLevels ?? thinkingVariantsForModel(choice.providerType, choice.model);
-    state.entries.push({
-      kind: 'notice',
-      level: 'info',
-      text: `Model: ${choice.model} (${choice.connectionName || choice.connectionSlug})`,
-    });
+    const lastUsed = input.driver.getLastUsedModel?.();
+    if (
+      lastUsed &&
+      (lastUsed.connectionSlug !== choice.connectionSlug || lastUsed.model !== choice.model)
+    ) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: 'Switching models mid-conversation may reduce performance.',
+      });
+    }
     requestRender();
   };
 
