@@ -84,10 +84,6 @@ function legacySentSkillTokens(text: string) {
   return [...values].map((value) => ({ value, label: value, variant: 'neutral' as const }));
 }
 
-/**
- * One chat message body: user verbatim; assistant/system via Markdown.
- * Memoized so streaming list re-renders do not re-parse settled bubbles.
- */
 function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentBytes?: ReadAttachmentBytes }) {
   const [src, setSrc] = useState<string | undefined>(undefined);
   const { onReadAttachmentBytes } = props;
@@ -139,8 +135,11 @@ function LoadedAttachmentImage(props: { src: string; name: string }) {
   );
 }
 
-const MessageBody = memo(function MessageBody(props: {
-  role: string;
+/**
+ * A user message: their text verbatim, with attachments, quotes and the edit
+ * affordance. Memoized so streaming re-renders do not rebuild settled asks.
+ */
+const UserMessageBody = memo(function UserMessageBody(props: {
   text: string;
   ts?: number;
   attachments?: readonly AttachmentRef[];
@@ -154,98 +153,91 @@ const MessageBody = memo(function MessageBody(props: {
 }) {
   const locale = useUiLocale();
   const copyText = getConversationCopy(locale).messages;
-  if (props.role === 'user') {
-    const nonImageAttachments = props.attachments?.filter((attachment) => attachment.kind !== 'image') ?? [];
-    const imageAttachments = props.attachments?.filter((attachment) => attachment.kind === 'image') ?? [];
-    const editActionLabel = props.editDisabled
-      ? (props.editDisabledReason ?? copyText.editMessageDisabledRunning)
-      : copyText.editMessage;
-    const userMetadata = (
-      <ChatMessageMetadata
-        className="maka-message-meta"
-        timestamp={
-          props.ts !== undefined ? (
-            /* `value` takes ms directly: Timestamp's own parseValue reads
-               anything past 1e12 as milliseconds (2001-09-09 onward), and a
-               chat message never predates that. */
-            (<Timestamp className="maka-message-time-inline" value={props.ts} format="time" />)
-          ) : undefined
-        }
-        footer={
-          <>
-            <MessageCopyButton text={props.text} />
-            {props.onEditUserMessage ? (
-              <UiIconButton
-                label={editActionLabel}
-                tooltip={editActionLabel}
-                icon={<Pencil size={ICON_SIZE.control} aria-hidden="true" />}
-                variant="ghost"
-                size="sm"
-                className={markerVariants({ variant: 'footer-action' })}
-                aria-disabled={props.editDisabled === true ? 'true' : undefined}
-                data-action="edit"
-                onClick={() => {
-                  if (props.editDisabled) return;
-                  props.onEditUserMessage?.();
-                }}
-              />
-            ) : null}
-          </>
-        }
-      />
-    );
-    return (
-      <>
-        {nonImageAttachments.length > 0 ? (
-          <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachment-tokens">
-            {nonImageAttachments.map((attachment, index) => (
-              <Token
-                key={`${attachment.name}-${index}`}
-                size="sm"
-                label={attachment.name}
-                icon={<AttachmentKindIcon kind={attachment.kind} />}
-                description={attachment.bytes !== undefined ? formatBytes(attachment.bytes) : undefined}
-              />
-            ))}
-          </HStack>
-        ) : null}
-        {props.quotes && props.quotes.length > 0 ? (
-          <div className="maka-user-quotes">
-            {props.quotes.map((quote, index) => (
-              <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
-            ))}
-          </div>
-        ) : null}
-        {imageAttachments.length > 0 ? (
-          <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachments">
-            {imageAttachments.map((attachment, index) => (
-              <AttachmentImage
-                key={`${attachment.name}-${index}`}
-                attachment={attachment}
-                onReadAttachmentBytes={props.onReadAttachmentBytes}
-              />
-            ))}
-          </HStack>
-        ) : null}
-        <ChatMessageBubble
-          className="maka-chat-message-bubble maka-chat-message-bubble-user"
-          metadata={userMetadata}
-        >
-          {props.inlineReferences ? (
-            <InlineReferenceText text={props.text} references={props.inlineReferences} />
-          ) : (
-            <ChatTokenizedText tokens={legacySentSkillTokens(props.text)}>
-              {props.text}
-            </ChatTokenizedText>
-          )}
-        </ChatMessageBubble>
-      </>
-    );
-  }
+  const nonImageAttachments = props.attachments?.filter((attachment) => attachment.kind !== 'image') ?? [];
+  const imageAttachments = props.attachments?.filter((attachment) => attachment.kind === 'image') ?? [];
+  const editActionLabel = props.editDisabled
+    ? (props.editDisabledReason ?? copyText.editMessageDisabledRunning)
+    : copyText.editMessage;
+  const userMetadata = (
+    <ChatMessageMetadata
+      className="maka-message-meta"
+      timestamp={
+        props.ts !== undefined ? (
+          /* `value` takes ms directly: Timestamp's own parseValue reads
+             anything past 1e12 as milliseconds (2001-09-09 onward), and a
+             chat message never predates that. */
+          (<Timestamp className="maka-message-time-inline" value={props.ts} format="time" />)
+        ) : undefined
+      }
+      footer={
+        <>
+          <MessageCopyButton text={props.text} />
+          {props.onEditUserMessage ? (
+            <UiIconButton
+              label={editActionLabel}
+              tooltip={editActionLabel}
+              icon={<Pencil size={ICON_SIZE.control} aria-hidden="true" />}
+              variant="ghost"
+              size="sm"
+              className={markerVariants({ variant: 'footer-action' })}
+              aria-disabled={props.editDisabled === true ? 'true' : undefined}
+              data-action="edit"
+              onClick={() => {
+                if (props.editDisabled) return;
+                props.onEditUserMessage?.();
+              }}
+            />
+          ) : null}
+        </>
+      }
+    />
+  );
   return (
-    <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
-      <Markdown text={props.text} density="compact" />
-    </ChatMessageBubble>
+    <>
+      {nonImageAttachments.length > 0 ? (
+        <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachment-tokens">
+          {nonImageAttachments.map((attachment, index) => (
+            <Token
+              key={`${attachment.name}-${index}`}
+              size="sm"
+              label={attachment.name}
+              icon={<AttachmentKindIcon kind={attachment.kind} />}
+              description={attachment.bytes !== undefined ? formatBytes(attachment.bytes) : undefined}
+            />
+          ))}
+        </HStack>
+      ) : null}
+      {props.quotes && props.quotes.length > 0 ? (
+        <div className="maka-user-quotes">
+          {props.quotes.map((quote, index) => (
+            <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
+          ))}
+        </div>
+      ) : null}
+      {imageAttachments.length > 0 ? (
+        <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachments">
+          {imageAttachments.map((attachment, index) => (
+            <AttachmentImage
+              key={`${attachment.name}-${index}`}
+              attachment={attachment}
+              onReadAttachmentBytes={props.onReadAttachmentBytes}
+            />
+          ))}
+        </HStack>
+      ) : null}
+      <ChatMessageBubble
+        className="maka-chat-message-bubble maka-chat-message-bubble-user"
+        metadata={userMetadata}
+      >
+        {props.inlineReferences ? (
+          <InlineReferenceText text={props.text} references={props.inlineReferences} />
+        ) : (
+          <ChatTokenizedText tokens={legacySentSkillTokens(props.text)}>
+            {props.text}
+          </ChatTokenizedText>
+        )}
+      </ChatMessageBubble>
+    </>
   );
 });
 
@@ -483,8 +475,7 @@ export const TurnView = memo(function TurnView(props: {
           sender="user"
           className="maka-chat-message maka-user-message"
         >
-          <MessageBody
-            role="user"
+          <UserMessageBody
             text={turn.user.text}
             ts={turn.user.ts}
             attachments={turn.user.attachments}
@@ -539,8 +530,7 @@ export const TurnView = memo(function TurnView(props: {
               sender="user"
               className="maka-chat-message maka-user-message maka-steering-message"
             >
-              <MessageBody
-                role="user"
+              <UserMessageBody
                 text={message.text}
                 ts={message.ts}
                 attachments={message.attachments}
