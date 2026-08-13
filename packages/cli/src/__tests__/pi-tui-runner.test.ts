@@ -2560,7 +2560,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => terminal.output().includes('glm-5.2'));
     assert.match(
       plainTerminalOutput(terminal.screenOutput()),
-      /Switching may rebuild prompt cache; next request can be slower or cost more/,
+      /切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高/,
     );
     // The picker opens on the current model (gpt-5.5); move down to the choice on
     // the other connection and select it.
@@ -2638,7 +2638,7 @@ describe('Maka Pi TUI runner', () => {
     });
     assert.doesNotMatch(
       plainTerminalOutput(terminal.screenOutput()),
-      /Switching may rebuild prompt cache/,
+      /切换模型可能需要重建提示缓存/,
     );
 
     // Each query isolates exactly one of the five match criteria named by #1098

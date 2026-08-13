@@ -578,7 +578,7 @@ export interface ModelSearchOverlayInput {
 }
 
 export const MODEL_SWITCH_CACHE_WARNING =
-  '⚠ Switching may rebuild prompt cache; next request can be slower or cost more.';
+  '⚠ 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。';
 
 /**
  * One bottom search field + a bounded single-select list, for the cross-
