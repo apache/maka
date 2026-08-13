@@ -554,9 +554,13 @@ export const TurnView = memo(function TurnView(props: {
         const ownsTurnChrome = segmentIndex === conversationSegments.length - 1;
         return (
           <LocalizedChatMessage
-            key={`assistant-${
-              segment.items[0] ? foldedTimelineEntryKey(segment.items[0], 0) : 'empty'
-            }`}
+            // Disjoint namespaces: a steering id is any string, so a bare
+            // sentinel could collide with a real one.
+            key={
+              segment.repliesTo === undefined
+                ? 'assistant-opening'
+                : `assistant-after-${segment.repliesTo}`
+            }
             accessibleLabel={copy.assistantAriaLabel}
             sender="assistant"
             data-turn-status={turn.status}
@@ -680,31 +684,41 @@ type UserTimelineItem = Extract<TurnTimelineItem, { kind: 'user' }>;
 type AssistantFoldedTimelineEntry = Exclude<FoldedTimelineEntry, UserTimelineItem>;
 type ConversationSegment =
   | { kind: 'user'; item: UserTimelineItem }
-  | { kind: 'assistant'; items: AssistantFoldedTimelineEntry[] };
+  | {
+      kind: 'assistant';
+      items: AssistantFoldedTimelineEntry[];
+      /**
+       * What this answer replies to: the steering message that opened it, or
+       * the turn itself for the first answer. This is the segment's identity —
+       * its React key must not be derived from its contents, because those
+       * change as the turn runs (a Processing fold appears, then the answer
+       * lands) and a changing key remounts the whole answer, which drops any
+       * text Selection the user was holding inside it.
+       */
+      repliesTo?: string;
+    };
 
 function splitTimelineAtUserMessages(
   items: readonly FoldedTimelineEntry[],
   includeEmptyAssistant: boolean,
 ): ConversationSegment[] {
   const segments: ConversationSegment[] = [];
+  let repliesTo: string | undefined;
   for (const item of items) {
     const last = segments.at(-1);
     if (item.kind === 'user') {
       segments.push({ kind: 'user', item });
+      repliesTo = item.message.id;
     } else if (last?.kind === 'assistant') {
       last.items.push(item);
     } else {
-      segments.push({ kind: 'assistant', items: [item] });
+      segments.push({ kind: 'assistant', items: [item], repliesTo });
     }
   }
   if (includeEmptyAssistant && segments.at(-1)?.kind !== 'assistant') {
-    segments.push({ kind: 'assistant', items: [] });
+    segments.push({ kind: 'assistant', items: [], repliesTo });
   }
   return segments;
-}
-
-function foldedTimelineEntryKey(item: FoldedTimelineEntry, index: number): string {
-  return item.kind === 'processing' ? `processing-${item.id}` : timelineEntryKey(item, index);
 }
 
 export interface TurnFooterActionMeta {
@@ -984,25 +998,51 @@ export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }
   );
 }
 
-function StreamingAssistantBubble(props: { text: string; live: boolean; settledText?: string; truncated?: boolean; onSettled?: () => void }) {
+/**
+ * The assistant's answer, in every state it can be in: still streaming,
+ * streamed and settled, and replayed from history.
+ *
+ * One component on purpose. Swapping components as a turn ends would unmount
+ * the answer's DOM and remount an identical-looking copy, and the browser
+ * drops any text Selection that lived in the removed subtree — so a user who
+ * selected part of an answer while it was still arriving lost the selection
+ * (and the quote affordance it feeds) the instant the turn finished.
+ */
+const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: {
+  text: string;
+  /** Belongs to a turn the UI is still following; carries the live-bubble marker. */
+  live: boolean;
+  /** Text is still growing, so the markdown renderer stays behind its cursor. */
+  streaming: boolean;
+  settledText?: string;
+  truncated?: boolean;
+  onSettled?: () => void;
+}) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const settledRef = useRef(false);
 
   useEffect(() => {
     settledRef.current = false;
-  }, [props.text, props.live]);
+  }, [props.text, props.streaming]);
 
   useEffect(() => {
-    if (props.live || settledRef.current) return;
+    if (props.streaming || settledRef.current) return;
     settledRef.current = true;
     props.onSettled?.();
-  }, [props.live, props.onSettled]);
+  }, [props.streaming, props.onSettled]);
 
   return (
-    <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-streaming">
+    <ChatMessageBubble
+      variant="ghost"
+      className={
+        props.live
+          ? 'maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-streaming'
+          : 'maka-chat-message-bubble maka-chat-message-bubble-assistant'
+      }
+    >
       <Markdown
         text={props.text}
-        streaming={props.live}
+        streaming={props.streaming}
         settledText={props.settledText}
         density="compact"
       />
@@ -1028,7 +1068,7 @@ function StreamingAssistantBubble(props: { text: string; live: boolean; settledT
       )}
     </ChatMessageBubble>
   );
-}
+});
 
 // Semantic keys (no index) so mid-timeline inserts do not remount/collapse disclosures.
 function timelineEntryKey(item: TurnTimelineItem, index: number): string {
@@ -1057,18 +1097,17 @@ function TurnTimelineEntry(props: {
   if (item.kind === 'tools') {
     return <ToolTrow items={item.items} onOpenLinkedSession={props.onOpenLinkedSession} />;
   }
-  if (item.kind === 'text' && item.live) {
-    return (
-      <StreamingAssistantBubble
-        text={item.text}
-        live={item.complete !== true}
-        settledText={props.initialLiveContent?.get(`text:${item.messageId}`)}
-        truncated={item.truncated === true}
-        onSettled={() => props.onStreamingSettled?.(item.messageId)}
-      />
-    );
-  }
-  return <MessageBody role="assistant" text={item.text} ts={item.ts} />;
+  const live = item.live === true;
+  return (
+    <AssistantAnswerBubble
+      text={item.text}
+      live={live}
+      streaming={live && item.complete !== true}
+      settledText={props.initialLiveContent?.get(`text:${item.messageId}`)}
+      truncated={live && item.truncated === true}
+      onSettled={live ? () => props.onStreamingSettled?.(item.messageId) : undefined}
+    />
+  );
 }
 
 function ProcessingBlock(props: {

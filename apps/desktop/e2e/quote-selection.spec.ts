@@ -10,6 +10,13 @@ test('a transcript drag releases outside the window through its owning Turn', as
 
   const reply = page.getByText(/Fake backend received: pointer capture source/);
   await expect(reply).toBeVisible();
+  // Select from a settled answer, not a streaming one. The markdown renderer
+  // rebuilds a paragraph's inline fragments when the stream closes, and the
+  // browser drops any Selection inside the removed nodes — a race that has
+  // nothing to do with the pointer-capture contract under test here.
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
   const turn = reply.locator('xpath=ancestor::*[@data-turn-id][1]');
   const quoteLayer = page.locator('.maka-quote-actions');
   await turn.evaluate((element) => {
