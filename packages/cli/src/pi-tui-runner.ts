@@ -54,6 +54,7 @@ import type {
 } from './pi-tui-contracts.js';
 import { AUTO_RECAP_DISPLAY_LIMIT_BYTES, shouldAutoRecap } from './session-recap.js';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
+import type { AgentGraphClientSnapshot, AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
 import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
 import { parseSwarmCommand, type ParsedSwarmCommand } from '@maka/core/swarm-command';
@@ -170,6 +171,11 @@ export interface MakaPiTuiInput {
   listShellRunUpdates?: (sessionId: string) => Promise<ShellRunUpdate[]>;
   /** Host-owned invocable Skill catalog used for picker, completion, and token highlighting. */
   listSkills?: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
+  /** Read-only Runtime Host projection for inspecting current and historical Graph epochs. */
+  agentGraphHistory?: {
+    listEpochs(rootSessionId: string): Promise<readonly AgentGraphEpochSummary[]>;
+    getSnapshot(rootSessionId: string, graphId: string): Promise<AgentGraphClientSnapshot>;
+  };
   /** Serializes TUI turn and control activity for the attached Session. */
   turnActivity: MakaPiTuiTurnActivitySurface;
   /** API-key onboarding surface (#1098). When present, /setup runs the wizard,
@@ -2260,6 +2266,56 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
   };
 
+  const showGraphHistory = async (): Promise<void> => {
+    const rootSessionId = input.driver.getSessionId();
+    if (!rootSessionId || !input.agentGraphHistory) {
+      throw new Error('Agent Graph history is unavailable on this session driver.');
+    }
+    const epochs = await input.agentGraphHistory.listEpochs(rootSessionId);
+    const items: SelectItem[] = epochs.map((entry) => ({
+      value: entry.graphId,
+      label: `Run #${entry.epoch}${entry.current ? ' · Current' : ''}`,
+      description: entry.current ? 'Current graph' : 'History · read-only',
+    }));
+    if (items.length === 0) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: 'This session has no Agent Graph runs.',
+      });
+      requestRender();
+      return;
+    }
+    const epochsByGraphId = new Map(epochs.map((entry) => [entry.graphId, entry]));
+    showSelectPicker(
+      'Agent Graph History',
+      `${items.length} run${items.length === 1 ? '' : 's'}`,
+      items,
+      (item) => {
+        const epoch = epochsByGraphId.get(item.value);
+        if (!epoch) return;
+        void runControl(async () => {
+          const graph = await input.agentGraphHistory!.getSnapshot(rootSessionId, epoch.graphId);
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text: formatAgentGraphHistory(graph, epoch),
+          });
+          requestRender();
+        });
+      },
+      {
+        minPrimaryColumnWidth: 16,
+        maxPrimaryColumnWidth: 28,
+        selectedIndex: Math.max(
+          0,
+          epochs.findIndex((entry) => entry.current),
+        ),
+        hint: '↑↓ move · Enter inspect · Esc close',
+      },
+    );
+  };
+
   const setGraphMode = async (mode: OrchestrationMode) => {
     if (!input.driver.setOrchestrationMode) {
       throw new Error('Graph Mode is unavailable on this session driver.');
@@ -2277,6 +2333,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const runGraphCommand = (command: ParsedGraphCommand, idleMs: number) => {
     if (command.kind === 'status') {
       showGraphStatus();
+      return;
+    }
+    if (command.kind === 'history') {
+      void runControl(showGraphHistory);
       return;
     }
     if (command.kind === 'set_mode') {
@@ -3019,6 +3079,41 @@ function estimateContextTokens(bytes: number): number {
 
 function formatContextCount(value: number): string {
   return value.toLocaleString('en-US');
+}
+
+function formatAgentGraphHistory(
+  graph: AgentGraphClientSnapshot,
+  epoch: AgentGraphEpochSummary,
+): string {
+  const settled = graph.operators.filter((operator) =>
+    ['completed', 'failed', 'aborted', 'cancelled'].includes(operator.status),
+  ).length;
+  const lines = [
+    `Agent Graph run #${epoch.epoch}${epoch.current ? ' · Current' : ' · History (read-only)'}`,
+    `  ${formatAgentGraphStatus(graph.status)} · ${settled}/${graph.operators.length} operators settled`,
+  ];
+  for (const operator of graph.operators) {
+    lines.push(`  ${operator.agentId}: ${operator.status.replaceAll('_', ' ')}`);
+  }
+  if (graph.finish) {
+    lines.push(`  Selected results: ${graph.finish.resultIds.join(', ') || 'none'}`);
+  }
+  if (graph.omitted.operators > 0) {
+    lines.push(`  ${graph.omitted.operators} more operators omitted`);
+  }
+  return lines.join('\n');
+}
+
+function formatAgentGraphStatus(status: AgentGraphClientSnapshot['status']): string {
+  return {
+    empty: 'Awaiting schedule',
+    active: 'Running',
+    closing: 'Finishing',
+    waiting: 'Waiting',
+    stopped: 'Stopped',
+    failed: 'Failed',
+    completed: 'Completed',
+  }[status];
 }
 
 function flattenLinkedSessionTree(

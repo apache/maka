@@ -20,6 +20,7 @@ import { type SessionSummary, type StoredMessage } from '@maka/core/session';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { type UserQuestionResponse } from '@maka/core/user-question';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
+import type { AgentGraphClientSnapshot } from '@maka/runtime-host/protocol';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type {
@@ -114,6 +115,40 @@ function deferred<T>() {
     resolve = done;
   });
   return { promise, resolve };
+}
+
+function historicalGraphSnapshot(graphId: string): AgentGraphClientSnapshot {
+  return {
+    schemaVersion: 1,
+    rootSessionId: 'session-1',
+    graphId,
+    orchestrationMode: 'graph',
+    snapshotVersion: `sha256:${'1'.repeat(64)}`,
+    status: 'completed',
+    scheduleRevision: 2,
+    topologyFingerprint: `sha256:${'2'.repeat(64)}`,
+    closed: true,
+    operators: [],
+    edges: [],
+    work: [],
+    reconciliationFailures: [],
+    stoppedTargets: [],
+    finish: { resultIds: ['result-1'], reason: 'done', revision: 2, committedAt: 2 },
+    claims: [],
+    recentControlDecisions: [],
+    recentActivity: [],
+    terminalHistory: { records: [] },
+    omitted: {
+      operators: 0,
+      edges: 0,
+      work: 0,
+      reconciliationFailures: 0,
+      stoppedTargets: 0,
+      claims: 0,
+      controlDecisions: 0,
+      recentActivity: 0,
+    },
+  };
 }
 
 /** Catalog API-key providers as wizard entries with no existing connection —
@@ -2463,6 +2498,47 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => terminal.output().includes('Swarm Mode is off'));
 
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('inspects a historical Agent Graph run without starting a turn', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const requestedGraphIds: string[] = [];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+      agentGraphHistory: {
+        listEpochs: async () => [
+          { epoch: 2, graphId: 'graph-2', createdAt: 2, current: true },
+          { epoch: 1, graphId: 'graph-1', createdAt: 1, current: false },
+        ],
+        getSnapshot: async (_rootSessionId, graphId) => {
+          requestedGraphIds.push(graphId);
+          return historicalGraphSnapshot(graphId);
+        },
+      },
+    });
+
+    terminal.input('/graph history');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Agent Graph History'),
+    );
+    terminal.input('\x1b[B');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Agent Graph run #1 · History (read-only)'),
+    );
+
+    assert.deepEqual(requestedGraphIds, ['graph-1']);
+    assert.deepEqual(driver.prompts, []);
     exitMaka(terminal);
     await run;
   });

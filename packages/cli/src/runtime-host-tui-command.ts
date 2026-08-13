@@ -68,6 +68,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       permissionMode: 'ask',
       turnActivity: context.turnActivity,
       listSkills: context.listSkills,
+      agentGraphHistory: context.agentGraphHistory,
       onboarding: context.onboarding,
       recap: context.recap,
       ...(context.profile.kind === 'local'
