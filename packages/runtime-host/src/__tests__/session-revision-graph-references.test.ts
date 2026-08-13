@@ -261,6 +261,12 @@ async function prepare(overrides: PrepareOverrides = {}) {
       },
       graph: {
         readSessionState: async () => overrides.graphState ?? 'terminal',
+        readGraphState: async (_rootSessionId, graphId) => {
+          if (graphId !== agentGraphIdForRootSession(ROOT_SESSION_ID)) {
+            throw new Error('Graph is not bound to this root Session');
+          }
+          return overrides.graphState ?? 'terminal';
+        },
       },
       isSessionActive: () => overrides.childActive ?? false,
     },

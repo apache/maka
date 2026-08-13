@@ -30,6 +30,7 @@ describe('Host Agent Graph coordinator', () => {
     let unsubscribed = false;
     const invalidations: unknown[] = [];
     const authority = {
+      currentGraphId: async () => snapshot.graphId,
       getSnapshot: async () => snapshot,
       inspectOperator: async () => inspection,
       subscribeAll: (candidate: AgentGraphClientChangedListener) => {
@@ -97,6 +98,7 @@ describe('Host Agent Graph coordinator', () => {
 
   test('returns stable root, archive, operator, and cursor failures', async () => {
     const authority = {
+      currentGraphId: async () => agentGraphIdForRootSession('root-1'),
       getSnapshot: async (_rootSessionId: string, options?: { terminalCursor?: string }) => {
         throw new AgentGraphClientOperationError(
           options?.terminalCursor ? 'invalid_request' : 'operation_conflict',
@@ -223,7 +225,7 @@ describe('Host Agent Graph coordinator', () => {
 
 type GraphAuthority = Pick<
   AgentGraphCoordinator,
-  'getSnapshot' | 'inspectOperator' | 'subscribeAll'
+  'currentGraphId' | 'getSnapshot' | 'inspectOperator' | 'subscribeAll'
 >;
 
 function graphSnapshot(): RuntimeAgentGraphClientSnapshot {

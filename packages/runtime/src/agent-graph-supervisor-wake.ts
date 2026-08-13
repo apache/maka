@@ -308,6 +308,7 @@ export class AgentGraphSupervisorWakeCoordinator {
   async runWithSessionWakesSuppressed<T>(
     rootSessionId: string,
     operation: () => Promise<T>,
+    reason = 'agent_graph_stopped',
   ): Promise<T> {
     this.#beginSessionWakeSuppression(rootSessionId);
     try {
@@ -315,7 +316,7 @@ export class AgentGraphSupervisorWakeCoordinator {
     } finally {
       try {
         await this.#waitForSessionIdle(rootSessionId);
-        await this.#supersedeSession(rootSessionId, 'agent_graph_stopped');
+        await this.#supersedeSession(rootSessionId, reason);
       } finally {
         this.#endSessionWakeSuppression(rootSessionId);
       }

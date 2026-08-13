@@ -2647,14 +2647,12 @@ export class SqliteSessionMetadataStore {
         graphId: request.legacyGraphId,
         createdAt: this.now(),
       };
-      try {
-        this.insertAgentGraphEpochSync(binding);
-      } catch (error) {
+      if (this.readAgentGraphEpochByGraphIdSync(binding.graphId)) {
         throw new AgentGraphEpochConflictError(
           `Agent Graph epoch 1 could not be adopted for root Session ${request.rootSessionId}`,
-          { cause: error },
         );
       }
+      this.insertAgentGraphEpochSync(binding);
       return { binding, created: true };
     });
   }
@@ -2686,14 +2684,12 @@ export class SqliteSessionMetadataStore {
         graphId: request.nextGraphId,
         createdAt: this.now(),
       };
-      try {
-        this.insertAgentGraphEpochSync(binding);
-      } catch (error) {
+      if (this.readAgentGraphEpochByGraphIdSync(binding.graphId)) {
         throw new AgentGraphEpochConflictError(
           `Agent Graph epoch could not advance for root Session ${request.rootSessionId}`,
-          { cause: error },
         );
       }
+      this.insertAgentGraphEpochSync(binding);
       return { binding, created: true };
     });
   }
@@ -4697,6 +4693,24 @@ export class SqliteSessionMetadataStore {
         binding.schemaVersion,
         binding.createdAt,
       );
+  }
+
+  private readAgentGraphEpochByGraphIdSync(graphId: string): AgentGraphEpochBinding | undefined {
+    const row = this.db
+      .prepare(
+        `
+        SELECT
+          schema_version AS schemaVersion,
+          root_session_id AS rootSessionId,
+          epoch,
+          graph_id AS graphId,
+          created_at AS createdAt
+        FROM agent_graph_epochs
+        WHERE graph_id = ?
+      `,
+      )
+      .get(graphId) as AgentGraphEpochRow | undefined;
+    return row ? decodeAgentGraphEpochBinding(row) : undefined;
   }
 
   private assertOpen(): void {

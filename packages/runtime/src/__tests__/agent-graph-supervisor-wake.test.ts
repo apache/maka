@@ -772,6 +772,59 @@ describe('Agent Graph supervisor wake delivery', () => {
       store.close();
     }
   });
+
+  test('epoch cutover supersedes retryable wakes before the next graph can notify', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    let current = snapshot();
+    let turns = 0;
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => current,
+      startTurn: async (_sessionId, input) => {
+        turns += 1;
+        return { kind: 'completed', turnId: input.turnId };
+      },
+      inspectAttempt: async () => 'missing',
+      newId: sequentialIds(),
+    });
+    try {
+      await store.claimAgentGraphSupervisorWake({
+        schemaVersion: 1,
+        graphId: 'graph-1',
+        wakeId: 'graph-1:stale',
+        snapshotVersion: 'stale',
+        rootSessionId: 'root-session',
+      });
+      await store.recoverAgentGraphSupervisorWakes();
+      await coordinator.runWithSessionWakesSuppressed(
+        'root-session',
+        async () => {
+          current = snapshot({ graphId: 'graph-2', snapshotVersion: 'snapshot-2' });
+        },
+        'agent_graph_epoch_advanced',
+      );
+      assert.equal(
+        (await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:stale'))?.status,
+        'superseded',
+      );
+      assert.equal(
+        (await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:stale'))?.failureReason,
+        'agent_graph_epoch_advanced',
+      );
+
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.equal(turns, 1);
+      assert.equal(
+        (await store.readAgentGraphSupervisorWake('graph-2', 'graph-2:snapshot-2'))?.status,
+        'delivered',
+      );
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
 });
 
 async function createRunningAttempt(

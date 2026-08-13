@@ -96,6 +96,43 @@ function assertStartedTurn(outcome: TurnStartOutcome): asserts outcome is Starte
   }
 }
 
+test('prepares a fresh Agent Graph epoch before durable external Turn admission', async () => {
+  let fixture!: FailureFixture;
+  let cutovers = 0;
+  fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    agentGraphEpochs: {
+      currentGraphId: async (rootSessionId) => agentGraphIdForRootSession(rootSessionId),
+      beginNextGraphEpoch: async (rootSessionId) => {
+        cutovers += 1;
+        assert.equal(
+          (await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(rootSessionId))
+            .length,
+          0,
+        );
+        return agentGraphIdForRootSession(rootSessionId);
+      },
+    },
+  });
+  try {
+    const outcome = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-after-epoch-cutover',
+        content: { text: 'Start the next task.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(outcome);
+    assert.equal(cutovers, 1);
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('startup recovery replays one admitted safe-boundary continuation without a UserMessage', async () => {
   const workspaceIdentity = 'workspace-safe-boundary-recovery';
   const fixture = await createFailureFixture({
@@ -4509,6 +4546,10 @@ async function createFailureFixture(options: {
     workspaceIdentity: string;
     availableToolNames: readonly string[] | ((sessionId: string) => readonly string[]);
   };
+  agentGraphEpochs?: {
+    currentGraphId(rootSessionId: string): Promise<string>;
+    beginNextGraphEpoch(rootSessionId: string): Promise<string>;
+  };
   prepareSkillInvocation?(input: {
     sessionId: string;
     turnId: string;
@@ -4681,6 +4722,7 @@ async function createFailureFixture(options: {
       undefined,
       artifactAuthority,
       options.prepareSkillInvocation,
+      options.agentGraphEpochs,
     );
   coordinator = createCoordinator(rootAdmissionOwner);
   const contextOperations = new HostContextCoordinator({

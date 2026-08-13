@@ -267,6 +267,11 @@ interface HostTurnAttachmentValidator {
   ): Promise<string | undefined>;
 }
 
+interface HostAgentGraphEpochAuthority {
+  currentGraphId(rootSessionId: string): Promise<string>;
+  beginNextGraphEpoch(rootSessionId: string): Promise<string>;
+}
+
 export class RootTurnCoordinator implements HostedExecutionAuthority {
   readonly handlers: Pick<TurnOperationHandlerMap, 'turn.resume.query' | 'turn.resume.start'> = {
     'turn.resume.query': (input, context) => this.queryTurnResume(input, context),
@@ -298,6 +303,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     ) => Promise<void>,
     attachmentValidator?: HostTurnAttachmentValidator,
     prepareSkillInvocation?: HostSkillInvocationPreparer,
+    private readonly agentGraphEpochs?: HostAgentGraphEpochAuthority,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);
@@ -928,7 +934,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       mode?: BackendStopMode;
     } = {},
   ): Promise<void> {
-    const graphId = agentGraphIdForRootSession(sessionId);
+    const graphId = await this.resolveCurrentGraphId(sessionId);
     const identity = await this.runCommand(() =>
       this.sessionAdmission.run(sessionId, () => {
         const active = this.#executions.get(sessionId);
@@ -999,6 +1005,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         if (!this.beginRootAdmission(reservation)) {
           return { error: 'Root Turn reservation is no longer current' };
         }
+
+        await this.prepareFreshAgentGraphEpoch(header.id);
 
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: input.sessionId,
@@ -1316,6 +1324,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         }
         if (!this.beginRootAdmission(reservation)) {
           return completedStart(sessionBusy('Root Turn reservation is no longer current'));
+        }
+        if (request.execution.kind === 'external_message') {
+          await this.prepareFreshAgentGraphEpoch(header.id);
         }
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: request.sessionId,
@@ -2247,6 +2258,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     await this.clientCapabilities?.bindConfirmedFollowup(batch.sessionId, initiatingConnectionId);
 
     const turnId = randomUUID();
+    const header = await this.stores.sessionStore.readHeaderSnapshot(batch.sessionId);
+    await this.prepareFreshAgentGraphEpoch(header.id);
     const admitted = await this.rootAdmissionOwner.admitRootTurn({
       sessionId: batch.sessionId,
       turnId,
@@ -2346,9 +2359,19 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           resolveEffectiveOrchestration(session.orchestrationMode, undefined).mode)
         : resolveEffectiveOrchestration(session.orchestrationMode, admission.turnOrchestration)
             .mode;
-    return mode === 'graph' || mode === 'swarm'
-      ? agentGraphIdForRootSession(admission.sessionId)
-      : undefined;
+    if (mode !== 'graph' && mode !== 'swarm') return undefined;
+    return this.resolveCurrentGraphId(admission.sessionId);
+  }
+
+  private async prepareFreshAgentGraphEpoch(rootSessionId: string): Promise<void> {
+    await this.agentGraphEpochs?.beginNextGraphEpoch(rootSessionId);
+  }
+
+  private async resolveCurrentGraphId(rootSessionId: string): Promise<string> {
+    return (
+      (await this.agentGraphEpochs?.currentGraphId(rootSessionId)) ??
+      agentGraphIdForRootSession(rootSessionId)
+    );
   }
 
   private async assertRunMatchesDurableExecution(
