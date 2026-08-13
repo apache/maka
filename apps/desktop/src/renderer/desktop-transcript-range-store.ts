@@ -114,6 +114,7 @@ export class DesktopTranscriptRangeStore {
   #durableThrough: number | null = null;
   #oldestSequence: number | null = null;
   #newestSequence: number | null = null;
+  #newestUserSequence: number | null = null;
   #hasOlder = false;
   #hasNewer = false;
   #ready = false;
@@ -197,6 +198,10 @@ export class DesktopTranscriptRangeStore {
     return false;
   }
 
+  newestDurableUserSequence(): number | null {
+    return this.#newestUserSequence;
+  }
+
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean> {
     if (this.hasDurableMessage(messageId)) return Promise.resolve(true);
     return new Promise((resolve) => {
@@ -224,6 +229,7 @@ export class DesktopTranscriptRangeStore {
     this.#durableThrough = batch.durableThrough;
     this.#oldestSequence = null;
     this.#newestSequence = null;
+    this.#newestUserSequence = null;
     this.#hasOlder = batch.hasOlder;
     this.#hasNewer = batch.hasNewer;
     this.#ready = false;
@@ -280,6 +286,9 @@ export class DesktopTranscriptRangeStore {
       this.#durable.set(sequence, { message });
       this.#oldestSequence = Math.min(this.#oldestSequence ?? sequence, sequence);
       this.#newestSequence = Math.max(this.#newestSequence ?? sequence, sequence);
+      if (message.type === 'user') {
+        this.#newestUserSequence = Math.max(this.#newestUserSequence ?? sequence, sequence);
+      }
       return !existing;
     }
     if (typeof pending.identity !== 'string' || message.id !== pending.identity) {

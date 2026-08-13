@@ -765,6 +765,54 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('keeps legacy prompts when newer turns have indexed admissions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-landmarks-mixed-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 10 }, (_, index) => [
+          {
+            type: 'user' as const,
+            id: `user-${index}`,
+            turnId: `turn-${index}`,
+            ts: index * 2,
+            text: `prompt ${index}`,
+          },
+          {
+            type: 'assistant' as const,
+            id: `assistant-${index}`,
+            turnId: `turn-${index}`,
+            ts: index * 2 + 1,
+            text: 'answer',
+            modelId: 'model-1',
+          },
+        ]).flat(),
+      );
+      const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+      try {
+        database
+          .prepare(`
+          INSERT INTO core_root_turn_admissions(session_id, turn_id, admitted_at, record_json)
+          VALUES (?, ?, ?, ?)
+        `)
+          .run(session.id, 'turn-9', 9, JSON.stringify({ userMessageId: 'user-9' }));
+      } finally {
+        database.close();
+      }
+
+      const snapshot = await store.readTurnLandmarksSnapshot(session.id, 8);
+
+      assert.equal(snapshot.landmarks.length, 8);
+      assert.equal(snapshot.landmarks[0]?.turnId, 'turn-0');
+      assert.equal(snapshot.landmarks.at(-1)?.turnId, 'turn-9');
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('clears unread when the current read marker is already the latest visible message', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-read-marker-'));
     const store = createSessionStore(root);

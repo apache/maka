@@ -392,6 +392,7 @@ function AppShellContent({
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
     sessionId: string;
+    throughSequence: number | null;
     turns: readonly { turnId: string; sequence: number; label: string }[];
   }>();
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
@@ -2332,6 +2333,15 @@ function AppShellContent({
     setSessionEventHealthBySession,
     toastApi,
   });
+  let newestDurablePromptSequence: number | null = null;
+  try {
+    const controller = transcriptRangeRef.current;
+    if (controller && controller.store.range().sessionId === activeId) {
+      newestDurablePromptSequence = controller.store.newestDurableUserSequence();
+    }
+  } catch {
+    newestDurablePromptSequence = null;
+  }
   useEffect(() => {
     const sessionId = activeId;
     if (!sessionId) {
@@ -2339,13 +2349,19 @@ function AppShellContent({
       return;
     }
     let disposed = false;
-    setTranscriptTurnIndex(undefined);
+    if (
+      transcriptTurnIndex?.sessionId === sessionId &&
+      (newestDurablePromptSequence === null ||
+        (transcriptTurnIndex.throughSequence !== null &&
+          newestDurablePromptSequence <= transcriptTurnIndex.throughSequence))
+    ) return;
     void window.maka.sessions.listTurnLandmarks(sessionId).then(
-      (turns) => {
+      (snapshot) => {
         if (disposed || activeIdRef.current !== sessionId) return;
         setTranscriptTurnIndex({
           sessionId,
-          turns,
+          throughSequence: snapshot.throughSequence,
+          turns: snapshot.landmarks,
         });
       },
       () => undefined,
@@ -2353,7 +2369,7 @@ function AppShellContent({
     return () => {
       disposed = true;
     };
-  }, [activeId, activeIdRef]);
+  }, [activeId, activeIdRef, newestDurablePromptSequence, transcriptTurnIndex]);
   useEffect(() => {
     const target = searchScrollTarget;
     if (!target || target.sessionId !== activeId || target.sequence === undefined) return;

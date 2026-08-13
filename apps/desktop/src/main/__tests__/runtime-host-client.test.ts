@@ -126,9 +126,11 @@ test('reads the bounded prompt rail index without paging every turn', async () =
   } as unknown as RuntimeHostConnection;
   const client = new DesktopRuntimeHostClient(connection);
 
-  assert.deepEqual(await client.listSessionTurnLandmarks('session-1'), [
-    { turnId: 'turn-50', sequence: 50, label: 'middle' },
-  ]);
+  assert.deepEqual(await client.listSessionTurnLandmarks('session-1'), {
+    sessionId: 'session-1',
+    throughSequence: 100,
+    landmarks: [{ turnId: 'turn-50', sequence: 50, label: 'middle' }],
+  });
   await client.close();
 });
 

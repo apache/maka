@@ -1341,13 +1341,12 @@ export class DesktopRuntimeHostClient {
 
   async listSessionTurnLandmarks(
     sessionId: string,
-  ): Promise<OperationOutput<'session.turn_landmarks.query'>['landmarks']> {
+  ): Promise<OperationOutput<'session.turn_landmarks.query'>> {
     this.#assertOpen();
-    const result = await this.request('session.turn_landmarks.query', {
+    return this.request('session.turn_landmarks.query', {
       sessionId,
       maxLandmarks: 64,
     });
-    return result.landmarks;
   }
 
   close(): Promise<void> {

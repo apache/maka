@@ -1730,18 +1730,22 @@ export class SqliteSessionMetadataStore {
     }
     return this.readTransaction(() => {
       if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
-      const bounds = this.db
+      const throughRow = this.db
         .prepare(
           `
-          SELECT MIN(sequence) AS first_sequence, MAX(sequence) AS through_sequence
+          SELECT sequence AS through_sequence
           FROM session_messages
           WHERE session_id = ?
+          ORDER BY sequence DESC
+          LIMIT 1
         `,
         )
-        .get(sessionId) as { first_sequence?: unknown; through_sequence?: unknown };
-      const firstSequence = nullableStoredMessageSequence(bounds.first_sequence, sessionId);
-      const throughSequence = nullableStoredMessageSequence(bounds.through_sequence, sessionId);
-      if (firstSequence === null || throughSequence === null) {
+        .get(sessionId) as { through_sequence?: unknown } | undefined;
+      const throughSequence = nullableStoredMessageSequence(
+        throughRow?.through_sequence,
+        sessionId,
+      );
+      if (throughSequence === null) {
         return { throughSequence: null, landmarks: [] };
       }
 
@@ -1830,7 +1834,28 @@ export class SqliteSessionMetadataStore {
           if (nearest) selected.add(requireStoredMessageSequence(nearest.sequence, sessionId));
         }
       }
-      if (promptRows.length === 0) {
+      const firstIndexedSequence =
+        promptRows.length > 0
+          ? requireStoredMessageSequence(promptRows[0]?.sequence, sessionId)
+          : null;
+      const legacyThrough =
+        firstIndexedSequence === null ? throughSequence : firstIndexedSequence - 1;
+      if (legacyThrough >= 0) {
+        const firstRow = this.db
+          .prepare(
+            `
+            SELECT sequence AS first_sequence
+            FROM session_messages
+            WHERE session_id = ?
+            ORDER BY sequence ASC
+            LIMIT 1
+          `,
+          )
+          .get(sessionId) as { first_sequence?: unknown } | undefined;
+        const firstSequence = nullableStoredMessageSequence(firstRow?.first_sequence, sessionId);
+        if (firstSequence === null || firstSequence > legacyThrough) {
+          throw new StoredSessionMessageIncompatibleError(sessionId, legacyThrough);
+        }
         const forwardLegacy = this.db.prepare(`
           SELECT message.sequence, message.message_type, payload.sequence AS payload_sequence
           FROM session_messages AS message
@@ -1849,15 +1874,15 @@ export class SqliteSessionMetadataStore {
           ORDER BY message.sequence DESC
           LIMIT ${SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES}
         `);
-        const targetCount = Math.min(maxLandmarks, throughSequence - firstSequence + 1);
+        const targetCount = Math.min(maxLandmarks, legacyThrough - firstSequence + 1);
         for (let index = 0; index < targetCount; index += 1) {
           const target =
             targetCount === 1
-              ? throughSequence
+              ? legacyThrough
               : firstSequence +
-                Math.floor(((throughSequence - firstSequence) * index) / (targetCount - 1));
+                Math.floor(((legacyThrough - firstSequence) * index) / (targetCount - 1));
           const candidates = [
-            ...(forwardLegacy.all(sessionId, target, throughSequence) as LegacyTurnLandmarkRow[]),
+            ...(forwardLegacy.all(sessionId, target, legacyThrough) as LegacyTurnLandmarkRow[]),
             ...(backwardLegacy.all(sessionId, target, firstSequence) as LegacyTurnLandmarkRow[]),
           ];
           let nearest: number | undefined;
@@ -1872,7 +1897,20 @@ export class SqliteSessionMetadataStore {
         }
       }
 
-      const landmarks = readStoredMessageRows(this.db, sessionId, [...selected]).flatMap(
+      const selectedSequences = [...selected].sort((left, right) => left - right);
+      const sampledSequences =
+        selectedSequences.length <= maxLandmarks
+          ? selectedSequences
+          : Array.from(
+              { length: maxLandmarks },
+              (_, index) =>
+                selectedSequences[
+                  maxLandmarks === 1
+                    ? selectedSequences.length - 1
+                    : Math.floor(((selectedSequences.length - 1) * index) / (maxLandmarks - 1))
+                ]!,
+            );
+      const landmarks = readStoredMessageRows(this.db, sessionId, sampledSequences).flatMap(
         ({ sequence, recordJson }) => {
           let message: StoredMessage;
           try {

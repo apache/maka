@@ -110,6 +110,38 @@ test('moves a fragmented overlay record to durable storage without duplicating i
   assert.deepEqual(store.snapshot().messages, [message]);
 });
 
+test('retains the newest observed durable prompt across eviction', () => {
+  const identity = {
+    sessionId: 'session-1',
+    generation: 'generation-1',
+    hostEpoch: 'host-1',
+  };
+  const store = new DesktopTranscriptRangeStore();
+  for (const batch of encodeDesktopTranscriptSnapshot({
+    ...identity,
+    durableThrough: 3,
+    durable: [
+      { sequence: 1, message: userMessage('older', 'user-1') },
+      { sequence: 2, message: assistantMessage('answer') },
+      { sequence: 3, message: userMessage('newer', 'user-3') },
+    ],
+    overlay: [],
+    hasOlder: false,
+    hasNewer: false,
+  })) store.accept(batch);
+  assert.equal(store.newestDurableUserSequence(), 3);
+
+  for (const batch of encodeDesktopTranscriptChange(identity, {
+    durableThrough: 4,
+    durableUpserts: [{ sequence: 4, message: assistantMessage('latest') }],
+    evictedDurableSequences: [3],
+    completedOverlayMessageIds: [],
+    hasOlder: false,
+    hasNewer: false,
+  })) store.accept(batch);
+  assert.equal(store.newestDurableUserSequence(), 3);
+});
+
 test('drops stale transcript batches after a generation reset', () => {
   const store = new DesktopTranscriptRangeStore();
   const oldBatches = [...encodeDesktopTranscriptSnapshot({
@@ -473,6 +505,19 @@ function assistantMessage(
     ts: 1,
     text,
     modelId: 'model-1',
+  };
+}
+
+function userMessage(
+  text: string,
+  id: string,
+): Extract<StoredMessage, { type: 'user' }> {
+  return {
+    type: 'user',
+    id,
+    turnId: id.replace('user-', 'turn-'),
+    ts: 1,
+    text,
   };
 }
 
