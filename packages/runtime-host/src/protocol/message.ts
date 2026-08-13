@@ -6,6 +6,7 @@ import {
   requireExactRecord,
   requireId,
   requireRecord,
+  requireShapedRecord,
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
 import {
@@ -63,6 +64,7 @@ export interface TurnMessageSubmitInput {
   readonly messageId: string;
   readonly content: MessageContent;
   readonly placement: MessagePlacement;
+  readonly busyBehavior?: 'queue' | 'reject';
 }
 
 export type TurnMessageSubmitResult =
@@ -159,19 +161,26 @@ export function decodeSessionMessageQueueProjection(value: unknown): SessionMess
 }
 
 function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
-  const record = requireExactRecord(value, 'turn.message.submit input', [
-    'originHostEpoch',
-    'sessionId',
-    'messageId',
-    'content',
-    'placement',
-  ]);
+  const record = requireShapedRecord(
+    value,
+    'turn.message.submit input',
+    ['originHostEpoch', 'sessionId', 'messageId', 'content', 'placement'],
+    ['busyBehavior'],
+  );
+  if (
+    record.busyBehavior !== undefined &&
+    record.busyBehavior !== 'queue' &&
+    record.busyBehavior !== 'reject'
+  ) {
+    throw invalidProtocolFrame('Invalid turn.message.submit busy behavior');
+  }
   return {
     originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     messageId: requireEntityId(record.messageId, 'messageId'),
     content: decodeMessageContent(record.content),
     placement: requireMessagePlacement(record.placement),
+    ...(record.busyBehavior === undefined ? {} : { busyBehavior: record.busyBehavior }),
   };
 }
 

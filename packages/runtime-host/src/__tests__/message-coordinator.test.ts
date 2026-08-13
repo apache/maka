@@ -99,6 +99,31 @@ test('submit re-runs admission when the queue revision moves during preflight', 
   owner.release();
 });
 
+test('rejects a busy-only submit without leaving a queued follow-up', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+
+  const outcome = await fixture.coordinator.handlers['turn.message.submit'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      messageId: 'bot-message',
+      content: { text: 'run only if idle' },
+      placement: 'next_turn',
+      busyBehavior: 'reject',
+    },
+    operationContext(),
+  );
+
+  assert.equal(outcome.ok, false);
+  assert.equal(!outcome.ok && outcome.error.code, 'session_busy');
+  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).followup, []);
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  fixture.coordinator.completeIdle(batch);
+});
+
 test('keeps submitted Skill text durable while handing prepared content to steering and follow-up roots', async () => {
   const fixture = createFixture();
   fixture.setMessagePreparation(async (input) => ({

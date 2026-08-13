@@ -127,11 +127,19 @@ export function createRuntimeHostBotSessionAdapter(
             messageId,
             content: { text },
             placement: 'next_turn',
+            busyBehavior: 'reject',
           });
         } catch (error) {
           turnId.reject(error);
           await session.close().catch(() => undefined);
           await completion.catch(() => undefined);
+          if (
+            error instanceof RuntimeHostOperationError &&
+            error.operation === 'turn.message.submit' &&
+            error.code === 'session_busy'
+          ) {
+            return { kind: 'errored' as const, reason: 'Session is already running a Turn' };
+          }
           throwUnavailable(error, sessionId);
           throw error;
         }
@@ -227,10 +235,10 @@ async function collectRuntimeHostBotTurn(
       if (turn?.turnId === turnId) {
         if (turn.status === 'waiting_for_user') return { kind: 'suspended' };
         if (turn.status === 'completed') {
-          return {
-            kind: 'completed',
-            text: latestMessageId ? (assistantText.get(latestMessageId) ?? '') : '',
-          };
+          if (latestMessageId) {
+            return { kind: 'completed', text: assistantText.get(latestMessageId) ?? '' };
+          }
+          return projectTerminalBotTurn(turn, await session.transcript, turnId);
         }
         if (turn.status === 'failed') return { kind: 'errored', reason: turn.failureClass };
         if (turn.status === 'cancelled') {

@@ -595,6 +595,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         if (rootState.kind === 'reserved') {
           return failure('session_busy', 'A Goal continuation is reserving the next root Turn');
         }
+        if (input.busyBehavior === 'reject') {
+          return failure('session_busy', 'Session already has an active Turn');
+        }
         const state = this.#requireState(input.sessionId);
         if (state.phase !== 'open') {
           return failure('session_busy', 'Message admission is closed for the active generation');
@@ -1529,6 +1532,7 @@ interface CanonicalSubmitPayload {
   readonly messageId: string;
   readonly content: MessageContent;
   readonly placement: MessagePlacement;
+  readonly busyBehavior: 'queue' | 'reject';
 }
 
 function canonicalSubmitPayload(input: TurnMessageSubmitInput): CanonicalSubmitPayload {
@@ -1538,6 +1542,7 @@ function canonicalSubmitPayload(input: TurnMessageSubmitInput): CanonicalSubmitP
     messageId: input.messageId,
     content: normalizeMessageContent(input.content),
     placement: input.placement,
+    busyBehavior: input.busyBehavior ?? 'queue',
   };
 }
 
