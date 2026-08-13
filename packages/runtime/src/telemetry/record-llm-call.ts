@@ -33,8 +33,8 @@ export async function recordLlmCallStrict(
     record.cacheMissInputSource ?? (derivedCacheMissInputTokens ? 'derived' : undefined);
   const cachedInputTokens = cacheHitInputTokens;
   const reasoningTokens = record.reasoningTokens ?? 0;
-  const totalTokens =
-    record.totalTokens ?? record.inputTokens + record.outputTokens + reasoningTokens;
+  // Reasoning is an output-token detail, not an additional token class.
+  const totalTokens = record.totalTokens ?? record.inputTokens + record.outputTokens;
   const costUsd =
     record.costUsd ??
     computeCost(
