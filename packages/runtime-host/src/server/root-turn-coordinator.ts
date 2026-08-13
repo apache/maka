@@ -1006,7 +1006,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           return { error: 'Root Turn reservation is no longer current' };
         }
 
-        await this.prepareFreshAgentGraphEpoch(header.id);
+        await this.prepareFreshAgentGraphEpoch(header);
 
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: input.sessionId,
@@ -1326,7 +1326,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           return completedStart(sessionBusy('Root Turn reservation is no longer current'));
         }
         if (request.execution.kind === 'external_message') {
-          await this.prepareFreshAgentGraphEpoch(header.id);
+          await this.prepareFreshAgentGraphEpoch(header, request.turnOrchestration);
         }
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: request.sessionId,
@@ -2259,7 +2259,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
 
     const turnId = randomUUID();
     const header = await this.stores.sessionStore.readHeaderSnapshot(batch.sessionId);
-    await this.prepareFreshAgentGraphEpoch(header.id);
+    await this.prepareFreshAgentGraphEpoch(header);
     const admitted = await this.rootAdmissionOwner.admitRootTurn({
       sessionId: batch.sessionId,
       turnId,
@@ -2363,8 +2363,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     return this.resolveCurrentGraphId(admission.sessionId);
   }
 
-  private async prepareFreshAgentGraphEpoch(rootSessionId: string): Promise<void> {
-    await this.agentGraphEpochs?.beginNextGraphEpoch(rootSessionId);
+  private async prepareFreshAgentGraphEpoch(
+    session: SessionHeader,
+    turnOrchestration?: TurnStartInput['turnOrchestration'],
+  ): Promise<void> {
+    const mode = resolveEffectiveOrchestration(session.orchestrationMode, turnOrchestration).mode;
+    if (mode === 'graph' || mode === 'swarm') {
+      await this.agentGraphEpochs?.beginNextGraphEpoch(session.id);
+    }
   }
 
   private async resolveCurrentGraphId(rootSessionId: string): Promise<string> {

@@ -120,11 +120,43 @@ test('prepares a fresh Agent Graph epoch before durable external Turn admission'
         sessionId: fixture.sessionId,
         turnId: 'turn-after-epoch-cutover',
         content: { text: 'Start the next task.' },
+        turnOrchestration: { mode: 'graph', source: 'host_api' },
       },
       operationContext(fixture.hostEpoch, fixture.acquireResidency),
     );
     assertStartedTurn(outcome);
     assert.equal(cutovers, 1);
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('does not advance a finished graph for an ordinary default Turn', async () => {
+  let cutovers = 0;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    agentGraphEpochs: {
+      currentGraphId: async (rootSessionId) => agentGraphIdForRootSession(rootSessionId),
+      beginNextGraphEpoch: async (rootSessionId) => {
+        cutovers += 1;
+        return agentGraphIdForRootSession(rootSessionId);
+      },
+    },
+  });
+  try {
+    const outcome = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-without-graph-orchestration',
+        content: { text: 'Continue the conversation normally.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(outcome);
+    assert.equal(cutovers, 0);
     await fixture.coordinator.whenIdle(fixture.sessionId);
   } finally {
     await fixture.coordinator.close();
