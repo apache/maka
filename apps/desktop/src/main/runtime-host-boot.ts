@@ -195,6 +195,7 @@ let lastRuntimeHostTarget = startupRuntimeHost;
 let runtimeHostReadiness: RuntimeHostDesktopTargetState["readiness"] =
   "connecting";
 let lastPublishedRuntimeHostTargetEpoch: string | undefined;
+let lastPublishedRuntimeHostScope: DesktopHostRef | undefined;
 let owner: RuntimeHostDesktopOwner | undefined;
 function activeRuntimeHostRef(): DesktopHostRef | undefined {
   const current = owner?.current();
@@ -458,7 +459,7 @@ mcpManager.onChange(() => {
 
 registerPersistentClientIpc();
 registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
-registerBrowserIpc({
+const browserIpc = registerBrowserIpc({
   mainWindowController,
   getActiveHostRef: activeRuntimeHostRef,
 });
@@ -612,8 +613,20 @@ owner = await startRuntimeHostDesktopOwner(
     onTargetStateChanged: (state) => {
       runtimeHostReadiness = state.readiness;
       const targetChanged = lastPublishedRuntimeHostTargetEpoch !== state.epoch;
+      if (targetChanged && lastPublishedRuntimeHostScope) {
+        void browserIpc.retireTarget(lastPublishedRuntimeHostScope).catch((error) =>
+          console.error("[runtime-host] Browser target retirement failed:", error),
+        );
+      }
       lastPublishedRuntimeHostTargetEpoch = state.epoch;
       lastRuntimeHostTarget = state.target;
+      const nextScope =
+        state.readiness === "ready"
+          ? { hostId: state.candidate.client.hostId, targetEpoch: state.epoch }
+          : "hostId" in state && state.hostId
+            ? { hostId: state.hostId, targetEpoch: state.epoch }
+            : undefined;
+      if (nextScope || targetChanged) lastPublishedRuntimeHostScope = nextScope;
       mainWindowController.send("runtime-host-profiles:changed", {
         epoch: state.epoch,
         profileId: state.target.profile.id,

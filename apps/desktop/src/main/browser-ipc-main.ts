@@ -6,6 +6,7 @@ import type { BrowserViewRect } from './browser/logic.js';
 import type { createMainWindowController } from './main-window.js';
 import {
   desktopSessionResourceKey,
+  parseDesktopSessionResourceKey,
   requireDesktopHostRef,
   type DesktopHostRef,
 } from '../preload/runtime-host-identity.js';
@@ -15,7 +16,11 @@ interface BrowserIpcDeps {
   getActiveHostRef(): DesktopHostRef | undefined;
 }
 
-export function registerBrowserIpc(deps: BrowserIpcDeps): void {
+export interface BrowserIpcController {
+  retireTarget(scope: DesktopHostRef): Promise<void>;
+}
+
+export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   let shownBrowserSessionId: string | null = null;
   provideBrowserViewHost(createBrowserViewHost(deps.mainWindowController.getBrowserViews(), () => shownBrowserSessionId));
 
@@ -80,4 +85,18 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): void {
     const resourceKey = requireBrowserTarget(scope, target);
     if (resourceKey === shownBrowserSessionId) await releaseBrowserSession(resourceKey);
   });
+
+  return {
+    async retireTarget(scope) {
+      shownBrowserSessionId = null;
+      const views = deps.mainWindowController.getBrowserViews();
+      views.hideAllExcept(null);
+      revokeHiddenBrowserActions(null);
+      const retired = views.sessionIds().filter((sessionId) => {
+        const ref = parseDesktopSessionResourceKey(sessionId);
+        return ref.hostId === scope.hostId && ref.targetEpoch === scope.targetEpoch;
+      });
+      await Promise.all(retired.map((sessionId) => releaseBrowserSession(sessionId)));
+    },
+  };
 }

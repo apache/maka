@@ -196,6 +196,21 @@ async function invokeActiveRuntimeHost<T>(channel: string, ...args: unknown[]): 
   return ipcRenderer.invoke(channel, await activeRuntimeHostRef(), ...args) as Promise<T>;
 }
 
+function scopedRuntimeHost(scope: DesktopHostRef): MakaBridge['runtimeHost'] {
+  return {
+    query(operation, input) {
+      return ipcRenderer.invoke('runtime-host:query', scope, operation, input) as Promise<
+        OperationOutput<typeof operation>
+      >;
+    },
+    command(operation, input) {
+      return ipcRenderer.invoke('runtime-host:command', scope, operation, input) as Promise<
+        OperationOutput<typeof operation>
+      >;
+    },
+  };
+}
+
 function sendActiveRuntimeHost(channel: string, ...args: unknown[]): void {
   void activeRuntimeHostRef()
     .then((scope) => ipcRenderer.send(channel, scope, ...args))
@@ -242,6 +257,7 @@ const runtimeHost: MakaBridge['runtimeHost'] = {
 };
 
 async function listScheduledTasks(): Promise<ScheduledTask[]> {
+  const host = scopedRuntimeHost(await activeRuntimeHostRef());
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const tasks: ScheduledTask[] = [];
     const taskIds = new Set<string>();
@@ -250,7 +266,7 @@ async function listScheduledTasks(): Promise<ScheduledTask[]> {
     let revision: number | undefined;
     let retry = false;
     do {
-      const result = await runtimeHost.query('scheduled-task.query', {
+      const result = await host.query('scheduled-task.query', {
         kind: 'list',
         ...(cursor === undefined ? {} : { cursor, expectedRevision: revision! }),
       });
@@ -287,14 +303,16 @@ async function listScheduledTasks(): Promise<ScheduledTask[]> {
 async function mutateScheduledTask(
   input: OperationInput<'scheduled-task.mutate'>,
 ): Promise<ScheduledTask> {
-  const result = await runtimeHost.command('scheduled-task.mutate', input);
+  const host = scopedRuntimeHost(await activeRuntimeHostRef());
+  const result = await host.command('scheduled-task.mutate', input);
   if (result.kind !== 'task') throw new Error('Runtime Host returned no ScheduledTask');
   return result.task;
 }
 
 async function loadSessionTrace(sessionId: string): Promise<SessionTrace> {
+  const host = scopedRuntimeHost(await activeRuntimeHostRef());
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const first = await runtimeHost.query('execution.inspect.query', {
+    const first = await host.query('execution.inspect.query', {
       kind: 'session_trace_start',
       sessionId,
     });
@@ -306,7 +324,7 @@ async function loadSessionTrace(sessionId: string): Promise<SessionTrace> {
     while (nextOffset !== null) {
       if (offsets.has(nextOffset)) throw new Error('Session trace repeated a page offset');
       offsets.add(nextOffset);
-      const next = await runtimeHost.query('execution.inspect.query', {
+      const next = await host.query('execution.inspect.query', {
         kind: 'session_trace_continue',
         sessionId,
         revision: first.revision,
@@ -345,11 +363,12 @@ async function loadSessionTrace(sessionId: string): Promise<SessionTrace> {
 async function updateDailyReviewConfig(
   patch: Partial<DailyReviewConfig>,
 ): Promise<DailyReviewConfig> {
+  const host = scopedRuntimeHost(await activeRuntimeHostRef());
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const current = await runtimeHost.query('daily-review.query', { kind: 'config' });
+    const current = await host.query('daily-review.query', { kind: 'config' });
     if (current.kind !== 'config') throw new Error('Invalid Daily Review config');
     const config = normalizeDailyReviewConfig({ ...current.config, ...patch });
-    const result = await runtimeHost.command('daily-review.mutate', {
+    const result = await host.command('daily-review.mutate', {
       kind: 'update_config',
       expectedRevision: current.revision,
       config,
@@ -362,10 +381,11 @@ async function updateDailyReviewConfig(
 }
 
 async function listDailyReviewArchives(): Promise<DailyReviewArchiveSummary[]> {
+  const host = scopedRuntimeHost(await activeRuntimeHostRef());
   const archives: DailyReviewArchiveSummary[] = [];
   let beforeArchiveId: string | null = null;
   do {
-    const result: OperationOutput<'daily-review.query'> = await runtimeHost.query(
+    const result: OperationOutput<'daily-review.query'> = await host.query(
       'daily-review.query', {
       kind: 'archives',
       beforeArchiveId,
@@ -630,11 +650,15 @@ const makaBridge = {
           skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
         }
     > {
+      const scope = await activeRuntimeHostRef();
       if (command.type === 'send' && 'attachmentItems' in command && command.attachmentItems) {
         const encoded = await encodeIngestItems(command.attachmentItems as RendererIngestInput[]);
-        return invokeActiveRuntimeHost('sessions:send', sessionId, { ...command, attachmentItems: encoded });
+        return ipcRenderer.invoke('sessions:send', scope, sessionId, {
+          ...command,
+          attachmentItems: encoded,
+        });
       }
-      return invokeActiveRuntimeHost('sessions:send', sessionId, command);
+      return ipcRenderer.invoke('sessions:send', scope, sessionId, command);
     },
     compact(sessionId: string): Promise<void> {
       return invokeActiveRuntimeHost('sessions:compact', sessionId);
@@ -708,14 +732,18 @@ const makaBridge = {
       const channel = `sessions:event:${sessionId}`;
       const unsubscribeEvents = subscribeActiveRuntimeHostEvent(channel, handler);
       const observerId = crypto.randomUUID();
-      const disposeSeedNotification = notifyWhenSeeded(
-        invokeActiveRuntimeHost('sessions:observe', sessionId, observerId),
-        onSeeded,
+      const scope = activeRuntimeHostRef();
+      const observing = scope.then((resolved) =>
+        ipcRenderer.invoke('sessions:observe', resolved, sessionId, observerId),
       );
+      const disposeSeedNotification = notifyWhenSeeded(observing, onSeeded);
       return () => {
         disposeSeedNotification();
         unsubscribeEvents();
-        void invokeActiveRuntimeHost('sessions:unobserve', observerId).catch(() => undefined);
+        void observing
+          .then(() => scope)
+          .then((resolved) => ipcRenderer.invoke('sessions:unobserve', resolved, observerId))
+          .catch(() => undefined);
       };
     },
     subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void {
