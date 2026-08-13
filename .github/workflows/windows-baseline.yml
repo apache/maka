@@ -158,12 +158,12 @@ jobs:
         timeout-minutes: 5
         shell: pwsh
         run: |
-          node.exe --test --test-force-exit --test-timeout=15000 --test-reporter=tap --test-concurrency=1 --test-name-pattern="semantic text and Enter actions|terminal mode parsed before the control cut" packages/runtime/dist/__tests__/shell-run-manager.test.js 2>&1 |
+          node.exe --test --test-force-exit --test-timeout=15000 --test-reporter=tap --test-concurrency=1 --test-name-pattern="semantic text and Enter actions|terminal mode parsed before the control cut|preserves the requested cwd through a real Git Bash login PTY" packages/runtime/dist/__tests__/shell-run-manager.test.js 2>&1 |
             Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/runtime-pty-input.log"
           $exitCode = $LASTEXITCODE
           $output = Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/runtime-pty-input.log"
-          if ($exitCode -eq 0 -and ($output -notcontains '# tests 2' -or $output -notcontains '# pass 2')) {
-            Write-Error 'Runtime PTY input gate did not run exactly two passing tests'
+          if ($exitCode -eq 0 -and ($output -notcontains '# tests 3' -or $output -notcontains '# pass 3')) {
+            Write-Error 'Runtime PTY input gate did not run exactly three passing tests'
             exit 1
           }
           exit $exitCode

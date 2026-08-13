@@ -13,7 +13,7 @@ import {
   isShellRunResourceRef,
 } from '@maka/runtime/shell-run-contract';
 import { type ShellRunLauncher } from '@maka/runtime/shell-tools';
-import { defaultShellPlan, type ShellPlan } from '@maka/runtime/shell-detect';
+import { defaultShellPlan, ShellPreferenceError, type ShellPlan } from '@maka/runtime/shell-detect';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import {
   decodeRuntimeResourceControllerAcquireResult,
@@ -339,13 +339,18 @@ export class HostRuntimeResourceCoordinator
       const shell = await this.#resolveShell();
       const env = { ...process.env };
       let command: string;
-      if (shell.kind === 'posix' || shell.kind === 'git-bash' || shell.kind === 'legacy-wsl-bash') {
-        if (shell.kind === 'git-bash' || shell.kind === 'legacy-wsl-bash') {
-          env.SHELL = shell.exe;
-        } else {
-          env.SHELL ||=
-            userInfo().shell || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh');
-        }
+      if (shell.kind === 'git-bash') {
+        env.SHELL = shell.exe;
+        env.CHERE_INVOKING = '1';
+        env.DISABLE_AUTO_UPDATE = 'true';
+        env.DISABLE_UPDATE_PROMPT = 'true';
+        command = 'exec "$SHELL" -l';
+      } else if (shell.kind === 'legacy-wsl-bash') {
+        env.DISABLE_AUTO_UPDATE = 'true';
+        env.DISABLE_UPDATE_PROMPT = 'true';
+        command = 'exec bash -l';
+      } else if (shell.kind === 'posix') {
+        env.SHELL ||= userInfo().shell || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh');
         env.DISABLE_AUTO_UPDATE = 'true';
         env.DISABLE_UPDATE_PROMPT = 'true';
         command = 'exec "$SHELL" -l';
@@ -375,6 +380,12 @@ export class HostRuntimeResourceCoordinator
         }),
       };
     } catch (error) {
+      if (error instanceof ShellPreferenceError) {
+        return mutationFailure('runtime.resource.start', {
+          code: 'invalid_request',
+          message: error.message,
+        });
+      }
       return this.#resourceFailure('runtime.resource.start', error);
     }
   }

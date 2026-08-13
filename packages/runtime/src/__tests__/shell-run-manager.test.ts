@@ -117,6 +117,53 @@ describe('ShellRunProcessManager', () => {
     assert.doesNotMatch(result.output.stdout, /\uFFFD/u);
   });
 
+  test('preserves the requested cwd through a real Git Bash login PTY', {
+    skip: process.platform === 'win32' ? false : 'Git Bash PTY regression',
+  }, async () => {
+    const shell = windowsGitBashPlan();
+    assert.ok(shell, 'Git Bash must exist on the Windows baseline runner');
+    const cwd = await workspace();
+    await writeFile(join(cwd, 'maka-cwd-marker'), 'expected workspace', 'utf8');
+    const manager = await createTestManager();
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        command: 'exec "$SHELL" -l',
+        env: {
+          ...process.env,
+          SHELL: shell.exe,
+          CHERE_INVOKING: '1',
+          DISABLE_AUTO_UPDATE: 'true',
+          DISABLE_UPDATE_PROMPT: 'true',
+        },
+        shell,
+        pty: true,
+        timeoutMs: 10_000,
+      }),
+    );
+    assert.equal(initial.kind, 'shell_run');
+
+    await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      input: "test -f maka-cwd-marker && printf 'MAKA_CWD_OK\\n'\r",
+      abortSignal: NO_ABORT,
+    });
+    const observed = await waitForPtyText(manager, initial.ref, /MAKA_CWD_OK/u, 10_000);
+    assert.equal(observed.output?.mode, 'pty');
+    if (observed.output?.mode !== 'pty') throw new Error('expected pty output');
+    assert.match(terminalText(observed.output), /MAKA_CWD_OK/u);
+
+    await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      input: 'exit\r',
+      abortSignal: NO_ABORT,
+    });
+    const completed = await waitForTerminalShellRun(manager, initial.ref, 10_000);
+    assert.equal(completed.status, 'completed');
+  });
+
   test('uses the shared explicit PowerShell pipe plan', async () => {
     const manager = await createTestManager();
     const result = await manager.runForegroundBash(
@@ -2768,6 +2815,18 @@ function windowsPowerShellPlan(): ShellPlan | undefined {
   );
   if (!existsSync(executable)) return undefined;
   return { kind: 'powershell', displayName: 'Windows PowerShell 5.1', exe: executable };
+}
+
+function windowsGitBashPlan(): ShellPlan | undefined {
+  if (process.platform !== 'win32') return undefined;
+  const executable = join(
+    process.env.ProgramFiles ?? 'C:\\Program Files',
+    'Git',
+    'bin',
+    'bash.exe',
+  );
+  if (!existsSync(executable)) return undefined;
+  return { kind: 'git-bash', displayName: 'Git Bash', exe: executable };
 }
 
 function record(input: { shellRunId: string; status: ShellRunRecord['status'] }): ShellRunRecord {

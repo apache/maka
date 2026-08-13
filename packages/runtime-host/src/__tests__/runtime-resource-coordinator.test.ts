@@ -7,6 +7,7 @@ import {
   type ShellRunUpdate,
 } from '@maka/core/events';
 import type { ShellRunBashInput, ShellRunWriteInput } from '@maka/runtime/shell-run-contract';
+import { ShellPreferenceError } from '@maka/runtime/shell-detect';
 import { SessionNotFoundError } from '@maka/storage';
 import { RUNTIME_RESOURCE_RESULT_MAX_BYTES } from '../protocol/runtime-resource.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
@@ -291,7 +292,47 @@ describe('Host Runtime Resource coordinator', () => {
     assert.deepEqual(harness.lastBackgroundInput?.shell, shell);
     assert.equal(harness.lastBackgroundInput?.command, 'exec "$SHELL" -l');
     assert.equal(harness.lastBackgroundInput?.env?.SHELL, shell.exe);
+    assert.equal(harness.lastBackgroundInput?.env?.CHERE_INVOKING, '1');
     harness.finishBackground({ successful: true });
+  });
+
+  test('starts the legacy WSL shim with a Linux-visible login shell', async () => {
+    const shell = {
+      kind: 'legacy-wsl-bash' as const,
+      displayName: 'Legacy WSL Bash',
+      exe: 'C:\\Windows\\System32\\bash.exe',
+    };
+    const harness = createHarness({ resolveShell: async () => shell });
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'desktop-launch-wsl' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, true);
+    assert.deepEqual(harness.lastBackgroundInput?.shell, shell);
+    assert.equal(harness.lastBackgroundInput?.command, 'exec bash -l');
+    assert.notEqual(harness.lastBackgroundInput?.env?.SHELL, shell.exe);
+    harness.finishBackground({ successful: true });
+  });
+
+  test('rejects an unavailable saved shell without draining Runtime Host', async () => {
+    const harness = createHarness({
+      resolveShell: async () => {
+        throw new ShellPreferenceError(
+          'executable_missing',
+          'The configured Git Bash was not found',
+        );
+      },
+    });
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'desktop-launch-missing-shell' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, false);
+    assert.equal(!started.ok && started.error.code, 'invalid_request');
+    assert.equal(harness.lastBackgroundInput, undefined);
+    assert.equal(harness.drainCount, 0);
   });
 
   test('makes the Host-resolved shell authoritative over a caller plan', async () => {
