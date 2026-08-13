@@ -50,7 +50,11 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
 
   first.disconnect();
   const botMessage = owner.handleBotIncomingMessage({ text: 'hello' } as BotIncomingMessage);
-  const stop = owner.stopSession({ hostId: 'test-host', sessionId: 'session-1' });
+  const stop = owner.stopSession({
+    hostId: 'test-host',
+    targetEpoch: owner.current()!.epoch,
+    sessionId: 'session-1',
+  });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(starts, 1);
   assert.equal(first.botMessages, 0);
@@ -187,8 +191,13 @@ test('does not apply an old Host resource stop after a target switch', async () 
     },
   );
 
+  const staleTargetEpoch = owner.current()!.epoch;
   const switching = owner.switchTarget(remoteTarget('office'));
-  const stopping = owner.stopSession({ hostId: 'host-a', sessionId: 'shared-session' });
+  const stopping = owner.stopSession({
+    hostId: 'host-a',
+    targetEpoch: staleTargetEpoch,
+    sessionId: 'shared-session',
+  });
   releaseRemote();
   await Promise.all([switching, stopping]);
 
@@ -233,7 +242,11 @@ test('lets a target switch cancel a stop waiting for reconnect', async () => {
 
   local.disconnect();
   await reconnecting;
-  const stopping = owner.stopSession({ hostId: 'host-a', sessionId: 'shared-session' });
+  const stopping = owner.stopSession({
+    hostId: 'host-a',
+    targetEpoch: owner.current()!.epoch,
+    sessionId: 'shared-session',
+  });
   await owner.switchTarget(remoteTarget('office'));
   await stopping;
 

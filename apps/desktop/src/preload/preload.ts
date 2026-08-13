@@ -151,7 +151,7 @@ type LocalMemoryMutationResult =
   | { ok: true; state: LocalMemoryState; entry?: LocalMemoryEntryPreview; proposal?: LocalMemoryEntryPreview }
   | { ok: false; state: LocalMemoryState; reason: string; message: string };
 
-let activeRuntimeHostId: string | undefined;
+let activeRuntimeHost: DesktopHostRef | undefined;
 let activeRuntimeHostGeneration = 0;
 
 type RuntimeHostProfileWireEvent = DesktopRuntimeHostProfileChangedEvent & {
@@ -162,13 +162,15 @@ ipcRenderer.on(
   'runtime-host-profiles:changed',
   (_event, change: RuntimeHostProfileWireEvent) => {
     if (change.targetChanged || change.hostId) activeRuntimeHostGeneration += 1;
-    if (change.targetChanged) activeRuntimeHostId = undefined;
-    if (change.hostId) activeRuntimeHostId = change.hostId;
+    if (change.targetChanged) activeRuntimeHost = undefined;
+    if (change.hostId) {
+      activeRuntimeHost = { hostId: change.hostId, targetEpoch: change.epoch };
+    }
   },
 );
 
 async function activeRuntimeHostRef(): Promise<DesktopHostRef> {
-  while (!activeRuntimeHostId) {
+  while (!activeRuntimeHost) {
     const generation = activeRuntimeHostGeneration;
     const snapshot = await ipcRenderer.invoke('runtime-host:activeIdentity');
     if (generation !== activeRuntimeHostGeneration) continue;
@@ -176,12 +178,18 @@ async function activeRuntimeHostRef(): Promise<DesktopHostRef> {
       throw new Error('Desktop Runtime Host identity is unavailable');
     }
     const hostId = (snapshot as { hostId?: unknown }).hostId;
-    if (typeof hostId !== 'string' || !hostId) {
+    const targetEpoch = (snapshot as { targetEpoch?: unknown }).targetEpoch;
+    if (
+      typeof hostId !== 'string' ||
+      !hostId ||
+      typeof targetEpoch !== 'string' ||
+      !targetEpoch
+    ) {
       throw new Error('Desktop Runtime Host identity is unavailable');
     }
-    activeRuntimeHostId = hostId;
+    activeRuntimeHost = { hostId, targetEpoch };
   }
-  return { hostId: activeRuntimeHostId };
+  return activeRuntimeHost;
 }
 
 async function invokeActiveRuntimeHost<T>(channel: string, ...args: unknown[]): Promise<T> {
@@ -209,7 +217,11 @@ function subscribeActiveRuntimeHostEvent<T extends readonly unknown[]>(
     } catch {
       return;
     }
-    if (!activeRuntimeHostId || host.hostId !== activeRuntimeHostId) return;
+    if (
+      !activeRuntimeHost ||
+      host.hostId !== activeRuntimeHost.hostId ||
+      host.targetEpoch !== activeRuntimeHost.targetEpoch
+    ) return;
     handler(...(args as unknown as T));
   };
   ipcRenderer.on(channel, listener);

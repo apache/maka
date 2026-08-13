@@ -141,7 +141,10 @@ import {
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
 import { startupStep, whileAwaitingPerson } from "./startup-step.js";
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
-import { parseDesktopSessionResourceKey } from "../preload/runtime-host-identity.js";
+import {
+  parseDesktopSessionResourceKey,
+  type DesktopHostRef,
+} from "../preload/runtime-host-identity.js";
 
 await resolveShellEnv();
 
@@ -193,6 +196,12 @@ let runtimeHostReadiness: RuntimeHostDesktopTargetState["readiness"] =
   "connecting";
 let lastPublishedRuntimeHostTargetEpoch: string | undefined;
 let owner: RuntimeHostDesktopOwner | undefined;
+function activeRuntimeHostRef(): DesktopHostRef | undefined {
+  const current = owner?.current();
+  return current?.hostId
+    ? { hostId: current.hostId, targetEpoch: current.epoch }
+    : undefined;
+}
 const currentRuntimeHost = (): ResolvedRuntimeHostProfile | undefined =>
   owner ? owner.current()?.target : startupRuntimeHost;
 const runtimeHostGeneration = app.isPackaged ? app.getVersion() : randomUUID();
@@ -258,7 +267,7 @@ const mainWindowController = createMainWindowController({
   e2eFixture,
   settingsStore,
   startHidden,
-  getActiveRuntimeHostId: () => owner?.current()?.hostId,
+  getActiveRuntimeHostRef: activeRuntimeHostRef,
   onClose: () => onMainWindowClose(),
 });
 const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
@@ -339,6 +348,7 @@ let runtimePolicyTarget:
   | {
       readonly client: DesktopRuntimeHostClient;
       readonly policy: DesktopRuntimeHostTargetPolicy;
+      readonly scope: DesktopHostRef;
       readonly projectCatalog: ReturnType<typeof createRuntimeHostProjectCatalog>;
       readonly projectManagement: ProjectManagementService;
       readonly isActive: () => boolean;
@@ -450,7 +460,7 @@ registerPersistentClientIpc();
 registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
 registerBrowserIpc({
   mainWindowController,
-  getActiveHostId: () => owner?.current()?.hostId,
+  getActiveHostRef: activeRuntimeHostRef,
 });
 registerNotificationsIpc({
   ipcMain,
@@ -616,8 +626,9 @@ owner = await startRuntimeHostDesktopOwner(
         readiness: state.readiness,
       });
       if (state.readiness === "ready") {
-        mainWindowController.send("projects:changed", { hostId: state.candidate.client.hostId });
-        emitConnectionListChanged(state.candidate.client.hostId);
+        const scope = { hostId: state.candidate.client.hostId, targetEpoch: state.epoch };
+        mainWindowController.send("projects:changed", scope);
+        emitConnectionListChanged(scope);
       }
     },
     onFatalError: (error) => {
@@ -708,20 +719,21 @@ function registerHostClientIpc(
   scopedIpc: ReconnectableReadIpcMain,
   controls: DesktopRuntimeHostCandidateControls,
   target: DesktopRuntimeHostTargetPolicy,
+  scope: DesktopHostRef,
   isTargetActive: () => boolean,
 ): () => Promise<void> {
   const sendToRenderer = (channel: string, ...args: unknown[]): void => {
-    if (isTargetActive()) mainWindowController.send(channel, { hostId: target.rootId }, ...args);
+    if (isTargetActive()) mainWindowController.send(channel, scope, ...args);
   };
   const emitTargetConnectionListChanged = (): void => {
-    if (isTargetActive()) emitConnectionListChanged(target.rootId);
+    if (isTargetActive()) emitConnectionListChanged(scope);
   };
   const emitTargetSessionsChanged = (
     reason: SessionChangedReason,
     sessionId?: string,
     extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
   ): void => {
-    if (isTargetActive()) emitSessionsChanged(target.rootId, reason, sessionId, extra);
+    if (isTargetActive()) emitSessionsChanged(scope, reason, sessionId, extra);
   };
   const targetProjectRoot = createProjectRootController({
     rootId: target.rootId,
@@ -759,6 +771,7 @@ function registerHostClientIpc(
   const targetContext = {
     client,
     policy: target,
+    scope,
     projectCatalog: targetProjectCatalog,
     projectManagement: targetProjectManagement,
     isActive: isTargetActive,
@@ -1048,9 +1061,9 @@ function requireScheduledTaskEffectString(value: unknown, label: string): string
 function registerPersistentClientIpc(): void {
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
   ipcMain.handle("runtime-host:activeIdentity", () => {
-    const hostId = owner?.current()?.hostId;
-    if (!hostId) throw new Error("Desktop Runtime Host identity is unavailable");
-    return { hostId };
+    const scope = activeRuntimeHostRef();
+    if (!scope) throw new Error("Desktop Runtime Host identity is unavailable");
+    return scope;
   });
   registerDesktopDiagnosticsIpc({
     ipcMain,
@@ -1109,10 +1122,14 @@ function requireRuntimePolicyTarget(target: DesktopRuntimeHostTargetPolicy) {
   return current;
 }
 
-function resolveRuntimeHostDiagnostics(hostId: string) {
+function resolveRuntimeHostDiagnostics(scope: DesktopHostRef) {
   const current = runtimePolicyTarget;
-  if (!current?.isActive() || current.client.hostId !== hostId) {
-    throw new Error("Desktop Runtime Host request belongs to a different Host");
+  if (
+    !current?.isActive() ||
+    current.scope.hostId !== scope.hostId ||
+    current.scope.targetEpoch !== scope.targetEpoch
+  ) {
+    throw new Error("Desktop Runtime Host request belongs to a different target");
   }
   const client = current.client;
   return {
@@ -1129,21 +1146,21 @@ function resolveRuntimeHostDiagnostics(hostId: string) {
 }
 
 function sendActiveRuntimeHostEvent(channel: string, ...args: unknown[]): void {
-  const hostId = owner?.current()?.hostId;
-  if (hostId) mainWindowController.send(channel, { hostId }, ...args);
+  const scope = activeRuntimeHostRef();
+  if (scope) mainWindowController.send(channel, scope, ...args);
 }
 
-function emitConnectionListChanged(hostId: string): void {
+function emitConnectionListChanged(scope: DesktopHostRef): void {
   const event: ConnectionEvent = {
     type: "connection_list_changed",
     id: randomUUID(),
     ts: Date.now(),
   };
-  mainWindowController.send("connections:event", { hostId }, event);
+  mainWindowController.send("connections:event", scope, event);
 }
 
 function emitSessionsChanged(
-  hostId: string,
+  scope: DesktopHostRef,
   reason: SessionChangedReason,
   sessionId?: string,
   extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
@@ -1157,7 +1174,7 @@ function emitSessionsChanged(
     ...(extra?.modelId ? { modelId: extra.modelId } : {}),
     ...(extra?.turnId ? { turnId: extra.turnId } : {}),
   };
-  mainWindowController.send("sessions:changed", { hostId }, event);
+  mainWindowController.send("sessions:changed", scope, event);
 }
 
 function wireLifecycle(): void {

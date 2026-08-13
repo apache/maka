@@ -7,11 +7,12 @@ import type { createMainWindowController } from './main-window.js';
 import {
   desktopSessionResourceKey,
   requireDesktopHostRef,
+  type DesktopHostRef,
 } from '../preload/runtime-host-identity.js';
 
 interface BrowserIpcDeps {
   mainWindowController: ReturnType<typeof createMainWindowController>;
-  getActiveHostId(): string | undefined;
+  getActiveHostRef(): DesktopHostRef | undefined;
 }
 
 export function registerBrowserIpc(deps: BrowserIpcDeps): void {
@@ -19,11 +20,11 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): void {
   provideBrowserViewHost(createBrowserViewHost(deps.mainWindowController.getBrowserViews(), () => shownBrowserSessionId));
 
   const requireBrowserTarget = (scope: unknown, target: unknown): string | undefined => {
-    const hostId = deps.getActiveHostId();
-    if (!hostId) throw new Error('Desktop Runtime Host identity is unavailable');
-    const host = requireDesktopHostRef(scope, hostId);
+    const activeHost = deps.getActiveHostRef();
+    if (!activeHost) throw new Error('Desktop Runtime Host identity is unavailable');
+    const host = requireDesktopHostRef(scope, activeHost);
     return typeof target === 'string' && target.length > 0
-      ? desktopSessionResourceKey({ hostId: host.hostId, sessionId: target })
+      ? desktopSessionResourceKey({ ...host, sessionId: target })
       : undefined;
   };
 

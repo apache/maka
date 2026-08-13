@@ -4,7 +4,10 @@ import { redactSecrets } from '@maka/core/redaction';
 import type { TurnTrace } from '@maka/core/session-trace';
 import type { HostDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type { DesktopDiagnosticCopyResult } from '../preload/diagnostics-contract.js';
-import { requireDesktopHostRef } from '../preload/runtime-host-identity.js';
+import {
+  requireDesktopHostRef,
+  type DesktopHostRef,
+} from '../preload/runtime-host-identity.js';
 import {
   formatDesktopErrorDiagnosticReport,
   parseDesktopErrorDiagnosticInput,
@@ -17,7 +20,7 @@ export interface DesktopDiagnosticsIpcDeps {
   readonly ipcMain: Pick<IpcMain, 'handle'>;
   readonly environment: () => DesktopDiagnosticEnvironment;
   readonly mainLogs: () => readonly string[];
-  readonly resolveRuntimeHost: (hostId: string) =>
+  readonly resolveRuntimeHost: (scope: DesktopHostRef) =>
     {
       readonly getDiagnostics: () => Promise<HostDiagnosticsResult>;
       readonly getTurnTrace: (
@@ -32,8 +35,8 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
   deps.ipcMain.handle(
     'diagnostics:copyErrorReport',
     async (_event, scope: unknown, rawInput: unknown): Promise<DesktopDiagnosticCopyResult> => {
-      const { hostId } = requireDesktopHostRef(scope);
-      const runtime = deps.resolveRuntimeHost(hostId);
+      const host = requireDesktopHostRef(scope);
+      const runtime = deps.resolveRuntimeHost(host);
       const input = parseDesktopErrorDiagnosticInput(rawInput);
       let runtimeHost: RuntimeHostDiagnosticRead;
       try {

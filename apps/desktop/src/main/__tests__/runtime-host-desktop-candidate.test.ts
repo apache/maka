@@ -17,7 +17,7 @@ import type {
 import { z } from 'zod';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import {
-  createDesktopRuntimeHostCandidate,
+  createDesktopRuntimeHostCandidate as createCandidate,
   type DesktopRuntimeHostCandidateControls,
   type DesktopRuntimeHostCandidateDeps,
 } from '../runtime-host-desktop-candidate.js';
@@ -25,6 +25,21 @@ import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-o
 import { desktopSessionResourceKey } from '../../preload/runtime-host-identity.js';
 
 const TEST_HOST_ID = 'a'.repeat(64);
+const TEST_TARGET_EPOCH = 'test-target-epoch';
+
+function createDesktopRuntimeHostCandidate(
+  connection: RuntimeHostConnection,
+  candidateDeps: DesktopRuntimeHostCandidateDeps,
+  observationRegistry?: RuntimeHostSessionObservationRegistry,
+) {
+  return createCandidate(
+    connection,
+    candidateDeps,
+    observationRegistry,
+    'ephemeral',
+    { kind: 'local', targetEpoch: TEST_TARGET_EPOCH },
+  );
+}
 
 test('owns one complete Desktop candidate generation and can restart cleanly', async () => {
   const ipc = ipcHarness();
@@ -99,7 +114,7 @@ test('rejects a stale Host identity when raw Session IDs collide', async () => {
   await second.invokeCapability(capabilityFrame('shared-session'));
   await assert.rejects(
     () => ipc.invokeFor(TEST_HOST_ID, 'sessions:list'),
-    /different Host/,
+    /different target/,
   );
   assert.equal(
     ((await ipc.invokeFor(secondHostId, 'sessions:list')) as SessionCatalogProjection[])[0]?.id,
@@ -107,11 +122,47 @@ test('rejects a stale Host identity when raw Session IDs collide', async () => {
   );
   await secondCandidate.close();
   const resourceKeys = [
-    desktopSessionResourceKey({ hostId: TEST_HOST_ID, sessionId: 'shared-session' }),
-    desktopSessionResourceKey({ hostId: secondHostId, sessionId: 'shared-session' }),
+    desktopSessionResourceKey({ targetEpoch: TEST_TARGET_EPOCH, hostId: TEST_HOST_ID, sessionId: 'shared-session' }),
+    desktopSessionResourceKey({ targetEpoch: TEST_TARGET_EPOCH, hostId: secondHostId, sessionId: 'shared-session' }),
   ];
   assert.deepEqual(browserReleased, resourceKeys);
   assert.deepEqual(computerReleased, resourceKeys);
+});
+
+test('rejects a stale target generation when two profiles share one Host', async () => {
+  const ipc = ipcHarness();
+  const first = connectionHarness('same-host-a');
+  const firstCandidate = await createCandidate(
+    first.connection,
+    deps(ipc),
+    undefined,
+    'ephemeral',
+    { kind: 'local', targetEpoch: 'target-a' },
+  );
+  await firstCandidate.close();
+
+  const second = connectionHarness('same-host-b');
+  const secondCandidate = await createCandidate(
+    second.connection,
+    deps(ipc),
+    undefined,
+    'ephemeral',
+    { kind: 'local', targetEpoch: 'target-b' },
+  );
+
+  await assert.rejects(
+    () => ipc.invokeForTarget('target-a', TEST_HOST_ID, 'sessions:list'),
+    /different target/,
+  );
+  assert.deepEqual(
+    ((await ipc.invokeForTarget(
+      'target-b',
+      TEST_HOST_ID,
+      'sessions:list',
+    )) as SessionCatalogProjection[]).map(({ id }) => id),
+    ['session-same-host-b'],
+  );
+  await secondCandidate.close();
 });
 
 test('tears down the whole candidate when the Host connection closes', async () => {
@@ -237,6 +288,7 @@ test('releases all native Session resources on retirement and generation close',
   await host.invokeCapability(capabilityFrame('session-native-lifecycle'));
   await ipc.invoke('sessions:archive', 'session-native-lifecycle');
   const retiredResource = desktopSessionResourceKey({
+    targetEpoch: TEST_TARGET_EPOCH,
     hostId: TEST_HOST_ID,
     sessionId: 'session-native-lifecycle',
   });
@@ -246,6 +298,7 @@ test('releases all native Session resources on retirement and generation close',
   await host.invokeCapability(capabilityFrame('close-owned-session'));
   await candidate.close();
   const closedResource = desktopSessionResourceKey({
+    targetEpoch: TEST_TARGET_EPOCH,
     hostId: TEST_HOST_ID,
     sessionId: 'close-owned-session',
   });
@@ -357,7 +410,7 @@ test('does not release or report a Revision the Host retained during cleanup', a
         released.push(`computer:${sessionId}`);
       },
     }),
-    emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
+    emitSessionsChanged: (_scope, reason, sessionId) => changes.push({ reason, sessionId }),
     createSessionCopyCleanup: ({ removeSession }) => {
       removeSessionCopy = removeSession;
       return {
@@ -525,9 +578,17 @@ function ipcHarness() {
       return this.invokeFor(TEST_HOST_ID, channel, ...args);
     },
     async invokeFor(hostId: string, channel: string, ...args: unknown[]): Promise<unknown> {
+      return this.invokeForTarget(TEST_TARGET_EPOCH, hostId, channel, ...args);
+    },
+    async invokeForTarget(
+      targetEpoch: string,
+      hostId: string,
+      channel: string,
+      ...args: unknown[]
+    ): Promise<unknown> {
       const handler = handlers.get(channel);
       assert.ok(handler, `missing handler: ${channel}`);
-      return handler({ sender } as never, { hostId }, ...args);
+      return handler({ sender } as never, { hostId, targetEpoch }, ...args);
     },
     get channels(): string[] {
       return [...handlers.keys()].sort();

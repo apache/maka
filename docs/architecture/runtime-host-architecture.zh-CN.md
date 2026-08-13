@@ -197,7 +197,7 @@ Host profile 是 Client-owned connection configuration，不是 Host state。内
 
 Desktop 会在当前进程内应用新 profile，不需要重启应用。每个 target generation 独占自己的 connection 与 Session observations，因此为某一 generation 捕获的 request 或 live event 不能跨到另一 generation。切换失败时会尝试恢复之前的 target；如果新旧 target 都无法连接，Desktop 会明确报告当前没有 active Host。
 
-Desktop 把 Host handshake 已验证的 root identity 作为每个 Host-backed IPC request 与 event 的 scope。Desktop 仍只有一个 active Host 时，preload 会把现有产品 API 绑定到该 scope，main process 在分发给 domain handler 前统一校验。相同 target 重连时 scope 保持不变；切换 target generation 时 scope 随之变化。Browser control、diagnostics 等 persistent Client-local surface 也使用同一道 fence。这个 scope 用于防止跨 Host 误路由，不是 authentication boundary。
+Desktop 使用 Host handshake 已验证的 root identity 与当前 target generation，共同作为每个 Host-backed IPC request 和 event 的 scope。Desktop 仍只有一个 active Host 时，preload 会把现有产品 API 绑定到该 scope，main process 在分发给 domain handler 前统一校验。相同 target 重连时会保留该绑定；切换 profile 时，即使两个 profile 指向同一个 root，也会使旧绑定失效。Browser control、diagnostics 等 persistent Client-local surface 也使用同一道 fence。这个 scope 用于防止跨 target 误路由，不是 authentication boundary。
 
 持久化的 Desktop selection 表示期望连接的 target，不是当前 connection 已生效的证明。启动时若所选 profile 或 credential 不可用，Desktop 会让用户选择重试、明确使用 `local` 或退出，不会静默改写 selection。TUI 与 CLI 在启动时解析一个 profile，并把 selection 不可用作为错误报告。
 

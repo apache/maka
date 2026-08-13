@@ -113,7 +113,7 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
   assert.ok(handler);
   const result = await handler(
     {} as never,
-    { hostId: 'test-host' },
+    { hostId: 'test-host', targetEpoch: 'test-target' },
     { surface: 'toast', title: 'Host failed' },
   );
 
@@ -209,7 +209,7 @@ test('copies bounded evidence for the exact failed Turn', async () => {
   assert.ok(handler);
   const result = await handler(
     {} as never,
-    { hostId: 'test-host' },
+    { hostId: 'test-host', targetEpoch: 'test-target' },
     {
       surface: 'toast',
       title: 'Conversation error',
@@ -239,8 +239,9 @@ test('keeps every diagnostic read bound to the scoped Host during a switch', asy
     },
     environment: () => environment,
     mainLogs: () => [],
-    resolveRuntimeHost: (hostId) => {
-      assert.equal(hostId, activeHostId);
+    resolveRuntimeHost: (scope) => {
+      assert.equal(scope.hostId, activeHostId);
+      assert.equal(scope.targetEpoch, 'target-a');
       const boundHostId = activeHostId;
       return {
         getDiagnostics: async () => {
@@ -260,7 +261,7 @@ test('keeps every diagnostic read bound to the scoped Host during a switch', asy
   assert.ok(handler);
   const copying = handler(
     {} as never,
-    { hostId: 'host-a' },
+    { hostId: 'host-a', targetEpoch: 'target-a' },
     {
       surface: 'toast',
       title: 'Conversation error',
