@@ -333,6 +333,7 @@ describe('SQLite SessionStore', () => {
       )
       .run(legacyRecord, sessionId);
     legacy.exec(`
+      DROP TABLE agent_graph_epochs;
       DROP TABLE session_message_chunks;
       DROP TABLE session_message_payloads;
       UPDATE session_metadata_schema SET version = 22 WHERE scope = 'session_metadata';

@@ -1,10 +1,11 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 23;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 24;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
 export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
+  'agent_graph_epochs',
   'agent_graph_intent_claims',
   'agent_graph_schedule_updates',
   'agent_graph_operator_provisions',
@@ -878,6 +879,22 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
         ON DELETE CASCADE
     ) WITHOUT ROWID;
 
+  `,
+  ],
+  [
+    24,
+    `
+    CREATE TABLE agent_graph_epochs (
+      root_session_id TEXT NOT NULL,
+      epoch INTEGER NOT NULL CHECK (epoch > 0),
+      graph_id TEXT NOT NULL UNIQUE,
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      created_at INTEGER NOT NULL CHECK (created_at >= 0),
+      PRIMARY KEY(root_session_id, epoch)
+    );
+
+    CREATE INDEX agent_graph_epochs_current
+      ON agent_graph_epochs(root_session_id, epoch DESC);
   `,
   ],
 ]);
