@@ -524,7 +524,9 @@ function buildFamilyWire(
     return {
       openai: {
         store: false,
-        ...(reasons ? { forceReasoning: true } : {}),
+        ...(reasons || reasoningReplay.kind === 'openai-responses-encrypted'
+          ? { forceReasoning: true }
+          : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
       },
     };

@@ -198,6 +198,44 @@ describe('open responses plaintext reasoning', () => {
     assert.equal(parts.text, ANSWER);
   });
 
+  test('ordinary function calls still finish as tool-calls', async () => {
+    const model = getAIModel({
+      connection: conn('deepseek'),
+      apiKey: 'test-key',
+      modelId: 'deepseek-v4-flash',
+      fetch: sseFetch(standardFunctionCallStream()),
+    });
+    const { stream } = await model.doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'read package.json' }] }],
+      tools: [
+        {
+          type: 'function',
+          name: 'Read',
+          inputSchema: {
+            type: 'object',
+            properties: { path: { type: 'string' } },
+            required: ['path'],
+            additionalProperties: false,
+          },
+        },
+      ],
+      providerOptions: buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'high'),
+    });
+
+    const parts = [];
+    for await (const part of stream) parts.push(part);
+    assert.deepEqual(
+      parts.find((part) => part.type === 'tool-call'),
+      {
+        type: 'tool-call',
+        toolCallId: 'call_1',
+        toolName: 'Read',
+        input: '{"path":"package.json"}',
+      },
+    );
+    assert.equal(parts.find((part) => part.type === 'finish')?.finishReason.unified, 'tool-calls');
+  });
+
   test('non-streaming reasoning content is read', async () => {
     let body: string | undefined;
     const fetch = (async () => {

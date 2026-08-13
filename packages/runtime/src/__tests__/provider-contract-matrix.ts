@@ -342,7 +342,7 @@ function wireDimensionCell(
     };
   }
   if (
-    def.runtimeAdapter.kind === 'openai' &&
+    (def.runtimeAdapter.kind === 'openai' || def.runtimeAdapter.kind === 'openai-compatible') &&
     def.runtimeAdapter.apiProtocol === 'openai-responses'
   ) {
     return {
@@ -367,6 +367,19 @@ function reasoningReplayCell(
       dimension: 'reasoning-replay',
       overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
       contract: `${adapter.kind} replays reasoning on its provider-specific per-model wire`,
+    };
+  }
+  if (
+    adapter.kind === 'openai-compatible' &&
+    adapter.supportsOpenAiResponses === true &&
+    adapter.apiProtocol === 'openai-responses'
+  ) {
+    return {
+      state: 'override',
+      dimension: 'reasoning-replay',
+      overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
+      contract:
+        'The explicitly declared Responses adapter owns its provider-specific continuation representation',
     };
   }
   if (adapter.kind === 'openai-compatible') {

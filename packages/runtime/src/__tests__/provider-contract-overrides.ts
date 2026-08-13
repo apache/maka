@@ -79,7 +79,11 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
     run: runZenMuxSignedReasoningReplay,
   },
   {
-    keys: ['openai-responses-compatible:exact-model-id', 'openai-responses-compatible:tool-loop'],
+    keys: [
+      'openai-responses-compatible:exact-model-id',
+      'openai-responses-compatible:tool-loop',
+      'openai-responses-compatible:reasoning-replay',
+    ],
     title: 'Custom OpenAI Responses relay preserves exact model ids and tool results',
     run: () =>
       runOpenAIResponsesWire({
@@ -89,6 +93,7 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
         basePath: '/relay/v1',
         modelId: 'relay-responses-model',
         apiKey: 'responses-relay-key',
+        statelessReasoning: true,
       }),
   },
   {
