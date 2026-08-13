@@ -217,21 +217,28 @@ test('unbounded tool diagnostics stay in the metering snapshot, not the relay fr
   }
 });
 
-test('downstream cancellation aborts an in-flight upstream provider request', async () => {
-  const server = createServer(() => undefined);
+test('late provider usage survives a downstream CLI disconnect', async () => {
+  const server = createServer((_request, response) => {
+    setTimeout(() => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2}}}\n\ndata: [DONE]\n\n',
+      );
+    }, 100);
+  });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
   });
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
-  const root = await mkdtemp(join(tmpdir(), 'maka-provider-abort-'));
+  const root = await mkdtemp(join(tmpdir(), 'maka-provider-late-usage-'));
   const child = join(root, 'child.mjs');
   await writeFile(
     child,
     [
       'const controller=new AbortController();',
-      'setTimeout(()=>controller.abort(),50);',
+      'setTimeout(()=>controller.abort(),20);',
       "await fetch(`${process.env.DEEPSEEK_BASE_URL}/responses`,{method:'POST',body:'{}',signal:controller.signal}).catch(()=>{});",
       "console.log(JSON.stringify({type:'error'}));",
       '',
@@ -258,14 +265,15 @@ test('downstream cancellation aborts an in-flight upstream provider request', as
         timeout: 2_000,
       },
     );
-    const result = decodeResultFrame(stdout) as { status: string };
-    assert.equal(result.status, 'infra_failed');
+    const result = decodeResultFrame(stdout) as {
+      usage: { totalTokens: number } | null;
+    };
+    assert.equal(result.usage?.totalTokens, 12);
     assert.match(
       await readFile(join(root, 'logs/agent/opencode.provider-events.jsonl'), 'utf8'),
-      /provider_error/u,
+      /provider_response_end/u,
     );
   } finally {
-    server.closeAllConnections();
     server.close();
     await rm(root, { recursive: true, force: true });
   }

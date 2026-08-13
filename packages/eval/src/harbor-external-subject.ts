@@ -749,23 +749,11 @@ async function startMeteringProxy(
       }
       if (anthropic) headers['x-api-key'] = upstreamKey;
       else headers.authorization = `Bearer ${upstreamKey}`;
-      const upstreamAbort = new AbortController();
-      const abortUpstream = () => {
-        if (!upstreamAbort.signal.aborted) {
-          upstreamAbort.abort(new Error('provider proxy downstream disconnected'));
-        }
-      };
-      const closeUpstream = () => {
-        if (!response.writableEnded) abortUpstream();
-      };
-      request.once('aborted', abortUpstream);
-      response.once('close', closeUpstream);
       const upstream = await undiciFetch(target, {
         method: request.method,
         headers,
         body: projected.body.length === 0 ? undefined : new Uint8Array(projected.body),
         dispatcher: providerTransport.dispatcher,
-        signal: upstreamAbort.signal,
       });
       await events.write({
         type: 'provider_response_start',
@@ -799,8 +787,6 @@ async function startMeteringProxy(
         }
         response.end();
       } finally {
-        request.removeListener('aborted', abortUpstream);
-        response.removeListener('close', closeUpstream);
         const parsed = parser.finish();
         if (upstream.ok && parsed.admitted) {
           admittedRequests += 1;
