@@ -6,7 +6,6 @@ import {
   useState,
   type KeyboardEvent,
   type ReactNode,
-  type Ref,
 } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import type { ProjectRecord } from '@maka/core/project';
@@ -370,18 +369,30 @@ function ProjectNavRow(props: {
   // still truthy children for Astryx (!!children) and fabricates a disclosure.
   const hasSessions = props.sessions.length > 0;
   return (
-    <div data-project-id={props.groupKey} className="maka-project-row">
+    <div
+      data-project-id={props.groupKey}
+      data-has-sessions={hasSessions ? 'true' : undefined}
+      className="maka-project-row"
+    >
       <SideNavItem
         label={props.label}
         icon={FolderOpen}
         collapsible={hasSessions ? { defaultIsCollapsed: false } : undefined}
         endContent={
-          <ProjectItemEndContent
+          <ProjectItemMeta
             project={props.project}
             sessionCount={props.sessions.length}
-            actions={props.projectActions}
-            onStartRename={props.onStartRename}
+            reserveAction={props.project !== undefined && props.projectActions !== undefined}
           />
+        }
+        siblingAction={
+          props.project && props.projectActions ? (
+            <ProjectItemActions
+              project={props.project}
+              actions={props.projectActions}
+              onStartRename={props.onStartRename}
+            />
+          ) : undefined
         }
       >
         {/* Nest indent zeroed one level in sidebar.css (time-sort left edge). */}
@@ -390,25 +401,6 @@ function ProjectNavRow(props: {
         ) : undefined}
       </SideNavItem>
     </div>
-  );
-}
-
-/** Keeps trailing controls from activating the parent SideNavItem button. */
-function EndContentHitTarget(props: {
-  children: ReactNode;
-  className?: string;
-  ref?: Ref<HTMLSpanElement>;
-}) {
-  return (
-    <span
-      ref={props.ref}
-      className={props.className}
-      onClick={(event) => event.stopPropagation()}
-      onPointerDown={(event) => event.stopPropagation()}
-      onKeyDown={(event) => event.stopPropagation()}
-    >
-      {props.children}
-    </span>
   );
 }
 
@@ -475,14 +467,30 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   );
 });
 
-function ProjectItemEndContent(props: {
+function ProjectItemMeta(props: {
   project?: ProjectRecord;
   sessionCount: number;
-  actions?: ProjectRowActions;
+  reserveAction: boolean;
+}) {
+  const copy = getConversationCopy(useUiLocale()).sessions;
+  return (
+    <span className="maka-session-row-end maka-project-item-end">
+      {props.project && !props.project.available && (
+        <AlertTriangle size={ICON_SIZE.meta} aria-label={copy.projectUnavailable} />
+      )}
+      <Badge variant="neutral" label={props.sessionCount} />
+      {props.reserveAction && <span className="maka-project-row-trailing" aria-hidden="true" />}
+    </span>
+  );
+}
+
+function ProjectItemActions(props: {
+  project: ProjectRecord;
+  actions: ProjectRowActions;
   onStartRename(opener: HTMLElement | null): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
-  const endRef = useRef<HTMLSpanElement>(null);
+  const trailingRef = useRef<HTMLSpanElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const mountedRef = useMountedRef();
@@ -514,77 +522,73 @@ function ProjectItemEndContent(props: {
     })();
   }
 
-  // Projects keep a permanent MoreMenu (SideNavEndContent pattern). Hover-only
-  // would fire on nested session rows if wired to the project wrapper.
-  const menuItems = project && actions
-    ? project.archivedAt !== undefined
-      ? [
-          {
-            label: copy.projectRestore,
-            icon: ArchiveRestore,
-            onClick: () => runProjectAction('restore', () => actions.onRestore(project.id)),
-          },
-        ]
-      : [
-          ...(project.available
+  // Projects keep a permanent MoreMenu. Hover-only would fire on nested
+  // session rows if wired to the project wrapper.
+  const menuItems = project.archivedAt !== undefined
+    ? [
+        {
+          label: copy.projectRestore,
+          icon: ArchiveRestore,
+          onClick: () => runProjectAction('restore', () => actions.onRestore(project.id)),
+        },
+      ]
+    : [
+        ...(project.available
+          ? [
+              {
+                label: copy.projectNewTask,
+                icon: SquarePen,
+                onClick: () => runProjectAction('new', () => actions.onNew(project.id)),
+              },
+            ]
+          : actions.onRelink
             ? [
-                {
-                  label: copy.projectNewTask,
-                  icon: SquarePen,
-                  onClick: () => runProjectAction('new', () => actions.onNew(project.id)),
-                },
-              ]
-            : actions.onRelink
-              ? [
-                {
-                  label: copy.projectRelink,
-                  icon: Plug,
-                  onClick: () => runProjectAction('relink', () => actions.onRelink!(project.id)),
-                },
-              ]
-              : []),
-          {
-            label: copy.projectRename,
-            icon: Pencil,
-            onClick: () => {
-              // Read now, while the trigger is still the thing the user is on:
-              // by the time the intent runs the menu has closed and focus is
-              // mid-handover.
-              const opener = endRef.current?.querySelector<HTMLElement>('button') ?? null;
-              pendingMenuIntentRef.current = () => props.onStartRename(opener);
-            },
+              {
+                label: copy.projectRelink,
+                icon: Plug,
+                onClick: () => runProjectAction('relink', () => actions.onRelink!(project.id)),
+              },
+            ]
+            : []),
+        {
+          label: copy.projectRename,
+          icon: Pencil,
+          onClick: () => {
+            // Read now, while the trigger is still the thing the user is on:
+            // by the time the intent runs the menu has closed and focus is
+            // mid-handover.
+            const opener = trailingRef.current?.querySelector<HTMLElement>('button') ?? null;
+            pendingMenuIntentRef.current = () => props.onStartRename(opener);
           },
-          {
-            label: copy.projectArchive,
-            icon: Archive,
-            onClick: () => runProjectAction('archive', () => actions.onArchive(project.id)),
-          },
-        ]
-    : [];
+        },
+        {
+          label: copy.projectArchive,
+          icon: Archive,
+          onClick: () => runProjectAction('archive', () => actions.onArchive(project.id)),
+        },
+      ];
 
   return (
-    <EndContentHitTarget className="maka-session-row-end maka-project-item-end" ref={endRef}>
-      {project && !project.available && (
-        <AlertTriangle size={ICON_SIZE.meta} aria-label={copy.projectUnavailable} />
-      )}
-      <Badge variant="neutral" label={props.sessionCount} />
-      {menuItems.length > 0 && (
-        <MoreMenu
-          size="sm"
-          label={copy.projectActionsAriaLabel(project?.name ?? '')}
-          isDisabled={pendingAction !== null}
-          isMenuOpen={menuOpen}
-          onOpenChange={(open) => {
-            setMenuOpen(open);
-            if (open) return;
-            const intent = pendingMenuIntentRef.current;
-            pendingMenuIntentRef.current = null;
-            if (intent) window.requestAnimationFrame(intent);
-          }}
-          items={menuItems}
-        />
-      )}
-    </EndContentHitTarget>
+    <span
+      className="maka-project-row-action"
+      ref={trailingRef}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      <MoreMenu
+        size="sm"
+        label={copy.projectActionsAriaLabel(project.name)}
+        isDisabled={pendingAction !== null}
+        isMenuOpen={menuOpen}
+        onOpenChange={(open) => {
+          setMenuOpen(open);
+          if (open) return;
+          const intent = pendingMenuIntentRef.current;
+          pendingMenuIntentRef.current = null;
+          if (intent) window.requestAnimationFrame(intent);
+        }}
+        items={menuItems}
+      />
+    </span>
   );
 }
 

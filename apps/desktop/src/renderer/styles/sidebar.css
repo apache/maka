@@ -189,7 +189,8 @@
   -webkit-app-region: no-drag;
 }
 
-.maka-session-row {
+.maka-session-row,
+.maka-project-row {
   position: relative;
   min-width: 0;
   -webkit-app-region: no-drag;
@@ -259,7 +260,8 @@
 
 /* Fixed trailing column so StatusDot ↔ MoreMenu swaps do not reflow the label
  * (hover used to steal ~28px and shove the title left). */
-.maka-session-row-trailing {
+.maka-session-row-trailing,
+.maka-project-row-trailing {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -268,10 +270,11 @@
   min-height: var(--h-control-sm, 24px);
 }
 
-/* SideNavItem owns the row button and only supports non-interactive
- * endContent. The action menu occupies the reserved trailing slot visually,
- * but remains its sibling in the DOM so neither control contains the other. */
-.maka-session-row-action {
+/* SideNavItem owns each row button and only supports non-interactive
+ * endContent. Action menus occupy reserved trailing slots visually, but stay
+ * sibling controls in the DOM so neither button contains another button. */
+.maka-session-row-action,
+.maka-project-row-action {
   position: absolute;
   inset-block-start: calc(
     (var(--size-element-md) - var(--size-element-sm)) / 2
@@ -282,6 +285,18 @@
   align-items: center;
   justify-content: center;
   width: var(--h-control-sm, 24px);
+}
+
+/* A project disclosure chevron follows endContent inside SideNavItem. Keep the
+ * overlaid menu in its reserved slot immediately before that chevron. */
+.maka-project-row[data-has-sessions="true"] > div > .maka-project-row-action {
+  inset-inline-end: calc(var(--space-2) + var(--space-6) + var(--space-2));
+}
+
+/* Collapsed SideNavItem intentionally omits endContent. Preserve that contract
+ * for the sibling action while the project row becomes an icon-only trigger. */
+.appFrame[data-sidebar-state="collapsed"] .maka-project-row-action {
+  display: none;
 }
 
 .maka-session-row-trailing-spacer {

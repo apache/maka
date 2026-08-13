@@ -247,6 +247,52 @@ index 867ed5a..4b8f835 100644
  }
  Markdown.displayName = 'Markdown';
 \ No newline at end of file
+diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
+index 16107cf..ce1f7a1 100644
+--- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
++++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
+@@ -61,6 +61,11 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+      * Right-side content (badges, counts).
+      */
+     endContent?: ReactNode;
++    /**
++     * Interactive control rendered as a sibling of the item button and before
++     * any nested children. Use this instead of placing a button in endContent.
++     */
++    siblingAction?: ReactNode;
+     /**
+      * Sub-items for nesting.
+      */
+@@ -107,7 +112,7 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+  * </SideNavItem>
+  * ```
+  */
+-export declare function SideNavItem({ as, label, icon, selectedIcon, isSelected, isDisabled, href, onClick, endContent, children, collapsible: itemCollapsible, size, 'data-testid': testId, ref, xstyle, }: SideNavItemProps): import("react").JSX.Element | null;
++export declare function SideNavItem({ as, label, icon, selectedIcon, isSelected, isDisabled, href, onClick, endContent, siblingAction, children, collapsible: itemCollapsible, size, 'data-testid': testId, ref, xstyle, }: SideNavItemProps): import("react").JSX.Element | null;
+ export declare namespace SideNavItem {
+     var displayName: string;
+ }
+diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
+index cf5010f..195e082 100644
+--- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
++++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
+@@ -142,6 +142,7 @@ export function SideNavItem({
+   href,
+   onClick,
+   endContent,
++  siblingAction,
+   children,
+   collapsible: itemCollapsible,
+   size = 'md',
+@@ -441,7 +442,7 @@ export function SideNavItem({
+   const item = /*#__PURE__*/_jsxs("div", {
+     ref: itemRef,
+     ...stylex.props(styles.root, xstyle),
+-    children: [itemElement, hasChildren && !isCollapsed && /*#__PURE__*/_jsx("div", {
++    children: [itemElement, !isCollapsed && siblingAction, hasChildren && !isCollapsed && /*#__PURE__*/_jsx("div", {
+       id: `${id}-children`,
+       role: "group",
+       "aria-labelledby": `${id}-label`,
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
 index 65f9278..f7515e2 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
@@ -546,6 +592,38 @@ index a6f850b..b6e0f2a 100644
    return rendered;
  }
 
+diff --git a/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx b/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
+index fcd0442..0409284 100644
+--- a/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
++++ b/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
+@@ -287,6 +287,11 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+    * Right-side content (badges, counts).
+    */
+   endContent?: ReactNode;
++  /**
++   * Interactive control rendered as a sibling of the item button and before
++   * any nested children. Use this instead of placing a button in endContent.
++   */
++  siblingAction?: ReactNode;
+   /**
+    * Sub-items for nesting.
+    */
+@@ -350,6 +355,7 @@ export function SideNavItem({
+   href,
+   onClick,
+   endContent,
++  siblingAction,
+   children,
+   collapsible: itemCollapsible,
+   size = 'md',
+@@ -673,6 +679,7 @@ export function SideNavItem({
+   const item = (
+     <div ref={itemRef} {...stylex.props(styles.root, xstyle)}>
+       {itemElement}
++      {!isCollapsed && siblingAction}
+       {hasChildren && !isCollapsed && (
+         <div
+           id={`${id}-children`}
 diff --git a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
 index 02c069f..acdc18a 100644
 --- a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts

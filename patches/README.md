@@ -24,6 +24,8 @@ Three published component seams drop host-owned state or semantics:
   without remounting its composer slot and discarding the live draft.
 - `ChatToolCalls` needs a stable row slot for product styling and E2E geometry.
 - `List` must forward its published `aria-label` to the rendered list element.
+- `SideNavItem` needs an interactive sibling-action seam before nested children
+  so a row menu can follow its header in DOM/focus order without nesting buttons.
 
 Blank UA-CH `navigator.userAgentData.platform` must also not mean "not Apple".
 Electron builds with a rewritten identity ship `platform: ''`, which made every
