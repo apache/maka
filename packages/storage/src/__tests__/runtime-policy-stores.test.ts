@@ -2715,19 +2715,23 @@ describe('runtime policy stores', () => {
       assert.equal(secondary.label, 'backup');
       assert.equal(secondary.weight, 1);
 
-      // Label conflict is case-insensitive.
-      const conflict = await stores.operations.createCredentialProfile({
+      // Labels are user-facing nicknames, not account identities; duplicates
+      // (including case-only variants) are valid.
+      const duplicate = await stores.operations.createCredentialProfile({
         expected: { connectionId: connection.connectionId, revision: afterCreate!.revision },
         label: 'BACKUP',
         weight: 2,
       });
-      assert.equal(conflict.kind, 'profile_label_conflict');
+      assert.equal(duplicate.kind, 'committed');
+      if (duplicate.kind !== 'committed') return;
 
       // Updating label and weight bumps only the target Profile.
       const updated = await stores.operations.updateCredentialProfile({
         expected: {
           connectionId: connection.connectionId,
-          connectionRevision: afterCreate!.revision,
+          connectionRevision: duplicate.snapshot.connections.find(
+            (item) => item.connectionId === connection.connectionId,
+          )!.revision,
           profileId: secondary.profileId,
           profileRevision: secondary.revision,
         },

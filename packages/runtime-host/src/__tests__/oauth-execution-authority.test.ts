@@ -50,6 +50,61 @@ test('one OAuth generation singleflights refresh and persists its lease with can
   });
 });
 
+test('a secondary OAuth profile refreshes and persists its own credential generation', async () => {
+  await withCopilotCredential(expiredTokens('secondary-access-v1'), async (fixture) => {
+    const catalog = await fixture.stores.connectionCatalog.getSnapshot();
+    const connection = catalog.connections[0]!;
+    const created = await fixture.stores.operations.createCredentialProfile({
+      expected: {
+        connectionId: connection.connectionId,
+        revision: connection.revision,
+      },
+      label: 'secondary',
+      weight: 1,
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const secondary = created.snapshot.connections[0]!.credentialRouting!.profiles.find(
+      (profile) => profile.profileId !== connection.connectionId,
+    )!;
+    const configured = await fixture.stores.credentialVault.set({
+      locator: {
+        scope: 'connection_profile',
+        connectionId: connection.connectionId,
+        profileId: secondary.profileId,
+        kind: 'oauth_token',
+      },
+      expected: null,
+      secret: serializeOAuthSubscriptionTokens(expiredTokens('secondary-access-v1')),
+    });
+    assert.equal(configured.kind, 'committed');
+    if (configured.kind !== 'committed') return;
+    const locator = {
+      scope: 'connection_profile' as const,
+      connectionId: connection.connectionId,
+      profileId: secondary.profileId,
+      kind: 'oauth_token' as const,
+    };
+    const before = await fixture.stores.operations.exportCredentialMaterial(locator);
+    assert.ok(before);
+    if (!before) return;
+    const binding = fixture.authority.bind({
+      providerType: 'github-copilot',
+      connectionSlug: CONNECTION_SLUG,
+      material: before,
+      createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
+    });
+
+    await binding.resolve();
+
+    const after = await fixture.stores.operations.exportCredentialMaterial(locator);
+    assert.ok(after);
+    if (!after) return;
+    assert.equal(after.credentialId, before.credentialId);
+    assert.equal(after.revision, before.revision + 2);
+  });
+});
+
 test('an active OAuth binding cannot use a credential generation replaced by the user', async () => {
   await withCopilotCredential(currentTokens('old-access'), async (fixture) => {
     const oldBinding = fixture.authority.bind({
@@ -93,7 +148,10 @@ test('a rotated Claude token crosses canonical CAS into request auth and identit
     'claude-subscription',
     expiredTokens('access-v1', 'account-v1'),
     async (fixture) => {
-      const observed: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+      const observed: Array<{
+        headers: Headers;
+        body: Record<string, unknown>;
+      }> = [];
       let refreshCalls = 0;
       const providerFetch: typeof fetch = async (url, init) => {
         if (String(url) === CLAUDE_TOKEN_ENDPOINT) {
@@ -396,63 +454,68 @@ test('Codex request auth and account identity advance from the same token snapsh
   assert.equal(observed[1]?.get('session_id'), 'codex-session');
 });
 
-test('a Codex 401 force-refreshes canonical credentials and replays once', async () => {
+test('a Codex secondary profile 401 force-refreshes canonical credentials and replays once', async () => {
   const staleAccess = codexAccessToken('account-v1');
   const refreshedAccess = codexAccessToken('account-v2');
-  await withSeededOAuthCredential('openai-codex', currentTokens(staleAccess), async (fixture) => {
-    let refreshCalls = 0;
-    const modelHeaders: Headers[] = [];
-    const providerFetch: typeof fetch = async (url, init) => {
-      if (String(url) === CODEX_TOKEN_ENDPOINT) {
-        refreshCalls += 1;
-        return Response.json({
-          access_token: refreshedAccess,
-          refresh_token: 'rotated-refresh',
-          expires_in: 3_600,
-        });
-      }
-      modelHeaders.push(new Headers(init?.headers));
-      return modelHeaders.length === 1
-        ? Response.json({ error: 'token invalidated' }, { status: 401 })
-        : Response.json({ ok: true });
-    };
-    const binding = fixture.authority.bind({
-      providerType: 'openai-codex',
-      connectionSlug: CONNECTION_SLUG,
-      material: fixture.material,
-      createRefreshTransport: () => testRefreshTransport(providerFetch),
-    });
-    const initialTokens = await binding.resolve();
-    const modelFetch = createHostOAuthModelFetch({
-      binding,
-      initialTokens,
-      connection: {
-        slug: CONNECTION_SLUG,
+  await withSeededOAuthCredential(
+    'openai-codex',
+    currentTokens(staleAccess),
+    async (fixture) => {
+      let refreshCalls = 0;
+      const modelHeaders: Headers[] = [];
+      const providerFetch: typeof fetch = async (url, init) => {
+        if (String(url) === CODEX_TOKEN_ENDPOINT) {
+          refreshCalls += 1;
+          return Response.json({
+            access_token: refreshedAccess,
+            refresh_token: 'rotated-refresh',
+            expires_in: 3_600,
+          });
+        }
+        modelHeaders.push(new Headers(init?.headers));
+        return modelHeaders.length === 1
+          ? Response.json({ error: 'token invalidated' }, { status: 401 })
+          : Response.json({ ok: true });
+      };
+      const binding = fixture.authority.bind({
         providerType: 'openai-codex',
-        defaultModel: 'gpt-5.6-sol',
-      },
-      sessionId: 'codex-401-session',
-      modelId: 'gpt-5.6-sol',
-      claudeDeviceId: 'unused',
-      fetchFn: providerFetch,
-    });
+        connectionSlug: CONNECTION_SLUG,
+        material: fixture.material,
+        createRefreshTransport: () => testRefreshTransport(providerFetch),
+      });
+      const initialTokens = await binding.resolve();
+      const modelFetch = createHostOAuthModelFetch({
+        binding,
+        initialTokens,
+        connection: {
+          slug: CONNECTION_SLUG,
+          providerType: 'openai-codex',
+          defaultModel: 'gpt-5.6-sol',
+        },
+        sessionId: 'codex-401-session',
+        modelId: 'gpt-5.6-sol',
+        claudeDeviceId: 'unused',
+        fetchFn: providerFetch,
+      });
 
-    const response = await modelFetch('https://chatgpt.com/backend-api/codex/responses', {
-      method: 'POST',
-      body: JSON.stringify({ input: [] }),
-    });
+      const response = await modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        body: JSON.stringify({ input: [] }),
+      });
 
-    assert.equal(response.ok, true);
-    assert.equal(refreshCalls, 1);
-    assert.equal(modelHeaders.length, 2);
-    assert.equal(modelHeaders[1]?.get('authorization'), `Bearer ${refreshedAccess}`);
-    assert.equal(modelHeaders[1]?.get('ChatGPT-Account-Id'), 'account-v2');
-    const canonical = JSON.parse(
-      (await readMaterial(fixture.stores)).secret,
-    ) as OAuthSubscriptionTokens;
-    assert.equal(canonical.access_token, refreshedAccess);
-    assert.equal(canonical.refresh_token, 'rotated-refresh');
-  });
+      assert.equal(response.ok, true);
+      assert.equal(refreshCalls, 1);
+      assert.equal(modelHeaders.length, 2);
+      assert.equal(modelHeaders[1]?.get('authorization'), `Bearer ${refreshedAccess}`);
+      assert.equal(modelHeaders[1]?.get('ChatGPT-Account-Id'), 'account-v2');
+      const canonical = JSON.parse(
+        (await readMaterial(fixture.stores, fixture.material.locator)).secret,
+      ) as OAuthSubscriptionTokens;
+      assert.equal(canonical.access_token, refreshedAccess);
+      assert.equal(canonical.refresh_token, 'rotated-refresh');
+    },
+    { profile: 'secondary' },
+  );
 });
 
 test('concurrent forced refreshes join one Host credential refresh', async () => {
@@ -553,6 +616,7 @@ async function withSeededOAuthCredential(
   providerType: 'claude-subscription' | 'openai-codex',
   tokens: OAuthSubscriptionTokens,
   run: (fixture: CopilotCredentialFixture) => Promise<void>,
+  options: { readonly profile?: 'primary' | 'secondary' } = {},
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-oauth-seeded-'));
   const capability = await resolveStorageRoot({
@@ -579,6 +643,34 @@ async function withSeededOAuthCredential(
     const connection = created.snapshot.connections[0];
     assert.ok(connection);
     if (!connection) return;
+    let locator: RuntimePolicyCredentialMaterial['locator'] = {
+      scope: 'connection',
+      connectionId: connection.connectionId,
+      kind: 'oauth_token',
+    };
+    if (options.profile === 'secondary') {
+      const profileCreated = await stores.operations.createCredentialProfile({
+        expected: {
+          connectionId: connection.connectionId,
+          revision: connection.revision,
+        },
+        label: 'secondary',
+        weight: 1,
+      });
+      assert.equal(profileCreated.kind, 'committed');
+      if (profileCreated.kind !== 'committed') return;
+      const secondary = profileCreated.snapshot.connections[0]!.credentialRouting!.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      );
+      assert.ok(secondary);
+      if (!secondary) return;
+      locator = {
+        scope: 'connection_profile',
+        connectionId: connection.connectionId,
+        profileId: secondary.profileId,
+        kind: 'oauth_token',
+      };
+    }
     await writeFile(
       join(capability.canonicalPath, 'credential-vault.json'),
       `${JSON.stringify(
@@ -587,11 +679,7 @@ async function withSeededOAuthCredential(
           revision: 1,
           entries: [
             {
-              locator: {
-                scope: 'connection',
-                connectionId: connection.connectionId,
-                kind: 'oauth_token',
-              },
+              locator,
               credentialId: randomUUID(),
               revision: 1,
               secret: serializeOAuthSubscriptionTokens(tokens),
@@ -608,7 +696,7 @@ async function withSeededOAuthCredential(
       root: capability.canonicalPath,
       stores,
       authority: new HostOAuthExecutionAuthority(stores, () => FIXED_NOW),
-      material: await readMaterial(stores),
+      material: await readMaterial(stores, locator),
     });
   } finally {
     await owner.close();
@@ -618,7 +706,13 @@ async function withSeededOAuthCredential(
 
 async function readMaterial(
   stores: RuntimePolicyStoresWriter,
+  locator?: RuntimePolicyCredentialMaterial['locator'],
 ): Promise<RuntimePolicyCredentialMaterial> {
+  if (locator) {
+    const material = await stores.operations.exportCredentialMaterial(locator);
+    if (!material) throw new Error('OAuth execution material was not ready');
+    return material;
+  }
   const resolved = await stores.operations.resolveExecutionConnection(CONNECTION_SLUG);
   assert.equal(resolved.kind, 'ready');
   if (resolved.kind !== 'ready' || !resolved.secretMaterial.connection) {
@@ -738,7 +832,9 @@ function claudeIdentity(body: Record<string, unknown> | undefined): Record<strin
 
 function codexAccessToken(accountId: string): string {
   const payload = Buffer.from(
-    JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: accountId } }),
+    JSON.stringify({
+      'https://api.openai.com/auth': { chatgpt_account_id: accountId },
+    }),
   ).toString('base64url');
   return `header.${payload}.signature`;
 }

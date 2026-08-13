@@ -529,11 +529,9 @@ export class RuntimePolicyCoordinator {
 
   /**
    * Balanced activation is a coordinator-level operation that combines the
-   * Catalog structural preconditions with the Vault configuration check, so
-   * a raw IPC call can never activate routing over unconfigured Profiles.
-   * The Verification Store evidence check is layered in by the Runtime Host
-   * routing integration (PR 2); until then the vault-configured gate is the
-   * strongest check available without a routing authority.
+   * Catalog structural preconditions with the Vault configuration and current
+   * Verification Store evidence checks, so a raw IPC call can never activate
+   * routing over an unconfigured or unverified Profile.
    */
   setCredentialRoutingMode(
     input: SetCredentialRoutingModeInput,
@@ -600,9 +598,46 @@ export class RuntimePolicyCoordinator {
           reason: 'balanced routing requires the primary profile credential to be configured',
         });
       }
-      // Account routing is admitted by durable credentials, not by a billable
-      // model probe. Real requests populate health/circuit state and trigger
-      // failover when an account is rejected, rate-limited, or exhausted.
+      const verificationStore = this.routingStoreFor(root);
+      for (const profile of enabledProfiles) {
+        const locator =
+          profile.profileId === connection.connectionId
+            ? connectionCredentialLocator(connection.connectionId, authKind)
+            : connectionProfileCredentialLocator(
+                connection.connectionId,
+                profile.profileId,
+                authKind,
+              );
+        const credential = locator ? findCredential(vault, locator) : undefined;
+        if (!credential) continue;
+        const records = await verificationStore.readProfileVerification(
+          connection.connectionId,
+          profile.profileId,
+        );
+        for (const modelId of connection.enabledModelIds) {
+          const digest = await this.connectionExecutionBasisDigest(
+            root,
+            vault,
+            connection,
+            modelId,
+          );
+          const verified = records.some(
+            (record) =>
+              record.credentialId === credential.credentialId &&
+              record.credentialRevision === credential.revision &&
+              record.executionBasisDigest === digest &&
+              record.modelId === modelId &&
+              record.status === 'supported',
+          );
+          if (!verified) {
+            return deepFreeze({
+              kind: 'balanced_activation_rejected' as const,
+              reason:
+                'balanced routing requires every enabled profile to have current verification for every enabled model',
+            });
+          }
+        }
+      }
       return this.catalog.setCredentialRoutingMode(root, decoded);
     });
   }
@@ -788,7 +823,8 @@ export class RuntimePolicyCoordinator {
     return this.inLane(async (root) => {
       const input = decodeCredentialInput(() => normalizeSetCredentialInput(rawInput));
       if (
-        input.locator.scope !== 'connection' ||
+        (input.locator.scope !== 'connection' &&
+          input.locator.scope !== 'connection_profile') ||
         input.locator.kind !== 'oauth_token' ||
         input.expected === null
       ) {
@@ -1015,40 +1051,9 @@ export class RuntimePolicyCoordinator {
             });
           }
 
-          // With two signed-in accounts, the non-balancing default is ordered
-          // failover: use the first account until an actual request marks it
-          // unavailable, then advance. The UI switch only changes this to
-          // equal load balancing.
-          const committedVault = await this.vault.read(root);
-          const configuredEnabledProfiles = currentConnection?.credentialRouting?.profiles.filter(
-            (profile) => {
-              if (!profile.enabled || !currentConnection) return false;
-              const profileLocator =
-                profile.profileId === currentConnection.connectionId
-                  ? connectionCredentialLocator(currentConnection.connectionId, 'oauth_token')
-                  : connectionProfileCredentialLocator(
-                      currentConnection.connectionId,
-                      profile.profileId,
-                      'oauth_token',
-                    );
-              return profileLocator
-                ? findCredential(committedVault, profileLocator) !== undefined
-                : false;
-            },
-          );
-          if (
-            currentConnection?.credentialRouting?.mode === 'legacy_primary' &&
-            (configuredEnabledProfiles?.length ?? 0) >= 2
-          ) {
-            const routed = await this.catalog.setCredentialRoutingMode(root, {
-              expected: connectionBasis(currentConnection),
-              mode: 'balanced',
-              strategy: 'priority_failover',
-            });
-            if (routed.kind !== 'committed') {
-              throw new Error('OAuth accounts were enabled but ordered routing could not start');
-            }
-          }
+          // Adding an account leaves routing disabled until the user enables
+          // load balancing. That transition is centrally gated on current
+          // per-profile verification evidence in setCredentialRoutingMode.
         } catch (error) {
           if (!credentialCommitted && !cleared) throw error;
           throw commitOutcomeUnknown(

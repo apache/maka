@@ -1,5 +1,6 @@
 import type { ConnectionCredentialRouting } from '@maka/core/runtime-policy';
 import type {
+  ProviderFailureRoutingHint,
   ProviderCredentialLease,
   ProviderCredentialOutcome,
   ProviderCredentialResolver,
@@ -61,6 +62,7 @@ export interface RouterProfileProvider {
     connectionId: string,
     profileId: string,
     circuitModelId: string,
+    modelId: string,
   ): Promise<boolean>;
 }
 
@@ -140,35 +142,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
       );
     }
     const binding = this.#selectBinding(context, routing, candidates, probeReason);
-    const material = await this.#provider.resolveCredential(
-      context.connectionId,
-      binding.profileId,
-    );
-    if (!material) {
-      // The Profile became unconfigured between eligibility and resolution.
-      // Fail closed instead of falling back to a stale secret; re-select once
-      // without counting as an account failover (nothing was dispatched).
-      const remaining = candidates.filter((profileId) => profileId !== binding.profileId);
-      if (remaining.length === 0) {
-        throw new RouterPoolExhaustedError(
-          'eligible profile lost its credential during selection',
-          {},
-        );
-      }
-      const reselected = this.#selectCandidate(context, routing, remaining, 'binding_reselect');
-      const fresh = await this.#provider.resolveCredential(
-        context.connectionId,
-        reselected.profileId,
-      );
-      if (!fresh) {
-        throw new RouterPoolExhaustedError(
-          'no eligible profile retained a configured credential',
-          {},
-        );
-      }
-      return this.#leaseFromMaterial(context, reselected, fresh, probeCircuitModelId);
-    }
-    return this.#leaseFromMaterial(context, binding, material, probeCircuitModelId);
+    return this.#resolveBalancedBinding(context, routing, binding, candidates, probeCircuitModelId);
   }
 
   async settle(lease: ProviderCredentialLease, outcome: ProviderCredentialOutcome): Promise<void> {
@@ -300,7 +274,12 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     );
     for (const [profileId, circuitModelId] of probeEligible) {
       if (
-        await this.#provider.claimHalfOpenProbe(context.connectionId, profileId, circuitModelId)
+        await this.#provider.claimHalfOpenProbe(
+          context.connectionId,
+          profileId,
+          circuitModelId,
+          context.modelId,
+        )
       ) {
         return {
           candidates: [profileId],
@@ -310,6 +289,69 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
       }
     }
     return null;
+  }
+
+  /**
+   * Credential resolution is part of selecting an account, rather than a
+   * provider request. In particular, an OAuth refresh can fail before the
+   * model adapter gets a lease. Account-scoped resolution failures must still
+   * settle health (including reopening a claimed half-open circuit) and allow
+   * another verified Profile to serve the logical request.
+   */
+  async #resolveBalancedBinding(
+    context: ProviderCredentialRouteContext,
+    routing: ConnectionCredentialRouting,
+    initialBinding: TurnBindingRecord,
+    candidates: readonly string[],
+    probeCircuitModelId?: string,
+  ): Promise<ProviderCredentialLease> {
+    let binding = initialBinding;
+    let remaining = [...candidates];
+    let lastFailure: string | undefined;
+    while (remaining.length > 0) {
+      try {
+        const material = await this.#provider.resolveCredential(
+          context.connectionId,
+          binding.profileId,
+        );
+        if (material) {
+          return this.#leaseFromMaterial(context, binding, material, probeCircuitModelId);
+        }
+      } catch (error) {
+        if (!(error instanceof RouterCredentialResolutionError)) throw error;
+        lastFailure = error.message;
+        await this.#provider.settleHealth(
+          this.#leaseFromMaterial(
+            context,
+            binding,
+            {
+              credentialId: error.credentialId,
+              credentialRevision: error.credentialRevision,
+              apiKey: '',
+            },
+            probeCircuitModelId,
+          ),
+          {
+            kind: 'failure',
+            failure: { kind: error.routingHint.kind, retryable: false },
+            routingHint: error.routingHint,
+          },
+        );
+      }
+      // The Profile disappeared, became unconfigured, or its OAuth refresh
+      // failed between eligibility and materialization. Remove only this
+      // binding and select another already-verified candidate; no request was
+      // sent with a stale credential.
+      this.#discardBinding(context, binding);
+      remaining = remaining.filter((profileId) => profileId !== binding.profileId);
+      if (remaining.length === 0) break;
+      binding = this.#selectCandidate(context, routing, remaining, 'binding_reselect');
+    }
+    throw new RouterPoolExhaustedError(
+      'no eligible profile retained a usable credential',
+      {},
+      lastFailure,
+    );
   }
 
   #selectBinding(
@@ -399,6 +441,16 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     return binding;
   }
 
+  #discardBinding(
+    context: ProviderCredentialRouteContext,
+    binding: Pick<ProviderProfileBinding, 'bindingId'>,
+  ): void {
+    const key = turnKey(context.sessionId, context.turnId);
+    if (this.#turnBindings.get(key)?.bindingId === binding.bindingId) {
+      this.#turnBindings.delete(key);
+    }
+  }
+
   /**
    * Smooth weighted round-robin (RFC 7.1): every round each candidate's
    * currentWeight += weight, the maximum is selected (first-max wins over the
@@ -416,7 +468,10 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     const effectiveRouting = equalWeights
       ? {
           ...routing,
-          profiles: routing.profiles.map((profile) => ({ ...profile, weight: 1 })),
+          profiles: routing.profiles.map((profile) => ({
+            ...profile,
+            weight: 1,
+          })),
         }
       : routing;
     const current = this.#swrr.get(connectionId);
@@ -480,6 +535,17 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
 export class RouterError extends Error {}
 export class RouterAbortedError extends RouterError {}
 export class RouterConfigurationError extends RouterError {}
+/** A credential that failed before a provider request received a lease. */
+export class RouterCredentialResolutionError extends RouterError {
+  constructor(
+    readonly credentialId: string,
+    readonly credentialRevision: number,
+    readonly routingHint: ProviderFailureRoutingHint,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 export class RouterPoolExhaustedError extends RouterError {
   constructor(
     message: string,
@@ -498,9 +564,7 @@ function turnKey(sessionId: string, turnId: string): string {
 let idCounter = 0;
 function createId(kind: 'binding' | 'lease'): string {
   idCounter += 1;
-  return `${kind}-${Date.now().toString(36)}-${idCounter.toString(36)}-${Math.random()
-    .toString(36)
-    .slice(2, 10)}`;
+  return `${kind}-${Date.now().toString(36)}-${idCounter.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function sameWeightShape(

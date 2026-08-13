@@ -499,8 +499,8 @@ export function resolveCollaborationPermissionMode(input: {
 }
 /**
  * Build the Credential Profile resolver for a resolved execution target when
- * the connection is in balanced API-key routing mode; otherwise undefined
- * (legacy fast path). OAuth providers stay legacy until PR 5.
+ * the connection is in balanced routing mode; otherwise undefined (legacy
+ * fast path). OAuth providers use the same resolver with Host-owned refresh.
  */
 async function buildCredentialResolver(
   input: HostAiSdkBackendInput,

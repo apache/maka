@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 import type { ConnectionCredentialRouting } from '@maka/core/runtime-policy';
 import {
   ProviderCredentialRouter,
+  RouterCredentialResolutionError,
   RouterPoolExhaustedError,
   type RouterCredentialMaterial,
   type RouterProfileProvider,
@@ -52,9 +53,16 @@ function createProvider(state: Partial<ProviderState>): RouterProfileProvider {
     resolveCredential: async (connectionId, profileId) =>
       state.credentials
         ? state.credentials(connectionId, profileId)
-        : { credentialId: `cred-${profileId}`, credentialRevision: 1, apiKey: `key-${profileId}` },
+        : {
+            credentialId: `cred-${profileId}`,
+            credentialRevision: 1,
+            apiKey: `key-${profileId}`,
+          },
     settleHealth: async (lease, outcome) => {
-      settleCalls.push({ profileId: lease.profileId, outcomeKind: outcome.kind });
+      settleCalls.push({
+        profileId: lease.profileId,
+        outcomeKind: outcome.kind,
+      });
     },
     probeEligibleProfiles: async (_c, profileIds) =>
       new Map<string, string>(
@@ -106,8 +114,20 @@ describe('ProviderCredentialRouter', () => {
         mode: 'legacy_primary',
         strategy: 'smooth_weighted_round_robin',
         profiles: [
-          { profileId: 'connection-1', revision: 1, label: 'primary', enabled: true, weight: 1 },
-          { profileId: 'secondary-1', revision: 1, label: 'backup', enabled: false, weight: 1 },
+          {
+            profileId: 'connection-1',
+            revision: 1,
+            label: 'primary',
+            enabled: true,
+            weight: 1,
+          },
+          {
+            profileId: 'secondary-1',
+            revision: 1,
+            label: 'backup',
+            enabled: false,
+            weight: 1,
+          },
         ],
       },
     });
@@ -123,8 +143,20 @@ describe('ProviderCredentialRouter', () => {
         mode: 'legacy_primary',
         strategy: 'smooth_weighted_round_robin',
         profiles: [
-          { profileId: 'connection-1', revision: 2, label: 'primary', enabled: false, weight: 1 },
-          { profileId: 'secondary-1', revision: 1, label: 'backup', enabled: true, weight: 1 },
+          {
+            profileId: 'connection-1',
+            revision: 2,
+            label: 'primary',
+            enabled: false,
+            weight: 1,
+          },
+          {
+            profileId: 'secondary-1',
+            revision: 1,
+            label: 'backup',
+            enabled: true,
+            weight: 1,
+          },
         ],
       },
     });
@@ -373,6 +405,133 @@ describe('ProviderCredentialRouter', () => {
     );
   });
 
+  test('OAuth resolution failure settles the failed account and selects a healthy fallback', async () => {
+    const provider = createProvider({
+      routing: routing(
+        [
+          { id: 'expired', weight: 2 },
+          { id: 'healthy', weight: 1 },
+        ],
+        'priority_failover',
+      ),
+      credentials: async (_c, profileId) => {
+        if (profileId === 'expired') {
+          throw new RouterCredentialResolutionError(
+            'cred-expired',
+            3,
+            { kind: 'auth', scope: 'credential', evidence: 'provider_adapter' },
+            'refresh rejected',
+          );
+        }
+        return {
+          credentialId: 'cred-healthy',
+          credentialRevision: 1,
+          apiKey: 'key-healthy',
+        };
+      },
+    });
+    const router = new ProviderCredentialRouter(provider);
+
+    const lease = await router.acquireAttempt(context());
+
+    assert.equal(lease.profileId, 'healthy');
+    const calls = (provider as RouterProfileProvider & { __settleCalls: unknown[] })
+      .__settleCalls as Array<{
+      profileId: string;
+      outcomeKind: string;
+    }>;
+    assert.deepEqual(calls, [{ profileId: 'expired', outcomeKind: 'failure' }]);
+  });
+
+  test('OAuth resolution failure releases a claimed half-open circuit', async () => {
+    const provider = createProvider({
+      routing: routing([{ id: 'expired', weight: 1 }]),
+      eligible: async () => new Set(),
+      credentials: async () => {
+        throw new RouterCredentialResolutionError(
+          'cred-expired',
+          3,
+          { kind: 'auth', scope: 'credential', evidence: 'provider_adapter' },
+          'refresh rejected',
+        );
+      },
+    });
+    const probeEligible = (
+      provider as RouterProfileProvider & {
+        __probeEligible: Map<string, string>;
+      }
+    ).__probeEligible;
+    probeEligible.set('expired', 'gpt-5');
+    const router = new ProviderCredentialRouter(provider);
+
+    await assert.rejects(
+      router.acquireAttempt(context({ turnId: 'failed-probe' })),
+      (error: unknown) => error instanceof RouterPoolExhaustedError,
+    );
+    const calls = (provider as RouterProfileProvider & { __settleCalls: unknown[] })
+      .__settleCalls as Array<{
+      profileId: string;
+      outcomeKind: string;
+    }>;
+    assert.deepEqual(calls, [{ profileId: 'expired', outcomeKind: 'failure' }]);
+  });
+
+  test('an active turn reads profile disable and mode changes before each retry', async () => {
+    const state: ProviderState = {
+      routing: routing([
+        { id: 'a', weight: 2 },
+        { id: 'b', weight: 1 },
+      ]),
+      eligible: async (_c, profileIds) =>
+        new Set(
+          profileIds.filter(
+            (profileId) =>
+              state.routing?.profiles.find((profile) => profile.profileId === profileId)?.enabled,
+          ),
+        ),
+      credentials: async (_c, profileId) => ({
+        credentialId: `cred-${profileId}`,
+        credentialRevision: 1,
+        apiKey: `key-${profileId}`,
+      }),
+      settleCalls: [],
+    };
+    const provider = createProvider(state);
+    const router = new ProviderCredentialRouter(provider);
+    const first = await router.acquireAttempt(context());
+
+    state.routing = {
+      ...state.routing!,
+      profiles: state.routing!.profiles.map((profile) => ({
+        ...profile,
+        enabled: profile.profileId !== first.profileId,
+      })),
+    };
+    const afterDisable = await router.acquireAttempt(
+      context({ logicalCallId: 'retry-after-disable' }),
+    );
+    assert.notEqual(afterDisable.profileId, first.profileId);
+
+    state.routing = {
+      mode: 'legacy_primary',
+      strategy: 'smooth_weighted_round_robin',
+      profiles: [
+        {
+          profileId: 'connection-1',
+          revision: 1,
+          label: 'primary',
+          enabled: true,
+          weight: 1,
+        },
+      ],
+    };
+    const afterModeChange = await router.acquireAttempt(
+      context({ logicalCallId: 'retry-after-mode-change' }),
+    );
+    assert.equal(afterModeChange.profileId, 'connection-1');
+    assert.equal(afterModeChange.selectionReason, 'legacy_single');
+  });
+
   test('releaseTurn frees the binding so the next call re-enters SWRR', async () => {
     const provider = createProvider({
       routing: routing([
@@ -393,7 +552,10 @@ describe('ProviderCredentialRouter', () => {
     const lease = await router.acquireAttempt(context());
     await router.settle(lease, { kind: 'success' });
     const calls = (provider as RouterProfileProvider & { __settleCalls: unknown[] })
-      .__settleCalls as Array<{ profileId: string; outcomeKind: string }>;
+      .__settleCalls as Array<{
+      profileId: string;
+      outcomeKind: string;
+    }>;
     assert.equal(calls.length, 1);
     assert.equal(calls[0]!.profileId, lease.profileId);
     assert.equal(calls[0]!.outcomeKind, 'success');
@@ -441,7 +603,9 @@ describe('ProviderCredentialRouter', () => {
       eligible: async () => new Set(), // normal dispatch is fully exhausted
     });
     const probeEligible = (
-      provider as RouterProfileProvider & { __probeEligible: Map<string, string> }
+      provider as RouterProfileProvider & {
+        __probeEligible: Map<string, string>;
+      }
     ).__probeEligible;
     probeEligible.set('a', '');
     const router = new ProviderCredentialRouter(provider);
@@ -464,7 +628,9 @@ describe('ProviderCredentialRouter', () => {
       eligible: async () => new Set(['healthy']),
     });
     const probeEligible = (
-      provider as RouterProfileProvider & { __probeEligible: Map<string, string> }
+      provider as RouterProfileProvider & {
+        __probeEligible: Map<string, string>;
+      }
     ).__probeEligible;
     probeEligible.set('preferred', 'gpt-5');
     const router = new ProviderCredentialRouter(provider);
@@ -488,7 +654,9 @@ describe('ProviderCredentialRouter', () => {
     const router = new ProviderCredentialRouter(provider);
     const first = await router.acquireAttempt(context({ turnId: 'sticky-turn' }));
     const probeEligible = (
-      provider as RouterProfileProvider & { __probeEligible: Map<string, string> }
+      provider as RouterProfileProvider & {
+        __probeEligible: Map<string, string>;
+      }
     ).__probeEligible;
     probeEligible.set(first.profileId === 'a' ? 'b' : 'a', 'gpt-5');
 
@@ -508,7 +676,9 @@ describe('ProviderCredentialRouter', () => {
       eligible: async () => new Set(),
     });
     const probeEligible = (
-      provider as RouterProfileProvider & { __probeEligible: Map<string, string> }
+      provider as RouterProfileProvider & {
+        __probeEligible: Map<string, string>;
+      }
     ).__probeEligible;
     probeEligible.set('a', '');
     const router = new ProviderCredentialRouter(provider);

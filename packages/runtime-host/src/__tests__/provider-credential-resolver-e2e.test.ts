@@ -84,17 +84,12 @@ describe('Provider Credential resolver end-to-end', () => {
           (profile) => profile.profileId !== connection.connectionId,
         )!;
 
-        // Routing activation does not spend tokens on a synthetic model probe.
+        // Configuration alone never admits an account into balanced routing.
         const beforeVerification = await stores.operations.setCredentialRoutingMode({
           expected: { connectionId: connection.connectionId, revision: snapshot.revision },
           mode: 'balanced',
         });
-        assert.equal(beforeVerification.kind, 'committed');
-        if (beforeVerification.kind !== 'committed') return;
-        snapshot = beforeVerification.snapshot;
-        routing = snapshot.connections.find(
-          (item) => item.connectionId === connection.connectionId,
-        )!.credentialRouting!;
+        assert.equal(beforeVerification.kind, 'balanced_activation_rejected');
 
         // Seed Profile verification through the production writer.
         for (const profile of routing.profiles) {
@@ -111,6 +106,17 @@ describe('Provider Credential resolver end-to-end', () => {
           });
           assert.equal(recorded.kind, 'committed');
         }
+
+        const activated = await stores.operations.setCredentialRoutingMode({
+          expected: { connectionId: connection.connectionId, revision: snapshot.revision },
+          mode: 'balanced',
+        });
+        assert.equal(activated.kind, 'committed');
+        if (activated.kind !== 'committed') return;
+        snapshot = activated.snapshot;
+        routing = snapshot.connections.find(
+          (item) => item.connectionId === connection.connectionId,
+        )!.credentialRouting!;
 
         // Build the real Host resolver against the same root (so it reads the
         // verification rows the coordinator wrote).
