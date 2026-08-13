@@ -141,6 +141,12 @@ export interface InteractiveUsageStoresWriter {
   readonly modelCalls: Readonly<ModelCallIndexWriter>;
   readonly pricing: Readonly<PricingAuthorityWriter>;
   subscribeSessionUsageChanges(listener: (sessionId: string) => void): () => void;
+  /**
+   * Host-epoch revision for the complete Usage read model. Waits for writes
+   * already admitted at the call boundary, so a caller can fence multi-read
+   * projections without observing an in-flight mutation.
+   */
+  usageSnapshotRevision(): Promise<number>;
   beginDrain(): Promise<void>;
   flush(): Promise<void>;
   close(): Promise<void>;
@@ -351,6 +357,16 @@ function createWriterFacade(
       }
     }
   };
+  let usageRevision = 0;
+
+  // Every admitted Usage mutation bumps the snapshot revision so a caller can
+  // fence a multi-read projection against in-flight writes (#2128).
+  const bumpUsageRevision = (): void => {
+    if (usageRevision === Number.MAX_SAFE_INTEGER) {
+      throw new Error('Usage revision is exhausted');
+    }
+    usageRevision += 1;
+  };
 
   const assertOpen = () => {
     if (state !== 'open') throw new InteractiveUsageStoresClosedError();
@@ -376,6 +392,7 @@ function createWriterFacade(
   ): Promise<T> =>
     admit(async () => {
       const result = await run(operation);
+      bumpUsageRevision();
       if (sessionId) publishSessionUsageChange(sessionId);
       return result;
     });
@@ -384,13 +401,17 @@ function createWriterFacade(
     operation: () => Promise<boolean>,
   ): Promise<void> =>
     admit(async () => {
-      if (await run(operation)) publishSessionUsageChange(sessionId);
+      if (await run(operation)) {
+        bumpUsageRevision();
+        publishSessionUsageChange(sessionId);
+      }
     });
   const admitModelCallProjectionCatchUp = (
     input?: CatchUpModelCallProjectionInput,
   ): Promise<CatchUpModelCallProjectionResult> =>
     admit(async () => {
       const result = await run(() => modelCalls.catchUpProjection(input));
+      bumpUsageRevision();
       for (const sessionId of result.changedSessionIds) publishSessionUsageChange(sessionId);
       return result;
     });
@@ -462,7 +483,11 @@ function createWriterFacade(
       recordLlmCall: (record) =>
         admitSessionUsageMutation(record.sessionId, () => telemetry.insertLlmCall(record)),
       recordToolInvocation: (record) =>
-        admit(() => run(() => telemetry.insertToolInvocation(record))),
+        admit(async () => {
+          const result = await run(() => telemetry.insertToolInvocation(record));
+          bumpUsageRevision();
+          return result;
+        }),
     },
     modelCalls: {
       modelCallAttempts: (range, sessionId) => read(() => modelCalls.read(range, sessionId)),
@@ -482,6 +507,14 @@ function createWriterFacade(
       assertOpen();
       sessionUsageChangeListeners.add(listener);
       return () => sessionUsageChangeListeners.delete(listener);
+    },
+    usageSnapshotRevision: async () => {
+      while (true) {
+        assertOpen();
+        const accepted = barrier;
+        await accepted;
+        if (accepted === barrier) return usageRevision;
+      }
     },
     beginDrain,
     flush,

@@ -177,6 +177,16 @@ describe('Usage/Pricing protocol', () => {
     assert.doesNotThrow(() =>
       usageResponse({ kind: 'summary', summary: validSummary(), provenance: validProvenance() }),
     );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'usage-response-without-revision',
+          operation: 'usage.query',
+          ok: true,
+          result: { kind: 'summary', summary: validSummary(), provenance: validProvenance() },
+        }),
+      invalidFrame,
+    );
     assert.doesNotThrow(() =>
       usageResponse({
         kind: 'buckets',
@@ -928,11 +938,13 @@ function usageRequest(input: unknown): void {
 }
 
 function usageResponse(result: unknown): void {
+  const revised =
+    typeof result === 'object' && result !== null ? { revision: 0, ...result } : result;
   decodeHostFrame({
     requestId: 'usage-response',
     operation: 'usage.query',
     ok: true,
-    result,
+    result: revised,
   });
 }
 

@@ -315,8 +315,11 @@ describe('InteractiveUsageStores', () => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert(owner);
       const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      assert.equal(await stores.usageSnapshotRevision(), 0);
       await stores.telemetry.recordLlmCall(llmRecord());
+      assert.equal(await stores.usageSnapshotRevision(), 1);
       await stores.telemetry.recordToolInvocation(toolRecord());
+      assert.equal(await stores.usageSnapshotRevision(), 2);
 
       assert.equal((await stores.telemetry.logs({ range: 'all' })).total, 1);
       const tools = await stores.telemetry.toolLogs({
@@ -335,12 +338,17 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+<<<<<<< HEAD
   test('legacy summary clamps each cache reading to its own input', async () => {
+=======
+  test('normalizes legacy reasoning details out of total tokens', async () => {
+>>>>>>> 6c19cff5b (fix(runtime-host): fence usage projections by revision)
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert(owner);
       const stores = await openInteractiveUsageStoresForWrite(owner.lease);
       await stores.telemetry.recordLlmCall(
+<<<<<<< HEAD
         llmRecord({
           id: 'malformed-cache',
           inputTokens: 100,
@@ -358,10 +366,24 @@ describe('InteractiveUsageStores', () => {
           cacheHitInputTokens: 1,
           cachedInputTokens: 1,
           cacheMissInputTokens: 0,
+=======
+        llmRecord({ inputTokens: 10, outputTokens: 20, reasoningTokens: 7, totalTokens: 37 }),
+      );
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          id: 'usage_2',
+          inputTokens: 10,
+          outputTokens: 20,
+          reasoningTokens: 7,
+          totalTokens: 40,
+          rawUsage: { total_tokens: 40 },
+          ts: Date.UTC(2026, 0, 2),
+>>>>>>> 6c19cff5b (fix(runtime-host): fence usage projections by revision)
         }),
       );
 
       const summary = await stores.telemetry.summary({ range: 'all' });
+<<<<<<< HEAD
       assert.equal(summary.totalTokens.input, 200);
       assert.equal(summary.totalTokens.cacheRead, 100);
       assert.equal(summary.cacheHitRequests, 1);
@@ -411,6 +433,18 @@ describe('InteractiveUsageStores', () => {
       assert.equal(summary.totalRequests, 1);
       assert.equal(summary.totalCostUsd, 1);
 
+=======
+      const buckets = await stores.telemetry.buckets({ range: 'all' }, 'model');
+      const logs = await stores.telemetry.logs({ range: 'all' });
+
+      assert.equal(summary.totalTokens.reasoning, 14);
+      assert.equal(summary.totalTokens.total, 70);
+      assert.equal(buckets[0]?.reasoningTokens, 14);
+      assert.equal(buckets[0]?.totalTokens, 70);
+      assert.equal(logs.rows[0]?.reasoningTokens, 7);
+      assert.equal(logs.rows[0]?.totalTokens, 40);
+      assert.equal(logs.rows[1]?.totalTokens, 30);
+>>>>>>> 6c19cff5b (fix(runtime-host): fence usage projections by revision)
       await stores.close();
       await owner.close();
     });
