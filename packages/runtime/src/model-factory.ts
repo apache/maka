@@ -25,7 +25,7 @@ import {
   createOpenAiChatReasoningTransportState,
   type OpenAiChatReasoningTransportState,
 } from './openai-chat-reasoning-transport.js';
-import { createOpenAiResponsesPlaintextReasoningTransport } from './openai-responses-plaintext-reasoning-transport.js';
+import { createPlaintextOpenResponsesModel } from './open-responses-plaintext-model.js';
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import { anthropicV1BaseUrl, googleV1BetaBaseUrl } from './provider-urls.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
@@ -145,19 +145,19 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         );
       }
       if (wire === 'openai-responses') {
-        // Measured against the live API rather than inferred from the wire:
-        // DeepSeek streams reasoning as `response.reasoning_text.delta`, which
-        // the SDK never reads, so its reasoning parts arrive empty. Keep this
-        // to the provider we have evidence for — a Responses wire says nothing
-        // about which reasoning shape a provider speaks, and the others
-        // reaching here have not been measured.
-        const speaksPlaintextReasoning = connection.providerType === 'deepseek';
+        if (reasoningReplay.kind === 'open-responses-plaintext') {
+          return createPlaintextOpenResponsesModel({
+            providerName: openAiCompatibleProviderName(adapter, connection),
+            apiKey,
+            baseUrl: baseURL,
+            modelId,
+            fetch: requestFetch,
+          });
+        }
         return createOpenAI({
           apiKey,
           baseURL,
-          fetch: speaksPlaintextReasoning
-            ? createOpenAiResponsesPlaintextReasoningTransport(requestFetch)
-            : requestFetch,
+          fetch: requestFetch,
         }).responses(modelId);
       }
       if (reasoningReplay.kind !== 'openai-chat-plaintext') {
@@ -509,35 +509,25 @@ function buildFamilyWire(
   level: ThinkingLevel | undefined,
   thinkingOptions: ThinkingOptions | undefined,
 ): SharedV4ProviderOptions {
-  const { adapter, wire } = resolveModelRuntime(connection, modelId);
+  const { adapter, wire, reasoningReplay } = resolveModelRuntime(connection, modelId);
   const reasoningEffort = level ? (level === 'off' ? 'none' : level) : undefined;
-  // Whatever the adapter kind, a Responses wire is dialled through the native
-  // OpenAI provider (`getAIModel`), so `openai` is the only provider-options
-  // namespace the SDK will read: an openai-compatible provider's own namespace
-  // is silently dropped there — including the effort, so a model asking for
-  // `max` sent no reasoning parameter at all.
-  //
-  // `store: false` is not a storage preference, it is the switch that makes the
-  // SDK ask for `include: ['reasoning.encrypted_content']` and, on the request
-  // side, drop any reasoning item that came back without one. Both halves are
-  // what we want here: a provider that speaks the encrypted-content contract
-  // gets a replayable chain, and one that does not stops shipping empty husks
-  // it could never replay. Which of the two a given provider is remains its own
-  // business, and this says nothing about how it carries reasoning otherwise —
-  // DeepSeek returns plaintext in `content[].reasoning_text` and consumes it in
-  // the same shape, a dialect the SDK neither reads nor writes. Bridging that
-  // is a transport's job, not this function's. Either way `store` is a property
-  // of the wire rather than of a thinking choice, so it holds whether or not a
-  // level was picked.
-  //
-  // The include is gated on the SDK also believing this is a reasoning model,
-  // and it decides that by parsing the model id for an OpenAI naming scheme —
-  // `deepseek-v4-flash` and `grok-4.5` fail that test however they are served.
-  // Our own declared thinking variants are the authority on that question, so
-  // say so with `forceReasoning` rather than letting a name decide.
+  // A Responses wire still has two distinct replay contracts. OpenAI's native
+  // dialect uses encrypted content and therefore reads `openai` options;
+  // `store: false` asks the SDK to include that replay token. Open Responses
+  // carries plaintext reasoning items and reads the compatible provider's own
+  // namespace. `getAIModel` selects the matching codec from the same resolved
+  // runtime, so a provider's effort cannot silently land in the wrong one.
   if (wire === 'openai-responses') {
     // Connection-aware: a relay model's declared variants count too.
     const reasons = thinkingVariantsForConnection(connection, modelId).length > 0;
+    if (reasoningReplay.kind === 'open-responses-plaintext') {
+      if (!reasoningEffort) return {};
+      return {
+        [openAiCompatibleProviderOptionsKey(adapter, connection)]: {
+          reasoningEffort,
+        },
+      };
+    }
     return {
       openai: {
         store: false,

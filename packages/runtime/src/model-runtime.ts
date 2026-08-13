@@ -19,7 +19,8 @@ export type ReasoningReplayContract =
   | { kind: 'none' }
   | { kind: 'anthropic-signed' }
   | { kind: 'openai-chat-plaintext'; requestField: 'observed' | 'reasoning' }
-  | { kind: 'openai-responses-encrypted' };
+  | { kind: 'openai-responses-encrypted' }
+  | { kind: 'open-responses-plaintext' };
 
 export interface ResolvedModelRuntime {
   adapter: ProviderRuntimeAdapter;
@@ -158,11 +159,9 @@ function reasoningReplayContract(
     case 'anthropic-messages':
       return { kind: 'anthropic-signed' };
     case 'openai-responses':
-      // The native OpenAI serializer can replay only provider-issued encrypted
-      // reasoning when store=false. Open Responses plaintext reasoning is read
-      // by a separate response transport, but has no request codec here yet;
-      // @ai-sdk/open-responses unlocks an open-responses-plaintext sibling.
-      return { kind: 'openai-responses-encrypted' };
+      return adapter.kind === 'openai-compatible' && adapter.responsesDialect === 'open-responses'
+        ? { kind: 'open-responses-plaintext' }
+        : { kind: 'openai-responses-encrypted' };
     case 'openai-chat':
       return adapter.kind === 'openai-compatible'
         ? {

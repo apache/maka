@@ -3930,7 +3930,15 @@ export class AiSdkBackend implements AgentBackend {
             }
           : undefined;
       }
-      if (replaySupport.openAiResponsesEncryptedThinking) {
+      if (replaySupport.responsesThinking === 'open-responses-plaintext') {
+        return {
+          part: {
+            type: 'reasoning' as const,
+            text: item.text,
+          },
+        };
+      }
+      if (replaySupport.responsesThinking === 'openai-encrypted') {
         const openai = item.providerOptions?.openai;
         if (openai && typeof openai === 'object' && !Array.isArray(openai)) {
           const { itemId, reasoningEncryptedContent } = openai as {

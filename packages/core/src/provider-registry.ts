@@ -31,6 +31,8 @@ type ProviderRuntimeAdapterDefinition =
       includeUsage?: boolean;
       requireBaseUrl?: boolean;
       supportsOpenAiResponses?: true;
+      /** Select the standard plaintext Open Responses dialect instead of OpenAI's extension. */
+      responsesDialect?: 'open-responses';
       replayAssistantReasoningAs?: 'reasoning';
       replayAssistantReasoningDetails?: true;
     };
@@ -837,6 +839,7 @@ const providerRegistry = {
       kind: 'openai-compatible',
       name: 'provider',
       supportsOpenAiResponses: true,
+      responsesDialect: 'open-responses',
       applyPatchProtocol: 'codex-v4a-freeform',
     },
     modelDiscovery: { kind: 'protocol' },
