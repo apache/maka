@@ -20,8 +20,10 @@ The probe exits non-zero when an observation differs from its expectation. Its
 JSON report is evidence input, not a claim that the current process is
 sandboxed.
 
-`launcher/` is the first process-containment prototype. It currently proves a
-restricted primary token, suspended process creation, Job assignment before
-resume, kill-on-close descendants, and no inherited handles. It intentionally
-rejects restricted-network and filesystem-root requests until the identity,
-ACL, and network prototypes exist.
+`launcher/` is the first process-containment prototype. It currently probes a
+restricted primary token, suspended process creation, post-create Job
+assignment, kill-on-close descendants, and no inherited handles. The post-create
+assignment is explicitly not the atomic Job guarantee; the W0 privileged-broker
+prototype must still prove `PROC_THREAD_ATTRIBUTE_JOB_LIST`. It intentionally
+rejects restricted-network and filesystem-root requests until the identity, ACL,
+and network prototypes exist.

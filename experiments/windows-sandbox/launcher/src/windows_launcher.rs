@@ -15,11 +15,9 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessWithTokenW,
-    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
-    GetExitCodeProcess, GetProcessId, INFINITE, InitializeProcThreadAttributeList,
-    OpenProcessToken, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, ResumeThread,
-    STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessWithTokenW, GetCurrentProcess,
+    GetExitCodeProcess, GetProcessId, INFINITE, OpenProcessToken, PROCESS_INFORMATION,
+    ResumeThread, STARTUPINFOW, WaitForSingleObject,
 };
 
 use crate::protocol::{LaunchRequest, NetworkMode};
@@ -141,34 +139,13 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
     let mut command = quote_command(&request.executable, &request.arguments);
     let mut cwd = wide(&request.cwd);
     let environment = environment_block(&request.environment);
-    let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
-    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
-    let mut attribute_bytes = 0;
-    unsafe { InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut attribute_bytes) };
-    let mut attribute_storage = vec![0_u8; attribute_bytes];
-    startup.lpAttributeList = attribute_storage.as_mut_ptr().cast();
-    if unsafe {
-        InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &mut attribute_bytes)
-    } == 0
-    {
-        return Err(last_error("InitializeProcThreadAttributeList"));
-    }
-    let mut job_attribute = job;
-    if unsafe {
-        UpdateProcThreadAttribute(
-            startup.lpAttributeList,
-            0,
-            PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
-            (&mut job_attribute as *mut HANDLE).cast(),
-            size_of::<HANDLE>(),
-            null_mut(),
-            null_mut(),
-        )
-    } == 0
-    {
-        unsafe { DeleteProcThreadAttributeList(startup.lpAttributeList) };
-        return Err(last_error("UpdateProcThreadAttribute(JOB_LIST)"));
-    }
+    let environment_ptr = if environment.is_empty() {
+        null()
+    } else {
+        environment.as_ptr() as *const c_void
+    };
+    let mut startup: STARTUPINFOW = unsafe { zeroed() };
+    startup.cb = size_of::<STARTUPINFOW>() as u32;
     let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
 
     let created = unsafe {
@@ -177,19 +154,23 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
             0,
             null(),
             command.as_mut_ptr(),
-            CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
-            environment.as_ptr() as *const c_void,
+            CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+            environment_ptr,
             cwd.as_mut_ptr(),
-            &startup.StartupInfo,
+            &startup,
             &mut process,
         )
     };
-    unsafe { DeleteProcThreadAttributeList(startup.lpAttributeList) };
     if created == 0 {
         return Err(last_error("CreateProcessWithTokenW"));
     }
 
-    let result = if unsafe { ResumeThread(process.hThread) } == u32::MAX {
+    let result = if unsafe {
+        windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(job, process.hProcess)
+    } == 0
+    {
+        Err(last_error("AssignProcessToJobObject"))
+    } else if unsafe { ResumeThread(process.hThread) } == u32::MAX {
         Err(last_error("ResumeThread"))
     } else {
         unsafe { WaitForSingleObject(process.hProcess, INFINITE) };
@@ -226,6 +207,9 @@ fn quote_argument(value: &str) -> String {
 }
 
 fn environment_block(environment: &std::collections::BTreeMap<String, String>) -> Vec<u16> {
+    if environment.is_empty() {
+        return Vec::new();
+    }
     let mut block = Vec::new();
     for (name, value) in environment {
         block.extend(OsStr::new(&format!("{name}={value}")).encode_wide());
