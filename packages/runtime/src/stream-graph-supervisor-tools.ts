@@ -263,6 +263,14 @@ const viewSchema = z.preprocess(
         .describe(
           'Opaque cursor returned by an earlier view_agent_graph call. Ignored when mode=latest.',
         ),
+      historical_before_epoch: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          'Continue historical selected-result discovery before this epoch, using nextHistoricalBeforeEpoch from an earlier view.',
+        ),
     })
     .strip()
     .superRefine((value, ctx) => {
@@ -331,6 +339,7 @@ function cleanViewInput(input: unknown): unknown {
 export interface ViewAgentGraphToolInput {
   mode?: 'latest' | 'page';
   cursor?: string;
+  historical_before_epoch?: number;
 }
 
 export interface UpdateAgentGraphToolInput {
@@ -446,6 +455,7 @@ export type ViewAgentGraphToolResult = {
   schedule: AgentGraphToolScheduleView;
   runtime: AgentGraphToolRuntimeView;
   historicalSelectedResults: AgentGraphSelectedResultInputView[];
+  nextHistoricalBeforeEpoch: number | null;
   nextCursor?: string;
 };
 
@@ -454,6 +464,7 @@ export type UpdateAgentGraphToolResult = {
   schedule: AgentGraphToolScheduleView;
   runtime: AgentGraphToolRuntimeView;
   historicalSelectedResults: AgentGraphSelectedResultInputView[];
+  nextHistoricalBeforeEpoch: number | null;
   nextCursor?: string;
 };
 
@@ -477,7 +488,10 @@ export interface BuildAgentGraphSupervisorToolsInput {
   graphId: string;
   scheduleStore: AgentGraphScheduleStore;
   observeGraph(): Promise<AgentGraphSupervisorObservation>;
-  listHistoricalSelectedResults?(): Promise<readonly AgentGraphSelectedResultInput[]>;
+  listHistoricalSelectedResults?(beforeEpoch?: number): Promise<{
+    readonly results: readonly AgentGraphSelectedResultInput[];
+    readonly nextBeforeEpoch: number | null;
+  }>;
   /** Register before state reads so runtime/reconciliation transitions cannot escape yield admission. */
   prepareYieldPermit?(): AgentGraphYieldPermit;
   /** Host ownership check performed before append-only schedule admission. */
@@ -523,6 +537,7 @@ export function buildAgentGraphSupervisorTools(
         graphId,
         input.observeGraph,
         input.listHistoricalSelectedResults,
+        toolInput.historical_before_epoch,
         resolveViewCursor(toolInput),
       );
       return {
@@ -557,6 +572,7 @@ export function buildAgentGraphSupervisorTools(
         graphId,
         input.observeGraph,
         input.listHistoricalSelectedResults,
+        undefined,
         undefined,
       );
       return {
@@ -854,19 +870,27 @@ async function readToolGraphView(
   graphId: string,
   observeGraph: () => Promise<AgentGraphSupervisorObservation>,
   listHistoricalSelectedResults:
-    | (() => Promise<readonly AgentGraphSelectedResultInput[]>)
+    | ((beforeEpoch?: number) => Promise<{
+        readonly results: readonly AgentGraphSelectedResultInput[];
+        readonly nextBeforeEpoch: number | null;
+      }>)
     | undefined,
+  historicalBeforeEpoch: number | undefined,
   cursor: string | undefined,
 ): Promise<{
   schedule: AgentGraphToolScheduleView;
   runtime: AgentGraphToolRuntimeView;
   historicalSelectedResults: AgentGraphSelectedResultInputView[];
+  nextHistoricalBeforeEpoch: number | null;
   nextCursor?: string;
 }> {
-  const [updates, observation, historicalSelectedResults] = await Promise.all([
+  const [updates, observation, historicalPage] = await Promise.all([
     store.listAgentGraphScheduleUpdates(graphId),
     observeGraph(),
-    listHistoricalSelectedResults?.() ?? [],
+    listHistoricalSelectedResults?.(historicalBeforeEpoch) ?? {
+      results: [],
+      nextBeforeEpoch: null,
+    },
   ]);
   assertGraphObservation(graphId, observation);
   const projection = projectAgentGraphSchedule(graphId, updates);
@@ -874,9 +898,10 @@ async function readToolGraphView(
   return {
     schedule: agentGraphToolScheduleView(projection, livePage),
     runtime: agentGraphToolRuntimeView(observation, livePage),
-    historicalSelectedResults: historicalSelectedResults
+    historicalSelectedResults: historicalPage.results
       .slice(0, TOOL_VIEW_MAX_HISTORICAL_RESULTS)
       .map((selected) => ({ ...selected })),
+    nextHistoricalBeforeEpoch: historicalPage.nextBeforeEpoch,
     ...(livePage.nextCursor ? { nextCursor: livePage.nextCursor } : {}),
   };
 }

@@ -160,7 +160,10 @@ describe('host-managed agent graph coordinator', () => {
       const tools = await coordinator.toolsForSession(rootSessionId);
       const view = tools.find((tool) => tool.name === VIEW_AGENT_GRAPH_TOOL_NAME) as MakaTool<
         Record<string, never>,
-        { historicalSelectedResults: Array<{ sourceGraphId: string; resultId: string }> }
+        {
+          historicalSelectedResults: Array<{ sourceGraphId: string; resultId: string }>;
+          nextHistoricalBeforeEpoch: number | null;
+        }
       >;
       const update = tools.find((tool) => tool.name === UPDATE_AGENT_GRAPH_TOOL_NAME) as MakaTool<
         UpdateAgentGraphToolInput,
@@ -168,11 +171,11 @@ describe('host-managed agent graph coordinator', () => {
       >;
       assert.ok(view);
       assert.ok(update);
-      assert.deepEqual(
-        (await view.impl({}, toolContext(rootSessionId, 'root-run-2', 'root-turn-2')))
-          .historicalSelectedResults,
-        [{ sourceGraphId, resultId: selectedRecord.recordId }],
-      );
+      const viewed = await view.impl({}, toolContext(rootSessionId, 'root-run-2', 'root-turn-2'));
+      assert.deepEqual(viewed.historicalSelectedResults, [
+        { sourceGraphId, resultId: selectedRecord.recordId },
+      ]);
+      assert.equal(viewed.nextHistoricalBeforeEpoch, null);
       await update.impl(
         {
           operation: 'add_work',

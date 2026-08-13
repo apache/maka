@@ -227,8 +227,8 @@ export class AgentGraphCoordinator {
         graphId: driver.graphId,
         scheduleStore: this.#input.controlStore,
         observeGraph: () => this.observe(rootSessionId),
-        listHistoricalSelectedResults: () =>
-          this.#listHistoricalSelectedResults(rootSessionId, driver.graphId),
+        listHistoricalSelectedResults: (beforeEpoch) =>
+          this.#listHistoricalSelectedResults(rootSessionId, driver.graphId, beforeEpoch),
         prepareYieldPermit: () => this.#prepareYieldPermit(driver),
         authorizeScheduleUpdate: async (request): Promise<ScheduleWakeFence> => {
           if (request.graphId !== driver.graphId || request.source.sessionId !== rootSessionId) {
@@ -1238,14 +1238,20 @@ export class AgentGraphCoordinator {
   async #listHistoricalSelectedResults(
     rootSessionId: string,
     currentGraphId: string,
-  ): Promise<readonly AgentGraphSelectedResultInput[]> {
-    if (!this.#input.epochStore) return [];
+    beforeEpoch?: number,
+  ): Promise<{
+    results: readonly AgentGraphSelectedResultInput[];
+    nextBeforeEpoch: number | null;
+  }> {
+    if (!this.#input.epochStore) return { results: [], nextBeforeEpoch: null };
     const current = await this.#input.epochStore.readAgentGraphEpochByGraphId(currentGraphId);
-    if (!current || current.rootSessionId !== rootSessionId || current.epoch <= 1) return [];
+    if (!current || current.rootSessionId !== rootSessionId || current.epoch <= 1) {
+      return { results: [], nextBeforeEpoch: null };
+    }
     const page = await this.#input.epochStore.listAgentGraphEpochPage({
       rootSessionId,
-      beforeEpoch: current.epoch,
-      limit: 16,
+      beforeEpoch: beforeEpoch ?? current.epoch,
+      limit: 1,
     });
     const selected: AgentGraphSelectedResultInput[] = [];
     for (const binding of page.epochs) {
@@ -1257,10 +1263,9 @@ export class AgentGraphCoordinator {
       if (!finish) continue;
       for (const resultId of finish.resultIds) {
         selected.push({ sourceGraphId: binding.graphId, resultId });
-        if (selected.length === 64) return selected;
       }
     }
-    return selected;
+    return { results: selected, nextBeforeEpoch: page.nextBeforeEpoch };
   }
 
   async #assertRootSupervisor(rootSessionId: string): Promise<SessionHeader> {
