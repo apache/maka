@@ -51,11 +51,17 @@ import {
 import { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
 import { RuntimeHostSessionObserver } from "./runtime-host-session-observer.js";
 import type { IpcHandler, ReconnectableReadIpcMain } from "./ipc-reconnect-policy.js";
+import type { RuntimeHostTargetIpcMain } from "./runtime-host-reconnecting-ipc-main.js";
+import {
+  desktopSessionResourceKey,
+  requireDesktopHostRef,
+  type DesktopHostRef,
+} from "../preload/runtime-host-identity.js";
 
 type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler">;
 
 export interface DesktopRuntimeHostCandidateDeps {
-  readonly ipcMain: CandidateIpcMain;
+  readonly ipcMain: RuntimeHostTargetIpcMain;
   readonly workspaceRoot: string;
   readonly attachmentApprovals: AttachmentApprovalRegistry;
   readonly stat: (path: string) => Promise<{ size: number }>;
@@ -70,16 +76,18 @@ export interface DesktopRuntimeHostCandidateDeps {
     target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<WorkspaceTarget>;
   readonly emitSessionsChanged: (
+    scope: DesktopHostRef,
     reason: SessionChangedReason,
     sessionId?: string,
     extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
   ) => void;
-  readonly emitModeChanged: RuntimeHostSessionDomainsIpcDeps["emitModeChanged"];
   readonly completeComputerUseTurn: (
     sessionId: string,
   ) => void | Promise<void>;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
-  readonly sendToRenderer?: RuntimeHostSessionDomainsIpcDeps["sendToRenderer"];
+  readonly renderer?: {
+    send(channel: string, scope: DesktopHostRef, payload: unknown): void;
+  };
   readonly onError?: RuntimeHostSessionDomainsIpcDeps["onError"];
   readonly isTargetActive?: () => boolean;
   readonly isTargetValid?: () => boolean;
@@ -102,6 +110,7 @@ export interface DesktopRuntimeHostCandidateDeps {
     ipcMain: ReconnectableReadIpcMain,
     controls: DesktopRuntimeHostCandidateControls,
     target: DesktopRuntimeHostTargetPolicy,
+    scope: DesktopHostRef,
     isTargetActive: () => boolean,
   ) => void | (() => void | Promise<void>);
 }
@@ -117,7 +126,9 @@ export interface DesktopRuntimeHostCandidateControls {
   refreshClientCapabilities(): Promise<void>;
 }
 
-export interface DesktopRuntimeHostCandidateStartInput extends DesktopRuntimeHostCandidateDeps {
+export interface DesktopRuntimeHostCandidateStartInput
+  extends Omit<DesktopRuntimeHostCandidateDeps, "ipcMain"> {
+  readonly ipcMain: CandidateIpcMain;
   readonly rootPath: string;
   readonly clientInstanceId?: string;
   readonly electionDeadlineMs?: number;
@@ -239,11 +250,13 @@ export async function startDesktopRuntimeHostCandidate(
   input: DesktopRuntimeHostCandidateStartInput,
   observationRegistry?: RuntimeHostSessionObservationRegistry,
 ): Promise<DesktopRuntimeHostCandidateStartResult> {
+  const ipcMain = requireTargetIpcMain(input.ipcMain);
   if (input.remote) {
     return startRemoteDesktopRuntimeHostCandidate(
       input,
       input.remote,
       observationRegistry,
+      ipcMain,
     );
   }
   const connection = await connectOrSpawnRuntimeHost(connectInput(input));
@@ -253,10 +266,10 @@ export async function startDesktopRuntimeHostCandidate(
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(
         connection.connection,
-        input,
+        { ...input, ipcMain },
         observationRegistry,
         connection.registration.lifecycleMode,
-        { kind: "local", rootId: connection.connection.rootId },
+        "local",
       ),
     };
   } catch (error) {
@@ -268,7 +281,8 @@ export async function startDesktopRuntimeHostCandidate(
 async function startRemoteDesktopRuntimeHostCandidate(
   input: DesktopRuntimeHostCandidateStartInput,
   remote: NonNullable<DesktopRuntimeHostCandidateStartInput["remote"]>,
-  observationRegistry?: RuntimeHostSessionObservationRegistry,
+  observationRegistry: RuntimeHostSessionObservationRegistry | undefined,
+  ipcMain: RuntimeHostTargetIpcMain,
 ): Promise<DesktopRuntimeHostCandidateStartResult> {
   const connection = await connectRemoteRuntimeHostProfile({
     profile: remote.profile,
@@ -295,13 +309,10 @@ async function startRemoteDesktopRuntimeHostCandidate(
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(
         connection,
-        input,
+        { ...input, ipcMain },
         observationRegistry,
         "remote",
-        {
-          kind: "remote",
-          rootId: remote.profile.rootId,
-        },
+        "remote",
       ),
     };
   } catch (error) {
@@ -313,32 +324,33 @@ async function startRemoteDesktopRuntimeHostCandidate(
 export async function createDesktopRuntimeHostCandidate(
   connection: RuntimeHostConnection,
   deps: DesktopRuntimeHostCandidateDeps,
-  observationRegistry?: RuntimeHostSessionObservationRegistry,
-  hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote" = "ephemeral",
-  target: DesktopRuntimeHostTargetPolicy = {
-    kind: "local",
-    rootId: connection.rootId,
-  },
+  observationRegistry: RuntimeHostSessionObservationRegistry | undefined,
+  hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote",
+  targetKind: DesktopRuntimeHostTargetPolicy["kind"],
 ): Promise<DesktopRuntimeHostCandidate> {
+  const target: DesktopRuntimeHostTargetPolicy = {
+    kind: targetKind,
+    rootId: connection.rootId,
+  };
+  const ipcMain = deps.ipcMain;
+  const scope = { hostId: connection.rootId, targetEpoch: ipcMain.epoch };
   const client = new DesktopRuntimeHostClient(connection);
-  const ipc = new ScopedIpcMain(deps.ipcMain);
+  const ipc = new ScopedIpcMain(ipcMain, scope);
   const isTargetActive = deps.isTargetActive ?? (() => true);
-  const emitSessionsChanged: DesktopRuntimeHostCandidateDeps["emitSessionsChanged"] = (
-    reason,
-    sessionId,
-    extra,
-  ) => {
-    if (isTargetActive()) deps.emitSessionsChanged(reason, sessionId, extra);
+  const emitSessionsChanged = (
+    reason: SessionChangedReason,
+    sessionId?: string,
+    extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
+  ): void => {
+    if (isTargetActive()) deps.emitSessionsChanged(scope, reason, sessionId, extra);
   };
-  const emitModeChanged: DesktopRuntimeHostCandidateDeps["emitModeChanged"] = (
-    ...args
+  const emitModeChanged = (sessionId: string): void =>
+    emitSessionsChanged("mode-change", sessionId);
+  const sendToRenderer: RuntimeHostSessionDomainsIpcDeps["sendToRenderer"] = (
+    channel,
+    payload,
   ) => {
-    if (isTargetActive()) deps.emitModeChanged(...args);
-  };
-  const sendToRenderer: DesktopRuntimeHostCandidateDeps["sendToRenderer"] = (
-    ...args
-  ) => {
-    if (isTargetActive()) deps.sendToRenderer?.(...args);
+    if (isTargetActive()) deps.renderer?.send(channel, scope, payload);
   };
   const reportError = (error: unknown): void => {
     if (isTargetActive()) deps.onError?.(error);
@@ -355,10 +367,14 @@ export async function createDesktopRuntimeHostCandidate(
     const results = await Promise.allSettled(
       sessionIds.flatMap((sessionId) => [
         Promise.resolve().then(() =>
-          deps.nativeCapabilities.releaseBrowserSession(sessionId),
+          deps.nativeCapabilities.releaseBrowserSession(
+            desktopSessionResourceKey({ ...scope, sessionId }),
+          ),
         ),
         Promise.resolve().then(() =>
-          deps.nativeCapabilities.releaseComputerUseSession(sessionId),
+          deps.nativeCapabilities.releaseComputerUseSession(
+            desktopSessionResourceKey({ ...scope, sessionId }),
+          ),
         ),
       ]),
     );
@@ -426,20 +442,12 @@ export async function createDesktopRuntimeHostCandidate(
         domains?.sessionSubscriptionRecovered(sessionId),
       onWatchedTurnFinished: (sessionId, outcome) =>
         outcome === "completed"
-          ? deps.completeComputerUseTurn(sessionId)
-          : deps.nativeCapabilities.releaseComputerUseSession(sessionId),
-      ...(deps.onError
-        ? {
-            onSubscriptionFailure: (sessionId: string, error: unknown) =>
-              deps.onError?.(
-                new Error(
-                  `Session ${sessionId} subscription interrupted; reopening: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`,
-                ),
-              ),
-          }
-        : {}),
+          ? deps.completeComputerUseTurn(
+              desktopSessionResourceKey({ ...scope, sessionId }),
+            )
+          : deps.nativeCapabilities.releaseComputerUseSession(
+              desktopSessionResourceKey({ ...scope, sessionId }),
+            ),
       recoverConnectionClosed: observationRegistry !== undefined,
       ...(deps.now ? { now: deps.now } : {}),
     });
@@ -449,7 +457,7 @@ export async function createDesktopRuntimeHostCandidate(
         client,
         sessionObserver,
         emitModeChanged,
-        ...(deps.sendToRenderer ? { sendToRenderer } : {}),
+        ...(deps.renderer ? { sendToRenderer } : {}),
         ...(deps.onError ? { onError: reportError } : {}),
         ...(deps.newId ? { newId: deps.newId } : {}),
         ...(deps.now ? { now: deps.now } : {}),
@@ -457,7 +465,20 @@ export async function createDesktopRuntimeHostCandidate(
       ipc,
     );
     closeSessionDomains = domains.close;
-    const restoredSessionIds = await sessionObservations.attach(sessionObserver);
+    const restoredSessionIds = await sessionObservations.attach(
+      sessionObserver,
+      (target) => ({
+        id: target.id,
+        send: (channel, payload) =>
+          (target.send as (channel: string, ...args: unknown[]) => void)(
+            channel,
+            scope,
+            payload,
+          ),
+        once: target.once.bind(target),
+        off: target.off.bind(target),
+      }),
+    );
     observationsAttached = true;
     for (const sessionId of restoredSessionIds) {
       emitSessionsChanged("message-appended", sessionId);
@@ -481,6 +502,8 @@ export async function createDesktopRuntimeHostCandidate(
           hostPathAccess: target.kind === "local" ? "cwd" : "none",
           ...(target.kind === "remote" ? { clientCwd: deps.workspaceRoot } : {}),
           releaseResourcesOnClose: false,
+          nativeSessionId: (sessionId) =>
+            desktopSessionResourceKey({ ...scope, sessionId }),
           onSessionUsed: (sessionId) => nativeSessionIds.add(sessionId),
           onComputerUseTurnUsed: watchComputerUseTurn,
           isTargetValid: deps.isTargetValid,
@@ -535,6 +558,7 @@ export async function createDesktopRuntimeHostCandidate(
       ipc,
       { refreshClientCapabilities },
       target,
+      scope,
       isTargetActive,
     );
     disposeClientIpc =
@@ -568,7 +592,10 @@ export async function createDesktopRuntimeHostCandidate(
         emitSessionsChanged,
         stat: deps.stat,
         resizeImage: deps.resizeImage,
-        beforeStop: deps.nativeCapabilities.releaseComputerUseSession,
+        beforeStop: (sessionId) =>
+          deps.nativeCapabilities.releaseComputerUseSession(
+            desktopSessionResourceKey({ ...scope, sessionId }),
+          ),
         sessionCopyCleanup,
         onBackgroundError: reportError,
         ...(deps.e2eInteractions
@@ -653,12 +680,27 @@ function connectInput(
   };
 }
 
+function requireTargetIpcMain(ipcMain: CandidateIpcMain): RuntimeHostTargetIpcMain {
+  const target = ipcMain as Partial<RuntimeHostTargetIpcMain>;
+  if (
+    typeof target.epoch !== "string" ||
+    !target.epoch ||
+    typeof target.isActive !== "function"
+  ) {
+    throw new Error("Desktop Runtime Host target IPC is required");
+  }
+  return ipcMain as RuntimeHostTargetIpcMain;
+}
+
 class ScopedIpcMain implements ReconnectableReadIpcMain {
   readonly #ipcMain: CandidateIpcMain;
   readonly #channels = new Set<string>();
   #closed = false;
 
-  constructor(ipcMain: CandidateIpcMain) {
+  constructor(
+    ipcMain: CandidateIpcMain,
+    private readonly scope: DesktopHostRef,
+  ) {
     this.#ipcMain = ipcMain;
   }
 
@@ -678,10 +720,14 @@ class ScopedIpcMain implements ReconnectableReadIpcMain {
         `Desktop Runtime Host candidate registered duplicate IPC: ${channel}`,
       );
     }
+    const hostScopedListener: IpcHandler = (event, scope, ...args) => {
+      requireDesktopHostRef(scope, this.scope);
+      return listener(event, ...args);
+    };
     if (reconnectableRead && this.#ipcMain.handleReconnectableRead) {
-      this.#ipcMain.handleReconnectableRead(channel, listener);
+      this.#ipcMain.handleReconnectableRead(channel, hostScopedListener);
     } else {
-      this.#ipcMain.handle(channel, listener);
+      this.#ipcMain.handle(channel, hostScopedListener);
     }
     this.#channels.add(channel);
   }

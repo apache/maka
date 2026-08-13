@@ -196,6 +196,10 @@ export class DesktopRuntimeHostClient {
     return this.connection.hostEpoch;
   }
 
+  get hostId(): string {
+    return this.connection.rootId;
+  }
+
   get lifecycleState(): 'ready' | 'unavailable' {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
   }

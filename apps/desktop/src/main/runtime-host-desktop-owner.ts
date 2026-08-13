@@ -12,6 +12,7 @@ import {
   type RuntimeHostSshInteraction,
 } from '@maka/runtime-host/client';
 import type { HostRegistration } from '@maka/runtime-host/protocol';
+import type { DesktopSessionRef } from '../preload/runtime-host-identity.js';
 import {
   startDesktopRuntimeHostCandidate,
   type DesktopRuntimeHostCandidate,
@@ -24,7 +25,8 @@ import { RuntimeHostSessionObservationRegistry } from './runtime-host-session-ob
 export interface RuntimeHostDesktopOwner {
   current(): RuntimeHostDesktopTargetSnapshot | undefined;
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
-  stopSession(sessionId: string): Promise<void>;
+  stopSession(ref: DesktopSessionRef): Promise<void>;
+  unobserveSession(observerId: string): Promise<void>;
   switchTarget(
     remote: DesktopRuntimeHostCandidateStartInput['remote'],
   ): Promise<void>;
@@ -36,6 +38,7 @@ export interface RuntimeHostDesktopOwner {
 
 export interface RuntimeHostDesktopTargetSnapshot {
   readonly epoch: string;
+  readonly hostId?: string;
   readonly target: ResolvedRuntimeHostProfile;
   readonly readiness: 'ready' | 'reconnecting';
   readonly candidate?: DesktopRuntimeHostCandidate;
@@ -46,6 +49,7 @@ export type RuntimeHostDesktopTargetState =
       readonly epoch: string;
       readonly target: ResolvedRuntimeHostProfile;
       readonly readiness: 'connecting' | 'reconnecting';
+      readonly hostId?: string;
     }
   | {
       readonly epoch: string;
@@ -98,6 +102,7 @@ interface DesktopRuntimeHostTargetGeneration {
   readonly input: DesktopRuntimeHostCandidateStartInput;
   readonly target: ResolvedRuntimeHostProfile;
   readonly observations: RuntimeHostSessionObservationRegistry;
+  hostId?: string;
   lifecycle?: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>;
   unsubscribeLifecycle?: () => void;
   valid: boolean;
@@ -137,6 +142,7 @@ export async function startRuntimeHostDesktopOwner(
 
 class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
   readonly #ipcMain: RuntimeHostReconnectingIpcMain;
+  readonly #observationRegistries = new Set<RuntimeHostSessionObservationRegistry>();
   #target: DesktopRuntimeHostTargetGeneration;
   #activeTarget: DesktopRuntimeHostTargetGeneration | undefined;
   #switchTail: Promise<void> = Promise.resolve();
@@ -176,7 +182,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     } catch (error) {
       this.#target.valid = false;
       this.#activeTarget = undefined;
-      await this.#target.observations.close();
+      await this.#closeObservations(this.#target.observations);
       this.#ipcMain.close();
       throw error;
     }
@@ -194,16 +200,46 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     const candidate = target.lifecycle?.current;
     return {
       epoch: target.epoch,
+      ...(target.hostId ? { hostId: target.hostId } : {}),
       target: target.target,
       readiness: candidate ? 'ready' : 'reconnecting',
       ...(candidate ? { candidate } : {}),
     };
   }
 
-  async stopSession(sessionId: string): Promise<void> {
-    await this.#switchTail;
-    const candidate = await this.#waitForReadyCandidate();
-    await candidate.stopSession(sessionId);
+  stopSession(ref: DesktopSessionRef): Promise<void> {
+    const precedingTransitions = this.#switchTail;
+    return precedingTransitions.then(async () => {
+      if (this.#closed) return;
+      const target = this.#activeTarget;
+      if (
+        !target?.valid ||
+        target.epoch !== ref.targetEpoch ||
+        target.hostId !== ref.hostId ||
+        !target.lifecycle
+      ) return;
+      let candidate: DesktopRuntimeHostCandidate;
+      try {
+        candidate = await this.#waitForReadyCandidate(target.lifecycle);
+      } catch (error) {
+        if (!target.valid || this.#activeTarget !== target) return;
+        throw error;
+      }
+      if (
+        !target.valid ||
+        this.#activeTarget !== target ||
+        candidate.client.hostId !== ref.hostId
+      ) return;
+      await candidate.stopSession(ref.sessionId);
+    });
+  }
+
+  async unobserveSession(observerId: string): Promise<void> {
+    await Promise.all(
+      [...this.#observationRegistries].map((observations) =>
+        observations.unobserve(observerId),
+      ),
+    );
   }
 
   switchTarget(
@@ -253,7 +289,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       await this.#target.lifecycle?.close();
     } finally {
       try {
-        await this.#target.observations.close();
+        await this.#closeObservations(this.#target.observations);
       } finally {
         this.#ipcMain.close();
       }
@@ -280,14 +316,14 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       readiness: 'connecting',
     });
     await previousTarget.lifecycle?.close();
-    if (!previousWasActive) await previousTarget.observations.close();
+    if (!previousWasActive) await this.#closeObservations(previousTarget.observations);
     if (this.#closed) throw new Error('Desktop Runtime Host owner is closed');
 
     try {
       nextTarget.lifecycle = await this.#startLifecycle(nextTarget, false);
     } catch (switchError) {
       nextTarget.valid = false;
-      await nextTarget.observations.close();
+      await this.#closeObservations(nextTarget.observations);
       if (!previousWasActive) {
         this.#publishState({
           epoch: nextTarget.epoch,
@@ -301,17 +337,23 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
         previousTarget.input,
         previousTarget.observations,
       );
+      rollbackTarget.hostId = previousTarget.hostId;
       this.#target = rollbackTarget;
+      this.#activeTarget = rollbackTarget;
       this.#publishState({
         epoch: rollbackTarget.epoch,
         target: rollbackTarget.target,
         readiness: 'connecting',
+        ...(rollbackTarget.hostId ? { hostId: rollbackTarget.hostId } : {}),
       });
+      this.#ipcMain.activate(rollbackTarget.epoch);
       try {
         rollbackTarget.lifecycle = await this.#startLifecycle(rollbackTarget, false);
       } catch (rollbackError) {
         rollbackTarget.valid = false;
-        await rollbackTarget.observations.close();
+        this.#activeTarget = undefined;
+        this.#ipcMain.deactivate(rollbackTarget.epoch);
+        await this.#closeObservations(rollbackTarget.observations);
         const failure = new AggregateError(
           [switchError, rollbackError],
           'Runtime Host switch failed and the previous Host could not be restored',
@@ -329,7 +371,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       throw switchError;
     }
     this.#activate(nextTarget);
-    await previousTarget.observations.close();
+    await this.#closeObservations(previousTarget.observations);
   }
 
   async #startLifecycle(
@@ -393,7 +435,10 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
         },
         target.observations,
       );
-      if (result.kind === 'ready') return result.candidate;
+      if (result.kind === 'ready') {
+        target.hostId = result.candidate.client.hostId;
+        return result.candidate;
+      }
       if (result.kind === 'upgrade_required' && result.restartable) {
         const decision = await this.#resolveRestartable(result);
         if (decision === 'cancel') {
@@ -444,8 +489,9 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     return this.#target.lifecycle;
   }
 
-  async #waitForReadyCandidate(): Promise<DesktopRuntimeHostCandidate> {
-    const lifecycle = this.#requireLifecycle();
+  async #waitForReadyCandidate(
+    lifecycle = this.#requireLifecycle(),
+  ): Promise<DesktopRuntimeHostCandidate> {
     let candidate = await lifecycle.waitForCurrent();
     while (candidate.client.lifecycleState !== 'ready') {
       candidate = await lifecycle.waitForCurrent(candidate);
@@ -457,6 +503,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     input: DesktopRuntimeHostCandidateStartInput,
     observations = new RuntimeHostSessionObservationRegistry((error) => input.onError?.(error)),
   ): DesktopRuntimeHostTargetGeneration {
+    this.#observationRegistries.add(observations);
     return {
       epoch: randomUUID(),
       input,
@@ -469,6 +516,14 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       observations,
       valid: true,
     };
+  }
+
+  async #closeObservations(observations: RuntimeHostSessionObservationRegistry): Promise<void> {
+    try {
+      await observations.close();
+    } finally {
+      this.#observationRegistries.delete(observations);
+    }
   }
 
   #activate(target: DesktopRuntimeHostTargetGeneration): void {
@@ -489,6 +544,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
               epoch: target.epoch,
               target: target.target,
               readiness: 'reconnecting',
+              ...(target.hostId ? { hostId: target.hostId } : {}),
             },
       );
     });
@@ -505,6 +561,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
             epoch: target.epoch,
             target: target.target,
             readiness: 'reconnecting',
+            ...(target.hostId ? { hostId: target.hostId } : {}),
           },
     );
   }

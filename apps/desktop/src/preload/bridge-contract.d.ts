@@ -115,7 +115,6 @@ import type {
   RemoteRuntimeHostProfile,
   RuntimeHostProfile,
 } from '@maka/runtime-host/client';
-
 export interface OnboardingSnapshot {
   state: OnboardingState;
   milestones: OnboardingMilestone[];

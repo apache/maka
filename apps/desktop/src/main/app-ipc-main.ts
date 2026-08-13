@@ -24,7 +24,6 @@ type E2eFixture = ReturnType<typeof resolveE2eFixture>;
 type BuildInfo = ReturnType<typeof resolveBuildInfo>;
 
 export interface AppIpcDeps {
-  mainWindowController: MainWindowController;
   projectRoot: ProjectRootController;
   getSessionProjectRoot(sessionId: string): Promise<string>;
   getProjectRoot(sessionId: unknown): Promise<string>;
@@ -32,37 +31,52 @@ export interface AppIpcDeps {
   buildInfo: BuildInfo;
   e2eFixture: E2eFixture;
   projectManagement: ProjectManagementService;
-  updateService: AppUpdateService;
   allowLocalProjectPaths?: boolean;
 }
 
-export function registerAppIpc(
-  deps: AppIpcDeps,
-  targetIpc: ReconnectableReadIpcMain = ipcMain,
-): void {
-  const { mainWindowController, projectRoot, workspaceRoot, buildInfo, e2eFixture, updateService } = deps;
-  const allowLocalProjectPaths = deps.allowLocalProjectPaths !== false;
-  // Call-time read of the shared project-root authority: every handler must
-  // observe the latest selection, not a snapshot taken at registration.
-  const currentProjectRoot = (): Promise<string> => projectRoot.current();
+export interface AppClientIpcDeps {
+  mainWindowController: MainWindowController;
+  e2eFixture: E2eFixture;
+  updateService: AppUpdateService;
+}
 
+export function registerAppClientIpc(
+  deps: AppClientIpcDeps,
+  targetIpc: Pick<ReconnectableReadIpcMain, 'handle'> = ipcMain,
+): void {
+  const { mainWindowController, e2eFixture, updateService } = deps;
   targetIpc.handle('window:setTitlebarControlsVisible', (event, visible: unknown): void => {
     mainWindowController.setTitlebarControlsVisible(event.sender, visible);
   });
-  // PR-SHOW-AFTER-FIRST-COMMIT: the renderer signals its first React commit so
-  // the hidden window (main-window.ts show: false) is revealed only once real
-  // content can paint. Idempotent + e2e-fixture-safe inside the controller.
   targetIpc.handle('window:notifyRendererReady', (): void => {
     mainWindowController.notifyRendererReady();
   });
   targetIpc.handle('window:setThemeSource', (event, themePref: unknown): void => {
     mainWindowController.setThemeSource(event.sender, themePref);
   });
-  // PR-WINDOW-TITLEBAR-0: re-sync the native titleBarOverlay color when the
-  // renderer resolves a new light/dark mode or palette. No-op outside Windows.
   targetIpc.handle('window:setTitleBarOverlayTheme', (event, theme: unknown): void => {
     mainWindowController.setTitleBarOverlayTheme(event.sender, theme);
   });
+  targetIpc.handle('app:updateStatus', (): AppUpdateStatus => updateService.getStatus());
+  targetIpc.handle('app:checkForUpdates', () => updateService.checkForUpdatesNow());
+  targetIpc.handle('app:retryUpdateDownload', () => updateService.retryUpdateDownload());
+  targetIpc.handle('app:installUpdate', (_event, input: unknown) => {
+    if (!isAppUpdateInstallRequest(input)) throw new TypeError('Invalid app update install request');
+    return updateService.installUpdate(input);
+  });
+  targetIpc.handle('e2eFixture:getState', () => getE2eFixtureState(e2eFixture));
+}
+
+export function registerAppIpc(
+  deps: AppIpcDeps,
+  targetIpc: ReconnectableReadIpcMain = ipcMain,
+): void {
+  const { projectRoot, workspaceRoot, buildInfo, e2eFixture } = deps;
+  const allowLocalProjectPaths = deps.allowLocalProjectPaths !== false;
+  // Call-time read of the shared project-root authority: every handler must
+  // observe the latest selection, not a snapshot taken at registration.
+  const currentProjectRoot = (): Promise<string> => projectRoot.current();
+
   targetIpc.handle('app:info', async () => {
     const selection = await deps.projectManagement.current();
     const projectPath = allowLocalProjectPaths ? selection.path : '';
@@ -95,13 +109,6 @@ export function registerAppIpc(
       buildMode: buildInfo.mode,
       buildCommit: buildInfo.commit,
     };
-  });
-  targetIpc.handle('app:updateStatus', (): AppUpdateStatus => updateService.getStatus());
-  targetIpc.handle('app:checkForUpdates', () => updateService.checkForUpdatesNow());
-  targetIpc.handle('app:retryUpdateDownload', () => updateService.retryUpdateDownload());
-  targetIpc.handle('app:installUpdate', (_event, input: unknown) => {
-    if (!isAppUpdateInstallRequest(input)) throw new TypeError('Invalid app update install request');
-    return updateService.installUpdate(input);
   });
   handleReconnectableRead(targetIpc, 'projects:getSnapshot', () =>
     deps.projectManagement.getSnapshot(),
@@ -176,7 +183,6 @@ export function registerAppIpc(
       return { ok: true, projectPath: resolved, projectGit: await resolveProjectGitInfo(resolved) };
     },
   );
-  targetIpc.handle('e2eFixture:getState', () => getE2eFixtureState(e2eFixture));
 }
 
 function isAppUpdateInstallRequest(input: unknown): input is AppUpdateInstallRequest {

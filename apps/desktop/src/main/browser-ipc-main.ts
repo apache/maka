@@ -4,51 +4,99 @@ import { provideBrowserViewHost } from './browser/browser-host.js';
 import { releaseBrowserSession, revokeHiddenBrowserActions } from './browser/session.js';
 import type { BrowserViewRect } from './browser/logic.js';
 import type { createMainWindowController } from './main-window.js';
+import {
+  desktopSessionResourceKey,
+  parseDesktopSessionResourceKey,
+  requireDesktopHostRef,
+  type DesktopHostRef,
+} from '../preload/runtime-host-identity.js';
 
 interface BrowserIpcDeps {
   mainWindowController: ReturnType<typeof createMainWindowController>;
+  getActiveHostRef(): DesktopHostRef | undefined;
 }
 
-export function registerBrowserIpc(deps: BrowserIpcDeps): void {
+export interface BrowserIpcController {
+  retireTarget(scope: DesktopHostRef): Promise<void>;
+}
+
+export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   let shownBrowserSessionId: string | null = null;
   provideBrowserViewHost(createBrowserViewHost(deps.mainWindowController.getBrowserViews(), () => shownBrowserSessionId));
 
-  const browserTargetOk = (target: unknown): target is string =>
-    typeof target === 'string' && target.length > 0 && target === shownBrowserSessionId;
+  const requireBrowserTarget = (scope: unknown, target: unknown): string | undefined => {
+    const activeHost = deps.getActiveHostRef();
+    if (!activeHost) throw new Error('Desktop Runtime Host identity is unavailable');
+    const host = requireDesktopHostRef(scope, activeHost);
+    return typeof target === 'string' && target.length > 0
+      ? desktopSessionResourceKey({ ...host, sessionId: target })
+      : undefined;
+  };
 
-  ipcMain.on('browser:active-session', (_event, sessionId: unknown) => {
-    shownBrowserSessionId = typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null;
+  ipcMain.on('browser:active-session', (_event, scope: unknown, sessionId: unknown) => {
+    try {
+      shownBrowserSessionId = requireBrowserTarget(scope, sessionId) ?? null;
+    } catch {
+      return;
+    }
     deps.mainWindowController.getBrowserViews().hideAllExcept(shownBrowserSessionId);
     revokeHiddenBrowserActions(shownBrowserSessionId);
   });
 
-  ipcMain.on('browser:setViewport', (_event, input: { sessionId?: unknown; rect?: BrowserViewRect | null }) => {
-    if (!browserTargetOk(input?.sessionId)) return;
-    deps.mainWindowController.getBrowserViews().setViewport(input.sessionId, input.rect ?? null);
+  ipcMain.on('browser:setViewport', (_event, scope: unknown, input: { sessionId?: unknown; rect?: BrowserViewRect | null }) => {
+    let target: string | undefined;
+    try {
+      target = requireBrowserTarget(scope, input?.sessionId);
+    } catch {
+      return;
+    }
+    if (!target || target !== shownBrowserSessionId) return;
+    deps.mainWindowController.getBrowserViews().setViewport(target, input.rect ?? null);
   });
 
-  ipcMain.handle('browser:navigate', async (_event, target: unknown, url: unknown) => {
-    if (!browserTargetOk(target)) return;
-    await deps.mainWindowController.getBrowserViews().getOrCreate(target).navigate(String(url ?? ''));
+  ipcMain.handle('browser:navigate', async (_event, scope: unknown, target: unknown, url: unknown) => {
+    const resourceKey = requireBrowserTarget(scope, target);
+    if (!resourceKey || resourceKey !== shownBrowserSessionId) return;
+    await deps.mainWindowController.getBrowserViews().getOrCreate(resourceKey).navigate(String(url ?? ''));
   });
-  ipcMain.handle('browser:back', (_event, target: unknown) => {
-    if (browserTargetOk(target)) deps.mainWindowController.getBrowserViews().get(target)?.goBack();
+  ipcMain.handle('browser:back', (_event, scope: unknown, target: unknown) => {
+    const resourceKey = requireBrowserTarget(scope, target);
+    if (resourceKey === shownBrowserSessionId) deps.mainWindowController.getBrowserViews().get(resourceKey)?.goBack();
   });
-  ipcMain.handle('browser:forward', (_event, target: unknown) => {
-    if (browserTargetOk(target)) deps.mainWindowController.getBrowserViews().get(target)?.goForward();
+  ipcMain.handle('browser:forward', (_event, scope: unknown, target: unknown) => {
+    const resourceKey = requireBrowserTarget(scope, target);
+    if (resourceKey === shownBrowserSessionId) deps.mainWindowController.getBrowserViews().get(resourceKey)?.goForward();
   });
-  ipcMain.handle('browser:reload', (_event, target: unknown) => {
-    if (browserTargetOk(target)) deps.mainWindowController.getBrowserViews().get(target)?.reload();
+  ipcMain.handle('browser:reload', (_event, scope: unknown, target: unknown) => {
+    const resourceKey = requireBrowserTarget(scope, target);
+    if (resourceKey === shownBrowserSessionId) deps.mainWindowController.getBrowserViews().get(resourceKey)?.reload();
   });
-  ipcMain.handle('browser:stop', (_event, target: unknown) => {
-    if (browserTargetOk(target)) deps.mainWindowController.getBrowserViews().get(target)?.stop();
+  ipcMain.handle('browser:stop', (_event, scope: unknown, target: unknown) => {
+    const resourceKey = requireBrowserTarget(scope, target);
+    if (resourceKey === shownBrowserSessionId) deps.mainWindowController.getBrowserViews().get(resourceKey)?.stop();
   });
-  ipcMain.handle('browser:get-state', (_event, target: unknown) =>
-    typeof target === 'string' && target.length > 0
-      ? deps.mainWindowController.getBrowserViews().get(target)?.state() ?? null
-      : null,
-  );
-  ipcMain.handle('browser:close-page', async (_event, target: unknown) => {
-    if (browserTargetOk(target)) await releaseBrowserSession(target);
+  ipcMain.handle('browser:get-state', (_event, scope: unknown, target: unknown) => {
+    const resourceKey = requireBrowserTarget(scope, target);
+    return resourceKey
+      ? deps.mainWindowController.getBrowserViews().get(resourceKey)?.state() ?? null
+      : null;
   });
+  ipcMain.handle('browser:close-page', async (_event, scope: unknown, target: unknown) => {
+    const resourceKey = requireBrowserTarget(scope, target);
+    if (resourceKey === shownBrowserSessionId) await releaseBrowserSession(resourceKey);
+  });
+
+  return {
+    async retireTarget(scope) {
+      shownBrowserSessionId = null;
+      const views = deps.mainWindowController.getBrowserViews();
+      views.hideAllExcept(null);
+      revokeHiddenBrowserActions(null);
+      const retired = views.sessionIds().filter((sessionId) => {
+        const ref = parseDesktopSessionResourceKey(sessionId);
+        return ref.hostId === scope.hostId && ref.targetEpoch === scope.targetEpoch;
+      });
+      await Promise.all(retired.map((sessionId) => releaseBrowserSession(sessionId)));
+    },
+  };
 }

@@ -85,6 +85,11 @@ export class BrowserViewManager<C extends ManagedView> {
     await Promise.all(ids.map((id) => this.dispose(id)));
   }
 
+  /** Snapshot the owned identities for an external lifecycle boundary. */
+  sessionIds(): string[] {
+    return [...this.views.keys()];
+  }
+
   /** Live view count — asserts the leak invariant in tests. */
   liveCount(): number {
     return this.views.size;

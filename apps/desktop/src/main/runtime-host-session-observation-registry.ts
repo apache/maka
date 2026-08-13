@@ -8,6 +8,10 @@ type SessionObservationSource = Pick<
   "observe" | "unobserve"
 >;
 
+type ObservationTargetBinding = (
+  target: RuntimeHostSessionObserverTarget,
+) => RuntimeHostSessionObserverTarget;
+
 interface ObservationReadiness {
   readonly promise: Promise<void>;
   resolve(): void;
@@ -42,25 +46,30 @@ export class RuntimeHostSessionObservationRegistry {
   >();
   readonly #onError: (error: unknown) => void;
   #source: SessionObservationSource | undefined;
+  #bindTarget: ObservationTargetBinding = (target) => target;
   #closed = false;
 
   constructor(onError: (error: unknown) => void = () => undefined) {
     this.#onError = onError;
   }
 
-  async attach(source: SessionObservationSource): Promise<string[]> {
+  async attach(
+    source: SessionObservationSource,
+    bindTarget: ObservationTargetBinding = (target) => target,
+  ): Promise<string[]> {
     this.#assertOpen();
     if (this.#source && this.#source !== source) {
       throw new Error("Runtime Host Session observations are already attached");
     }
     this.#source = source;
+    this.#bindTarget = bindTarget;
     const restored = await Promise.all(
       [...this.#registrations].map(async ([observerId, registration]) => {
         try {
           await source.observe(
             registration.sessionId,
             observerId,
-            registration.target,
+            bindTarget(registration.target),
           );
           if (
             this.#source !== source ||
@@ -89,7 +98,10 @@ export class RuntimeHostSessionObservationRegistry {
   }
 
   detach(source: SessionObservationSource): void {
-    if (this.#source === source) this.#source = undefined;
+    if (this.#source === source) {
+      this.#source = undefined;
+      this.#bindTarget = (target) => target;
+    }
   }
 
   async observe(
@@ -124,7 +136,7 @@ export class RuntimeHostSessionObservationRegistry {
     const source = this.#source;
     if (!source) return registration.ready.promise;
     try {
-      await source.observe(sessionId, observerId, target);
+      await source.observe(sessionId, observerId, this.#bindTarget(target));
       if (
         this.#source === source &&
         this.#registrations.get(observerId) === registration
@@ -154,6 +166,7 @@ export class RuntimeHostSessionObservationRegistry {
     this.#closed = true;
     const source = this.#source;
     this.#source = undefined;
+    this.#bindTarget = (target) => target;
     const registrations = [...this.#registrations];
     this.#registrations.clear();
     for (const [, registration] of registrations) {

@@ -17,11 +17,29 @@ import type {
 import { z } from 'zod';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import {
-  createDesktopRuntimeHostCandidate,
+  createDesktopRuntimeHostCandidate as createCandidate,
   type DesktopRuntimeHostCandidateControls,
   type DesktopRuntimeHostCandidateDeps,
 } from '../runtime-host-desktop-candidate.js';
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
+import { desktopSessionResourceKey } from '../../preload/runtime-host-identity.js';
+
+const TEST_HOST_ID = 'a'.repeat(64);
+const TEST_TARGET_EPOCH = 'test-target-epoch';
+
+function createDesktopRuntimeHostCandidate(
+  connection: RuntimeHostConnection,
+  candidateDeps: DesktopRuntimeHostCandidateDeps,
+  observationRegistry?: RuntimeHostSessionObservationRegistry,
+) {
+  return createCandidate(
+    connection,
+    candidateDeps,
+    observationRegistry,
+    'ephemeral',
+    'local',
+  );
+}
 
 test('owns one complete Desktop candidate generation and can restart cleanly', async () => {
   const ipc = ipcHarness();
@@ -56,6 +74,97 @@ test('owns one complete Desktop candidate generation and can restart cleanly', a
   );
   await reconnected.close();
   assert.equal(ipc.size, 0);
+});
+
+test('rejects a stale Host identity when raw Session IDs collide', async () => {
+  const ipc = ipcHarness();
+  const browserReleased: string[] = [];
+  const computerReleased: string[] = [];
+  const nativeCapabilities: DesktopRuntimeHostCandidateDeps['nativeCapabilities'] = {
+    browserTools: [nativeTool()],
+    releaseBrowserSession: (sessionId) => {
+      browserReleased.push(sessionId);
+    },
+    computerUseTools: emptyComputerUseTools(),
+    releaseComputerUseSession: (sessionId) => {
+      computerReleased.push(sessionId);
+    },
+  };
+  const first = connectionHarness('collision-a', { sessionId: 'shared-session' });
+  const firstCandidate = await createDesktopRuntimeHostCandidate(
+    first.connection,
+    deps(ipc, nativeCapabilities),
+  );
+  await first.invokeCapability(capabilityFrame('shared-session'));
+  assert.equal(
+    ((await ipc.invokeFor(TEST_HOST_ID, 'sessions:list')) as SessionCatalogProjection[])[0]?.id,
+    'shared-session',
+  );
+  await firstCandidate.close();
+
+  const secondHostId = 'b'.repeat(64);
+  const second = connectionHarness('collision-b', {
+    rootId: secondHostId,
+    sessionId: 'shared-session',
+  });
+  const secondCandidate = await createDesktopRuntimeHostCandidate(
+    second.connection,
+    deps(ipc, nativeCapabilities),
+  );
+  await second.invokeCapability(capabilityFrame('shared-session'));
+  await assert.rejects(
+    () => ipc.invokeFor(TEST_HOST_ID, 'sessions:list'),
+    /different target/,
+  );
+  assert.equal(
+    ((await ipc.invokeFor(secondHostId, 'sessions:list')) as SessionCatalogProjection[])[0]?.id,
+    'shared-session',
+  );
+  await secondCandidate.close();
+  const resourceKeys = [
+    desktopSessionResourceKey({ targetEpoch: TEST_TARGET_EPOCH, hostId: TEST_HOST_ID, sessionId: 'shared-session' }),
+    desktopSessionResourceKey({ targetEpoch: TEST_TARGET_EPOCH, hostId: secondHostId, sessionId: 'shared-session' }),
+  ];
+  assert.deepEqual(browserReleased, resourceKeys);
+  assert.deepEqual(computerReleased, resourceKeys);
+});
+
+test('rejects a stale target generation when two profiles share one Host', async () => {
+  const ipc = ipcHarness();
+  ipc.setEpoch('target-a');
+  const first = connectionHarness('same-host-a');
+  const firstCandidate = await createCandidate(
+    first.connection,
+    deps(ipc),
+    undefined,
+    'ephemeral',
+    'local',
+  );
+  await firstCandidate.close();
+
+  ipc.setEpoch('target-b');
+  const second = connectionHarness('same-host-b');
+  const secondCandidate = await createCandidate(
+    second.connection,
+    deps(ipc),
+    undefined,
+    'ephemeral',
+    'local',
+  );
+
+  await assert.rejects(
+    () => ipc.invokeForTarget('target-a', TEST_HOST_ID, 'sessions:list'),
+    /different target/,
+  );
+  assert.deepEqual(
+    ((await ipc.invokeForTarget(
+      'target-b',
+      TEST_HOST_ID,
+      'sessions:list',
+    )) as SessionCatalogProjection[]).map(({ id }) => id),
+    ['session-same-host-b'],
+  );
+  await secondCandidate.close();
 });
 
 test('tears down the whole candidate when the Host connection closes', async () => {
@@ -180,13 +289,23 @@ test('releases all native Session resources on retirement and generation close',
 
   await host.invokeCapability(capabilityFrame('session-native-lifecycle'));
   await ipc.invoke('sessions:archive', 'session-native-lifecycle');
-  assert.deepEqual(browserReleased, ['session-native-lifecycle']);
-  assert.deepEqual(computerReleased, ['session-native-lifecycle']);
+  const retiredResource = desktopSessionResourceKey({
+    targetEpoch: TEST_TARGET_EPOCH,
+    hostId: TEST_HOST_ID,
+    sessionId: 'session-native-lifecycle',
+  });
+  assert.deepEqual(browserReleased, [retiredResource]);
+  assert.deepEqual(computerReleased, [retiredResource]);
 
   await host.invokeCapability(capabilityFrame('close-owned-session'));
   await candidate.close();
-  assert.deepEqual(browserReleased, ['session-native-lifecycle', 'close-owned-session']);
-  assert.deepEqual(computerReleased, ['session-native-lifecycle', 'close-owned-session']);
+  const closedResource = desktopSessionResourceKey({
+    targetEpoch: TEST_TARGET_EPOCH,
+    hostId: TEST_HOST_ID,
+    sessionId: 'close-owned-session',
+  });
+  assert.deepEqual(browserReleased, [retiredResource, closedResource]);
+  assert.deepEqual(computerReleased, [retiredResource, closedResource]);
 });
 
 test('drains an accepted Host-backed Bot turn before closing its generation', async () => {
@@ -293,7 +412,7 @@ test('does not release or report a Revision the Host retained during cleanup', a
         released.push(`computer:${sessionId}`);
       },
     }),
-    emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
+    emitSessionsChanged: (_scope, reason, sessionId) => changes.push({ reason, sessionId }),
     createSessionCopyCleanup: ({ removeSession }) => {
       removeSessionCopy = removeSession;
       return {
@@ -331,7 +450,8 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
   await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
   assert.ok(
     firstIpc.sender.sent.some(
-      ({ payload }) =>
+      ({ hostId, payload }) =>
+        hostId === TEST_HOST_ID &&
         (payload as { type?: unknown }).type === 'user_question_request',
     ),
   );
@@ -358,16 +478,18 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     secondHost.connection,
     {
       ...deps(secondIpc),
-      emitSessionsChanged: (reason, sessionId) =>
+      emitSessionsChanged: (_hostId, reason, sessionId) =>
         sessionChanges.push({ reason, sessionId }),
-      sendToRenderer: (channel, payload) => {
-        resyncs.push({ channel, payload });
-        if (channel === 'shell-runs:resync') {
-          terminalReattach ??= secondIpc.invoke('shell-runs:attach', {
-            sessionId: 'session-1',
-            ref,
-          });
-        }
+      renderer: {
+        send(channel, _host, payload) {
+          resyncs.push({ channel, payload });
+          if (channel === 'shell-runs:resync') {
+            terminalReattach ??= secondIpc.invoke('shell-runs:attach', {
+              sessionId: 'session-1',
+              ref,
+            });
+          }
+        },
       },
     },
     observations,
@@ -436,14 +558,29 @@ type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
 function ipcHarness() {
   const handlers = new Map<string, IpcHandler>();
+  let epoch = TEST_TARGET_EPOCH;
   const sender = Object.assign(new EventEmitter(), {
     id: 1,
-    sent: [] as Array<{ channel: string; payload: unknown }>,
-    send(channel: string, payload: unknown): void {
-      sender.sent.push({ channel, payload });
+    sent: [] as Array<{ channel: string; hostId?: string; payload: unknown }>,
+    send(channel: string, ...args: unknown[]): void {
+      const hostId = (args[0] as { hostId?: unknown } | undefined)?.hostId;
+      sender.sent.push({
+        channel,
+        ...(typeof hostId === 'string' ? { hostId } : {}),
+        payload: args.at(-1),
+      });
     },
   });
   return {
+    get epoch() {
+      return epoch;
+    },
+    isActive() {
+      return true;
+    },
+    setEpoch(value: string) {
+      epoch = value;
+    },
     handle(channel: string, handler: IpcHandler): void {
       if (handlers.has(channel)) throw new Error(`duplicate handler: ${channel}`);
       handlers.set(channel, handler);
@@ -452,9 +589,20 @@ function ipcHarness() {
       handlers.delete(channel);
     },
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+      return this.invokeFor(TEST_HOST_ID, channel, ...args);
+    },
+    async invokeFor(hostId: string, channel: string, ...args: unknown[]): Promise<unknown> {
+      return this.invokeForTarget(TEST_TARGET_EPOCH, hostId, channel, ...args);
+    },
+    async invokeForTarget(
+      targetEpoch: string,
+      hostId: string,
+      channel: string,
+      ...args: unknown[]
+    ): Promise<unknown> {
       const handler = handlers.get(channel);
       assert.ok(handler, `missing handler: ${channel}`);
-      return handler({ sender } as never, ...args);
+      return handler({ sender } as never, { hostId, targetEpoch }, ...args);
     },
     get channels(): string[] {
       return [...handlers.keys()].sort();
@@ -488,7 +636,6 @@ function deps(
     }),
     resolveSessionCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
     emitSessionsChanged() {},
-    emitModeChanged() {},
     completeComputerUseTurn() {},
     createSessionCopyCleanup: () => ({
       ownCreation: (_creation, operation) => operation(),
@@ -517,6 +664,8 @@ function nativeTool(): MakaTool {
 function connectionHarness(
   label: string,
   options: {
+    rootId?: string;
+    sessionId?: string;
     revisionAbandon?: 'abandoned' | 'retained';
     subscriptionSnapshot?: SessionContinuitySnapshot;
     runtimeResourcePty?: ReturnType<typeof ptySnapshot>;
@@ -541,6 +690,7 @@ function connectionHarness(
   const connection = {
     hostEpoch: `host-${label}`,
     connectionId: `connection-${label}`,
+    rootId: options.rootId ?? TEST_HOST_ID,
     selectedProtocol: 0,
     closed,
     request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
@@ -551,7 +701,7 @@ function connectionHarness(
         return {
           kind: 'page',
           revision: catalogRevision(label),
-          sessions: [session(`session-${label}`)],
+          sessions: [session(options.sessionId ?? `session-${label}`)],
           nextCursor: null,
         };
       }

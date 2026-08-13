@@ -15,6 +15,7 @@ import {
   RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopOwner,
 } from '../runtime-host-desktop-owner.js';
+import type { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
 
 test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, async () => {
   const first = candidateHarness({ delayDisconnect: true });
@@ -50,13 +51,18 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
 
   first.disconnect();
   const botMessage = owner.handleBotIncomingMessage({ text: 'hello' } as BotIncomingMessage);
-  const stop = owner.stopSession('session-1');
+  const stop = owner.stopSession({
+    hostId: 'test-host',
+    targetEpoch: owner.current()!.epoch,
+    sessionId: 'session-1',
+  });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(starts, 1);
   assert.equal(first.botMessages, 0);
   assert.deepEqual(first.stoppedSessions, []);
   first.finishDisconnect();
   await secondStarted;
+  assert.equal(owner.current()?.hostId, 'test-host');
   assert.equal(second.botMessages, 0);
   assert.deepEqual(second.stoppedSessions, []);
   releaseSecond();
@@ -166,12 +172,101 @@ test('switches Runtime Host targets without replacing the Desktop owner', async 
   await owner.close();
 });
 
+test('does not apply an old Host resource stop after a target switch', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });
+  let releaseRemote!: () => void;
+  const remoteGate = new Promise<void>((resolve) => {
+    releaseRemote = resolve;
+  });
+  let starts = 0;
+  const owner = await startRuntimeHostDesktopOwner(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        await remoteGate;
+        return ready(remote.candidate);
+      },
+    },
+  );
+
+  const staleTargetEpoch = owner.current()!.epoch;
+  const switching = owner.switchTarget(remoteTarget('office'));
+  const stopping = owner.stopSession({
+    hostId: 'host-a',
+    targetEpoch: staleTargetEpoch,
+    sessionId: 'shared-session',
+  });
+  releaseRemote();
+  await Promise.all([switching, stopping]);
+
+  assert.deepEqual(local.stoppedSessions, []);
+  assert.deepEqual(remote.stoppedSessions, []);
+  await owner.close();
+});
+
+test('lets a target switch cancel a stop waiting for reconnect', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });
+  let reconnectStarted!: () => void;
+  const reconnecting = new Promise<void>((resolve) => {
+    reconnectStarted = resolve;
+  });
+  let starts = 0;
+  const owner = await startRuntimeHostDesktopOwner(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        if (starts === 2) {
+          reconnectStarted();
+          await new Promise<void>((_resolve, reject) => {
+            const rejectAborted = () => reject(input.signal?.reason);
+            if (input.signal?.aborted) rejectAborted();
+            else input.signal?.addEventListener('abort', rejectAborted, { once: true });
+          });
+          assert.fail('the abandoned reconnect must not produce a candidate');
+        }
+        return ready(remote.candidate);
+      },
+      reconnectBackoff: {
+        minMs: 1,
+        maxMs: 1,
+        random: () => 0,
+        wait: async () => {},
+      },
+    },
+  );
+
+  local.disconnect();
+  await reconnecting;
+  const stopping = owner.stopSession({
+    hostId: 'host-a',
+    targetEpoch: owner.current()!.epoch,
+    sessionId: 'shared-session',
+  });
+  await owner.switchTarget(remoteTarget('office'));
+  await stopping;
+
+  assert.equal(starts, 3);
+  assert.deepEqual(remote.stoppedSessions, []);
+  await owner.close();
+});
+
 test('restores the previous Runtime Host when a target switch fails', async () => {
   const first = candidateHarness();
   const restored = candidateHarness();
   const starts: DesktopRuntimeHostCandidateStartInput[] = [];
   const fatalErrors: Error[] = [];
-  const activations: Array<{ epoch: string; profileId: string }> = [];
+  const states: Array<{
+    epoch: string;
+    profileId: string;
+    readiness: string;
+    hostId?: string;
+  }> = [];
   const owner = await startRuntimeHostDesktopOwner(
     {} as DesktopRuntimeHostCandidateStartInput,
     {
@@ -180,11 +275,21 @@ test('restores the previous Runtime Host when a target switch fails', async () =
         if (starts.length === 2) {
           return { kind: 'failed', reason: 'host_unresponsive' };
         }
+        if (starts.length === 3) {
+          assert.equal(input.isTargetActive?.(), true);
+          assert.equal(owner.current()?.epoch, states.at(-1)?.epoch);
+          assert.equal(owner.current()?.readiness, 'reconnecting');
+        }
         return ready(starts.length === 1 ? first.candidate : restored.candidate);
       },
       onFatalError: (error) => fatalErrors.push(error),
-      onTargetStateChanged: ({ epoch, target, readiness }) => {
-        if (readiness === 'ready') activations.push({ epoch, profileId: target.profile.id });
+      onTargetStateChanged: (state) => {
+        states.push({
+          epoch: state.epoch,
+          profileId: state.target.profile.id,
+          readiness: state.readiness,
+          ...('hostId' in state && state.hostId ? { hostId: state.hostId } : {}),
+        });
       },
     },
   );
@@ -199,9 +304,61 @@ test('restores the previous Runtime Host when a target switch fails', async () =
   assert.equal(starts[0]?.isTargetActive?.(), false);
   assert.equal(starts[1]?.isTargetActive?.(), false);
   assert.equal(starts[2]?.isTargetActive?.(), true);
-  assert.deepEqual(activations.map(({ profileId }) => profileId), ["local", "local"]);
+  const activations = states.filter(({ readiness }) => readiness === 'ready');
+  assert.deepEqual(activations.map(({ profileId }) => profileId), ['local', 'local']);
   assert.notEqual(activations[0]?.epoch, activations[1]?.epoch);
+  const rollbackConnecting = states.at(-2);
+  assert.equal(rollbackConnecting?.readiness, 'connecting');
+  assert.equal(rollbackConnecting?.epoch, activations[1]?.epoch);
+  assert.equal(rollbackConnecting?.hostId, first.candidate.client.hostId);
   assert.deepEqual(fatalErrors, []);
+  await owner.close();
+});
+
+test('releases a Session observation while a failed target switch rolls back', async () => {
+  const first = candidateHarness();
+  const restored = candidateHarness();
+  const registries: RuntimeHostSessionObservationRegistry[] = [];
+  let switchStarted!: () => void;
+  let failSwitch!: () => void;
+  const switchingStarted = new Promise<void>((resolve) => {
+    switchStarted = resolve;
+  });
+  const switchFailure = new Promise<void>((resolve) => {
+    failSwitch = resolve;
+  });
+  let starts = 0;
+  const owner = await startRuntimeHostDesktopOwner(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (_input, observations) => {
+        starts += 1;
+        registries.push(observations);
+        if (starts === 2) {
+          switchStarted();
+          await switchFailure;
+          return { kind: 'failed', reason: 'host_unresponsive' };
+        }
+        return ready(starts === 1 ? first.candidate : restored.candidate);
+      },
+    },
+  );
+  const observations = registries[0];
+  assert.ok(observations);
+  const observing = observations.observe('session-1', 'observer-1', {
+    id: 1,
+    send() {},
+    once() {},
+    off() {},
+  });
+
+  const switching = owner.switchTarget(remoteTarget('offline'));
+  await switchingStarted;
+  await owner.unobserveSession('observer-1');
+  await assert.rejects(observing, /ended before it became ready/);
+  failSwitch();
+  await assert.rejects(switching, /stopped responding/);
+  assert.equal(registries[2], observations);
   await owner.close();
 });
 
@@ -481,6 +638,7 @@ function candidateHarness(
     disconnectOnPrepare?: boolean;
     activeTasks?: boolean;
     lifecycleMode?: 'ephemeral' | 'service' | 'remote';
+    hostId?: string;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -497,6 +655,7 @@ function candidateHarness(
     closed,
     hostLifecycleMode: options.lifecycleMode ?? 'ephemeral',
     client: {
+      hostId: options.hostId ?? 'test-host',
       get lifecycleState() {
         return lifecycleState;
       },
