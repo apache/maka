@@ -135,6 +135,14 @@ export async function runHostedExecutionWithDependencies(
 
 function runtimeHostClientErrorMarker(error: unknown): string {
   const failure = error instanceof Error ? error : new Error(String(error));
+  const details = failure as Error & {
+    readonly operation?: unknown;
+    readonly mode?: unknown;
+    readonly dispatch?: unknown;
+    readonly reason?: unknown;
+    readonly retryable?: unknown;
+  };
+  const cause = failure.cause instanceof Error ? failure.cause : undefined;
   const code =
     typeof (failure as NodeJS.ErrnoException).code === 'string'
       ? (failure as NodeJS.ErrnoException).code
@@ -143,7 +151,26 @@ function runtimeHostClientErrorMarker(error: unknown): string {
     name: failure.name,
     code,
     message: failure.message,
+    operation: stringField(details.operation),
+    mode: stringField(details.mode),
+    dispatch: stringField(details.dispatch),
+    reason: stringField(details.reason),
+    retryable: typeof details.retryable === 'boolean' ? details.retryable : null,
+    cause: cause
+      ? {
+          name: cause.name,
+          code:
+            typeof (cause as NodeJS.ErrnoException).code === 'string'
+              ? (cause as NodeJS.ErrnoException).code
+              : null,
+          message: cause.message,
+        }
+      : null,
   })}`;
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
 }
 
 async function executeHostedExecution(
