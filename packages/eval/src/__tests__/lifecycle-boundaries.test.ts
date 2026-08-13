@@ -224,6 +224,7 @@ await new Promise(() => {});
     const attempt = (await store.list('task::1::external'))[0]!;
     assert.equal(attempt.result.status, 'indeterminate');
     assert.equal(attempt.result.score, null);
+    assert.equal(attempt.result.failureReason, 'executor cancelled before verification completed');
     assert.equal(attempt.result.artifacts.at(-1)?.kind, 'executor-cleanup');
   } finally {
     restoreEnvironment();
@@ -313,6 +314,7 @@ await new Promise(() => {});
     });
     const result = (await store.list('task::1::external'))[0]!.result;
     assert.equal(result.status, 'infra_failed');
+    assert.equal(result.failureReason, 'subject transport failed');
     assert.deepEqual(result.artifacts, [
       {
         kind: 'executor-cleanup',
@@ -403,6 +405,7 @@ await new Promise(() => {});
     const result = (await store.list('task::1::external'))[0]!.result;
     assert.equal(result.status, 'indeterminate');
     assert.equal(result.score, null);
+    assert.equal(result.failureReason, 'executor cleanup did not settle');
     assert.deepEqual(result.artifacts.at(-1), {
       kind: 'executor-cleanup',
       action: 'abort',

@@ -202,12 +202,15 @@ async function runHarnessAttempt(
       ],
     };
   }
-  if (
-    !finalizationEvidence ||
-    !finalizationConfirmed(finalizationEvidence) ||
-    (hostCancellationObserved && !verificationConfirmedBeforeCancellation)
-  ) {
-    return hasValue ? { kind: 'indeterminate', value } : { kind: 'indeterminate' };
+  if (hostCancellationObserved && !verificationConfirmedBeforeCancellation) {
+    return hasValue
+      ? { kind: 'indeterminate', cause: 'host-cancelled', value }
+      : { kind: 'indeterminate', cause: 'host-cancelled' };
+  }
+  if (!finalizationEvidence || !finalizationConfirmed(finalizationEvidence)) {
+    return hasValue
+      ? { kind: 'indeterminate', cause: 'cleanup-unconfirmed', value }
+      : { kind: 'indeterminate', cause: 'cleanup-unconfirmed' };
   }
   if (!hasValue) throw new Error('executor operation did not settle');
   return { kind: 'settled', value };

@@ -83,7 +83,11 @@ export type ExecutorPreparationCode =
 
 export type ExecutorAttemptOutcome =
   | { readonly kind: 'settled'; readonly value: EvalResult }
-  | { readonly kind: 'indeterminate'; readonly value?: EvalResult }
+  | {
+      readonly kind: 'indeterminate';
+      readonly cause: 'host-cancelled' | 'cleanup-unconfirmed';
+      readonly value?: EvalResult;
+    }
   | {
       readonly kind: 'not_started';
       readonly code: ExecutorPreparationCode;
@@ -316,13 +320,17 @@ async function executeCell(
       );
     }
     if (attempt.kind === 'settled') return decodeEvalResult(attempt.value);
-    if (!attempt.value) return failure('indeterminate', 'executor cleanup did not settle');
+    const failureReason =
+      attempt.cause === 'host-cancelled'
+        ? 'executor cancelled before verification completed'
+        : 'executor cleanup did not settle';
+    if (!attempt.value) return failure('indeterminate', failureReason);
     const partial = decodeEvalResult(attempt.value);
     return {
       ...partial,
       score: null,
       status: 'indeterminate',
-      failureReason: partial.failureReason ?? 'executor cleanup did not settle',
+      failureReason,
     };
   } catch {
     return failure('infra_failed', 'executor preparation failed');

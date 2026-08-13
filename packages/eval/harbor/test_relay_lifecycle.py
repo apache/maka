@@ -162,7 +162,58 @@ def load_relay():
     return importlib.import_module("relay_agent")
 
 
+def run_host_teardown_probe(marker: Path, fail_cleanup: bool) -> subprocess.CompletedProcess:
+    cleanup_failure = 'raise RuntimeError("cleanup failed")' if fail_cleanup else ""
+    script = f"""
+import asyncio
+import os
+import signal
+import sys
+import types
+from pathlib import Path
+
+import run_trial as module
+
+relay = types.ModuleType("relay_agent")
+relay.request_host_teardown = lambda: None
+sys.modules["relay_agent"] = relay
+
+async def trial(*_args):
+    try:
+        asyncio.get_running_loop().call_soon(os.kill, os.getpid(), signal.SIGTERM)
+        await asyncio.Future()
+    finally:
+        Path({str(marker)!r}).write_text("attempted")
+        {cleanup_failure}
+
+module.run_trial = trial
+sys.argv = ["run_trial.py", "harbor", "test", "/tmp/test-config"]
+asyncio.run(module.main())
+"""
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    def test_host_teardown_exits_successfully_after_trial_unwinds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "cleanup-attempted"
+            completed = run_host_teardown_probe(marker, False)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(marker.read_text(), "attempted")
+
+    def test_host_teardown_failure_remains_nonzero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "cleanup-attempted"
+            completed = run_host_teardown_probe(marker, True)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertEqual(marker.read_text(), "attempted")
+
     async def test_scope_setup_failure_is_reported_without_quiescing_an_unknown_scope(self):
         relay = load_relay()
         environment = ScopeSetupFailureEnvironment()
