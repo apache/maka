@@ -1129,7 +1129,9 @@ export class RuntimeHostSessionObserver {
       const encodedBytes = encodedTranscriptMessageBytes(entry.message);
       pending.durableUpserts.set(entry.sequence, { entry, encodedBytes });
       byteDelta += encodedBytes;
-      if (pending.evictedDurableSequences.delete(entry.sequence)) byteDelta -= 8;
+      if (pending.evictedDurableSequences.delete(entry.sequence)) {
+        byteDelta -= encodedTranscriptIdentityBytes(entry.sequence);
+      }
     }
     for (const sequence of change.evictedDurableSequences) {
       const previous = pending.durableUpserts.get(sequence);
@@ -1139,13 +1141,13 @@ export class RuntimeHostSessionObserver {
       }
       if (!pending.evictedDurableSequences.has(sequence)) {
         pending.evictedDurableSequences.add(sequence);
-        byteDelta += 8;
+        byteDelta += encodedTranscriptIdentityBytes(sequence);
       }
     }
     for (const messageId of change.completedOverlayMessageIds) {
       if (!pending.completedOverlayMessageIds.has(messageId)) {
         pending.completedOverlayMessageIds.add(messageId);
-        byteDelta += Buffer.byteLength(messageId, 'utf8');
+        byteDelta += encodedTranscriptIdentityBytes(messageId);
       }
     }
     pending.encodedBytes += byteDelta;
@@ -1338,6 +1340,10 @@ function transcriptChannel(consumerId: string): string {
 
 function encodedTranscriptMessageBytes(message: StoredMessage): number {
   return Buffer.byteLength(JSON.stringify(message), 'utf8');
+}
+
+function encodedTranscriptIdentityBytes(identity: number | string): number {
+  return Buffer.byteLength(JSON.stringify(identity), 'utf8');
 }
 
 function requireTranscriptRangeBytes(value: number): number {
