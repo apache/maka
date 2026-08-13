@@ -101,7 +101,10 @@ test('offers commands only for the first token and keeps explicit Skill queries 
   await expect(inlineMenu.getByRole('option', { name: /\/compact/ })).toHaveCount(0);
 
   await composer.fill('/side');
-  await composer.press('Home');
+  // macOS maps Home to document scrolling rather than line-start movement in
+  // contentEditable. Put the caret at the same semantic position on every OS
+  // before checking that a slash with text after the caret is not a command.
+  await composer.press(process.platform === 'darwin' ? 'Meta+ArrowLeft' : 'Home');
   await composer.press('ArrowRight');
   await expect(inlineMenu.getByRole('group', { name: '命令' })).toHaveCount(0);
 });
