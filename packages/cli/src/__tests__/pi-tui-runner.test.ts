@@ -2555,6 +2555,10 @@ describe('Maka Pi TUI runner', () => {
 
     await waitFor(() => terminal.output().includes('Select Model'));
     await waitFor(() => terminal.output().includes('glm-5.2'));
+    assert.match(
+      plainTerminalOutput(terminal.screenOutput()),
+      /Switching may rebuild prompt cache; next request can be slower or cost more/,
+    );
     // The picker opens on the current model (gpt-5.5); move down to the choice on
     // the other connection and select it.
     terminal.input('\x1b[B');
@@ -2563,6 +2567,11 @@ describe('Maka Pi TUI runner', () => {
 
     assert.deepEqual(driver.models, ['glm-5.2']);
     assert.deepEqual(driver.modelConnections, ['zai']);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes(
+        'Model changed: gpt-5.5 (OpenAI) → glm-5.2 (Z.ai)',
+      ),
+    );
     // The status line now reflects both the new model and the new connection.
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes('Maka · Auto · glm-5.2 · zai · /repo'),

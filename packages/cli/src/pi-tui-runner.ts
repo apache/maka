@@ -98,6 +98,7 @@ import {
 import {
   MakaAutocompleteProvider,
   DirectoryPickerOverlay,
+  MODEL_SWITCH_CACHE_WARNING,
   ModelSearchOverlay,
   OnboardingWizard,
   PickerOverlay,
@@ -1259,6 +1260,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const setModel = async (nextModel: string) => {
+    if (nextModel === model) return;
+    const previousModel = model;
     await input.driver.setModel(nextModel);
     model = nextModel;
     // Same-connection switch: scope the choice lookup to the live connection
@@ -1275,7 +1278,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `Model: ${nextModel}`,
+      text: `Model changed: ${previousModel} → ${nextModel}`,
     });
     requestRender();
   };
@@ -1283,6 +1286,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Cross-connection /model: rebind the session to the chosen connection + model.
   // Updates the provider (and thus the thinking variants) and the status line.
   const setModelChoice = async (choice: ModelChoice) => {
+    if (choice.model === model && choice.connectionSlug === connectionSlug) return;
+    const previousModel = model;
+    const previousConnectionSlug = connectionSlug;
+    const previousChoice = modelChoices?.find(
+      (candidate) =>
+        candidate.model === previousModel &&
+        candidate.connectionSlug === previousConnectionSlug,
+    );
     await input.driver.setModel(choice.model, choice.connectionSlug);
     model = choice.model;
     connectionSlug = choice.connectionSlug;
@@ -1294,7 +1305,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `Model: ${choice.model} (${choice.connectionName || choice.connectionSlug})`,
+      text:
+        previousConnectionSlug === choice.connectionSlug
+          ? `Model changed: ${previousModel} → ${choice.model}`
+          : `Model changed: ${previousModel} (${previousChoice?.connectionName || previousConnectionSlug}) → ${choice.model} (${choice.connectionName || choice.connectionSlug})`,
     });
     requestRender();
   };
@@ -1476,6 +1490,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       maxPrimaryColumnWidth: number;
       selectedIndex?: number;
       hint?: string;
+      notice?: string;
       onCancel?: () => void;
     },
   ): void => {
@@ -1484,7 +1499,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       maxPrimaryColumnWidth: options.maxPrimaryColumnWidth,
     });
     if (options.selectedIndex !== undefined) list.setSelectedIndex(options.selectedIndex);
-    const picker = new PickerOverlay(list, { title, rightLabel, hint: options.hint });
+    const picker = new PickerOverlay(list, {
+      title,
+      rightLabel,
+      hint: options.hint,
+      notice: options.notice,
+    });
     let overlay: OverlayHandle | undefined;
     list.onSelect = (item) => {
       overlay?.hide();
@@ -2065,7 +2085,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       (item) => {
         void runControl(() => setModel(item.value));
       },
-      { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 48 },
+      {
+        minPrimaryColumnWidth: 24,
+        maxPrimaryColumnWidth: 48,
+        notice: MODEL_SWITCH_CACHE_WARNING,
+      },
     );
   };
 
