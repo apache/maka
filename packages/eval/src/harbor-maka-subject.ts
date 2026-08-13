@@ -23,7 +23,7 @@ await mkdir(runtimeHome, { recursive: true, mode: 0o700 });
 if (payload.webTools === 'disabled') {
   await writeFile(
     join(payload.rootPath, 'runtime-policy.json'),
-    `${JSON.stringify(disabledWebToolsRuntimePolicyDocument())}\n`,
+    `${JSON.stringify(disabledWebToolsRuntimePolicyDocument(process.env.HTTPS_PROXY))}\n`,
     { flag: 'wx', mode: 0o600 },
   );
 }

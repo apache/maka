@@ -27,7 +27,7 @@ test('passes declared environment and credential bindings to one external comman
       metadata: {},
       execute: async (input) => {
         request = input;
-        return { termination: 'exited', exitCode: 0, stdout: '' };
+        return { termination: 'exited', exitCode: 0, stdout: '', stderr: '' };
       },
     },
   });
@@ -195,6 +195,7 @@ test('verifies a mounted toolchain once before cell execution', async () => {
               costUsd: null,
               artifacts: [],
             }),
+            stderr: '',
           };
         },
       },

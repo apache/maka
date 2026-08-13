@@ -449,7 +449,12 @@ test('Maka framework termination is authoritative before stdout decoding', async
       cwd: '/app',
       taskInput: 'solve',
       metadata: {},
-      execute: async () => ({ termination: 'framework_timeout', exitCode: 124, stdout: '' }),
+      execute: async () => ({
+        termination: 'framework_timeout',
+        exitCode: 124,
+        stdout: '',
+        stderr: '',
+      }),
     },
   });
   assert.equal(external.status, 'failed');
@@ -777,8 +782,10 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
       config: {
         mounts: Array<{ target: string }>;
         egressProxy: {
-          urlEnv: string;
-          caCertificatePathEnv: string;
+          composeSourceEnv: string;
+          composeRelativePath: string;
+          proxyUrl: string;
+          allowedHost: string;
           containerCaPath: string;
         };
       };
@@ -790,14 +797,23 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
     ['maka', 'codex', 'claude-code', 'reasonix', 'opencode', 'kimi-code', 'zcode', 'pi'],
   );
   assert.deepEqual(spec.executor.config.egressProxy, {
-    urlEnv: 'MAKA_EVAL_EGRESS_PROXY_URL',
-    caCertificatePathEnv: 'MAKA_EVAL_EGRESS_PROXY_CA_CERT_PATH',
+    composeSourceEnv: 'MAKA_EVAL_MAKA_BUNDLE_PATH',
+    composeRelativePath: 'packages/eval/harbor/docker-compose-egress-proxy.yaml',
+    proxyUrl: 'http://maka-eval-mitmproxy:8080',
+    allowedHost: 'maka-eval-mitmproxy',
     containerCaPath: '/opt/maka-egress/mitmproxy-ca-cert.pem',
   });
+  const egressCompose = await readFile(
+    new URL('../../harbor/docker-compose-egress-proxy.yaml', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(egressCompose, /^\s*ports:/mu);
+  assert.match(egressCompose, /condition: service_healthy/u);
+  assert.match(egressCompose, /maka-eval-egress-state:\/opt\/maka-egress/u);
+  assert.match(egressCompose, /networks:\s*\n\s+- default/u);
   assert.deepEqual(
     spec.executor.config.mounts.map(({ target }) => target),
     [
-      '/opt/maka-egress/mitmproxy-ca-cert.pem',
       '/opt/maka-agent',
       '/opt/maka-node-toolchain',
       '/opt/maka-codex-toolchain',

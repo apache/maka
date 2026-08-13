@@ -30,16 +30,13 @@
         "SSH_AUTH_SOCK"
       ],
       "egressProxy": {
-        "urlEnv": "MAKA_EVAL_EGRESS_PROXY_URL",
-        "caCertificatePathEnv": "MAKA_EVAL_EGRESS_PROXY_CA_CERT_PATH",
+        "composeSourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
+        "composeRelativePath": "packages/eval/harbor/docker-compose-egress-proxy.yaml",
+        "proxyUrl": "http://maka-eval-mitmproxy:8080",
+        "allowedHost": "maka-eval-mitmproxy",
         "containerCaPath": "/opt/maka-egress/mitmproxy-ca-cert.pem"
       },
       "mounts": [
-        {
-          "sourceEnv": "MAKA_EVAL_EGRESS_PROXY_CA_CERT_PATH",
-          "target": "/opt/maka-egress/mitmproxy-ca-cert.pem",
-          "readOnly": true
-        },
         {
           "sourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
           "target": "/opt/maka-agent",

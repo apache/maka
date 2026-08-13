@@ -38,9 +38,15 @@ Every benchmark subject removes `WebSearch`, `WebFetch`, and `FetchURL` from the
 tool list. Maka enforces that through its Hosted Execution profile; external harnesses pass through
 the Eval metering proxy, which structurally removes named and provider-native web tools from JSON
 requests. Shell networking remains enabled. The configured HTTPS egress proxy blocks only
-Terminal-Bench repository paths for `harbor-framework/terminal-bench*` and
-`NousResearch/terminal-bench*` on GitHub, the GitHub repositories API, raw content, and codeload.
-The machine must provide `MAKA_EVAL_EGRESS_PROXY_URL` and a trusted CA file through
-`MAKA_EVAL_EGRESS_PROXY_CA_CERT_PATH`.
+benchmark and public-solution contamination URLs, including normalized or recursively wrapped
+`terminal-bench` references, pinned benchmark revisions, task registries, benchmark repositories,
+public trajectories, and known patch mirrors. The checked-in Compose overlay gives every cell its
+own MITM proxy, CA, bounded audit log, and health gate. During `Agent.run()`, Harbor's Docker egress
+sidecar applies an nftables allowlist containing only that proxy service; direct subject egress is
+therefore rejected even when a command unsets proxy variables or requests `--noproxy`. Harbor task
+download and verifier phases retain their native network policy. Build the pinned
+`maka-eval-egress-proxy:12.2.3` image from `harbor/egress-proxy/Dockerfile` before running the
+cohort. Collected Maka runtime files and egress audit logs are represented in attempt artifacts with
+byte counts and SHA-256 digests.
 
 The experiment directory contains the frozen `experiment.json` and append-only attempt records. There is no second mutable results file. A leftover `.writer.lock` means the previous writer did not complete; remove it only after proving that no writer process remains.

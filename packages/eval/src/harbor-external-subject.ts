@@ -5,6 +5,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { basename, dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
+import { fetch as undiciFetch, ProxyAgent } from 'undici';
 import {
   decodePreverifiedToolchain,
   type ExternalProfile as Profile,
@@ -600,6 +601,7 @@ async function startMeteringProxy(
   let admittedRequests = 0;
   let usageRequests = 0;
   let removedWebTools = 0;
+  const dispatcher = process.env.HTTPS_PROXY ? new ProxyAgent(process.env.HTTPS_PROXY) : undefined;
   const active = new Set<Promise<void>>();
   const server = createServer((request, response) => {
     const operation = (async () => {
@@ -620,10 +622,11 @@ async function startMeteringProxy(
       }
       if (anthropic) headers.set('x-api-key', upstreamKey);
       else headers.set('authorization', `Bearer ${upstreamKey}`);
-      const upstream = await fetch(target, {
+      const upstream = await undiciFetch(target, {
         method: request.method,
         headers,
         body: projected.body.length === 0 ? undefined : new Uint8Array(projected.body),
+        ...(dispatcher ? { dispatcher } : {}),
       });
       response.statusCode = upstream.status;
       upstream.headers.forEach((value, name) => {
@@ -677,6 +680,7 @@ async function startMeteringProxy(
     close: async () => {
       await Promise.allSettled([...active]);
       await closeServer(server);
+      await dispatcher?.close();
     },
   };
 }

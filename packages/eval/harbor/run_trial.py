@@ -120,6 +120,7 @@ async def run_trial(framework: str, expected_version: str, config_file: Path) ->
                 config.task.download_dir = namespace
                 config.task.overwrite = ready is None
                 trial = await trial_type.create(config)
+                apply_subject_egress_policy(trial)
                 target = Path(trial.task.task_dir)
                 if ready is not None and target.resolve() != ready:
                     raise RuntimeError("Harbor task cache target changed for one identity")
@@ -130,6 +131,15 @@ async def run_trial(framework: str, expected_version: str, config_file: Path) ->
         await trial.run()
     finally:
         config_file.unlink(missing_ok=True)
+
+
+def apply_subject_egress_policy(trial: object) -> None:
+    allowed_host = os.environ.get("MAKA_EVAL_EGRESS_ALLOWED_HOST")
+    if not allowed_host:
+        return
+    agent = trial.task.config.agent
+    agent.network_mode = "allowlist"
+    agent.allowed_hosts = [allowed_host]
 
 
 async def main() -> None:
