@@ -635,7 +635,6 @@ function egressExecutionEnvironment(
     CURL_CA_BUNDLE: options.containerCaPath,
     GIT_SSL_CAINFO: options.containerCaPath,
     NODE_EXTRA_CA_CERTS: options.containerCaPath,
-    NODE_OPTIONS: '--use-env-proxy',
   };
 }
 
