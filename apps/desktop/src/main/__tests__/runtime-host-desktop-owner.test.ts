@@ -197,6 +197,51 @@ test('does not apply an old Host resource stop after a target switch', async () 
   await owner.close();
 });
 
+test('lets a target switch cancel a stop waiting for reconnect', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });
+  let reconnectStarted!: () => void;
+  const reconnecting = new Promise<void>((resolve) => {
+    reconnectStarted = resolve;
+  });
+  let starts = 0;
+  const owner = await startRuntimeHostDesktopOwner(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        if (starts === 2) {
+          reconnectStarted();
+          await new Promise<void>((_resolve, reject) => {
+            const rejectAborted = () => reject(input.signal?.reason);
+            if (input.signal?.aborted) rejectAborted();
+            else input.signal?.addEventListener('abort', rejectAborted, { once: true });
+          });
+          assert.fail('the abandoned reconnect must not produce a candidate');
+        }
+        return ready(remote.candidate);
+      },
+      reconnectBackoff: {
+        minMs: 1,
+        maxMs: 1,
+        random: () => 0,
+        wait: async () => {},
+      },
+    },
+  );
+
+  local.disconnect();
+  await reconnecting;
+  const stopping = owner.stopSession({ hostId: 'host-a', sessionId: 'shared-session' });
+  await owner.switchTarget(remoteTarget('office'));
+  await stopping;
+
+  assert.equal(starts, 3);
+  assert.deepEqual(remote.stoppedSessions, []);
+  await owner.close();
+});
+
 test('restores the previous Runtime Host when a target switch fails', async () => {
   const first = candidateHarness();
   const restored = candidateHarness();

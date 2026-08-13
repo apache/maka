@@ -206,13 +206,25 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
   }
 
   stopSession(ref: DesktopSessionRef): Promise<void> {
-    const operation = this.#switchTail.then(async () => {
-      const candidate = await this.#waitForReadyCandidate();
-      if (candidate.client.hostId !== ref.hostId) return;
+    const precedingTransitions = this.#switchTail;
+    return precedingTransitions.then(async () => {
+      if (this.#closed) return;
+      const target = this.#activeTarget;
+      if (!target?.valid || target.hostId !== ref.hostId || !target.lifecycle) return;
+      let candidate: DesktopRuntimeHostCandidate;
+      try {
+        candidate = await this.#waitForReadyCandidate(target.lifecycle);
+      } catch (error) {
+        if (!target.valid || this.#activeTarget !== target) return;
+        throw error;
+      }
+      if (
+        !target.valid ||
+        this.#activeTarget !== target ||
+        candidate.client.hostId !== ref.hostId
+      ) return;
       await candidate.stopSession(ref.sessionId);
     });
-    this.#switchTail = operation.catch(() => undefined);
-    return operation;
   }
 
   switchTarget(
@@ -456,8 +468,9 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     return this.#target.lifecycle;
   }
 
-  async #waitForReadyCandidate(): Promise<DesktopRuntimeHostCandidate> {
-    const lifecycle = this.#requireLifecycle();
+  async #waitForReadyCandidate(
+    lifecycle = this.#requireLifecycle(),
+  ): Promise<DesktopRuntimeHostCandidate> {
     let candidate = await lifecycle.waitForCurrent();
     while (candidate.client.lifecycleState !== 'ready') {
       candidate = await lifecycle.waitForCurrent(candidate);
