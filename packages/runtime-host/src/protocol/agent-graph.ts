@@ -169,6 +169,10 @@ export interface AgentGraphClientScheduledWork {
     | { readonly kind: 'preset'; readonly presetId: string }
     | { readonly kind: 'operator'; readonly operatorId: string };
   readonly inputIds: readonly string[];
+  readonly selectedResultInputs?: readonly {
+    readonly sourceGraphId: string;
+    readonly resultId: string;
+  }[];
   readonly replaces?: string;
   readonly status: 'requested' | 'stopped' | 'superseded';
   readonly instructionPreview: string;
@@ -860,7 +864,7 @@ function decodeWork(value: unknown): AgentGraphClientScheduledWork {
       'revision',
       'committedAt',
     ],
-    ['replaces'],
+    ['replaces', 'selectedResultInputs'],
   );
   if (
     record.status !== 'requested' &&
@@ -869,10 +873,19 @@ function decodeWork(value: unknown): AgentGraphClientScheduledWork {
   ) {
     throw invalidProtocolFrame('Invalid agent graph work status');
   }
+  const inputIds = decodeIdentityArray(record.inputIds, 'inputIds', AGENT_GRAPH_MAX_WORK_INPUTS);
   return {
     workId: requireOpaqueIdentity(record.workId, 'workId'),
     target: decodeWorkTarget(record.target),
-    inputIds: decodeIdentityArray(record.inputIds, 'inputIds', AGENT_GRAPH_MAX_WORK_INPUTS),
+    inputIds,
+    ...(record.selectedResultInputs === undefined
+      ? {}
+      : {
+          selectedResultInputs: decodeSelectedResultInputs(
+            record.selectedResultInputs,
+            new Set(inputIds),
+          ),
+        }),
     ...(record.replaces === undefined
       ? {}
       : { replaces: requireOpaqueIdentity(record.replaces, 'replaces') }),
@@ -886,6 +899,30 @@ function decodeWork(value: unknown): AgentGraphClientScheduledWork {
     revision: requireCount(record.revision, 'revision'),
     committedAt: requireCount(record.committedAt, 'committedAt'),
   };
+}
+
+function decodeSelectedResultInputs(
+  value: unknown,
+  currentInputIds: ReadonlySet<string>,
+): Array<{ sourceGraphId: string; resultId: string }> {
+  if (!Array.isArray(value) || value.length === 0 || value.length > AGENT_GRAPH_MAX_WORK_INPUTS) {
+    throw invalidProtocolFrame('Invalid selected graph result inputs');
+  }
+  const selected = value.map((item) => {
+    const record = requireExactRecord(item, 'selected graph result input', [
+      'sourceGraphId',
+      'resultId',
+    ]);
+    return {
+      sourceGraphId: requireOpaqueIdentity(record.sourceGraphId, 'sourceGraphId'),
+      resultId: requireOpaqueIdentity(record.resultId, 'resultId'),
+    };
+  });
+  assertUnique(selected, (item) => item.resultId, 'selected graph result');
+  if (selected.some((item) => currentInputIds.has(item.resultId))) {
+    throw invalidProtocolFrame('Graph input ids are ambiguous across current and historical data');
+  }
+  return selected;
 }
 
 function decodeReconciliationFailure(value: unknown): AgentGraphClientReconciliationFailure {

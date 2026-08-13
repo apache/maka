@@ -425,6 +425,9 @@ function projectWork(
           ? { kind: work.target.kind, presetId: work.target.presetId }
           : { kind: work.target.kind, operatorId: work.target.operatorId },
     inputIds: [...work.inputIds],
+    ...(work.selectedResultInputs
+      ? { selectedResultInputs: work.selectedResultInputs.map((input) => ({ ...input })) }
+      : {}),
     ...(work.replaces ? { replaces: work.replaces } : {}),
     status: work.status,
     instructionPreview: work.instructionPreview,
