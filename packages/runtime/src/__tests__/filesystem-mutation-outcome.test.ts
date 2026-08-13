@@ -4,17 +4,27 @@
 // "post-dispatch unknown outcomes"; the worker-side dispatch flag is exercised
 // separately in filesystem-worker-client.test.ts.
 import assert from 'node:assert/strict';
-import { describe, test } from 'node:test';
+import { mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, test } from 'node:test';
 
 import { ToolOutcomeUnknownError } from '@maka/core';
 
 import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
 import {
   FilesystemWorkerClientError,
+  type FilesystemWorkerClient,
   type FilesystemWorkerClientErrorReason,
+  type FilesystemWorkerExecuteInput,
 } from '../filesystem-worker/client.js';
 import type { FilesystemWorkerResult } from '../filesystem-worker/protocol.js';
 import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
+
+const cleanup: string[] = [];
+afterEach(async () => {
+  await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
 
 /** A worker whose execute always rejects with a configured client error. */
 function failingWorker(
@@ -33,10 +43,12 @@ function failingWorker(
   };
 }
 
-function executorWith(worker: { execute: () => Promise<FilesystemWorkerResult> }) {
+function executorWith(worker: {
+  execute: (input: FilesystemWorkerExecuteInput) => Promise<FilesystemWorkerResult>;
+}) {
   return createBoundaryFilesystemExecutor({
     workspace: createLocalWorkspaceExecutor(),
-    worker,
+    worker: worker as Pick<FilesystemWorkerClient, 'execute'>,
   });
 }
 
@@ -172,6 +184,58 @@ describe('filesystem mutation unknown-outcome classification', () => {
         assert.ok(!(error instanceof ToolOutcomeUnknownError));
         return true;
       },
+    );
+  });
+});
+
+describe('filesystem mutation T0 identity capture (queue-window closure)', () => {
+  // This is the red-line test for issue #2600 concern #1. The identity must be
+  // captured at lock acquisition (T0), BEFORE waiting for the write lock — not
+  // re-derived inside client.execute after the lock is held (T1). If it were
+  // captured at T1, a path replaced during the lock wait would sample the
+  // replacement's inode, making the CAS self-fulfilling and the window open.
+  test('the worker receives the T0 identity (before replacement), not T1 (after)', async () => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-t0-identity-')));
+    cleanup.push(cwd);
+    const target = join(cwd, 'file.txt');
+    const replacement = join(cwd, 'replacement.txt');
+    await writeFile(target, 'original', 'utf8');
+    await writeFile(replacement, 'replacement-body', 'utf8');
+
+    // Capture the original inode for later comparison.
+    const { stat } = await import('node:fs/promises');
+    const originalMeta = await stat(target, { bigint: true });
+    const originalIno = String(originalMeta.ino);
+
+    let capturedIdentity: { dev: string; ino: string } | undefined;
+    // A worker that records the identity it receives, then replaces the path
+    // (simulating a replacement that happened during the lock wait), and returns
+    // a synthetic result. The point is to observe WHAT identity the worker got.
+    const recordingWorker: {
+      execute: (input: FilesystemWorkerExecuteInput) => Promise<FilesystemWorkerResult>;
+    } = {
+      async execute(input) {
+        capturedIdentity = input.expectedIdentity;
+        // Simulate the replacement having happened during the lock wait.
+        await rename(replacement, target);
+        return { kind: 'write', ok: true, path: target, bytes: 3 };
+      },
+    };
+    const fs = executorWith(recordingWorker);
+
+    await fs.execute({
+      operation: { kind: 'write', path: target, content: 'new' },
+      cwd,
+    });
+
+    // The worker must have received the T0 identity (original inode), proving
+    // the capture happened before the replacement. If it were T1, the identity
+    // would be the replacement's inode.
+    assert.ok(capturedIdentity, 'worker should have received an identity');
+    assert.equal(
+      capturedIdentity.ino,
+      originalIno,
+      'identity must be the T0 (pre-replacement) inode, not T1',
     );
   });
 });

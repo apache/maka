@@ -10,7 +10,7 @@
 // "full access" stricter than ask mode, which grants :slash_tmp outright (#2083).
 
 import { Buffer } from 'node:buffer';
-import { realpath } from 'node:fs/promises';
+import { lstat, realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { PermissionMode } from '@maka/core/permission';
@@ -18,7 +18,7 @@ import type { PermissionProfile } from '@maka/core/permission-profile';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
 import { computeEditedSource } from './edit-replace.js';
 import { createUnifiedDiff } from './unified-diff.js';
-import { classifyFailedMutationOutcome } from './filesystem-authority.js';
+import { classifyFailedMutationOutcome, type FilesystemTargetIdentity } from './filesystem-authority.js';
 import { withFileWriteLock } from './file-write-lock.js';
 import type {
   FilesystemWorkerClient,
@@ -122,6 +122,34 @@ function mutates(operation: FilesystemOperation): boolean {
 }
 
 /**
+ * Capture the target's stable identity at lock acquisition (T0) — *before*
+ * waiting for the write lock. This is the inode the worker compare-and-swaps
+ * against, so a path replaced while the call is queued for the lock is detected
+ * rather than silently written. Returns undefined when the target does not yet
+ * exist (a create), since there is no inode to pin.
+ *
+ * `follow` must match how the worker derives the targetType: content operations
+ * follow the final symlink (stat), create/delete pin the directory entry (lstat)
+ * so a swapped link is detected against the entry's own inode.
+ */
+async function captureIdentityAtLockAcquisition(
+  canonicalPath: string,
+  follow: boolean,
+): Promise<FilesystemTargetIdentity | undefined> {
+  try {
+    const metadata = follow
+      ? await stat(canonicalPath, { bigint: true })
+      : await lstat(canonicalPath, { bigint: true });
+    return { dev: String(metadata.dev), ino: String(metadata.ino) };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // A missing target (create / new file) has no inode to pin.
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
+    throw error;
+  }
+}
+
+/**
  * Compose the backends behind one boundary-driven decision.
  *
  * - `managed` → the sandboxed worker, which enforces the boundary's profile.
@@ -152,7 +180,10 @@ export function createBoundaryFilesystemExecutor(
         'Managed filesystem execution is unavailable because the sandboxed worker cannot be enforced.',
     });
   };
-  async function run(call: FilesystemBackendExecuteInput): Promise<FilesystemResult> {
+  async function run(
+    call: FilesystemBackendExecuteInput,
+    expectedIdentity?: FilesystemTargetIdentity,
+  ): Promise<FilesystemResult> {
     const worker = workerFor(call.executionBoundary);
     if (!worker) return await local.execute(call, pathScopeForBoundary(call.executionBoundary));
     const result = await worker.execute({
@@ -167,6 +198,7 @@ export function createBoundaryFilesystemExecutor(
       mode: call.permissionMode ?? 'ask',
       ...(input.permissionProfile ? { permissionProfile: input.permissionProfile } : {}),
       ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
+      ...(expectedIdentity ? { expectedIdentity } : {}),
     });
     if (result.kind === 'read_image') {
       return {
@@ -181,27 +213,29 @@ export function createBoundaryFilesystemExecutor(
     call: Omit<FilesystemExecuteInput, 'operation'>,
     path: string,
     semantics: 'target' | 'entry' = 'target',
-  ): Promise<string> {
+  ): Promise<{ key: string; canonicalPath: string }> {
     const worker = workerFor(call.executionBoundary);
-    if (!worker)
-      return (
+    if (!worker) {
+      const key = (
         await input.workspace.writeLockKey({
           cwd: call.cwd,
           path,
           semantics,
         })
       ).key;
-    if (semantics === 'entry') {
-      return (await resolveCanonicalDirectoryEntryTarget(call.cwd, path)).path;
+      return { key, canonicalPath: key };
     }
-    return (
-      await normalizeSandboxBoundaryPath({
-        path,
-        access: 'write',
-        scope: 'exact',
-        cwd: await canonicalExistingPath(call.cwd),
-      })
-    ).enforcementPath;
+    if (semantics === 'entry') {
+      const resolved = await resolveCanonicalDirectoryEntryTarget(call.cwd, path);
+      return { key: resolved.path, canonicalPath: resolved.path };
+    }
+    const normalized = await normalizeSandboxBoundaryPath({
+      path,
+      access: 'write',
+      scope: 'exact',
+      cwd: await canonicalExistingPath(call.cwd),
+    });
+    return { key: normalized.enforcementPath, canonicalPath: normalized.enforcementPath };
   }
   return {
     async execute(call) {
@@ -210,9 +244,18 @@ export function createBoundaryFilesystemExecutor(
       // goes on to reject still takes the same lock as its other spellings. The
       // key is derived from the same canonicalisation the backend will resolve
       // with, or the lock-key space and the resolved-path space drift apart.
-      const key = await writeLockTarget(call, call.operation.path);
+      const { key, canonicalPath } = await writeLockTarget(call, call.operation.path);
+      // Capture the target identity at lock acquisition (T0), BEFORE waiting
+      // for the lock. This is what closes the queue window: if Bash replaces
+      // the path while this call is queued, the worker's CAS sees a mismatch
+      // against this T0 inode and rejects with path_changed. Content operations
+      // follow the final symlink (stat); apply_patch create/delete use 'entry'
+      // semantics but execute() only handles write/edit/format_json here.
+      const expectedIdentity = workerFor(call.executionBoundary)
+        ? await captureIdentityAtLockAcquisition(canonicalPath, true)
+        : undefined;
       try {
-        return await withFileWriteLock(key, () => run(call));
+        return await withFileWriteLock(key, () => run(call, expectedIdentity));
       } catch (error) {
         // A mutation that fails after dispatch may already have landed on disk.
         // Surface that as an unknown outcome so the model re-reads rather than
@@ -229,7 +272,12 @@ export function createBoundaryFilesystemExecutor(
     async applyPatch(call) {
       const { operation, ...common } = call;
       const semantics = operation.type === 'update_file' ? 'target' : 'entry';
-      const key = await writeLockTarget(common, operation.path, semantics);
+      const { key, canonicalPath } = await writeLockTarget(common, operation.path, semantics);
+      // Capture identity at T0 (before the lock wait). update_file follows the
+      // target (stat); create/delete pin the directory entry (lstat).
+      const expectedIdentity = workerFor(common.executionBoundary)
+        ? await captureIdentityAtLockAcquisition(canonicalPath, semantics === 'target')
+        : undefined;
       try {
         return await withFileWriteLock(key, async () => {
           const backendOperation: FilesystemWorkerClientOperation =
@@ -241,7 +289,7 @@ export function createBoundaryFilesystemExecutor(
                   action: operation.type === 'create_file' ? 'create' : 'update',
                   diff: operation.diff,
                 };
-          const result = await run({ ...common, operation: backendOperation });
+          const result = await run({ ...common, operation: backendOperation }, expectedIdentity);
           if (result.kind !== 'apply_patch') {
             throw new Error(`ApplyPatch backend returned ${JSON.stringify(result.kind)}.`);
           }

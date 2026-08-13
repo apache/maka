@@ -82,11 +82,16 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
     const aliasedTarget = target.replace(/^\/private(?=\/)/, '');
     assert.notEqual(aliasedTarget, target);
     await writeFile(target, 'delete me', 'utf8');
+    // Capture the identity at T0 (the boundary executor does this in production).
+    const { lstat } = await import('node:fs/promises');
+    const meta = await lstat(target, { bigint: true });
+    const expectedIdentity = { dev: String(meta.dev), ino: String(meta.ino) };
 
     await client.execute({
       operation: { kind: 'apply_patch', path: aliasedTarget, action: 'delete' },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity,
     });
 
     await assert.rejects(readFile(target, 'utf8'), { code: 'ENOENT' });

@@ -58,6 +58,13 @@ export interface FilesystemWorkerExecuteInput {
   /** Explicit embedding policy. Mode-based defaults are compiled only when omitted. */
   permissionProfile?: PermissionProfile;
   abortSignal?: AbortSignal;
+  /**
+   * The target identity captured at lock acquisition (T0), passed in by the
+   * caller so the client does not re-derive it after acquiring the lock (T1).
+   * The worker compare-and-swaps this against the on-disk inode. Undefined for
+   * a missing target (create) or when the host-local backend is in use.
+   */
+  expectedIdentity?: { dev: string; ino: string };
 }
 
 export type FilesystemWorkerClientErrorReason =
@@ -183,6 +190,11 @@ export class FilesystemWorkerClient {
     ).catch(() => {
       throw clientError('invalid_operation', 'validation', requestId);
     });
+    // The identity was captured by the caller at lock acquisition (T0) and
+    // passed in as expectedIdentity. Do NOT re-derive it here: re-deriving at
+    // this point (after the lock is held) would sample the post-queue inode,
+    // making the CAS self-fulfilling and re-opening the queue window.
+    const identity = input.expectedIdentity;
     const compiled =
       input.executionBoundary?.kind === 'managed'
         ? {
@@ -262,6 +274,7 @@ export class FilesystemWorkerClient {
         access,
         scope: target.scope,
         targetType: target.targetType,
+        ...(identity ? { identity } : {}),
       },
     } as const;
     const requestJson = JSON.stringify(request);

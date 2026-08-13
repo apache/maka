@@ -59,6 +59,12 @@ export type FilesystemWorkerGrepRunner = (
   input: FilesystemWorkerGrepRunInput,
 ) => Promise<FilesystemWorkerGrepRunResult>;
 
+function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
+  return kind === 'write' || kind === 'apply_patch' || kind === 'edit' || kind === 'format_json'
+    ? 'write'
+    : 'read';
+}
+
 export async function executeFilesystemWorkerRequest(
   request: FilesystemWorkerRequest,
   dependencies: FilesystemWorkerOperationDependencies = {},
@@ -69,6 +75,7 @@ export async function executeFilesystemWorkerRequest(
       request.operation.path,
       request.expectedTarget,
       operationUsesDirectoryEntry(request.operation),
+      operationAccess(request.operation.kind),
     );
     return {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
@@ -78,6 +85,7 @@ export async function executeFilesystemWorkerRequest(
         request.operation,
         request.operationBoundary,
         dependencies,
+        request.expectedTarget,
       ),
     };
   } catch (error) {
@@ -95,6 +103,7 @@ export async function executeFilesystemOperation(
   operation: FilesystemWorkerOperation,
   operationBoundary: FilesystemWorkerRequest['operationBoundary'],
   dependencies: FilesystemWorkerOperationDependencies = {},
+  expectedTarget?: FilesystemWorkerTarget,
 ): Promise<FilesystemWorkerResult> {
   switch (operation.kind) {
     case 'read': {
@@ -147,6 +156,10 @@ export async function executeFilesystemOperation(
         previous = code === 'ENOENT' || code === 'ENOTDIR' ? 'new' : 'unknown';
       }
       await fs.writeFile(path, operation.content, 'utf8');
+      // Confirm the path still names the inode we just wrote: a swap during the
+      // write means the bytes went to an orphan and the visible file is the
+      // replacement (unknown outcome).
+      await assertPathStillMatchesIdentity(path, expectedTarget?.identity);
       const diff =
         previous === 'unknown'
           ? undefined
@@ -379,6 +392,7 @@ async function assertTargetUnchanged(
   path: string,
   expected: FilesystemWorkerTarget,
   noFollowFinalSymlink = false,
+  access: 'read' | 'write' = 'read',
 ): Promise<void> {
   const enforcementPath = noFollowFinalSymlink
     ? (await resolveCanonicalDirectoryEntryTarget(cwd, path)).path
@@ -390,6 +404,62 @@ async function assertTargetUnchanged(
     throw operationError(
       'path_changed',
       'The approved filesystem target changed before execution.',
+    );
+  }
+  // Compare the on-disk identity against the one captured at authorisation
+  // time. This is the load-bearing check for the queue window: a path swapped
+  // while the call waited for the lock has a different inode even when its
+  // canonical path and type still match.
+  //
+  // A non-missing WRITE target MUST carry an identity — if it does not, the
+  // CAS is silently skipped and the entire defence collapses. Fail loudly
+  // rather than degrading to "no check", so a buggy caller that omits the
+  // identity is caught immediately instead of leaving the window open. Reads
+  // are exempt: they do not mutate, so there is no queue window to close.
+  if (access === 'write' && expected.targetType !== 'missing' && !expected.identity) {
+    throw operationError(
+      'invalid_request',
+      'A non-missing filesystem target must carry an identity for CAS.',
+    );
+  }
+  if (expected.identity) {
+    const metadata = noFollowFinalSymlink
+      ? await fs.lstat(enforcementPath, { bigint: true })
+      : await fs.stat(enforcementPath, { bigint: true });
+    if (String(metadata.dev) !== expected.identity.dev || String(metadata.ino) !== expected.identity.ino) {
+      throw operationError(
+        'path_changed',
+        'The approved filesystem target changed before execution.',
+      );
+    }
+  }
+}
+
+/**
+ * After a write, confirm the path still resolves to the inode we wrote to. If
+ * the path was swapped mid-write, the write landed on an orphaned inode and
+ * the visible file is the replacement — the outcome on disk is genuinely
+ * unknown, so report `outcome_unknown` rather than a misleading success.
+ */
+/** @internal Exported for unit testing the post-write orphan check. */
+export async function assertPathStillMatchesIdentity(
+  path: string,
+  expected: FilesystemWorkerTarget['identity'],
+): Promise<void> {
+  if (!expected) return;
+  let metadata: { dev: bigint; ino: bigint };
+  try {
+    metadata = await fs.stat(path, { bigint: true });
+  } catch {
+    throw operationError(
+      'outcome_unknown',
+      'The target disappeared after the write; the outcome on disk is unknown.',
+    );
+  }
+  if (String(metadata.dev) !== expected.dev || String(metadata.ino) !== expected.ino) {
+    throw operationError(
+      'outcome_unknown',
+      'The target was replaced during the write; the outcome on disk is unknown.',
     );
   }
 }

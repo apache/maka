@@ -65,12 +65,14 @@ describe('filesystem worker client permission snapshots', () => {
     });
 
     assert.equal(requests[0]?.operation.path, link);
-    assert.deepEqual(requests[0]?.expectedTarget, {
-      enforcementPath: link,
-      access: 'write',
-      scope: 'exact',
-      targetType: 'symlink',
-    });
+    const expectedTarget = requests[0]?.expectedTarget;
+    assert.equal(expectedTarget?.enforcementPath, link);
+    assert.equal(expectedTarget?.access, 'write');
+    assert.equal(expectedTarget?.scope, 'exact');
+    assert.equal(expectedTarget?.targetType, 'symlink');
+    // The identity is captured at T0 by the boundary executor and passed in as
+    // expectedIdentity; this client-level harness does not wire that path, so
+    // identity is absent here. The executor-level tests cover it.
   });
 
   for (const kind of ['bypass', 'external'] as const) {
