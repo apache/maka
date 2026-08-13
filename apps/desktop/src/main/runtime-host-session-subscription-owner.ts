@@ -43,7 +43,7 @@ interface SubscriptionAttempt {
   readonly failed: Promise<Error>;
   pendingFrameBytes: number;
   replica?: DesktopTranscriptReplica;
-  phase: "preparing" | "active";
+  phase: 'preparing' | 'active' | 'retiring';
   failure?: Error;
   fail(error: Error): void;
 }
@@ -117,6 +117,7 @@ export class RuntimeHostSessionSubscriptionOwner {
       const prepared = await this.#prepare();
       attempt = prepared.attempt;
       if (attempt.failure) throw attempt.failure;
+      previous.phase = 'retiring';
       await this.#deps.commit(prepared.prepared, false);
       if (attempt.failure) throw attempt.failure;
       if (this.#closed || this.#candidate !== attempt || this.#attempt !== previous) {
@@ -126,12 +127,7 @@ export class RuntimeHostSessionSubscriptionOwner {
       this.#attempt = attempt;
       previous.replica?.close();
       await previous.handle.close().catch(() => undefined);
-      while (attempt.pendingFrames.length > 0) {
-        const frame = attempt.pendingFrames.shift()!;
-        attempt.pendingFrameBytes -= Buffer.byteLength(JSON.stringify(frame), 'utf8');
-        await this.#deps.acceptFrame(frame);
-        if (attempt.failure) throw attempt.failure;
-      }
+      await this.#drainPendingFrames(attempt);
       attempt.phase = 'active';
     } catch (error) {
       const failure = asError(error);
@@ -143,6 +139,22 @@ export class RuntimeHostSessionSubscriptionOwner {
       if (attempt && this.#candidate === attempt) this.#candidate = undefined;
       attempt?.replica?.close();
       await attempt?.handle.close().catch(() => undefined);
+      if (this.#attempt === previous && previous.phase === 'retiring') {
+        if (previous.failure) {
+          this.#replaceReadyTask(this.#establish(previous, previous.failure));
+          await this.waitUntilReady();
+          return;
+        }
+        previous.phase = 'active';
+        try {
+          await this.#drainPendingFrames(previous);
+        } catch (error) {
+          const recoveryError = asError(error);
+          this.#replaceReadyTask(this.#establish(previous, recoveryError));
+          await this.waitUntilReady();
+          return;
+        }
+      }
       throw failure;
     }
   }
@@ -187,12 +199,7 @@ export class RuntimeHostSessionSubscriptionOwner {
         if (this.#closed || this.#candidate !== attempt) throw ownerClosed();
         this.#candidate = undefined;
         this.#attempt = attempt;
-        while (attempt.pendingFrames.length > 0) {
-          const frame = attempt.pendingFrames.shift()!;
-          attempt.pendingFrameBytes -= Buffer.byteLength(JSON.stringify(frame), 'utf8');
-          await this.#deps.acceptFrame(frame);
-          if (attempt.failure) throw attempt.failure;
-        }
+        await this.#drainPendingFrames(attempt);
         attempt.phase = "active";
       } catch (error) {
         if (this.#candidate === attempt) this.#candidate = undefined;
@@ -284,7 +291,7 @@ export class RuntimeHostSessionSubscriptionOwner {
         if (frame.kind === "subscription.closed") {
           throw subscriptionClosedError(frame.reason);
         }
-        if (attempt.phase === 'preparing') {
+        if (attempt.phase !== 'active') {
           const frameBytes = Buffer.byteLength(JSON.stringify(frame), 'utf8');
           if (
             attempt.pendingFrames.length >= MAX_PENDING_FRAMES ||
@@ -307,7 +314,7 @@ export class RuntimeHostSessionSubscriptionOwner {
     } catch (error) {
       if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) return;
       const failure = asError(error);
-      if (attempt.phase === "preparing") {
+      if (attempt.phase !== 'active') {
         attempt.fail(failure);
       } else if (isRecoverableSubscriptionFailure(failure)) {
         this.#replaceReadyTask(this.#establish(attempt, failure));
@@ -323,6 +330,15 @@ export class RuntimeHostSessionSubscriptionOwner {
       if (this.#closed || this.#readyTask !== task) return;
       this.#deps.terminalFailure(asError(error));
     });
+  }
+
+  async #drainPendingFrames(attempt: SubscriptionAttempt): Promise<void> {
+    while (attempt.pendingFrames.length > 0) {
+      const frame = attempt.pendingFrames.shift()!;
+      attempt.pendingFrameBytes -= Buffer.byteLength(JSON.stringify(frame), 'utf8');
+      await this.#deps.acceptFrame(frame);
+      if (attempt.failure) throw attempt.failure;
+    }
   }
 
   #assertOpen(): void {
