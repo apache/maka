@@ -6,7 +6,7 @@ use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::Security::{
-    CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, IsTokenRestricted,
+    CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, IsTokenRestricted, LUA_TOKEN,
     SecurityImpersonation, TOKEN_ALL_ACCESS, TOKEN_DUPLICATE, TOKEN_QUERY, TokenPrimary,
 };
 use windows_sys::Win32::System::JobObjects::{
@@ -97,7 +97,7 @@ unsafe fn create_restricted_token(primary: HANDLE) -> Result<HANDLE, String> {
     if unsafe {
         CreateRestrictedToken(
             primary,
-            DISABLE_MAX_PRIVILEGE,
+            DISABLE_MAX_PRIVILEGE | LUA_TOKEN,
             0,
             null(),
             0,
