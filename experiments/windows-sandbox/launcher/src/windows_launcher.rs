@@ -180,8 +180,8 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
     } else if unsafe { ResumeThread(process.hThread) } == u32::MAX {
         Err(last_error("ResumeThread"))
     } else {
-        let child_restricted = child_token_is_restricted(process.hProcess)?;
-        let child_in_job = child_process_is_in_job(process.hProcess)?;
+        let child_restricted = unsafe { child_token_is_restricted(process.hProcess) }?;
+        let child_in_job = unsafe { child_process_is_in_job(process.hProcess) }?;
         println!("{{\"restrictedToken\":{child_restricted},\"inJob\":{child_in_job}}}");
         let wait = unsafe { WaitForSingleObject(process.hProcess, 30_000) };
         if wait == WAIT_TIMEOUT {
