@@ -28,7 +28,7 @@ const COMPUTER_USE_WAKE_HOLD = 'computer-use';
 
 export interface DesktopNativeCapabilityAssemblyDeps {
   readonly isComputerUseRealModelE2e: boolean;
-  readonly locale: Pick<DesktopLocaleAuthority, 'current'>;
+  readonly locale: Pick<DesktopLocaleAuthority, 'current' | 'subscribe'>;
   readonly keepSystemAwake?: { hold(reason: string): void; release(reason: string): void };
   readonly mainWindow?: {
     windowBounds(): { x: number; y: number; width: number; height: number } | undefined;
@@ -57,6 +57,7 @@ export function assembleDesktopNativeCapabilities(
 
   const computerUseStatusItem = createComputerUseStatusItem({
     resolveLocale: () => deps.locale.current(),
+    subscribeLocaleChanges: (listener) => deps.locale.subscribe(listener),
     onLiveChanged: (live) => {
       if (live) deps.keepSystemAwake?.hold(COMPUTER_USE_WAKE_HOLD);
       else deps.keepSystemAwake?.release(COMPUTER_USE_WAKE_HOLD);

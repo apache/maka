@@ -15,6 +15,8 @@ export interface DesktopLocaleAuthority {
   resolve(): Promise<UiLocale>;
   /** Advances the synchronous projection from an already-read settings snapshot. */
   observe(settings: LocaleSettings): UiLocale;
+  /** Observes resolved-locale changes for already-materialized native presentation. */
+  subscribe(listener: (locale: UiLocale) => void): () => void;
 }
 
 /** One locale owner for post-settings Desktop main-process presentation. */
@@ -24,17 +26,36 @@ export function createDesktopLocaleAuthority(input: {
 }): DesktopLocaleAuthority {
   let preference: UiLocalePreference = 'auto';
   let observation = 0;
+  const listeners = new Set<(locale: UiLocale) => void>();
   const systemLocale = (): UiLocale =>
     resolveSystemUiLocale([...input.preferredSystemLanguages()]);
   const current = (): UiLocale => resolveUiLocale(preference, systemLocale());
+  let published = current();
+  const publish = (): UiLocale => {
+    const next = current();
+    if (next === published) return next;
+    published = next;
+    for (const listener of [...listeners]) {
+      try {
+        listener(next);
+      } catch {
+        // A native projection must not make a persisted settings update fail.
+      }
+    }
+    return next;
+  };
   const observe = (settings: LocaleSettings): UiLocale => {
     observation += 1;
     preference = settings.personalization.uiLocale;
-    return current();
+    return publish();
   };
   return Object.freeze({
     current,
     observe,
+    subscribe: (listener: (locale: UiLocale) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     resolve: async () => {
       const request = ++observation;
       try {
@@ -43,7 +64,7 @@ export function createDesktopLocaleAuthority(input: {
       } catch {
         // Locale presentation must not block startup or an unrelated native action.
       }
-      return current();
+      return publish();
     },
   });
 }

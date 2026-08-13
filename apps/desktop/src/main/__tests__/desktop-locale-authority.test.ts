@@ -19,6 +19,28 @@ test('resolves explicit preferences and observes a mid-session settings change',
   assert.equal(authority.current(), 'en');
 });
 
+test('publishes only resolved-locale changes and allows listeners to detach', () => {
+  const authority = createDesktopLocaleAuthority({
+    readSettings: async () => createDefaultSettings(),
+    preferredSystemLanguages: () => ['en-US'],
+  });
+  const observed: string[] = [];
+  const unsubscribe = authority.subscribe((locale) => observed.push(locale));
+
+  authority.observe(mergeSettings(createDefaultSettings(), {
+    personalization: { uiLocale: 'en' },
+  }));
+  authority.observe(mergeSettings(createDefaultSettings(), {
+    personalization: { uiLocale: 'zh' },
+  }));
+  unsubscribe();
+  authority.observe(mergeSettings(createDefaultSettings(), {
+    personalization: { uiLocale: 'en' },
+  }));
+
+  assert.deepEqual(observed, ['zh']);
+});
+
 test('keeps automatic preference live against the current system fallback', async () => {
   let languages: readonly string[] = ['en-US'];
   const authority = createDesktopLocaleAuthority({
@@ -40,6 +62,8 @@ test('does not let a stale read replace a newer observed preference', async () =
     readSettings: () => pending,
     preferredSystemLanguages: () => ['en-US'],
   });
+  const observed: string[] = [];
+  authority.subscribe((locale) => observed.push(locale));
 
   const read = authority.resolve();
   authority.observe(mergeSettings(createDefaultSettings(), {
@@ -49,6 +73,7 @@ test('does not let a stale read replace a newer observed preference', async () =
 
   assert.equal(await read, 'zh');
   assert.equal(authority.current(), 'zh');
+  assert.deepEqual(observed, ['zh']);
 });
 
 test('falls back to its current projection when settings cannot be read', async () => {
