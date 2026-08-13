@@ -113,6 +113,8 @@ export interface ConnectRuntimeHostInput {
    * waiting the real cadence; defaults to DEFAULT_LIVENESS_INTERVAL_MS (2s).
    */
   livenessIntervalMs?: number;
+  /** Timeout for each liveness probe response. Defaults to 2s. */
+  livenessTimeoutMs?: number;
   /**
    * Invoked after each liveness probe round-trips and validates its Host
    * Epoch. Test observability: lets a probe-crossing test prove probes
@@ -174,6 +176,7 @@ export interface ConnectRemoteRuntimeHostInput {
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
   readonly livenessIntervalMs?: number;
+  readonly livenessTimeoutMs?: number;
   readonly onLivenessProbe?: () => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
 }
@@ -377,6 +380,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   #inFlightDomainRequests = 0;
   #terminalError: Error | undefined;
   readonly #livenessIntervalMs: number;
+  readonly #livenessTimeoutMs: number;
   readonly #onLivenessProbe: (() => void) | undefined;
 
   constructor(
@@ -393,11 +397,13 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     // the other connect timeouts, before any transport work happens.
     options?: {
       livenessIntervalMs?: number;
+      livenessTimeoutMs?: number;
       onLivenessProbe?: () => void;
       connectionResource?: RuntimeHostConnectionResource;
     },
   ) {
     this.#livenessIntervalMs = options?.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS;
+    this.#livenessTimeoutMs = options?.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS;
     this.#onLivenessProbe = options?.onLivenessProbe;
     this.#transport = transport;
     this.rootId = accepted.rootId;
@@ -458,7 +464,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return this.#requestOperation(
       operation,
       input,
-      timeoutMs ?? (operation === 'host.status' ? DEFAULT_LIVENESS_TIMEOUT_MS : undefined),
+      timeoutMs ?? (operation === 'host.status' ? this.#livenessTimeoutMs : undefined),
       (result) => result,
       operation === 'host.status' ? 'connection' : 'request',
     );
@@ -938,7 +944,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     void this.#requestOperation(
       'host.status',
       {},
-      DEFAULT_LIVENESS_TIMEOUT_MS,
+      this.#livenessTimeoutMs,
       (status) => {
         if (status.hostEpoch !== this.hostEpoch) {
           throw new Error('Runtime Host returned status for a different Host Epoch');
@@ -1131,6 +1137,7 @@ export async function connectRemoteRuntimeHost(
         compositionId,
         expectedRootId,
         livenessIntervalMs: normalized.livenessIntervalMs,
+        livenessTimeoutMs: normalized.livenessTimeoutMs,
         onLivenessProbe: input.onLivenessProbe,
         connectionResource,
       });
@@ -1165,12 +1172,14 @@ function normalizeConnectRuntimeHostInput(
     | 'connectTimeoutMs'
     | 'handshakeTimeoutMs'
     | 'livenessIntervalMs'
+    | 'livenessTimeoutMs'
   >,
 ): {
   clientInstanceId: string;
   connectTimeoutMs: number;
   handshakeTimeoutMs: number;
   livenessIntervalMs: number;
+  livenessTimeoutMs: number;
 } {
   validateProtocolRange(input.protocol);
   return {
@@ -1186,6 +1195,10 @@ function normalizeConnectRuntimeHostInput(
     livenessIntervalMs: requireTimeout(
       input.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS,
       'livenessIntervalMs',
+    ),
+    livenessTimeoutMs: requireTimeout(
+      input.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS,
+      'livenessTimeoutMs',
     ),
   };
 }
@@ -1226,6 +1239,10 @@ export async function connectResolvedRuntimeHost(
   const livenessIntervalMs = requireTimeout(
     input.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS,
     'livenessIntervalMs',
+  );
+  const livenessTimeoutMs = requireTimeout(
+    input.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS,
+    'livenessTimeoutMs',
   );
   const compositionId = requireHostCompositionId(
     input.compositionId ?? INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -1312,6 +1329,7 @@ export async function connectResolvedRuntimeHost(
         : registration.compositionRevision,
       hostProtocol: { min: registration.protocolMin, max: registration.protocolMax },
       livenessIntervalMs,
+      livenessTimeoutMs,
       onLivenessProbe: input.onLivenessProbe,
     });
     if (result.kind === 'connected') {
@@ -1387,6 +1405,7 @@ interface ExchangeRuntimeHostHandshakeInput {
   readonly expectedRootId?: string;
   readonly expectedCompositionRevision?: string;
   readonly livenessIntervalMs?: number;
+  readonly livenessTimeoutMs?: number;
   readonly onLivenessProbe?: () => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
 }
@@ -1454,6 +1473,7 @@ async function exchangeRuntimeHostHandshake(
     kind: 'connected',
     connection: new RuntimeHostConnectionImpl(input.transport, handshake, {
       livenessIntervalMs: input.livenessIntervalMs,
+      livenessTimeoutMs: input.livenessTimeoutMs,
       onLivenessProbe: input.onLivenessProbe,
       connectionResource: input.connectionResource,
     }),

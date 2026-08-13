@@ -22,6 +22,10 @@ interface RunHostedExecutionDependencies {
 }
 
 const defaultDependencies: RunHostedExecutionDependencies = { connectOwnedRuntimeHost };
+const HEADLESS_LIVENESS = {
+  livenessIntervalMs: 10_000,
+  livenessTimeoutMs: 30_000,
+} as const;
 
 export async function runHostedExecution(
   input: RunHostedExecutionInput,
@@ -36,6 +40,8 @@ export async function runHostedExecutionWithDependencies(
   if (input.signal?.aborted) {
     return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
   }
+  const liveness =
+    input.execution.session.toolProfile === 'headless-coding-v1' ? HEADLESS_LIVENESS : {};
   const initial = await dependencies.connectOwnedRuntimeHost({
     rootPath: input.rootPath,
     surface: 'run',
@@ -44,6 +50,7 @@ export async function runHostedExecutionWithDependencies(
       max: RUNTIME_HOST_PROTOCOL_VERSION,
     },
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    ...liveness,
     ...(input.signal ? { signal: input.signal } : {}),
   });
   if (initial.kind !== 'connected') {
@@ -85,6 +92,7 @@ export async function runHostedExecutionWithDependencies(
             max: RUNTIME_HOST_PROTOCOL_VERSION,
           },
           compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+          ...liveness,
           ...(input.signal ? { signal: input.signal } : {}),
         });
         if (reconnected.kind !== 'connected') {
@@ -114,9 +122,8 @@ export async function runHostedExecutionWithDependencies(
     return projection;
   }
   const clean = await connected.host.settle(input.hostSettlementTimeoutMs ?? 15_000);
-  return clean
-    ? projection
-    : indeterminate(input.execution.executionId, 'Runtime Host did not exit cleanly');
+  if (clean || projection.kind === 'indeterminate') return projection;
+  return indeterminate(input.execution.executionId, 'Runtime Host did not exit cleanly');
 }
 
 async function executeHostedExecution(

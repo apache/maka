@@ -43,6 +43,8 @@ test('the headless coding profile freezes prompt, tools, memory, and foreground 
   ]);
   assert.equal(profile.memoryExtraction, false);
   assert.equal(profile.streamIdleTimeoutMs, 0);
+  assert.equal(profile.providerHeadersTimeoutMs, 0);
+  assert.equal(profile.providerBodyTimeoutMs, 0);
   assert.equal(
     profile.systemPrompt,
     [

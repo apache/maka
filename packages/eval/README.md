@@ -35,8 +35,11 @@ routing remains authoritative: DeepSeek Responses exposes `apply_patch` instead 
 `Edit`, and Runtime-owned `ArchiveRead` remains available for archived tool results. A real
 `hosted.execution.start` regression test pins SHA-256 hashes for the first main provider request's
 developer prompt and complete tool schema. The profile disables Runtime's product stream-idle
-watchdog after provider activity; benchmark-native subject timeouts remain the execution deadline,
-while the model stream connect timeout still rejects requests that never establish a response.
+watchdog and Undici's provider headers/body inactivity timers after provider activity;
+benchmark-native subject timeouts remain the execution deadline, while the model stream connect
+timeout still rejects requests that never establish a response. Hosted Eval clients also use a
+10-second liveness cadence with a 30-second response budget so a CPU-bound one-core task cannot
+starve the Runtime Host briefly enough to be mistaken for a dead connection.
 
 Every benchmark subject removes `WebSearch`, `WebFetch`, and `FetchURL` from the provider-visible
 tool list. Maka enforces that through its Hosted Execution profile; external harnesses pass through

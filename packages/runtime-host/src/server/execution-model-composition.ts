@@ -18,6 +18,7 @@ import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
+  type ProxiedFetchTransportOptions,
 } from '@maka/runtime/network/scoped-fetch-transport';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
@@ -55,7 +56,10 @@ export interface HostAiSdkBackendInput {
   readonly requestDrain: () => void;
   readonly runtimeCommitSink?: RuntimeCommitSink;
   readonly childAgents?: HostChildAgentBackendCapabilities;
-  readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
+  readonly createFetchTransport?: (
+    proxy: ProxiedFetchProxy | null,
+    options?: ProxiedFetchTransportOptions,
+  ) => ProxiedFetchTransport;
 }
 
 type HostExecutionRuntimePolicyAuthority = {
@@ -80,6 +84,7 @@ type HostExecutionUsageAuthority = {
 /** Builds one real provider backend from canonical Host state. */
 export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Promise<AiSdkBackend> {
   const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
+  const runProfile = hostedExecutionRunProfile(input.context.header.toolProfile);
   const target = await readDuringBackendCreation(
     () =>
       resolveExecutionTarget(
@@ -101,6 +106,12 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
   );
   const transport = createFetchTransport(
     toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
+    runProfile
+      ? {
+          headersTimeoutMs: runProfile.providerHeadersTimeoutMs,
+          bodyTimeoutMs: runProfile.providerBodyTimeoutMs,
+        }
+      : undefined,
   );
   let apiKey = target.apiKey;
   let modelFetch: typeof fetch = transport.fetch;
@@ -253,7 +264,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       })
     : undefined;
   const recordProviderRequestAttempt = input.context.recordProviderRequestAttempt ?? (() => {});
-  const runProfile = hostedExecutionRunProfile(input.context.header.toolProfile);
   const resolveRunPrompt = async (context: {
     readonly turnId: string;
     readonly runId?: string;

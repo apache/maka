@@ -43,6 +43,8 @@ export interface ConnectOrSpawnRuntimeHostInput {
   electionDeadlineMs?: number;
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
+  livenessIntervalMs?: number;
+  livenessTimeoutMs?: number;
   candidateEntrypoint: string | URL;
   signal?: AbortSignal;
 }
