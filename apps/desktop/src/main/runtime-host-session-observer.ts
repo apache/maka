@@ -474,8 +474,8 @@ export class RuntimeHostSessionObserver {
         onChange: (replica, change) =>
           this.#broadcastTranscriptChange(state, replica, change),
       },
-      commit: (subscription, recovered) =>
-        this.#commitSubscription(state, subscription, recovered),
+      prepareActivation: (subscription, recovered) =>
+        this.#prepareSubscriptionActivation(state, subscription, recovered),
       acceptFrame: (frame) => this.#acceptFrame(state, frame),
       recoveryStarted: (error) => {
         console.warn(
@@ -673,15 +673,16 @@ export class RuntimeHostSessionObserver {
     this.#publishSubscriptionFailure(state, error);
   }
 
-  async #commitSubscription(
+  async #prepareSubscriptionActivation(
     state: ObservedSessionState,
     subscription: PreparedSessionSubscription,
     recovered: boolean,
-  ): Promise<void> {
+  ): Promise<() => void> {
     if (state.closing || this.#states.get(state.sessionId) !== state) {
       throw new Error("Runtime Host Session observer closed before commit");
     }
     const previousSnapshot = state.snapshot;
+    const previousReplica = state.replica;
     const projector = new RuntimeHostSessionProjector(
       subscription.snapshot,
       subscription.replica.projectionSeed,
@@ -720,58 +721,67 @@ export class RuntimeHostSessionObserver {
       ? !sameGoal(previousSnapshot.goal, subscription.snapshot.goal)
       : false;
 
-    state.snapshot = structuredClone(subscription.snapshot);
-    const previousReplica = state.replica;
-    state.replica = subscription.replica;
-    state.projector = projector;
-    previousReplica?.close();
-    this.#resetTranscriptConsumers(state, subscription.replica);
-    this.#touchReplica(state);
+    return () => {
+      if (
+        state.closing ||
+        this.#states.get(state.sessionId) !== state ||
+        state.snapshot !== previousSnapshot ||
+        state.replica !== previousReplica
+      ) {
+        throw new Error('Runtime Host Session observer changed before activation');
+      }
+      state.snapshot = structuredClone(subscription.snapshot);
+      state.replica = subscription.replica;
+      state.projector = projector;
+      previousReplica?.close();
+      this.#resetTranscriptConsumers(state, subscription.replica);
+      this.#touchReplica(state);
 
-    if (replacement) {
-      for (const event of replacement.terminalEvents) {
-        this.#broadcast(state.sessionId, event);
+      if (replacement) {
+        for (const event of replacement.terminalEvents) {
+          this.#broadcast(state.sessionId, event);
+        }
+        for (const event of replacement.activeEvents) {
+          this.#broadcast(state.sessionId, event);
+        }
+        for (const group of state.targets.values()) group.seeded = true;
+        for (const turnId of replacement.terminalTurnIds) {
+          this.#finishWatchedTurn(state, turnId, "completed");
+          this.#emitSessionsChanged("turn-status-change", state.sessionId, {
+            turnId,
+          });
+          this.#emitSessionsChanged("message-appended", state.sessionId, {
+            turnId,
+          });
+        }
+        this.#emitActiveInteractions(state);
+        if (goalChanged) {
+          this.#emitSessionsChanged("goal-change", state.sessionId);
+        }
+        const root = state.snapshot.rootTurn;
+        this.#emitSessionsChanged(
+          "status-change",
+          state.sessionId,
+          root ? { turnId: root.turnId } : undefined,
+        );
+        if (root && !replacement.terminalTurnIds.has(root.turnId)) {
+          this.#emitSessionsChanged("message-appended", state.sessionId, {
+            turnId: root.turnId,
+          });
+        }
+      } else {
+        for (const group of state.targets.values()) this.#seedTarget(state, group);
       }
-      for (const event of replacement.activeEvents) {
-        this.#broadcast(state.sessionId, event);
-      }
-      for (const group of state.targets.values()) group.seeded = true;
-      for (const turnId of replacement.terminalTurnIds) {
-        this.#finishWatchedTurn(state, turnId, "completed");
-        this.#emitSessionsChanged("turn-status-change", state.sessionId, {
-          turnId,
-        });
-        this.#emitSessionsChanged("message-appended", state.sessionId, {
-          turnId,
-        });
-      }
-      this.#emitActiveInteractions(state);
-      if (goalChanged) {
-        this.#emitSessionsChanged("goal-change", state.sessionId);
-      }
-      const root = state.snapshot.rootTurn;
-      this.#emitSessionsChanged(
-        "status-change",
-        state.sessionId,
-        root ? { turnId: root.turnId } : undefined,
+
+      this.#finishPersistedWatchedTurns(
+        state,
+        projector,
+        subscription.replica,
+        recordedTurns,
       );
-      if (root && !replacement.terminalTurnIds.has(root.turnId)) {
-        this.#emitSessionsChanged("message-appended", state.sessionId, {
-          turnId: root.turnId,
-        });
-      }
-    } else {
-      for (const group of state.targets.values()) this.#seedTarget(state, group);
-    }
 
-    this.#finishPersistedWatchedTurns(
-      state,
-      projector,
-      subscription.replica,
-      recordedTurns,
-    );
-
-    if (recovered) this.#emitSubscriptionRecovered(state.sessionId);
+      if (recovered) this.#emitSubscriptionRecovered(state.sessionId);
+    };
   }
 
   #emitActiveInteractions(state: ObservedSessionState): void {
@@ -946,34 +956,43 @@ export class RuntimeHostSessionObserver {
     replica: DesktopTranscriptReplica,
     change: DesktopTranscriptReplicaChange,
   ): void {
-    const batches = encodeDesktopTranscriptChange(
-      {
-        sessionId: replica.sessionId,
-        generation: replica.generation,
-        hostEpoch: replica.hostEpoch,
-      },
-      change,
+    this.#broadcastTranscriptBatches(
+      state,
+      encodeDesktopTranscriptChange(
+        {
+          sessionId: replica.sessionId,
+          generation: replica.generation,
+          hostEpoch: replica.hostEpoch,
+        },
+        change,
+      ),
     );
-    for (const consumer of [...state.transcriptConsumers.values()]) {
-      try {
-        this.#sendTranscriptBatches(consumer, batches);
-      } catch {
-        this.#detachTranscriptConsumer(state, consumer);
-      }
-    }
   }
 
   #resetTranscriptConsumers(
     state: ObservedSessionState,
     replica: DesktopTranscriptReplica,
   ): void {
-    const batches = encodeDesktopTranscriptSnapshot(replica.snapshot());
     for (const consumer of [...state.transcriptConsumers.values()]) {
       consumer.generation = replica.generation;
-      try {
-        this.#sendTranscriptBatches(consumer, batches);
-      } catch {
-        this.#detachTranscriptConsumer(state, consumer);
+    }
+    this.#broadcastTranscriptBatches(
+      state,
+      encodeDesktopTranscriptSnapshot(replica.snapshot()),
+    );
+  }
+
+  #broadcastTranscriptBatches(
+    state: ObservedSessionState,
+    batches: Iterable<DesktopTranscriptBatch>,
+  ): void {
+    for (const batch of batches) {
+      for (const consumer of [...state.transcriptConsumers.values()]) {
+        try {
+          consumer.target.send(transcriptChannel(consumer.consumerId), batch);
+        } catch {
+          this.#detachTranscriptConsumer(state, consumer);
+        }
       }
     }
   }

@@ -29,7 +29,10 @@ export interface RuntimeHostSessionSubscriptionOwnerDeps {
   readonly sessionId: string;
   readonly now: () => number;
   readonly transcriptReplicaOptions?: DesktopTranscriptReplicaOptions;
-  commit(subscription: PreparedSessionSubscription, recovered: boolean): void | Promise<void>;
+  prepareActivation(
+    subscription: PreparedSessionSubscription,
+    recovered: boolean,
+  ): Promise<() => void>;
   acceptFrame(frame: SubscriptionFrame): void | Promise<void>;
   recoveryStarted(error: Error): void;
   recoveryCompleted(error: Error): void;
@@ -110,6 +113,7 @@ export class RuntimeHostSessionSubscriptionOwner {
   async #refresh(): Promise<void> {
     await this.waitUntilReady();
     this.#assertOpen();
+    const readyTask = this.#readyTask;
     const previous = this.#attempt;
     if (!previous) throw ownerClosed();
     let attempt: SubscriptionAttempt | undefined;
@@ -118,11 +122,12 @@ export class RuntimeHostSessionSubscriptionOwner {
       attempt = prepared.attempt;
       if (attempt.failure) throw attempt.failure;
       previous.phase = 'retiring';
-      await this.#deps.commit(prepared.prepared, false);
+      const activate = await this.#prepareActivation(attempt, prepared.prepared, false);
       if (attempt.failure) throw attempt.failure;
       if (this.#closed || this.#candidate !== attempt || this.#attempt !== previous) {
         throw ownerClosed();
       }
+      activate();
       this.#candidate = undefined;
       this.#attempt = attempt;
       previous.replica?.close();
@@ -154,6 +159,10 @@ export class RuntimeHostSessionSubscriptionOwner {
           await this.waitUntilReady();
           return;
         }
+      }
+      if (this.#readyTask !== readyTask) {
+        await this.waitUntilReady();
+        if (this.#attempt?.replica?.resident) return;
       }
       throw failure;
     }
@@ -194,9 +203,14 @@ export class RuntimeHostSessionSubscriptionOwner {
 
       try {
         if (attempt.failure) throw attempt.failure;
-        await this.#deps.commit(prepared, recoveryError !== undefined);
+        const activate = await this.#prepareActivation(
+          attempt,
+          prepared,
+          recoveryError !== undefined,
+        );
         if (attempt.failure) throw attempt.failure;
         if (this.#closed || this.#candidate !== attempt) throw ownerClosed();
+        activate();
         this.#candidate = undefined;
         this.#attempt = attempt;
         await this.#drainPendingFrames(attempt);
@@ -282,6 +296,22 @@ export class RuntimeHostSessionSubscriptionOwner {
       await handle.close().catch(() => undefined);
       throw error;
     }
+  }
+
+  async #prepareActivation(
+    attempt: SubscriptionAttempt,
+    subscription: PreparedSessionSubscription,
+    recovered: boolean,
+  ): Promise<() => void> {
+    const result = await Promise.race([
+      this.#deps.prepareActivation(subscription, recovered).then(
+        (activate) => ({ kind: 'ready' as const, activate }),
+        (error: unknown) => ({ kind: 'failure' as const, error: asError(error) }),
+      ),
+      attempt.failed.then((error) => ({ kind: 'failure' as const, error })),
+    ]);
+    if (result.kind === 'failure') throw result.error;
+    return result.activate;
   }
 
   async #pump(attempt: SubscriptionAttempt): Promise<void> {

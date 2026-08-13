@@ -471,7 +471,7 @@ test('cancels a transcript consumer while its replica is still preparing', async
   await observer.close();
 });
 
-test('advances the read marker when the visible durable tail advances', async () => {
+test('broadcasts transcript changes to every consumer and advances the read marker', async () => {
   const events = new AsyncFrameQueue();
   const markers: string[] = [];
   const message: StoredMessage = {
@@ -514,13 +514,19 @@ test('advances the read marker when the visible durable tail advances', async ()
     },
     emitSessionsChanged() {},
   });
-  const target: RuntimeHostTranscriptTarget = {
-    id: 19,
-    send() {},
-    once() {},
-    off() {},
-  };
-  await observer.openTranscript('session-1', 'consumer-1', target);
+  const transcriptBatches: DesktopTranscriptBatch[][] = [[], []];
+  for (const [index, batches] of transcriptBatches.entries()) {
+    await observer.openTranscript('session-1', `consumer-${index}`, {
+      id: 19 + index,
+      send(_channel, batch) {
+        batches.push(batch);
+      },
+      once() {},
+      off() {},
+    });
+    batches.splice(0);
+  }
+  markers.splice(0);
   events.push({
     kind: 'subscription.transcript_advanced',
     hostEpoch: 'host-1',
@@ -529,9 +535,12 @@ test('advances the read marker when the visible durable tail advances', async ()
     sequence: 1,
     throughSequence: 0,
   });
-  await waitFor(() => markers.length === 1);
+  await waitFor(() =>
+    markers.length === 1 && transcriptBatches.every((batches) => batches.length > 0),
+  );
 
   assert.deepEqual(markers, ['assistant-1']);
+  assert.deepEqual(transcriptBatches[1], transcriptBatches[0]);
   await observer.close();
 });
 
@@ -926,12 +935,15 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
   await observer.close();
 });
 
-test('keeps the active subscription when a cold replica refresh fails', async () => {
+test('does not activate a refresh candidate that fails during commit preparation', async () => {
   const firstEvents = new AsyncFrameQueue();
-  let opens = 0;
-  let firstCloses = 0;
-  let secondCloses = 0;
+  const secondEvents = new AsyncFrameQueue();
+  const activation = deferred<() => void>();
   const accepted: SubscriptionFrame[] = [];
+  let opens = 0;
+  let preparations = 0;
+  let activated = false;
+  let firstCloses = 0;
   const owner = new RuntimeHostSessionSubscriptionOwner({
     client: {
       openSession: async () => {
@@ -939,22 +951,22 @@ test('keeps the active subscription when a cold replica refresh fails', async ()
         const first = opens === 1;
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          transcript: first ? Promise.resolve([]) : Promise.reject(new Error('refresh failed')),
-          events: first ? firstEvents : new AsyncFrameQueue(),
+          transcript: Promise.resolve([]),
+          events: first ? firstEvents : secondEvents,
           async close() {
-            if (first) {
-              firstCloses += 1;
-              firstEvents.end();
-            } else {
-              secondCloses += 1;
-            }
+            if (first) firstCloses += 1;
+            (first ? firstEvents : secondEvents).end();
           },
         });
       },
     },
     sessionId: 'session-1',
     now: () => 0,
-    commit() {},
+    async prepareActivation() {
+      preparations += 1;
+      if (preparations === 1) return () => undefined;
+      return activation.promise;
+    },
     acceptFrame: (frame) => {
       accepted.push(frame);
     },
@@ -968,14 +980,84 @@ test('keeps the active subscription when a cold replica refresh fails', async ()
   owner.start();
   await owner.waitUntilReady();
 
-  await assert.rejects(() => owner.refresh(), /refresh failed/);
+  const refresh = owner.refresh();
+  await waitFor(() => preparations === 2);
+  secondEvents.push({
+    kind: 'subscription.closed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-2',
+    sequence: 1,
+    reason: 'slow_consumer',
+  });
+  await assert.rejects(refresh, /slow consumer/);
+  activation.resolve(() => {
+    activated = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(activated, false);
   assert.equal(firstCloses, 0);
-  assert.equal(secondCloses, 1);
   firstEvents.push(deltaFrame(1, 0, 'still live'));
   await waitFor(() => accepted.length === 1);
-
   await owner.close();
-  assert.equal(firstCloses, 1);
+});
+
+test('lets an active recovery supersede a concurrent cold refresh', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const candidateEvents = new AsyncFrameQueue();
+  const recoveredEvents = new AsyncFrameQueue();
+  const candidateTranscript = deferred<StoredMessage[]>();
+  const accepted: SubscriptionFrame[] = [];
+  let opens = 0;
+  const owner = new RuntimeHostSessionSubscriptionOwner({
+    client: {
+      openSession: async () => {
+        opens += 1;
+        const events =
+          opens === 1 ? firstEvents : opens === 2 ? candidateEvents : recoveredEvents;
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: opens === 2 ? candidateTranscript.promise : Promise.resolve([]),
+          events,
+          async close() {
+            events.end();
+          },
+        });
+      },
+    },
+    sessionId: 'session-1',
+    now: () => 0,
+    async prepareActivation() {
+      return () => undefined;
+    },
+    acceptFrame: (frame) => {
+      accepted.push(frame);
+    },
+    recoveryStarted() {},
+    recoveryCompleted() {},
+    recoveryFailed() {},
+    terminalFailure(error) {
+      throw error;
+    },
+  });
+  owner.start();
+  await owner.waitUntilReady();
+
+  const refresh = owner.refresh();
+  await waitFor(() => opens === 2);
+  firstEvents.push({
+    kind: 'subscription.closed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    reason: 'slow_consumer',
+  });
+  await refresh;
+
+  assert.equal(opens, 3);
+  recoveredEvents.push(deltaFrame(1, 0, 'recovered'));
+  await waitFor(() => accepted.length === 1);
+  await owner.close();
 });
 
 test("retries an initial subscription closed before commit and resyncs once", async () => {
