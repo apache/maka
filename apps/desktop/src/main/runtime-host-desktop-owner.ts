@@ -12,6 +12,7 @@ import {
   type RuntimeHostSshInteraction,
 } from '@maka/runtime-host/client';
 import type { HostRegistration } from '@maka/runtime-host/protocol';
+import type { DesktopSessionRef } from '../preload/runtime-host-identity.js';
 import {
   startDesktopRuntimeHostCandidate,
   type DesktopRuntimeHostCandidate,
@@ -24,7 +25,7 @@ import { RuntimeHostSessionObservationRegistry } from './runtime-host-session-ob
 export interface RuntimeHostDesktopOwner {
   current(): RuntimeHostDesktopTargetSnapshot | undefined;
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
-  stopSession(sessionId: string): Promise<void>;
+  stopSession(ref: DesktopSessionRef): Promise<void>;
   switchTarget(
     remote: DesktopRuntimeHostCandidateStartInput['remote'],
   ): Promise<void>;
@@ -204,10 +205,14 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     };
   }
 
-  async stopSession(sessionId: string): Promise<void> {
-    await this.#switchTail;
-    const candidate = await this.#waitForReadyCandidate();
-    await candidate.stopSession(sessionId);
+  stopSession(ref: DesktopSessionRef): Promise<void> {
+    const operation = this.#switchTail.then(async () => {
+      const candidate = await this.#waitForReadyCandidate();
+      if (candidate.client.hostId !== ref.hostId) return;
+      await candidate.stopSession(ref.sessionId);
+    });
+    this.#switchTail = operation.catch(() => undefined);
+    return operation;
   }
 
   switchTarget(

@@ -101,7 +101,6 @@ export function createDesktopRuntimeHostProfileService(input: {
     readonly error: Error;
   };
   readonly getActiveTarget: () => ResolvedRuntimeHostProfile | undefined;
-  readonly getActiveHostId: () => string | undefined;
   readonly getRuntimeHostReadiness: () =>
     | "connecting"
     | "ready"
@@ -130,7 +129,6 @@ export function createDesktopRuntimeHostProfileService(input: {
     knownActiveProfileId?: string,
   ): Promise<DesktopRuntimeHostProfileSnapshot> => {
     const activeTarget = input.getActiveTarget();
-    const activeHostId = input.getActiveHostId();
     const currentDocument = document ?? await catalog.read();
     const remoteProfiles = [...currentDocument.profiles];
     const activeProfileId = knownActiveProfileId ?? (activeTarget && await catalog
@@ -145,7 +143,6 @@ export function createDesktopRuntimeHostProfileService(input: {
       profiles: [LOCAL_RUNTIME_HOST_PROFILE, ...remoteProfiles],
       selectedProfileId,
       runtimeHostReadiness: input.getRuntimeHostReadiness(),
-      ...(activeHostId ? { activeHostId } : {}),
       ...(activeTarget ? { activeProfile: activeTarget.profile } : {}),
       ...(activeProfileId ? { activeProfileId } : {}),
       ...(unavailable?.profileId === selectedProfileId

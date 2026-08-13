@@ -154,9 +154,13 @@ type LocalMemoryMutationResult =
 let activeRuntimeHostId: string | undefined;
 let activeRuntimeHostGeneration = 0;
 
+type RuntimeHostProfileWireEvent = DesktopRuntimeHostProfileChangedEvent & {
+  readonly hostId?: string;
+};
+
 ipcRenderer.on(
   'runtime-host-profiles:changed',
-  (_event, change: DesktopRuntimeHostProfileChangedEvent) => {
+  (_event, change: RuntimeHostProfileWireEvent) => {
     if (change.targetChanged || change.hostId) activeRuntimeHostGeneration += 1;
     if (change.targetChanged) activeRuntimeHostId = undefined;
     if (change.hostId) activeRuntimeHostId = change.hostId;
@@ -166,12 +170,12 @@ ipcRenderer.on(
 async function activeRuntimeHostRef(): Promise<DesktopHostRef> {
   while (!activeRuntimeHostId) {
     const generation = activeRuntimeHostGeneration;
-    const snapshot = await ipcRenderer.invoke('runtime-host-profiles:getSnapshot');
+    const snapshot = await ipcRenderer.invoke('runtime-host:activeIdentity');
     if (generation !== activeRuntimeHostGeneration) continue;
     if (!snapshot || typeof snapshot !== 'object') {
       throw new Error('Desktop Runtime Host identity is unavailable');
     }
-    const hostId = (snapshot as { activeHostId?: unknown }).activeHostId;
+    const hostId = (snapshot as { hostId?: unknown }).hostId;
     if (typeof hostId !== 'string' || !hostId) {
       throw new Error('Desktop Runtime Host identity is unavailable');
     }
@@ -449,18 +453,8 @@ async function bridgeResult<T>(operation: () => Promise<T>, code: string): Promi
 const makaBridge = {
   runtimeHost,
   runtimeHostProfiles: {
-    async getSnapshot() {
-      const generation = activeRuntimeHostGeneration;
-      const snapshot = await ipcRenderer.invoke('runtime-host-profiles:getSnapshot');
-      if (
-        generation === activeRuntimeHostGeneration &&
-        snapshot &&
-        typeof snapshot === 'object' &&
-        typeof (snapshot as { activeHostId?: unknown }).activeHostId === 'string'
-      ) {
-        activeRuntimeHostId = (snapshot as { activeHostId: string }).activeHostId;
-      }
-      return snapshot;
+    getSnapshot() {
+      return ipcRenderer.invoke('runtime-host-profiles:getSnapshot');
     },
     addAndSelect(input: DesktopRuntimeHostProfileAddInput) {
       return ipcRenderer.invoke('runtime-host-profiles:add-and-select', input);
@@ -474,8 +468,11 @@ const makaBridge = {
     subscribeChanges(handler: (event: DesktopRuntimeHostProfileChangedEvent) => void) {
       const listener = (
         _event: Electron.IpcRendererEvent,
-        payload: DesktopRuntimeHostProfileChangedEvent,
-      ) => handler(payload);
+        payload: RuntimeHostProfileWireEvent,
+      ) => {
+        const { hostId: _hostId, ...change } = payload;
+        handler(change);
+      };
       ipcRenderer.on('runtime-host-profiles:changed', listener);
       return () => ipcRenderer.off('runtime-host-profiles:changed', listener);
     },

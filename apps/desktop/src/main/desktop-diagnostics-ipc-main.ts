@@ -17,9 +17,14 @@ export interface DesktopDiagnosticsIpcDeps {
   readonly ipcMain: Pick<IpcMain, 'handle'>;
   readonly environment: () => DesktopDiagnosticEnvironment;
   readonly mainLogs: () => readonly string[];
-  readonly getActiveHostId: () => string | undefined;
-  readonly getRuntimeHostDiagnostics: () => Promise<HostDiagnosticsResult>;
-  readonly getRuntimeHostTurnTrace: (sessionId: string, turnId: string) => Promise<TurnTrace | undefined>;
+  readonly resolveRuntimeHost: (hostId: string) =>
+    {
+      readonly getDiagnostics: () => Promise<HostDiagnosticsResult>;
+      readonly getTurnTrace: (
+        sessionId: string,
+        turnId: string,
+      ) => Promise<TurnTrace | undefined>;
+    };
   readonly writeClipboard: (value: string) => void;
 }
 
@@ -27,13 +32,12 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
   deps.ipcMain.handle(
     'diagnostics:copyErrorReport',
     async (_event, scope: unknown, rawInput: unknown): Promise<DesktopDiagnosticCopyResult> => {
-      const hostId = deps.getActiveHostId();
-      if (!hostId) throw new Error('Desktop Runtime Host identity is unavailable');
-      requireDesktopHostRef(scope, hostId);
+      const { hostId } = requireDesktopHostRef(scope);
+      const runtime = deps.resolveRuntimeHost(hostId);
       const input = parseDesktopErrorDiagnosticInput(rawInput);
       let runtimeHost: RuntimeHostDiagnosticRead;
       try {
-        runtimeHost = { ok: true, value: await deps.getRuntimeHostDiagnostics() };
+        runtimeHost = { ok: true, value: await runtime.getDiagnostics() };
       } catch (error) {
         runtimeHost = {
           ok: false,
@@ -46,7 +50,7 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
       let runtimeExecution: RuntimeHostExecutionDiagnosticRead | undefined;
       if (input.execution) {
         try {
-          const turn = await deps.getRuntimeHostTurnTrace(
+          const turn = await runtime.getTurnTrace(
             input.execution.sessionId,
             input.execution.turnId,
           );

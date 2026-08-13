@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IpcMain } from 'electron';
-import { registerDesktopDiagnosticsIpc } from '../desktop-diagnostics-ipc-main.js';
+import {
+  registerDesktopDiagnosticsIpc,
+  type DesktopDiagnosticsIpcDeps,
+} from '../desktop-diagnostics-ipc-main.js';
 import {
   formatDesktopErrorDiagnosticReport,
   parseDesktopErrorDiagnosticInput,
@@ -95,11 +98,12 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
     },
     environment: () => environment,
     mainLogs: () => ['main remained available'],
-    getActiveHostId: () => 'test-host',
-    getRuntimeHostDiagnostics: async () => {
-      throw new Error('Runtime Host disconnected');
-    },
-    getRuntimeHostTurnTrace: async () => undefined,
+    resolveRuntimeHost: () => ({
+      getDiagnostics: async () => {
+        throw new Error('Runtime Host disconnected');
+      },
+      getTurnTrace: async () => undefined,
+    }),
     writeClipboard: (value) => {
       clipboard = value;
     },
@@ -122,17 +126,9 @@ test('copies bounded evidence for the exact failed Turn', async () => {
   type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
   const handlers = new Map<string, IpcHandler>();
   let clipboard = '';
-  registerDesktopDiagnosticsIpc({
-    ipcMain: {
-      handle(channel, handler) {
-        handlers.set(channel, handler);
-      },
-    },
-    environment: () => environment,
-    mainLogs: () => [],
-    getActiveHostId: () => 'test-host',
-    getRuntimeHostDiagnostics: async () => runtimeHostDiagnostics,
-    getRuntimeHostTurnTrace: async (sessionId, turnId) => {
+  const runtime: ReturnType<DesktopDiagnosticsIpcDeps['resolveRuntimeHost']> = {
+    getDiagnostics: async () => runtimeHostDiagnostics,
+    getTurnTrace: async (sessionId: string, turnId: string) => {
       assert.equal(sessionId, 'session-1');
       assert.equal(turnId, 'turn-1');
       return {
@@ -194,6 +190,16 @@ test('copies bounded evidence for the exact failed Turn', async () => {
         },
       };
     },
+  };
+  registerDesktopDiagnosticsIpc({
+    ipcMain: {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    environment: () => environment,
+    mainLogs: () => [],
+    resolveRuntimeHost: () => runtime,
     writeClipboard: (value) => {
       clipboard = value;
     },
@@ -214,4 +220,60 @@ test('copies bounded evidence for the exact failed Turn', async () => {
   assert.deepEqual(result, { ok: true });
   assert.match(clipboard, /Runtime Host execution[\s\S]*Run: run-1/);
   assert.match(clipboard, /Failure message: No endpoints accepted the request/);
+});
+
+test('keeps every diagnostic read bound to the scoped Host during a switch', async () => {
+  type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
+  const handlers = new Map<string, IpcHandler>();
+  let activeHostId = 'host-a';
+  let releaseDiagnostics!: () => void;
+  const diagnosticsGate = new Promise<void>((resolve) => {
+    releaseDiagnostics = resolve;
+  });
+  const traceReads: string[] = [];
+  registerDesktopDiagnosticsIpc({
+    ipcMain: {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    environment: () => environment,
+    mainLogs: () => [],
+    resolveRuntimeHost: (hostId) => {
+      assert.equal(hostId, activeHostId);
+      const boundHostId = activeHostId;
+      return {
+        getDiagnostics: async () => {
+          await diagnosticsGate;
+          return runtimeHostDiagnostics;
+        },
+        getTurnTrace: async () => {
+          traceReads.push(boundHostId);
+          return undefined;
+        },
+      };
+    },
+    writeClipboard() {},
+  });
+
+  const handler = handlers.get('diagnostics:copyErrorReport');
+  assert.ok(handler);
+  const copying = handler(
+    {} as never,
+    { hostId: 'host-a' },
+    {
+      surface: 'toast',
+      title: 'Conversation error',
+      execution: {
+        sessionId: 'shared-session',
+        turnId: 'shared-turn',
+        eventId: 'shared-event',
+      },
+    },
+  );
+  activeHostId = 'host-b';
+  releaseDiagnostics();
+
+  assert.deepEqual(await copying, { ok: true });
+  assert.deepEqual(traceReads, ['host-a']);
 });

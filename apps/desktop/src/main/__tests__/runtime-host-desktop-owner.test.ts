@@ -50,7 +50,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
 
   first.disconnect();
   const botMessage = owner.handleBotIncomingMessage({ text: 'hello' } as BotIncomingMessage);
-  const stop = owner.stopSession('session-1');
+  const stop = owner.stopSession({ hostId: 'test-host', sessionId: 'session-1' });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(starts, 1);
   assert.equal(first.botMessages, 0);
@@ -164,6 +164,36 @@ test('switches Runtime Host targets without replacing the Desktop owner', async 
   assert.equal(starts[1]?.isTargetActive?.(), true);
   assert.deepEqual(activations.map(({ profileId }) => profileId), ["local", "office"]);
   assert.notEqual(activations[0]?.epoch, activations[1]?.epoch);
+  await owner.close();
+});
+
+test('does not apply an old Host resource stop after a target switch', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });
+  let releaseRemote!: () => void;
+  const remoteGate = new Promise<void>((resolve) => {
+    releaseRemote = resolve;
+  });
+  let starts = 0;
+  const owner = await startRuntimeHostDesktopOwner(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        await remoteGate;
+        return ready(remote.candidate);
+      },
+    },
+  );
+
+  const switching = owner.switchTarget(remoteTarget('office'));
+  const stopping = owner.stopSession({ hostId: 'host-a', sessionId: 'shared-session' });
+  releaseRemote();
+  await Promise.all([switching, stopping]);
+
+  assert.deepEqual(local.stoppedSessions, []);
+  assert.deepEqual(remote.stoppedSessions, []);
   await owner.close();
 });
 
@@ -482,6 +512,7 @@ function candidateHarness(
     disconnectOnPrepare?: boolean;
     activeTasks?: boolean;
     lifecycleMode?: 'ephemeral' | 'service' | 'remote';
+    hostId?: string;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -498,7 +529,7 @@ function candidateHarness(
     closed,
     hostLifecycleMode: options.lifecycleMode ?? 'ephemeral',
     client: {
-      hostId: 'test-host',
+      hostId: options.hostId ?? 'test-host',
       get lifecycleState() {
         return lifecycleState;
       },

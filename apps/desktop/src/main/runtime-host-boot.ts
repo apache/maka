@@ -305,7 +305,6 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   clientDataRoot: userDataDir,
   selectedProfileId: startupRuntimeHostProfileId,
   getActiveTarget: currentRuntimeHost,
-  getActiveHostId: () => owner?.current()?.hostId,
   getRuntimeHostReadiness: () => runtimeHostReadiness,
   activate: async (target) => {
     try {
@@ -686,9 +685,8 @@ async function handleRemoteRuntimeHostFailure(error: unknown): Promise<never> {
 
 const stopComputerUseSession = (sessionId: string): void => {
   const ref = parseDesktopSessionResourceKey(sessionId);
-  if (owner?.current()?.hostId !== ref.hostId) return;
   void owner
-    .stopSession(ref.sessionId)
+    ?.stopSession(ref)
     .catch((error) => console.error("[runtime-host] stop failed:", error));
 };
 native.computerUsePip.setStopHandler(stopComputerUseSession);
@@ -1049,6 +1047,11 @@ function requireScheduledTaskEffectString(value: unknown, label: string): string
 
 function registerPersistentClientIpc(): void {
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
+  ipcMain.handle("runtime-host:activeIdentity", () => {
+    const hostId = owner?.current()?.hostId;
+    if (!hostId) throw new Error("Desktop Runtime Host identity is unavailable");
+    return { hostId };
+  });
   registerDesktopDiagnosticsIpc({
     ipcMain,
     environment: () => ({
@@ -1067,18 +1070,7 @@ function registerPersistentClientIpc(): void {
       processUptimeSeconds: process.uptime(),
     }),
     mainLogs: () => mainProcessLogBuffer.snapshot(),
-    getActiveHostId: () => owner?.current()?.hostId,
-    getRuntimeHostDiagnostics: async () => {
-      return requireActiveRuntimePolicyTarget().client.queryHostDiagnostics();
-    },
-    getRuntimeHostTurnTrace: async (sessionId, turnId) => {
-      const result = await requireActiveRuntimePolicyTarget().client.request('execution.inspect.query', {
-        kind: "turn_trace",
-        sessionId,
-        turnId,
-      });
-      return result.kind === "turn_trace" ? result.turn : undefined;
-    },
+    resolveRuntimeHost: resolveRuntimeHostDiagnostics,
     writeClipboard: (report) => clipboard.writeText(report),
   });
   ipcMain.handle("attachments:pickFiles", async (event) => {
@@ -1117,10 +1109,23 @@ function requireRuntimePolicyTarget(target: DesktopRuntimeHostTargetPolicy) {
   return current;
 }
 
-function requireActiveRuntimePolicyTarget() {
+function resolveRuntimeHostDiagnostics(hostId: string) {
   const current = runtimePolicyTarget;
-  if (!current?.isActive()) throw new Error("Runtime Host is unavailable");
-  return current;
+  if (!current?.isActive() || current.client.hostId !== hostId) {
+    throw new Error("Desktop Runtime Host request belongs to a different Host");
+  }
+  const client = current.client;
+  return {
+    getDiagnostics: () => client.queryHostDiagnostics(),
+    getTurnTrace: async (sessionId: string, turnId: string) => {
+      const result = await client.request('execution.inspect.query', {
+        kind: "turn_trace",
+        sessionId,
+        turnId,
+      });
+      return result.kind === "turn_trace" ? result.turn : undefined;
+    },
+  };
 }
 
 function sendActiveRuntimeHostEvent(channel: string, ...args: unknown[]): void {
