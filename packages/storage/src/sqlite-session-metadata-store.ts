@@ -2473,16 +2473,24 @@ export class SqliteSessionMetadataStore {
   ): Promise<number> {
     this.assertOpen();
     const sessionIds = [...new Set(request.rootSessionIds)];
+    const graphIds = request.graphIds ? [...new Set(request.graphIds)] : undefined;
     sessionIds.forEach(assertSafeSessionId);
+    graphIds?.forEach((graphId) => assertGraphLookupIdentity(graphId, 'graph id'));
     if (!request.reason.trim() || request.reason.length > 4_000) {
       throw new Error(
         'Agent graph supervisor wake supersession reason must be non-empty and bounded',
       );
     }
-    if (sessionIds.length === 0) return 0;
+    if (sessionIds.length === 0 || graphIds?.length === 0) return 0;
     return this.transaction(() => {
       const now = this.now();
       const placeholders = sessionIds.map(() => '?').join(', ');
+      const graphFilter = graphIds
+        ? `AND wakes.graph_id IN (${graphIds.map(() => '?').join(', ')})`
+        : '';
+      const wakeGraphFilter = graphIds
+        ? `AND graph_id IN (${graphIds.map(() => '?').join(', ')})`
+        : '';
       this.db
         .prepare(
           `
@@ -2495,20 +2503,22 @@ export class SqliteSessionMetadataStore {
               WHERE wakes.graph_id = agent_graph_supervisor_wake_attempts.graph_id
                 AND wakes.wake_id = agent_graph_supervisor_wake_attempts.wake_id
                 AND wakes.root_session_id IN (${placeholders})
+                ${graphFilter}
             )
         `,
         )
-        .run(request.reason, now, ...sessionIds);
+        .run(request.reason, now, ...sessionIds, ...(graphIds ?? []));
       const updated = this.db
         .prepare(
           `
           UPDATE agent_graph_supervisor_wakes
           SET status = 'superseded', failure_reason = ?, updated_at = ?
           WHERE root_session_id IN (${placeholders})
+            ${wakeGraphFilter}
             AND status IN ('pending', 'running', 'waiting_permission', 'retryable_failed')
         `,
         )
-        .run(request.reason, now, ...sessionIds);
+        .run(request.reason, now, ...sessionIds, ...(graphIds ?? []));
       return Number(updated.changes);
     });
   }

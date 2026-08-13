@@ -427,12 +427,15 @@ export class AgentGraphSupervisorWakeCoordinator {
       return;
     }
     const snapshot = await this.#input.readSnapshot(wake.rootSessionId);
-    if (
-      this.#closed ||
-      snapshot.closed ||
-      snapshot.graphId !== wake.graphId ||
-      snapshot.scheduleRevision === 0
-    ) {
+    if (snapshot.graphId !== wake.graphId) {
+      await this.#input.wakeStore.supersedeAgentGraphSupervisorWakes({
+        rootSessionIds: [wake.rootSessionId],
+        graphIds: [wake.graphId],
+        reason: 'agent_graph_epoch_advanced',
+      });
+      return;
+    }
+    if (this.#closed || snapshot.closed || snapshot.scheduleRevision === 0) {
       return;
     }
     abortSignal.throwIfAborted();

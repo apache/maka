@@ -59,6 +59,8 @@ export interface CompleteAgentGraphSupervisorWakeAttemptRequest {
 
 export interface SupersedeAgentGraphSupervisorWakesRequest {
   rootSessionIds: readonly string[];
+  /** Optional exact graph identities; omitted means every graph under the roots. */
+  graphIds?: readonly string[];
   reason: string;
 }
 
