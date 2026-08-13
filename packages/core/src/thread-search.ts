@@ -21,7 +21,8 @@
  *     (default 5, max `SEARCH_MAX_LIMIT=10`).
  *   - Total payload bytes (sum of snippets) capped at `TOTAL_PAYLOAD_CAP_BYTES`.
  *   - Per-result snippet capped at `SNIPPET_MAX_CODE_POINTS`.
- *   - Returns `SearchResult[]` per PR-SEARCH-0 shape with
+ *   - Returns a success envelope containing `SearchResult[]` plus an explicit
+ *     scan-truncation bit, with each result following the PR-SEARCH-0 shape and
  *     `source: 'thread'` and `target: { kind:'thread', sessionId, turnId? }`
  *     per PR-SEARCH-1.5, extended with stable message id, match kind, and
  *     timestamp anchors for Agent global search. `url` is left undefined
@@ -74,7 +75,7 @@ export const THREAD_SOURCE = 'thread' as const;
  */
 export interface ThreadSearchDeps {
   listSessions(): Promise<SessionSummary[]>;
-  readMessages(sessionId: string): Promise<StoredMessage[] | null>;
+  readMessages(sessionId: string, abortSignal?: AbortSignal): Promise<StoredMessage[] | null>;
   /**
    * Host-authority workspace privacy snapshot. Returned as `unknown`
    * deliberately — the helper validates the payload with
@@ -83,6 +84,12 @@ export interface ThreadSearchDeps {
    * or workspace owner). Untrusted request payloads MUST NOT flow into this dep.
    */
   getPrivacyContext(): Promise<unknown>;
+}
+
+export interface ThreadSearchSuccess {
+  readonly ok: true;
+  readonly results: SearchResult[];
+  readonly truncated: boolean;
 }
 
 /**
@@ -105,8 +112,10 @@ export async function runThreadSearch(
     readonly excludeSessionIds?: ReadonlySet<string>;
     /** Keeps Agent global search from matching the user/tool text of its active turn. */
     readonly excludeTurnIds?: ReadonlySet<string>;
+    readonly abortSignal?: AbortSignal;
   } = {},
-): Promise<SearchResult[] | { ok: false; reason: SearchErrorReason; message: string }> {
+): Promise<ThreadSearchSuccess | { ok: false; reason: SearchErrorReason; message: string }> {
+  if (options.abortSignal?.aborted) return abortedSearch();
   // L1: runtime shape guard. Renderer payload is untrusted across the
   // IPC boundary. Null / non-object / missing fields → typed reject.
   if (typeof request !== 'object' || request === null || Array.isArray(request)) {
@@ -142,6 +151,7 @@ export async function runThreadSearch(
   // Distinguishing message wording is kept for diagnostics; consumers
   // can read `message` if they need to differentiate.
   const privacyPayload = await deps.getPrivacyContext();
+  if (options.abortSignal?.aborted) return abortedSearch();
   const privacyResult = validateWorkspacePrivacyContext(privacyPayload);
   if (!privacyResult.ok) {
     return {
@@ -161,7 +171,10 @@ export async function runThreadSearch(
   const queryFolded = foldForMatch(queryResult.value);
   const maxResults = limitResult.value;
 
-  const sessions = collapseSessionRevisions(await deps.listSessions(), options.activeSessionId)
+  const eligibleSessions = collapseSessionRevisions(
+    await deps.listSessions(),
+    options.activeSessionId,
+  )
     // Exclude fake-backend sessions — e2e-fixture fixtures and
     // similar dev-only state should not surface as real chat hits.
     .filter((session) => session.backend !== 'fake' && !options.excludeSessionIds?.has(session.id))
@@ -170,14 +183,16 @@ export async function runThreadSearch(
       const ts = (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0);
       if (ts !== 0) return ts;
       return a.id.localeCompare(b.id);
-    })
-    .slice(0, MAX_SESSIONS_SCANNED);
+    });
+  if (options.abortSignal?.aborted) return abortedSearch();
+  const sessions = eligibleSessions.slice(0, MAX_SESSIONS_SCANNED);
 
   const results: SearchResult[] = [];
   let totalBytes = 0;
-  let truncated = false;
+  let truncated = eligibleSessions.length > sessions.length;
 
   for (const session of sessions) {
+    if (options.abortSignal?.aborted) return abortedSearch();
     if (results.length >= maxResults) {
       truncated = true;
       break;
@@ -212,17 +227,25 @@ export async function runThreadSearch(
       }
     }
 
-    const messages = await deps.readMessages(session.id);
+    const messages = await deps.readMessages(session.id, options.abortSignal);
+    if (options.abortSignal?.aborted) return abortedSearch();
     if (!messages) continue;
 
-    for (const message of messages) {
+    for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+      if (messageIndex > 0 && messageIndex % 256 === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      if (options.abortSignal?.aborted) return abortedSearch();
+      const message = messages[messageIndex]!;
       if (results.length >= maxResults) {
         truncated = true;
         break;
       }
 
       const turnId = (message as { turnId?: string }).turnId;
-      if (turnId && options.excludeTurnIds?.has(turnId)) continue;
+      if (session.id === options.activeSessionId && turnId && options.excludeTurnIds?.has(turnId)) {
+        continue;
+      }
 
       const candidate = collectSearchableText(message);
       if (candidate === undefined) continue;
@@ -266,7 +289,11 @@ export async function runThreadSearch(
     results[results.length - 1] = { ...results[results.length - 1]!, truncated: true };
   }
 
-  return results;
+  return { ok: true, results, truncated };
+}
+
+function abortedSearch(): { ok: false; reason: 'aborted'; message: string } {
+  return { ok: false, reason: 'aborted', message: 'History search was aborted.' };
 }
 
 /** Stable result classification shared by Desktop navigation and Agent tools. */

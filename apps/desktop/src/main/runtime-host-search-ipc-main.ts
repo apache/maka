@@ -18,8 +18,8 @@ interface RuntimeHostSearchIpcDeps {
 export function registerRuntimeHostSearchIpc(
   deps: RuntimeHostSearchIpcDeps,
 ): void {
-  handleReconnectableRead(deps.ipcMain, 'search:thread', (_event, request: unknown) =>
-    runThreadSearch(request, {
+  handleReconnectableRead(deps.ipcMain, 'search:thread', async (_event, request: unknown) => {
+    const result = await runThreadSearch(request, {
       listSessions: async () =>
         (await deps.client.listSessions()).map(toDesktopHostSessionSummary),
       readMessages: (sessionId) =>
@@ -35,6 +35,7 @@ export function registerRuntimeHostSearchIpc(
         incognitoActive: (await deps.client.queryRuntimePolicy()).policy.privacy
           .incognitoActive,
       }),
-    }),
-  );
+    });
+    return result.ok ? result.results : result;
+  });
 }

@@ -92,8 +92,8 @@ function makeDeps(entries: Record<string, Entry>, privacyPayload: unknown = { in
 }
 
 function expectResults(outcome: SearchOutcome) {
-  if (!Array.isArray(outcome)) assert.fail(`expected results, got ${outcome.reason}`);
-  return outcome;
+  if (!outcome.ok) assert.fail(`expected results, got ${outcome.reason}`);
+  return outcome.results;
 }
 
 describe('runThreadSearch', () => {
@@ -111,8 +111,8 @@ describe('runThreadSearch', () => {
     ];
     for (const [request, reason] of cases) {
       const outcome = await runThreadSearch(request, makeDeps({}));
-      assert.equal(Array.isArray(outcome), false);
-      if (!Array.isArray(outcome)) assert.equal(outcome.reason, reason);
+      assert.equal(outcome.ok, false);
+      if (!outcome.ok) assert.equal(outcome.reason, reason);
     }
   });
 
@@ -130,6 +130,90 @@ describe('runThreadSearch', () => {
     );
     assert.equal(hits.length, 10);
     assert.equal(hits.at(-1)?.truncated, true);
+  });
+
+  it('reports truncation when eligible sessions exceed the scan ceiling', async () => {
+    const entries: Record<string, Entry> = {};
+    for (let index = 0; index < 201; index += 1) {
+      const id = `session-${String(index).padStart(3, '0')}`;
+      entries[id] = {
+        session: session({ id, lastMessageAt: 10_000 - index }),
+        messages: index === 200 ? [userMessage('only-oldest-match')] : [],
+      };
+    }
+    const outcome = await runThreadSearch(
+      { source: 'thread', query: 'only-oldest-match', limit: 5 },
+      makeDeps(entries),
+    );
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.deepEqual(outcome.results, []);
+    assert.equal(outcome.truncated, true);
+  });
+
+  it('checks cancellation between transcript reads', async () => {
+    const controller = new AbortController();
+    let reads = 0;
+    const outcome = await runThreadSearch(
+      { source: 'thread', query: 'needle', limit: 5 },
+      {
+        ...makeDeps({
+          newest: { session: session({ id: 'newest', lastMessageAt: 2 }), messages: [] },
+          older: {
+            session: session({ id: 'older', lastMessageAt: 1 }),
+            messages: [userMessage('needle')],
+          },
+        }),
+        async readMessages(sessionId, signal) {
+          reads += 1;
+          assert.equal(signal, controller.signal);
+          if (sessionId === 'newest') controller.abort();
+          return [];
+        },
+      },
+      { abortSignal: controller.signal },
+    );
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.equal(outcome.reason, 'aborted');
+    assert.equal(reads, 1);
+  });
+
+  it('yields to cancellation while scanning a large transcript', async () => {
+    const controller = new AbortController();
+    const messages = Array.from({ length: 2_000 }, (_, index) =>
+      userMessage(`ordinary message ${index}`, `turn-${index}`, `message-${index}`),
+    );
+    setImmediate(() => controller.abort());
+    const outcome = await runThreadSearch(
+      { source: 'thread', query: 'missing needle', limit: 5 },
+      makeDeps({ large: { session: session({ id: 'large' }), messages } }),
+      { abortSignal: controller.signal },
+    );
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.equal(outcome.reason, 'aborted');
+  });
+
+  it('excludes the active Turn only inside the active Session', async () => {
+    const hits = expectResults(
+      await runThreadSearch(
+        { source: 'thread', query: 'copied text', limit: 10 },
+        makeDeps({
+          active: {
+            session: session({ id: 'active', lastMessageAt: 2 }),
+            messages: [userMessage('copied text active', 'shared-turn', 'active-message')],
+          },
+          branch: {
+            session: session({ id: 'branch', lastMessageAt: 1 }),
+            messages: [userMessage('copied text branch', 'shared-turn', 'branch-message')],
+          },
+        }),
+        { activeSessionId: 'active', excludeTurnIds: new Set(['shared-turn']) },
+      ),
+    );
+    assert.deepEqual(
+      hits.map((hit) => (hit.target?.kind === 'thread' ? hit.target.sessionId : undefined)),
+      ['branch'],
+    );
   });
 
   it('redacts snippets and excludes fake-backend and archived sessions', async () => {
@@ -247,9 +331,11 @@ describe('runThreadSearch', () => {
     const deps = makeDeps(entries);
 
     assert.deepEqual(
-      await runThreadSearch(
+      expectResults(
+        await runThreadSearch(
         { source: 'thread', query: 'diagnostic', limit: 5 },
         { ...deps, readMessages: async () => null },
+        ),
       ),
       [],
     );
@@ -281,8 +367,8 @@ describe('runThreadSearch', () => {
           },
         },
       );
-      assert.equal(Array.isArray(outcome), false);
-      if (!Array.isArray(outcome)) {
+      assert.equal(outcome.ok, false);
+      if (!outcome.ok) {
         assert.equal(outcome.reason, 'incognito_active');
         assert.match(
           outcome.message,

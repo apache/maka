@@ -416,10 +416,13 @@ export async function createExecutionRuntimeHostComposition(
     });
     const historyTools = buildHistoryTools({
       listSessions: () => requireSessionManager(manager).listSessions(),
-      readMessages: (sessionId) =>
-        requireSessionManager(manager)
+      readMessages: async (sessionId, abortSignal) => {
+        if (abortSignal?.aborted) return null;
+        const messages = await requireSessionManager(manager)
           .getMessages(sessionId)
-          .catch(() => null),
+          .catch(() => null);
+        return abortSignal?.aborted ? null : messages;
+      },
       getPrivacyContext: async () => ({
         incognitoActive: (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy
           .incognitoActive,

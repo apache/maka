@@ -76,10 +76,12 @@ test('SearchHistory returns typed message hits from current and other sessions',
 
   const result = (await tool.impl({ query: 'deploy', limit: 10 }, context())) as {
     kind: string;
+    truncated: boolean;
     rows: Array<Record<string, unknown>>;
   };
 
   assert.equal(result.kind, 'history_search');
+  assert.equal(result.truncated, false);
   assert.ok(result.rows.length > 0);
   assert.deepEqual(new Set(result.rows.map((row) => row.session_id)), new Set(['current', 'past']));
   assert.ok(result.rows.every((row) => row.session_id !== 'current-newer-revision'));

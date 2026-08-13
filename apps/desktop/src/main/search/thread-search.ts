@@ -19,4 +19,5 @@ export {
   runThreadSearch,
   threadSearchMatchKind,
   type ThreadSearchDeps,
+  type ThreadSearchSuccess,
 } from '@maka/core/thread-search';

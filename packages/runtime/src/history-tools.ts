@@ -111,9 +111,10 @@ export function buildSearchHistoryTool(deps: HistoryToolDeps): MakaTool {
         {
           activeSessionId: context.sessionId,
           excludeTurnIds: new Set([context.turnId]),
+          abortSignal: context.abortSignal,
         },
       );
-      if (!Array.isArray(result)) return historySearchError(result);
+      if (!result.ok) return historySearchError(result);
       if (context.abortSignal.aborted) {
         return historySearchError({
           ok: false,
@@ -126,7 +127,8 @@ export function buildSearchHistoryTool(deps: HistoryToolDeps): MakaTool {
       return {
         kind: 'history_search' as const,
         query: normalizedQuery.value,
-        rows: result.flatMap((row) => {
+        truncated: result.truncated,
+        rows: result.results.flatMap((row) => {
           if (row.target?.kind !== 'thread') return [];
           const session = sessionById.get(row.target.sessionId);
           return [
