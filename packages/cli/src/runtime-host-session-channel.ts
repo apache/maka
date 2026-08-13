@@ -100,7 +100,10 @@ export class RuntimeHostSessionChannel {
   ): Promise<RuntimeHostSessionChannelOpenResult> {
     const subscription = await options.connection.openSessionSubscription({
       sessionId: options.sessionId,
-      transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+      transcript: {
+        kind: 'tail',
+        maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+      },
     });
     const initialRoot = structuredClone(subscription.snapshot.rootTurn);
     const channel = new RuntimeHostSessionChannel(subscription, [], options, options.connection);
@@ -138,7 +141,7 @@ export class RuntimeHostSessionChannel {
     this.messages.push(...(messages ?? []).map((message) => structuredClone(message)));
     this.#projector = new RuntimeHostSessionProjector(
       this.snapshot,
-      createRuntimeHostSessionProjectionSeed(this.messages, this.snapshot.rootTurn?.turnId),
+      createRuntimeHostSessionProjectionSeed(this.messages, this.snapshot),
       this.#now,
       subscription.activeAssistantStreams,
     );
@@ -304,7 +307,10 @@ export class RuntimeHostSessionChannel {
       try {
         replacement = await this.#connection.openSessionSubscription({
           sessionId: this.sessionId,
-          transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+          transcript: {
+            kind: 'tail',
+            maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+          },
         });
       } catch (error) {
         if (this.#canRecover(error)) continue;
@@ -351,7 +357,7 @@ export class RuntimeHostSessionChannel {
     this.snapshot = nextSnapshot;
     this.#projector = new RuntimeHostSessionProjector(
       nextSnapshot,
-      createRuntimeHostSessionProjectionSeed(this.messages, nextSnapshot.rootTurn?.turnId),
+      createRuntimeHostSessionProjectionSeed(this.messages, nextSnapshot),
       this.#now,
       this.#subscription.activeAssistantStreams,
     );
@@ -517,7 +523,10 @@ export class RuntimeHostSessionChannel {
 class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<SessionEvent> {
   readonly #items: SessionEvent[] = [];
   #waiting:
-    | { resolve(value: IteratorResult<SessionEvent>): void; reject(error: unknown): void }
+    | {
+        resolve(value: IteratorResult<SessionEvent>): void;
+        reject(error: unknown): void;
+      }
     | undefined;
   #done = false;
   #finishAfterItems = false;

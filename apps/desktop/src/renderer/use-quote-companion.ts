@@ -40,7 +40,6 @@ import {
   type StagedCompanionQuote,
 } from './quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
-import { desktopSessionsWithTurnIndex } from './session-turn-index.js';
 
 export interface UseQuoteCompanionInput {
   /** Stable owner for the currently mounted panel generation. */
@@ -200,7 +199,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         // so the finished exchange never flickers away.
         void readSettledMessages(forkId, {
           ...(requiredAssistantMessageId(liveTurnRef.current)
-            ? { requiredAssistantMessageId: requiredAssistantMessageId(liveTurnRef.current) }
+                ? {
+                    requiredAssistantMessageId: requiredAssistantMessageId(liveTurnRef.current),
+                  }
             : {}),
           })
           .then(({ messages: next }) => {
@@ -249,7 +250,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
 
       setPreparing(true);
       const promise = ensureCompanionFork({
-        api: desktopSessionsWithTurnIndex(),
+        api: window.maka.sessions,
         sourceSession,
         panelId,
         name,
@@ -307,25 +308,18 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         const sourceSessionId = sourceSessionIdRef.current;
         const id = companionIdRef.current ?? pendingForkIdRef.current;
         if (id && sourceSessionId) {
-          void dismissCompanionCopy(
-            desktopSessionsWithTurnIndex(),
-            sourceSessionId,
-            panelId,
-            id,
-          ).then((cleaned) => {
-            if (cleaned) {
-              onForkVisibilityChangeRef.current?.({
-                type: 'cleanup-succeeded',
-                sessionId: id,
-              });
-            }
-          });
-        } else if (sourceSessionId) {
-          void abandonPendingCompanionCopy(
-            desktopSessionsWithTurnIndex(),
-            sourceSessionId,
-            panelId,
+          void dismissCompanionCopy(window.maka.sessions, sourceSessionId, panelId, id).then(
+            (cleaned) => {
+              if (cleaned) {
+                onForkVisibilityChangeRef.current?.({
+                  type: 'cleanup-succeeded',
+                  sessionId: id,
+                });
+              }
+            },
           );
+        } else if (sourceSessionId) {
+          void abandonPendingCompanionCopy(window.maka.sessions, sourceSessionId, panelId);
         }
       });
     };
@@ -351,7 +345,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         return false;
       }
       const result = await performCompanionTurn({
-        api: desktopSessionsWithTurnIndex(),
+        api: window.maka.sessions,
         sourceSession,
         panelId,
         name: `${copyRef.current.namePrefix}${label}`,

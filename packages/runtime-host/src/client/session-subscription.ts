@@ -59,7 +59,10 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
 }
 
 export interface DecodedSessionTranscriptPage<T> {
-  readonly messages: readonly { readonly identity: number; readonly message: T }[];
+  readonly messages: readonly {
+    readonly identity: number;
+    readonly message: T;
+  }[];
   readonly nextCursor: string | null;
 }
 
@@ -99,6 +102,7 @@ export class ClientSessionSubscription
   #closeTask: Promise<void> | undefined;
   #transcriptTask: Promise<unknown[]> | undefined;
   #overlayTask: Promise<Array<{ identity: number; value: unknown }>> | undefined;
+  #overlayConsumed = false;
   #latestTranscriptThroughSequence: number | null;
 
   constructor(
@@ -176,7 +180,7 @@ export class ClientSessionSubscription
         ),
       );
     }
-    return this.#loadAndReleaseTranscriptOverlay(bootstrap).then((messages) =>
+    return this.#consumeTranscriptOverlay(bootstrap).then((messages) =>
       messages.map((entry) => decodeMessage(entry.value)),
     );
   }
@@ -222,9 +226,10 @@ export class ClientSessionSubscription
       cursor = continuation.nextCursor;
     }
     return {
-      messages: assembler
-        .finish()
-        .map((entry) => ({ identity: entry.identity, message: decodeMessage(entry.value) })),
+      messages: assembler.finish().map((entry) => ({
+        identity: entry.identity,
+        message: decodeMessage(entry.value),
+      })),
       nextCursor: cursor,
     };
   }
@@ -253,13 +258,14 @@ export class ClientSessionSubscription
         ),
       );
     }
-    return this.#readTranscriptPage({ subscriptionId: this.subscriptionId, ...input }).then(
-      (page) => {
-        this.#assertTranscriptReadable();
-        this.#assertTranscriptPage(page, input);
-        return page;
-      },
-    );
+    return this.#readTranscriptPage({
+      subscriptionId: this.subscriptionId,
+      ...input,
+    }).then((page) => {
+      this.#assertTranscriptReadable();
+      this.#assertTranscriptPage(page, input);
+      return page;
+    });
   }
 
   async #loadTranscript(): Promise<unknown[]> {
@@ -271,7 +277,7 @@ export class ClientSessionSubscription
         'Session subscription was opened without transcript access',
       );
     }
-    const overlay = await this.#loadAndReleaseTranscriptOverlay(bootstrap);
+    const overlay = await this.#consumeTranscriptOverlay(bootstrap);
     const durable = await this.#loadTranscriptSource(bootstrap.durable);
     assertCompleteIdentities(durable, bootstrap.throughSequence);
     const messages = durable.map((entry) => entry.value);
@@ -293,16 +299,27 @@ export class ClientSessionSubscription
     return messages;
   }
 
-  #loadAndReleaseTranscriptOverlay(
+  #consumeTranscriptOverlay(
     bootstrap: SessionTranscriptBootstrap,
   ): Promise<Array<{ identity: number; value: unknown }>> {
+    if (this.#overlayConsumed && !this.#overlayTask) {
+      return Promise.reject(
+        new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript overlay was already consumed',
+        ),
+      );
+    }
     this.#overlayTask ??= (async () => {
       const overlay = await this.#loadTranscriptSource(bootstrap.overlay);
       assertCompleteIdentities(
         overlay,
         bootstrap.overlayMessageCount === 0 ? null : bootstrap.overlayMessageCount - 1,
       );
-      if (bootstrap.overlayMessageCount === 0) return overlay;
+      if (bootstrap.overlayMessageCount === 0) {
+        this.#overlayConsumed = true;
+        return overlay;
+      }
       try {
         await this.#releaseTranscriptOverlay();
       } catch (cause) {
@@ -313,12 +330,13 @@ export class ClientSessionSubscription
           { cause },
         );
       }
+      this.#overlayConsumed = true;
       return overlay;
-    })().catch((error: unknown) => {
-      this.#overlayTask = undefined;
-      throw error;
+    })();
+    const task = this.#overlayTask;
+    return task.finally(() => {
+      if (this.#overlayTask === task) this.#overlayTask = undefined;
     });
-    return this.#overlayTask;
   }
 
   async #loadTranscriptSource(

@@ -9,10 +9,12 @@ import type {
 } from "@maka/runtime-host/protocol";
 import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
+import type { DesktopTranscriptBatch } from '../../preload/transcript-contract.js';
 import { RuntimeHostSessionObservationRegistry } from "../runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
+  type RuntimeHostTranscriptTarget,
 } from "../runtime-host-session-observer.js";
 import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
 
@@ -360,6 +362,129 @@ test("keeps an active observation across a failed Host replacement", async () =>
   assert.deepEqual(await observations.attach(recoveredSource), ["session-1"]);
   assert.equal(recovered, 1);
   await observations.close();
+});
+
+test('restores transcript consumers across Host replacement', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const batches: DesktopTranscriptBatch[] = [];
+  const target: RuntimeHostTranscriptTarget = {
+    id: 18,
+    send(_channel, batch) {
+      batches.push(batch);
+    },
+    once() {},
+    off() {},
+  };
+  const opens: string[] = [];
+  const source = (generation: string) => ({
+    async observe() {},
+    async unobserve() {},
+    async openTranscript(
+      sessionId: string,
+      consumerId: string,
+      consumer: RuntimeHostTranscriptTarget,
+    ) {
+      opens.push(`${generation}:${sessionId}:${consumerId}`);
+      consumer.send(`sessions:transcript:${consumerId}`, {
+        sessionId,
+        generation,
+        hostEpoch: `host-${generation}`,
+        durableThrough: null,
+        fragments: [],
+        evictedDurableSequences: [],
+        completedOverlayMessageIds: [],
+        hasOlder: false,
+        hasNewer: false,
+        reset: true,
+        ready: true,
+      });
+      return {
+        sessionId,
+        generation,
+        hostEpoch: `host-${generation}`,
+        readThroughMessageId: null,
+      };
+    },
+    async loadTranscriptBefore() {},
+    async loadTranscriptAround() {},
+    async closeTranscript() {},
+  });
+  const first = source('first');
+  await observations.attach(first);
+  await observations.openTranscript('session-1', 'consumer-1', target);
+  observations.detach(first);
+  await observations.attach(source('second'));
+
+  assert.deepEqual(opens, ['first:session-1:consumer-1', 'second:session-1:consumer-1']);
+  assert.deepEqual(
+    batches.map((batch) => batch.generation),
+    ['first', 'second'],
+  );
+  await observations.close();
+});
+
+test('advances the read marker when the visible durable tail advances', async () => {
+  const events = new AsyncFrameQueue();
+  const markers: string[] = [];
+  const message: StoredMessage = {
+    type: 'assistant',
+    id: 'assistant-1',
+    turnId: 'turn-1',
+    ts: 2,
+    text: 'Hi',
+    modelId: 'test-model',
+  };
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([]),
+          events,
+          loadTranscriptPage: async () => ({
+            kind: 'page',
+            sessionId: 'session-1',
+            source: 'durable',
+            direction: 'newer',
+            throughSequence: 0,
+            rawBytes: 1,
+            fragments: [],
+            nextCursor: null,
+          }),
+          decodeTranscriptPage: async () => ({
+            messages: [{ identity: 0, message }],
+            nextCursor: null,
+          }),
+          async close() {
+            events.end();
+          },
+        }),
+      setSessionReadMarker: async (_sessionId, messageId) => {
+        markers.push(messageId);
+        return undefined as never;
+      },
+    },
+    emitSessionsChanged() {},
+  });
+  const target: RuntimeHostTranscriptTarget = {
+    id: 19,
+    send() {},
+    once() {},
+    off() {},
+  };
+  await observer.openTranscript('session-1', 'consumer-1', target);
+  events.push({
+    kind: 'subscription.transcript_advanced',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sessionId: 'session-1',
+    sequence: 1,
+    throughSequence: 0,
+  });
+  await waitFor(() => markers.length === 1);
+
+  assert.deepEqual(markers, ['assistant-1']);
+  await observer.close();
 });
 
 test("ignores a stale seed failure after its replacement succeeds", async () => {
@@ -1225,7 +1350,9 @@ test("rehydrates pending interactions and publishes answer acknowledgements", as
   const observer = new RuntimeHostSessionObserver({
     client: {
       openSession: async () => runtimeHostSessionFixture({
-        snapshot: continuitySnapshot({ interactions: { pending: [pending] } }),
+          snapshot: continuitySnapshot({
+            interactions: { pending: [pending] },
+          }),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,

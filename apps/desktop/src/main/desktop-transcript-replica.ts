@@ -64,6 +64,7 @@ export class DesktopTranscriptReplica {
   #targetThrough: number | null;
   #hasOlder: boolean;
   #hasNewer = false;
+  #resident = true;
   #closed = false;
   #catchUpTask: Promise<void> | undefined;
   #operationTail = Promise.resolve();
@@ -107,19 +108,22 @@ export class DesktopTranscriptReplica {
     return this.#residentBytes;
   }
 
+  get resident(): boolean {
+    return this.#resident;
+  }
+
   get durableThrough(): number | null {
     return this.#durableThrough;
   }
 
   get projectionSeed(): RuntimeHostSessionProjectionSeed {
-    return createRuntimeHostSessionProjectionSeed(
-      this.messages(),
-      this.#handle.snapshot.rootTurn?.turnId,
-    );
+    this.#assertResident();
+    return createRuntimeHostSessionProjectionSeed(this.messages(), this.#handle.snapshot);
   }
 
   snapshot(): DesktopTranscriptReplicaSnapshot {
     this.#assertOpen();
+    this.#assertResident();
     return {
       sessionId: this.sessionId,
       generation: this.generation,
@@ -133,6 +137,8 @@ export class DesktopTranscriptReplica {
   }
 
   messages(): StoredMessage[] {
+    this.#assertOpen();
+    this.#assertResident();
     return this.#orderedDurable()
       .map((entry) => entry.message)
       .concat([...this.#overlay.values()].map((message) => structuredClone(message)));
@@ -142,19 +148,19 @@ export class DesktopTranscriptReplica {
     return this.messages().filter((message) => message.turnId === turnId);
   }
 
-  latestVisibleMessageId(): string | null {
-    let latestOverlayId: string | null = null;
-    for (const message of this.#overlay.values()) {
-      if (message.type === 'user' || message.type === 'assistant') latestOverlayId = message.id;
-    }
-    if (latestOverlayId) return latestOverlayId;
-    let latestDurable: ResidentMessage | undefined;
+  latestDurableVisibleMessageId(): string | null {
+    this.#assertOpen();
+    this.#assertResident();
+    let latest: ResidentMessage | undefined;
     for (const entry of this.#durable.values()) {
-      if (entry.message.type === 'user' || entry.message.type === 'assistant') {
-        if (!latestDurable || entry.sequence > latestDurable.sequence) latestDurable = entry;
+      if (
+        (entry.message.type === 'user' || entry.message.type === 'assistant') &&
+        (!latest || entry.sequence > latest.sequence)
+      ) {
+        latest = entry;
       }
     }
-    return latestDurable?.message.id ?? null;
+    return latest?.message.id ?? null;
   }
 
   async loadBefore(
@@ -241,6 +247,10 @@ export class DesktopTranscriptReplica {
     if (this.#targetThrough === null || throughSequence > this.#targetThrough) {
       this.#targetThrough = throughSequence;
     }
+    if (!this.#resident) {
+      this.#durableThrough = this.#targetThrough;
+      return Promise.resolve();
+    }
     this.#catchUpTask ??= this.#enqueue(() => this.#catchUp()).finally(() => {
       this.#catchUpTask = undefined;
       if (
@@ -256,21 +266,32 @@ export class DesktopTranscriptReplica {
 
   trimDurable(targetResidentBytes: number): DesktopTranscriptReplicaChange | undefined {
     this.#assertOpen();
+    if (!this.#resident) return undefined;
     const evictedDurableSequences = this.#evictToBudget(targetResidentBytes);
     return evictedDurableSequences.length === 0
       ? undefined
       : this.#change([], [], evictedDurableSequences);
   }
 
+  discard(): void {
+    this.#assertOpen();
+    if (!this.#resident) return;
+    this.#resident = false;
+    this.#clearDurable();
+    this.#overlay.clear();
+    this.#residentBytes = 0;
+  }
+
   close(): void {
     this.#closed = true;
+    this.#resident = false;
     this.#durable.clear();
     this.#overlay.clear();
     this.#residentBytes = 0;
   }
 
   async #catchUp(): Promise<void> {
-    while (!this.#closed) {
+    while (!this.#closed && this.#resident) {
       const target = this.#targetThrough;
       if (target === null || (this.#durableThrough !== null && target <= this.#durableThrough)) {
         return;
@@ -284,6 +305,7 @@ export class DesktopTranscriptReplica {
       const anchorSequence = this.#durableThrough;
       let expectedSequence = (anchorSequence ?? -1) + 1;
       do {
+        if (!this.#resident) return;
         const page: SessionTranscriptPage = await this.#handle.loadTranscriptPage({
           source: 'durable',
           direction: 'newer',
@@ -294,6 +316,7 @@ export class DesktopTranscriptReplica {
         });
         const decoded = await this.#handle.decodeTranscriptPage(page, this.#maxResidentBytes);
         this.#assertOpen();
+        if (!this.#resident) return;
         if (decoded.messages.length === 0 && decoded.nextCursor !== null) {
           throw correlationError('Desktop transcript catch-up returned an empty continuation');
         }
@@ -324,14 +347,16 @@ export class DesktopTranscriptReplica {
     for (const message of messages) {
       const previous = this.#overlay.get(message.id);
       if (previous) this.#residentBytes -= encodedMessageBytes(previous);
-      const cloned = structuredClone(message);
-      this.#overlay.set(message.id, cloned);
-      this.#residentBytes += encodedMessageBytes(cloned);
+      this.#overlay.set(message.id, message);
+      this.#residentBytes += encodedMessageBytes(message);
     }
   }
 
   #installDurable(
-    messages: readonly { readonly identity: number; readonly message: StoredMessage }[],
+    messages: readonly {
+      readonly identity: number;
+      readonly message: StoredMessage;
+    }[],
   ): string[] {
     const completedOverlayMessageIds: string[] = [];
     for (const item of messages) {
@@ -342,7 +367,11 @@ export class DesktopTranscriptReplica {
       if (previous) this.#residentBytes -= previous.encodedBytes;
       const message = structuredClone(item.message);
       const encodedBytes = encodedMessageBytes(message);
-      this.#durable.set(item.identity, { sequence: item.identity, message, encodedBytes });
+      this.#durable.set(item.identity, {
+        sequence: item.identity,
+        message,
+        encodedBytes,
+      });
       this.#residentBytes += encodedBytes;
       const overlay = this.#overlay.get(message.id);
       if (overlay) {
@@ -367,7 +396,10 @@ export class DesktopTranscriptReplica {
   }
 
   #publish(
-    messages: readonly { readonly identity: number; readonly message: StoredMessage }[],
+    messages: readonly {
+      readonly identity: number;
+      readonly message: StoredMessage;
+    }[],
     completedOverlayMessageIds: readonly string[],
     evictedDurableSequences: readonly number[],
   ): void {
@@ -375,7 +407,10 @@ export class DesktopTranscriptReplica {
   }
 
   #change(
-    messages: readonly { readonly identity: number; readonly message: StoredMessage }[],
+    messages: readonly {
+      readonly identity: number;
+      readonly message: StoredMessage;
+    }[],
     completedOverlayMessageIds: readonly string[],
     evictedDurableSequences: readonly number[],
   ): DesktopTranscriptReplicaChange {
@@ -418,7 +453,10 @@ export class DesktopTranscriptReplica {
   #orderedDurable(): DesktopSequencedTranscriptMessage[] {
     return [...this.#durable.values()]
       .sort((left, right) => left.sequence - right.sequence)
-      .map((entry) => ({ sequence: entry.sequence, message: structuredClone(entry.message) }));
+      .map((entry) => ({
+        sequence: entry.sequence,
+        message: structuredClone(entry.message),
+      }));
   }
 
   #oldestSequence(): number | null {
@@ -436,6 +474,12 @@ export class DesktopTranscriptReplica {
 
   #assertOpen(): void {
     if (this.#closed) throw new Error('Desktop transcript replica is closed');
+  }
+
+  #assertResident(): void {
+    if (!this.#resident) {
+      throw new Error('Desktop transcript replica was evicted');
+    }
   }
 
   #enqueue(operation: () => Promise<void>): Promise<void> {

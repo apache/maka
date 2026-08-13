@@ -7,25 +7,53 @@ import type {
 
 export interface DesktopTranscriptRangeController {
   readonly store: DesktopTranscriptRangeStore;
+  ready(): Promise<void>;
   loadBefore(): Promise<void>;
   loadLatest(): Promise<void>;
+  reload(): Promise<void>;
+  close(): Promise<void>;
 }
 
 export function createDesktopTranscriptRangeController(
   store: DesktopTranscriptRangeStore,
-  handle: Promise<DesktopTranscriptHandle>,
+  open: () => Promise<DesktopTranscriptHandle>,
 ): DesktopTranscriptRangeController {
+  let closed = false;
+  let handle = open();
+  const current = async () => {
+    if (closed) throw new Error('Desktop transcript range is closed');
+    return handle;
+  };
   return {
     store,
+    async ready() {
+      await current();
+    },
     async loadBefore() {
       const range = store.range();
       if (!range.hasOlder) return;
-      await (await handle).loadBefore(range.oldestSequence);
+      await (await current()).loadBefore(range.oldestSequence);
     },
     async loadLatest() {
       const range = store.range();
       if (!range.hasNewer || range.durableThrough === null) return;
-      await (await handle).loadAround(range.durableThrough);
+      await (await current()).loadAround(range.durableThrough);
+    },
+    async reload() {
+      const previous = handle;
+      handle = previous
+        .then((value) => value.close())
+        .catch(() => undefined)
+        .then(() => {
+          if (closed) throw new Error('Desktop transcript range is closed');
+          return open();
+        });
+      await handle;
+    },
+    async close() {
+      if (closed) return;
+      closed = true;
+      await handle.then((value) => value.close()).catch(() => undefined);
     },
   };
 }

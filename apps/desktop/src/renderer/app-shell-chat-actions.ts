@@ -472,7 +472,10 @@ export function createAppShellChatActions(deps: {
       const feedbackSessionId = optimisticSessionId ?? initialSessionId;
       const sendStillOwnsCurrentSurface =
         (feedbackSessionId !== undefined &&
-          isShellSurfaceOwnerActive({ ...sendOwner, sessionId: feedbackSessionId })) ||
+          isShellSurfaceOwnerActive({
+            ...sendOwner,
+            sessionId: feedbackSessionId,
+          })) ||
         (newChatOwner !== null && isNewChatSendSurfaceActive(newChatOwner));
       if (!sendStillOwnsCurrentSurface) return false;
       if (isNoRealConnectionError(error)) {
@@ -570,7 +573,8 @@ export function createAppShellChatActions(deps: {
   async function retryMessages(sessionId: string) {
     if (!addPendingSessionAction(sessionId, messageRetryPendingRef, setMessageRetryPendingBySession)) return;
     try {
-      await refreshMessages(sessionId);
+      if (activeIdRef.current !== sessionId) return;
+      await transcriptRangeRef.current?.reload();
     } finally {
       clearPendingSessionAction(sessionId, messageRetryPendingRef, setMessageRetryPendingBySession);
     }

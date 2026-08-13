@@ -57,6 +57,7 @@ export class RuntimeHostSessionSubscriptionOwner {
   readonly #deps: RuntimeHostSessionSubscriptionOwnerDeps;
   #attempt?: SubscriptionAttempt;
   #readyTask: Promise<void> = Promise.resolve();
+  #refreshTask?: Promise<void>;
   #started = false;
   #closed = false;
 
@@ -78,6 +79,16 @@ export class RuntimeHostSessionSubscriptionOwner {
     }
   }
 
+  refresh(): Promise<void> {
+    if (this.#refreshTask) return this.#refreshTask;
+    const task = this.#refresh();
+    const tracked = task.finally(() => {
+      if (this.#refreshTask === tracked) this.#refreshTask = undefined;
+    });
+    this.#refreshTask = tracked;
+    return tracked;
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
@@ -88,10 +99,21 @@ export class RuntimeHostSessionSubscriptionOwner {
     await attempt?.handle.close().catch(() => undefined);
   }
 
+  async #refresh(): Promise<void> {
+    await this.waitUntilReady();
+    this.#assertOpen();
+    const attempt = this.#attempt;
+    if (!attempt) throw ownerClosed();
+    const task = this.#establish(attempt);
+    this.#replaceReadyTask(task);
+    await this.waitUntilReady();
+  }
+
   async #establish(failed?: SubscriptionAttempt, initialError?: Error): Promise<void> {
     let recoveryError = initialError;
     if (recoveryError) this.#deps.recoveryStarted(recoveryError);
     if (failed) {
+      if (this.#attempt === failed) this.#attempt = undefined;
       failed.replica?.close();
       await failed.handle.close().catch(() => undefined);
     }

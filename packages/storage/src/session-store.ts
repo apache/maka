@@ -186,13 +186,19 @@ export interface SessionTranscriptStoragePage {
   /** Returned in traversal order for the requested direction. */
   readonly fragments: readonly SessionTranscriptStorageFragment[];
   readonly rawBytes: number;
-  readonly next: { readonly position: number; readonly byteOffset: number | null } | null;
+  readonly next: {
+    readonly position: number;
+    readonly byteOffset: number | null;
+  } | null;
 }
 
 export interface SessionTurnContribution {
   readonly turnId: string;
   readonly firstSequence: number;
-  readonly latestState: { readonly sequence: number; readonly message: TurnStateMessage } | null;
+  readonly latestState: {
+    readonly sequence: number;
+    readonly message: TurnStateMessage;
+  } | null;
   readonly hasAssistantMessage: boolean;
   readonly hasAssistantOutput: boolean;
   readonly hasToolResult: boolean;
@@ -226,7 +232,7 @@ export interface SessionStore {
     sessionId: string,
     throughSequence: number | null,
     position: number,
-    maxMessages: number,
+    maxContributions: number,
   ): Promise<SessionTurnContributionPage>;
   /** Read durable messages for startup recovery. */
   readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]>;
@@ -692,10 +698,15 @@ class SqliteSessionStore implements SessionAuthorityStore {
     sessionId: string,
     throughSequence: number | null,
     position: number,
-    maxMessages: number,
+    maxContributions: number,
   ): Promise<SessionTurnContributionPage> {
     await this.ensureReady();
-    return this.metadata.readTurnContributions(sessionId, throughSequence, position, maxMessages);
+    return this.metadata.readTurnContributions(
+      sessionId,
+      throughSequence,
+      position,
+      maxContributions,
+    );
   }
 
   async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
@@ -1203,7 +1214,9 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
     ...(header.branchOfTurnId ? { branchOfTurnId: header.branchOfTurnId } : {}),
     ...(header.subagentParent ? { subagentParent: header.subagentParent } : {}),
     ...(header.subagentRuntime
-      ? { subagentRuntime: subagentSessionRuntimeSummary(header.subagentRuntime) }
+      ? {
+          subagentRuntime: subagentSessionRuntimeSummary(header.subagentRuntime),
+        }
       : {}),
     ...(header.subagentWorkspace ? { subagentWorkspace: header.subagentWorkspace } : {}),
     ...(header.revisionRootSessionId

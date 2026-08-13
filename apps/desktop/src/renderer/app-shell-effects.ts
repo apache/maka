@@ -501,8 +501,8 @@ export function useActiveSessionEvents(options: {
         now: subscribedAt,
       }),
     }));
-    const transcriptHandle = window.maka.transcripts
-      .open(activeId, (batch) => {
+    const openTranscript = () =>
+      window.maka.transcripts.open(activeId, (batch) => {
         if (disposed) return;
         try {
           if (transcript.accept(batch)) {
@@ -511,18 +511,12 @@ export function useActiveSessionEvents(options: {
         } catch (error) {
           applyReadError(activeId, error, () => disposed);
         }
-      })
-      .catch((error) => {
-        applyReadError(activeId, error, () => disposed);
-        return undefined;
       });
-    options.transcriptRangeRef.current = createDesktopTranscriptRangeController(
-      transcript,
-      transcriptHandle.then((handle) => {
-        if (!handle) throw new Error('Desktop transcript is unavailable');
-        return handle;
-      }),
-    );
+    const controller = createDesktopTranscriptRangeController(transcript, openTranscript);
+    const transcriptReady = controller.ready().catch((error) => {
+      applyReadError(activeId, error, () => disposed);
+    });
+    options.transcriptRangeRef.current = controller;
     const unsubscribe = window.maka.sessions.subscribeEvents(
       activeId,
       (event) => {
@@ -535,7 +529,7 @@ export function useActiveSessionEvents(options: {
       if (options.transcriptRangeRef.current?.store === transcript) {
         options.transcriptRangeRef.current = undefined;
       }
-      void transcriptHandle.then((handle) => handle?.close()).catch(() => undefined);
+      void transcriptReady.finally(() => controller.close());
       unsubscribe();
       markSessionEventStreamClosed(activeId);
     };

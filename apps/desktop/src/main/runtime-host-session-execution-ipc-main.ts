@@ -45,7 +45,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "getSession"
   | "ingestAttachment"
   | "interruptTurn"
-  | 'querySessionTurnContributions'
+  | 'listSessionTurns'
   | "queryTurnResume"
   | "readExecutionBoundary"
   | "regenerateTurn"
@@ -62,7 +62,12 @@ export interface RuntimeHostSessionExecutionIpcDeps {
   observer: RuntimeHostSessionObserver;
   observations: Pick<
     RuntimeHostSessionObservationRegistry,
-    "observe"
+    | 'closeTranscript'
+    | 'loadTranscriptAround'
+    | 'loadTranscriptBefore'
+    | 'observe'
+    | 'openTranscript'
+    | 'unobserve'
   >;
   attachmentApprovals: AttachmentApprovalRegistry;
   emitSessionsChanged: (
@@ -136,46 +141,34 @@ export function registerRuntimeHostSessionExecutionIpc(
   ipcMain.handle(
     'sessions:transcript:open',
     async (event, sessionId: unknown, consumerId: unknown) => {
-      const result = await deps.observer.openTranscript(
+      const result = await deps.observations.openTranscript(
         requiredId(sessionId, 'Session'),
         requiredId(consumerId, 'Transcript consumer'),
         event.sender as RuntimeHostTranscriptTarget,
       );
-      if (result.readThroughMessageId) {
-        await deps.client
-          .setSessionReadMarker(result.sessionId, result.readThroughMessageId)
-          .catch(() => undefined);
-      }
       return result;
     },
   );
   ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
-    await deps.observer.loadTranscriptBefore(
+    await deps.observations.loadTranscriptBefore(
       normalizeTranscriptRangeRequest(input),
       event.sender.id,
     );
   });
   ipcMain.handle('sessions:transcript:load-around', async (event, input: unknown) => {
-    await deps.observer.loadTranscriptAround(
+    await deps.observations.loadTranscriptAround(
       normalizeTranscriptRangeRequest(input),
       event.sender.id,
     );
   });
   ipcMain.handle('sessions:transcript:close', async (event, consumerId: unknown) => {
-    await deps.observer.closeTranscript(
+    await deps.observations.closeTranscript(
       requiredId(consumerId, 'Transcript consumer'),
       event.sender.id,
     );
   });
-  handleReconnectableRead(
-    ipcMain,
-    'sessions:queryTurnContributions',
-    async (_event, sessionId: unknown, throughSequence: unknown, position: unknown) =>
-      deps.client.querySessionTurnContributions(
-        requiredId(sessionId, 'Session'),
-        nullableSequence(throughSequence),
-        requiredSequence(position),
-      ),
+  handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>
+    deps.client.listSessionTurns(requiredId(sessionId, 'Session')),
   );
   handleReconnectableRead(
     ipcMain,
@@ -511,17 +504,6 @@ function requiredId(value: unknown, label: string): string {
     throw new Error(`Invalid ${label} identity`);
   }
   return value;
-}
-
-function requiredSequence(value: unknown): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw new Error('Invalid Session turn query position');
-  }
-  return value as number;
-}
-
-function nullableSequence(value: unknown): number | null {
-  return value === null ? null : requiredSequence(value);
 }
 
 function steeringContent(value: unknown): string {

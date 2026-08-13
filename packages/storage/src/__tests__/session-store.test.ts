@@ -244,8 +244,10 @@ describe('SQLite SessionStore', () => {
         byteOffset: oversized.fragments[0]!.byteOffset,
       });
       const fragments = [...oversized.fragments];
-      let continuation: { readonly position: number; readonly byteOffset: number | null } | null =
-        oversized.next;
+      let continuation: {
+        readonly position: number;
+        readonly byteOffset: number | null;
+      } | null = oversized.next;
       while (continuation?.position === 3 && continuation.byteOffset !== null) {
         const page = await store.readTranscriptPageSnapshot(session.id, {
           direction: 'older',
@@ -323,10 +325,12 @@ describe('SQLite SessionStore', () => {
     const legacy = new DatabaseSync(path);
     const legacyRecord = JSON.stringify(message);
     legacy
-      .prepare(`
+      .prepare(
+        `
         UPDATE session_messages SET record_json = ?
         WHERE session_id = ? AND sequence = 0
-      `)
+      `,
+      )
       .run(legacyRecord, sessionId);
     legacy.exec(`
       DROP TABLE session_message_chunks;
@@ -378,11 +382,13 @@ describe('SQLite SessionStore', () => {
     const inspect = new DatabaseSync(path);
     try {
       inspect
-        .prepare(`
+        .prepare(
+          `
           UPDATE session_message_chunks
           SET data = zeroblob(length(data))
           WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
-        `)
+        `,
+        )
         .run(sessionId);
     } finally {
       inspect.close();
@@ -404,16 +410,20 @@ describe('SQLite SessionStore', () => {
       const rewritten = new DatabaseSync(path);
       try {
         const chunk = rewritten
-          .prepare(`
+          .prepare(
+            `
             SELECT data FROM session_message_chunks
             WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
-          `)
+          `,
+          )
           .get(sessionId) as { data: Uint8Array };
         rewritten
-          .prepare(`
+          .prepare(
+            `
             UPDATE session_message_chunks SET sha256 = ?
             WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
-          `)
+          `,
+          )
           .run(createHash('sha256').update(chunk.data).digest('hex'), sessionId);
       } finally {
         rewritten.close();
@@ -544,14 +554,24 @@ describe('SQLite SessionStore', () => {
         { type: 'user', id: 'user-2', turnId: 'turn-2', ts: 4, text: 'two' },
       ]);
 
-      const first = await store.readTurnContributionsSnapshot(session.id, null, 0, 2);
+      const first = await store.readTurnContributionsSnapshot(session.id, null, 0, 1);
       assert.equal(first.throughSequence, 3);
-      assert.equal(first.nextPosition, 2);
+      assert.equal(first.nextPosition, 3);
       assert.deepEqual(first.contributions, [
         {
           turnId: 'turn-1',
           firstSequence: 0,
-          latestState: null,
+          latestState: {
+            sequence: 2,
+            message: {
+              type: 'turn_state',
+              id: 'state-1',
+              turnId: 'turn-1',
+              ts: 3,
+              status: 'completed',
+              partialOutputRetained: true,
+            },
+          },
           hasAssistantMessage: true,
           hasAssistantOutput: true,
           hasToolResult: false,
@@ -572,15 +592,37 @@ describe('SQLite SessionStore', () => {
         session.id,
         first.throughSequence,
         first.nextPosition!,
-        2,
+        1,
       );
       assert.equal(second.throughSequence, 3);
       assert.deepEqual(
         second.contributions.map((entry) => entry.turnId),
-        ['turn-1', 'turn-2'],
+        ['turn-2'],
       );
-      assert.equal(second.contributions[0]?.latestState?.message.status, 'completed');
       assert.equal(second.nextPosition, null);
+
+      await store.appendMessage(session.id, {
+        type: 'assistant',
+        id: 'assistant-large',
+        turnId: 'turn-large',
+        ts: 6,
+        text: 'x'.repeat(70 * 1024),
+        modelId: 'model-1',
+      });
+      const chunked = await store.readTurnContributionsSnapshot(session.id, null, 0, 128);
+      assert.deepEqual(
+        chunked.contributions.find((entry) => entry.turnId === 'turn-large'),
+        {
+          turnId: 'turn-large',
+          firstSequence: 5,
+          latestState: null,
+          hasAssistantMessage: true,
+          hasAssistantOutput: true,
+          hasToolResult: false,
+          hasFailedToolResult: false,
+          hasAbortNote: false,
+        },
+      );
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });

@@ -1390,7 +1390,12 @@ export class SqliteSessionMetadataStore {
       const throughSequence =
         request.throughSequence === undefined ? actualHighWater : request.throughSequence;
       if (throughSequence === null) {
-        return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
+        return {
+          throughSequence: null,
+          fragments: [],
+          rawBytes: 0,
+          next: null,
+        };
       }
       if (actualHighWater === null || throughSequence > actualHighWater) {
         throw new Error(`Session transcript watermark is ahead of durable storage: ${sessionId}`);
@@ -1614,7 +1619,7 @@ export class SqliteSessionMetadataStore {
     sessionId: string,
     throughSequence: number | null,
     position: number,
-    maxMessages: number,
+    maxContributions: number,
   ): Promise<SessionTurnContributionPage> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
@@ -1623,9 +1628,9 @@ export class SqliteSessionMetadataStore {
         (!Number.isSafeInteger(throughSequence) || throughSequence < 0)) ||
       !Number.isSafeInteger(position) ||
       position < 0 ||
-      !Number.isSafeInteger(maxMessages) ||
-      maxMessages < 1 ||
-      maxMessages > 256
+      !Number.isSafeInteger(maxContributions) ||
+      maxContributions < 1 ||
+      maxContributions > 128
     ) {
       throw new Error('Invalid Session turn contribution request');
     }
@@ -1642,91 +1647,54 @@ export class SqliteSessionMetadataStore {
       if (actualHighWater === null || fixedThrough > actualHighWater) {
         throw new Error(`Session turn watermark is ahead of durable storage: ${sessionId}`);
       }
-      const rows = this.db
-        .prepare(
-          `
-          SELECT sequence,
-            json_extract(record_json, '$.turnId') AS turn_id,
-            CASE
-              WHEN json_extract(record_json, '$.type') = 'turn_state' THEN record_json
-              ELSE NULL
-            END AS turn_state_json,
-            CASE
-              WHEN json_extract(record_json, '$.type') = 'assistant' THEN 1
-              ELSE 0
-            END AS has_assistant_message,
-            CASE
-              WHEN json_extract(record_json, '$.type') = 'assistant'
-                AND length(trim(COALESCE(json_extract(record_json, '$.text'), ''))) > 0 THEN 1
-              ELSE 0
-            END AS has_assistant_output,
-            CASE WHEN json_extract(record_json, '$.type') = 'tool_result' THEN 1 ELSE 0 END
-              AS has_tool_result,
-            CASE
-              WHEN json_extract(record_json, '$.type') = 'tool_result'
-                AND json_extract(record_json, '$.isError') = 1 THEN 1
-              ELSE 0
-            END AS has_failed_tool_result,
-            CASE
-              WHEN json_extract(record_json, '$.type') = 'system_note'
-                AND json_extract(record_json, '$.kind') = 'abort' THEN 1
-              ELSE 0
-            END AS has_abort_note
-          FROM session_messages
-          WHERE session_id = ? AND sequence >= ? AND sequence <= ?
-          ORDER BY sequence ASC
-          LIMIT ?
-        `,
-        )
-        .all(
-          sessionId,
-          position,
-          fixedThrough,
-          maxMessages,
-        ) as unknown as SessionTurnContributionRow[];
       const contributions = new Map<string, SessionTurnContribution>();
-      for (const row of rows) {
-        const sequence = requireStoredMessageSequence(row.sequence, sessionId);
-        if (typeof row.turn_id !== 'string' || row.turn_id.length === 0) continue;
-        const current = contributions.get(row.turn_id) ?? {
-          turnId: row.turn_id,
-          firstSequence: sequence,
-          latestState: null,
-          hasAssistantMessage: false,
-          hasAssistantOutput: false,
-          hasToolResult: false,
-          hasFailedToolResult: false,
-          hasAbortNote: false,
-        };
-        let latestState = current.latestState;
-        if (row.turn_state_json !== null) {
-          const message = decodeStoredMessage(JSON.parse(row.turn_state_json) as unknown);
-          if (message.type !== 'turn_state') {
-            throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
-          }
-          latestState = { sequence, message };
+      let nextPosition: number | null = position;
+      while (nextPosition <= fixedThrough) {
+        const rows = this.db
+          .prepare(
+            `
+            SELECT message.sequence, message.record_json, payload.record_bytes, payload.sha256
+            FROM session_messages AS message
+            LEFT JOIN session_message_payloads AS payload
+              ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+            WHERE message.session_id = ?
+              AND message.sequence >= ?
+              AND message.sequence <= ?
+            ORDER BY message.sequence ASC
+            LIMIT 128
+          `,
+          )
+          .all(sessionId, nextPosition, fixedThrough) as StoredSessionMessagePayloadRow[];
+        if (rows.length === 0) {
+          throw new StoredSessionMessageIncompatibleError(sessionId, nextPosition);
         }
-        contributions.set(row.turn_id, {
-          ...current,
-          latestState,
-          hasAssistantMessage: current.hasAssistantMessage || row.has_assistant_message === 1,
-          hasAssistantOutput: current.hasAssistantOutput || row.has_assistant_output === 1,
-          hasToolResult: current.hasToolResult || row.has_tool_result === 1,
-          hasFailedToolResult: current.hasFailedToolResult || row.has_failed_tool_result === 1,
-          hasAbortNote: current.hasAbortNote || row.has_abort_note === 1,
-        });
+        for (const row of rows) {
+          const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+          const message = decodeStoredMessageRecordRow(this.db, sessionId, row);
+          if (!('turnId' in message) || typeof message.turnId !== 'string') {
+            nextPosition = sequence + 1;
+            continue;
+          }
+          const turnId = message.turnId;
+          if (turnId && !contributions.has(turnId) && contributions.size >= maxContributions) {
+            nextPosition = sequence;
+            return {
+              throughSequence: fixedThrough,
+              contributions: [...contributions.values()],
+              nextPosition,
+            };
+          }
+          contributions.set(
+            turnId,
+            foldTurnContribution(contributions.get(turnId), turnId, sequence, message),
+          );
+          nextPosition = sequence + 1;
+        }
       }
-      const lastSequence = rows.at(-1)?.sequence;
-      const nextPosition =
-        rows.length === maxMessages &&
-        typeof lastSequence === 'number' &&
-        lastSequence < fixedThrough
-          ? lastSequence + 1
-          : null;
       return {
         throughSequence: fixedThrough,
         contributions: [...contributions.values()],
-        nextPosition,
+        nextPosition: null,
       };
     });
   }
@@ -1744,10 +1712,12 @@ export class SqliteSessionMetadataStore {
     if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
     const sequences = (
       this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT sequence FROM session_messages
           WHERE session_id = ? ORDER BY sequence DESC LIMIT ?
-        `)
+        `,
+        )
         .all(sessionId, limit) as Array<{ sequence?: unknown }>
     )
       .map((row) => requireStoredMessageSequence(row.sequence, sessionId))
@@ -3600,7 +3570,10 @@ export class SqliteSessionMetadataStore {
   private insertSessionMessagesSync(
     sessionId: string,
     firstSequence: number,
-    entries: readonly { readonly message: StoredMessage; readonly json: string }[],
+    entries: readonly {
+      readonly message: StoredMessage;
+      readonly json: string;
+    }[],
   ): void {
     const insertMessage = this.db.prepare(`
       INSERT INTO session_messages(
@@ -4352,17 +4325,6 @@ interface SessionMetadataRow {
   committed_at: number;
 }
 
-interface SessionTurnContributionRow {
-  readonly sequence?: unknown;
-  readonly turn_id?: unknown;
-  readonly turn_state_json: string | null;
-  readonly has_assistant_message?: unknown;
-  readonly has_assistant_output?: unknown;
-  readonly has_tool_result?: unknown;
-  readonly has_failed_tool_result?: unknown;
-  readonly has_abort_note?: unknown;
-}
-
 interface OwnedAgentGraphOperatorRow extends SessionMetadataRow {
   graph_id: string;
   work_id: string;
@@ -5013,6 +4975,92 @@ function decodeStoredMessageRow(
   }
 }
 
+interface StoredSessionMessagePayloadRow {
+  readonly sequence?: unknown;
+  readonly record_json?: unknown;
+  readonly record_bytes?: unknown;
+  readonly sha256?: unknown;
+}
+
+function decodeStoredMessageRecordRow(
+  db: DatabaseSync,
+  sessionId: string,
+  row: StoredSessionMessagePayloadRow,
+): StoredMessage {
+  const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+  return decodeStoredMessageRow(
+    {
+      sequence,
+      record_json: readStoredMessageRecordJson(db, sessionId, sequence, row),
+    },
+    sessionId,
+  );
+}
+
+function readStoredMessageRecordJson(
+  db: DatabaseSync,
+  sessionId: string,
+  sequence: number,
+  row: StoredSessionMessagePayloadRow,
+): string {
+  let recordJson: string;
+  if (row.record_bytes === null) {
+    if (
+      typeof row.record_json !== 'string' ||
+      row.record_json === SQLITE_SESSION_MESSAGE_CHUNK_MARKER
+    ) {
+      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+    }
+    recordJson = row.record_json;
+  } else {
+    const recordBytes = requireTranscriptRecordByteLength(row.record_bytes, sessionId, sequence);
+    if (
+      row.record_json !== SQLITE_SESSION_MESSAGE_CHUNK_MARKER ||
+      recordBytes <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES ||
+      typeof row.sha256 !== 'string'
+    ) {
+      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+    }
+    const data = readChunkedTranscriptRecord(db, sessionId, sequence, recordBytes);
+    if (createHash('sha256').update(data).digest('hex') !== row.sha256) {
+      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+    }
+    recordJson = data.toString('utf8');
+  }
+  return recordJson;
+}
+
+function foldTurnContribution(
+  current: SessionTurnContribution | undefined,
+  turnId: string,
+  sequence: number,
+  message: StoredMessage,
+): SessionTurnContribution {
+  const contribution = current ?? {
+    turnId,
+    firstSequence: sequence,
+    latestState: null,
+    hasAssistantMessage: false,
+    hasAssistantOutput: false,
+    hasToolResult: false,
+    hasFailedToolResult: false,
+    hasAbortNote: false,
+  };
+  return {
+    ...contribution,
+    latestState: message.type === 'turn_state' ? { sequence, message } : contribution.latestState,
+    hasAssistantMessage: contribution.hasAssistantMessage || message.type === 'assistant',
+    hasAssistantOutput:
+      contribution.hasAssistantOutput ||
+      (message.type === 'assistant' && message.text.trim().length > 0),
+    hasToolResult: contribution.hasToolResult || message.type === 'tool_result',
+    hasFailedToolResult:
+      contribution.hasFailedToolResult || (message.type === 'tool_result' && message.isError),
+    hasAbortNote:
+      contribution.hasAbortNote || (message.type === 'system_note' && message.kind === 'abort'),
+  };
+}
+
 function readStoredMessageRows(
   db: DatabaseSync,
   sessionId: string,
@@ -5031,39 +5079,16 @@ function readStoredMessageRows(
         ORDER BY message.sequence
       `,
     )
-    .all(sessionId, ...sequences) as Array<{
-    sequence?: unknown;
-    record_json?: unknown;
-    record_bytes?: unknown;
-    sha256?: unknown;
-  }>;
+    .all(sessionId, ...sequences) as StoredSessionMessagePayloadRow[];
   if (rows.length !== sequences.length) {
     throw new StoredSessionMessageIncompatibleError(sessionId, -1);
   }
   return rows.map((row) => {
     const sequence = requireStoredMessageSequence(row.sequence, sessionId);
-    if (row.record_bytes === null) {
-      if (
-        typeof row.record_json !== 'string' ||
-        row.record_json === SQLITE_SESSION_MESSAGE_CHUNK_MARKER
-      ) {
-        throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
-      }
-      return { sequence, recordJson: row.record_json };
-    }
-    const recordBytes = requireTranscriptRecordByteLength(row.record_bytes, sessionId, sequence);
-    if (
-      row.record_json !== SQLITE_SESSION_MESSAGE_CHUNK_MARKER ||
-      recordBytes <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES ||
-      typeof row.sha256 !== 'string'
-    ) {
-      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
-    }
-    const data = readChunkedTranscriptRecord(db, sessionId, sequence, recordBytes);
-    if (createHash('sha256').update(data).digest('hex') !== row.sha256) {
-      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
-    }
-    return { sequence, recordJson: data.toString('utf8') };
+    return {
+      sequence,
+      recordJson: readStoredMessageRecordJson(db, sessionId, sequence, row),
+    };
   });
 }
 
@@ -5074,12 +5099,14 @@ function readChunkedTranscriptRecord(
   recordBytes: number,
 ): Buffer {
   const rows = db
-    .prepare(`
+    .prepare(
+      `
       SELECT chunk_index, data, sha256
       FROM session_message_chunks
       WHERE session_id = ? AND sequence = ?
       ORDER BY chunk_index
-    `)
+    `,
+    )
     .all(sessionId, sequence) as Array<{
     chunk_index?: unknown;
     data?: unknown;
@@ -5250,7 +5277,10 @@ function readTranscriptSlices(
             ON message.session_id = ? AND message.sequence = requested.sequence
         `,
       )
-      .all(...inlineParameters, sessionId) as Array<{ sequence?: unknown; data?: unknown }>;
+      .all(...inlineParameters, sessionId) as Array<{
+      sequence?: unknown;
+      data?: unknown;
+    }>;
     for (const row of inlineRows) {
       const sequence = requireStoredMessageSequence(row.sequence, sessionId);
       if (!(row.data instanceof Uint8Array)) {
@@ -5272,7 +5302,9 @@ function validateTranscriptRecord(
       JSON.parse(typeof data === 'string' ? data : data.toString('utf8')) as unknown,
     );
   } catch (error) {
-    throw new StoredSessionMessageIncompatibleError(sessionId, sequence, { cause: error });
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence, {
+      cause: error,
+    });
   }
 }
 

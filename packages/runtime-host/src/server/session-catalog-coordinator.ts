@@ -238,7 +238,7 @@ export class HostSessionCatalogCoordinator {
         input.sessionId,
         input.throughSequence,
         input.position,
-        input.maxMessages,
+        input.maxContributions,
       );
       return {
         ok: true,

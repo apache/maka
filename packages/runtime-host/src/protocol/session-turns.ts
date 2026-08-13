@@ -8,13 +8,16 @@ import {
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
-export const SESSION_TURN_QUERY_MAX_MESSAGES = 128;
+export const SESSION_TURN_QUERY_MAX_CONTRIBUTIONS = 128;
 export const SESSION_TURN_QUERY_RESULT_MAX_BYTES = 192 * 1024;
 
 export interface SessionTurnContribution {
   readonly turnId: string;
   readonly firstSequence: number;
-  readonly latestState: { readonly sequence: number; readonly message: TurnStateMessage } | null;
+  readonly latestState: {
+    readonly sequence: number;
+    readonly message: TurnStateMessage;
+  } | null;
   readonly hasAssistantMessage: boolean;
   readonly hasAssistantOutput: boolean;
   readonly hasToolResult: boolean;
@@ -26,7 +29,7 @@ export interface SessionTurnsQueryInput {
   readonly sessionId: string;
   readonly throughSequence: number | null;
   readonly position: number;
-  readonly maxMessages: number;
+  readonly maxContributions: number;
 }
 
 export interface SessionTurnsQueryResult {
@@ -131,11 +134,14 @@ export function decodeSessionTurnsQueryInput(value: unknown): SessionTurnsQueryI
     'sessionId',
     'throughSequence',
     'position',
-    'maxMessages',
+    'maxContributions',
   ]);
-  const maxMessages = requireCount(input.maxMessages, 'Session turn query message limit');
-  if (maxMessages < 1 || maxMessages > SESSION_TURN_QUERY_MAX_MESSAGES) {
-    throw invalidProtocolFrame('Invalid Session turn query message limit');
+  const maxContributions = requireCount(
+    input.maxContributions,
+    'Session turn query contribution limit',
+  );
+  if (maxContributions < 1 || maxContributions > SESSION_TURN_QUERY_MAX_CONTRIBUTIONS) {
+    throw invalidProtocolFrame('Invalid Session turn query contribution limit');
   }
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
@@ -144,7 +150,7 @@ export function decodeSessionTurnsQueryInput(value: unknown): SessionTurnsQueryI
         ? null
         : requireCount(input.throughSequence, 'Session turn query watermark'),
     position: requireCount(input.position, 'Session turn query position'),
-    maxMessages,
+    maxContributions,
   };
 }
 
@@ -158,7 +164,7 @@ export function decodeSessionTurnsQueryResult(value: unknown): SessionTurnsQuery
   ]);
   if (
     !Array.isArray(result.contributions) ||
-    result.contributions.length > SESSION_TURN_QUERY_MAX_MESSAGES
+    result.contributions.length > SESSION_TURN_QUERY_MAX_CONTRIBUTIONS
   ) {
     throw invalidProtocolFrame('Invalid Session turn query contributions');
   }

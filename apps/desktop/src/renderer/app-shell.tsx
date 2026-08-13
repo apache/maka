@@ -182,7 +182,6 @@ import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellLayout } from './use-shell-layout';
 import { useShellResume } from './use-shell-resume';
 import { recoverOrphanedCompanionCopies } from './quote-companion-core';
-import { desktopSessionsWithTurnIndex } from './session-turn-index.js';
 import { useSideConversationWorkspace } from './use-side-conversation-workspace';
 
 function rebaseWorkspaceFileReferences(
@@ -372,7 +371,10 @@ function AppShellContent({
     removeAttachment,
     clearSubmittedAttachments,
     clearAllAttachments,
-  } = useAppShellComposerAttachments({ draftKey: attachmentDraftKey, toastApi });
+  } = useAppShellComposerAttachments({
+    draftKey: attachmentDraftKey,
+    toastApi,
+  });
   const {
     pendingQuotes,
     addQuote,
@@ -615,7 +617,7 @@ function AppShellContent({
   useLayoutEffect(() => {
     if (companionRecoveryStartedRef.current) return;
     companionRecoveryStartedRef.current = true;
-    void recoverOrphanedCompanionCopies(desktopSessionsWithTurnIndex());
+    void recoverOrphanedCompanionCopies(window.maka.sessions);
   }, []);
   const onCompanionForkVisibilityChange = useCallback(
     (event: Parameters<typeof applyCompanionForkVisibilityEvent>[1]) =>
@@ -1829,7 +1831,9 @@ function AppShellContent({
     onArchive: archiveProject,
     onRestore: restoreProject,
     ...(projectCapabilities.chooseClientDirectory
-      ? { onRelink: (projectId: string) => relinkProject(projectId).then(() => undefined) }
+      ? {
+          onRelink: (projectId: string) => relinkProject(projectId).then(() => undefined),
+        }
       : {}),
   };
 
@@ -2583,7 +2587,9 @@ function AppShellContent({
       style={
         sessionListCollapsed
           ? undefined
-          : ({ '--maka-sidenav-width': `${sessionListWidth}px` } as CSSProperties)
+          : ({
+              '--maka-sidenav-width': `${sessionListWidth}px`,
+            } as CSSProperties)
       }
     >
       <LiveTurnReconciler

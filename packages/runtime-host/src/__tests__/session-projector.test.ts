@@ -10,7 +10,7 @@ import type { SessionContinuitySnapshot, SubscriptionFrame } from '../protocol/i
 test('applies authoritative replacement once and does not complete it again at Turn terminal', () => {
   const projector = new RuntimeHostSessionProjector(
     snapshot(),
-    createRuntimeHostSessionProjectionSeed([assistant('message-1', 'draft')], 'turn-1'),
+    createRuntimeHostSessionProjectionSeed([assistant('message-1', 'draft')], snapshot()),
     () => 10,
     [{ kind: 'text', turnId: 'turn-1', messageId: 'message-1' }],
   );
@@ -59,7 +59,7 @@ test('seeds only streams identified as active by the Host catch-up state', () =>
   ];
   const projector = new RuntimeHostSessionProjector(
     snapshot(),
-    createRuntimeHostSessionProjectionSeed(transcript, 'turn-1'),
+    createRuntimeHostSessionProjectionSeed(transcript, snapshot()),
     () => 10,
     [{ kind: 'thinking', turnId: 'turn-1', messageId: 'active-step' }],
   );
@@ -89,7 +89,7 @@ test('does not replay settled transcript steps when the active step reaches term
   ];
   const projector = new RuntimeHostSessionProjector(
     snapshot(),
-    createRuntimeHostSessionProjectionSeed(transcript, 'turn-1'),
+    createRuntimeHostSessionProjectionSeed(transcript, snapshot()),
     () => 10,
     [
       { kind: 'text', turnId: 'turn-1', messageId: 'active-step' },
@@ -185,7 +185,12 @@ function snapshot(overrides: Partial<SessionContinuitySnapshot> = {}): SessionCo
       status: 'running',
     },
     goal: null,
-    queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
+    queue: {
+      hostEpoch: 'host-1',
+      queueRevision: 0,
+      steering: [],
+      followup: [],
+    },
     interactions: { pending: [] },
     ...overrides,
   };

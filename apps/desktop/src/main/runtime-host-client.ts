@@ -1311,7 +1311,7 @@ export class DesktopRuntimeHostClient {
           sessionId,
           throughSequence,
           position,
-          maxMessages: 128,
+          maxContributions: 128,
         },
       );
       throughSequence = page.throughSequence;
@@ -1333,19 +1333,6 @@ export class DesktopRuntimeHostClient {
     return [...contributions.values()]
       .sort((left, right) => left.firstSequence - right.firstSequence)
       .map(projectSessionTurnContribution);
-  }
-
-  querySessionTurnContributions(
-    sessionId: string,
-    throughSequence: number | null,
-    position: number,
-  ): Promise<OperationOutput<'session.turns.query'>> {
-    return this.request('session.turns.query', {
-      sessionId,
-      throughSequence,
-      position,
-      maxMessages: 128,
-    });
   }
 
   close(): Promise<void> {

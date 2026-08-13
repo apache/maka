@@ -70,7 +70,7 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { SessionChangedEvent, SessionSummary } from '@maka/core/session';
+import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type { ExternalSessionSummary } from '@maka/core/external-session';
@@ -486,7 +486,10 @@ async function bridgeResult<T>(operation: () => Promise<T>, code: string): Promi
   } catch (error) {
     return {
       ok: false,
-      error: { code, message: error instanceof Error ? error.message : String(error) },
+      error: {
+        code,
+        message: error instanceof Error ? error.message : String(error),
+      },
     };
   }
 }
@@ -523,7 +526,10 @@ const makaBridge = {
       return ipcRenderer.invoke('runtime-host-ssh-terminal:getSnapshot');
     },
     write(sessionId: string, data: string) {
-      return ipcRenderer.invoke('runtime-host-ssh-terminal:write', { sessionId, data });
+      return ipcRenderer.invoke('runtime-host-ssh-terminal:write', {
+        sessionId,
+        data,
+      });
     },
     resize(sessionId: string, cols: number, rows: number) {
       return ipcRenderer.invoke('runtime-host-ssh-terminal:resize', {
@@ -698,17 +704,8 @@ const makaBridge = {
     ): () => void {
       return subscribeActiveRuntimeHostEvent('sessions:active-interactions-changed', handler);
     },
-    queryTurnContributions(
-      sessionId: string,
-      throughSequence: number | null,
-      position: number,
-    ): Promise<OperationOutput<'session.turns.query'>> {
-      return ipcRenderer.invoke(
-        'sessions:queryTurnContributions',
-        sessionId,
-        throughSequence,
-        position,
-      );
+    listTurns(sessionId: string): Promise<TurnRecord[]> {
+      return ipcRenderer.invoke('sessions:listTurns', sessionId);
     },
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void> {
       return invokeActiveRuntimeHost('sessions:regenerateTurn', sessionId, input);
@@ -1195,7 +1192,15 @@ const makaBridge = {
   },
   attachments: {
     pickFiles(): Promise<
-      | { ok: true; files: { approvalId: string; name: string; mimeType?: string; size: number }[] }
+      | {
+          ok: true;
+          files: {
+            approvalId: string;
+            name: string;
+            mimeType?: string;
+            size: number;
+          }[];
+        }
       | { ok: false; reason: 'cancelled' }
     > {
       return ipcRenderer.invoke('attachments:pickFiles');
@@ -1402,19 +1407,29 @@ const makaBridge = {
       return mutateScheduledTask({ kind: 'update', taskId: id, patch });
     },
     setEnabled(id: string, enabled: boolean): Promise<ScheduledTask> {
-      return mutateScheduledTask({ kind: enabled ? 'resume' : 'pause', taskId: id });
+      return mutateScheduledTask({
+        kind: enabled ? 'resume' : 'pause',
+        taskId: id,
+      });
     },
     triggerNow(id: string): Promise<ScheduledTask> {
       return mutateScheduledTask({ kind: 'trigger_now', taskId: id });
     },
     snooze(id: string): Promise<ScheduledTask> {
-      return mutateScheduledTask({ kind: 'snooze', taskId: id, delayMs: 10 * 60 * 1000 });
+      return mutateScheduledTask({
+        kind: 'snooze',
+        taskId: id,
+        delayMs: 10 * 60 * 1000,
+      });
     },
     clearRunHistory(id: string): Promise<ScheduledTask> {
       return mutateScheduledTask({ kind: 'clear_history', taskId: id });
     },
     async delete(id: string): Promise<void> {
-      await runtimeHost.command('scheduled-task.mutate', { kind: 'delete', taskId: id });
+      await runtimeHost.command('scheduled-task.mutate', {
+        kind: 'delete',
+        taskId: id,
+      });
     },
     subscribeChanges(handler: (event: { type: 'scheduled_tasks_changed'; reason: string; taskId?: string; ts: number }) => void): () => void {
       return subscribeActiveRuntimeHostEvent('scheduled-tasks:changed', handler);
@@ -1518,7 +1533,9 @@ const makaBridge = {
       }, 'DAILY_REVIEW_DAY_FAILED');
     },
     async getConfig(): Promise<DailyReviewConfig> {
-      const result = await runtimeHost.query('daily-review.query', { kind: 'config' });
+      const result = await runtimeHost.query('daily-review.query', {
+        kind: 'config',
+      });
       if (result.kind !== 'config') throw new Error('Invalid Daily Review config');
       return result.config;
     },
@@ -1540,7 +1557,10 @@ const makaBridge = {
       return listDailyReviewArchives();
     },
     async getArchive(archiveId: string): Promise<DailyReviewArchive | null> {
-      const result = await runtimeHost.query('daily-review.query', { kind: 'archive', archiveId });
+      const result = await runtimeHost.query('daily-review.query', {
+        kind: 'archive',
+        archiveId,
+      });
       if (result.kind !== 'archive') throw new Error('Invalid Daily Review archive');
       return result.archive;
     },
@@ -1611,7 +1631,11 @@ const makaBridge = {
           ok: true;
           includedData: ConfigCategory[];
           result: {
-            connections?: { created: number; overwritten: number; skipped: number };
+            connections?: {
+              created: number;
+              overwritten: number;
+              skipped: number;
+            };
             settings?: { applied: boolean };
             credentials?: { applied: number; skipped: number };
             memory?: { applied: boolean };
@@ -1808,7 +1832,10 @@ const makaBridge = {
     },
     setPinned(skillRef: string, pinned: boolean): Promise<
       | { ok: true; skill: SkillEntry }
-      | { ok: false; reason: 'not_found' | 'blocked_path' | 'state_error' | 'write_failed' }
+      | {
+          ok: false;
+          reason: 'not_found' | 'blocked_path' | 'state_error' | 'write_failed';
+        }
     > {
       return invokeActiveRuntimeHost('skills:setPinned', skillRef, pinned);
     },

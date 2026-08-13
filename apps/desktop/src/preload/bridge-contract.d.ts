@@ -40,7 +40,7 @@ import type {
 } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { SessionChangedEvent, SessionSummary } from '@maka/core/session';
+import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type { ExternalSessionSummary } from '@maka/core/external-session';
@@ -441,11 +441,7 @@ export interface MakaBridge {
         interactions: ActiveInteractionRequestEvent[];
       }) => void,
     ): () => void;
-    queryTurnContributions(
-      sessionId: string,
-      throughSequence: number | null,
-      position: number,
-    ): Promise<OperationOutput<'session.turns.query'>>;
+    listTurns(sessionId: string): Promise<TurnRecord[]>;
     compact(sessionId: string): Promise<void>;
     resumeLatest(sessionId: string): Promise<
       | { disposition: 'started'; runId: string; turnId: string }
@@ -507,11 +503,10 @@ export interface MakaBridge {
   };
   externalSessions: {
     listSources(): Promise<{ adapterIds: string[] }>;
-    list(input: {
-      adapterId: string;
-      includeArchived?: boolean;
-      cursor?: string;
-    }): Promise<{ sessions: ExternalSessionSummary[]; nextCursor: string | null }>;
+    list(input: { adapterId: string; includeArchived?: boolean; cursor?: string }): Promise<{
+      sessions: ExternalSessionSummary[];
+      nextCursor: string | null;
+    }>;
     import(input: {
       adapterId: string;
       sourceSessionId: string;
@@ -691,7 +686,15 @@ export interface MakaBridge {
   };
   attachments: {
     pickFiles(): Promise<
-      | { ok: true; files: { approvalId: string; name: string; mimeType?: string; size: number }[] }
+      | {
+          ok: true;
+          files: {
+            approvalId: string;
+            name: string;
+            mimeType?: string;
+            size: number;
+          }[];
+        }
       | { ok: false; reason: 'cancelled' }
     >;
     previewApproval(approvalId: string): Promise<
@@ -874,7 +877,11 @@ export interface MakaBridge {
           ok: true;
           includedData: ConfigCategory[];
           result: {
-            connections?: { created: number; overwritten: number; skipped: number };
+            connections?: {
+              created: number;
+              overwritten: number;
+              skipped: number;
+            };
             settings?: { applied: boolean };
             credentials?: { applied: number; skipped: number };
             memory?: { applied: boolean };

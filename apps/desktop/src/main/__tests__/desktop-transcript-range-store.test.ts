@@ -6,13 +6,20 @@ import {
   encodeDesktopTranscriptSnapshot,
 } from '../desktop-transcript-ipc.js';
 import { DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES } from '../../preload/transcript-contract.js';
-import { DesktopTranscriptRangeStore } from '../../renderer/desktop-transcript-range-store.js';
+import {
+  createDesktopTranscriptRangeController,
+  DesktopTranscriptRangeStore,
+} from '../../renderer/desktop-transcript-range-store.js';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 
 test('moves a fragmented overlay record to durable storage without duplicating it', () => {
   const message = assistantMessage('x'.repeat(DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES * 2));
-  const identity = { sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1' };
+  const identity = {
+    sessionId: 'session-1',
+    generation: 'generation-1',
+    hostEpoch: 'host-1',
+  };
   const store = new DesktopTranscriptRangeStore();
   const snapshot = encodeDesktopTranscriptSnapshot({
     ...identity,
@@ -131,7 +138,9 @@ test('keeps a bounded contiguous window while moving between history and the tai
     async close() {},
   });
   const maxResidentBytes = Buffer.byteLength(JSON.stringify(messages[0]!.message), 'utf8') + 1;
-  const replica = await DesktopTranscriptReplica.prepare(handle, { maxResidentBytes });
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes,
+  });
 
   assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [4]);
   await replica.loadBefore(4, 128 * 1024);
@@ -142,6 +151,40 @@ test('keeps a bounded contiguous window while moving between history and the tai
   assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [4]);
   assert.equal(replica.snapshot().hasNewer, false);
   assert.ok(replica.residentBytes <= maxResidentBytes);
+});
+
+test('reopens a failed transcript range with a fresh generation', async () => {
+  const store = new DesktopTranscriptRangeStore();
+  let attempts = 0;
+  const controller = createDesktopTranscriptRangeController(store, async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('open failed');
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      sessionId: 'session-1',
+      generation: 'reloaded',
+      hostEpoch: 'host-2',
+      durableThrough: null,
+      durable: [],
+      overlay: [],
+      hasOlder: false,
+      hasNewer: false,
+    }))
+      store.accept(batch);
+    return {
+      sessionId: 'session-1',
+      generation: 'reloaded',
+      hostEpoch: 'host-2',
+      readThroughMessageId: null,
+      async loadBefore() {},
+      async loadAround() {},
+      async close() {},
+    };
+  });
+
+  await assert.rejects(() => controller.ready(), /open failed/);
+  await controller.reload();
+  assert.equal(store.range().generation, 'reloaded');
+  await controller.close();
 });
 
 function assistantMessage(

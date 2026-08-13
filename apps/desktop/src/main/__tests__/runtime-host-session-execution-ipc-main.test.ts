@@ -17,59 +17,6 @@ import {
 import { RuntimeHostSessionObserver } from "../runtime-host-session-observer.js";
 import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
 
-test("advances the Host read marker through the last visible message", async () => {
-  const readMarkers: unknown[] = [];
-  const observer = observerWithTranscript([
-    {
-      type: "user",
-      id: "user-1",
-      turnId: "turn-1",
-      ts: 1,
-      text: "Hello",
-    },
-    {
-      type: "assistant",
-      id: "assistant-1",
-      turnId: "turn-1",
-      ts: 2,
-      text: "Hi",
-      modelId: "test-model",
-    },
-    {
-      type: "system_note",
-      id: "internal-tail",
-      turnId: "turn-1",
-      ts: 3,
-      kind: "session_resume",
-    },
-  ]);
-  const ipc = ipcHarness();
-  registerExecutionIpc(
-    {
-      client: executionClient({
-        setSessionReadMarker: async (sessionId, readThroughMessageId) => {
-          readMarkers.push({ sessionId, readThroughMessageId });
-          return session();
-        },
-      }),
-      observer,
-      attachmentApprovals: createAttachmentApprovalRegistry(),
-      emitSessionsChanged() {},
-      stat: async () => ({ size: 0 }),
-      resizeImage: async (bytes) => bytes,
-      beforeStop() {},
-    },
-    ipc,
-  );
-
-  await ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1');
-  assert.deepEqual(readMarkers, [
-    { sessionId: "session-1", readThroughMessageId: "assistant-1" },
-  ]);
-  await ipc.invoke('sessions:transcript:close', 'consumer-1');
-  await observer.close();
-});
-
 test("keeps synthetic E2E interactions visible through Host hydration and retires their answer", async () => {
   const observer = observerWithSnapshot();
   const ipc = ipcHarness();
@@ -156,7 +103,11 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
           });
           let copy = committed.get(input.targetSessionId);
           if (!copy) {
-            copy = { ...session(), id: input.targetSessionId, name: input.targetSessionId };
+            copy = {
+              ...session(),
+              id: input.targetSessionId,
+              name: input.targetSessionId,
+            };
             committed.set(input.targetSessionId, copy);
           }
           if (lostResponses.delete(input.targetSessionId)) {
@@ -628,7 +579,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     getSession: unavailable,
     ingestAttachment: unavailable,
     interruptTurn: unavailable,
-    querySessionTurnContributions: unavailable,
+    listSessionTurns: unavailable,
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,

@@ -38,7 +38,7 @@ import {
 } from './desktop-transcript-ipc.js';
 
 type SessionObserverClient = Pick<DesktopRuntimeHostClient, 'openSession'> &
-  Partial<Pick<DesktopRuntimeHostClient, 'listSessionTurns'>>;
+  Partial<Pick<DesktopRuntimeHostClient, 'listSessionTurns' | 'setSessionReadMarker'>>;
 
 export interface RuntimeHostSessionObserverTarget {
   readonly id: number;
@@ -90,6 +90,7 @@ interface ObservedSessionState {
   readonly watchedTurnIds: Set<string>;
   readonly transcriptConsumers: Map<string, TranscriptConsumer>;
   readonly subscriptionOwner: RuntimeHostSessionSubscriptionOwner;
+  pendingTranscriptConsumers: number;
   replica?: DesktopTranscriptReplica;
   snapshot?: SessionContinuitySnapshot;
   projector?: RuntimeHostSessionProjector;
@@ -177,9 +178,29 @@ export class RuntimeHostSessionObserver {
       throw new Error('Desktop transcript consumer identity was reused');
     }
     const state = this.#state(sessionId);
-    await state.subscriptionOwner.waitUntilReady();
-    const replica = state.replica;
-    if (!replica) throw new Error('Desktop transcript replica is unavailable');
+    state.pendingTranscriptConsumers += 1;
+    let replica: DesktopTranscriptReplica;
+    let admitted = false;
+    try {
+      await state.subscriptionOwner.waitUntilReady();
+      if (!state.replica?.resident) {
+        await state.subscriptionOwner.refresh();
+      }
+      replica = state.replica!;
+      if (!replica?.resident) {
+        throw new Error('Desktop transcript replica is unavailable');
+      }
+      if (!this.#touchReplica(state, state)) {
+        throw new Error('Desktop transcript cache capacity was reached');
+      }
+      admitted = true;
+    } finally {
+      state.pendingTranscriptConsumers -= 1;
+      if (!admitted) {
+        this.#touchReplica(state);
+        void this.#closeIfIdle(state);
+      }
+    }
     const destroyedListener = () => {
       void this.closeTranscript(consumerId);
     };
@@ -200,7 +221,8 @@ export class RuntimeHostSessionObserver {
       throw error;
     }
     this.#touchReplica(state);
-    const readThroughMessageId = replica.latestVisibleMessageId();
+    this.#markTranscriptRead(state, replica);
+    const readThroughMessageId = replica.latestDurableVisibleMessageId();
     return {
       sessionId,
       generation: replica.generation,
@@ -241,6 +263,7 @@ export class RuntimeHostSessionObserver {
       throw new Error('Desktop transcript consumer belongs to another renderer');
     }
     this.#detachTranscriptConsumer(state, consumer);
+    this.#touchReplica(state);
     await this.#closeIfIdle(state);
   }
 
@@ -448,6 +471,7 @@ export class RuntimeHostSessionObserver {
       watchedTurnIds: new Set(),
       transcriptConsumers: new Map(),
       subscriptionOwner,
+      pendingTranscriptConsumers: 0,
       transcriptAccess: 0,
       closing: false,
     };
@@ -766,13 +790,15 @@ export class RuntimeHostSessionObserver {
     if (
       state.targets.size > 0 ||
       state.watchedTurnIds.size > 0 ||
-      state.transcriptConsumers.size > 0
+      state.transcriptConsumers.size > 0 ||
+      state.pendingTranscriptConsumers > 0
     ) return;
     await Promise.resolve();
     if (
       state.targets.size === 0 &&
       state.watchedTurnIds.size === 0 &&
-      state.transcriptConsumers.size === 0
+      state.transcriptConsumers.size === 0 &&
+      state.pendingTranscriptConsumers === 0
     ) {
       await this.#closeState(state);
     }
@@ -871,6 +897,9 @@ export class RuntimeHostSessionObserver {
       change.durableUpserts.map((entry) => entry.message.id),
     );
     this.#sendTranscriptChange(state, replica, change);
+    if (!change.hasNewer && change.durableUpserts.length > 0) {
+      this.#markTranscriptRead(state, replica);
+    }
     this.#touchReplica(state);
     void this.#closeIfIdle(state);
   }
@@ -952,10 +981,13 @@ export class RuntimeHostSessionObserver {
     consumer.target.off('destroyed', consumer.destroyedListener);
   }
 
-  #touchReplica(state: ObservedSessionState): void {
+  #touchReplica(state: ObservedSessionState, protectedState?: ObservedSessionState): boolean {
     state.transcriptAccess = ++this.#transcriptAccessClock;
     let total = 0;
-    const replicas: Array<{ state: ObservedSessionState; replica: DesktopTranscriptReplica }> = [];
+    const replicas: Array<{
+      state: ObservedSessionState;
+      replica: DesktopTranscriptReplica;
+    }> = [];
     for (const candidate of this.#states.values()) {
       if (!candidate.replica) continue;
       total += candidate.replica.residentBytes;
@@ -971,6 +1003,28 @@ export class RuntimeHostSessionObserver {
       if (change) this.#sendTranscriptChange(candidate.state, candidate.replica, change);
       total -= before - candidate.replica.residentBytes;
     }
+    for (const candidate of replicas) {
+      if (total <= DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES) break;
+      if (
+        candidate.state === protectedState ||
+        candidate.state.pendingTranscriptConsumers > 0 ||
+        candidate.state.transcriptConsumers.size > 0
+      ) {
+        continue;
+      }
+      const before = candidate.replica.residentBytes;
+      candidate.replica.discard();
+      total -= before;
+    }
+    return total <= DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES;
+  }
+
+  #markTranscriptRead(state: ObservedSessionState, replica: DesktopTranscriptReplica): void {
+    if (state.transcriptConsumers.size === 0) return;
+    const messageId = replica.latestDurableVisibleMessageId();
+    if (!messageId) return;
+    const update = this.#client.setSessionReadMarker?.(state.sessionId, messageId);
+    if (update) void update.catch(() => undefined);
   }
 }
 
