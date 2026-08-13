@@ -1387,6 +1387,8 @@ test('lets an active recovery supersede a concurrent cold refresh', async () => 
   const recoveredEvents = new AsyncFrameQueue();
   const candidateTranscript = deferred<StoredMessage[]>();
   const accepted: SubscriptionFrame[] = [];
+  let preparationBytes = 0;
+  let sawCandidateBytes = false;
   let opens = 0;
   const owner = new RuntimeHostSessionSubscriptionOwner({
     client: {
@@ -1406,6 +1408,12 @@ test('lets an active recovery supersede a concurrent cold refresh', async () => 
     },
     sessionId: 'session-1',
     now: () => 0,
+    transcriptReplicaOptions: {
+      accountPreparationBytes(deltaBytes) {
+        preparationBytes += deltaBytes;
+        if (preparationBytes > 0) sawCandidateBytes = true;
+      },
+    },
     async prepareActivation() {
       return () => undefined;
     },
@@ -1434,6 +1442,17 @@ test('lets an active recovery supersede a concurrent cold refresh', async () => 
   await refresh;
 
   assert.equal(opens, 3);
+  candidateTranscript.resolve([
+    {
+      type: 'assistant',
+      id: 'candidate-message',
+      turnId: 'candidate-turn',
+      ts: 1,
+      text: 'late candidate',
+      modelId: 'test-model',
+    },
+  ]);
+  await waitFor(() => sawCandidateBytes && preparationBytes === 0);
   recoveredEvents.push(deltaFrame(1, 0, 'recovered'));
   await waitFor(() => accepted.length === 1);
   await owner.close();

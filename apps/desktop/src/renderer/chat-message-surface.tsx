@@ -73,7 +73,7 @@ interface ChatMessageSurfaceProps extends Omit<
   hasNewerHistory: boolean;
   historyLoadPending: boolean;
   onLoadEarlierHistory: () => Promise<void> | void;
-  onReturnToLatestHistory: () => void;
+  onReturnToLatestHistory: () => Promise<void> | void;
 }
 
 function captureLiveContent(
@@ -214,17 +214,6 @@ export function ChatMessageSurface({
 
   return (
     <>
-      {hasNewerHistory && (
-        <div className="maka-transcript-history-controls">
-          <Button
-            label={transcriptCopy.returnLatest}
-            variant="ghost"
-            size="sm"
-            isDisabled={historyLoadPending}
-            onClick={onReturnToLatestHistory}
-          />
-        </div>
-      )}
       <ChatView
         {...chatViewRest}
         liveTurn={liveTurn}
@@ -237,6 +226,11 @@ export function ChatMessageSurface({
         hasOlderHistory={hasOlderHistory}
         historyLoadPending={historyLoadPending}
         onLoadEarlierHistory={onLoadEarlierHistory}
+        returnToLatest={hasNewerHistory ? {
+          label: transcriptCopy.returnLatest,
+          isPending: historyLoadPending,
+          onClick: onReturnToLatestHistory,
+        } : undefined}
       />
       {taskReadinessNotice && (
         <div className="maka-workspace-readiness-notice">

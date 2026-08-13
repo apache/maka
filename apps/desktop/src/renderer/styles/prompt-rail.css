@@ -1,4 +1,4 @@
-/* Codex-style prompt navigation rail: one tick per user prompt, pinned to the
+/* Codex-style prompt navigation rail: bounded prompt landmarks pinned to the
    right edge of the chat scrollport. Low-key by default, brightens on hover;
    each tick jumps to that prompt and the active turn's tick stays highlighted.
    The tick bar draws in `currentColor` so active/hover just shift the neutral

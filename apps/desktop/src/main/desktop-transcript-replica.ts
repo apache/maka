@@ -239,12 +239,13 @@ export class DesktopTranscriptReplica {
     sequence: number,
     maxBytes: number,
   ): Promise<void> {
+    const loadTail = sequence === throughSequence;
     const page = await this.#handle.loadTranscriptPage({
       source: 'durable',
-      direction: 'older',
+      direction: loadTail ? 'older' : 'newer',
       throughSequence,
       cursor: null,
-      anchorSequence: sequence + 1,
+      anchorSequence: loadTail ? sequence + 1 : sequence === 0 ? null : sequence - 1,
       maxBytes,
     });
     await this.#withDecodedPage(page, (decoded) => {
@@ -252,7 +253,9 @@ export class DesktopTranscriptReplica {
       this.#acceptRange(decoded.messages);
       if (
         decoded.messages.length > 0 &&
-        decoded.messages.at(-1)!.identity !== sequence
+        (loadTail
+          ? decoded.messages.at(-1)!.identity !== sequence
+          : decoded.messages[0]!.identity !== sequence)
       ) {
         throw correlationError('Desktop transcript range did not meet its anchor');
       }
@@ -260,9 +263,11 @@ export class DesktopTranscriptReplica {
       this.#clearDurable();
       const completedOverlayMessageIds = this.#installDurable(decoded.messages);
       this.#durableThrough = throughSequence;
-      this.#hasOlder = decoded.nextCursor !== null;
-      this.#hasNewer = sequence < throughSequence;
-      evictedDurableSequences.push(...this.#evictToBudget());
+      this.#hasOlder = loadTail ? decoded.nextCursor !== null : sequence > 0;
+      this.#hasNewer = loadTail ? false : decoded.nextCursor !== null;
+      evictedDurableSequences.push(
+        ...this.#evictToBudget(this.#maxResidentBytes, loadTail ? 'oldest' : 'newest'),
+      );
       this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
     });
   }

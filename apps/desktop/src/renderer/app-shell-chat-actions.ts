@@ -405,6 +405,23 @@ export function createAppShellChatActions(deps: {
         return true;
       }
       const sessionId = initialSessionId;
+      const transcript = transcriptRangeRef.current;
+      if (transcript) {
+        let hasNewer = false;
+        try {
+          const range = transcript.store.range();
+          hasNewer = range.sessionId === sessionId && range.hasNewer;
+        } catch {
+          // An unopened transcript is not a sparse historical view.
+        }
+        if (hasNewer) {
+          await transcript.loadLatest();
+          if (activeIdRef.current !== sessionId || transcriptRangeRef.current !== transcript) {
+            return false;
+          }
+          setMessages([...transcript.store.snapshot().messages]);
+        }
+      }
       optimisticSessionId = sessionId;
       optimisticTurnId = turnId;
       armTurnActive(sessionId, turnId);

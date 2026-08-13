@@ -73,29 +73,64 @@ export function projectSessionTurnContributionForWire(
 ): SessionTurnContribution {
   const latestState = contribution.latestState;
   const projectedLatestState = latestState
-    ? (() => {
-        const { abortSource, errorClass, ...message } = latestState.message;
-        return {
-          ...latestState,
-          message: {
-            ...message,
-            ...(abortSource
-              ? { abortSource: truncateUtf8(abortSource, SESSION_TURN_DIAGNOSTIC_MAX_BYTES) }
-              : {}),
-            ...(errorClass
-              ? { errorClass: truncateUtf8(errorClass, SESSION_TURN_DIAGNOSTIC_MAX_BYTES) }
-              : {}),
-          },
-        };
-      })()
+    ? {
+        sequence: latestState.sequence,
+        message: projectTurnStateMessageForWire(latestState.message),
+      }
     : null;
   return {
-    ...contribution,
+    turnId: requireEntityId(contribution.turnId, 'turnId'),
+    firstSequence: contribution.firstSequence,
     latestState: projectedLatestState,
     userPromptPreview:
       contribution.userPromptPreview === null
         ? null
         : truncateUtf8(contribution.userPromptPreview, SESSION_TURN_PROMPT_PREVIEW_MAX_BYTES),
+    hasAssistantMessage: contribution.hasAssistantMessage,
+    hasAssistantOutput: contribution.hasAssistantOutput,
+    hasToolResult: contribution.hasToolResult,
+    hasFailedToolResult: contribution.hasFailedToolResult,
+    hasAbortNote: contribution.hasAbortNote,
+  };
+}
+
+function projectTurnStateMessageForWire(message: TurnStateMessage): TurnStateMessage {
+  return {
+    type: 'turn_state',
+    id: requireEntityId(message.id, 'messageId'),
+    turnId: requireEntityId(message.turnId, 'turnId'),
+    ts: message.ts,
+    status: message.status,
+    ...(message.parentTurnId === undefined
+      ? {}
+      : { parentTurnId: requireEntityId(message.parentTurnId, 'parentTurnId') }),
+    ...(message.retriedFromTurnId === undefined
+      ? {}
+      : { retriedFromTurnId: requireEntityId(message.retriedFromTurnId, 'retriedFromTurnId') }),
+    ...(message.regeneratedFromTurnId === undefined
+      ? {}
+      : {
+          regeneratedFromTurnId: requireEntityId(
+            message.regeneratedFromTurnId,
+            'regeneratedFromTurnId',
+          ),
+        }),
+    ...(message.branchOfTurnId === undefined
+      ? {}
+      : { branchOfTurnId: requireEntityId(message.branchOfTurnId, 'branchOfTurnId') }),
+    ...(message.parentSessionId === undefined
+      ? {}
+      : { parentSessionId: requireEntityId(message.parentSessionId, 'parentSessionId') }),
+    ...(message.abortedAt === undefined ? {} : { abortedAt: message.abortedAt }),
+    ...(message.abortSource
+      ? {
+          abortSource: truncateUtf8(message.abortSource, SESSION_TURN_DIAGNOSTIC_MAX_BYTES),
+        }
+      : {}),
+    ...(message.errorClass
+      ? { errorClass: truncateUtf8(message.errorClass, SESSION_TURN_DIAGNOSTIC_MAX_BYTES) }
+      : {}),
+    partialOutputRetained: message.partialOutputRetained,
   };
 }
 

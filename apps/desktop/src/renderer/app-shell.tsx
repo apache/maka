@@ -3064,7 +3064,7 @@ function AppShellContent({
                 hasNewerHistory={activeTranscriptRange?.hasNewer === true}
                 historyLoadPending={historyLoadPendingSessionId === activeId}
                 onLoadEarlierHistory={() => loadTranscriptHistory('earlier')}
-                onReturnToLatestHistory={() => void loadTranscriptHistory('latest')}
+                onReturnToLatestHistory={() => loadTranscriptHistory('latest')}
                 liveContentSeedRevision={activeEventSeed.sessionId === activeId
                   ? activeEventSeed.revision
                   : 0}

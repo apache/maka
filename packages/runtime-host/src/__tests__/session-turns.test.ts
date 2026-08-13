@@ -68,3 +68,30 @@ test('bounds turn diagnostics before publishing a contribution', () => {
     }),
   );
 });
+
+test('rejects invalid turn-state references before publishing a contribution', () => {
+  assert.throws(() =>
+    projectSessionTurnContributionForWire({
+      turnId: 'turn-1',
+      firstSequence: 0,
+      latestState: {
+        sequence: 0,
+        message: {
+          type: 'turn_state',
+          id: 'state-1',
+          turnId: 'turn-1',
+          ts: 1,
+          status: 'completed',
+          parentTurnId: 'x'.repeat(129),
+          partialOutputRetained: false,
+        },
+      },
+      userPromptPreview: null,
+      hasAssistantMessage: false,
+      hasAssistantOutput: false,
+      hasToolResult: false,
+      hasFailedToolResult: false,
+      hasAbortNote: false,
+    }),
+  );
+});

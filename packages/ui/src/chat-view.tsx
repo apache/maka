@@ -170,6 +170,11 @@ export function ChatView(props: {
   hasOlderHistory?: boolean;
   historyLoadPending?: boolean;
   onLoadEarlierHistory?(): Promise<void> | void;
+  returnToLatest?: {
+    label: string;
+    isPending: boolean;
+    onClick(): Promise<void> | void;
+  };
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
   onLoadTranscriptTurn?(target: { turnId: string; sequence: number }): void;
   /**
@@ -409,6 +414,7 @@ export function ChatView(props: {
     throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
   }
   const scrollRef = chatLayout.scrollContainerRef;
+  const [latestNavigationNonce, setLatestNavigationNonce] = useState(0);
   // #2052: the first commit after a session switch mounts only a tail window
   // of turns; the rest arrive in idle chunks with scroll compensation. The
   // full `turns` array above still feeds deriveTurnPresentation and the
@@ -513,6 +519,7 @@ export function ChatView(props: {
     hasOlderHistory: props.hasOlderHistory,
     historyLoadPending: props.historyLoadPending,
     onLoadEarlierHistory: props.onLoadEarlierHistory,
+    latestNavigationNonce,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
@@ -610,6 +617,21 @@ export function ChatView(props: {
 
   return (
     <main className="maka-main agents-chat-panel agents-chat-view-root">
+      {props.returnToLatest ? (
+        <div className="maka-transcript-history-controls">
+          <Button
+            label={props.returnToLatest.label}
+            variant="ghost"
+            size="sm"
+            isDisabled={props.returnToLatest.isPending}
+            onClick={() => {
+              void Promise.resolve(props.returnToLatest?.onClick()).then(() => {
+                setLatestNavigationNonce((nonce) => nonce + 1);
+              });
+            }}
+          />
+        </div>
+      ) : null}
       <SessionContextLayer
         sessionName={props.activeSession.name}
         branch={props.branchBanner}
@@ -637,7 +659,6 @@ export function ChatView(props: {
           turns={promptRailTurns}
           scrollRef={scrollRef}
           onNavigateFallback={navigatePromptRailFallback}
-          mountedTurnsRevision={mountStart}
           onNavigateStart={chatLayout.unlockAutoFollow}
           transcriptFilled={turnsFilled}
         />

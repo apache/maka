@@ -53,6 +53,7 @@ import {
   type SessionReadMarkerSetInput,
   type SessionUpdateResult,
   type SessionTurnsQueryInput,
+  SESSION_TURN_QUERY_RESULT_MAX_BYTES,
   projectSessionTurnContributionForWire,
 } from '../protocol/index.js';
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
@@ -235,21 +236,39 @@ export class HostSessionCatalogCoordinator {
     input: SessionTurnsQueryInput,
   ): Promise<OperationOutcome<'session.turns.query'>> {
     try {
-      const page = await this.#stores.readTurnContributionsSnapshot(
-        input.sessionId,
-        input.throughSequence,
-        input.position,
-        input.maxContributions,
-      );
-      return {
-        ok: true,
-        result: {
+      let maxContributions = input.maxContributions;
+      let throughSequence = input.throughSequence;
+      while (true) {
+        const page = await this.#stores.readTurnContributionsSnapshot(
+          input.sessionId,
+          throughSequence,
+          input.position,
+          maxContributions,
+        );
+        throughSequence = page.throughSequence;
+        const result = {
           sessionId: input.sessionId,
           throughSequence: page.throughSequence,
           contributions: page.contributions.map(projectSessionTurnContributionForWire),
           nextPosition: page.nextPosition,
-        },
-      };
+        };
+        const resultBytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+        if (resultBytes <= SESSION_TURN_QUERY_RESULT_MAX_BYTES) {
+          return { ok: true, result };
+        }
+        if (maxContributions === 1) {
+          throw new Error('Session turn contribution exceeds the wire limit');
+        }
+        maxContributions = Math.max(
+          1,
+          Math.min(
+            maxContributions - 1,
+            Math.floor(
+              (page.contributions.length * SESSION_TURN_QUERY_RESULT_MAX_BYTES) / resultBytes,
+            ),
+          ),
+        );
+      }
     } catch (error) {
       if (isNotFound(error)) return turnsFailure('not_found', 'Session does not exist');
       return turnsFailure('persistence_failed', 'Session turns are unavailable');

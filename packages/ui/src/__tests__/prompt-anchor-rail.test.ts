@@ -35,6 +35,7 @@ function railHoldHarness() {
     scrollTop: 900,
     /** The target's top edge, relative to the scrollport's. 0 = landed. */
     targetTop: 600,
+    targetPresent: true,
     filled: false,
     queried: '',
     settled: 0,
@@ -58,7 +59,7 @@ function railHoldHarness() {
     getBoundingClientRect: () => ({ top: 0 }) as DOMRect,
     querySelector: (selector: string) => {
       state.queried = selector;
-      return target;
+      return state.targetPresent ? target : null;
     },
     addEventListener: (type: string, listener: EventListener) => listeners.set(type, listener),
     removeEventListener: (type: string) => listeners.delete(type),
@@ -147,6 +148,36 @@ test('a jump holds until the transcript reports itself filled and still', () => 
   assert.equal(state.settled, 0, 'settling waits for a few still frames');
   harness.runFrame();
   assert.equal(state.settled, 1, 'filled and still ends the hold');
+
+  harness.restore();
+});
+
+test('a jump waits for an unloaded destination before settling', () => {
+  const harness = railHoldHarness();
+  const { root, scheduler, state } = harness;
+  state.filled = true;
+  state.targetPresent = false;
+
+  holdJumpDestination({
+    root,
+    readTargetId: () => 'turn-7',
+    isTranscriptFilled: () => state.filled,
+    onSettled: () => {
+      state.settled += 1;
+    },
+    scheduler,
+  });
+
+  for (let index = 0; index < 10; index += 1) harness.runFrame();
+  assert.equal(state.settled, 0, 'a sparse transcript cannot settle before the target arrives');
+
+  state.targetPresent = true;
+  harness.runFrame();
+  assert.equal(harness.scrolled.length, 1, 'the arriving target is placed at the top');
+  harness.runFrame();
+  harness.runFrame();
+  harness.runFrame();
+  assert.equal(state.settled, 1, 'the landed target settles normally');
 
   harness.restore();
 });

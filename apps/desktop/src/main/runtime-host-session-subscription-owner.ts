@@ -270,9 +270,13 @@ export class RuntimeHostSessionSubscriptionOwner {
     this.#candidate = attempt;
     void this.#pump(attempt);
 
+    const replicaPreparation = DesktopTranscriptReplica.prepare(
+      handle,
+      this.#deps.transcriptReplicaOptions,
+    );
     try {
       const loaded = await Promise.race([
-        DesktopTranscriptReplica.prepare(handle, this.#deps.transcriptReplicaOptions).then(
+        replicaPreparation.then(
           (replica) => ({ kind: "replica" as const, replica }),
           (error: unknown) => ({ kind: "failure" as const, error: asError(error) }),
         ),
@@ -292,7 +296,8 @@ export class RuntimeHostSessionSubscriptionOwner {
       };
     } catch (error) {
       if (this.#candidate === attempt) this.#candidate = undefined;
-      attempt.replica?.close();
+      if (attempt.replica) attempt.replica.close();
+      else void replicaPreparation.then((replica) => replica.close(), () => undefined);
       await handle.close().catch(() => undefined);
       throw error;
     }

@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, type CSSProperties, type RefObject } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { useUiLocale } from './locale-context.js';
@@ -16,6 +16,7 @@ const HOVER_FALLOFF_TICKS = 3;
  * as restraint.
  */
 const PREVIEW_DELAY_MS = 120;
+const MAX_PROMPT_RAIL_TICKS = 64;
 
 /** Quiet frames after the transcript is filled that end a jump's hold. */
 const JUMP_SETTLE_QUIET_FRAMES = 3;
@@ -104,13 +105,15 @@ export function holdJumpDestination(input: {
     onSettled();
   };
 
-  const reaim = (): boolean => {
+  const reaim = (): { found: boolean; corrected: boolean } => {
     const turnId = readTargetId();
-    if (turnId === null) return false;
+    if (turnId === null) return { found: false, corrected: false };
     const target = root.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
-    if (!target) return false;
+    if (!target) return { found: false, corrected: false };
     const offset = target.getBoundingClientRect().top - root.getBoundingClientRect().top;
-    if (Math.abs(offset) <= JUMP_LANDED_TOLERANCE_PX) return false;
+    if (Math.abs(offset) <= JUMP_LANDED_TOLERANCE_PX) {
+      return { found: true, corrected: false };
+    }
     const before = root.scrollTop;
     // `auto`: this is a correction, not a second journey.
     (target as HTMLElement).scrollIntoView({ behavior: 'auto', block: 'start' });
@@ -119,7 +122,7 @@ export function holdJumpDestination(input: {
     // as this scroller can put it — the last turn of a transcript cannot reach
     // it at all. Report it as landed, or the hold would keep trying until its
     // frame budget ran out.
-    return root.scrollTop !== before;
+    return { found: true, corrected: root.scrollTop !== before };
   };
 
   const hold = (): void => {
@@ -135,13 +138,21 @@ export function holdJumpDestination(input: {
     // A still frame that is nonetheless off-target is the other failure: a
     // scroll that was cancelled part-way and will never resume on its own,
     // which is what happens when the mount's compensation lands on top of one.
-    const corrected = grew || (!moved && isTranscriptFilled()) ? reaim() : false;
+    const target = grew || (!moved && isTranscriptFilled())
+      ? reaim()
+      : { found: false, corrected: false };
     // Quiet means nothing moved at all — not the content, not the position.
     // Height alone was not enough: with the transcript already mounted there
     // is nothing to re-aim through, and the hold released three frames in,
     // handing the highlight and the auto-follow release back while the jump's
     // own scroll was still in flight.
-    if (!grew && !moved && !corrected && isTranscriptFilled()) quietFrames += 1;
+    if (
+      !grew &&
+      !moved &&
+      !target.corrected &&
+      target.found &&
+      isTranscriptFilled()
+    ) quietFrames += 1;
     else quietFrames = 0;
     if (quietFrames >= JUMP_SETTLE_QUIET_FRAMES || framesRun >= JUMP_HOLD_FRAME_BUDGET) stop();
   };
@@ -193,8 +204,6 @@ export interface PromptAnchorRailProps {
   scrollRef: RefObject<HTMLElement | null>;
   /** When progressive mount has not yet placed the turn in the DOM. */
   onNavigateFallback?: (turn: PromptAnchorRailTurn) => void;
-  /** Bumped when turn DOM membership changes without `turns` changing. */
-  mountedTurnsRevision?: number;
   /**
    * Release Astryx's auto-follow before a jump scrolls.
    *
@@ -216,8 +225,8 @@ export interface PromptAnchorRailProps {
   transcriptFilled?: boolean;
 }
 
-/** Right-edge rail: one tick per user prompt, scrolls to `[data-turn-id]`. */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, mountedTurnsRevision, onNavigateStart, transcriptFilled }: PromptAnchorRailProps): React.ReactElement | null {
+/** Right-edge rail: bounded prompt landmarks that scroll to `[data-turn-id]`. */
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, onNavigateStart, transcriptFilled }: PromptAnchorRailProps): React.ReactElement | null {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [safeArea, setSafeArea] = useState<{ scrollport: number; dock: number } | null>(null);
@@ -238,19 +247,54 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   transcriptFilledRef.current = transcriptFilled ?? true;
   const onNavigateStartRef = useRef(onNavigateStart);
   onNavigateStartRef.current = onNavigateStart;
+  const turnIndexById = useMemo(
+    () => new Map(turns.map((turn, index) => [turn.turnId, index])),
+    [turns],
+  );
+  const railTurns = useMemo(() => {
+    if (turns.length <= MAX_PROMPT_RAIL_TICKS) return turns;
+    return Array.from({ length: MAX_PROMPT_RAIL_TICKS }, (_, index) =>
+      turns[Math.round(index * (turns.length - 1) / (MAX_PROMPT_RAIL_TICKS - 1))]!,
+    );
+  }, [turns]);
+
+  const railTurnIdFor = (turnId: string): string | null => {
+    const turnIndex = turnIndexById.get(turnId);
+    if (turnIndex === undefined) return null;
+    if (turns.length === railTurns.length) return turnId;
+    const railIndex = Math.round(turnIndex * (railTurns.length - 1) / (turns.length - 1));
+    return railTurns[railIndex]?.turnId ?? null;
+  };
 
   useEffect(() => {
     const root = scrollRef.current;
     if (!root || turns.length === 0) return;
 
     const idByElement = new Map<Element, string>();
-    for (const turn of turns) {
-      const el = root.querySelector(`[data-turn-id="${CSS.escape(turn.turnId)}"]`);
-      if (el) idByElement.set(el, turn.turnId);
-    }
-    if (idByElement.size === 0) return;
-
     const visible = new Set<string>();
+    const observeElement = (element: Element): void => {
+      const turnId = element.getAttribute('data-turn-id');
+      if (!turnId || !turnIndexById.has(turnId) || idByElement.has(element)) return;
+      idByElement.set(element, turnId);
+      observer.observe(element);
+    };
+    const unobserveElement = (element: Element): void => {
+      const turnId = idByElement.get(element);
+      if (!turnId) return;
+      idByElement.delete(element);
+      visible.delete(turnId);
+      observer.unobserve(element);
+    };
+    const visitTurnElements = (node: Node, visit: (element: Element) => void): void => {
+      if (!(node instanceof Element)) return;
+      if (node.hasAttribute('data-turn-id')) visit(node);
+      for (const element of node.querySelectorAll('[data-turn-id]')) visit(element);
+    };
+    const activeFor = (turnId: string | null): void => {
+      if (turnId === null) return;
+      const railTurnId = railTurnIdFor(turnId);
+      if (railTurnId !== null) setActiveTurnId(railTurnId);
+    };
     const resolveActive = (): void => {
       // A jump owns the highlight until its scroll settles. Without this the
       // observer walks the highlight through every prompt the scroll passes,
@@ -258,11 +302,28 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       // glide alone would only turn one long slide into a burst of hops.
       if (jumpTargetRef.current !== null) return;
       if (root.scrollHeight - root.scrollTop - root.clientHeight <= SCROLL_END_EPSILON_PX) {
-        setActiveTurnId(Array.from(idByElement.values()).at(-1) ?? null);
+        let latest: string | null = null;
+        let latestIndex = -1;
+        for (const turnId of idByElement.values()) {
+          const index = turnIndexById.get(turnId) ?? -1;
+          if (index > latestIndex) {
+            latest = turnId;
+            latestIndex = index;
+          }
+        }
+        activeFor(latest);
         return;
       }
-      const firstVisible = turns.find((turn) => visible.has(turn.turnId));
-      if (firstVisible) setActiveTurnId(firstVisible.turnId);
+      let firstVisible: string | null = null;
+      let firstIndex = Number.POSITIVE_INFINITY;
+      for (const turnId of visible) {
+        const index = turnIndexById.get(turnId) ?? Number.POSITIVE_INFINITY;
+        if (index < firstIndex) {
+          firstVisible = turnId;
+          firstIndex = index;
+        }
+      }
+      activeFor(firstVisible);
     };
 
     const observer = new IntersectionObserver(
@@ -277,7 +338,16 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       },
       { root, rootMargin: '0px 0px -66% 0px', threshold: 0 },
     );
-    for (const el of idByElement.keys()) observer.observe(el);
+    for (const element of root.querySelectorAll('[data-turn-id]')) observeElement(element);
+
+    const mutationObserver = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.removedNodes) visitTurnElements(node, unobserveElement);
+        for (const node of record.addedNodes) visitTurnElements(node, observeElement);
+      }
+      resolveActive();
+    });
+    mutationObserver.observe(root, { childList: true, subtree: true });
 
     let frame = 0;
     const onScroll = (): void => {
@@ -291,10 +361,11 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
 
     return () => {
       observer.disconnect();
+      mutationObserver.disconnect();
       root.removeEventListener('scroll', onScroll);
       if (frame !== 0) cancelAnimationFrame(frame);
     };
-  }, [scrollRef, turns, mountedTurnsRevision]);
+  }, [scrollRef, turnIndexById, railTurns]);
 
   useEffect(() => {
     const root = scrollRef.current;
@@ -398,7 +469,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   }
 
   // A rail is only useful once there are a few prompts to jump between.
-  if (turns.length < 3) return null;
+  if (railTurns.length < 3) return null;
 
   return (
     <div
@@ -419,7 +490,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
         ref={railRef}
         onPointerLeave={() => setHoveredIndex(null)}
       >
-        {turns.map((turn, index) => {
+        {railTurns.map((turn, index) => {
           const isActive = turn.turnId === activeTurnId;
           const preview = turn.label.trim() || copy.emptyPrompt;
           const replyPreview = (turn.reply ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);

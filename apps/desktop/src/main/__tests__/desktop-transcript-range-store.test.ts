@@ -168,7 +168,7 @@ test('keeps a bounded contiguous window while moving between history and the tai
   });
   const bootstrapPage = page('older');
   const olderPage = page('older');
-  const latestPage = page('older');
+  const latestPage = page(null);
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
     transcript: Promise.resolve([]),
@@ -184,7 +184,7 @@ test('keeps a bounded contiguous window while moving between history and the tai
       ? { messages: messages.slice(3), nextCursor: 'older' }
       : candidate === olderPage
         ? { messages: messages.slice(2, 4), nextCursor: 'older' }
-        : { messages: messages.slice(4), nextCursor: 'older' },
+        : { messages: messages.slice(4), nextCursor: null },
     loadTranscriptPage: async (input) => input.anchorSequence === 4 ? olderPage : latestPage,
     async close() {},
   });
@@ -202,6 +202,47 @@ test('keeps a bounded contiguous window while moving between history and the tai
   assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [4]);
   assert.equal(replica.snapshot().hasNewer, false);
   assert.ok(replica.residentBytes <= maxResidentBytes);
+});
+
+test('loads a history target with newer messages available below it', async () => {
+  const messages = [0, 1, 2, 3, 4].map((sequence) => ({
+    identity: sequence,
+    message: assistantMessage(String(sequence), `assistant-${sequence}`),
+  }));
+  const bootstrapPage = transcriptPage('older', null, 4);
+  const aroundPage = transcriptPage('newer', 'newer', 4);
+  let aroundInput: { direction: string; anchorSequence: number | null } | undefined;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 4,
+      overlayMessageCount: 0,
+      durable: bootstrapPage,
+      overlay: { ...transcriptPage('older', null, 4), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (page) => page === bootstrapPage
+      ? { messages: messages.slice(4), nextCursor: null }
+      : { messages: messages.slice(0, 3), nextCursor: 'newer' },
+    loadTranscriptPage: async (input) => {
+      aroundInput = input;
+      return aroundPage;
+    },
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes: 128 * 1024,
+  });
+
+  await replica.loadAround(0, 128 * 1024);
+
+  assert.equal(aroundInput?.direction, 'newer');
+  assert.equal(aroundInput?.anchorSequence, null);
+  assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [0, 1, 2]);
+  assert.equal(replica.snapshot().hasOlder, false);
+  assert.equal(replica.snapshot().hasNewer, true);
 });
 
 test('rejects an overlay that exceeds the complete session cache budget', async () => {
@@ -343,6 +384,23 @@ function assistantMessage(
     ts: 1,
     text,
     modelId: 'model-1',
+  };
+}
+
+function transcriptPage(
+  direction: 'older' | 'newer',
+  nextCursor: string | null,
+  throughSequence: number,
+) {
+  return {
+    kind: 'page' as const,
+    sessionId: 'session-1',
+    source: 'durable' as const,
+    direction,
+    throughSequence,
+    rawBytes: 1,
+    fragments: [],
+    nextCursor,
   };
 }
 

@@ -18,6 +18,7 @@ import { describe, it } from 'node:test';
 
 import type { SessionSummary } from '@maka/core/session';
 import type { LiveTurnProjection } from '@maka/ui';
+import type { DesktopTranscriptRangeController } from '../../renderer/desktop-transcript-range-store.js';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
 import { createAppShellSessionUiStateController } from '../../renderer/app-shell-session-ui-state.js';
 import { settledSessionTransientIds } from '../../renderer/settled-session-transients.js';
@@ -270,6 +271,46 @@ describe('composer first-send cleanup', () => {
     }
 
     assert.deepEqual(removed, []);
+  });
+
+  it('returns a sparse existing session to latest before sending', async () => {
+    const latest = deferred<void>();
+    const order: string[] = [];
+    const activeIdRef = { current: 'existing-session' as string | undefined };
+    const transcript = {
+      store: {
+        range: () => ({ sessionId: 'existing-session', hasNewer: true }),
+        snapshot: () => ({ messages: [] }),
+      },
+      async loadLatest() {
+        order.push('latest');
+        await latest.promise;
+      },
+    } as unknown as DesktopTranscriptRangeController;
+    const transcriptRangeRef = { current: transcript as DesktopTranscriptRangeController | undefined };
+    const restoreWindow = installWindow({
+      sessions: {
+        send: async () => {
+          order.push('send');
+          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+        },
+      },
+    });
+
+    try {
+      const sending = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        transcriptRangeRef,
+      }).send('hello');
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(order, ['latest']);
+      latest.resolve();
+      assert.equal(await sending, true);
+      assert.deepEqual(order, ['latest', 'send']);
+    } finally {
+      restoreWindow();
+    }
   });
 });
 
