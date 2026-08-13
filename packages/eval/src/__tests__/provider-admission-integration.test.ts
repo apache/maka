@@ -107,7 +107,37 @@ test('provider failures remain infrastructure failures until inference admission
   }
 });
 
-test('canonical Pi settlement remains completed when the CLI exits nonzero', async () => {
+test('large canonical Pi settlement remains completed when the CLI exits nonzero', async () => {
+  const result = await executePiWithTerminalRecord(2 * 1024 * 1024);
+  assert.equal(result.status, 'completed', JSON.stringify(result));
+  assert.equal(result.artifacts.find(({ kind }) => kind === 'external-process')?.exitCode, 1);
+});
+
+test('oversized external records are attributed to bounded classification', async () => {
+  const result = await executePiWithTerminalRecord(17 * 1024 * 1024);
+  assert.equal(result.status, 'infra_failed');
+  assert.equal(result.failureReason, 'pi output record exceeded the classification limit');
+  const stdout = result.artifacts.find(({ kind }) => kind === 'stdout');
+  assert.equal(stdout?.profile, 'pi');
+  assert.equal(stdout?.classification, 'record-too-large');
+  assert.equal(stdout?.limitBytes, 16 * 1024 * 1024);
+  assert.ok((stdout?.bytes ?? 0) > 16 * 1024 * 1024);
+  assert.match(stdout?.sha256 ?? '', /^[0-9a-f]{64}$/u);
+});
+
+async function executePiWithTerminalRecord(contentBytes: number): Promise<{
+  status: string;
+  failureReason: string | null;
+  artifacts: Array<{
+    kind: string;
+    profile?: string;
+    exitCode?: number;
+    bytes?: number;
+    sha256?: string;
+    classification?: string;
+    limitBytes?: number;
+  }>;
+}> {
   const server = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'text/event-stream' });
     response.end(
@@ -129,7 +159,7 @@ test('canonical Pi settlement remains completed when the CLI exits nonzero', asy
       "const config=JSON.parse(await readFile(`${process.env.PI_CODING_AGENT_DIR}/models.json`,'utf8'));",
       "if(process.env.OPENAI_API_KEY!=='maka-eval-local'||process.env.ANTHROPIC_API_KEY||process.env.DEEPSEEK_API_KEY)process.exit(9);",
       "await fetch(`${config.providers['maka-proxy'].baseUrl}/responses`,{method:'POST',body:'{}'});",
-      "console.log(JSON.stringify({type:'agent_end',messages:[]}));",
+      `await new Promise(resolve=>process.stdout.write(JSON.stringify({type:'agent_end',messages:[{role:'assistant',content:'x'.repeat(${contentBytes})}]})+'\\n',resolve));`,
       "console.log(JSON.stringify({type:'agent_settled'}));",
       'process.exit(1);',
       '',
@@ -148,17 +178,12 @@ test('canonical Pi settlement remains completed when the CLI exits nonzero', asy
         },
       },
     );
-    const result = decodeResultFrame(stdout) as {
-      status: string;
-      artifacts: Array<{ kind: string; exitCode?: number }>;
-    };
-    assert.equal(result.status, 'completed');
-    assert.equal(result.artifacts.find(({ kind }) => kind === 'external-process')?.exitCode, 1);
+    return decodeResultFrame(stdout) as Awaited<ReturnType<typeof executePiWithTerminalRecord>>;
   } finally {
     server.close();
     await rm(root, { recursive: true, force: true });
   }
-});
+}
 
 function decodeResultFrame(stdout: string): unknown {
   const [prefix, token, length, _digest, encoded] = stdout.trim().split(' ');

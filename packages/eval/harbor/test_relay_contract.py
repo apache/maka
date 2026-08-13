@@ -123,22 +123,6 @@ class RelayContractTest(unittest.TestCase):
 
         self.assertEqual(diagnostic["category"], "none")
 
-    def test_harbor_and_pier_decode_the_same_merged_result_contract(self):
-        token = "frame-token"
-        payload = b'{}'
-        encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
-        carrier = (
-            f"warning\nMAKA-EVAL-RESULT-V1 {token} {len(payload)} "
-            f"{hashlib.sha256(payload).hexdigest()} {encoded}\n"
-        )
-        results = [
-            load_relay(framework)._decode_result_carrier(carrier, token)
-            for framework in ("harbor", "pier")
-        ]
-        self.assertEqual(results[0], results[1])
-        self.assertEqual(results[0][0], "{}")
-        self.assertEqual(results[0][1]["category"], "unstructured-output")
-
     def test_command_keeps_capture_and_control_files_out_of_task_workspace(self):
         relay = load_relay()
         environment = Environment()

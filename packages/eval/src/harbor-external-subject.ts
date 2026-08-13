@@ -15,6 +15,7 @@ import { takeRelayResultToken, writeRelayResult } from './relay-result-frame.js'
 const resultToken = takeRelayResultToken();
 
 type SubjectStatus = 'completed' | 'failed' | 'infra_failed' | 'indeterminate';
+const CLASSIFIABLE_RECORD_LIMIT_BYTES = 16 * 1024 * 1024;
 
 interface Usage {
   inputTokens: number;
@@ -413,11 +414,19 @@ interface StreamDiagnostic {
   readonly sha256: string;
 }
 
-interface ClassifiedStream extends StreamDiagnostic {
-  readonly completed: boolean;
-  readonly reportedError: boolean;
-  readonly nonempty: boolean;
-}
+type ClassifiedStream = StreamDiagnostic &
+  (
+    | {
+        readonly classification: 'classified';
+        readonly completed: boolean;
+        readonly reportedError: boolean;
+        readonly nonempty: boolean;
+      }
+    | {
+        readonly classification: 'record-too-large';
+        readonly limitBytes: number;
+      }
+  );
 
 async function classifyStream(input: Readable, selected: Profile): Promise<ClassifiedStream> {
   const digest = createHash('sha256');
@@ -427,6 +436,7 @@ async function classifyStream(input: Readable, selected: Profile): Promise<Class
   let completed = false;
   let reportedError = false;
   let nonempty = false;
+  let recordTooLarge = false;
   const consume = (line: string) => {
     nonempty ||= line.trim().length > 0;
     const signal = classifyLine(selected, line);
@@ -444,13 +454,24 @@ async function classifyStream(input: Readable, selected: Profile): Promise<Class
       buffered = buffered.slice(newline + 1);
       newline = buffered.indexOf('\n');
     }
-    if (buffered.length > 1024 * 1024) buffered = '';
+    if (Buffer.byteLength(buffered) > CLASSIFIABLE_RECORD_LIMIT_BYTES) {
+      recordTooLarge = true;
+      buffered = '';
+    }
   }
   buffered += decoder.decode();
   if (buffered) consume(buffered);
+  const streamDiagnostic = { observedBytes, sha256: digest.digest('hex') };
+  if (recordTooLarge) {
+    return {
+      ...streamDiagnostic,
+      classification: 'record-too-large',
+      limitBytes: CLASSIFIABLE_RECORD_LIMIT_BYTES,
+    };
+  }
   return {
-    observedBytes,
-    sha256: digest.digest('hex'),
+    ...streamDiagnostic,
+    classification: 'classified',
     completed,
     reportedError,
     nonempty,
@@ -474,6 +495,11 @@ function streamArtifact(kind: string, profile: Profile, capture: StreamDiagnosti
     profile,
     bytes: capture.observedBytes,
     sha256: capture.sha256,
+    ...('classification' in capture &&
+    capture.classification === 'record-too-large' &&
+    'limitBytes' in capture
+      ? { classification: capture.classification, limitBytes: capture.limitBytes }
+      : {}),
   };
 }
 
@@ -494,6 +520,12 @@ function classifyExecution(
   output: ClassifiedStream,
   admittedRequests: number,
 ): { status: SubjectStatus; failureReason: string | null } {
+  if (output.classification === 'record-too-large') {
+    return {
+      status: 'infra_failed',
+      failureReason: `${selected} output record exceeded the classification limit`,
+    };
+  }
   const completed = output.completed || (selected === 'zcode' && exitCode === 0 && output.nonempty);
   const reportedError = output.reportedError;
   if (admittedRequests === 0) {
