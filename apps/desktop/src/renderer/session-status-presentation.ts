@@ -129,7 +129,7 @@ export function describeTurnErrorClass(errorClass: string | undefined, locale: U
   if (lower === 'provider_unavailable' || /\b5\d\d\b/.test(lower)) return copy.provider;
   if (lower === 'tool_step_cap_reached') return copy.stepCap;
   if (lower === 'tool_failed' || lower.includes('tool')) return copy.tool;
-  if (lower === 'permission_required' || lower.includes('permission')) return copy.permission;
+  if (lower === 'permission_required') return copy.permission;
   if (lower === 'app_restarted') return copy.restarted;
   return copy.unknown;
 }

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { SessionEvent } from '@maka/core/events';
 
+import { sessionEventErrorMessage } from '../../renderer/model-connection-errors.js';
 import { describeSessionErrorReason } from '../../renderer/session-error-presentation.js';
 import {
   deriveFailedTurnRecovery,
@@ -29,5 +31,43 @@ describe('provider failure presentation', () => {
         label: '检查模型服务的额度、套餐或恢复时间',
       },
     );
+  });
+
+  test('does not present a provider permission code as a local permission wait', () => {
+    assert.equal(describeTurnErrorClass('permission_required'), '等待权限确认');
+    assert.equal(describeTurnErrorClass('permission_error'), '未知错误');
+  });
+
+  test('preserves the bounded provider summary for a neutral Kimi plan-limit event', () => {
+    const message =
+      "You've reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle. " +
+      'To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/code/#pricing ' +
+      '(code=permission_error, status=403)';
+    const event: Extract<SessionEvent, { type: 'error' }> = {
+      type: 'error',
+      id: 'event-kimi-plan-limit',
+      turnId: 'turn-kimi-plan-limit',
+      ts: 1,
+      recoverable: false,
+      code: 'permission_error',
+      message,
+    };
+
+    assert.equal(sessionEventErrorMessage(event), message);
+    assert.equal(sessionEventErrorMessage(event, 'en'), message);
+  });
+
+  test('uses generic copy when an error has neither a known reason nor provider evidence', () => {
+    const event: Extract<SessionEvent, { type: 'error' }> = {
+      type: 'error',
+      id: 'event-unknown',
+      turnId: 'turn-unknown',
+      ts: 1,
+      recoverable: false,
+      message: '403 permission denied',
+    };
+
+    assert.equal(sessionEventErrorMessage(event), '对话运行失败，请稍后重试。');
+    assert.equal(sessionEventErrorMessage(event, 'en'), 'The conversation run failed. Try again later.');
   });
 });
