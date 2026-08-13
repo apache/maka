@@ -71,6 +71,37 @@ class EgressFilterTest(unittest.TestCase):
             self.assertIn("host", record)
             self.assertIn("normalizedPath", record)
 
+    def test_audit_omits_query_strings_without_changing_matching(self) -> None:
+        class Response:
+            @staticmethod
+            def make(status, body, headers):
+                return {"status": status, "body": body, "headers": headers}
+
+        with tempfile.TemporaryDirectory() as directory:
+            MODULE.http = SimpleNamespace(Response=Response)
+            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
+            flow = type(
+                "Flow",
+                (),
+                {
+                    "request": type(
+                        "Request",
+                        (),
+                        {
+                            "pretty_url": "https://example.test/search?q=terminal+bench&token=fake-secret"
+                        },
+                    )()
+                },
+            )()
+
+            MODULE.request(flow)
+
+            self.assertEqual(flow.response["status"], 451)
+            record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
+            self.assertEqual(record["ruleId"], "terminal_bench_url")
+            self.assertEqual(record["normalizedPath"], "/search")
+            self.assertNotIn("fake-secret", json.dumps(record))
+
 
 if __name__ == "__main__":
     unittest.main()
