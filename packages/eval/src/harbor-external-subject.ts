@@ -19,7 +19,7 @@ const resultToken = takeRelayResultToken();
 
 type SubjectStatus = 'completed' | 'failed' | 'infra_failed' | 'indeterminate';
 const CLASSIFIABLE_RECORD_LIMIT_BYTES = 16 * 1024 * 1024;
-const PERSISTED_STREAM_LIMIT_BYTES = 64 * 1024 * 1024;
+const PERSISTED_STREAM_LIMIT_BYTES = takePersistedStreamLimit();
 
 interface Usage {
   inputTokens: number;
@@ -28,6 +28,17 @@ interface Usage {
   cacheWriteTokens: number;
   reasoningTokens: number;
   totalTokens: number;
+}
+
+function takePersistedStreamLimit(): number {
+  const override = process.env.MAKA_EVAL_TEST_PERSISTED_STREAM_LIMIT_BYTES;
+  delete process.env.MAKA_EVAL_TEST_PERSISTED_STREAM_LIMIT_BYTES;
+  if (override === undefined) return 64 * 1024 * 1024;
+  const parsed = Number(override);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > 64 * 1024 * 1024) {
+    throw new Error('invalid external trajectory persistence limit');
+  }
+  return parsed;
 }
 
 const [rawProfile, baseUrl, systemRoot, command, ...args] = process.argv.slice(2);

@@ -133,9 +133,9 @@ test('oversized external records are attributed to bounded classification', asyn
 });
 
 test('external trajectories are truncated at the persisted byte limit', async () => {
-  const result = await executePiWithTerminalRecord(65 * 1024 * 1024);
+  const result = await executePiWithTerminalRecord(65 * 1024, 64 * 1024);
   const stdout = result.artifacts.find(({ kind }) => kind === 'stdout');
-  assert.equal(stdout?.persistedBytes, 64 * 1024 * 1024);
+  assert.equal(stdout?.persistedBytes, 64 * 1024);
   assert.ok((stdout?.bytes ?? 0) > (stdout?.persistedBytes ?? 0));
   assert.equal(stdout?.truncatedBytes, (stdout?.bytes ?? 0) - (stdout?.persistedBytes ?? 0));
 });
@@ -278,7 +278,10 @@ test('late provider usage survives a downstream CLI disconnect', async () => {
   }
 });
 
-async function executePiWithTerminalRecord(contentBytes: number): Promise<{
+async function executePiWithTerminalRecord(
+  contentBytes: number,
+  persistedStreamLimitBytes?: number,
+): Promise<{
   status: string;
   failureReason: string | null;
   artifacts: Array<{
@@ -330,6 +333,11 @@ async function executePiWithTerminalRecord(contentBytes: number): Promise<{
           ...process.env,
           OPENAI_API_KEY: 'upstream-test-key',
           MAKA_EVAL_RESULT_TOKEN: RESULT_TOKEN,
+          ...(persistedStreamLimitBytes === undefined
+            ? {}
+            : {
+                MAKA_EVAL_TEST_PERSISTED_STREAM_LIMIT_BYTES: String(persistedStreamLimitBytes),
+              }),
         },
       },
     );
