@@ -8,6 +8,7 @@ import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experiment.js';
+import { recoverExternalMetering } from './external-subject.js';
 import {
   MAKA_RUNTIME_ARTIFACT_PATH,
   MAKA_SUBJECT_STDERR_PATH,
@@ -220,7 +221,34 @@ async function runHarnessAttempt(
       : { kind: 'indeterminate', cause: 'cleanup-unconfirmed' };
   }
   if (!hasValue) throw new Error('executor operation did not settle');
+  if (value!.usage === null) {
+    const profile = externalProfile(cell.subject.id);
+    const recovered = await recoverExternalMetering({ trialPath: state.trialPath }, profile);
+    if (recovered) {
+      value = {
+        ...value!,
+        usage: recovered.usage,
+        costUsd: recovered.costUsd,
+        artifacts: [...value!.artifacts, recovered.artifact],
+      };
+    }
+  }
   return { kind: 'settled', value };
+}
+
+function externalProfile(value: string) {
+  if (
+    value === 'codex' ||
+    value === 'claude-code' ||
+    value === 'reasonix' ||
+    value === 'opencode' ||
+    value === 'kimi-code' ||
+    value === 'zcode' ||
+    value === 'pi'
+  ) {
+    return value;
+  }
+  return undefined;
 }
 
 function relayContext(state: RelayState, signal?: AbortSignal): SubjectExecutionContext {
