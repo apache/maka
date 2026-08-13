@@ -648,7 +648,9 @@ export async function createExecutionRuntimeHostComposition(
               resolveBoundToolNames: (sessionId) =>
                 hostedExecutionToolProfiles.toolNamesFor(sessionId),
             }),
-            memoryExtraction,
+            ...(hostedExecutionToolProfiles.allowsMemoryExtractionFor(backendContext.sessionId)
+              ? { memoryExtraction }
+              : {}),
             artifacts: openedArtifactStore,
             executionArtifacts,
             usage: openedUsageStores,

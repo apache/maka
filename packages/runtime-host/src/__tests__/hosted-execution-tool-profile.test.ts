@@ -27,6 +27,7 @@ test('hosted execution tool profiles are explicit protocol inputs', () => {
 test('hosted execution tool profiles remain process-local and bounded to one execution', async () => {
   const registry = new HostedExecutionToolProfileRegistry();
   assert.equal(registry.toolNamesFor('execution'), undefined);
+  assert.equal(registry.allowsMemoryExtractionFor('execution'), true);
   await registry.run('execution', 'headless-coding-v1', async () => {
     assert.deepEqual(registry.toolNamesFor('execution'), [
       'Bash',
@@ -37,6 +38,8 @@ test('hosted execution tool profiles remain process-local and bounded to one exe
       'Grep',
       'apply_patch',
     ]);
+    assert.equal(registry.allowsMemoryExtractionFor('execution'), false);
   });
   assert.equal(registry.toolNamesFor('execution'), undefined);
+  assert.equal(registry.allowsMemoryExtractionFor('execution'), true);
 });

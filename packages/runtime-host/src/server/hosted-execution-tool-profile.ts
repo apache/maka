@@ -10,10 +10,26 @@ const HEADLESS_CODING_V1_TOOL_NAMES = [
   'apply_patch',
 ] as const;
 
-export function hostedExecutionToolNames(profile: HostedExecutionToolProfile): readonly string[] {
-  if (profile === 'headless-coding-v1') return HEADLESS_CODING_V1_TOOL_NAMES;
+interface HostedExecutionToolProfilePolicy {
+  readonly toolNames: readonly string[];
+  readonly memoryExtraction: boolean;
+}
+
+function hostedExecutionToolProfilePolicy(
+  profile: HostedExecutionToolProfile,
+): HostedExecutionToolProfilePolicy {
+  if (profile === 'headless-coding-v1') {
+    return {
+      toolNames: HEADLESS_CODING_V1_TOOL_NAMES,
+      memoryExtraction: false,
+    };
+  }
   profile satisfies never;
   throw new Error('Unknown Hosted execution tool profile');
+}
+
+export function hostedExecutionToolNames(profile: HostedExecutionToolProfile): readonly string[] {
+  return hostedExecutionToolProfilePolicy(profile).toolNames;
 }
 
 export class HostedExecutionToolProfileRegistry {
@@ -39,5 +55,10 @@ export class HostedExecutionToolProfileRegistry {
   toolNamesFor(executionId: string): readonly string[] | undefined {
     const profile = this.#profiles.get(executionId);
     return profile ? hostedExecutionToolNames(profile) : undefined;
+  }
+
+  allowsMemoryExtractionFor(executionId: string): boolean {
+    const profile = this.#profiles.get(executionId);
+    return profile ? hostedExecutionToolProfilePolicy(profile).memoryExtraction : true;
   }
 }
