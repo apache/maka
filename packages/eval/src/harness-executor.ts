@@ -13,6 +13,7 @@ import {
   MAKA_RUNTIME_ARTIFACT_PATH,
   MAKA_SUBJECT_STDERR_PATH,
   MAKA_SUBJECT_STDOUT_PATH,
+  recoverMakaRuntimeUsage,
 } from './maka-artifacts.js';
 import {
   type ExecutorAttemptOutcome,
@@ -222,8 +223,13 @@ async function runHarnessAttempt(
   }
   if (!hasValue) throw new Error('executor operation did not settle');
   if (value!.usage === null) {
-    const profile = externalProfile(cell.subject.id);
-    const recovered = await recoverExternalMetering({ trialPath: state.trialPath }, profile);
+    const recovered =
+      cell.subject.kind === 'maka'
+        ? await recoverMakaRuntimeUsage({ trialPath: state.trialPath })
+        : await recoverExternalMetering(
+            { trialPath: state.trialPath },
+            externalProfile(cell.subject.id),
+          );
     if (recovered) {
       value = {
         ...value!,

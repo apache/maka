@@ -10,6 +10,7 @@ import {
   MAKA_RUNTIME_ARTIFACT_PATH,
   MAKA_SUBJECT_STDERR_PATH,
   MAKA_SUBJECT_STDOUT_PATH,
+  recoverMakaRuntimeUsage,
 } from '../maka-artifacts.js';
 import { createMakaSubjectAdapter } from '../maka-subject.js';
 import type { ExperimentCell } from '../experiment.js';
@@ -63,6 +64,78 @@ test('runtime artifact capture includes committed WAL rows in a standalone datab
   } finally {
     database.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Maka timeout usage recovery returns committed usage with explicit lower-bound provenance', async () => {
+  const trialPath = await mkdtemp(join(tmpdir(), 'maka-eval-usage-recovery-'));
+  const artifactRoot = join(trialPath, 'artifacts', 'logs', 'artifacts', 'maka-runtime-host');
+  await mkdir(artifactRoot, { recursive: true });
+  const database = new DatabaseSync(join(artifactRoot, 'runtime.sqlite'));
+  try {
+    database.exec(
+      'CREATE TABLE usage_model_call_attempts (record_json TEXT NOT NULL);' +
+        'CREATE TABLE usage_llm_calls (record_json TEXT NOT NULL);',
+    );
+    const insertAttempt = database.prepare(
+      'INSERT INTO usage_model_call_attempts (record_json) VALUES (?)',
+    );
+    insertAttempt.run(
+      JSON.stringify({
+        status: 'completed',
+        usageBasis: 'reported',
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadInputTokens: 80,
+        cacheWriteInputTokens: 0,
+        reasoningTokens: 10,
+        costUsd: 0.01,
+      }),
+    );
+    insertAttempt.run(
+      JSON.stringify({
+        status: 'aborted',
+        usageBasis: 'missing',
+        costBasis: 'unpriced',
+      }),
+    );
+    database.prepare('INSERT INTO usage_llm_calls (record_json) VALUES (?)').run(
+      JSON.stringify({
+        status: 'success',
+        inputTokens: 5,
+        outputTokens: 2,
+        cacheHitInputTokens: 4,
+        reasoningTokens: 1,
+        costUsd: 0.001,
+      }),
+    );
+  } finally {
+    database.close();
+  }
+
+  try {
+    const recovered = await recoverMakaRuntimeUsage({ trialPath });
+    assert.ok(recovered);
+    assert.deepEqual(recovered.usage, {
+      inputTokens: 105,
+      outputTokens: 22,
+      cacheReadTokens: 84,
+      cacheWriteTokens: 0,
+      reasoningTokens: 11,
+      totalTokens: 127,
+    });
+    assert.equal(recovered.costUsd, 0.011);
+    assert.deepEqual(recovered.artifact, {
+      kind: 'maka-runtime-usage-recovery',
+      path: 'artifacts/logs/artifacts/maka-runtime-host/runtime.sqlite',
+      usageComplete: false,
+      confirmedAttempts: 2,
+      missingAttempts: 1,
+      tokenBasis: 'lower-bound',
+      costBasis: 'lower-bound',
+    });
+  } finally {
+    await rm(trialPath, { recursive: true, force: true });
   }
 });
 
