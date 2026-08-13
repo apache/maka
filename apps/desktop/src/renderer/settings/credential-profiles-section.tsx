@@ -18,7 +18,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
-import type { ConnectionTestResult, LlmConnection } from '@maka/core';
+import type { ConnectionTestResult, LlmConnection } from '@maka/core/llm-connections';
 import type { QuotaWindow } from '@maka/core/oauth-subscription';
 import type {
   CredentialProfileReadinessView,
