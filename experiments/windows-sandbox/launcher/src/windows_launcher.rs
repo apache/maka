@@ -145,6 +145,12 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
     } else {
         environment.as_ptr() as *const c_void
     };
+    let creation_flags = CREATE_SUSPENDED
+        | if environment.is_empty() {
+            0
+        } else {
+            CREATE_UNICODE_ENVIRONMENT
+        };
     let mut startup: STARTUPINFOW = unsafe { zeroed() };
     startup.cb = size_of::<STARTUPINFOW>() as u32;
     let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
@@ -155,7 +161,7 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
             0,
             executable.as_mut_ptr(),
             command.as_mut_ptr(),
-            CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+            creation_flags,
             environment_ptr,
             cwd.as_mut_ptr(),
             &startup,

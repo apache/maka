@@ -16,7 +16,10 @@ $request = @{
   readRoots = @()
   writeRoots = @()
   network = 'enabled'
-  environment = @{}
+  environment = @{
+    SystemRoot = $env:SystemRoot
+    PATH = $env:PATH
+  }
 }
 $request | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $requestPath -Encoding utf8
 
