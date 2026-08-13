@@ -2550,6 +2550,9 @@ describe('Maka Pi TUI runner', () => {
       terminal,
     });
 
+    terminal.input('keep this context');
+    terminal.input('\r');
+    await waitFor(() => driver.prompts.length === 1);
     terminal.input('/model');
     terminal.input('\r');
 
@@ -2633,6 +2636,10 @@ describe('Maka Pi TUI runner', () => {
       const out = plainTerminalOutput(terminal.screenOutput());
       return out.includes('gpt-5.5') && out.includes('glm-max') && out.includes('text-unicorn');
     });
+    assert.doesNotMatch(
+      plainTerminalOutput(terminal.screenOutput()),
+      /Switching may rebuild prompt cache/,
+    );
 
     // Each query isolates exactly one of the five match criteria named by #1098
     // (model id, connection name, connection slug, provider type, provider

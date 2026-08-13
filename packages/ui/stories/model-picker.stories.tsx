@@ -109,6 +109,7 @@ export const ExistingConversation: Story = {
           activeConnectionLabel="Anthropic"
           currentProviderType="anthropic"
           choices={CHOICES}
+          hasConversationHistory
           renderProviderMark={providerMark}
           onChange={({ llmConnectionSlug, model: nextModel }) =>
             setValue(modelChoiceValue(llmConnectionSlug, nextModel))}
@@ -126,6 +127,46 @@ export const ExistingConversation: Story = {
     );
     await userEvent.hover(trigger);
     await within(document.body).findByText(/下一次请求可能更慢或更贵/);
+  },
+};
+
+// Real path: an existing but still-empty Session. There is no conversation
+// prefix to abandon yet, so this stays as quiet as the new-chat picker.
+export const EmptyConversation: Story = {
+  render: () => (
+    <div style={{ width: 460 }}>
+      <ChatModelSwitcher
+        activeSession={{
+          id: 'storybook-empty-model-switch',
+          name: 'Empty conversation',
+          isFlagged: false,
+          isArchived: false,
+          labels: [],
+          hasUnread: false,
+          status: 'active',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'anthropic-team',
+          connectionLocked: true,
+          model: 'claude-sonnet-4',
+          permissionMode: 'ask',
+        }}
+        activeModelLabel="Claude Sonnet 4"
+        activeConnectionLabel="Anthropic"
+        currentProviderType="anthropic"
+        choices={CHOICES}
+        renderProviderMark={providerMark}
+        onChange={() => undefined}
+      />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const trigger = within(canvasElement).getByRole('button', {
+      name: '切换当前会话模型',
+    });
+    await expect(trigger).not.toHaveAttribute('aria-description');
+    await expect(
+      trigger.querySelector('.maka-model-switch-warning-icon'),
+    ).not.toBeInTheDocument();
   },
 };
 

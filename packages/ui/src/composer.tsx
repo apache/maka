@@ -260,6 +260,8 @@ export const Composer = forwardRef<
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
+    /** Whether this Session already has conversation history whose provider prompt cache may be rebuilt by a switch. */
+    modelSwitchHasHistory?: boolean;
     /** Renders the provider brand mark beside each model option;
      *  injected by the desktop app to keep the provider SVG library out of @maka/ui. */
     renderProviderMark?(type: ProviderType): ReactNode;
@@ -1678,6 +1680,7 @@ export const Composer = forwardRef<
                     activeModelLabel={props.activeModelLabel}
                     currentProviderType={props.activeProviderType}
                     choices={props.modelChoices ?? []}
+                    hasConversationHistory={props.modelSwitchHasHistory}
                     pending={props.modelChangePending}
                     disabledReason={modelSwitcherDisabledReason}
                     renderProviderMark={props.renderProviderMark}

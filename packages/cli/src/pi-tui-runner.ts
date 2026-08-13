@@ -2062,6 +2062,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showModelList = () => {
     const choices = modelChoices;
+    const hasConversationHistory = state.entries.some(
+      (entry) => entry.kind === 'user' || entry.kind === 'assistant',
+    );
     // Cross-connection picker when the caller supplied choices across all ready
     // connections; otherwise the single-connection list (typed /model, tests).
     if (choices && choices.length > 0) {
@@ -2069,6 +2072,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       const picker = new ModelSearchOverlay(tui, {
         choices,
         current: { model, connectionSlug },
+        showCacheWarning: hasConversationHistory,
         onSelect: (choice) => {
           overlay?.hide();
           void runControl(() => setModelChoice(choice));
@@ -2088,7 +2092,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       {
         minPrimaryColumnWidth: 24,
         maxPrimaryColumnWidth: 48,
-        notice: MODEL_SWITCH_CACHE_WARNING,
+        notice: hasConversationHistory ? MODEL_SWITCH_CACHE_WARNING : undefined,
       },
     );
   };
