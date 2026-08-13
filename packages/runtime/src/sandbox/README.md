@@ -4,7 +4,8 @@ This directory owns platform sandbox selection and command transformation. It tr
 
 Code and focused tests are the final authority. Windows enforcement work is tracked in
 [issue #2142](https://github.com/maka-agent/maka-agent/issues/2142) and specified by the
-[Windows sandbox backend RFC](../../../../docs/architecture/windows-sandbox-rfc-v1.md).
+[Windows sandbox backend RFC](../../../../docs/architecture/windows-sandbox-rfc-v1.md)
+([中文](../../../../docs/architecture/windows-sandbox-rfc-v1.zh-CN.md)).
 
 ## Ownership
 
