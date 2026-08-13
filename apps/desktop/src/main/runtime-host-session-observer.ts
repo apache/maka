@@ -273,20 +273,29 @@ export class RuntimeHostSessionObserver {
     try {
       consumer.resetRequested = true;
       await this.#scheduleTranscriptDelivery(state, consumer);
+      await state.subscriptionOwner.waitUntilReady();
+      if (state.replica?.generation !== consumer.generation) {
+        consumer.resetRequested = true;
+        await this.#scheduleTranscriptDelivery(state, consumer);
+      }
+      const currentReplica = state.replica;
+      if (!currentReplica?.resident || currentReplica.generation !== consumer.generation) {
+        throw new Error('Desktop transcript replica changed while opening');
+      }
+      this.#touchReplica(state);
+      this.#markTranscriptRead(state, currentReplica);
+      const readThroughMessageId = currentReplica.latestDurableVisibleMessageId();
+      return {
+        sessionId,
+        generation: currentReplica.generation,
+        hostEpoch: currentReplica.hostEpoch,
+        readThroughMessageId,
+      };
     } catch (error) {
       this.#detachTranscriptConsumer(state, consumer);
       await this.#closeIfIdle(state);
       throw error;
     }
-    this.#touchReplica(state);
-    this.#markTranscriptRead(state, replica);
-    const readThroughMessageId = replica.latestDurableVisibleMessageId();
-    return {
-      sessionId,
-      generation: replica.generation,
-      hostEpoch: replica.hostEpoch,
-      readThroughMessageId,
-    };
   }
 
   async loadTranscriptBefore(

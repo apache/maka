@@ -644,6 +644,85 @@ test('keeps a bounded transcript batch window in flight until the renderer ackno
   await observer.close();
 });
 
+test('finishes transcript open against a replacement that arrives while reset delivery waits', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const message: StoredMessage = {
+    type: 'assistant',
+    id: 'assistant-large',
+    turnId: 'turn-1',
+    ts: 2,
+    text: 'x'.repeat(DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES * 6),
+    modelId: 'test-model',
+  };
+  let opens = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        opens += 1;
+        const events = opens === 1 ? firstEvents : secondEvents;
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([message]),
+          events,
+          async close() {
+            events.end();
+          },
+        });
+      },
+    },
+    emitSessionsChanged() {},
+  });
+  const batches: DesktopTranscriptBatch[] = [];
+  const opening = observer.openTranscript('session-1', 'consumer-recovery', {
+    id: 22,
+    send(_channel, batch) {
+      batches.push(batch);
+    },
+    once() {},
+    off() {},
+  });
+  const result = opening.then(
+    (value) => ({ value, error: undefined }),
+    (error: unknown) => ({ value: undefined, error }),
+  );
+
+  await waitFor(() => batches.length === 4);
+  firstEvents.push({
+    kind: 'subscription.closed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-session-1',
+    sequence: 1,
+    reason: 'slow_consumer',
+  });
+  await waitFor(() => opens === 2);
+
+  const acknowledged = new Set<string>();
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (const batch of batches) {
+      const key = `${batch.generation}:${batch.deliverySequence}`;
+      if (acknowledged.has(key)) continue;
+      acknowledged.add(key);
+      observer.acknowledgeTranscript(
+        'consumer-recovery',
+        batch.generation,
+        batch.deliverySequence,
+        22,
+      );
+    }
+    const settled = await Promise.race([
+      result.then(() => true),
+      new Promise<false>((resolve) => setImmediate(() => resolve(false))),
+    ]);
+    if (settled) break;
+  }
+
+  const opened = await result;
+  assert.equal(opened.error, undefined);
+  assert.equal(opened.value?.generation, batches.at(-1)?.generation);
+  await observer.close();
+});
+
 test('coalesces transcript changes into one bounded delta while renderer delivery is backpressured', async () => {
   const events = new AsyncFrameQueue();
   let decoded = 0;
