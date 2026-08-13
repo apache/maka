@@ -15,7 +15,7 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessWithTokenW,
     DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
     GetExitCodeProcess, GetProcessId, INFINITE, InitializeProcThreadAttributeList,
     OpenProcessToken, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, ResumeThread,
@@ -172,13 +172,11 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
     let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
 
     let created = unsafe {
-        CreateProcessAsUserW(
+        CreateProcessWithTokenW(
             token,
+            0,
             null(),
             command.as_mut_ptr(),
-            null(),
-            null(),
-            0,
             CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
             environment.as_ptr() as *const c_void,
             cwd.as_mut_ptr(),
@@ -188,7 +186,7 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
     };
     unsafe { DeleteProcThreadAttributeList(startup.lpAttributeList) };
     if created == 0 {
-        return Err(last_error("CreateProcessAsUserW"));
+        return Err(last_error("CreateProcessWithTokenW"));
     }
 
     let result = if unsafe { ResumeThread(process.hThread) } == u32::MAX {
