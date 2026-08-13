@@ -274,7 +274,11 @@ test('restores the previous Runtime Host when a target switch fails', async () =
         if (starts.length === 2) {
           return { kind: 'failed', reason: 'host_unresponsive' };
         }
-        if (starts.length === 3) assert.equal(input.isTargetActive?.(), true);
+        if (starts.length === 3) {
+          assert.equal(input.isTargetActive?.(), true);
+          assert.equal(owner.current()?.epoch, states.at(-1)?.epoch);
+          assert.equal(owner.current()?.readiness, 'reconnecting');
+        }
         return ready(starts.length === 1 ? first.candidate : restored.candidate);
       },
       onFatalError: (error) => fatalErrors.push(error),

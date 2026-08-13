@@ -329,6 +329,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
       );
       rollbackTarget.hostId = previousTarget.hostId;
       this.#target = rollbackTarget;
+      this.#activeTarget = rollbackTarget;
       this.#publishState({
         epoch: rollbackTarget.epoch,
         target: rollbackTarget.target,
@@ -340,6 +341,7 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
         rollbackTarget.lifecycle = await this.#startLifecycle(rollbackTarget, false);
       } catch (rollbackError) {
         rollbackTarget.valid = false;
+        this.#activeTarget = undefined;
         this.#ipcMain.deactivate(rollbackTarget.epoch);
         await rollbackTarget.observations.close();
         const failure = new AggregateError(
