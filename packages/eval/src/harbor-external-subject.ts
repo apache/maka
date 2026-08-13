@@ -10,7 +10,7 @@ import {
   decodePreverifiedToolchain,
   type ExternalProfile as Profile,
 } from './toolchain-verification.js';
-import { isInferenceAdmissionEvent } from './provider-admission.js';
+import { isInferenceAdmissionEvent, isSuccessfulInferenceResponse } from './provider-admission.js';
 import { removeEvalWebTools } from './provider-web-tool-surface.js';
 import { takeRelayResultToken, writeRelayResult } from './relay-result-frame.js';
 
@@ -657,7 +657,9 @@ async function startMeteringProxy(
         response.end();
       } finally {
         const parsed = parser.finish();
-        if (upstream.ok && parsed.admitted) {
+        const admitted =
+          parsed.admitted || isSuccessfulInferenceResponse(upstream.status, projected.model);
+        if (admitted) {
           admittedRequests += 1;
           if (parsed.usage) {
             usageRequests += 1;
