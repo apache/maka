@@ -26,4 +26,11 @@ The result kernel contains only score, normalized usage, attributable cost, dura
 
 The checked-in Terminal-Bench 2.1 four-arm cohort is `experiments/terminal-bench-2.1-deepseek-v4-flash-four-arm.json`. It freezes provider endpoints, framework version, container paths and read-only mount policy. Set each declared machine-path environment variable to its trusted prepared directory, and set the declared API-key credentials. Machine-local paths select artifacts; they do not alter experiment semantics and are not presented as a cryptographic identity scheme.
 
+Maka benchmark subjects also freeze a versioned Hosted Execution tool profile. The
+`headless-coding-v1` profile admits only `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, and
+`apply_patch` as agent-permission tools. Runtime-owned `ArchiveRead` remains available when context
+budget pruning creates an archive placeholder. Product task, goal, scheduling, skill, interaction,
+background-control, and parent-agent tools are outside this profile and must not drift into a
+benchmark run.
+
 The experiment directory contains the frozen `experiment.json` and append-only attempt records. There is no second mutable results file. A leftover `.writer.lock` means the previous writer did not complete; remove it only after proving that no writer process remains.

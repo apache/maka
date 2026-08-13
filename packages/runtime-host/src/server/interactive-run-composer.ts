@@ -86,6 +86,7 @@ export interface InteractiveRunComposerInput {
   readonly childInstruction?: string;
   readonly sideConversation?: boolean;
   readonly boundTools?: readonly MakaTool[];
+  readonly boundToolNames?: readonly string[];
   readonly skillBudget?: SkillCatalogBudgetOptions;
   readonly platform?: NodeJS.Platform;
   readonly shell?: string;
@@ -112,6 +113,9 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const inventorySnapshotFor = createTurnSkillInventorySnapshotResolver(input.skills);
   const inventoryFor: SkillInventoryResolver = async (context) =>
     (await inventorySnapshotFor(context)).inventory;
+  if (input.boundTools && input.boundToolNames) {
+    throw new Error('Interactive tool bindings are ambiguous');
+  }
   const defaultTools = input.boundTools
     ? input.boundTools
     : buildDefaultHostTools(
@@ -125,11 +129,15 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         input.plan,
         input.deepResearch?.tools,
       );
-  const clientCapabilityTools = input.boundTools ? [] : (input.clientCapabilities?.tools ?? []);
+  const clientCapabilityTools =
+    input.boundTools || input.boundToolNames ? [] : (input.clientCapabilities?.tools ?? []);
   const unscopedCandidateTools = [...defaultTools, ...clientCapabilityTools];
-  const candidateTools = input.deepResearch
+  const routedCandidateTools = input.deepResearch
     ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
     : unscopedCandidateTools;
+  const candidateTools = input.boundToolNames
+    ? bindToolsByName(routedCandidateTools, input.boundToolNames)
+    : routedCandidateTools;
   const activeExecution = input.plan ? activePlanExecution(input.plan.state) : undefined;
   const selectedTools = input.plan
     ? selectCollaborationTools({
@@ -142,7 +150,10 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const productSurface = projectEffectiveProductToolSurface({
     host: 'runtime-host',
     tools: selectedTools,
-    policy: { economy: !process.env.MAKA_DISABLE_DEFERRED_TOOLS },
+    policy: {
+      economy:
+        input.boundTools || input.boundToolNames ? false : !process.env.MAKA_DISABLE_DEFERRED_TOOLS,
+    },
   });
   // A bound tool list is an exact child/local activation ceiling. Dynamic
   // capabilities must be included by the authority that constructs that list.
@@ -266,10 +277,26 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   });
 }
 
+function bindToolsByName(
+  tools: readonly MakaTool[],
+  names: readonly string[],
+): readonly MakaTool[] {
+  if (new Set(names).size !== names.length) {
+    throw new Error('Hosted tool profile contains duplicate tool names');
+  }
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const selected = names.map((name) => byName.get(name));
+  const missing = names.filter((_name, index) => selected[index] === undefined);
+  if (missing.length > 0) {
+    throw new Error(`Hosted tool profile is unavailable: ${missing.join(', ')}`);
+  }
+  return selected as MakaTool[];
+}
+
 export interface InteractiveRunComposerFactoryInput
   extends Omit<
     InteractiveRunComposerInput,
-    'runtimePolicy' | 'boundTools' | 'clientCapabilities' | 'plan'
+    'runtimePolicy' | 'boundTools' | 'boundToolNames' | 'clientCapabilities' | 'plan'
   > {
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
@@ -277,6 +304,7 @@ export interface InteractiveRunComposerFactoryInput
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly planStore?: PlanStore;
   readonly deepResearchTools?: readonly MakaTool[];
+  readonly resolveBoundToolNames?: (sessionId: string) => readonly string[] | undefined;
 }
 
 export function createInteractiveRunComposerFactory(
@@ -341,6 +369,9 @@ export function createInteractiveRunComposerFactory(
           ? { sideConversation: true }
           : {}),
         ...(boundTools ? { boundTools } : {}),
+        ...(!boundTools && input.resolveBoundToolNames
+          ? { boundToolNames: input.resolveBoundToolNames(backendContext.sessionId) }
+          : {}),
         ...(clientCapabilities ? { clientCapabilities } : {}),
         ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
         ...(hostTools.length > 0 ? { hostTools } : {}),

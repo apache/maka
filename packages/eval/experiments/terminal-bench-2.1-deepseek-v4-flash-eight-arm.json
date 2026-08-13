@@ -96,7 +96,8 @@
         "thinkingLevel": "max",
         "permissionMode": "bypass",
         "collaborationMode": "agent",
-        "orchestrationMode": "default"
+        "orchestrationMode": "default",
+        "toolProfile": "headless-coding-v1"
       }
     },
     {

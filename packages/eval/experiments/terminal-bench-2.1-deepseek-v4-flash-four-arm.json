@@ -74,7 +74,8 @@
         "permissionMode": "bypass",
         "collaborationMode": "agent",
         "orchestrationMode": "default",
-        "hostSettlementTimeoutMs": 120000
+        "hostSettlementTimeoutMs": 120000,
+        "toolProfile": "headless-coding-v1"
       }
     },
     {

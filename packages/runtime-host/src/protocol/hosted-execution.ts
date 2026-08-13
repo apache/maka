@@ -11,6 +11,9 @@ import { defineOperation } from './operation-spec.js';
 import { decodeSessionCreateInput, type SessionCreateInput } from './session-catalog.js';
 import { decodeMessageContent } from './turn.js';
 
+export const HOSTED_EXECUTION_TOOL_PROFILES = ['headless-coding-v1'] as const;
+export type HostedExecutionToolProfile = (typeof HOSTED_EXECUTION_TOOL_PROFILES)[number];
+
 const ERRORS = [
   'host_not_ready',
   'host_draining',
@@ -25,6 +28,7 @@ export interface HostedExecutionStartInput {
   readonly session: Omit<SessionCreateInput, 'sessionId'>;
   readonly content: MessageContent;
   readonly maxSteps?: number;
+  readonly toolProfile?: HostedExecutionToolProfile;
 }
 
 export interface HostedExecutionReferenceInput {
@@ -95,7 +99,7 @@ export function decodeHostedExecutionStartInput(value: unknown): HostedExecution
     value,
     'Hosted execution start input',
     ['executionId', 'session', 'content'],
-    ['maxSteps'],
+    ['maxSteps', 'toolProfile'],
   );
   const executionId = requireEntityId(input.executionId, 'executionId');
   const { sessionId: _sessionId, ...session } = decodeSessionCreateInput({
@@ -109,7 +113,20 @@ export function decodeHostedExecutionStartInput(value: unknown): HostedExecution
     ...(input.maxSteps === undefined
       ? {}
       : { maxSteps: requirePositiveCount(input.maxSteps, 'maxSteps') }),
+    ...(input.toolProfile === undefined
+      ? {}
+      : { toolProfile: decodeHostedExecutionToolProfile(input.toolProfile) }),
   };
+}
+
+function decodeHostedExecutionToolProfile(value: unknown): HostedExecutionToolProfile {
+  if (
+    typeof value !== 'string' ||
+    !(HOSTED_EXECUTION_TOOL_PROFILES as readonly string[]).includes(value)
+  ) {
+    throw invalidProtocolFrame('Invalid Hosted execution tool profile');
+  }
+  return value as HostedExecutionToolProfile;
 }
 
 export function decodeHostedExecutionReferenceInput(value: unknown): HostedExecutionReferenceInput {

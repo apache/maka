@@ -635,6 +635,7 @@ test('eight-arm spec and wrappers freeze the working provider contracts', async 
       config: {
         connectionSlug?: string;
         baseUrl?: string;
+        toolProfile?: string;
         args?: string[];
         credentialEnvironment?: Record<string, string>;
       };
@@ -646,6 +647,7 @@ test('eight-arm spec and wrappers freeze the working provider contracts', async 
   assert.deepEqual(maka.credentials, ['DEEPSEEK_API_KEY']);
   assert.equal(maka.config.connectionSlug, 'env-deepseek');
   assert.equal(maka.config.baseUrl, 'https://api.deepseek.com');
+  assert.equal(maka.config.toolProfile, 'headless-coding-v1');
   assert.equal(codex.config.args?.includes('--ephemeral'), true);
   assert.equal(codex.config.args?.includes('--skip-git-repo-check'), true);
   assert.equal(claude.config.args?.includes('--bare'), true);
@@ -766,7 +768,10 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
       'utf8',
     ),
   ) as {
-    subjects: Array<{ id: string; config: { args?: string[]; webTools?: string } }>;
+    subjects: Array<{
+      id: string;
+      config: { args?: string[]; webTools?: string; toolProfile?: string };
+    }>;
     execution: { maxConcurrentTaskGroups: number };
     executor: { config: { mounts: Array<{ target: string }> } };
   };
@@ -797,6 +802,7 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
     (maka.config as { hostSettlementTimeoutMs?: number }).hostSettlementTimeoutMs,
     120_000,
   );
+  assert.equal(maka.config.toolProfile, 'headless-coding-v1');
   assert.deepEqual(
     zcode.config.args?.slice(
       zcode.config.args.indexOf('--disallowedTools'),
@@ -1005,6 +1011,7 @@ function makaConfig() {
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     hostSettlementTimeoutMs: 120_000,
+    toolProfile: 'headless-coding-v1',
   };
 }
 

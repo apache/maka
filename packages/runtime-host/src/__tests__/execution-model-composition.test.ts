@@ -37,6 +37,7 @@ import { type ScannedSkill } from '@maka/runtime/skills';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
+import { hostedExecutionToolNames } from '../server/hosted-execution-tool-profile.js';
 import { createToolResultArchiveCapability } from '@maka/runtime/tool-result-archive-capability';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
@@ -2363,6 +2364,32 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     composition.toolAvailability.groups?.some((group) => group.id === 'client_fixture'),
     false,
   );
+});
+
+test('the headless coding profile binds the exact Eval tool ceiling', () => {
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {} as HostMemoryCoordinator,
+    taskLedger: {} as TaskLedgerStore,
+    builtinTools: {},
+    boundToolNames: hostedExecutionToolNames('headless-coding-v1'),
+    parentAgentTools: buildParentAgentTools(),
+    scheduledTaskTool: {
+      name: 'ScheduledTask',
+      description: 'Must stay outside the Eval ceiling.',
+      parameters: {},
+      impl: async () => 'scheduled',
+    },
+  });
+
+  assert.deepEqual(
+    composition.tools.map(({ name }) => name),
+    ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'apply_patch'],
+  );
+  assert.deepEqual(composition.toolAvailability.groups, []);
 });
 
 function skillFixture(id: string, description: string, content: string): ScannedSkill {
