@@ -8,6 +8,7 @@ import {
 import { DEFAULT_PROCESS_TERMINATION_GRACE_MS } from '../process-tree-terminator.js';
 
 const HOOK_OUTPUT_LIMIT = 64 * 1024;
+export const HOOK_EXECUTION_MARKER = 'MAKA_HOOK_EXECUTION' as const;
 
 export interface HookCommandResult {
   exitCode: number | null;
@@ -36,6 +37,9 @@ async function runHookCommand(
   abortSignal: AbortSignal,
 ): Promise<HookCommandResult> {
   if (abortSignal.aborted) return emptyResult({ aborted: true });
+  if (process.env[HOOK_EXECUTION_MARKER] !== undefined) {
+    return emptyResult({ spawnError: 'Recursive Hook execution is not allowed' });
+  }
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(definition.command, definition.args, {
@@ -142,6 +146,7 @@ function minimalHookEnvironment(): NodeJS.ProcessEnv {
   for (const key of keep) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
+  env[HOOK_EXECUTION_MARKER] = '1';
   return env;
 }
 

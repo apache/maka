@@ -10,7 +10,9 @@ import type {
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
 import {
+  createHookExecutionLimiter,
   createPreToolUseHookDispatcher,
+  type HookExecutionLimiter,
   type PreToolUseHookDispatcher,
 } from '@maka/runtime/hooks/engine';
 import {
@@ -35,12 +37,14 @@ export function createHostHookComposition(input: {
 }): HostHookComposition {
   const userConfig = createHookConfigStore(input.stateRoot);
   const trust = createHookTrustStore(input.stateRoot);
+  const executionLimiter = createHookExecutionLimiter();
   return {
     dispatcherFor(header) {
       return createSessionHookDispatcher({
         header,
         userConfig,
         trust,
+        executionLimiter,
         runtimeEvents: input.runtimeEvents,
       });
     },
@@ -51,10 +55,12 @@ function createSessionHookDispatcher(input: {
   header: SessionHeader;
   userConfig: HookConfigStore;
   trust: HookTrustStore;
+  executionLimiter: HookExecutionLimiter;
   runtimeEvents: HookRuntimeEventWriter;
 }): PreToolUseHookDispatcher {
   return createPreToolUseHookDispatcher({
     loadSnapshot: () => loadSnapshot(input),
+    executionLimiter: input.executionLimiter,
     recordAudit: (hookInput, audit, context) =>
       recordAudit(input.runtimeEvents, hookInput, audit, context.invocationId),
   });
