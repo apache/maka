@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { describe, test } from 'node:test';
-import type { ModelMessage } from '../model-protocol.js';
+import type { ModelMessage, ModelStreamResult } from '../model-protocol.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { APICallError, type LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import type { AgentRunHeader } from '@maka/core/agent-run';
@@ -9102,7 +9102,7 @@ describe('AiSdkBackend RunTrace', () => {
     };
     (
       backend as unknown as {
-        modelAdapter: { startStream: (input: FakeStreamInput) => Promise<unknown> };
+        modelAdapter: { startStream: (input: FakeStreamInput) => Promise<ModelStreamResult> };
       }
     ).modelAdapter.startStream = async (input: FakeStreamInput) => {
       calls += 1;
@@ -9117,8 +9117,12 @@ describe('AiSdkBackend RunTrace', () => {
             else input.abortSignal.addEventListener('abort', abort, { once: true });
           });
         })(),
-        usage: Promise.resolve(undefined),
-        finishReason: Promise.resolve('stop'),
+        outcome: Promise.resolve({
+          kind: 'completed',
+          finishReason: 'stop',
+          request: { messages: [] },
+          continuation: 'none',
+        }),
       };
     };
 
@@ -11467,7 +11471,7 @@ describe('AiSdkBackend thinking persistence', () => {
     };
     (
       backend as unknown as {
-        modelAdapter: { startStream: (input: FakeStreamInput) => Promise<unknown> };
+        modelAdapter: { startStream: (input: FakeStreamInput) => Promise<ModelStreamResult> };
       }
     ).modelAdapter.startStream = async (input: FakeStreamInput) => ({
       // The adapter boundary now exposes Maka-owned `ModelStreamEvent`s, not
@@ -11479,8 +11483,17 @@ describe('AiSdkBackend thinking persistence', () => {
         yield { kind: 'thinking', text: 'final thoughts' };
         yield { kind: 'thinking-signature', signature: 'sig-last' };
       })(),
-      usage: Promise.resolve(undefined),
-      finishReason: Promise.resolve('stop'),
+      outcome: Promise.resolve({
+        kind: 'truncated',
+        failure: {
+          type: 'model_failure',
+          kind: 'provider_unavailable',
+          message: 'Provider stream ended without finishing (unknown)',
+          retryable: false,
+        },
+        request: { messages: [] },
+        continuation: 'none',
+      }),
     });
 
     for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
@@ -11493,6 +11506,7 @@ describe('AiSdkBackend thinking persistence', () => {
     const thinkingOnly = assistants.find((m) => m.thinking?.signature === 'sig-last');
     assert.ok(thinkingOnly, 'thinking-only last step must persist');
     assert.equal(thinkingOnly.text, '');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
     // No duplicate message ids anywhere in the ledger.
     const ids = appended.map((m) => (m as { id: string }).id);
     assert.equal(new Set(ids).size, ids.length, `duplicate ledger ids: ${ids.join(', ')}`);
