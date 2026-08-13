@@ -38,11 +38,204 @@ import {
 import { encodeAgentGraphTerminalCursor } from '../stream-graph-read-model.js';
 import {
   UPDATE_AGENT_GRAPH_TOOL_NAME,
+  VIEW_AGENT_GRAPH_TOOL_NAME,
   YIELD_AGENT_GRAPH_TOOL_NAME,
   compileAgentGraphScheduleUpdate,
+  type UpdateAgentGraphToolInput,
 } from '../stream-graph-supervisor-tools.js';
+import { projectAgentGraphRecords } from '../stream-graph-projection.js';
 
 describe('host-managed agent graph coordinator', () => {
+  test('authorizes only selected committed results from an earlier epoch of the same root', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const rootSessionId = 'root-session';
+    const sourceGraphId = agentGraphIdForRootSession(rootSessionId);
+    const currentGraphId = agentGraphIdForRootSessionEpoch(rootSessionId, 2);
+    const sourceRun: AgentRunHeader = {
+      sessionId: 'source-child',
+      runId: 'source-run',
+      turnId: 'source-turn',
+      invocationId: 'source-invocation',
+      backendKind: 'fake',
+      llmConnectionSlug: 'fake',
+      modelId: 'fake',
+      cwd: '/workspace',
+      permissionMode: 'explore',
+      status: 'completed',
+      createdAt: 1,
+      updatedAt: 2,
+      completedAt: 2,
+    };
+    const sourceEvent: RuntimeEvent = {
+      id: 'source-result-event',
+      invocationId: 'source-invocation',
+      sessionId: sourceRun.sessionId,
+      runId: sourceRun.runId,
+      turnId: sourceRun.turnId,
+      ts: 2,
+      role: 'model',
+      author: 'agent',
+      partial: false,
+      content: { kind: 'text', text: 'Outcome: retain this result.' },
+    };
+    const selectedRecord = projectAgentGraphRecords({
+      graphId: sourceGraphId,
+      streams: [
+        {
+          operator: { operatorId: 'source-operator', sessionId: sourceRun.sessionId },
+          run: sourceRun,
+          events: [sourceEvent],
+        },
+      ],
+    }).records[0]!;
+    const sourceProvision: AgentGraphOperatorProvision = {
+      schemaVersion: AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
+      provisionId: `graph_provision_${'1'.repeat(32)}`,
+      provisionFingerprint: `sha256:${'2'.repeat(64)}`,
+      graphId: sourceGraphId,
+      workId: `graph_work_${'3'.repeat(32)}`,
+      agentId: 'source-agent',
+      operatorId: 'source-operator',
+      initialTurnId: sourceRun.turnId,
+      initialRunId: sourceRun.runId,
+      edges: [],
+      targetSessionId: sourceRun.sessionId,
+      provisionedAt: 1,
+    };
+    const controlStore = new Proxy(store, {
+      get(target, property) {
+        if (property === 'listAgentGraphOperatorProvisions') {
+          return async (graphId: string) =>
+            graphId === sourceGraphId ? [structuredClone(sourceProvision)] : [];
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    await store.resolveCurrentAgentGraphEpoch({ rootSessionId, legacyGraphId: sourceGraphId });
+    await store.commitAgentGraphScheduleUpdate(
+      compileAgentGraphScheduleUpdate({
+        graphId: sourceGraphId,
+        input: {
+          operation: 'finish',
+          finish: { result_ids: [selectedRecord.recordId], reason: 'Publish selected output.' },
+        },
+        context: toolContext(rootSessionId, 'root-run-1', 'root-turn-1', 'finish-source'),
+      }),
+    );
+    await store.advanceAgentGraphEpoch({
+      rootSessionId,
+      expectedEpoch: 1,
+      expectedGraphId: sourceGraphId,
+      nextGraphId: currentGraphId,
+    });
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async (sessionId: string) =>
+          ({ id: sessionId, status: 'active', isArchived: false }) as never,
+      },
+      runStore: {
+        listSessionRuns: async (sessionId: string) =>
+          sessionId === sourceRun.sessionId ? [sourceRun] : [],
+      },
+      runtimeEventStore: {
+        readImmutableRuntimeEvents: async (sessionId, runId) =>
+          sessionId === sourceRun.sessionId && runId === sourceRun.runId ? [sourceEvent] : [],
+      },
+      controlStore,
+      epochStore: store,
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('test does not reconcile new work');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('test does not dispatch new work');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+    });
+    try {
+      const tools = await coordinator.toolsForSession(rootSessionId);
+      const view = tools.find((tool) => tool.name === VIEW_AGENT_GRAPH_TOOL_NAME) as MakaTool<
+        Record<string, never>,
+        { historicalSelectedResults: Array<{ sourceGraphId: string; resultId: string }> }
+      >;
+      const update = tools.find((tool) => tool.name === UPDATE_AGENT_GRAPH_TOOL_NAME) as MakaTool<
+        UpdateAgentGraphToolInput,
+        unknown
+      >;
+      assert.ok(view);
+      assert.ok(update);
+      assert.deepEqual(
+        (await view.impl({}, toolContext(rootSessionId, 'root-run-2', 'root-turn-2')))
+          .historicalSelectedResults,
+        [{ sourceGraphId, resultId: selectedRecord.recordId }],
+      );
+      await update.impl(
+        {
+          operation: 'add_work',
+          add_work: [
+            {
+              target_kind: 'new_agent',
+              agent_id: 'reader',
+              instruction: 'Continue from the selected result.',
+              selected_result_inputs: [
+                { source_graph_id: sourceGraphId, result_id: selectedRecord.recordId },
+              ],
+            },
+          ],
+        },
+        toolContext(rootSessionId, 'root-run-2', 'root-turn-2', 'use-selected'),
+      );
+      await assert.rejects(
+        async () =>
+          await update.impl(
+            {
+              operation: 'add_work',
+              add_work: [
+                {
+                  target_kind: 'new_agent',
+                  agent_id: 'reader',
+                  instruction: 'Try an unselected record.',
+                  selected_result_inputs: [
+                    { source_graph_id: sourceGraphId, result_id: 'unselected-record' },
+                  ],
+                },
+              ],
+            },
+            toolContext(rootSessionId, 'root-run-2', 'root-turn-2', 'use-unselected'),
+          ),
+        /did not select result/,
+      );
+      await assert.rejects(
+        async () =>
+          await update.impl(
+            {
+              operation: 'add_work',
+              add_work: [
+                {
+                  target_kind: 'new_agent',
+                  agent_id: 'reader',
+                  instruction: 'Try the current graph.',
+                  selected_result_inputs: [
+                    { source_graph_id: currentGraphId, result_id: selectedRecord.recordId },
+                  ],
+                },
+              ],
+            },
+            toolContext(rootSessionId, 'root-run-2', 'root-turn-2', 'use-current'),
+          ),
+        /not a completed earlier epoch/,
+      );
+      assert.equal((await store.listAgentGraphScheduleUpdates(currentGraphId)).length, 1);
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
   test('boots an empty graph from agent work and recovers it without duplicate topology', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-graph-coordinator-'));
     const sessionStore = createSessionStore(root);

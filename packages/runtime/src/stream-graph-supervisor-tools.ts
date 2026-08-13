@@ -12,6 +12,7 @@ import {
   type AgentGraphScheduleStore,
   type AgentGraphScheduleUpdate,
   type AgentGraphScheduleUpdateRequest,
+  type AgentGraphSelectedResultInput,
   type AgentGraphScheduledWork,
   type AgentGraphStoppedTarget,
   type AgentGraphWorkTarget,
@@ -41,6 +42,7 @@ const TOOL_VIEW_MAX_INSTRUCTION_CHARS = 2_000;
 const TOOL_VIEW_MAX_ACTIVITY = 64;
 const TOOL_VIEW_MAX_TERMINAL_OPERATORS = 64;
 const TOOL_VIEW_MAX_LIVE_STATE = 64;
+const TOOL_VIEW_MAX_HISTORICAL_RESULTS = 64;
 
 const identitySchema = z
   .string()
@@ -85,6 +87,20 @@ const addWorkSchema = z.preprocess(
         .max(AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS)
         .default([])
         .describe('Durable record or result ids that form this work item input frontier.'),
+      selected_result_inputs: z
+        .array(
+          z
+            .object({
+              source_graph_id: identitySchema.describe('Completed earlier graph epoch id.'),
+              result_id: identitySchema.describe(
+                'Record id selected by the earlier graph finish operation.',
+              ),
+            })
+            .strict(),
+        )
+        .max(AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS)
+        .optional()
+        .describe('Explicit results selected from completed earlier graph epochs.'),
       replaces: identitySchema
         .optional()
         .describe('Existing work or activation superseded by this request.'),
@@ -119,6 +135,31 @@ const addWorkSchema = z.preprocess(
         });
       }
       addDuplicateIssue(ctx, value.input_ids, ['input_ids']);
+      addDuplicateIssue(
+        ctx,
+        (value.selected_result_inputs ?? []).map((input) => input.result_id),
+        ['selected_result_inputs'],
+      );
+      const currentInputIds = new Set(value.input_ids);
+      value.selected_result_inputs?.forEach((selected, index) => {
+        if (currentInputIds.has(selected.result_id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['selected_result_inputs', index, 'result_id'],
+            message: 'A result id cannot be both a current and historical graph input',
+          });
+        }
+      });
+      if (
+        value.input_ids.length + (value.selected_result_inputs?.length ?? 0) >
+        AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['selected_result_inputs'],
+          message: `Combined graph inputs must contain at most ${AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS} entries`,
+        });
+      }
     }),
 );
 
@@ -301,6 +342,10 @@ export interface UpdateAgentGraphToolInput {
     operator_id?: string;
     instruction: string;
     input_ids?: string[];
+    selected_result_inputs?: Array<{
+      source_graph_id: string;
+      result_id: string;
+    }>;
     replaces?: string;
     replacement_mode?: 'none' | 'replace';
   }>;
@@ -394,10 +439,13 @@ export interface AgentGraphToolRuntimeView {
   omittedActivityCount: number;
 }
 
+export interface AgentGraphSelectedResultInputView extends AgentGraphSelectedResultInput {}
+
 export type ViewAgentGraphToolResult = {
   kind: 'agent_graph_view';
   schedule: AgentGraphToolScheduleView;
   runtime: AgentGraphToolRuntimeView;
+  historicalSelectedResults: AgentGraphSelectedResultInputView[];
   nextCursor?: string;
 };
 
@@ -405,6 +453,7 @@ export type UpdateAgentGraphToolResult = {
   kind: 'agent_graph_updated';
   schedule: AgentGraphToolScheduleView;
   runtime: AgentGraphToolRuntimeView;
+  historicalSelectedResults: AgentGraphSelectedResultInputView[];
   nextCursor?: string;
 };
 
@@ -428,6 +477,7 @@ export interface BuildAgentGraphSupervisorToolsInput {
   graphId: string;
   scheduleStore: AgentGraphScheduleStore;
   observeGraph(): Promise<AgentGraphSupervisorObservation>;
+  listHistoricalSelectedResults?(): Promise<readonly AgentGraphSelectedResultInput[]>;
   /** Register before state reads so runtime/reconciliation transitions cannot escape yield admission. */
   prepareYieldPermit?(): AgentGraphYieldPermit;
   /** Host ownership check performed before append-only schedule admission. */
@@ -472,6 +522,7 @@ export function buildAgentGraphSupervisorTools(
         input.scheduleStore,
         graphId,
         input.observeGraph,
+        input.listHistoricalSelectedResults,
         resolveViewCursor(toolInput),
       );
       return {
@@ -505,6 +556,7 @@ export function buildAgentGraphSupervisorTools(
         input.scheduleStore,
         graphId,
         input.observeGraph,
+        input.listHistoricalSelectedResults,
         undefined,
       );
       return {
@@ -604,6 +656,12 @@ export function compileAgentGraphScheduleUpdate(input: {
   const addWork = addWorkInput.map((work, index): AgentGraphScheduledWork => {
     const target = normalizeWorkTarget(work);
     const inputIds = normalizeUniqueIdentities(work.input_ids, 'input id');
+    const selectedResultInputs: AgentGraphSelectedResultInput[] = (
+      work.selected_result_inputs ?? []
+    ).map((input) => ({
+      sourceGraphId: requireIdentity(input.source_graph_id, 'source graph id'),
+      resultId: requireIdentity(input.result_id, 'selected result id'),
+    }));
     const workHash = stableHash({
       schemaVersion: AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION,
       updateId,
@@ -618,6 +676,7 @@ export function compileAgentGraphScheduleUpdate(input: {
         'instruction',
       ),
       inputIds,
+      ...(selectedResultInputs.length > 0 ? { selectedResultInputs } : {}),
       ...(work.replaces && work.replacement_mode !== 'none'
         ? { replaces: requireIdentity(work.replaces, 'replacement target id') }
         : {}),
@@ -698,6 +757,9 @@ export function projectAgentGraphSchedule(
         ...item,
         target: { ...item.target },
         inputIds: [...item.inputIds],
+        ...(item.selectedResultInputs
+          ? { selectedResultInputs: item.selectedResultInputs.map((input) => ({ ...input })) }
+          : {}),
         status: 'requested',
         updateId: update.updateId,
         revision: update.revision,
@@ -755,6 +817,9 @@ function agentGraphToolScheduleView(
       ...item,
       target: { ...item.target },
       inputIds: [...item.inputIds],
+      ...(item.selectedResultInputs
+        ? { selectedResultInputs: item.selectedResultInputs.map((input) => ({ ...input })) }
+        : {}),
       instruction: instructionTruncated
         ? `${item.instruction.slice(0, TOOL_VIEW_MAX_INSTRUCTION_CHARS)}…`
         : item.instruction,
@@ -788,15 +853,20 @@ async function readToolGraphView(
   store: AgentGraphScheduleStore,
   graphId: string,
   observeGraph: () => Promise<AgentGraphSupervisorObservation>,
+  listHistoricalSelectedResults:
+    | (() => Promise<readonly AgentGraphSelectedResultInput[]>)
+    | undefined,
   cursor: string | undefined,
 ): Promise<{
   schedule: AgentGraphToolScheduleView;
   runtime: AgentGraphToolRuntimeView;
+  historicalSelectedResults: AgentGraphSelectedResultInputView[];
   nextCursor?: string;
 }> {
-  const [updates, observation] = await Promise.all([
+  const [updates, observation, historicalSelectedResults] = await Promise.all([
     store.listAgentGraphScheduleUpdates(graphId),
     observeGraph(),
+    listHistoricalSelectedResults?.() ?? [],
   ]);
   assertGraphObservation(graphId, observation);
   const projection = projectAgentGraphSchedule(graphId, updates);
@@ -804,6 +874,9 @@ async function readToolGraphView(
   return {
     schedule: agentGraphToolScheduleView(projection, livePage),
     runtime: agentGraphToolRuntimeView(observation, livePage),
+    historicalSelectedResults: historicalSelectedResults
+      .slice(0, TOOL_VIEW_MAX_HISTORICAL_RESULTS)
+      .map((selected) => ({ ...selected })),
     ...(livePage.nextCursor ? { nextCursor: livePage.nextCursor } : {}),
   };
 }

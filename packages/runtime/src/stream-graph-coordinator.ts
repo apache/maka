@@ -4,6 +4,7 @@ import type { AgentGraphEpochBinding, AgentGraphEpochStore } from '@maka/core/ag
 import type { AgentGraphEpochPage } from '@maka/core/agent-graph-epoch';
 import type {
   AgentGraphScheduleControlStore,
+  AgentGraphSelectedResultInput,
   AgentGraphScheduleUpdate,
 } from '@maka/core/agent-graph-schedule';
 import type { AgentGraphTimelineMetadataStore } from '@maka/core/agent-graph-timeline';
@@ -19,7 +20,10 @@ import {
 import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
 import type { MakaTool } from './tool-runtime.js';
 import type { SessionManager } from './session-manager.js';
-import { readCommittedAgentGraphProjection } from './stream-graph-projection.js';
+import {
+  readCommittedAgentGraphProjection,
+  type AgentGraphRecord,
+} from './stream-graph-projection.js';
 import {
   hydrateAgentGraphInputHandoffs,
   renderAgentGraphScheduledWorkPrompt,
@@ -54,6 +58,7 @@ import {
 } from './stream-graph-read-model.js';
 import {
   buildAgentGraphSupervisorTools,
+  projectAgentGraphSchedule,
   type AgentGraphYieldPermit,
 } from './stream-graph-supervisor-tools.js';
 import type { AgentGraphTraceTopology } from './stream-graph-trace.js';
@@ -222,13 +227,20 @@ export class AgentGraphCoordinator {
         graphId: driver.graphId,
         scheduleStore: this.#input.controlStore,
         observeGraph: () => this.observe(rootSessionId),
+        listHistoricalSelectedResults: () =>
+          this.#listHistoricalSelectedResults(rootSessionId, driver.graphId),
         prepareYieldPermit: () => this.#prepareYieldPermit(driver),
-        authorizeScheduleUpdate: (request): ScheduleWakeFence => {
+        authorizeScheduleUpdate: async (request): Promise<ScheduleWakeFence> => {
           if (request.graphId !== driver.graphId || request.source.sessionId !== rootSessionId) {
             throw new Error(
               `Agent graph schedule update is not authorized for root Session ${rootSessionId}`,
             );
           }
+          await this.#resolveSelectedResultInputs(
+            rootSessionId,
+            driver.graphId,
+            request.addWork.flatMap((work) => work.selectedResultInputs ?? []),
+          );
           return {
             stopGeneration: driver.stopGeneration,
             mayResumePaused: driver.paused && !driver.stopping,
@@ -702,6 +714,8 @@ export class AgentGraphCoordinator {
       newId: this.#input.newId,
       maxNewActivations: this.#input.maxNewActivations!,
       observeGraph: (topology) => this.#observeTopology(topology),
+      resolveSelectedResultInputs: (selected) =>
+        this.#resolveSelectedResultInputs(driver.rootSessionId, driver.graphId, selected),
       hydrateInputHandoffs: (records) =>
         hydrateAgentGraphInputHandoffs({
           records,
@@ -1156,6 +1170,97 @@ export class AgentGraphCoordinator {
       graphId,
       await this.#input.controlStore.listAgentGraphOperatorProvisions(graphId),
     );
+  }
+
+  async #resolveSelectedResultInputs(
+    rootSessionId: string,
+    currentGraphId: string,
+    selectedInputs: readonly AgentGraphSelectedResultInput[],
+  ): Promise<readonly AgentGraphRecord[]> {
+    if (selectedInputs.length === 0) return [];
+    if (!this.#input.epochStore) {
+      throw new Error('Historical graph result inputs require agent graph epoch authority');
+    }
+    const current = await this.#input.epochStore.readAgentGraphEpochByGraphId(currentGraphId);
+    if (!current || current.rootSessionId !== rootSessionId) {
+      throw new Error(`Current agent graph ${currentGraphId} is not owned by ${rootSessionId}`);
+    }
+    const sourceGraphIds = [...new Set(selectedInputs.map((input) => input.sourceGraphId))];
+    const recordsBySource = new Map<string, Map<string, AgentGraphRecord>>();
+    for (const sourceGraphId of sourceGraphIds) {
+      const source = await this.#input.epochStore.readAgentGraphEpochByGraphId(sourceGraphId);
+      if (!source || source.rootSessionId !== rootSessionId || source.epoch >= current.epoch) {
+        throw new Error(
+          `Agent graph ${sourceGraphId} is not a completed earlier epoch of ${currentGraphId}`,
+        );
+      }
+      const updates = await this.#input.controlStore.listAgentGraphScheduleUpdates(sourceGraphId);
+      updates.forEach((update) =>
+        this.#assertScheduleOwnedByRoot(update, rootSessionId, sourceGraphId),
+      );
+      const schedule = projectAgentGraphSchedule(sourceGraphId, updates);
+      if (!schedule.closed || !schedule.finish) {
+        throw new Error(`Agent graph ${sourceGraphId} has not selected final results`);
+      }
+      const requestedIds = selectedInputs
+        .filter((input) => input.sourceGraphId === sourceGraphId)
+        .map((input) => input.resultId);
+      const selectedIds = new Set(schedule.finish.resultIds);
+      const unselected = requestedIds.filter((resultId) => !selectedIds.has(resultId));
+      if (unselected.length > 0) {
+        throw new Error(
+          `Agent graph ${sourceGraphId} did not select result ${unselected.join(', ')}`,
+        );
+      }
+      const topology = await this.#readTopology(sourceGraphId);
+      const projection = await readCommittedAgentGraphProjection({
+        graphId: sourceGraphId,
+        operators: topology.operators,
+        runStore: this.#input.runStore,
+        runtimeEventStore: this.#input.runtimeEventStore,
+      });
+      recordsBySource.set(
+        sourceGraphId,
+        new Map(projection.records.map((record) => [record.recordId, record])),
+      );
+    }
+    return selectedInputs.map((selected) => {
+      const record = recordsBySource.get(selected.sourceGraphId)?.get(selected.resultId);
+      if (!record) {
+        throw new Error(
+          `Selected result ${selected.resultId} is not a committed record of ${selected.sourceGraphId}`,
+        );
+      }
+      return structuredClone(record);
+    });
+  }
+
+  async #listHistoricalSelectedResults(
+    rootSessionId: string,
+    currentGraphId: string,
+  ): Promise<readonly AgentGraphSelectedResultInput[]> {
+    if (!this.#input.epochStore) return [];
+    const current = await this.#input.epochStore.readAgentGraphEpochByGraphId(currentGraphId);
+    if (!current || current.rootSessionId !== rootSessionId || current.epoch <= 1) return [];
+    const page = await this.#input.epochStore.listAgentGraphEpochPage({
+      rootSessionId,
+      beforeEpoch: current.epoch,
+      limit: 16,
+    });
+    const selected: AgentGraphSelectedResultInput[] = [];
+    for (const binding of page.epochs) {
+      const updates = await this.#input.controlStore.listAgentGraphScheduleUpdates(binding.graphId);
+      updates.forEach((update) =>
+        this.#assertScheduleOwnedByRoot(update, rootSessionId, binding.graphId),
+      );
+      const finish = projectAgentGraphSchedule(binding.graphId, updates).finish;
+      if (!finish) continue;
+      for (const resultId of finish.resultIds) {
+        selected.push({ sourceGraphId: binding.graphId, resultId });
+        if (selected.length === 64) return selected;
+      }
+    }
+    return selected;
   }
 
   async #assertRootSupervisor(rootSessionId: string): Promise<SessionHeader> {

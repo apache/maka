@@ -117,6 +117,7 @@ export interface AgentGraphClientScheduledWork {
     | { kind: 'preset'; presetId: string }
     | { kind: 'operator'; operatorId: string };
   inputIds: string[];
+  selectedResultInputs?: Array<{ sourceGraphId: string; resultId: string }>;
   replaces?: string;
   status: AgentGraphScheduleWorkView['status'];
   instructionPreview: string;
@@ -1049,6 +1050,9 @@ function clientWork(work: AgentGraphScheduleWorkView): AgentGraphClientScheduled
     workId: work.workId,
     target: { ...work.target },
     inputIds: [...work.inputIds],
+    ...(work.selectedResultInputs
+      ? { selectedResultInputs: work.selectedResultInputs.map((input) => ({ ...input })) }
+      : {}),
     ...(work.replaces ? { replaces: work.replaces } : {}),
     status: work.status,
     instructionPreview: instructionTruncated

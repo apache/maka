@@ -5,6 +5,7 @@ import type {
 import {
   AgentGraphScheduleRevisionConflictError,
   type AgentGraphScheduleControlStore,
+  type AgentGraphSelectedResultInput,
   type AgentGraphScheduleUpdate,
   type AgentGraphScheduleUpdateSource,
 } from '@maka/core/agent-graph-schedule';
@@ -60,6 +61,9 @@ export interface ReconcileAgentGraphScheduleInput {
     input: ProvisionAgentGraphOperatorInput,
   ): Promise<ProvisionAgentGraphOperatorResult>;
   hydrateInputHandoffs?(records: readonly AgentGraphRecord[]): Promise<AgentGraphInputHandoff[]>;
+  resolveSelectedResultInputs?(
+    inputs: readonly AgentGraphSelectedResultInput[],
+  ): Promise<readonly AgentGraphRecord[]>;
   renderPrompt(input: RenderAgentGraphScheduledWorkPromptInput): string | Promise<string>;
   abortSignal?: AbortSignal;
   supervisor?: AgentGraphSupervisorObserver;
@@ -106,6 +110,7 @@ interface ScheduleSnapshot {
   topology: AgentGraphTraceTopology;
   provisions: AgentGraphOperatorProvision[];
   sourceByWorkId: Map<string, AgentGraphScheduleUpdateSource>;
+  selectedResultRecords: Map<string, AgentGraphRecord>;
 }
 
 interface PreparedWork {
@@ -191,6 +196,9 @@ export async function reconcileAgentGraphSchedule(
     const committedRecords = new Map(
       snapshot.observation.projection.records.map((record) => [record.recordId, record]),
     );
+    for (const [recordId, record] of snapshot.selectedResultRecords) {
+      committedRecords.set(recordId, record);
+    }
     const deferredWork: AgentGraphScheduleDeferredWork[] = [];
     let topologyChanged = false;
     let topologyStale = false;
@@ -322,9 +330,10 @@ export async function reconcileAgentGraphSchedule(
 
     const rendered = await Promise.allSettled(
       selected.map(async ({ work, intent }): Promise<PreparedWork> => {
-        const inputRecords = work.inputIds.map((recordId) =>
-          clonePlain(committedRecords.get(recordId)!),
-        );
+        const inputRecords = [
+          ...work.inputIds,
+          ...(work.selectedResultInputs ?? []).map((selected) => selected.resultId),
+        ].map((recordId) => clonePlain(committedRecords.get(recordId)!));
         const inputHandoffs = input.hydrateInputHandoffs
           ? await input.hydrateInputHandoffs(inputRecords)
           : [];
@@ -462,14 +471,54 @@ async function readScheduleSnapshot(
   const observation = await input.observeGraph(topology);
   assertGraphObservation(input.topology.graphId, observation);
   notifySupervisor(input.supervisor?.onObservation, observation);
+  const schedule = projectAgentGraphSchedule(input.topology.graphId, updates);
+  const selectedInputs = schedule.work
+    .filter((work) => work.status === 'requested')
+    .flatMap((work) => work.selectedResultInputs ?? []);
+  const selectedResultRecords = await resolveSelectedResultRecords(input, selectedInputs);
   return {
-    schedule: projectAgentGraphSchedule(input.topology.graphId, updates),
+    schedule,
     observation,
     claims,
     topology,
     provisions,
     sourceByWorkId: scheduleSourceByWorkId(updates),
+    selectedResultRecords,
   };
+}
+
+async function resolveSelectedResultRecords(
+  input: ReconcileAgentGraphScheduleInput,
+  selectedInputs: readonly AgentGraphSelectedResultInput[],
+): Promise<Map<string, AgentGraphRecord>> {
+  if (selectedInputs.length === 0) return new Map();
+  if (!input.resolveSelectedResultInputs) {
+    throw new Error('Selected graph result inputs require a Runtime Host resolver');
+  }
+  const distinct = [
+    ...new Map(
+      selectedInputs.map((selected) => [
+        `${selected.sourceGraphId}\u0000${selected.resultId}`,
+        selected,
+      ]),
+    ).values(),
+  ];
+  const records = await input.resolveSelectedResultInputs(distinct);
+  if (records.length !== distinct.length) {
+    throw new Error('Selected graph result resolver returned an incomplete result set');
+  }
+  const resolved = new Map<string, AgentGraphRecord>();
+  records.forEach((record, index) => {
+    const selected = distinct[index]!;
+    if (record.graphId !== selected.sourceGraphId || record.recordId !== selected.resultId) {
+      throw new Error('Selected graph result resolver returned a mismatched record');
+    }
+    if (resolved.has(record.recordId)) {
+      throw new Error(`Selected graph result id ${record.recordId} is ambiguous`);
+    }
+    resolved.set(record.recordId, clonePlain(record));
+  });
+  return resolved;
 }
 
 async function applyScheduleStops(
@@ -712,6 +761,9 @@ function scheduledWorkIntent(
     workId: work.workId,
     target: work.target,
     inputIds: work.inputIds,
+    ...(work.selectedResultInputs?.length
+      ? { selectedResultInputs: work.selectedResultInputs }
+      : {}),
     ...(work.replaces ? { replaces: work.replaces } : {}),
   });
   const readinessContextFingerprint = stableHash({
@@ -721,6 +773,9 @@ function scheduledWorkIntent(
     operatorId,
     targetSessionId: topologyBinding.sessionId,
     inputIds: work.inputIds,
+    ...(work.selectedResultInputs?.length
+      ? { selectedResultInputs: work.selectedResultInputs }
+      : {}),
   });
   return {
     schemaVersion: 1,
@@ -733,7 +788,10 @@ function scheduledWorkIntent(
     targetSessionId: topologyBinding.sessionId,
     policyKind: 'supervisor',
     triggerRouteIds: [],
-    triggerRecordIds: [...work.inputIds],
+    triggerRecordIds: [
+      ...work.inputIds,
+      ...(work.selectedResultInputs ?? []).map((input) => input.resultId),
+    ],
   };
 }
 
