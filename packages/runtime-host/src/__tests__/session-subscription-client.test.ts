@@ -459,9 +459,12 @@ test('decodes one bounded page without walking the remaining transcript', async 
     },
   );
 
+  const assemblyDeltas: number[] = [];
   const decoded = await subscription.decodeTranscriptPage(
     subscription.transcriptBootstrap!.durable,
     decodeStoredMessage,
+    undefined,
+    (deltaBytes) => assemblyDeltas.push(deltaBytes),
   );
 
   assert.deepEqual(decoded, {
@@ -469,6 +472,7 @@ test('decodes one bounded page without walking the remaining transcript', async 
     nextCursor: 'older-records',
   });
   assert.deepEqual(requests, [{ cursor: 'complete-message', maxBytes: splitAt }]);
+  assert.deepEqual(assemblyDeltas, [encoded.byteLength, -encoded.byteLength]);
 
   requests.length = 0;
   await assert.rejects(
@@ -808,10 +812,18 @@ test('rejects a durable message that does not match its payload digest', async (
     },
   );
 
+  const assemblyDeltas: number[] = [];
   await assert.rejects(
-    () => subscription.loadTranscript(decodeStoredMessage),
+    () =>
+      subscription.decodeTranscriptPage(
+        subscription.transcriptBootstrap!.durable,
+        decodeStoredMessage,
+        undefined,
+        (deltaBytes) => assemblyDeltas.push(deltaBytes),
+      ),
     hasSubscriptionReason('correlation_changed'),
   );
+  assert.deepEqual(assemblyDeltas, [message.byteLength, -message.byteLength]);
 });
 
 test('rejects a transcript cursor that does not advance', async () => {

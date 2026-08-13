@@ -182,6 +182,7 @@ export class RuntimeHostSessionObserver {
   readonly #now: () => number;
   #closed = false;
   #transcriptAccessClock = 0;
+  #transcriptPreparationBytes = 0;
 
   constructor(deps: RuntimeHostSessionObserverDeps) {
     this.#client = deps.client;
@@ -523,6 +524,8 @@ export class RuntimeHostSessionObserver {
       sessionId,
       now: this.#now,
       transcriptReplicaOptions: {
+        accountPreparationBytes: (deltaBytes) =>
+          this.#accountTranscriptPreparation(state, deltaBytes),
         onChange: (replica, change) =>
           this.#broadcastTranscriptChange(state, replica, change),
       },
@@ -1175,12 +1178,26 @@ export class RuntimeHostSessionObserver {
   }
 
   #transcriptResidentBytes(): number {
-    let total = 0;
+    let total = this.#transcriptPreparationBytes;
     for (const state of this.#states.values()) {
       total += state.replica?.residentBytes ?? 0;
       for (const consumer of state.transcriptConsumers.values()) total += consumer.deliveryBytes;
     }
     return total;
+  }
+
+  #accountTranscriptPreparation(state: ObservedSessionState, deltaBytes: number): void {
+    if (!Number.isSafeInteger(deltaBytes)) {
+      throw new RangeError('Invalid Desktop transcript preparation size');
+    }
+    if (this.#transcriptPreparationBytes + deltaBytes < 0) {
+      throw new RangeError('Invalid Desktop transcript preparation release');
+    }
+    this.#transcriptPreparationBytes += deltaBytes;
+    if (deltaBytes > 0 && !this.#touchReplica(state, state)) {
+      this.#transcriptPreparationBytes -= deltaBytes;
+      throw new RangeError('Desktop transcript preparation exceeds the global cache limit');
+    }
   }
 
   #deliverTranscriptBatch(
@@ -1228,12 +1245,16 @@ export class RuntimeHostSessionObserver {
     consumer: TranscriptConsumer,
     batches: Iterable<DesktopTranscriptBatchPayload>,
   ): Promise<void> {
-    let deliveries: Promise<void>[] = [];
+    const deliveries = new Set<Promise<void>>();
     for (const batch of batches) {
-      deliveries.push(this.#deliverTranscriptBatch(consumer, batch));
-      if (deliveries.length === TRANSCRIPT_DELIVERY_WINDOW) {
-        await Promise.all(deliveries);
-        deliveries = [];
+      let delivery!: Promise<void>;
+      delivery = this.#deliverTranscriptBatch(consumer, batch).finally(() => {
+        deliveries.delete(delivery);
+      });
+      deliveries.add(delivery);
+      void delivery.catch(() => undefined);
+      if (deliveries.size === TRANSCRIPT_DELIVERY_WINDOW) {
+        await Promise.race(deliveries);
       }
     }
     await Promise.all(deliveries);

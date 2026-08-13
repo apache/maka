@@ -142,10 +142,14 @@ export interface DesktopRuntimeHostSession {
   readonly transcriptBootstrap: SessionTranscriptBootstrap;
   readonly events: AsyncIterable<SubscriptionFrame>;
   loadTranscript(): Promise<StoredMessage[]>;
-  loadTranscriptOverlay(maxMessageBytes?: number): Promise<StoredMessage[]>;
+  loadTranscriptOverlay(
+    maxMessageBytes?: number,
+    accountAssemblyBytes?: (deltaBytes: number) => void,
+  ): Promise<StoredMessage[]>;
   decodeTranscriptPage(
     page: SessionTranscriptPage,
     maxMessageBytes?: number,
+    accountAssemblyBytes?: (deltaBytes: number) => void,
   ): Promise<DecodedSessionTranscriptPage<StoredMessage>>;
   loadTranscriptPage(
     input: Omit<SessionTranscriptPageInput, "subscriptionId">,
@@ -1481,15 +1485,28 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
     return this.#transcriptTask;
   }
 
-  loadTranscriptOverlay(maxMessageBytes?: number): Promise<StoredMessage[]> {
-    return this.subscription.loadTranscriptOverlay(decodeStoredMessage, maxMessageBytes);
+  loadTranscriptOverlay(
+    maxMessageBytes?: number,
+    accountAssemblyBytes?: (deltaBytes: number) => void,
+  ): Promise<StoredMessage[]> {
+    return this.subscription.loadTranscriptOverlay(
+      decodeStoredMessage,
+      maxMessageBytes,
+      accountAssemblyBytes,
+    );
   }
 
   decodeTranscriptPage(
     page: SessionTranscriptPage,
     maxMessageBytes?: number,
+    accountAssemblyBytes?: (deltaBytes: number) => void,
   ): Promise<DecodedSessionTranscriptPage<StoredMessage>> {
-    return this.subscription.decodeTranscriptPage(page, decodeStoredMessage, maxMessageBytes);
+    return this.subscription.decodeTranscriptPage(
+      page,
+      decodeStoredMessage,
+      maxMessageBytes,
+      accountAssemblyBytes,
+    );
   }
 
   loadTranscriptPage(

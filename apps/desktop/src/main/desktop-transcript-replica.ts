@@ -16,6 +16,7 @@ export interface DesktopTranscriptReplicaOptions {
   readonly generation?: string;
   readonly maxMessageBytes?: number;
   readonly maxResidentBytes?: number;
+  readonly accountPreparationBytes?: (deltaBytes: number) => void;
   readonly onChange?: (
     replica: DesktopTranscriptReplica,
     change: DesktopTranscriptReplicaChange,
@@ -58,6 +59,7 @@ export class DesktopTranscriptReplica {
   readonly #handle: DesktopRuntimeHostSession;
   readonly #maxResidentBytes: number;
   readonly #maxMessageBytes: number;
+  readonly #accountPreparationBytes: (deltaBytes: number) => void;
   readonly #onChange: (
     replica: DesktopTranscriptReplica,
     change: DesktopTranscriptReplicaChange,
@@ -85,6 +87,7 @@ export class DesktopTranscriptReplica {
     this.#maxResidentBytes =
       options.maxResidentBytes ?? DESKTOP_TRANSCRIPT_SESSION_CACHE_MAX_BYTES;
     this.#maxMessageBytes = options.maxMessageBytes ?? DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES;
+    this.#accountPreparationBytes = options.accountPreparationBytes ?? (() => undefined);
     this.#onChange = options.onChange ?? (() => undefined);
     this.#durableThrough = handle.transcriptBootstrap.throughSequence;
     this.#targetThrough = this.#durableThrough;
@@ -96,16 +99,16 @@ export class DesktopTranscriptReplica {
     options: DesktopTranscriptReplicaOptions = {},
   ): Promise<DesktopTranscriptReplica> {
     const replica = new DesktopTranscriptReplica(handle, options);
-    const [overlay, durable] = await Promise.all([
-      handle.loadTranscriptOverlay(replica.#maxMessageBytes),
-      handle.decodeTranscriptPage(
-        handle.transcriptBootstrap.durable,
+    replica.#installOverlay(
+      await handle.loadTranscriptOverlay(
         replica.#maxMessageBytes,
+        replica.#accountPreparationBytes,
       ),
-    ]);
-    replica.#installOverlay(overlay);
-    replica.#installDurable(durable.messages);
-    replica.#hasOlder = durable.nextCursor !== null;
+    );
+    await replica.#withDecodedPage(handle.transcriptBootstrap.durable, (durable) => {
+      replica.#installDurable(durable.messages);
+      replica.#hasOlder = durable.nextCursor !== null;
+    });
     replica.#evictToBudget();
     if (replica.#residentBytes > replica.#maxResidentBytes) {
       throw new RangeError('Desktop transcript overlay exceeds the session cache limit');
@@ -192,20 +195,21 @@ export class DesktopTranscriptReplica {
       anchorSequence: anchor,
       maxBytes,
     });
-    const decoded = await this.#handle.decodeTranscriptPage(page, this.#maxMessageBytes);
-    this.#assertOpen();
-    this.#acceptRange(decoded.messages);
-    if (
-      anchor !== null &&
-      decoded.messages.length > 0 &&
-      decoded.messages.at(-1)!.identity !== anchor - 1
-    ) {
-      throw correlationError('Desktop transcript older page did not meet its anchor');
-    }
-    const completedOverlayMessageIds = this.#installDurable(decoded.messages);
-    this.#hasOlder = decoded.nextCursor !== null;
-    const evictedDurableSequences = this.#evictToBudget(this.#maxResidentBytes, 'newest');
-    this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
+    await this.#withDecodedPage(page, (decoded) => {
+      this.#assertOpen();
+      this.#acceptRange(decoded.messages);
+      if (
+        anchor !== null &&
+        decoded.messages.length > 0 &&
+        decoded.messages.at(-1)!.identity !== anchor - 1
+      ) {
+        throw correlationError('Desktop transcript older page did not meet its anchor');
+      }
+      const completedOverlayMessageIds = this.#installDurable(decoded.messages);
+      this.#hasOlder = decoded.nextCursor !== null;
+      const evictedDurableSequences = this.#evictToBudget(this.#maxResidentBytes, 'newest');
+      this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
+    });
   }
 
   async loadAround(sequence: number, maxBytes: number): Promise<void> {
@@ -232,23 +236,24 @@ export class DesktopTranscriptReplica {
       anchorSequence: sequence + 1,
       maxBytes,
     });
-    const decoded = await this.#handle.decodeTranscriptPage(page, this.#maxMessageBytes);
-    this.#assertOpen();
-    this.#acceptRange(decoded.messages);
-    if (
-      decoded.messages.length > 0 &&
-      decoded.messages.at(-1)!.identity !== sequence
-    ) {
-      throw correlationError('Desktop transcript range did not meet its anchor');
-    }
-    const evictedDurableSequences = [...this.#durable.keys()];
-    this.#clearDurable();
-    const completedOverlayMessageIds = this.#installDurable(decoded.messages);
-    this.#durableThrough = throughSequence;
-    this.#hasOlder = decoded.nextCursor !== null;
-    this.#hasNewer = sequence < throughSequence;
-    evictedDurableSequences.push(...this.#evictToBudget());
-    this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
+    await this.#withDecodedPage(page, (decoded) => {
+      this.#assertOpen();
+      this.#acceptRange(decoded.messages);
+      if (
+        decoded.messages.length > 0 &&
+        decoded.messages.at(-1)!.identity !== sequence
+      ) {
+        throw correlationError('Desktop transcript range did not meet its anchor');
+      }
+      const evictedDurableSequences = [...this.#durable.keys()];
+      this.#clearDurable();
+      const completedOverlayMessageIds = this.#installDurable(decoded.messages);
+      this.#durableThrough = throughSequence;
+      this.#hasOlder = decoded.nextCursor !== null;
+      this.#hasNewer = sequence < throughSequence;
+      evictedDurableSequences.push(...this.#evictToBudget());
+      this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
+    });
   }
 
   advance(throughSequence: number): Promise<void> {
@@ -323,26 +328,27 @@ export class DesktopTranscriptReplica {
           anchorSequence: cursor === null ? anchorSequence : null,
           maxBytes: 512 * 1024,
         });
-        const decoded = await this.#handle.decodeTranscriptPage(page, this.#maxMessageBytes);
-        this.#assertOpen();
-        if (!this.#resident) return;
-        if (decoded.messages.length === 0 && decoded.nextCursor !== null) {
-          throw correlationError('Desktop transcript catch-up returned an empty continuation');
-        }
-        this.#acceptRange(decoded.messages);
-        if (
-          decoded.messages.length > 0 &&
-          decoded.messages[0]!.identity !== expectedSequence
-        ) {
-          throw correlationError('Desktop transcript catch-up has a sequence gap');
-        }
-        if (decoded.messages.length > 0) {
-          expectedSequence = decoded.messages.at(-1)!.identity + 1;
-        }
-        const completedOverlayMessageIds = this.#installDurable(decoded.messages);
-        const evictedDurableSequences = this.#evictToBudget();
-        this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
-        cursor = decoded.nextCursor;
+        await this.#withDecodedPage(page, (decoded) => {
+          this.#assertOpen();
+          if (!this.#resident) return;
+          if (decoded.messages.length === 0 && decoded.nextCursor !== null) {
+            throw correlationError('Desktop transcript catch-up returned an empty continuation');
+          }
+          this.#acceptRange(decoded.messages);
+          if (
+            decoded.messages.length > 0 &&
+            decoded.messages[0]!.identity !== expectedSequence
+          ) {
+            throw correlationError('Desktop transcript catch-up has a sequence gap');
+          }
+          if (decoded.messages.length > 0) {
+            expectedSequence = decoded.messages.at(-1)!.identity + 1;
+          }
+          const completedOverlayMessageIds = this.#installDurable(decoded.messages);
+          const evictedDurableSequences = this.#evictToBudget();
+          this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
+          cursor = decoded.nextCursor;
+        });
       } while (cursor !== null);
       if (expectedSequence !== target + 1) {
         throw correlationError('Desktop transcript catch-up ended before its watermark');
@@ -374,7 +380,7 @@ export class DesktopTranscriptReplica {
         throw correlationError(`Desktop transcript sequence ${item.identity} changed identity`);
       }
       if (previous) this.#residentBytes -= previous.encodedBytes;
-      const message = structuredClone(item.message);
+      const message = item.message;
       const encodedBytes = encodedMessageBytes(message);
       this.#durable.set(item.identity, {
         sequence: item.identity,
@@ -479,6 +485,21 @@ export class DesktopTranscriptReplica {
   #clearDurable(): void {
     for (const entry of this.#durable.values()) this.#residentBytes -= entry.encodedBytes;
     this.#durable.clear();
+  }
+
+  async #withDecodedPage<T>(
+    page: SessionTranscriptPage,
+    accept: (
+      decoded: Awaited<ReturnType<DesktopRuntimeHostSession['decodeTranscriptPage']>>,
+    ) => T | Promise<T>,
+  ): Promise<T> {
+    return accept(
+      await this.#handle.decodeTranscriptPage(
+        page,
+        this.#maxMessageBytes,
+        this.#accountPreparationBytes,
+      ),
+    );
   }
 
   #assertOpen(): void {

@@ -49,11 +49,13 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   loadTranscriptOverlay<T>(
     decodeMessage: (value: unknown) => T,
     maxMessageBytes?: number,
+    accountAssemblyBytes?: (deltaBytes: number) => void,
   ): Promise<T[]>;
   decodeTranscriptPage<T>(
     page: SessionTranscriptPage,
     decodeMessage: (value: unknown) => T,
     maxMessageBytes?: number,
+    accountAssemblyBytes?: (deltaBytes: number) => void,
   ): Promise<DecodedSessionTranscriptPage<T>>;
   loadTranscriptPage(
     input: Omit<SessionTranscriptPageInput, 'subscriptionId'>,
@@ -175,6 +177,7 @@ export class ClientSessionSubscription
   loadTranscriptOverlay<T>(
     decodeMessage: (value: unknown) => T,
     maxMessageBytes = Number.MAX_SAFE_INTEGER,
+    accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
   ): Promise<T[]> {
     this.#assertTranscriptReadable();
     const bootstrap = this.transcriptBootstrap;
@@ -186,8 +189,8 @@ export class ClientSessionSubscription
         ),
       );
     }
-    return this.#consumeTranscriptOverlay(bootstrap, maxMessageBytes).then((messages) =>
-      messages.map((entry) => decodeMessage(entry.value)),
+    return this.#consumeTranscriptOverlay(bootstrap, maxMessageBytes, accountAssemblyBytes).then(
+      (messages) => messages.map((entry) => decodeMessage(entry.value)),
     );
   }
 
@@ -195,6 +198,7 @@ export class ClientSessionSubscription
     page: SessionTranscriptPage,
     decodeMessage: (value: unknown) => T,
     maxMessageBytes = Number.MAX_SAFE_INTEGER,
+    accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
   ): Promise<DecodedSessionTranscriptPage<T>> {
     this.#assertTranscriptReadable();
     this.#assertTranscriptPage(page, {
@@ -203,41 +207,50 @@ export class ClientSessionSubscription
       throughSequence: page.throughSequence,
       maxBytes: Math.max(1, page.rawBytes),
     });
-    const assembler = new TranscriptFragmentAssembler(page.source, page.direction, maxMessageBytes);
-    assembler.accept(page.fragments);
-    let cursor = page.nextCursor;
-    while (assembler.continuationBytes !== null) {
-      if (cursor === null) {
-        throw new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Session transcript message ended before every fragment arrived',
-        );
+    const assembler = new TranscriptFragmentAssembler(
+      page.source,
+      page.direction,
+      maxMessageBytes,
+      accountAssemblyBytes,
+    );
+    try {
+      assembler.accept(page.fragments);
+      let cursor = page.nextCursor;
+      while (assembler.continuationBytes !== null) {
+        if (cursor === null) {
+          throw new RuntimeHostSubscriptionError(
+            'correlation_changed',
+            'Session transcript message ended before every fragment arrived',
+          );
+        }
+        const requestedCursor = cursor;
+        const continuation = await this.loadTranscriptPage({
+          source: page.source,
+          direction: page.direction,
+          throughSequence: page.throughSequence,
+          cursor,
+          anchorSequence: null,
+          maxBytes: Math.min(SESSION_TRANSCRIPT_PAGE_MAX_BYTES, assembler.continuationBytes),
+        });
+        if (continuation.nextCursor === requestedCursor) {
+          throw new RuntimeHostSubscriptionError(
+            'correlation_changed',
+            'Session transcript cursor did not advance',
+          );
+        }
+        assembler.accept(continuation.fragments);
+        cursor = continuation.nextCursor;
       }
-      const requestedCursor = cursor;
-      const continuation = await this.loadTranscriptPage({
-        source: page.source,
-        direction: page.direction,
-        throughSequence: page.throughSequence,
-        cursor,
-        anchorSequence: null,
-        maxBytes: Math.min(SESSION_TRANSCRIPT_PAGE_MAX_BYTES, assembler.continuationBytes),
-      });
-      if (continuation.nextCursor === requestedCursor) {
-        throw new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Session transcript cursor did not advance',
-        );
-      }
-      assembler.accept(continuation.fragments);
-      cursor = continuation.nextCursor;
+      return {
+        messages: assembler.finish().map((entry) => ({
+          identity: entry.identity,
+          message: decodeMessage(entry.value),
+        })),
+        nextCursor: cursor,
+      };
+    } finally {
+      assembler.release();
     }
-    return {
-      messages: assembler.finish().map((entry) => ({
-        identity: entry.identity,
-        message: decodeMessage(entry.value),
-      })),
-      nextCursor: cursor,
-    };
   }
 
   loadTranscriptPage(
@@ -308,6 +321,7 @@ export class ClientSessionSubscription
   #consumeTranscriptOverlay(
     bootstrap: SessionTranscriptBootstrap,
     maxMessageBytes = Number.MAX_SAFE_INTEGER,
+    accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
   ): Promise<Array<{ identity: number; value: unknown }>> {
     if (this.#overlayConsumed && !this.#overlayTask) {
       return Promise.reject(
@@ -318,7 +332,11 @@ export class ClientSessionSubscription
       );
     }
     this.#overlayTask ??= (async () => {
-      const overlay = await this.#loadTranscriptSource(bootstrap.overlay, maxMessageBytes);
+      const overlay = await this.#loadTranscriptSource(
+        bootstrap.overlay,
+        maxMessageBytes,
+        accountAssemblyBytes,
+      );
       assertCompleteIdentities(
         overlay,
         bootstrap.overlayMessageCount === 0 ? null : bootstrap.overlayMessageCount - 1,
@@ -349,6 +367,7 @@ export class ClientSessionSubscription
   async #loadTranscriptSource(
     initial: SessionTranscriptPage,
     maxMessageBytes = Number.MAX_SAFE_INTEGER,
+    accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
   ): Promise<Array<{ identity: number; value: unknown }>> {
     this.#assertTranscriptPage(initial, {
       source: initial.source,
@@ -360,28 +379,33 @@ export class ClientSessionSubscription
       initial.source,
       initial.direction,
       maxMessageBytes,
+      accountAssemblyBytes,
     );
-    assembler.accept(initial.fragments);
-    let cursor = initial.nextCursor;
-    while (cursor !== null) {
-      const page = await this.loadTranscriptPage({
-        source: initial.source,
-        direction: initial.direction,
-        throughSequence: initial.throughSequence,
-        cursor,
-        anchorSequence: null,
-        maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
-      });
-      if (page.nextCursor === cursor) {
-        throw new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Session transcript cursor did not advance',
-        );
+    try {
+      assembler.accept(initial.fragments);
+      let cursor = initial.nextCursor;
+      while (cursor !== null) {
+        const page = await this.loadTranscriptPage({
+          source: initial.source,
+          direction: initial.direction,
+          throughSequence: initial.throughSequence,
+          cursor,
+          anchorSequence: null,
+          maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+        });
+        if (page.nextCursor === cursor) {
+          throw new RuntimeHostSubscriptionError(
+            'correlation_changed',
+            'Session transcript cursor did not advance',
+          );
+        }
+        assembler.accept(page.fragments);
+        cursor = page.nextCursor;
       }
-      assembler.accept(page.fragments);
-      cursor = page.nextCursor;
+      return assembler.finish();
+    } finally {
+      assembler.release();
     }
-    return assembler.finish();
   }
 
   #assertTranscriptReadable(): void {
@@ -537,12 +561,13 @@ export class ClientSessionSubscription
 
 class TranscriptFragmentAssembler {
   readonly #messages: Array<{ identity: number; value: unknown }> = [];
+  #assemblyBytes = 0;
   #current:
     | {
         identity: number;
         totalBytes: number;
         payloadDigest: `sha256:${string}` | null;
-        chunks: Buffer[];
+        data: Buffer;
         edge: number;
       }
     | undefined;
@@ -552,6 +577,7 @@ class TranscriptFragmentAssembler {
     private readonly source: 'durable' | 'overlay',
     private readonly direction: 'older' | 'newer',
     private readonly maxMessageBytes = Number.MAX_SAFE_INTEGER,
+    private readonly accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
   ) {}
 
   accept(fragments: readonly SessionTranscriptFragment[]): void {
@@ -573,6 +599,12 @@ class TranscriptFragmentAssembler {
     }
     if (this.direction === 'older') this.#messages.reverse();
     return this.#messages;
+  }
+
+  release(): void {
+    if (this.#assemblyBytes === 0) return;
+    this.accountAssemblyBytes(-this.#assemblyBytes);
+    this.#assemblyBytes = 0;
   }
 
   #accept(fragment: SessionTranscriptFragment): void {
@@ -604,7 +636,13 @@ class TranscriptFragmentAssembler {
         'Session transcript message has a fragment gap',
       );
     }
-    this.#current.chunks.push(bytes);
+    if (fragment.byteOffset + bytes.byteLength > this.#current.totalBytes) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session transcript fragment exceeds its declared message size',
+      );
+    }
+    bytes.copy(this.#current.data, fragment.byteOffset);
     this.#current.edge =
       this.direction === 'older' ? fragment.byteOffset : fragment.byteOffset + bytes.byteLength;
     if (
@@ -631,29 +669,35 @@ class TranscriptFragmentAssembler {
       );
     }
     this.#lastStartedIdentity = identity;
-    this.#current = {
-      identity,
-      totalBytes,
-      payloadDigest,
-      chunks: [],
-      edge: this.direction === 'older' ? totalBytes : 0,
-    };
+    this.accountAssemblyBytes(totalBytes);
+    try {
+      this.#current = {
+        identity,
+        totalBytes,
+        payloadDigest,
+        data: Buffer.allocUnsafe(totalBytes),
+        edge: this.direction === 'older' ? totalBytes : 0,
+      };
+      this.#assemblyBytes += totalBytes;
+    } catch (error) {
+      this.accountAssemblyBytes(-totalBytes);
+      throw error;
+    }
   }
 
   #completeCurrent(): void {
     const current = this.#current!;
-    const chunks = this.direction === 'older' ? current.chunks.reverse() : current.chunks;
-    const data = Buffer.concat(chunks, current.totalBytes);
     try {
       if (
         current.payloadDigest !== null &&
-        `sha256:${createHash('sha256').update(data).digest('hex')}` !== current.payloadDigest
+        `sha256:${createHash('sha256').update(current.data).digest('hex')}` !==
+          current.payloadDigest
       ) {
         throw new Error('payload digest mismatch');
       }
       this.#messages.push({
         identity: current.identity,
-        value: JSON.parse(data.toString('utf8')) as unknown,
+        value: JSON.parse(current.data.toString('utf8')) as unknown,
       });
     } catch (cause) {
       throw new RuntimeHostSubscriptionError(

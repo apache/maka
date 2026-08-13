@@ -578,7 +578,7 @@ test('keeps a bounded transcript batch window in flight until the renderer ackno
     id: 'assistant-large',
     turnId: 'turn-1',
     ts: 2,
-    text: 'x'.repeat(DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES * 2),
+    text: 'x'.repeat(DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES * 6),
     modelId: 'test-model',
   };
   const observer = new RuntimeHostSessionObserver({
@@ -605,9 +605,34 @@ test('keeps a bounded transcript batch window in flight until the renderer ackno
     off() {},
   });
 
-  await waitFor(() => batches.some((batch) => batch.ready));
-  assert.ok(batches.length > 1 && batches.length <= 4);
+  await waitFor(() => batches.length === 4);
+  assert.equal(batches.some((batch) => batch.ready), false);
+  const second = batches[1]!;
+  observer.acknowledgeTranscript(
+    'consumer-ack',
+    second.generation,
+    second.deliverySequence,
+    21,
+  );
+  await waitFor(() => batches.length === 5);
+
+  const acknowledged = new Set([second.deliverySequence]);
+  for (let attempt = 0; !batches.some((batch) => batch.ready) && attempt < 100; attempt += 1) {
+    for (const batch of batches) {
+      if (acknowledged.has(batch.deliverySequence)) continue;
+      acknowledged.add(batch.deliverySequence);
+      observer.acknowledgeTranscript(
+        'consumer-ack',
+        batch.generation,
+        batch.deliverySequence,
+        21,
+      );
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.ok(batches.some((batch) => batch.ready));
   for (const batch of batches) {
+    if (acknowledged.has(batch.deliverySequence)) continue;
     observer.acknowledgeTranscript(
       'consumer-ack',
       batch.generation,
