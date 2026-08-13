@@ -7,6 +7,7 @@ import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/explore-agent';
 import { type RelayModelProfile } from '@maka/core/model-thinking';
+import type { AgentRunHeader } from '@maka/core/agent-run';
 import { type SessionHeader } from '@maka/core/session';
 import {
   SessionConfigurationTransitionError,
@@ -59,6 +60,49 @@ test('projects only bounded execution boundary presentation facts', async () => 
     ok: true,
     result: { kind: 'managed', access: 'read_only', revision: 0 },
   });
+});
+
+test('projects the latest started inline model on a single-Session read', async () => {
+  const fixture = createFixture({
+    runs: [
+      runHeader({ status: 'completed', createdAt: 1, modelId: 'model-a' }),
+      runHeader({ status: 'failed', createdAt: 2, runId: 'run-b', modelId: 'model-b' }),
+      runHeader({ status: 'created', createdAt: 3, runId: 'run-unused', modelId: 'model-c' }),
+    ],
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.catalog.query'](
+    { kind: 'get', sessionId: fixture.sessionId },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok || outcome.result.kind !== 'session' || !outcome.result.session) {
+    assert.fail('Catalog query did not return the Session');
+  }
+  if ('kind' in outcome.result.session) assert.fail('Unexpected tombstone projection');
+  assert.deepEqual(outcome.result.session.lastUsedModel, {
+    connectionSlug: 'test',
+    model: 'model-b',
+  });
+});
+
+test('does not query AgentRuns for catalog pages', async () => {
+  let runReads = 0;
+  const fixture = createFixture({
+    listRuns: async () => {
+      runReads += 1;
+      return [];
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.catalog.query'](
+    { kind: 'list_start' },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(runReads, 0);
 });
 
 test('metadata replacement preserves execution-semantic labels and ignores injected ones', async () => {
@@ -812,6 +856,8 @@ function createFixture(
     readonly connection?: FixtureConnection;
     readonly projectCatalog?: ProjectCatalog;
     readonly onProjectChanged?: () => void;
+    readonly runs?: readonly AgentRunHeader[];
+    readonly listRuns?: (sessionId: string) => Promise<AgentRunHeader[]>;
   } = {},
 ) {
   const sessionId = 'session-1';
@@ -873,6 +919,10 @@ function createFixture(
   };
   const coordinator = new HostSessionCatalogCoordinator({
     stores,
+    runs: {
+      listSessionRuns:
+        options.listRuns ?? (async () => options.runs?.map((run) => ({ ...run })) ?? []),
+    },
     runtimePolicy,
     manager,
     admission: new SessionAdmissionGate(),
@@ -892,6 +942,23 @@ function createFixture(
     revision: () => revision,
     header: () => header,
     drainRequests: () => drains,
+  };
+}
+
+function runHeader(overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
+  return {
+    runId: 'run-a',
+    sessionId: 'session-1',
+    turnId: 'turn-a',
+    status: 'completed',
+    backendKind: 'ai-sdk',
+    llmConnectionSlug: 'test',
+    modelId: 'model-a',
+    cwd: '/workspace',
+    permissionMode: 'ask',
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
   };
 }
 

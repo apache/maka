@@ -306,6 +306,11 @@ export interface SessionSummary {
   connectionLocked: boolean;
   /** Sticky session default model id for renderer/header display. */
   model: string;
+  /**
+   * Model target carried by the latest started inline AgentRun. This is a
+   * read-only Runtime Host projection, not another configurable default.
+   */
+  lastUsedModel?: SessionModelIdentity;
   /** Per-model reasoning-depth variant; `undefined` = model default. Cleared on model switch. */
   thinkingLevel?: import('./model-thinking.js').ThinkingLevel;
   permissionMode: PermissionMode;
@@ -845,6 +850,40 @@ export interface SystemNoteMessage {
   data?: unknown;
 }
 
+export interface SessionModelIdentity {
+  connectionSlug: string;
+  model: string;
+}
+
+export interface ModelChangeNoteData {
+  from: SessionModelIdentity;
+  to: SessionModelIdentity;
+}
+
+export function decodeModelChangeNoteData(value: unknown): ModelChangeNoteData {
+  if (!isRecord(value) || !hasExactShape(value, MODEL_CHANGE_NOTE_DATA_SHAPE)) {
+    throw new Error('Invalid model change note data');
+  }
+  return {
+    from: decodeSessionModelIdentity(value.from),
+    to: decodeSessionModelIdentity(value.to),
+  };
+}
+
+function decodeSessionModelIdentity(value: unknown): SessionModelIdentity {
+  if (
+    !isRecord(value) ||
+    !hasExactShape(value, SESSION_MODEL_IDENTITY_SHAPE) ||
+    typeof value.connectionSlug !== 'string' ||
+    value.connectionSlug.trim().length === 0 ||
+    typeof value.model !== 'string' ||
+    value.model.trim().length === 0
+  ) {
+    throw new Error('Invalid Session model identity');
+  }
+  return { connectionSlug: value.connectionSlug, model: value.model };
+}
+
 const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text'],
   ['displayText', 'attachments', 'quotes', 'inlineReferences', 'steeringEventId', 'origin'],
@@ -926,6 +965,11 @@ const SYSTEM_NOTE_MESSAGE_SHAPE = defineObjectShape<SystemNoteMessage>()(
   ['type', 'id', 'ts', 'kind'],
   ['turnId', 'data'],
 );
+const SESSION_MODEL_IDENTITY_SHAPE = defineObjectShape<SessionModelIdentity>()(
+  ['connectionSlug', 'model'],
+  [],
+);
+const MODEL_CHANGE_NOTE_DATA_SHAPE = defineObjectShape<ModelChangeNoteData>()(['from', 'to'], []);
 const ASSISTANT_THINKING_PART_SHAPE = defineObjectShape<AssistantThinkingPart>()(
   ['text'],
   ['signature', 'providerOptions'],

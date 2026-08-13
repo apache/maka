@@ -9,7 +9,7 @@ import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { RunCompositionSnapshot } from '@maka/core/run-composition';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
-import { isSessionInlineRun } from '@maka/core/agent-run';
+import { isSessionInlineRun, latestStartedSessionInlineRun } from '@maka/core/agent-run';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import {
   ToolLedgerCorruptionError,
@@ -25,6 +25,7 @@ import {
 import type {
   SessionBlockedReason,
   SessionHeader,
+  ModelChangeNoteData,
   SessionStatus,
   StoredMessage,
   SystemNoteMessage,
@@ -154,6 +155,7 @@ export interface AgentRunInput {
 
 export interface AgentRunSessionStore {
   appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
+  appendMessages?(sessionId: string, messages: StoredMessage[]): Promise<void>;
   readMessages(sessionId: string): Promise<StoredMessage[]>;
 }
 
@@ -748,7 +750,15 @@ export class AgentRun {
           : {}),
         ...(this.input.userInput.origin ? { origin: this.input.userInput.origin } : {}),
       };
-      await this.input.store.appendMessage(this.sessionId, userMsg);
+      const modelChange = await this.modelChangeNote(userMessageTs);
+      const initialMessages: StoredMessage[] = modelChange ? [modelChange, userMsg] : [userMsg];
+      if (this.input.store.appendMessages) {
+        await this.input.store.appendMessages(this.sessionId, initialMessages);
+      } else {
+        for (const message of initialMessages) {
+          await this.input.store.appendMessage(this.sessionId, message);
+        }
+      }
       await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage);
       this.lastTs = userMessageTs;
     } else {
@@ -1180,6 +1190,37 @@ export class AgentRun {
 
   private recordsSessionMessages(): boolean {
     return this.input.recordSessionMessages !== false;
+  }
+
+  private async modelChangeNote(ts: number): Promise<SystemNoteMessage | undefined> {
+    if (!this.input.runStore || !this.runStoreAvailable) return undefined;
+    let runs: AgentRunHeader[];
+    try {
+      runs = await this.input.runStore.listSessionRuns(this.sessionId);
+    } catch (error) {
+      if (this.requiresDurablePersistence()) throw error;
+      return undefined;
+    }
+    const previous = latestStartedSessionInlineRun(runs.filter((run) => run.runId !== this.runId));
+    if (
+      !previous ||
+      (previous.llmConnectionSlug === this.header.llmConnectionSlug &&
+        previous.modelId === this.header.model)
+    ) {
+      return undefined;
+    }
+    const data: ModelChangeNoteData = {
+      from: { connectionSlug: previous.llmConnectionSlug, model: previous.modelId },
+      to: { connectionSlug: this.header.llmConnectionSlug, model: this.header.model },
+    };
+    return {
+      type: 'system_note',
+      id: this.input.newId(),
+      turnId: this.turnId,
+      ts,
+      kind: 'model_change',
+      data,
+    };
   }
 
   private async createRunRecord(continuation?: RuntimeContinuation): Promise<void> {

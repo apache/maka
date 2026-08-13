@@ -366,6 +366,21 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('decodes a bounded last-used model projection', () => {
+    const session = projection({
+      lastUsedModel: { connectionSlug: 'openai-main', model: 'gpt-5.5' },
+    });
+    assert.deepEqual(decodeSessionCatalogItem(session), session);
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...session,
+          lastUsedModel: { connectionSlug: 'openai-main', model: 'gpt-5.5', extra: true },
+        }),
+      isProtocolError,
+    );
+  });
+
   test('bounds pages and preserves revision-pinned continuation results', () => {
     const sessions = Array.from({ length: SESSION_CATALOG_PAGE_MAX_ITEMS }, (_, index) =>
       projection({ id: `session-${index}` }),

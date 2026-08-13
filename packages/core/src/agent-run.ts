@@ -645,3 +645,26 @@ export function isSessionInlineRun(run: {
     (run.continuationSource !== undefined && run.agentId === undefined)
   );
 }
+
+/**
+ * Returns the latest AgentRun that actually started in the owning Session's
+ * transcript. Created-only rows and maintenance compaction runs do not carry a
+ * user-visible model choice.
+ */
+export function latestStartedSessionInlineRun(
+  runs: readonly AgentRunHeader[],
+): AgentRunHeader | undefined {
+  return runs
+    .filter(
+      (run) =>
+        run.status !== 'created' &&
+        run.rootExecutionKind !== 'context_compact' &&
+        isSessionInlineRun(run),
+    )
+    .sort((left, right) =>
+      left.createdAt === right.createdAt
+        ? left.runId.localeCompare(right.runId)
+        : left.createdAt - right.createdAt,
+    )
+    .at(-1);
+}
