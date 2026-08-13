@@ -503,6 +503,8 @@ export class SqliteRuntimeStore
       }
 
       let afterSequence = 0;
+      let immutableRecords = 0;
+      let immutableBytes = 0;
       for (;;) {
         const measured = this.db
           .prepare(
@@ -528,8 +530,16 @@ export class SqliteRuntimeStore
             return { status: 'limit_exceeded' };
           }
           if (sequences.length > 0 && batchBytes + storedBytes > budget.maxBatchBytes) break;
+          if (
+            immutableRecords + 1 > budget.maxImmutableRecords ||
+            immutableBytes + storedBytes > budget.maxImmutableBytes
+          ) {
+            return { status: 'limit_exceeded' };
+          }
           sequences.push(sequence);
           batchBytes += storedBytes;
+          immutableRecords += 1;
+          immutableBytes += storedBytes;
           if (batchBytes >= budget.maxBatchBytes) break;
         }
         const placeholders = sequences.map(() => '?').join(', ');

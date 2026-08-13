@@ -205,7 +205,7 @@ test('keeps durable history separate from the canonical active overlay', async (
   }
 });
 
-test('does not reject a representable overlay because its ledger has many control facts', async () => {
+test('stops scanning a control-only ledger at the cumulative immutable event limit', async () => {
   const sessionId = 'session-1';
   const events = Array.from({ length: 8_193 }, (_, index) =>
     runtimeEvent(sessionId, {
@@ -216,6 +216,7 @@ test('does not reject a representable overlay because its ledger has many contro
       actions: { artifactDelta: { bytes: index } },
     }),
   );
+  let scanned = 0;
   const stores = {
     agentRunStore: { readRun: async () => runHeader(sessionId) },
     runtimeEventStore: {
@@ -223,11 +224,16 @@ test('does not reject a representable overlay because its ledger has many contro
       scanRuntimeEvents: async (
         _sessionId: string,
         _runId: string,
-        _budget: unknown,
+        budget: { readonly maxImmutableRecords: number },
         visit: (batch: readonly RuntimeEvent[]) => void,
       ) => {
         for (let offset = 0; offset < events.length; offset += 128) {
-          visit(events.slice(offset, offset + 128));
+          const batch = events.slice(offset, offset + 128);
+          if (offset + batch.length > budget.maxImmutableRecords) {
+            return { status: 'limit_exceeded' as const };
+          }
+          scanned += batch.length;
+          visit(batch);
         }
         return { status: 'complete' as const };
       },
@@ -238,15 +244,16 @@ test('does not reject a representable overlay because its ledger has many contro
     canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
   });
 
-  assert.deepEqual(
-    await read.readActiveOverlay(sessionId, {
+  await assert.rejects(
+    read.readActiveOverlay(sessionId, {
       sessionId,
       turnId: 'turn-1',
       runId: 'run-1',
       status: 'running',
     }),
-    [],
+    /storage scan limit/,
   );
+  assert.equal(scanned, 8_192);
 });
 
 test('stops an oversized active projection before retaining the full RuntimeEvent ledger', async () => {

@@ -852,6 +852,56 @@ test('rechecks a reusable overlay cache after queued preparation reaches capacit
   coordinator.close();
 });
 
+test('keeps a shared overlay retained while another subscription open consumes it', async () => {
+  const durable = [
+    {
+      type: 'user' as const,
+      id: 'durable-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'history',
+    },
+  ];
+  const baseReader = transcriptReader(durable, [assistantMessage('partial')]);
+  const secondPageStarted = deferred<void>();
+  const continueSecondPage = deferred<void>();
+  let pageReads = 0;
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    readDurablePage: async (...args) => {
+      pageReads += 1;
+      if (pageReads === 2) {
+        secondPageStarted.resolve();
+        await continueSecondPage.promise;
+      }
+      return baseReader.readDurablePage(...args);
+    },
+  };
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+  );
+  coordinator.attachConnection('connection-shared-overlay-1', new RecordingSink());
+  coordinator.attachConnection('connection-shared-overlay-2', new RecordingSink());
+  const first = await openForSession(coordinator, 'connection-shared-overlay-1', SESSION_ID);
+  const second = openForSession(coordinator, 'connection-shared-overlay-2', SESSION_ID);
+  await secondPageStarted.promise;
+
+  assert.deepEqual(
+    await coordinator.handlers['session.transcript.overlay.release'](
+      { subscriptionId: first.subscriptionId },
+      connectionContext('connection-shared-overlay-1'),
+    ),
+    { ok: true, result: { subscriptionId: first.subscriptionId } },
+  );
+  continueSecondPage.resolve();
+  assert.ok((await second).transcript);
+  coordinator.close();
+});
+
 test('cancels a queued overlay preparation when its connection closes', async () => {
   const firstRead = deferred<void>();
   let reads = 0;
@@ -971,6 +1021,40 @@ test('releases retained overlays after their materialization is acknowledged', a
     generation += 1;
     await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(index + 1));
   }
+  coordinator.close();
+});
+
+test('treats overlay release as idempotent after teardown without crossing connection ownership', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    transcriptReader([], [assistantMessage('partial')]),
+  );
+  const owner = coordinator.attachConnection('connection-release-owner', new RecordingSink());
+  coordinator.attachConnection('connection-release-foreign', new RecordingSink());
+  const opened = await openForSession(coordinator, 'connection-release-owner', SESSION_ID);
+  const input = { subscriptionId: opened.subscriptionId };
+
+  assert.deepEqual(
+    await coordinator.handlers['session.transcript.overlay.release'](
+      input,
+      connectionContext('connection-release-foreign'),
+    ),
+    {
+      ok: false,
+      error: { code: 'not_found', message: 'Session subscription was not found' },
+    },
+  );
+  owner.abort(opened.subscriptionId);
+  assert.deepEqual(
+    await coordinator.handlers['session.transcript.overlay.release'](
+      input,
+      connectionContext('connection-release-owner'),
+    ),
+    { ok: true, result: input },
+  );
   coordinator.close();
 });
 

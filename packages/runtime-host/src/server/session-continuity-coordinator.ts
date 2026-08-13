@@ -219,6 +219,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     'session.transcript.page': (input, context) =>
       this.#readTranscriptPage(context.connectionId, input),
     'session.transcript.overlay.release': async (input, context) => {
+      const existing = this.#subscriptions.get(input.subscriptionId);
+      if (!existing) {
+        return { ok: true, result: { subscriptionId: input.subscriptionId } };
+      }
       const subscriber = this.#ownedSubscriber(context.connectionId, input.subscriptionId);
       if (!subscriber) {
         return {
@@ -951,7 +955,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
                 cachedTranscriptOverlay &&
                 !transcriptSubscriberInstalled &&
                 cachedTranscriptOverlay.pendingConsumers === 0 &&
-                !this.#hasTranscriptSubscriber(committed.state)
+                !this.#hasTranscriptOverlayConsumer(committed.state)
               ) {
                 this.#invalidateTranscriptOverlay(committed.state, cachedTranscriptOverlay);
               }
@@ -1256,9 +1260,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     );
   }
 
-  #hasTranscriptSubscriber(state: SessionProjectionState): boolean {
-    return [...state.subscribers.values()].some(
-      (subscriber) => subscriber.retainedTranscriptOverlay !== undefined,
+  #hasTranscriptOverlayConsumer(state: SessionProjectionState): boolean {
+    return (
+      (state.transcriptOverlay?.pendingConsumers ?? 0) > 0 ||
+      [...state.subscribers.values()].some(
+        (subscriber) => subscriber.retainedTranscriptOverlay !== undefined,
+      )
     );
   }
 
@@ -1553,7 +1560,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       ?.subscriptionIds.delete(subscriber.subscriptionId);
     this.#releaseSubscriberTranscriptOverlay(subscriber);
     if (!this.#closed && state && removed) {
-      if (!this.#hasTranscriptSubscriber(state)) this.#invalidateTranscriptOverlay(state);
+      if (!this.#hasTranscriptOverlayConsumer(state)) this.#invalidateTranscriptOverlay(state);
       if (state.subscribers.size === 0) {
         this.#scheduleInactiveStateCleanup(subscriber.sessionId, state);
       }
@@ -1567,7 +1574,9 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     subscriber.retainedTranscriptOverlay = undefined;
     this.#releaseTranscriptOverlay(retained);
     const state = this.#sessions.get(subscriber.sessionId);
-    if (state && !this.#hasTranscriptSubscriber(state)) this.#invalidateTranscriptOverlay(state);
+    if (state && !this.#hasTranscriptOverlayConsumer(state)) {
+      this.#invalidateTranscriptOverlay(state);
+    }
   }
 
   #ownedSubscriber(connectionId: string, subscriptionId: string): Subscriber | undefined {

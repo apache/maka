@@ -205,6 +205,8 @@ export interface ConversationCopyRuntimeEventBatch {
 export interface RuntimeEventScanBudget {
   readonly maxBatchBytes: number;
   readonly maxRecordBytes: number;
+  readonly maxImmutableRecords: number;
+  readonly maxImmutableBytes: number;
   readonly maxPartialRecords: number;
   readonly maxPartialBytes: number;
 }

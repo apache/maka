@@ -87,6 +87,7 @@ export class ClientSessionSubscription
   #closing = false;
   #closeTask: Promise<void> | undefined;
   #transcriptTask: Promise<unknown[]> | undefined;
+  #overlayTask: Promise<Array<{ identity: number; value: unknown }>> | undefined;
   #latestTranscriptThroughSequence: number | null;
 
   constructor(
@@ -195,13 +196,9 @@ export class ClientSessionSubscription
         'Session subscription was opened without transcript access',
       );
     }
+    const overlay = await this.#loadAndReleaseTranscriptOverlay(bootstrap);
     const durable = await this.#loadTranscriptSource(bootstrap.durable);
-    const overlay = await this.#loadTranscriptSource(bootstrap.overlay);
     assertCompleteIdentities(durable, bootstrap.throughSequence);
-    assertCompleteIdentities(
-      overlay,
-      bootstrap.overlayMessageCount === 0 ? null : bootstrap.overlayMessageCount - 1,
-    );
     const messages = durable.map((entry) => entry.value);
     const indexById = new Map<string, number>();
     for (const [index, message] of messages.entries()) {
@@ -218,7 +215,19 @@ export class ClientSessionSubscription
         messages[index] = entry.value;
       }
     }
-    if (bootstrap.overlayMessageCount > 0) {
+    return messages;
+  }
+
+  #loadAndReleaseTranscriptOverlay(
+    bootstrap: SessionTranscriptBootstrap,
+  ): Promise<Array<{ identity: number; value: unknown }>> {
+    this.#overlayTask ??= (async () => {
+      const overlay = await this.#loadTranscriptSource(bootstrap.overlay);
+      assertCompleteIdentities(
+        overlay,
+        bootstrap.overlayMessageCount === 0 ? null : bootstrap.overlayMessageCount - 1,
+      );
+      if (bootstrap.overlayMessageCount === 0) return overlay;
       try {
         await this.#releaseTranscriptOverlay();
       } catch (cause) {
@@ -229,8 +238,12 @@ export class ClientSessionSubscription
           { cause },
         );
       }
-    }
-    return messages;
+      return overlay;
+    })().catch((error: unknown) => {
+      this.#overlayTask = undefined;
+      throw error;
+    });
+    return this.#overlayTask;
   }
 
   async #loadTranscriptSource(

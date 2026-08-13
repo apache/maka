@@ -162,6 +162,8 @@ async function readActiveProjectionEvents(
     {
       maxBatchBytes: ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES,
       maxRecordBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+      maxImmutableRecords: ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS,
+      maxImmutableBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
       maxPartialRecords: ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS,
       maxPartialBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
     },

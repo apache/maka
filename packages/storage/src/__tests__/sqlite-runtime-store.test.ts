@@ -604,6 +604,8 @@ describe('SqliteRuntimeStore', () => {
         {
           maxBatchBytes: 1024,
           maxRecordBytes: 1024,
+          maxImmutableRecords: 10,
+          maxImmutableBytes: 1024,
           maxPartialRecords: 10,
           maxPartialBytes: 1024,
         },
@@ -635,6 +637,8 @@ describe('SqliteRuntimeStore', () => {
         {
           maxBatchBytes: 128,
           maxRecordBytes: 128,
+          maxImmutableRecords: 10,
+          maxImmutableBytes: 1024,
           maxPartialRecords: 10,
           maxPartialBytes: 1024,
         },
@@ -642,6 +646,45 @@ describe('SqliteRuntimeStore', () => {
           visits += 1;
         },
       );
+      assert.equal(result.status, 'limit_exceeded');
+      assert.equal(visits, 0);
+    });
+  });
+
+  it('rejects an immutable ledger that exceeds its cumulative scan budget before decoding it', async () => {
+    await withStore(async (store) => {
+      for (const index of [1, 2]) {
+        const event: RuntimeEvent = {
+          id: `event-${index}`,
+          invocationId: 'invocation-1',
+          runId: 'run-1',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          ts: index,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: `message-${index}` },
+        };
+        await store.appendRuntimeEvent('session-1', 'run-1', event);
+      }
+      let visits = 0;
+      const result = await store.scanRuntimeEvents(
+        'session-1',
+        'run-1',
+        {
+          maxBatchBytes: 16 * 1024,
+          maxRecordBytes: 16 * 1024,
+          maxImmutableRecords: 1,
+          maxImmutableBytes: 16 * 1024,
+          maxPartialRecords: 10,
+          maxPartialBytes: 16 * 1024,
+        },
+        () => {
+          visits += 1;
+        },
+      );
+
       assert.equal(result.status, 'limit_exceeded');
       assert.equal(visits, 0);
     });
@@ -683,6 +726,8 @@ describe('SqliteRuntimeStore', () => {
         {
           maxBatchBytes: 1024,
           maxRecordBytes: 16 * 1024,
+          maxImmutableRecords: 10,
+          maxImmutableBytes: 16 * 1024,
           maxPartialRecords: 10,
           maxPartialBytes: 16 * 1024,
         },
