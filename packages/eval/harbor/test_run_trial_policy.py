@@ -15,13 +15,13 @@ SPEC.loader.exec_module(MODULE)
 class RunTrialPolicyTest(unittest.TestCase):
     def test_forces_only_the_subject_phase_through_the_cell_proxy(self) -> None:
         agent = SimpleNamespace(network_mode=None, allowed_hosts=None)
-        trial = SimpleNamespace(task=SimpleNamespace(config=SimpleNamespace(agent=agent)))
+        task = SimpleNamespace(config=SimpleNamespace(agent=agent))
         with patch.dict(
             os.environ,
             {"MAKA_EVAL_EGRESS_ALLOWED_HOST": "maka-eval-mitmproxy"},
             clear=False,
         ):
-            MODULE.apply_subject_egress_policy(trial)
+            MODULE.apply_subject_egress_policy(task)
         self.assertEqual(agent.network_mode, "allowlist")
         self.assertEqual(agent.allowed_hosts, ["maka-eval-mitmproxy"])
 

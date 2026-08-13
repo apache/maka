@@ -119,8 +119,7 @@ async def run_trial(framework: str, expected_version: str, config_file: Path) ->
                 namespace.mkdir(parents=True, exist_ok=True, mode=0o700)
                 config.task.download_dir = namespace
                 config.task.overwrite = ready is None
-                trial = await trial_type.create(config)
-                apply_subject_egress_policy(trial)
+                trial = await create_harbor_trial(trial_type, config)
                 target = Path(trial.task.task_dir)
                 if ready is not None and target.resolve() != ready:
                     raise RuntimeError("Harbor task cache target changed for one identity")
@@ -133,13 +132,34 @@ async def run_trial(framework: str, expected_version: str, config_file: Path) ->
         config_file.unlink(missing_ok=True)
 
 
-def apply_subject_egress_policy(trial: object) -> None:
+def apply_subject_egress_policy(task: object) -> None:
     allowed_host = os.environ.get("MAKA_EVAL_EGRESS_ALLOWED_HOST")
     if not allowed_host:
         return
-    agent = trial.task.config.agent
+    agent = task.config.agent
     agent.network_mode = "allowlist"
     agent.allowed_hosts = [allowed_host]
+
+
+async def create_harbor_trial(trial_type: type, config: object) -> object:
+    trial_type._resolve_agent_skills(config)
+    task, task_download_result = await trial_type._load_task(config)
+    apply_subject_egress_policy(task)
+    if task.has_steps:
+        from harbor.trial.multi_step import MultiStepTrial
+
+        return MultiStepTrial(
+            config,
+            _task=task,
+            _task_download_result=task_download_result,
+        )
+    from harbor.trial.single_step import SingleStepTrial
+
+    return SingleStepTrial(
+        config,
+        _task=task,
+        _task_download_result=task_download_result,
+    )
 
 
 async def main() -> None:
