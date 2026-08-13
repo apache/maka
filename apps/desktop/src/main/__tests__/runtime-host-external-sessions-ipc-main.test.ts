@@ -9,6 +9,17 @@ import {
 } from '../runtime-host-external-sessions-ipc-main.js';
 import { toDesktopHostSessionSummary } from '../runtime-host-session-catalog-ipc-main.js';
 
+test('preserves the Host last-used model through the Desktop adapter', () => {
+  assert.deepEqual(
+    toDesktopHostSessionSummary(
+      session('session-1', {
+        lastUsedModel: { connectionSlug: 'openai-main', model: 'gpt-5.5' },
+      }),
+    ).lastUsedModel,
+    { connectionSlug: 'openai-main', model: 'gpt-5.5' },
+  );
+});
+
 test('forwards bounded external Session requests and publishes imported Sessions', async () => {
   const requests: unknown[] = [];
   const events: Array<{ reason: string; sessionId?: string }> = [];
@@ -150,7 +161,10 @@ function ipcHarness() {
   };
 }
 
-function session(id: string): SessionCatalogProjection {
+function session(
+  id: string,
+  overrides: Partial<SessionCatalogProjection> = {},
+): SessionCatalogProjection {
   return {
     id,
     revision: 1,
@@ -174,5 +188,6 @@ function session(id: string): SessionCatalogProjection {
     permissionMode: 'ask',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
+    ...overrides,
   };
 }
