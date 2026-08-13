@@ -24,17 +24,7 @@ function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmCo
   };
 }
 
-/**
- * Every Responses wire is dialled through `createOpenAI(...).responses(...)` in
- * `getAIModel`, whatever the adapter kind is — the native OpenAI provider is the
- * only one that speaks it. Its provider-options namespace is `openai`, and the
- * SDK reads no other one: the Responses model picks its namespace by asking
- * whether its own provider name contains `azure`, and only that Azure case ever
- * retries under `openai`. `parseProviderOptions` itself reads the one namespace
- * it is handed and nothing else, so options filed under a compatible provider's
- * own namespace are not dropped by a fallback that missed — they are never
- * looked at.
- */
+/** OpenAI's encrypted Responses dialect still reads the `openai` namespace. */
 function openAiNamespace(options: Record<string, unknown>): Record<string, unknown> | undefined {
   const inner = options.openai;
   return typeof inner === 'object' && inner !== null
@@ -53,7 +43,7 @@ describe('responses wire contract', () => {
     }
   });
 
-  test('every Responses model asks for encrypted reasoning', () => {
+  test('every encrypted Responses dialect asks for encrypted reasoning', () => {
     // `store: false` is not a privacy preference here, it is the switch that
     // makes the SDK add `include: ['reasoning.encrypted_content']` and drop
     // reasoning items that came back without one. Asking is the only way a
@@ -68,13 +58,18 @@ describe('responses wire contract', () => {
         ...modelMetadataIdsForProvider(providerType),
       ]);
       for (const modelId of modelIds) {
-        let wire: string;
+        let runtime: ReturnType<typeof resolveModelRuntime>;
         try {
-          wire = resolveModelRuntime({ providerType }, modelId).wire;
+          runtime = resolveModelRuntime({ providerType }, modelId);
         } catch {
           continue;
         }
-        if (wire !== 'openai-responses') continue;
+        if (
+          runtime.wire !== 'openai-responses' ||
+          runtime.reasoningReplay.kind === 'open-responses-plaintext'
+        ) {
+          continue;
+        }
         // Sweep the declared levels and the unset case: `store` is a property
         // of the wire, not of a thinking choice, so a model reaches this branch
         // whether or not a level was picked.
@@ -384,7 +379,7 @@ describe('responses wire request body', () => {
         },
       ],
       tools: [{ ...(tools.apply_patch as object), name: 'apply_patch' } as never],
-      providerOptions: { openai: { store: false } },
+      providerOptions: buildProviderOptions(connection, 'deepseek-v4-flash'),
     });
 
     assert.deepEqual((body?.tools as unknown[] | undefined)?.[0], {
@@ -401,16 +396,191 @@ describe('responses wire request body', () => {
     ]);
   });
 
-  test('a non-OpenAI-named Responses model still asks for encrypted reasoning', async () => {
-    // The options shape alone does not prove the wire: the SDK only adds the
-    // include when it also believes the model reasons, and it decides that by
-    // parsing the model id. `deepseek-v4-flash` fails that parse, so this
-    // asserts the body the provider actually receives rather than the options
-    // we hand the SDK. Without `forceReasoning` the include silently vanishes
-    // while the options still look right.
+  test('returns streamed DeepSeek custom apply_patch calls through the model interface', async () => {
+    const patch = '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch';
+    const events = [
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        sequence_number: 1,
+        item: {
+          type: 'custom_tool_call',
+          id: 'custom-1',
+          status: 'in_progress',
+          call_id: 'call-1',
+          name: 'apply_patch',
+          input: '',
+        },
+      },
+      {
+        type: 'response.custom_tool_call_input.delta',
+        output_index: 0,
+        sequence_number: 2,
+        item_id: 'custom-1',
+        delta: patch,
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        sequence_number: 3,
+        item: {
+          type: 'custom_tool_call',
+          id: 'custom-1',
+          status: 'completed',
+          call_id: 'call-1',
+          name: 'apply_patch',
+          input: patch,
+        },
+      },
+      {
+        type: 'response.completed',
+        sequence_number: 4,
+        response: {
+          id: 'r',
+          object: 'response',
+          created_at: 0,
+          model: 'deepseek-v4-flash',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      },
+    ];
+    const fetch = (async () =>
+      new Response(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      )) as unknown as typeof globalThis.fetch;
+    const model = getAIModel({
+      connection: conn('deepseek'),
+      apiKey: 'test-key',
+      modelId: 'deepseek-v4-flash',
+      fetch,
+    });
+
+    const { stream } = await model.doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'Delete old.txt' }] }],
+      tools: [
+        {
+          type: 'provider',
+          id: 'openai.custom',
+          name: 'apply_patch',
+          args: {},
+        },
+      ],
+    });
+    const parts = [];
+    for await (const part of stream) {
+      parts.push(part);
+    }
+
+    assert.deepEqual(
+      parts.filter((part) => part.type === 'tool-call'),
+      [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-1',
+          toolName: 'apply_patch',
+          input: JSON.stringify(patch),
+        },
+      ],
+      JSON.stringify(parts),
+    );
+  });
+
+  test('returns streamed DeepSeek hosted web search calls and results', async () => {
+    const action = { type: 'search', queries: ['latest Maka'] };
+    let requestBody: Record<string, unknown> | undefined;
+    const events = [
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        sequence_number: 1,
+        item: {
+          type: 'web_search_call',
+          id: 'search-1',
+          status: 'in_progress',
+        },
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        sequence_number: 2,
+        item: {
+          type: 'web_search_call',
+          id: 'search-1',
+          status: 'completed',
+          action,
+        },
+      },
+      {
+        type: 'response.completed',
+        sequence_number: 3,
+        response: {
+          id: 'r',
+          object: 'response',
+          created_at: 0,
+          model: 'deepseek-v4-flash',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      },
+    ];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const model = getAIModel({
+      connection: conn('deepseek'),
+      apiKey: 'test-key',
+      modelId: 'deepseek-v4-flash',
+      fetch,
+    });
+
+    const { stream } = await model.doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'Search.' }] }],
+      tools: [
+        {
+          type: 'provider',
+          id: 'openai.web_search',
+          name: 'WebSearch',
+          args: { searchContextSize: 'medium' },
+        },
+      ],
+    });
+    const parts = [];
+    for await (const part of stream) {
+      if (part.type === 'tool-call' || part.type === 'tool-result') parts.push(part);
+    }
+
+    assert.deepEqual(parts, [
+      {
+        type: 'tool-call',
+        toolCallId: 'search-1',
+        toolName: 'WebSearch',
+        input: '{}',
+        providerExecuted: true,
+      },
+      {
+        type: 'tool-result',
+        toolCallId: 'search-1',
+        toolName: 'WebSearch',
+        result: { action },
+      },
+    ]);
+    assert.deepEqual(requestBody?.tools, [{ type: 'web_search', search_context_size: 'medium' }]);
+  });
+
+  test('DeepSeek uses plaintext Responses options without asking for encrypted content', async () => {
     let body: Record<string, unknown> | undefined;
+    let headers: Headers | undefined;
     const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
       body = JSON.parse(String(init?.body));
+      headers = new Headers(init?.headers);
       return new Response(
         JSON.stringify({
           id: 'r',
@@ -436,7 +606,92 @@ describe('responses wire request body', () => {
     });
 
     assert.equal(body?.store, false);
-    assert.deepEqual(body?.include, ['reasoning.encrypted_content']);
+    assert.equal(body?.include, undefined);
     assert.equal((body?.reasoning as { effort?: string } | undefined)?.effort, 'max');
+    assert.equal(headers?.has('x-maka-open-responses-reasoning-effort'), false);
+  });
+
+  test('replays plaintext reasoning before its function call and result', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({
+        id: 'r',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const connection = conn('deepseek');
+    const model = getAIModel({
+      connection,
+      apiKey: 'test-key',
+      modelId: 'deepseek-v4-flash',
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [
+        { role: 'user', content: [{ type: 'text', text: 'Read package.json' }] },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'reasoning', text: 'I should inspect the requested file.' },
+            {
+              type: 'tool-call',
+              toolCallId: 'call-read',
+              toolName: 'Read',
+              input: { path: 'package.json' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-read',
+              toolName: 'Read',
+              output: { type: 'text', value: '{"name":"maka"}' },
+            },
+          ],
+        },
+      ],
+      tools: [
+        {
+          type: 'function',
+          name: 'Read',
+          inputSchema: {
+            type: 'object',
+            properties: { path: { type: 'string' } },
+            required: ['path'],
+            additionalProperties: false,
+          },
+        },
+      ],
+    });
+
+    const input = body?.input as Array<Record<string, unknown>> | undefined;
+    assert.deepEqual(
+      input?.map((item) => item.type),
+      ['message', 'reasoning', 'function_call', 'function_call_output'],
+    );
+    assert.deepEqual(input?.[1], {
+      type: 'reasoning',
+      summary: [],
+      content: [{ type: 'reasoning_text', text: 'I should inspect the requested file.' }],
+    });
+    assert.deepEqual(input?.[2], {
+      type: 'function_call',
+      call_id: 'call-read',
+      name: 'Read',
+      arguments: '{"path":"package.json"}',
+    });
+    assert.deepEqual(input?.[3], {
+      type: 'function_call_output',
+      call_id: 'call-read',
+      output: '{"name":"maka"}',
+    });
   });
 });

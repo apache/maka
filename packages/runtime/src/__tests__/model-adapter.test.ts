@@ -67,7 +67,7 @@ describe('ModelAdapter stream and error normalization', () => {
       toolResults: true,
       signedThinking: false,
       unsignedThinking: true,
-      openAiResponsesEncryptedThinking: false,
+      responsesThinking: 'none',
     });
   });
 
@@ -121,7 +121,30 @@ describe('ModelAdapter stream and error normalization', () => {
       toolResults: true,
       signedThinking: false,
       unsignedThinking: false,
-      openAiResponsesEncryptedThinking: true,
+      responsesThinking: 'openai-encrypted',
+    });
+  });
+
+  test('supports plaintext Responses reasoning replay for DeepSeek V4', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(adapter.runtimeEventReplaySupport(), {
+      toolCalls: true,
+      toolResults: true,
+      signedThinking: false,
+      unsignedThinking: false,
+      responsesThinking: 'open-responses-plaintext',
     });
   });
 

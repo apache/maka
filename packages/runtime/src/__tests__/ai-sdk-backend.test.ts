@@ -12448,10 +12448,19 @@ describe('AiSdkBackend thinking persistence', () => {
         },
       },
       {
-        type: 'text_complete',
+        type: 'thinking_complete',
         id: 'e4',
         turnId: 'turn-prev',
         ts: 4,
+        messageId: 'm1',
+        text: 'unreplayable OpenAI reasoning',
+        providerOptions: { openai: { itemId: 'rs_without_encrypted_content' } },
+      },
+      {
+        type: 'text_complete',
+        id: 'e5',
+        turnId: 'turn-prev',
+        ts: 5,
         messageId: 'm1',
         text: '',
       },
@@ -12491,17 +12500,112 @@ describe('AiSdkBackend thinking persistence', () => {
       (message) => message.role === 'assistant' && Array.isArray(message.content),
     );
     assert.ok(assistant && Array.isArray(assistant.content));
-    const reasoning = assistant.content.find((part) => part.type === 'reasoning');
-    assert.deepEqual(reasoning, {
-      type: 'reasoning',
-      text: 'reasoning about the tool',
-      providerOptions: {
-        openai: {
-          itemId: 'rs_ark',
-          reasoningEncryptedContent: 'encrypted-ark-reasoning',
+    assert.deepEqual(
+      assistant.content.filter((part) => part.type === 'reasoning'),
+      [
+        {
+          type: 'reasoning',
+          text: 'reasoning about the tool',
+          providerOptions: {
+            openai: {
+              itemId: 'rs_ark',
+              reasoningEncryptedContent: 'encrypted-ark-reasoning',
+            },
+          },
         },
+      ],
+    );
+    assert.ok(
+      assistant.content.some((part) => part.type === 'tool-call' && part.toolCallId === 'tool-1'),
+    );
+  });
+
+  test('DeepSeek Responses replays plaintext reasoning without an OpenAI item id', async () => {
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-prev',
+      turnId: 'turn-prev',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as InvocationContext;
+    const memory = createSessionEventMapMemory();
+    const priorEvents: SessionEvent[] = [
+      {
+        type: 'tool_start',
+        id: 'e1',
+        turnId: 'turn-prev',
+        ts: 1,
+        toolUseId: 'tool-1',
+        toolName: 'Read',
+        args: { path: 'package.json' },
+        stepId: 'm1',
       },
+      {
+        type: 'tool_result',
+        id: 'e2',
+        turnId: 'turn-prev',
+        ts: 2,
+        toolUseId: 'tool-1',
+        isError: false,
+        content: { kind: 'text', text: 'file contents' },
+      },
+      {
+        type: 'thinking_complete',
+        id: 'e3',
+        turnId: 'turn-prev',
+        ts: 3,
+        messageId: 'm1',
+        text: 'reasoning about the tool',
+      },
+      {
+        type: 'text_complete',
+        id: 'e4',
+        turnId: 'turn-prev',
+        ts: 4,
+        messageId: 'm1',
+        text: '',
+      },
+    ];
+    const runtimeContext = priorEvents.map((event) =>
+      mapSessionEventToRuntimeEvent(event, ctx, memory),
+    );
+    const secondModel = completionModel();
+    const secondBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => secondModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
     });
+
+    await drain(
+      secondBackend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(secondModel) as ModelMessage[];
+    const assistant = prompt.find(
+      (message) => message.role === 'assistant' && Array.isArray(message.content),
+    );
+    assert.ok(assistant && Array.isArray(assistant.content));
+    assert.deepEqual(
+      assistant.content.find((part) => part.type === 'reasoning'),
+      { type: 'reasoning', text: 'reasoning about the tool', providerOptions: undefined },
+    );
     assert.ok(
       assistant.content.some((part) => part.type === 'tool-call' && part.toolCallId === 'tool-1'),
     );

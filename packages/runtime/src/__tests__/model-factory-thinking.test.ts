@@ -203,20 +203,15 @@ describe('buildProviderOptions: thinking level', () => {
       [...thinkingVariantsForModel('deepseek', 'deepseek-v4-flash')],
       ['high', 'max'],
     );
-    // deepseek-v4-flash serves the Responses wire, which the native OpenAI
-    // provider dials: its namespace is `openai`, and the provider's own
-    // namespace would be dropped on the floor. `store: false` and
-    // `forceReasoning` are what earn the encrypted reasoning the next step
-    // replays, so they hold even when no level was picked.
+    // DeepSeek V4 speaks the plaintext Open Responses dialect, so its effort
+    // stays in the DeepSeek namespace and no encrypted-content option leaks in.
     assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'high'), {
-      openai: { store: false, forceReasoning: true, reasoningEffort: 'high' },
+      deepseek: { reasoningEffort: 'high' },
     });
     assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'max'), {
-      openai: { store: false, forceReasoning: true, reasoningEffort: 'max' },
+      deepseek: { reasoningEffort: 'max' },
     });
-    assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'off'), {
-      openai: { store: false, forceReasoning: true },
-    });
+    assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'off'), {});
     assert.deepEqual([...thinkingVariantsForModel('zai-coding-plan', 'glm-5.1')], []);
     assert.deepEqual([...thinkingVariantsForModel('zai-coding-plan', 'glm-4.5-air')], []);
     // miss model (deepseek-chat non-reasoning) drops level
@@ -499,7 +494,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       { 'zai-coding-plan': { reasoningEffort: 'max' } },
     );
   });
-  test('deepseek uses its own raw namespace on the chat wire, the OpenAI one on Responses', () => {
+  test('deepseek uses its own namespace on both supported dialects', () => {
     const chatConnection: LlmConnection = {
       ...conn('deepseek', 'deepseek'),
       models: [{ id: 'deepseek-v4-pro', apiProtocol: 'openai-chat' }],
@@ -509,7 +504,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     });
     assert.deepEqual(
       buildProviderOptions(conn('deepseek', 'deepseek'), 'deepseek-v4-flash', 'high'),
-      { openai: { store: false, forceReasoning: true, reasoningEffort: 'high' } },
+      { deepseek: { reasoningEffort: 'high' } },
     );
   });
 
