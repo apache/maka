@@ -79,6 +79,7 @@ try {
     if (profile === 'claude-code') prepareClaudeWorkspace(systemRoot, prepared.home);
     const result = await runChild(prepared.command, prepared.args, prepared.env, profile);
     child = undefined;
+    await proxy.settle();
     await writeState('child_exited', { exitCode: result.exitCode });
     usage = proxy.usage();
     costUsd = usage && proxy.usageComplete() ? estimateCost(usage) : null;
@@ -601,6 +602,7 @@ async function startMeteringProxy(
   removedWebToolCount(): number;
   requestModels(): readonly string[];
   observedToolNames(): readonly string[];
+  settle(): Promise<void>;
   close(): Promise<void>;
 }> {
   const total = zeroUsage();
@@ -708,6 +710,10 @@ async function startMeteringProxy(
     removedWebToolCount: () => removedWebTools,
     requestModels: () => [...requestModels].sort(),
     observedToolNames: () => [...observedToolNames].sort(),
+    settle: async () => {
+      await Promise.allSettled([...active]);
+      await snapshotWrite;
+    },
     close: async () => {
       await Promise.allSettled([...active]);
       await snapshotWrite;
