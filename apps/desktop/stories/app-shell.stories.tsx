@@ -418,6 +418,9 @@ function ComposedShell(props: {
                   <Composer
                     {...baseComposerProps}
                     activeSession={active}
+                    modelSwitchHasHistory={messages.some(
+                      (message) => message.type === 'user' || message.type === 'assistant',
+                    )}
                     streaming={sessionStreaming ?? false}
                     {...props.composer}
                   />
