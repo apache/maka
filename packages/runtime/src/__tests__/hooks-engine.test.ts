@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { PreToolUseHookInput, ResolvedHookDefinition } from '@maka/core/hooks';
-import { createHookCommandRunner, type HookCommandRunner } from '../hooks/command-runner.js';
-import { createPreToolUseHookDispatcher } from '../hooks/engine.js';
+import {
+  createHookCommandRunner,
+  HOOK_EXECUTION_MARKER,
+  type HookCommandRunner,
+} from '../hooks/command-runner.js';
+import { createHookExecutionLimiter, createPreToolUseHookDispatcher } from '../hooks/engine.js';
 
 describe('PreToolUse Hook engine', () => {
   it('freezes one snapshot per turn and skips untrusted matching definitions', async () => {
@@ -35,6 +39,37 @@ describe('PreToolUse Hook engine', () => {
     assert.equal(runs, 0);
     assert.equal(first.denied, false);
     assert.equal(first.audits[0]?.status, 'skipped_untrusted');
+  });
+
+  it('retains every active Turn snapshot until that Turn is released', async () => {
+    let revision = 1;
+    let loads = 0;
+    const dispatcher = createPreToolUseHookDispatcher({
+      loadSnapshot: async () => {
+        loads += 1;
+        return [definition({ id: `revision-${revision}`, trusted: false })];
+      },
+    });
+    for (let index = 1; index <= 9; index += 1) dispatcher.prepareTurn(`turn-${index}`);
+    await Promise.resolve();
+    revision = 2;
+
+    const retained = await dispatcher.runPreToolUse(
+      hookInput('turn-1'),
+      new AbortController().signal,
+      { invocationId: 'invocation-1' },
+    );
+    assert.equal(retained.audits[0]?.handlerId, 'revision-1');
+    assert.equal(loads, 9);
+
+    dispatcher.releaseTurn('turn-1');
+    const reloaded = await dispatcher.runPreToolUse(
+      hookInput('turn-1'),
+      new AbortController().signal,
+      { invocationId: 'invocation-1-reloaded' },
+    );
+    assert.equal(reloaded.audits[0]?.handlerId, 'revision-2');
+    assert.equal(loads, 10);
   });
 
   it('runs matching handlers concurrently and reports denials in configuration order', async () => {
@@ -71,6 +106,49 @@ describe('PreToolUse Hook engine', () => {
       output.audits.map((audit) => audit.handlerId),
       ['first', 'second'],
     );
+  });
+
+  it('shares one concurrency ceiling across simultaneous dispatchers and sessions', async () => {
+    let active = 0;
+    let maxActive = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runner: HookCommandRunner = {
+      run: async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await gate;
+        active -= 1;
+        return result(0);
+      },
+    };
+    const limiter = createHookExecutionLimiter(2);
+    const createDispatcher = () =>
+      createPreToolUseHookDispatcher({
+        loadSnapshot: async () => [
+          definition({ id: 'first', definitionOrder: 0 }),
+          definition({ id: 'second', definitionOrder: 1 }),
+        ],
+        commandRunner: runner,
+        executionLimiter: limiter,
+      });
+    const first = createDispatcher().runPreToolUse(
+      hookInput('turn-1'),
+      new AbortController().signal,
+      { invocationId: 'invocation-1' },
+    );
+    const second = createDispatcher().runPreToolUse(
+      { ...hookInput('turn-2'), session_id: 'session-2' },
+      new AbortController().signal,
+      { invocationId: 'invocation-2' },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(maxActive, 2);
+    release();
+    await Promise.all([first, second]);
+    assert.equal(maxActive, 2);
   });
 
   it('fails open on handler and audit failures but preserves an explicit denial', async () => {
@@ -131,6 +209,37 @@ describe('PreToolUse Hook engine', () => {
     );
     assert.equal(output.denied, true);
     assert.equal(output.reason, 'structured policy denial');
+  });
+
+  it('marks Hook children and refuses execution in a Host recursively started by a Hook', async () => {
+    const runner = createHookCommandRunner();
+    const markerProbe = await runner.run(
+      definition({
+        command: process.execPath,
+        args: [
+          '-e',
+          `process.exit(process.env[${JSON.stringify(HOOK_EXECUTION_MARKER)}] === '1' ? 0 : 9)`,
+        ],
+      }),
+      hookInput('turn-1'),
+      new AbortController().signal,
+    );
+    assert.equal(markerProbe.exitCode, 0);
+
+    const previous = process.env[HOOK_EXECUTION_MARKER];
+    process.env[HOOK_EXECUTION_MARKER] = '1';
+    try {
+      const recursive = await runner.run(
+        definition({ command: process.execPath, args: ['-e', 'process.exit(99)'] }),
+        hookInput('turn-recursive'),
+        new AbortController().signal,
+      );
+      assert.equal(recursive.exitCode, null);
+      assert.equal(recursive.spawnError, 'Recursive Hook execution is not allowed');
+    } finally {
+      if (previous === undefined) delete process.env[HOOK_EXECUTION_MARKER];
+      else process.env[HOOK_EXECUTION_MARKER] = previous;
+    }
   });
 
   it('terminates timed-out Hook process trees and fails open', async () => {

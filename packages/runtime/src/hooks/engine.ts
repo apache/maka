@@ -23,6 +23,7 @@ export interface HookDispatchResult {
 
 export interface PreToolUseHookDispatcher {
   prepareTurn(turnId: string): void;
+  releaseTurn(turnId: string): void;
   runPreToolUse(
     input: PreToolUseHookInput,
     abortSignal: AbortSignal,
@@ -44,6 +45,41 @@ export interface PreToolUseHookDispatcherInput {
   commandRunner?: HookCommandRunner;
   now?: () => number;
   concurrency?: number;
+  executionLimiter?: HookExecutionLimiter;
+}
+
+export interface HookExecutionLimiter {
+  run<T>(operation: () => Promise<T>): Promise<T>;
+}
+
+export function createHookExecutionLimiter(
+  concurrency = DEFAULT_CONCURRENCY,
+): HookExecutionLimiter {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error('Hook concurrency must be a positive integer');
+  }
+  let active = 0;
+  const queued: Array<() => void> = [];
+  const drain = () => {
+    while (active < concurrency && queued.length > 0) queued.shift()?.();
+  };
+  return {
+    run<T>(operation: () => Promise<T>): Promise<T> {
+      return new Promise<T>((resolve, reject) => {
+        queued.push(() => {
+          active += 1;
+          void Promise.resolve()
+            .then(operation)
+            .then(resolve, reject)
+            .finally(() => {
+              active -= 1;
+              drain();
+            });
+        });
+        drain();
+      });
+    },
+  };
 }
 
 export function createPreToolUseHookDispatcher(
@@ -52,6 +88,7 @@ export function createPreToolUseHookDispatcher(
   const commandRunner = input.commandRunner ?? createHookCommandRunner();
   const now = input.now ?? Date.now;
   const concurrency = input.concurrency ?? DEFAULT_CONCURRENCY;
+  const executionLimiter = input.executionLimiter ?? createHookExecutionLimiter(concurrency);
   const snapshots = new Map<string, Promise<readonly ResolvedHookDefinition[]>>();
 
   const snapshotForTurn = (turnId: string): Promise<readonly ResolvedHookDefinition[]> => {
@@ -59,7 +96,6 @@ export function createPreToolUseHookDispatcher(
     if (!snapshot) {
       snapshot = input.loadSnapshot(turnId);
       snapshots.set(turnId, snapshot);
-      while (snapshots.size > 8) snapshots.delete(snapshots.keys().next().value!);
     }
     return snapshot;
   };
@@ -67,6 +103,9 @@ export function createPreToolUseHookDispatcher(
   return {
     prepareTurn(turnId) {
       void snapshotForTurn(turnId).catch(() => {});
+    },
+    releaseTurn(turnId) {
+      snapshots.delete(turnId);
     },
     async runPreToolUse(hookInput, abortSignal, context) {
       const definitions = await snapshotForTurn(hookInput.turn_id);
@@ -78,7 +117,9 @@ export function createPreToolUseHookDispatcher(
           return auditFor(definition, hookInput, 'skipped_untrusted', 0, 'Review required');
         }
         const startedAt = now();
-        const result = await commandRunner.run(definition, hookInput, abortSignal);
+        const result = await executionLimiter.run(() =>
+          commandRunner.run(definition, hookInput, abortSignal),
+        );
         return auditFromCommandResult(
           definition,
           hookInput,

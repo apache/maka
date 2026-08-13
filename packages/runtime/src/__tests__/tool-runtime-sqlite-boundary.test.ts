@@ -37,6 +37,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
         runtimeCommitSink: store,
         preToolUseHooks: {
           prepareTurn: () => {},
+          releaseTurn: () => {},
           runPreToolUse: async () => ({
             denied: true,
             reason: 'Policy denied this command',

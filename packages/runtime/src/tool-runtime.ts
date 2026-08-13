@@ -593,6 +593,7 @@ export class ToolRuntime {
     // Bounded, not open-ended: every rejection above has already been
     // dispatched, and running impls observe the turn abort signal.
     await Promise.allSettled([...this.activeToolSettlements]);
+    this.input.preToolUseHooks?.releaseTurn(turnId);
     if (boundarySettlementErrors.length > 0) {
       throw new AggregateError(
         boundarySettlementErrors,
