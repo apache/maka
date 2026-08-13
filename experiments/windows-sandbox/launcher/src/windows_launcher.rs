@@ -16,8 +16,8 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessWithTokenW, GetCurrentProcess,
-    GetExitCodeProcess, GetProcessId, INFINITE, OpenProcessToken, PROCESS_INFORMATION,
-    ResumeThread, STARTUPINFOW, WaitForSingleObject,
+    GetExitCodeProcess, GetProcessId, OpenProcessToken, PROCESS_INFORMATION, ResumeThread,
+    STARTUPINFOW, TerminateProcess, WAIT_OBJECT_0, WAIT_TIMEOUT, WaitForSingleObject,
 };
 
 use crate::protocol::{LaunchRequest, NetworkMode};
@@ -173,17 +173,24 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
     } else if unsafe { ResumeThread(process.hThread) } == u32::MAX {
         Err(last_error("ResumeThread"))
     } else {
-        unsafe { WaitForSingleObject(process.hProcess, INFINITE) };
-        let mut exit_code = 1;
-        if unsafe { GetExitCodeProcess(process.hProcess, &mut exit_code) } == 0 {
-            Err(last_error("GetExitCodeProcess"))
-        } else if exit_code > u8::MAX as u32 {
-            Err(format!(
-                "child {} returned unsupported exit code {exit_code}",
-                unsafe { GetProcessId(process.hProcess) }
-            ))
+        let wait = unsafe { WaitForSingleObject(process.hProcess, 30_000) };
+        if wait == WAIT_TIMEOUT {
+            unsafe { TerminateProcess(process.hProcess, 124) };
+            Err("child exceeded the 30 second W0 timeout".to_owned())
+        } else if wait != WAIT_OBJECT_0 {
+            Err(last_error("WaitForSingleObject"))
         } else {
-            Ok(exit_code as u8)
+            let mut exit_code = 1;
+            if unsafe { GetExitCodeProcess(process.hProcess, &mut exit_code) } == 0 {
+                Err(last_error("GetExitCodeProcess"))
+            } else if exit_code > u8::MAX as u32 {
+                Err(format!(
+                    "child {} returned unsupported exit code {exit_code}",
+                    unsafe { GetProcessId(process.hProcess) }
+                ))
+            } else {
+                Ok(exit_code as u8)
+            }
         }
     };
     unsafe {
