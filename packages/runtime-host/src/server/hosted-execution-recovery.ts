@@ -1,11 +1,17 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { RootExecutionDescriptor } from '@maka/core/agent-run';
+import { randomUUID } from 'node:crypto';
+import {
+  latestStartedSessionInlineRun,
+  modelChangeBetweenRuns,
+  type AgentRunHeader,
+  type RootExecutionDescriptor,
+} from '@maka/core/agent-run';
 import {
   messageContentsEqual,
   normalizeMessageContent,
   type MessageContent,
 } from '@maka/core/events';
-import type { StoredMessage } from '@maka/core/session';
+import type { StoredMessage, SystemNoteMessage } from '@maka/core/session';
 import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-authority';
 import { type SessionManager } from '@maka/runtime/session-manager';
 import type { ExecutionStoresWriter, RootTurnAdmission } from '@maka/storage/execution-stores';
@@ -44,7 +50,7 @@ export async function prepareHostedExecutionRecovery(
     const messageIndex = indexRecoveryMessages(messages);
     const replayAdmissions: RootTurnAdmission[] = [];
     const rootReplayAdmissions: RootTurnAdmission[] = [];
-    const missingMessages: RecoveryUserMessage[] = [];
+    const missingMessageBatches: StoredMessage[][] = [];
     const pendingRecoveryClosures: RootTurnAdmission[] = [];
     for (const admission of admissions) {
       const run = runsById.get(admission.runId);
@@ -104,22 +110,26 @@ export async function prepareHostedExecutionRecovery(
       }
       const messageIdOwner = messageIdOwners[0];
       if (!run && executionContract.pendingWithoutRun === 'host_recovery_closure') {
-        verifyOrRecoverUserMessage(
+        verifyOrRecoverMessages(
           admission,
           rootUserMessages,
           messageIdOwner,
-          missingMessages,
+          undefined,
+          runs,
+          missingMessageBatches,
           messageIndex,
         );
         pendingRecoveryClosures.push(admission);
         continue;
       }
       if (!run && executionContract.pendingWithoutRun === 'domain_replay') {
-        verifyOrRecoverUserMessage(
+        verifyOrRecoverMessages(
           admission,
           rootUserMessages,
           messageIdOwner,
-          missingMessages,
+          undefined,
+          runs,
+          missingMessageBatches,
           messageIndex,
         );
         replayAdmissions.push(admission);
@@ -138,11 +148,13 @@ export async function prepareHostedExecutionRecovery(
         admission.turnId,
         admission.execution,
       );
-      verifyOrRecoverUserMessage(
+      verifyOrRecoverMessages(
         admission,
         rootUserMessages,
         messageIdOwner,
-        missingMessages,
+        run,
+        runs,
+        missingMessageBatches,
         messageIndex,
       );
     }
@@ -156,14 +168,14 @@ export async function prepareHostedExecutionRecovery(
       sessionId: session.id,
       admissions,
       ...(rootReplayAdmissions[0] ? { rootReplayAdmission: rootReplayAdmissions[0] } : {}),
-      missingMessages,
+      missingMessageBatches,
       pendingRecoveryClosures,
     });
   }
 
   for (const plan of prepared) {
-    for (const message of plan.missingMessages) {
-      await input.stores.sessionStore.appendMessage(plan.sessionId, message);
+    for (const messages of plan.missingMessageBatches) {
+      await input.stores.sessionStore.appendMessages(plan.sessionId, [...messages]);
     }
     for (const admission of plan.pendingRecoveryClosures) {
       if (!usesHostRecoveryClosure(admission.execution)) {
@@ -216,7 +228,7 @@ export function hostedExecutionMessageOrigin(execution: RootExecutionDescriptor)
 }
 
 interface PreparedRecoverySession extends HostedExecutionRecoveryPlan {
-  readonly missingMessages: readonly RecoveryUserMessage[];
+  readonly missingMessageBatches: readonly (readonly StoredMessage[])[];
   readonly pendingRecoveryClosures: readonly RootTurnAdmission[];
 }
 
@@ -233,11 +245,13 @@ interface RecoveryExecutionContract {
   readonly pendingWithoutRun: 'root_replay' | 'domain_replay' | 'host_recovery_closure';
 }
 
-function verifyOrRecoverUserMessage(
+function verifyOrRecoverMessages(
   admission: RootTurnAdmission,
   rootUserMessages: readonly RecoveryUserMessage[],
   messageIdOwner: StoredMessage | undefined,
-  missingMessages: RecoveryUserMessage[],
+  run: AgentRunHeader | undefined,
+  runs: readonly AgentRunHeader[],
+  missingMessageBatches: StoredMessage[][],
   index: RecoveryMessageIndex,
 ): void {
   if (rootUserMessages.length > 1) {
@@ -262,8 +276,34 @@ function verifyOrRecoverUserMessage(
     throw new Error(`Admitted Turn ${admission.turnId} reuses another message identity`);
   }
   const recoveredMessage = recoveryUserMessage(admission);
-  missingMessages.push(recoveredMessage);
+  const modelChange = run ? recoveryModelChangeNote(run, runs, recoveredMessage.ts) : undefined;
+  const batch: StoredMessage[] = modelChange ? [modelChange, recoveredMessage] : [recoveredMessage];
+  missingMessageBatches.push(batch);
+  if (modelChange) indexRecoveryMessage(index, modelChange);
   indexRecoveryMessage(index, recoveredMessage);
+}
+
+function recoveryModelChangeNote(
+  run: AgentRunHeader,
+  runs: readonly AgentRunHeader[],
+  ts: number,
+): SystemNoteMessage | undefined {
+  const previous = latestStartedSessionInlineRun(
+    runs.filter(
+      (candidate) => candidate.runId !== run.runId && candidate.createdAt <= run.createdAt,
+    ),
+  );
+  if (!previous) return undefined;
+  const data = modelChangeBetweenRuns(previous, run);
+  if (!data) return undefined;
+  return {
+    type: 'system_note',
+    id: randomUUID(),
+    turnId: run.turnId,
+    ts,
+    kind: 'model_change',
+    data,
+  };
 }
 
 function recoveryUserMessage(admission: RootTurnAdmission): RecoveryUserMessage {

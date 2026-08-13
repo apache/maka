@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { latestStartedSessionInlineRun, type AgentRunHeader } from '../agent-run.js';
+import {
+  latestStartedSessionInlineRun,
+  modelChangeBetweenRuns,
+  type AgentRunHeader,
+} from '../agent-run.js';
 
 test('selects the latest started inline run and ignores non-execution rows', () => {
   const latest = latestStartedSessionInlineRun([
@@ -17,6 +21,20 @@ test('selects the latest started inline run and ignores non-execution rows', () 
 
   assert.equal(latest?.runId, 'failed-turn');
   assert.equal(latest?.modelId, 'model-b');
+});
+
+test('projects a model change only when the admitted identity differs', () => {
+  assert.equal(modelChangeBetweenRuns(run('failed', 1), run('created', 2)), undefined);
+  assert.deepEqual(
+    modelChangeBetweenRuns(
+      run('failed', 1, { llmConnectionSlug: 'provider-a', modelId: 'model-a' }),
+      run('created', 2, { llmConnectionSlug: 'provider-b', modelId: 'model-b' }),
+    ),
+    {
+      from: { connectionSlug: 'provider-a', model: 'model-a' },
+      to: { connectionSlug: 'provider-b', model: 'model-b' },
+    },
+  );
 });
 
 function run(

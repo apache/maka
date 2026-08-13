@@ -9,7 +9,11 @@ import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { RunCompositionSnapshot } from '@maka/core/run-composition';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
-import { isSessionInlineRun, latestStartedSessionInlineRun } from '@maka/core/agent-run';
+import {
+  isSessionInlineRun,
+  latestStartedSessionInlineRun,
+  modelChangeBetweenRuns,
+} from '@maka/core/agent-run';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import {
   ToolLedgerCorruptionError,
@@ -25,7 +29,6 @@ import {
 import type {
   SessionBlockedReason,
   SessionHeader,
-  ModelChangeNoteData,
   SessionStatus,
   StoredMessage,
   SystemNoteMessage,
@@ -1202,17 +1205,12 @@ export class AgentRun {
       return undefined;
     }
     const previous = latestStartedSessionInlineRun(runs.filter((run) => run.runId !== this.runId));
-    if (
-      !previous ||
-      (previous.llmConnectionSlug === this.header.llmConnectionSlug &&
-        previous.modelId === this.header.model)
-    ) {
-      return undefined;
-    }
-    const data: ModelChangeNoteData = {
-      from: { connectionSlug: previous.llmConnectionSlug, model: previous.modelId },
-      to: { connectionSlug: this.header.llmConnectionSlug, model: this.header.model },
-    };
+    if (!previous) return undefined;
+    const data = modelChangeBetweenRuns(previous, {
+      llmConnectionSlug: this.header.llmConnectionSlug,
+      modelId: this.header.model,
+    });
+    if (!data) return undefined;
     return {
       type: 'system_note',
       id: this.input.newId(),

@@ -8,7 +8,7 @@ import {
   type EffectiveOrchestrationSource,
   type OrchestrationMode,
 } from './orchestration.js';
-import type { BackendKind } from './session.js';
+import type { BackendKind, ModelChangeNoteData } from './session.js';
 import {
   defineObjectShape,
   hasExactShape,
@@ -667,4 +667,24 @@ export function latestStartedSessionInlineRun(
         : left.createdAt - right.createdAt,
     )
     .at(-1);
+}
+
+/** Returns the user-visible model transition between two admitted runs. */
+export function modelChangeBetweenRuns(
+  previous: Pick<AgentRunHeader, 'llmConnectionSlug' | 'modelId'>,
+  current: Pick<AgentRunHeader, 'llmConnectionSlug' | 'modelId'>,
+): ModelChangeNoteData | undefined {
+  if (
+    previous.llmConnectionSlug === current.llmConnectionSlug &&
+    previous.modelId === current.modelId
+  ) {
+    return undefined;
+  }
+  return {
+    from: {
+      connectionSlug: previous.llmConnectionSlug,
+      model: previous.modelId,
+    },
+    to: { connectionSlug: current.llmConnectionSlug, model: current.modelId },
+  };
 }
