@@ -99,7 +99,6 @@ const PROJECTION_FIELDS = [
   'revisionIndex',
   'revisionState',
   'thinkingLevel',
-  'lastUsedModel',
   'lastReadMessageId',
 ] as const;
 
@@ -213,11 +212,6 @@ export interface SessionCatalogProjection {
   readonly llmConnectionSlug: string;
   readonly connectionLocked: boolean;
   readonly model: string;
-  /** Present on point reads and configuration results; catalog pages omit the per-Session Run read. */
-  readonly lastUsedModel?: {
-    readonly connectionSlug: string;
-    readonly model: string;
-  };
   readonly thinkingLevel?: ThinkingLevel;
   readonly permissionMode: PermissionMode;
   readonly collaborationMode: CollaborationMode;
@@ -657,7 +651,6 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     ),
     connectionLocked: boolean(record.connectionLocked, 'Session connection lock'),
     model: requireUtf8String(record.model, 'Session model', SESSION_CATALOG_MODEL_MAX_BYTES),
-    ...optionalLastUsedModel(record),
     ...optionalThinkingLevel(record),
     permissionMode: permissionMode(record.permissionMode),
     collaborationMode: collaborationMode(record.collaborationMode),
@@ -860,26 +853,6 @@ function optionalThinkingLevel(
 ): Pick<SessionCatalogProjection, 'thinkingLevel'> | Record<string, never> {
   if (!Object.hasOwn(record, 'thinkingLevel')) return {};
   return { thinkingLevel: thinkingLevel(record.thinkingLevel) };
-}
-
-function optionalLastUsedModel(
-  record: Record<string, unknown>,
-): Pick<SessionCatalogProjection, 'lastUsedModel'> | Record<string, never> {
-  if (!Object.hasOwn(record, 'lastUsedModel')) return {};
-  const target = requireExactRecord(record.lastUsedModel, 'Session last-used model', [
-    'connectionSlug',
-    'model',
-  ]);
-  return {
-    lastUsedModel: {
-      connectionSlug: boundedText(
-        target.connectionSlug,
-        'Session last-used connection slug',
-        SESSION_CATALOG_CONNECTION_SLUG_MAX_BYTES,
-      ),
-      model: boundedText(target.model, 'Session last-used model', SESSION_CATALOG_MODEL_MAX_BYTES),
-    },
-  };
 }
 
 function sessionStatus(value: unknown): SessionStatus {

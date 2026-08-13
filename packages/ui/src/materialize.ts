@@ -1,4 +1,4 @@
-import { decodeModelChangeNoteData, deriveTurnRecords, STEP_LIMIT_NOTICE_TEXT } from '@maka/core/session';
+import { deriveTurnRecords, STEP_LIMIT_NOTICE_TEXT } from '@maka/core/session';
 import {
   isInFlightToolStatus,
   toolResultActivityStatus,
@@ -18,7 +18,7 @@ import type {
 } from '@maka/core/events';
 import type { ToolActivityStatus } from '@maka/core/tool-result-status';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
-import type { ModelChangeNoteData, StoredMessage, TurnRecord, TurnStatus, UserMessage } from '@maka/core/session';
+import type { StoredMessage, TurnRecord, TurnStatus, UserMessage } from '@maka/core/session';
 import type {
   LiveSteeringProjection,
   LiveTurnProjection,
@@ -359,8 +359,6 @@ export interface TurnViewModel {
   errorClass?: string;
   partialOutputRetained: boolean;
   user?: ChatItem;
-  /** Actual model transition recorded when this turn began, before its user message. */
-  modelChange?: { id: string; ts: number; data: ModelChangeNoteData };
   tools: ToolActivityItem[];
   assistant?: ChatItem;
   /**
@@ -706,16 +704,6 @@ export function materializeTurns(
         text: SYSTEM_NOTE_LABELS[message.kind] ?? message.kind,
         ts: message.ts,
       });
-    } else if (message.type === "system_note" && message.kind === "model_change") {
-      try {
-        turn.modelChange = {
-          id: message.id,
-          ts: message.ts,
-          data: decodeModelChangeNoteData(message.data),
-        };
-      } catch {
-        // Malformed legacy note data is audit-only; it must not break the transcript.
-      }
     } else if (message.type === "token_usage") {
       const totals = turn.tokens ?? { input: 0, output: 0 };
       totals.input += message.input;

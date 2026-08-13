@@ -8,7 +8,7 @@ import {
   type EffectiveOrchestrationSource,
   type OrchestrationMode,
 } from './orchestration.js';
-import type { BackendKind, ModelChangeNoteData } from './session.js';
+import type { BackendKind } from './session.js';
 import {
   defineObjectShape,
   hasExactShape,
@@ -644,47 +644,4 @@ export function isSessionInlineRun(run: {
     run.parentRunId === undefined ||
     (run.continuationSource !== undefined && run.agentId === undefined)
   );
-}
-
-/**
- * Returns the latest AgentRun that actually started in the owning Session's
- * transcript. Created-only rows and maintenance compaction runs do not carry a
- * user-visible model choice.
- */
-export function latestStartedSessionInlineRun(
-  runs: readonly AgentRunHeader[],
-): AgentRunHeader | undefined {
-  return runs
-    .filter(
-      (run) =>
-        run.status !== 'created' &&
-        run.rootExecutionKind !== 'context_compact' &&
-        isSessionInlineRun(run),
-    )
-    .sort((left, right) =>
-      left.createdAt === right.createdAt
-        ? left.runId.localeCompare(right.runId)
-        : left.createdAt - right.createdAt,
-    )
-    .at(-1);
-}
-
-/** Returns the user-visible model transition between two admitted runs. */
-export function modelChangeBetweenRuns(
-  previous: Pick<AgentRunHeader, 'llmConnectionSlug' | 'modelId'>,
-  current: Pick<AgentRunHeader, 'llmConnectionSlug' | 'modelId'>,
-): ModelChangeNoteData | undefined {
-  if (
-    previous.llmConnectionSlug === current.llmConnectionSlug &&
-    previous.modelId === current.modelId
-  ) {
-    return undefined;
-  }
-  return {
-    from: {
-      connectionSlug: previous.llmConnectionSlug,
-      model: previous.modelId,
-    },
-    to: { connectionSlug: current.llmConnectionSlug, model: current.modelId },
-  };
 }

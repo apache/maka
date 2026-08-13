@@ -1114,7 +1114,6 @@ export async function createExecutionRuntimeHostComposition(
     });
     const sessionCatalog = new HostSessionCatalogCoordinator({
       stores: stores.sessionStore,
-      runs: stores.agentRunStore,
       runtimePolicy: runtimePolicyStores,
       manager,
       admission: sessionAdmission,

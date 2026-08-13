@@ -20,7 +20,7 @@
 import { type ReactNode, useMemo } from 'react';
 import { Button as UiButton } from '@astryxdesign/core';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
-import { ICON_SIZE, Check, Settings } from './icons.js';
+import { ICON_SIZE, AlertTriangle, Check, Settings } from './icons.js';
 import {
   type ChatModelChoice,
   type ModelMenuGroup,
@@ -177,6 +177,7 @@ export function ChatModelSwitcher(props: {
   activeModelLabel?: string;
   currentProviderType?: ProviderType;
   choices: ChatModelChoice[];
+  hasConversationHistory?: boolean;
   pending?: boolean;
   disabledReason?: string;
   renderProviderMark?(type: ProviderType): ReactNode;
@@ -187,6 +188,7 @@ export function ChatModelSwitcher(props: {
   const currentModel = props.activeModel ?? props.activeSession.model;
   const currentValue = modelChoiceValue(props.activeSession.llmConnectionSlug, currentModel);
   const pending = Boolean(props.pending);
+  const showWarning = props.hasConversationHistory === true;
   const disabled = pending || Boolean(props.disabledReason) || !props.onChange || props.choices.length === 0;
   const grouped = modelMenuGroups(props.choices, locale);
   const currentKnownChoice = props.choices.some((choice) => modelChoiceValue(choice.connectionSlug, choice.model) === currentValue);
@@ -196,7 +198,8 @@ export function ChatModelSwitcher(props: {
     : copy.switchSession;
   const title = pending
     ? `${copy.switching}…`
-    : props.disabledReason ?? copy.switchTitle(currentSessionModelTitle);
+    : props.disabledReason ??
+      `${copy.switchTitle(currentSessionModelTitle)}${showWarning ? ` ${copy.switchWarning}` : ''}`;
 
   return (
     <DropdownMenu
@@ -206,6 +209,13 @@ export function ChatModelSwitcher(props: {
       button={{
         label: displayLabel,
         icon: providerMarkIcon(props.currentProviderType, props.renderProviderMark),
+        endContent: pending || !showWarning ? undefined : (
+          <AlertTriangle
+            className="maka-model-switch-warning-icon"
+            size={ICON_SIZE.meta}
+            aria-hidden="true"
+          />
+        ),
         variant: 'ghost',
         size: 'sm',
         isDisabled: disabled,
@@ -213,6 +223,7 @@ export function ChatModelSwitcher(props: {
         tooltip: title,
         className: 'maka-model-switcher-trigger',
         'aria-label': copy.switchAriaLabel,
+        'aria-description': showWarning ? copy.switchWarning : undefined,
       }}
     >
       <ModelMenuItems

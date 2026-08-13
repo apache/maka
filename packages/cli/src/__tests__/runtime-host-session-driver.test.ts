@@ -26,30 +26,6 @@ import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../se
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
-  test('restores the Host last-used model when a Session is resumed', async () => {
-    const connection = new FakeConnection([
-      new FakeSubscription(continuitySnapshot(), Promise.resolve([])),
-    ]);
-    connection.sessionQueries.push(
-      sessionProjection({
-        lastUsedModel: { connectionSlug: 'openai-main', model: 'gpt-5.5' },
-      }),
-    );
-    const driver = createRuntimeHostMakaSessionDriver({
-      connection: connection.value,
-      cwd: '/tmp',
-      llmConnectionSlug: 'openai-main',
-      model: 'gpt-5.5',
-    });
-
-    await driver.switchSession('session-1');
-
-    assert.deepEqual(driver.getLastUsedModel?.(), {
-      connectionSlug: 'openai-main',
-      model: 'gpt-5.5',
-    });
-  });
-
   test('keeps remote Session paths out of Client filesystem policy', async () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: new FakeConnection([]).value,

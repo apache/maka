@@ -885,6 +885,8 @@ function AppShellContent({
   } = useStableActions(createAppShellSessionSettingsActions, {
     uiLocale,
     activeIdRef,
+    connections,
+    messages,
     pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
     pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
     refreshSessions,
@@ -2834,6 +2836,9 @@ function AppShellContent({
                   activeModelLabel={activeModelLabel}
                   activeProviderType={activeConnection?.providerType}
                   modelChoices={chatModelChoices}
+                  modelSwitchHasHistory={messages.some(
+                    (message) => message.type === 'user' || message.type === 'assistant',
+                  )}
                   renderProviderMark={(type) => <ProviderBrandMark type={type} />}
                   modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
                   onModelChange={(input) => setSessionModel(input)}

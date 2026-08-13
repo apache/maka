@@ -1,5 +1,4 @@
 import { Markdown } from '@earendil-works/pi-tui';
-import { decodeModelChangeNoteData } from '@maka/core/session';
 import type {
   ProviderRetryEvent,
   SandboxBoundaryRequestEvent,
@@ -1060,14 +1059,7 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
     case 'mode_change':
       return 'Permission mode changed.';
     case 'model_change':
-      try {
-        const change = decodeModelChangeNoteData(message.data);
-        const from = modelChangeLabel(change.from, change.to);
-        const to = modelChangeLabel(change.to, change.from);
-        return `Model changed from ${from} to ${to}.`;
-      } catch {
-        return 'Model changed.';
-      }
+      return 'Model changed.';
     case 'context_compacted':
       return 'Context compacted to keep this session within the model window.';
     case 'context_compaction_failed_open':
@@ -1079,15 +1071,6 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
     case 'abort':
       return 'Session was stopped.';
   }
-}
-
-function modelChangeLabel(
-  identity: { connectionSlug: string; model: string },
-  other: { connectionSlug: string; model: string },
-): string {
-  return identity.connectionSlug === other.connectionSlug
-    ? identity.model
-    : `${identity.model} (${identity.connectionSlug})`;
 }
 
 export function renderMakaPiTranscript(

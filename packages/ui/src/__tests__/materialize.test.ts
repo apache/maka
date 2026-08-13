@@ -192,40 +192,6 @@ function userMsg(turnId: string, ts: number, text: string): StoredMessage {
   return { type: "user", id: `u-${turnId}`, turnId, ts, text };
 }
 
-test('projects a valid model change onto its turn and ignores malformed legacy data', () => {
-  const valid = materializeTurns([
-    {
-      type: 'system_note',
-      id: 'model-change',
-      turnId: 'turn-1',
-      ts: 1,
-      kind: 'model_change',
-      data: {
-        from: { connectionSlug: 'openai', model: 'gpt-5.5' },
-        to: { connectionSlug: 'anthropic', model: 'claude-opus' },
-      },
-    },
-    userMsg('turn-1', 1, 'continue'),
-  ]);
-  assert.deepEqual(valid[0]?.modelChange?.data, {
-    from: { connectionSlug: 'openai', model: 'gpt-5.5' },
-    to: { connectionSlug: 'anthropic', model: 'claude-opus' },
-  });
-
-  const malformed = materializeTurns([
-    {
-      type: 'system_note',
-      id: 'bad-model-change',
-      turnId: 'turn-2',
-      ts: 2,
-      kind: 'model_change',
-      data: { from: 'gpt-5.5', to: 'claude-opus' },
-    },
-    userMsg('turn-2', 2, 'continue'),
-  ]);
-  assert.equal(malformed[0]?.modelChange, undefined);
-});
-
 test('retains persisted nested tool activity identity', () => {
   const [tool] = materializeTools([{
     type: 'tool_call',

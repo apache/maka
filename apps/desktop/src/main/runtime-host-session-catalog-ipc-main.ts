@@ -314,7 +314,6 @@ export function toDesktopHostSessionSummary(
     llmConnectionSlug: session.llmConnectionSlug,
     connectionLocked: session.connectionLocked,
     model: session.model,
-    ...(session.lastUsedModel === undefined ? {} : { lastUsedModel: session.lastUsedModel }),
     ...(session.thinkingLevel === undefined ? {} : { thinkingLevel: session.thinkingLevel }),
     permissionMode: session.permissionMode,
     collaborationMode: session.collaborationMode,

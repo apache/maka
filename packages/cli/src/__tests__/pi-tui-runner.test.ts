@@ -2550,11 +2550,18 @@ describe('Maka Pi TUI runner', () => {
       terminal,
     });
 
+    terminal.input('keep this context');
+    terminal.input('\r');
+    await waitFor(() => driver.prompts.length === 1);
     terminal.input('/model');
     terminal.input('\r');
 
     await waitFor(() => terminal.output().includes('Select Model'));
     await waitFor(() => terminal.output().includes('glm-5.2'));
+    assert.match(
+      plainTerminalOutput(terminal.screenOutput()),
+      /切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高/,
+    );
     // The picker opens on the current model (gpt-5.5); move down to the choice on
     // the other connection and select it.
     terminal.input('\x1b[B');
@@ -2563,6 +2570,11 @@ describe('Maka Pi TUI runner', () => {
 
     assert.deepEqual(driver.models, ['glm-5.2']);
     assert.deepEqual(driver.modelConnections, ['zai']);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes(
+        'Model changed: gpt-5.5 (OpenAI) → glm-5.2 (Z.ai)',
+      ),
+    );
     // The status line now reflects both the new model and the new connection.
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes('Maka · Auto · glm-5.2 · zai · /repo'),
@@ -2575,47 +2587,6 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
-  });
-
-  test('compares every unsent model selection with the last model that carried a turn', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new LastUsedModelDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'model-a',
-      connectionSlug: 'provider',
-      permissionMode: 'ask',
-      terminal,
-    });
-    const warning = 'Switching models mid-conversation may reduce performance.';
-    const warningCount = () =>
-      plainTerminalOutput(terminal.screenOutput()).split(warning).length - 1;
-
-    terminal.input('/model model-b');
-    terminal.input('\r');
-    await waitFor(() => driver.models.length === 1);
-    await waitFor(() => warningCount() === 1);
-
-    // B was never used. Returning to the actual baseline A adds no warning.
-    terminal.input('/model model-a');
-    terminal.input('\r');
-    await waitFor(() => driver.models.length === 2);
-    assert.equal(warningCount(), 1);
-
-    // B and C both differ from A, so each unsent selection warns independently.
-    terminal.input('/model model-b');
-    terminal.input('\r');
-    await waitFor(() => driver.models.length === 3);
-    await waitFor(() => warningCount() === 2);
-    terminal.input('/model model-c');
-    terminal.input('\r');
-    await waitFor(() => driver.models.length === 4);
-    await waitFor(() => warningCount() === 3);
-
-    exitMaka(terminal);
-    await run;
   });
 
   test('cross-connection /model search matches by every required criterion', async () => {
@@ -2665,6 +2636,10 @@ describe('Maka Pi TUI runner', () => {
       const out = plainTerminalOutput(terminal.screenOutput());
       return out.includes('gpt-5.5') && out.includes('glm-max') && out.includes('text-unicorn');
     });
+    assert.doesNotMatch(
+      plainTerminalOutput(terminal.screenOutput()),
+      /切换模型可能需要重建提示缓存/,
+    );
 
     // Each query isolates exactly one of the five match criteria named by #1098
     // (model id, connection name, connection slug, provider type, provider
@@ -2694,6 +2669,115 @@ describe('Maka Pi TUI runner', () => {
         return out.includes('gpt-5.5') && out.includes('glm-max') && out.includes('text-unicorn');
       });
     }
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('switches models in a fresh conversation without a cache warning', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'gpt-5.5',
+      connectionSlug: 'openai',
+      providerType: 'openai',
+      modelChoices: [
+        {
+          connectionSlug: 'openai',
+          connectionName: 'OpenAI',
+          providerType: 'openai',
+          model: 'gpt-5.5',
+          isDefaultConnection: true,
+        },
+        {
+          connectionSlug: 'openai',
+          connectionName: 'OpenAI',
+          providerType: 'openai',
+          model: 'gpt-5.6',
+          isDefaultConnection: true,
+        },
+      ],
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/model');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('gpt-5.6'));
+    assert.doesNotMatch(
+      plainTerminalOutput(terminal.screenOutput()),
+      /切换模型可能需要重建提示缓存/,
+    );
+
+    terminal.input('\x1b[B');
+    terminal.input('\r');
+    await waitFor(() => driver.models.length === 1);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Model changed: gpt-5.5 → gpt-5.6'),
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('names both connections when the model id stays the same', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'shared-model',
+      connectionSlug: 'primary',
+      providerType: 'openai',
+      modelChoices: [
+        {
+          connectionSlug: 'primary',
+          connectionName: 'Primary',
+          providerType: 'openai',
+          model: 'shared-model',
+          isDefaultConnection: true,
+        },
+        {
+          connectionSlug: 'relay',
+          connectionName: 'Relay',
+          providerType: 'openai',
+          model: 'shared-model',
+          isDefaultConnection: false,
+        },
+      ],
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/model');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Select Model'));
+    terminal.input('\x1b[B');
+    terminal.input('\r');
+
+    await waitFor(() => driver.modelConnections.length === 1);
+    assert.deepEqual(driver.modelConnections, ['relay']);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes(
+        'Model changed: shared-model (Primary) → shared-model (Relay)',
+      ),
+    );
 
     exitMaka(terminal);
     await Promise.race([
@@ -5957,12 +6041,6 @@ class SlashCommandDriver implements MakaSessionDriver {
   }
   getPermissionMode(): PermissionMode {
     return this.activeBoundaryDisplayMode ?? 'ask';
-  }
-}
-
-class LastUsedModelDriver extends SlashCommandDriver {
-  getLastUsedModel() {
-    return { connectionSlug: 'provider', model: 'model-a' };
   }
 }
 

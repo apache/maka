@@ -101,7 +101,6 @@ export interface ExecutionHostHandle {
 export interface TurnLedger {
   runs: AgentRunHeader[];
   userMessages: Array<Extract<StoredMessage, { type: 'user' }>>;
-  systemNotes: Array<Extract<StoredMessage, { type: 'system_note' }>>;
   runtimeEvents: RuntimeEvent[];
   terminalEvents: RuntimeEvent[];
   classification: ReturnType<typeof classifyTerminalRuntimeLedger>;
@@ -723,72 +722,6 @@ export class ExecutionFixture {
     return this.seedTurnState(turnId, content, true, false);
   }
 
-  async seedModelChangeRunWithoutUserMessage(
-    turnId: string,
-    content: string,
-    fromModel: string,
-    toModel: string,
-  ): Promise<{ runId: string; userMessageId: string }> {
-    const owner = await tryAcquireInteractiveRootOwner(this.capability);
-    assert.ok(owner);
-    if (!owner) throw new Error('Unable to acquire execution root for model change setup');
-    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
-    try {
-      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-      const admittedAt = Date.now();
-      await stores.agentRunStore.createRun({
-        runId: randomUUID(),
-        invocationId: randomUUID(),
-        sessionId: this.sessionId,
-        turnId: randomUUID(),
-        status: 'failed',
-        backendKind: 'fake',
-        llmConnectionSlug: 'fake',
-        modelId: fromModel,
-        cwd: this.root,
-        permissionMode: 'ask',
-        createdAt: admittedAt - 1,
-        updatedAt: admittedAt - 1,
-        completedAt: admittedAt - 1,
-        failureClass: 'test_previous_turn',
-      });
-      const result = await stores.agentRunStore.admitRootTurn({
-        sessionId: this.sessionId,
-        turnId,
-        proposedRunId: randomUUID(),
-        proposedUserMessageId: randomUUID(),
-        execution: { kind: 'external_message' },
-        previousRootTurnId: null,
-        normalizedInput: { text: content },
-        sourceMessages: [],
-        admittedAt,
-      });
-      assert.equal(result.kind, 'admitted');
-      await stores.agentRunStore.createRun({
-        runId: result.admission.runId,
-        invocationId: result.admission.runId,
-        sessionId: this.sessionId,
-        turnId,
-        status: 'created',
-        backendKind: 'fake',
-        llmConnectionSlug: 'fake',
-        modelId: toModel,
-        cwd: this.root,
-        permissionMode: 'ask',
-        createdAt: admittedAt,
-        updatedAt: admittedAt,
-      });
-      assert.ok(result.admission.userMessageId);
-      return {
-        runId: result.admission.runId,
-        userMessageId: result.admission.userMessageId,
-      };
-    } finally {
-      await stores?.sessionStore.close?.();
-      await owner.close();
-    }
-  }
-
   seedRunWithUserMessage(
     turnId: string,
     content: MessageContent,
@@ -981,10 +914,6 @@ export class ExecutionFixture {
         userMessages: messages.filter(
           (message): message is Extract<StoredMessage, { type: 'user' }> =>
             message.type === 'user' && message.turnId === turnId,
-        ),
-        systemNotes: messages.filter(
-          (message): message is Extract<StoredMessage, { type: 'system_note' }> =>
-            message.type === 'system_note' && message.turnId === turnId,
         ),
         runtimeEvents,
         terminalEvents: runtimeEvents.filter(isTerminalRuntimeEvent),

@@ -13,7 +13,6 @@ import {
   sessionStartModeSpec,
 } from '@maka/core/explore-agent';
 import type { SessionHeader } from '@maka/core/session';
-import { latestStartedSessionInlineRun, type AgentRunStore } from '@maka/core/agent-run';
 import {
   isSessionNotFoundError,
   SessionMetadataConflictError,
@@ -102,7 +101,6 @@ export class SessionOperationFailure extends Error {
 
 export interface HostSessionCatalogCoordinatorOptions {
   readonly stores: SessionCatalogStores;
-  readonly runs: Pick<AgentRunStore, 'listSessionRuns'>;
   readonly runtimePolicy: SessionRuntimePolicyStores;
   readonly manager: SessionConfigurationAuthority;
   readonly admission: SessionAdmissionGate;
@@ -128,8 +126,6 @@ export class HostSessionCatalogCoordinator {
     'session.execution_boundary.query': (input) => this.#queryExecutionBoundary(input),
   };
 
-  readonly #runs: Pick<AgentRunStore, 'listSessionRuns'>;
-
   readonly #stores: SessionCatalogStores;
   readonly #runtimePolicy: SessionRuntimePolicyStores;
   readonly #manager: SessionConfigurationAuthority;
@@ -140,7 +136,6 @@ export class HostSessionCatalogCoordinator {
 
   constructor(options: HostSessionCatalogCoordinatorOptions) {
     this.#stores = options.stores;
-    this.#runs = options.runs;
     this.#runtimePolicy = options.runtimePolicy;
     this.#manager = options.manager;
     this.#admission = options.admission;
@@ -177,9 +172,7 @@ export class HostSessionCatalogCoordinator {
         const record = await this.#readCatalogRecordIfPresent(input.sessionId);
         return successQuery({
           kind: 'session',
-          session: record
-            ? projectSessionCatalogRecord(record, await this.#readLastUsedModel(record.header.id))
-            : null,
+          session: record ? projectSessionCatalogRecord(record) : null,
         });
       }
 
@@ -378,10 +371,6 @@ export class HostSessionCatalogCoordinator {
           input.configuration.modelTarget,
           input.configuration.thinkingLevel ?? undefined,
         );
-        // Read the execution fact before attempting the configuration commit.
-        // A projection failure must never turn a committed model change into an
-        // artificial commit_outcome_unknown result.
-        const lastUsedModel = await this.#readLastUsedModel(input.sessionId);
         const clearsConnectionBlock = current.header.blockedReason === 'NO_REAL_CONNECTION';
         if (
           !clearsConnectionBlock &&
@@ -391,7 +380,6 @@ export class HostSessionCatalogCoordinator {
             kind: 'committed',
             session: projectSessionCatalogRecord(
               await this.#stores.readCatalogRecord(input.sessionId),
-              lastUsedModel,
             ),
           });
         }
@@ -409,9 +397,7 @@ export class HostSessionCatalogCoordinator {
             orchestrationMode: input.configuration.orchestrationMode,
           },
         });
-        return configurationSuccess(
-          await this.#committedUpdate(input.sessionId, lease, lastUsedModel),
-        );
+        return configurationSuccess(await this.#committedUpdate(input.sessionId, lease));
       } catch (error) {
         if (
           !commitAttempted &&
@@ -522,25 +508,12 @@ export class HostSessionCatalogCoordinator {
   async #committedUpdate(
     sessionId: string,
     lease: SessionAdmissionLease,
-    lastUsedModel?: { readonly connectionSlug: string; readonly model: string },
   ): Promise<SessionUpdateResult> {
     await this.#continuity.refreshCanonical(sessionId, lease);
     return {
       kind: 'committed',
-      session: projectSessionCatalogRecord(
-        await this.#stores.readCatalogRecord(sessionId),
-        lastUsedModel,
-      ),
+      session: projectSessionCatalogRecord(await this.#stores.readCatalogRecord(sessionId)),
     };
-  }
-
-  async #readLastUsedModel(
-    sessionId: string,
-  ): Promise<{ readonly connectionSlug: string; readonly model: string } | undefined> {
-    const lastUsed = latestStartedSessionInlineRun(await this.#runs.listSessionRuns(sessionId));
-    return lastUsed
-      ? { connectionSlug: lastUsed.llmConnectionSlug, model: lastUsed.modelId }
-      : undefined;
   }
 
   #metadataMutationFailure(
@@ -783,10 +756,7 @@ function createRequestFingerprint(
   return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
 }
 
-export function projectSessionCatalogRecord(
-  record: SessionCatalogRecord,
-  lastUsedModel?: { readonly connectionSlug: string; readonly model: string },
-): SessionCatalogItem {
+export function projectSessionCatalogRecord(record: SessionCatalogRecord): SessionCatalogItem {
   const { header, summary } = record;
   const projectedLabels = projectCatalogLabels(header.labels);
   const projection: SessionCatalogProjection = {
@@ -848,7 +818,6 @@ export function projectSessionCatalogRecord(
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
     model: header.model,
-    ...(lastUsedModel ? { lastUsedModel } : {}),
     ...(header.thinkingLevel === undefined ? {} : { thinkingLevel: header.thinkingLevel }),
     permissionMode: header.permissionMode,
     collaborationMode: header.collaborationMode ?? 'agent',

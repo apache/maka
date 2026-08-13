@@ -294,7 +294,8 @@ type ShellCopy = {
     permissionSwitched(label: string): string;
     permissionFailedTitle: string;
     permissionFallback: string;
-    modelSwitchWarning: string;
+    modelSwitchedTitle: string;
+    modelSwitchedDescription(from: string, to: string): string;
     modelFailedTitle: string;
     modelFallback: string;
     thinkingUpdatedTitle: string;
@@ -896,7 +897,8 @@ const SHELL_COPY_BY_LOCALE = {
       permissionSwitched: (label: string) => `已切到 ${label}`,
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
-      modelSwitchWarning: '在对话中途切换模型会降低性能表现。',
+      modelSwitchedTitle: '已切换当前会话模型',
+      modelSwitchedDescription: (from, to) => `${from} → ${to}`,
       modelFailedTitle: '切换模型失败',
       modelFallback: '模型暂时无法切换，请稍后重试。',
       thinkingUpdatedTitle: '已更新思考级别',
@@ -1367,7 +1369,8 @@ const SHELL_COPY_BY_LOCALE = {
       permissionSwitched: (label: string) => `Switched to ${label}`,
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
-      modelSwitchWarning: 'Switching models mid-conversation may reduce performance.',
+      modelSwitchedTitle: 'Conversation model changed',
+      modelSwitchedDescription: (from, to) => `${from} → ${to}`,
       modelFailedTitle: 'Could not change model',
       modelFallback: 'The model could not be changed. Try again later.',
       thinkingUpdatedTitle: 'Thinking level updated',

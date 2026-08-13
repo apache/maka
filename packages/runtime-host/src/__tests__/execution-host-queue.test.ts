@@ -520,48 +520,6 @@ test('startup recovery restores the admitted UserMessage before terminalizing it
   });
 });
 
-test('startup recovery restores the admitted model change with its UserMessage', async () => {
-  await withExecutionRoot(async (fixture) => {
-    const turnId = randomUUID();
-    const { runId, userMessageId } = await fixture.seedModelChangeRunWithoutUserMessage(
-      turnId,
-      'recover the model change',
-      'model-a',
-      'model-b',
-    );
-    const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'tui');
-
-    const recovered = await client.queryTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-    });
-    assert.equal(recovered.runId, runId);
-    assert.equal(recovered.status, 'failed');
-    await client.close();
-    await fixture.stopHost(host);
-
-    const restarted = await fixture.startHost();
-    await fixture.stopHost(restarted);
-
-    const ledger = await fixture.readTurn(turnId);
-    assert.equal(ledger.userMessages[0]?.id, userMessageId);
-    assert.deepEqual(ledger.systemNotes, [
-      {
-        type: 'system_note',
-        id: ledger.systemNotes[0]?.id,
-        turnId,
-        ts: ledger.userMessages[0]?.ts,
-        kind: 'model_change',
-        data: {
-          from: { connectionSlug: 'fake', model: 'model-a' },
-          to: { connectionSlug: 'fake', model: 'model-b' },
-        },
-      },
-    ]);
-  });
-});
-
 test('startup recovery canonically closes pending linked child admissions without inventing identity', async () => {
   await withExecutionRoot(async (fixture) => {
     const initial = await fixture.seedPendingChildAdmission('linked_child_initial');
