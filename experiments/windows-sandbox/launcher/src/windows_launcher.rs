@@ -4,7 +4,7 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::Security::{
     CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, IsTokenRestricted, LUA_TOKEN,
     SecurityImpersonation, TOKEN_ALL_ACCESS, TOKEN_DUPLICATE, TOKEN_QUERY, TokenPrimary,
@@ -17,7 +17,7 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessWithTokenW, GetCurrentProcess,
     GetExitCodeProcess, GetProcessId, OpenProcessToken, PROCESS_INFORMATION, ResumeThread,
-    STARTUPINFOW, TerminateProcess, WAIT_OBJECT_0, WAIT_TIMEOUT, WaitForSingleObject,
+    STARTUPINFOW, TerminateProcess, WaitForSingleObject,
 };
 
 use crate::protocol::{LaunchRequest, NetworkMode};
