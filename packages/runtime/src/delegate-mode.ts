@@ -32,10 +32,10 @@ export function shouldWakeDelegateSupervisor(
   snapshot: AgentGraphClientSnapshot,
 ): boolean | undefined {
   if (snapshot.orchestrationMode !== 'delegate') return undefined;
-  // Runtime events own Delegate checkpoint wakeups. The following reconciliation
-  // of the same terminal snapshot is a control-plane confirmation, not a second
-  // user-visible completion event.
-  if (_result !== undefined) return false;
+  // Checkpoint and reconciliation callbacks intentionally share the same
+  // snapshot-version wake identity. The durable wake store deduplicates the
+  // ordinary pair, while a recovery reconciliation can recreate a wake if the
+  // Host stopped before the checkpoint callback persisted its claim.
   return snapshot.reconciliationFailures.length > 0 || isAgentSwarmSupervisorCheckpoint(snapshot);
 }
 

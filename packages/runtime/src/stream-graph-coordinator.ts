@@ -728,7 +728,7 @@ export class AgentGraphCoordinator {
               );
               if (
                 advancement &&
-                isAsyncCheckpointTransition(advancement.before, advancement.after)
+                isAgentGraphAsyncCheckpointTransition(advancement.before, advancement.after)
               ) {
                 await notify(this.#input.onCheckpoint, driver.rootSessionId);
               }
@@ -1357,13 +1357,28 @@ function isMaterializedGraphClientEvent(
   ].includes(type);
 }
 
-function isAsyncCheckpointTransition(
+export function isAgentGraphAsyncCheckpointTransition(
   before: AgentGraphClientSnapshot,
   after: AgentGraphClientSnapshot,
 ): boolean {
   if (after.orchestrationMode !== 'swarm' && after.orchestrationMode !== 'delegate') return false;
   const previous = projectAgentSwarmStatus(before);
   const current = projectAgentSwarmStatus(after);
+  if (after.orchestrationMode === 'delegate') {
+    const terminals = (snapshot: ReturnType<typeof projectAgentSwarmStatus>): string[] =>
+      snapshot.items
+        .filter((item) =>
+          ['completed', 'blocked', 'failed', 'aborted', 'cancelled'].includes(item.status),
+        )
+        .map((item) => `${item.workId}:${item.status}`)
+        .sort();
+    const previousTerminals = terminals(previous);
+    const currentTerminals = terminals(current);
+    return (
+      previousTerminals.length !== currentTerminals.length ||
+      currentTerminals.some((entry, index) => entry !== previousTerminals[index])
+    );
+  }
   if (current.status === 'settled' && previous.status !== 'settled') return true;
   const attention = (snapshot: ReturnType<typeof projectAgentSwarmStatus>): string[] =>
     snapshot.items

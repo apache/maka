@@ -5,6 +5,7 @@ import {
   renderDelegateSupervisorWake,
   shouldWakeDelegateSupervisor,
 } from '../delegate-mode.js';
+import { isAgentGraphAsyncCheckpointTransition } from '../stream-graph-coordinator.js';
 import type { AgentGraphClientSnapshot } from '../stream-graph-read-model.js';
 
 describe('Delegate Mode', () => {
@@ -31,7 +32,7 @@ describe('Delegate Mode', () => {
     assert.match(wake?.text ?? '', /Do not poll, sleep/);
   });
 
-  test('does not wake again for reconciliation after a runtime checkpoint', () => {
+  test('lets recovery reconciliation recreate a terminal wake not yet persisted', () => {
     const completed = snapshot('completed');
     assert.equal(
       shouldWakeDelegateSupervisor(
@@ -49,8 +50,40 @@ describe('Delegate Mode', () => {
         },
         completed,
       ),
-      false,
+      true,
     );
+  });
+
+  test('checkpoints a completed later batch while an older failure still needs attention', () => {
+    const failedA = snapshot('failed');
+    failedA.work[0]!.workId = 'work-a';
+    failedA.operators[0]!.scheduledWorkIds = ['work-a'];
+
+    const runningB = structuredClone(failedA);
+    runningB.work.push({
+      ...runningB.work[0]!,
+      workId: 'work-b',
+      instructionPreview: 'Run independent batch B.',
+    });
+    runningB.operators.push({
+      ...runningB.operators[0]!,
+      operatorId: 'operator-2',
+      childSessionId: 'child-2',
+      provisionId: 'provision-2',
+      scheduledWorkIds: ['work-b'],
+      currentActivation: {
+        ...runningB.operators[0]!.currentActivation!,
+        activationId: 'activation-2',
+        status: 'running',
+        run: { sessionId: 'child-2', agentRunId: 'run-2' },
+      },
+    });
+    const completedB = structuredClone(runningB);
+    completedB.operators[1]!.status = 'completed';
+    completedB.operators[1]!.currentActivation!.status = 'completed';
+
+    assert.equal(isAgentGraphAsyncCheckpointTransition(failedA, runningB), false);
+    assert.equal(isAgentGraphAsyncCheckpointTransition(runningB, completedB), true);
   });
 
   test('does not claim ordinary Graph checkpoints', () => {
@@ -61,7 +94,7 @@ describe('Delegate Mode', () => {
   });
 });
 
-function snapshot(status: 'running' | 'completed'): AgentGraphClientSnapshot {
+function snapshot(status: 'running' | 'completed' | 'failed'): AgentGraphClientSnapshot {
   return {
     schemaVersion: 1,
     rootSessionId: 'root',
