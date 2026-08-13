@@ -11,6 +11,7 @@ export const AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION = 1 as const;
 export const AGENT_GRAPH_SCHEDULE_MAX_ADD_WORK = 32;
 export const AGENT_GRAPH_SCHEDULE_MAX_STOP = 20;
 export const AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS = 64;
+export const AGENT_GRAPH_SCHEDULE_MAX_SELECTED_RESULT_INPUTS = 64;
 export const AGENT_GRAPH_SCHEDULE_MAX_RESULT_IDS = 64;
 export const AGENT_GRAPH_SCHEDULE_MAX_INSTRUCTION_CHARS = 60_000;
 export const AGENT_GRAPH_SCHEDULE_MAX_REASON_CHARS = 4_000;
@@ -187,6 +188,8 @@ export function isAgentGraphScheduleUpdateRequest(
     request.addWork.length <= AGENT_GRAPH_SCHEDULE_MAX_ADD_WORK &&
     request.addWork.every(isScheduledWork) &&
     unique(request.addWork.map((work) => work.workId)) &&
+    request.addWork.reduce((count, work) => count + (work.selectedResultInputs?.length ?? 0), 0) <=
+      AGENT_GRAPH_SCHEDULE_MAX_SELECTED_RESULT_INPUTS &&
     Array.isArray(request.stop) &&
     request.stop.length <= AGENT_GRAPH_SCHEDULE_MAX_STOP &&
     request.stop.every(isStoppedTarget) &&

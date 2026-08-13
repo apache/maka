@@ -31,6 +31,21 @@ describe('agent graph schedule contract', () => {
     assert.equal(
       isAgentGraphScheduleUpdateRequest({
         ...scheduleRequest(),
+        addWork: Array.from({ length: 2 }, (_, workIndex) => ({
+          ...scheduleRequest().addWork[0],
+          workId: `graph_work_${String(workIndex + 1).repeat(32)}`,
+          inputIds: [],
+          selectedResultInputs: Array.from({ length: 33 }, (_, resultIndex) => ({
+            sourceGraphId: 'graph-previous',
+            resultId: `selected-${workIndex}-${resultIndex}`,
+          })),
+        })),
+      }),
+      false,
+    );
+    assert.equal(
+      isAgentGraphScheduleUpdateRequest({
+        ...scheduleRequest(),
         addWork: [
           {
             ...scheduleRequest().addWork[0],

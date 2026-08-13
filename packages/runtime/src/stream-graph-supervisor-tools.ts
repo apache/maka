@@ -5,6 +5,7 @@ import {
   AGENT_GRAPH_SCHEDULE_MAX_INSTRUCTION_CHARS,
   AGENT_GRAPH_SCHEDULE_MAX_REASON_CHARS,
   AGENT_GRAPH_SCHEDULE_MAX_RESULT_IDS,
+  AGENT_GRAPH_SCHEDULE_MAX_SELECTED_RESULT_INPUTS,
   AGENT_GRAPH_SCHEDULE_MAX_STOP,
   AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION,
   decodeAgentGraphScheduleUpdate,
@@ -210,6 +211,16 @@ const updateSchema = z.preprocess(
     .superRefine((value, ctx) => {
       const addWork = value.add_work ?? [];
       const stop = value.stop ?? [];
+      if (
+        addWork.reduce((count, work) => count + (work.selected_result_inputs?.length ?? 0), 0) >
+        AGENT_GRAPH_SCHEDULE_MAX_SELECTED_RESULT_INPUTS
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['add_work'],
+          message: `One graph update may select at most ${AGENT_GRAPH_SCHEDULE_MAX_SELECTED_RESULT_INPUTS} historical results`,
+        });
+      }
       if (value.operation) {
         const hasSelectedPayload =
           (value.operation === 'add_work' && addWork.length > 0) ||
