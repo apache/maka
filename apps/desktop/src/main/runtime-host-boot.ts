@@ -849,7 +849,6 @@ function registerHostClientIpc(
     sendToRenderer,
     showItemInFolder: (path) => shell.showItemInFolder(path),
   });
-  registerMarkdownSaveIpc({ ipcMain: scopedIpc, mainWindowController });
   registerRuntimeHostOAuthIpc({
     ipcMain: scopedIpc,
     client,
@@ -959,7 +958,6 @@ function registerHostClientIpc(
     });
   registerAppIpc(
     {
-      mainWindowController,
       projectRoot: targetProjectRoot,
       getSessionProjectRoot: (sessionId) =>
         resolveProjectRootForContext(sessionId),
@@ -968,7 +966,6 @@ function registerHostClientIpc(
       buildInfo,
       e2eFixture,
       projectManagement: targetProjectManagement,
-      updateService,
       allowLocalProjectPaths: target.kind === "local",
     },
     scopedIpc,
@@ -1076,6 +1073,7 @@ function registerPersistentClientIpc(): void {
     e2eFixture,
     updateService,
   });
+  registerMarkdownSaveIpc({ ipcMain, mainWindowController });
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
   ipcMain.handle("sessions:unobserve", async (_event, observerId: unknown) => {
     if (typeof observerId !== "string" || observerId.length === 0 || observerId.length > 256) {

@@ -24,7 +24,6 @@ type E2eFixture = ReturnType<typeof resolveE2eFixture>;
 type BuildInfo = ReturnType<typeof resolveBuildInfo>;
 
 export interface AppIpcDeps {
-  mainWindowController: MainWindowController;
   projectRoot: ProjectRootController;
   getSessionProjectRoot(sessionId: string): Promise<string>;
   getProjectRoot(sessionId: unknown): Promise<string>;
@@ -32,14 +31,14 @@ export interface AppIpcDeps {
   buildInfo: BuildInfo;
   e2eFixture: E2eFixture;
   projectManagement: ProjectManagementService;
-  updateService: AppUpdateService;
   allowLocalProjectPaths?: boolean;
 }
 
-export type AppClientIpcDeps = Pick<
-  AppIpcDeps,
-  'e2eFixture' | 'mainWindowController' | 'updateService'
->;
+export interface AppClientIpcDeps {
+  mainWindowController: MainWindowController;
+  e2eFixture: E2eFixture;
+  updateService: AppUpdateService;
+}
 
 export function registerAppClientIpc(
   deps: AppClientIpcDeps,

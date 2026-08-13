@@ -723,7 +723,7 @@ const makaBridge = {
     }): Promise<
       { ok: true; path: string } | { ok: false; reason: 'canceled' | 'write_failed' | 'invalid_input' }
     > {
-      return invokeActiveRuntimeHost('chat:saveConversationToFile', input);
+      return ipcRenderer.invoke('chat:saveConversationToFile', input);
     },
     subscribeEvents(
       sessionId: string,
