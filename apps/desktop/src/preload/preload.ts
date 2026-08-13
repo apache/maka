@@ -845,13 +845,21 @@ const makaBridge = {
       let generation: string | undefined;
       let closed = false;
       let requestClose = () => {};
+      let openedScope: DesktopHostRef | undefined;
       const listener = (
         _event: Electron.IpcRendererEvent,
+        scope: unknown,
         value: unknown,
       ) => {
         if (closed) return;
         let batch: DesktopTranscriptBatch;
         try {
+          const host = requireDesktopHostRef(scope);
+          if (
+            !activeRuntimeHost ||
+            host.hostId !== activeRuntimeHost.hostId ||
+            host.targetEpoch !== activeRuntimeHost.targetEpoch
+          ) return;
           batch = assertDesktopTranscriptBatch(value);
           if (batch.reset || generation === undefined) generation = batch.generation;
           if (batch.generation === generation) handler(batch);
@@ -859,22 +867,28 @@ const makaBridge = {
           requestClose();
           throw error;
         }
-        void invokeActiveRuntimeHost(
-          'sessions:transcript:ack',
-          consumerId,
-          batch.generation,
-          batch.deliverySequence,
-        ).catch(requestClose);
+        if (openedScope) {
+          void ipcRenderer.invoke(
+            'sessions:transcript:ack',
+            openedScope,
+            consumerId,
+            batch.generation,
+            batch.deliverySequence,
+          ).catch(requestClose);
+        }
       };
       ipcRenderer.on(channel, listener);
-      const openDispatch = activeRuntimeHostRef().then((scope) => ({
-        completion: ipcRenderer.invoke(
-          'sessions:transcript:open',
-          scope,
-          sessionId,
-          consumerId,
-        ) as Promise<DesktopTranscriptOpenResult>,
-      }));
+      const openDispatch = activeRuntimeHostRef().then((scope) => {
+        openedScope = scope;
+        return {
+          completion: ipcRenderer.invoke(
+            'sessions:transcript:open',
+            scope,
+            sessionId,
+            consumerId,
+          ) as Promise<DesktopTranscriptOpenResult>,
+        };
+      });
       let closeTask: Promise<void> | undefined;
       requestClose = () => {
         if (closed) return;
@@ -901,12 +915,12 @@ const makaBridge = {
         anchorSequence: number | null,
         maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
       ): Promise<void> =>
-        invokeActiveRuntimeHost(operation, {
+        ipcRenderer.invoke(operation, openedScope, {
           consumerId,
           generation,
           anchorSequence,
           maxBytes,
-        });
+        }) as Promise<void>;
       return {
         ...opened,
         loadBefore: (anchorSequence, maxBytes) =>

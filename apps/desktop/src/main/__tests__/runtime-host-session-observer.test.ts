@@ -16,6 +16,7 @@ import {
 import { RuntimeHostSessionObservationRegistry } from "../runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,
+  type RuntimeHostRendererTarget,
   type RuntimeHostSessionObserverTarget,
   type RuntimeHostTranscriptTarget,
 } from "../runtime-host-session-observer.js";
@@ -233,7 +234,7 @@ test("rebinds a restored renderer observation to the current target scope", asyn
     },
     async unobserve() {},
   };
-  const bind = (targetEpoch: string) => (target: RuntimeHostSessionObserverTarget) => ({
+  const bind = (targetEpoch: string) => <Payload>(target: RuntimeHostRendererTarget<Payload>) => ({
     ...target,
     send: (channel: string, payload: unknown) =>
       (target.send as (channel: string, ...args: unknown[]) => void)(
@@ -557,7 +558,7 @@ test('broadcasts transcript changes to every consumer and advances the read mark
   await observer.close();
 });
 
-test('keeps one transcript batch in flight until the renderer acknowledges it', async () => {
+test('keeps a bounded transcript batch window in flight until the renderer acknowledges it', async () => {
   const events = new AsyncFrameQueue();
   const message: StoredMessage = {
     type: 'assistant',
@@ -591,24 +592,21 @@ test('keeps one transcript batch in flight until the renderer acknowledges it', 
     off() {},
   });
 
-  await waitFor(() => batches.length === 1);
-  for (let index = 0; ; index += 1) {
-    const batch = batches[index]!;
+  await waitFor(() => batches.some((batch) => batch.ready));
+  assert.ok(batches.length > 1 && batches.length <= 4);
+  for (const batch of batches) {
     observer.acknowledgeTranscript(
       'consumer-ack',
       batch.generation,
-      batch.deliverySequence!,
+      batch.deliverySequence,
       21,
     );
-    if (batch.ready) break;
-    await waitFor(() => batches.length === index + 2);
   }
   await opening;
-  assert.ok(batches.length > 1);
   await observer.close();
 });
 
-test('coalesces transcript changes while renderer delivery is backpressured', async () => {
+test('coalesces transcript changes into one bounded delta while renderer delivery is backpressured', async () => {
   const events = new AsyncFrameQueue();
   let decoded = 0;
   const observer = new RuntimeHostSessionObserver({
@@ -695,8 +693,195 @@ test('coalesces transcript changes while renderer delivery is backpressured', as
     batches[0]!.deliverySequence,
     22,
   );
-  await waitFor(() => batches.some((batch) => batch.reset));
-  assert.equal(batches.filter((batch) => !batch.reset).length, 1);
+  await waitFor(() => batches.length === 2);
+  assert.equal(batches[1]!.reset, false);
+  assert.equal(batches[1]!.durableThrough, 4);
+  assert.equal(batches[1]!.fragments.length, 4);
+  observer.acknowledgeTranscript(
+    consumerId,
+    batches[1]!.generation,
+    batches[1]!.deliverySequence,
+    22,
+  );
+  await observer.close();
+});
+
+test('does not let one backpressured transcript consumer block another', async () => {
+  const events = new AsyncFrameQueue();
+  let decoded = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([]),
+          events,
+          loadTranscriptPage: async (input) => ({
+            kind: 'page',
+            sessionId: 'session-1',
+            source: 'durable',
+            direction: 'newer',
+            throughSequence: input.throughSequence,
+            rawBytes: 1,
+            fragments: [],
+            nextCursor: null,
+          }),
+          decodeTranscriptPage: async (page) => {
+            if (page.throughSequence === null) return { messages: [], nextCursor: null };
+            decoded += 1;
+            return {
+              messages: [{
+                identity: page.throughSequence,
+                message: {
+                  type: 'assistant',
+                  id: `a-${page.throughSequence}`,
+                  turnId: 'turn-1',
+                  ts: page.throughSequence,
+                  text: String(page.throughSequence),
+                  modelId: 'test-model',
+                },
+              }],
+              nextCursor: null,
+            };
+          },
+          async close() {
+            events.end();
+          },
+        }),
+    },
+    emitSessionsChanged() {},
+  });
+  const received = new Map<string, DesktopTranscriptBatch[]>([
+    ['slow', []],
+    ['healthy', []],
+  ]);
+  let blockSlow = false;
+  for (const [consumerId, targetId] of [['slow', 23], ['healthy', 24]] as const) {
+    await observer.openTranscript('session-1', consumerId, {
+      id: targetId,
+      send(_channel, batch) {
+        received.get(consumerId)!.push(batch);
+        if (consumerId !== 'slow' || !blockSlow) {
+          queueMicrotask(() =>
+            observer.acknowledgeTranscript(
+              consumerId,
+              batch.generation,
+              batch.deliverySequence,
+              targetId,
+            ),
+          );
+        }
+      },
+      once() {},
+      off() {},
+    });
+    received.get(consumerId)!.splice(0);
+  }
+  blockSlow = true;
+  const slow = received.get('slow')!;
+  const healthy = received.get('healthy')!;
+
+  events.push({
+    kind: 'subscription.transcript_advanced',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sessionId: 'session-1',
+    sequence: 1,
+    throughSequence: 0,
+  });
+  await waitFor(() => decoded === 1);
+  await waitFor(() => slow.length === 1 && healthy.length >= 2);
+  const healthyBeforeSecondAdvance = healthy.length;
+  events.push({
+    kind: 'subscription.transcript_advanced',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sessionId: 'session-1',
+    sequence: 2,
+    throughSequence: 1,
+  });
+  await waitFor(() => decoded === 2 && healthy.length > healthyBeforeSecondAdvance);
+  assert.equal(slow.length, 1);
+  observer.acknowledgeTranscript(
+    'slow',
+    slow[0]!.generation,
+    slow[0]!.deliverySequence,
+    23,
+  );
+  await observer.close();
+});
+
+test('releases an idle session when transcript delivery fails', async () => {
+  const events = new AsyncFrameQueue();
+  let closeCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([]),
+          events,
+          loadTranscriptPage: async (input) => ({
+            kind: 'page',
+            sessionId: 'session-1',
+            source: 'durable',
+            direction: 'newer',
+            throughSequence: input.throughSequence,
+            rawBytes: 1,
+            fragments: [],
+            nextCursor: null,
+          }),
+          decodeTranscriptPage: async (page) => ({
+            messages: page.throughSequence === null ? [] : [{
+              identity: page.throughSequence,
+              message: {
+                type: 'assistant',
+                id: 'assistant-1',
+                turnId: 'turn-1',
+                ts: 1,
+                text: 'done',
+                modelId: 'test-model',
+              },
+            }],
+            nextCursor: null,
+          }),
+          async close() {
+            closeCount += 1;
+            events.end();
+          },
+        }),
+    },
+    emitSessionsChanged() {},
+  });
+  let opened = false;
+  const consumerId = 'consumer-failing';
+  await observer.openTranscript('session-1', consumerId, {
+    id: 25,
+    send(_channel, batch) {
+      if (opened) throw new Error('renderer unavailable');
+      queueMicrotask(() =>
+        observer.acknowledgeTranscript(
+          consumerId,
+          batch.generation,
+          batch.deliverySequence,
+          25,
+        ),
+      );
+    },
+    once() {},
+    off() {},
+  });
+  opened = true;
+  events.push({
+    kind: 'subscription.transcript_advanced',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sessionId: 'session-1',
+    sequence: 1,
+    throughSequence: 0,
+  });
+
+  await waitFor(() => closeCount === 1);
   await observer.close();
 });
 

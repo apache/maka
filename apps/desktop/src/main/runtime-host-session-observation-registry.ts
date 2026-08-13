@@ -1,5 +1,6 @@
 import type {
   RuntimeHostSessionObserver,
+  RuntimeHostRendererTarget,
   RuntimeHostSessionObserverTarget,
   RuntimeHostTranscriptTarget,
 } from "./runtime-host-session-observer.js";
@@ -30,9 +31,9 @@ type TranscriptSource = Required<
   >
 >;
 
-type ObservationTargetBinding = (
-  target: RuntimeHostSessionObserverTarget,
-) => RuntimeHostSessionObserverTarget;
+type ObservationTargetBinding = <Payload>(
+  target: RuntimeHostRendererTarget<Payload>,
+) => RuntimeHostRendererTarget<Payload>;
 
 interface ObservationReadiness {
   readonly promise: Promise<void>;
@@ -162,7 +163,7 @@ export class RuntimeHostSessionObservationRegistry {
           const result = await transcriptSource.openTranscript(
             registration.sessionId,
             consumerId,
-            registration.target,
+            this.#bindTranscriptTarget(registration.target),
           );
           if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
             registration.lifecycle = 'active';
@@ -274,7 +275,11 @@ export class RuntimeHostSessionObservationRegistry {
     if (!source) return ready.promise;
     const transcriptSource = requireTranscriptSource(source);
     try {
-      const result = await transcriptSource.openTranscript(sessionId, consumerId, target);
+      const result = await transcriptSource.openTranscript(
+        sessionId,
+        consumerId,
+        this.#bindTranscriptTarget(target),
+      );
       if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
         registration.lifecycle = 'active';
         registration.ready.resolve(result);
@@ -393,6 +398,10 @@ export class RuntimeHostSessionObservationRegistry {
     this.#transcripts.delete(consumerId);
     registration.target.off('destroyed', registration.destroyedListener);
     registration.ready.reject(new Error('Transcript observation ended before it became ready'));
+  }
+
+  #bindTranscriptTarget(target: RuntimeHostTranscriptTarget): RuntimeHostTranscriptTarget {
+    return this.#bindTarget(target);
   }
 
   #assertOpen(): void {

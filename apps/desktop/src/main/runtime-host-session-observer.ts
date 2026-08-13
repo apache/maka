@@ -30,6 +30,7 @@ import {
   SessionRemovedSubscriptionError,
 } from "./runtime-host-session-subscription-owner.js";
 import {
+  type DesktopSequencedTranscriptMessage,
   type DesktopTranscriptReplica,
   type DesktopTranscriptReplicaChange,
 } from './desktop-transcript-replica.js';
@@ -42,20 +43,17 @@ type SessionObserverClient = Pick<DesktopRuntimeHostClient, 'openSession'> &
   Partial<Pick<DesktopRuntimeHostClient, 'listSessionTurns' | 'setSessionReadMarker'>>;
 
 const TRANSCRIPT_DELIVERY_TIMEOUT_MS = 30_000;
+const TRANSCRIPT_DELIVERY_WINDOW = 4;
 
-export interface RuntimeHostSessionObserverTarget {
+export interface RuntimeHostRendererTarget<Payload> {
   readonly id: number;
-  send(channel: string, event: SessionEvent): void;
+  send(channel: string, payload: Payload): void;
   once(event: "destroyed", listener: () => void): void;
   off(event: "destroyed", listener: () => void): void;
 }
 
-export interface RuntimeHostTranscriptTarget {
-  readonly id: number;
-  send(channel: string, batch: DesktopTranscriptBatch): void;
-  once(event: 'destroyed', listener: () => void): void;
-  off(event: 'destroyed', listener: () => void): void;
-}
+export type RuntimeHostSessionObserverTarget = RuntimeHostRendererTarget<SessionEvent>;
+export type RuntimeHostTranscriptTarget = RuntimeHostRendererTarget<DesktopTranscriptBatch>;
 
 export interface RuntimeHostSessionObserverDeps {
   client: SessionObserverClient;
@@ -93,9 +91,6 @@ interface ObservedSessionState {
   readonly watchedTurnIds: Set<string>;
   readonly transcriptConsumers: Map<string, TranscriptConsumer>;
   readonly subscriptionOwner: RuntimeHostSessionSubscriptionOwner;
-  transcriptDeliveryTail: Promise<void>;
-  transcriptDeliveryTask?: Promise<void>;
-  transcriptResetRequested: boolean;
   pendingTranscriptConsumers: number;
   replica?: DesktopTranscriptReplica;
   snapshot?: SessionContinuitySnapshot;
@@ -110,12 +105,31 @@ interface TranscriptConsumer {
   readonly destroyedListener: () => void;
   generation: string;
   deliverySequence: number;
-  pendingDelivery?: {
+  deliveryBytes: number;
+  deliveryTask?: Promise<void>;
+  resetRequested: boolean;
+  pendingChange?: PendingTranscriptChange;
+  readonly pendingDeliveries: Map<number, {
     readonly generation: string;
     readonly deliverySequence: number;
     resolve(): void;
     reject(error: Error): void;
-  };
+  }>;
+}
+
+interface PendingTranscriptChange {
+  durableThrough: number | null;
+  readonly durableUpserts: Map<number, PendingTranscriptUpsert>;
+  readonly evictedDurableSequences: Set<number>;
+  readonly completedOverlayMessageIds: Set<string>;
+  hasOlder: boolean;
+  hasNewer: boolean;
+  encodedBytes: number;
+}
+
+interface PendingTranscriptUpsert {
+  readonly entry: DesktopSequencedTranscriptMessage;
+  readonly encodedBytes: number;
 }
 
 interface PendingTranscriptConsumer {
@@ -248,14 +262,16 @@ export class RuntimeHostSessionObserver {
       destroyedListener,
       generation: replica.generation,
       deliverySequence: 0,
+      deliveryBytes: 0,
+      resetRequested: false,
+      pendingDeliveries: new Map(),
     };
     state.transcriptConsumers.set(consumerId, consumer);
     this.#transcriptConsumers.set(consumerId, state);
     target.once('destroyed', destroyedListener);
     try {
-      await this.#queueTranscriptDelivery(state, () =>
-        this.#sendTranscriptBatches(consumer, encodeDesktopTranscriptSnapshot(replica.snapshot())),
-      );
+      consumer.resetRequested = true;
+      await this.#scheduleTranscriptDelivery(state, consumer);
     } catch (error) {
       this.#detachTranscriptConsumer(state, consumer);
       await this.#closeIfIdle(state);
@@ -276,9 +292,9 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    const { state, replica } = this.#requireTranscriptConsumer(request, targetId);
+    const { state, replica, consumer } = this.#requireTranscriptConsumer(request, targetId);
     await replica.loadBefore(request.anchorSequence, requireTranscriptRangeBytes(request.maxBytes));
-    await state.transcriptDeliveryTail;
+    await consumer.deliveryTask;
     this.#touchReplica(state);
   }
 
@@ -286,7 +302,7 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    const { state, replica } = this.#requireTranscriptConsumer(request, targetId);
+    const { state, replica, consumer } = this.#requireTranscriptConsumer(request, targetId);
     if (request.anchorSequence === null) {
       throw new Error('Desktop transcript around request requires an anchor');
     }
@@ -294,7 +310,7 @@ export class RuntimeHostSessionObserver {
       request.anchorSequence,
       requireTranscriptRangeBytes(request.maxBytes),
     );
-    await state.transcriptDeliveryTail;
+    await consumer.deliveryTask;
     this.#touchReplica(state);
   }
 
@@ -331,13 +347,9 @@ export class RuntimeHostSessionObserver {
     if (targetId !== undefined && consumer.target.id !== targetId) {
       throw new Error('Desktop transcript consumer belongs to another renderer');
     }
-    const pending = consumer.pendingDelivery;
-    if (
-      !pending ||
-      pending.generation !== generation ||
-      pending.deliverySequence !== deliverySequence
-    ) return;
-    consumer.pendingDelivery = undefined;
+    const pending = consumer.pendingDeliveries.get(deliverySequence);
+    if (!pending || pending.generation !== generation) return;
+    consumer.pendingDeliveries.delete(deliverySequence);
     pending.resolve();
   }
 
@@ -548,8 +560,6 @@ export class RuntimeHostSessionObserver {
       watchedTurnIds: new Set(),
       transcriptConsumers: new Map(),
       subscriptionOwner,
-      transcriptDeliveryTail: Promise.resolve(),
-      transcriptResetRequested: false,
       pendingTranscriptConsumers: 0,
       transcriptAccess: 0,
       closing: false,
@@ -998,99 +1008,185 @@ export class RuntimeHostSessionObserver {
     replica: DesktopTranscriptReplica,
     change: DesktopTranscriptReplicaChange,
   ): void {
-    if (state.transcriptDeliveryTask) {
-      state.transcriptResetRequested = true;
-      return;
+    for (const consumer of [...state.transcriptConsumers.values()]) {
+      if (consumer.generation !== replica.generation) {
+        this.#requestTranscriptReset(state, consumer);
+      } else if (!this.#mergeTranscriptChange(consumer, change)) {
+        this.#detachTranscriptConsumer(state, consumer);
+        void this.#closeIfIdle(state);
+      } else {
+        void this.#scheduleTranscriptDelivery(state, consumer).catch(() => undefined);
+      }
     }
-    const consumers = [...state.transcriptConsumers.values()];
-    const batches = encodeDesktopTranscriptChange(
-      {
-        sessionId: replica.sessionId,
-        generation: replica.generation,
-        hostEpoch: replica.hostEpoch,
-      },
-      change,
-    );
-    void this.#scheduleTranscriptDelivery(state, () =>
-      this.#broadcastTranscriptBatches(state, consumers, batches),
-    );
   }
 
   #resetTranscriptConsumers(state: ObservedSessionState): void {
-    state.transcriptResetRequested = true;
-    void this.#scheduleTranscriptDelivery(state);
+    for (const consumer of [...state.transcriptConsumers.values()]) {
+      this.#requestTranscriptReset(state, consumer);
+    }
   }
 
   #scheduleTranscriptDelivery(
     state: ObservedSessionState,
-    initial?: () => Promise<void>,
+    consumer: TranscriptConsumer,
   ): Promise<void> {
-    if (state.transcriptDeliveryTask) {
-      state.transcriptResetRequested = true;
-      return state.transcriptDeliveryTask;
-    }
+    if (consumer.deliveryTask) return consumer.deliveryTask;
     let task!: Promise<void>;
-    task = state.transcriptDeliveryTail
-      .then(async () => {
-        await initial?.();
-        while (state.transcriptResetRequested) {
-          state.transcriptResetRequested = false;
-          const replica = state.replica;
-          if (!replica?.resident || state.closing) return;
-          const consumers = [...state.transcriptConsumers.values()];
-          for (const consumer of consumers) consumer.generation = replica.generation;
-          await this.#broadcastTranscriptBatches(
-            state,
-            consumers,
-            encodeDesktopTranscriptSnapshot(replica.snapshot()),
-          );
+    task = (async () => {
+      try {
+        while (state.transcriptConsumers.get(consumer.consumerId) === consumer) {
+          if (consumer.resetRequested) {
+            consumer.resetRequested = false;
+            this.#clearPendingTranscriptChange(consumer);
+            const replica = state.replica;
+            if (!replica?.resident || state.closing) return;
+            const deliveryBytes = replica.residentBytes;
+            if (!this.#adjustTranscriptDeliveryBytes(consumer, deliveryBytes)) {
+              throw new Error('Desktop transcript delivery capacity was reached');
+            }
+            consumer.generation = replica.generation;
+            try {
+              await this.#sendTranscriptBatches(
+                consumer,
+                encodeDesktopTranscriptSnapshot(replica.snapshot()),
+              );
+            } finally {
+              this.#adjustTranscriptDeliveryBytes(consumer, -deliveryBytes);
+            }
+            continue;
+          }
+          const pending = consumer.pendingChange;
+          if (!pending) return;
+          consumer.pendingChange = undefined;
+          try {
+            const replica = state.replica;
+            if (!replica?.resident || replica.generation !== consumer.generation) {
+              consumer.resetRequested = true;
+              continue;
+            }
+            await this.#sendTranscriptBatches(
+              consumer,
+              encodeDesktopTranscriptChange(
+                {
+                  sessionId: replica.sessionId,
+                  generation: replica.generation,
+                  hostEpoch: replica.hostEpoch,
+                },
+                {
+                  durableThrough: pending.durableThrough,
+                  durableUpserts: [...pending.durableUpserts.values()].map(({ entry }) => entry),
+                  evictedDurableSequences: [...pending.evictedDurableSequences],
+                  completedOverlayMessageIds: [...pending.completedOverlayMessageIds],
+                  hasOlder: pending.hasOlder,
+                  hasNewer: pending.hasNewer,
+                },
+              ),
+            );
+          } finally {
+            this.#adjustTranscriptDeliveryBytes(consumer, -pending.encodedBytes);
+          }
         }
-      })
-      .finally(() => {
-        if (state.transcriptDeliveryTask === task) state.transcriptDeliveryTask = undefined;
-      });
-    state.transcriptDeliveryTask = task;
-    state.transcriptDeliveryTail = task.catch(() => undefined);
+      } catch (error) {
+        this.#detachTranscriptConsumer(state, consumer);
+        void this.#closeIfIdle(state);
+        throw error;
+      }
+    })().finally(() => {
+      if (consumer.deliveryTask === task) consumer.deliveryTask = undefined;
+    });
+    consumer.deliveryTask = task;
+    void task.catch(() => undefined);
     return task;
   }
 
-  #queueTranscriptDelivery(
-    state: ObservedSessionState,
-    deliver: () => Promise<void>,
-  ): Promise<void> {
-    const delivery = state.transcriptDeliveryTail.then(deliver);
-    state.transcriptDeliveryTail = delivery.catch(() => undefined);
-    return delivery;
+  #requestTranscriptReset(state: ObservedSessionState, consumer: TranscriptConsumer): void {
+    consumer.resetRequested = true;
+    this.#clearPendingTranscriptChange(consumer);
+    void this.#scheduleTranscriptDelivery(state, consumer).catch(() => undefined);
   }
 
-  async #broadcastTranscriptBatches(
-    state: ObservedSessionState,
-    consumers: readonly TranscriptConsumer[],
-    batches: Iterable<DesktopTranscriptBatchPayload>,
-  ): Promise<void> {
-    for (const batch of batches) {
-      const deliveries = consumers
-        .filter(
-          (consumer) => state.transcriptConsumers.get(consumer.consumerId) === consumer,
-        )
-        .map(async (consumer) => {
-          try {
-            await this.#deliverTranscriptBatch(consumer, batch);
-          } catch {
-            this.#detachTranscriptConsumer(state, consumer);
-          }
-        });
-      if (deliveries.length === 0) return;
-      await Promise.all(deliveries);
+  #mergeTranscriptChange(
+    consumer: TranscriptConsumer,
+    change: DesktopTranscriptReplicaChange,
+  ): boolean {
+    if (consumer.resetRequested) return true;
+    const pending = consumer.pendingChange ?? {
+      durableThrough: change.durableThrough,
+      durableUpserts: new Map<number, PendingTranscriptUpsert>(),
+      evictedDurableSequences: new Set<number>(),
+      completedOverlayMessageIds: new Set<string>(),
+      hasOlder: change.hasOlder,
+      hasNewer: change.hasNewer,
+      encodedBytes: 0,
+    };
+    let byteDelta = 0;
+    pending.durableThrough = change.durableThrough;
+    pending.hasOlder = change.hasOlder;
+    pending.hasNewer = change.hasNewer;
+    for (const entry of change.durableUpserts) {
+      const previous = pending.durableUpserts.get(entry.sequence);
+      if (previous) byteDelta -= previous.encodedBytes;
+      const encodedBytes = encodedTranscriptMessageBytes(entry.message);
+      pending.durableUpserts.set(entry.sequence, { entry, encodedBytes });
+      byteDelta += encodedBytes;
+      if (pending.evictedDurableSequences.delete(entry.sequence)) byteDelta -= 8;
     }
+    for (const sequence of change.evictedDurableSequences) {
+      const previous = pending.durableUpserts.get(sequence);
+      if (previous) {
+        pending.durableUpserts.delete(sequence);
+        byteDelta -= previous.encodedBytes;
+      }
+      if (!pending.evictedDurableSequences.has(sequence)) {
+        pending.evictedDurableSequences.add(sequence);
+        byteDelta += 8;
+      }
+    }
+    for (const messageId of change.completedOverlayMessageIds) {
+      if (!pending.completedOverlayMessageIds.has(messageId)) {
+        pending.completedOverlayMessageIds.add(messageId);
+        byteDelta += Buffer.byteLength(messageId, 'utf8');
+      }
+    }
+    pending.encodedBytes += byteDelta;
+    consumer.pendingChange = pending;
+    if (this.#adjustTranscriptDeliveryBytes(consumer, byteDelta)) return true;
+    pending.encodedBytes -= byteDelta;
+    this.#clearPendingTranscriptChange(consumer);
+    return false;
   }
 
-  async #deliverTranscriptBatch(
+  #clearPendingTranscriptChange(consumer: TranscriptConsumer): void {
+    const pending = consumer.pendingChange;
+    if (!pending) return;
+    consumer.pendingChange = undefined;
+    this.#adjustTranscriptDeliveryBytes(consumer, -pending.encodedBytes);
+  }
+
+  #adjustTranscriptDeliveryBytes(consumer: TranscriptConsumer, delta: number): boolean {
+    consumer.deliveryBytes += delta;
+    if (delta <= 0 || this.#transcriptResidentBytes() <= DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES) {
+      return true;
+    }
+    consumer.deliveryBytes -= delta;
+    return false;
+  }
+
+  #transcriptResidentBytes(): number {
+    let total = 0;
+    for (const state of this.#states.values()) {
+      total += state.replica?.residentBytes ?? 0;
+      for (const consumer of state.transcriptConsumers.values()) total += consumer.deliveryBytes;
+    }
+    return total;
+  }
+
+  #deliverTranscriptBatch(
     consumer: TranscriptConsumer,
     batch: DesktopTranscriptBatchPayload,
   ): Promise<void> {
-    if (consumer.pendingDelivery) {
-      throw new Error('Desktop transcript consumer already has an in-flight batch');
+    if (consumer.pendingDeliveries.size >= TRANSCRIPT_DELIVERY_WINDOW) {
+      throw new Error('Desktop transcript consumer delivery window is full');
     }
     let resolve!: () => void;
     let reject!: (error: Error) => void;
@@ -1099,33 +1195,46 @@ export class RuntimeHostSessionObserver {
       reject = rejectPromise;
     });
     const deliverySequence = ++consumer.deliverySequence;
-    consumer.pendingDelivery = {
+    const pending = {
       generation: batch.generation,
       deliverySequence,
       resolve,
       reject,
     };
+    consumer.pendingDeliveries.set(deliverySequence, pending);
     const timeout = setTimeout(
       () => reject(new Error('Desktop transcript delivery timed out')),
       TRANSCRIPT_DELIVERY_TIMEOUT_MS,
     );
-    try {
+    return (async () => {
+      try {
       consumer.target.send(transcriptChannel(consumer.consumerId), {
         ...batch,
         deliverySequence,
       });
       await acknowledged;
-    } finally {
-      clearTimeout(timeout);
-      if (consumer.pendingDelivery?.resolve === resolve) consumer.pendingDelivery = undefined;
-    }
+      } finally {
+        clearTimeout(timeout);
+        if (consumer.pendingDeliveries.get(deliverySequence) === pending) {
+          consumer.pendingDeliveries.delete(deliverySequence);
+        }
+      }
+    })();
   }
 
   async #sendTranscriptBatches(
     consumer: TranscriptConsumer,
     batches: Iterable<DesktopTranscriptBatchPayload>,
   ): Promise<void> {
-    for (const batch of batches) await this.#deliverTranscriptBatch(consumer, batch);
+    let deliveries: Promise<void>[] = [];
+    for (const batch of batches) {
+      deliveries.push(this.#deliverTranscriptBatch(consumer, batch));
+      if (deliveries.length === TRANSCRIPT_DELIVERY_WINDOW) {
+        await Promise.all(deliveries);
+        deliveries = [];
+      }
+    }
+    await Promise.all(deliveries);
   }
 
   #requireTranscriptConsumer(
@@ -1134,6 +1243,7 @@ export class RuntimeHostSessionObserver {
   ): {
     state: ObservedSessionState;
     replica: DesktopTranscriptReplica;
+    consumer: TranscriptConsumer;
   } {
     const state = this.#transcriptConsumers.get(request.consumerId);
     const consumer = state?.transcriptConsumers.get(request.consumerId);
@@ -1147,7 +1257,7 @@ export class RuntimeHostSessionObserver {
     if (consumer.generation !== request.generation || replica.generation !== request.generation) {
       throw new Error('Desktop transcript generation changed');
     }
-    return { state, replica };
+    return { state, replica, consumer };
   }
 
   #detachTranscriptConsumer(
@@ -1157,21 +1267,24 @@ export class RuntimeHostSessionObserver {
     if (state.transcriptConsumers.get(consumer.consumerId) !== consumer) return;
     state.transcriptConsumers.delete(consumer.consumerId);
     this.#transcriptConsumers.delete(consumer.consumerId);
-    consumer.pendingDelivery?.reject(new Error('Desktop transcript consumer was closed'));
-    consumer.pendingDelivery = undefined;
+    consumer.resetRequested = false;
+    this.#clearPendingTranscriptChange(consumer);
+    for (const pending of consumer.pendingDeliveries.values()) {
+      pending.reject(new Error('Desktop transcript consumer was closed'));
+    }
+    consumer.pendingDeliveries.clear();
     consumer.target.off('destroyed', consumer.destroyedListener);
   }
 
   #touchReplica(state: ObservedSessionState, protectedState?: ObservedSessionState): boolean {
     state.transcriptAccess = ++this.#transcriptAccessClock;
-    let total = 0;
+    let total = this.#transcriptResidentBytes();
     const replicas: Array<{
       state: ObservedSessionState;
       replica: DesktopTranscriptReplica;
     }> = [];
     for (const candidate of this.#states.values()) {
       if (!candidate.replica) continue;
-      total += candidate.replica.residentBytes;
       replicas.push({ state: candidate, replica: candidate.replica });
     }
     replicas.sort((left, right) => left.state.transcriptAccess - right.state.transcriptAccess);
@@ -1197,7 +1310,7 @@ export class RuntimeHostSessionObserver {
       candidate.replica.discard();
       total -= before;
     }
-    return total <= DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES;
+    return this.#transcriptResidentBytes() <= DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES;
   }
 
   #markTranscriptRead(state: ObservedSessionState, replica: DesktopTranscriptReplica): void {
@@ -1221,6 +1334,10 @@ function sessionEventChannel(sessionId: string): string {
 
 function transcriptChannel(consumerId: string): string {
   return `sessions:transcript:${consumerId}`;
+}
+
+function encodedTranscriptMessageBytes(message: StoredMessage): number {
+  return Buffer.byteLength(JSON.stringify(message), 'utf8');
 }
 
 function requireTranscriptRangeBytes(value: number): number {
