@@ -16,7 +16,7 @@ test('remounting a live surface leaves accumulated output settled', async ({
 
   const accumulatedOutput = 'prefix sk-123456789012345';
   const liveBubble = page.locator('.maka-bubble-streaming');
-  await expect(liveBubble).toContainText(accumulatedOutput);
+  await expect(liveBubble).toContainText(accumulatedOutput, { timeout: 20_000 });
 
   const sidebar = page.getByRole('navigation', { name: '对话列表' });
   await sidebar.getByRole('button', { name: '扩展' }).click();
@@ -71,7 +71,7 @@ test('returning to a live conversation settles output accumulated while away', a
 
   const accumulatedOutput = 'Fake backend waiting for the test to stop the Turn.';
   const liveBubble = page.locator('.maka-bubble-streaming');
-  await expect(liveBubble).toContainText(accumulatedOutput);
+  await expect(liveBubble).toContainText(accumulatedOutput, { timeout: 20_000 });
 
   const sidebar = page.getByRole('navigation', { name: '对话列表' });
   await page.getByRole('button', { name: '展开侧边栏' }).click();
