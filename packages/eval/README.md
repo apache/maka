@@ -53,6 +53,6 @@ surfaces, not a complete defense against a deliberately invented lookup channel;
 namespace still forces all subject traffic through the audited proxy. Collected Maka runtime files
 and egress audit logs are represented in attempt artifacts with byte counts and SHA-256 digests.
 The local image tag remains a machine deployment identity rather than a registry digest; digest
-pinning is tracked separately.
+pinning is tracked in issue #2953.
 
 The experiment directory contains the frozen `experiment.json` and append-only attempt records. There is no second mutable results file. A leftover `.writer.lock` means the previous writer did not complete; remove it only after proving that no writer process remains.
