@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 20 |
-| portable-candidate | 3 |
+| portable-candidate | 9 |
 | platform-contract | 35 |
 
-Total Windows-excluded declarations: **58**
+Total Windows-excluded declarations: **64**
 
 ## Inventory
 
@@ -54,12 +54,18 @@ Total Windows-excluded declarations: **58**
 | portable-candidate | `packages/runtime/src/__tests__/filesystem-apply-patch.test.ts` deletes a self-referential symlink entry without following it | `process.platform === 'win32'` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-process-runner.test.ts` filesystem worker rejects boundedly when a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-smoke.test.ts` macOS filesystem worker smoke | `process.platform !== 'darwin'` |
+| portable-candidate | `packages/runtime/src/__tests__/node-pty-write-lifecycle.test.ts` does not carry queued Unix PTY writes past native exit | `process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-exec.test.ts` writes a legacy WSL Bash command through stdin | `process.platform === 'win32' ? 'uses /bin/sh as a portable stdin probe' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-exec.test.ts` bounds output drain after the root exits while a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves CJK PowerShell output through pipes | `process.platform === 'win32' ? false : 'Windows PowerShell 5.1 regression'` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves the requested cwd through a real Git Bash login PTY | `process.platform === 'win32' ? false : 'Git Bash PTY regression'` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` latches timeout when the root exits during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves cancellation when timeout fires during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` ignores a Stop abort that occurs after another admitted Stop commits termination | `process.platform === 'win32' ? 'Windows termination has no asynchronous POSIX snapshot window' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps a pipe task alive when Stop aborts during process-tree preparation | `process.platform === 'win32' ? 'Windows termination does not take a POSIX process snapshot' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps a PTY task controllable when Stop aborts during process-tree preparation | `process.platform === 'win32' ? 'Windows termination does not take a POSIX process snapshot' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves CJK PowerShell output through a real PTY | `process.platform === 'win32' ? false : 'Windows PowerShell 5.1 regression'` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves the caller environment through a PowerShell PTY | `process.platform === 'win32' ? false : 'Windows PowerShell 5.1 regression'` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` settles after root exit when a detached descendant retains inherited stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps the first committed lifecycle cause across Stop and timeout races | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps SIGTERM final output and escalates an ignored SIGTERM without leaking slots | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
