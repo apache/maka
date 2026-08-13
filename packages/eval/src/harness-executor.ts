@@ -724,7 +724,7 @@ async function collectedArtifactInventory(trialPath: string): Promise<JsonObject
     join(trialPath, 'artifacts', 'logs', 'artifacts', basename(MAKA_RUNTIME_ARTIFACT_PATH)),
     join(trialPath, 'artifacts', 'logs', 'artifacts', basename(MAKA_SUBJECT_STDOUT_PATH)),
     join(trialPath, 'artifacts', 'logs', 'artifacts', basename(MAKA_SUBJECT_STDERR_PATH)),
-    join(trialPath, 'artifacts', 'logs', 'agent'),
+    join(trialPath, 'agent'),
   ];
   for (const target of targets) {
     await walkCollectedArtifacts(trialPath, target, files).catch((error: NodeJS.ErrnoException) => {
