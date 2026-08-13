@@ -67,7 +67,6 @@ export interface RuntimeHostSessionExecutionIpcDeps {
     | 'loadTranscriptBefore'
     | 'observe'
     | 'openTranscript'
-    | 'unobserve'
   >;
   attachmentApprovals: AttachmentApprovalRegistry;
   emitSessionsChanged: (
@@ -133,11 +132,6 @@ export function registerRuntimeHostSessionExecutionIpc(
       );
     },
   );
-  ipcMain.handle("sessions:unobserve", async (_event, observerId: unknown) => {
-    await deps.observations.unobserve(
-      requiredId(observerId, "Session observer"),
-    );
-  });
   ipcMain.handle(
     'sessions:transcript:open',
     async (event, sessionId: unknown, consumerId: unknown) => {
