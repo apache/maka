@@ -2212,6 +2212,9 @@ export class SqliteSessionMetadataStore {
           ...work,
           target: { ...work.target },
           inputIds: [...work.inputIds],
+          ...(work.selectedResultInputs
+            ? { selectedResultInputs: work.selectedResultInputs.map((input) => ({ ...input })) }
+            : {}),
         })),
         stop: request.stop.map((stopped) => ({ ...stopped })),
         ...(request.finish

@@ -43,7 +43,14 @@ export interface AgentGraphScheduledWork {
   target: AgentGraphWorkTarget;
   instruction: string;
   inputIds: string[];
+  /** Explicit, immutable results selected from completed earlier epochs. */
+  selectedResultInputs?: AgentGraphSelectedResultInput[];
   replaces?: string;
+}
+
+export interface AgentGraphSelectedResultInput {
+  sourceGraphId: string;
+  resultId: string;
 }
 
 export interface AgentGraphStoppedTarget {
@@ -231,6 +238,11 @@ export function decodeAgentGraphScheduleUpdate(value: unknown): AgentGraphSchedu
       target: { ...work.target },
       instruction: work.instruction,
       inputIds: [...work.inputIds],
+      ...(work.selectedResultInputs
+        ? {
+            selectedResultInputs: work.selectedResultInputs.map((input) => ({ ...input })),
+          }
+        : {}),
       ...(work.replaces ? { replaces: work.replaces } : {}),
     })),
     stop: value.stop.map((stopped) => ({ ...stopped })),
@@ -274,21 +286,38 @@ function isScheduledWork(value: unknown): value is AgentGraphScheduledWork {
       'target',
       'instruction',
       'inputIds',
+      ...(hasOwn(value, 'selectedResultInputs') ? ['selectedResultInputs'] : []),
       ...(hasOwn(value, 'replaces') ? ['replaces'] : []),
     ])
   ) {
     return false;
   }
+  const inputIds = Array.isArray(value.inputIds) ? value.inputIds : [];
   return (
     typeof value.workId === 'string' &&
     /^graph_work_[a-f0-9]{32}$/.test(value.workId) &&
     isWorkTarget(value.target) &&
     isBoundedText(value.instruction, AGENT_GRAPH_SCHEDULE_MAX_INSTRUCTION_CHARS) &&
     Array.isArray(value.inputIds) &&
-    value.inputIds.length <= AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS &&
-    value.inputIds.every(isOpaqueIdentity) &&
-    unique(value.inputIds) &&
+    inputIds.length <= AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS &&
+    inputIds.every(isOpaqueIdentity) &&
+    unique(inputIds) &&
+    (value.selectedResultInputs === undefined ||
+      (Array.isArray(value.selectedResultInputs) &&
+        value.selectedResultInputs.length > 0 &&
+        inputIds.length + value.selectedResultInputs.length <= AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS &&
+        value.selectedResultInputs.every(isSelectedResultInput) &&
+        unique(value.selectedResultInputs.map((input) => input.resultId)) &&
+        value.selectedResultInputs.every((input) => !inputIds.includes(input.resultId)))) &&
     (value.replaces === undefined || isOpaqueIdentity(value.replaces))
+  );
+}
+
+function isSelectedResultInput(value: unknown): value is AgentGraphSelectedResultInput {
+  return (
+    isExactRecord(value, ['sourceGraphId', 'resultId']) &&
+    isOpaqueIdentity(value.sourceGraphId) &&
+    isOpaqueIdentity(value.resultId)
   );
 }
 

@@ -7,6 +7,14 @@ import {
 } from '../agent-graph-schedule.js';
 
 describe('agent graph schedule contract', () => {
+  test('accepts explicit selected results from an earlier graph', () => {
+    const request = scheduleRequest();
+    request.addWork[0]!.selectedResultInputs = [
+      { sourceGraphId: 'graph-previous', resultId: 'selected-result' },
+    ];
+    assert.equal(isAgentGraphScheduleUpdateRequest(request), true);
+  });
+
   test('rejects ambiguous, duplicate, empty, and add-plus-finish updates', () => {
     assert.equal(
       isAgentGraphScheduleUpdateRequest({
@@ -15,6 +23,33 @@ describe('agent graph schedule contract', () => {
           {
             ...scheduleRequest().addWork[0],
             target: { kind: 'agent', agentId: '' },
+          },
+        ],
+      }),
+      false,
+    );
+    assert.equal(
+      isAgentGraphScheduleUpdateRequest({
+        ...scheduleRequest(),
+        addWork: [
+          {
+            ...scheduleRequest().addWork[0],
+            selectedResultInputs: [{ sourceGraphId: 'graph-previous', resultId: 'result-1' }],
+          },
+        ],
+      }),
+      false,
+    );
+    assert.equal(
+      isAgentGraphScheduleUpdateRequest({
+        ...scheduleRequest(),
+        addWork: [
+          {
+            ...scheduleRequest().addWork[0],
+            selectedResultInputs: [
+              { sourceGraphId: 'graph-previous', resultId: 'selected-result' },
+              { sourceGraphId: 'graph-previous', resultId: 'selected-result' },
+            ],
           },
         ],
       }),
