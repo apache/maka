@@ -83,6 +83,36 @@ test('adapts Host Goal, Task, Deep Research, and Resource projections', async ()
   });
 });
 
+test('adapts bounded Agent Graph epoch reads without changing graph identity', async () => {
+  const calls: unknown[] = [];
+  const client = domainClient({
+    listAgentGraphEpochs: async (rootSessionId) => {
+      calls.push(rootSessionId);
+      return [{ epoch: 2, graphId: 'graph-2', createdAt: 2, current: true }];
+    },
+    queryAgentGraph: async (input) => {
+      calls.push(input);
+      return graphSnapshot(input.rootSessionId, input.graphId ?? 'graph-current');
+    },
+  });
+  const ipc = ipcHarness();
+  registerDomainsIpc({ client, emitModeChanged() {} }, ipc);
+
+  assert.deepEqual(await ipc.invoke('graphs:listEpochs', 'session-1'), [
+    { epoch: 2, graphId: 'graph-2', createdAt: 2, current: true },
+  ]);
+  assert.equal(
+    (await ipc.invoke('graphs:getSnapshot', 'session-1', { graphId: 'graph-2' }) as {
+      graphId: string;
+    }).graphId,
+    'graph-2',
+  );
+  assert.deepEqual(calls, [
+    'session-1',
+    { rootSessionId: 'session-1', graphId: 'graph-2' },
+  ]);
+});
+
 test('adapts interactive terminal ownership to one Host controller lease', async () => {
   const calls: Array<{ operation: string; input: unknown }> = [];
   const update = shellRunUpdate({
@@ -680,6 +710,7 @@ function domainClient(overrides: Partial<DomainClient>): DomainClient {
     getRuntimeResource: unavailable,
     getPlanState: unavailable,
     listRuntimeResources: unavailable,
+    listAgentGraphEpochs: unavailable,
     listTasks: unavailable,
     queryAgentGraph: unavailable,
     queryAgentGraphOperator: unavailable,
@@ -710,6 +741,39 @@ function goalProjection() {
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+  };
+}
+
+function graphSnapshot(rootSessionId: string, graphId: string) {
+  return {
+    schemaVersion: 1 as const,
+    rootSessionId,
+    graphId,
+    orchestrationMode: 'graph' as const,
+    snapshotVersion: `sha256:${'1'.repeat(64)}` as const,
+    status: 'completed' as const,
+    scheduleRevision: 1,
+    topologyFingerprint: `sha256:${'2'.repeat(64)}` as const,
+    closed: true,
+    operators: [],
+    edges: [],
+    work: [],
+    reconciliationFailures: [],
+    stoppedTargets: [],
+    claims: [],
+    recentControlDecisions: [],
+    recentActivity: [],
+    terminalHistory: { records: [] },
+    omitted: {
+      operators: 0,
+      edges: 0,
+      work: 0,
+      reconciliationFailures: 0,
+      stoppedTargets: 0,
+      claims: 0,
+      controlDecisions: 0,
+      recentActivity: 0,
+    },
   };
 }
 

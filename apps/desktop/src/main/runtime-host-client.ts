@@ -28,6 +28,7 @@ import {
   type RuntimeHostSessionSubscription,
   RuntimeHostCatalogReadError,
   RuntimeHostOperationError,
+  readRuntimeHostAgentGraphEpochs,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
@@ -1265,6 +1266,11 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"agent.graph.query">,
   ): Promise<OperationOutput<"agent.graph.query">> {
     return this.request("agent.graph.query", input);
+  }
+
+  listAgentGraphEpochs(rootSessionId: string) {
+    this.#assertOpen();
+    return readRuntimeHostAgentGraphEpochs(this.connection, rootSessionId);
   }
 
   queryAgentGraphOperator(

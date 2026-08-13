@@ -4,6 +4,7 @@ import { parseHTML } from 'linkedom';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { AgentGraphClientSnapshot } from '@maka/runtime/stream-graph-read-model';
+import type { AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
 import { AgentGraphPanel } from '../../renderer/agent-graph-panel.js';
 
 type GraphListener = () => void;
@@ -59,7 +60,10 @@ function snapshot(
   };
 }
 
-function installGraphRenderer(initial: AgentGraphClientSnapshot): {
+function installGraphRenderer(
+  initial: AgentGraphClientSnapshot,
+  historical: readonly AgentGraphClientSnapshot[] = [],
+): {
   container: Element;
   root: Root;
   setSnapshot(next: AgentGraphClientSnapshot): Promise<void>;
@@ -88,15 +92,31 @@ function installGraphRenderer(initial: AgentGraphClientSnapshot): {
     IS_REACT_ACT_ENVIRONMENT: true,
   });
 
-  const snapshots = new Map<string, AgentGraphClientSnapshot>([
-    [initial.rootSessionId, initial],
-  ]);
+  const snapshots = new Map(
+    [initial, ...historical].map((entry) => [entry.graphId, entry] as const),
+  );
+  const currentGraphIds = new Map([[initial.rootSessionId, initial.graphId]]);
   const listeners = new Set<GraphListener>();
   (window as unknown as { maka: unknown }).maka = {
     graphs: {
-      getSnapshot: async (sessionId: string) => {
-        const next = snapshots.get(sessionId);
-        if (!next) throw new Error(`missing graph snapshot for ${sessionId}`);
+      listEpochs: async (sessionId: string): Promise<AgentGraphEpochSummary[]> => {
+        const currentGraphId = currentGraphIds.get(sessionId);
+        const entries = [...snapshots.values()]
+          .filter((entry) => entry.rootSessionId === sessionId)
+          .sort((left, right) => Number(right.graphId === currentGraphId) - Number(left.graphId === currentGraphId));
+        return entries.map((entry, index) => ({
+          epoch: entries.length - index,
+          graphId: entry.graphId,
+          createdAt: index + 1,
+          current: currentGraphIds.get(sessionId) === entry.graphId,
+        }));
+      },
+      getSnapshot: async (sessionId: string, options?: { graphId?: string }) => {
+        const graphId = options?.graphId ?? currentGraphIds.get(sessionId);
+        const next = graphId ? snapshots.get(graphId) : undefined;
+        if (!next || next.rootSessionId !== sessionId) {
+          throw new Error(`missing graph snapshot for ${sessionId}`);
+        }
         return next;
       },
       inspectOperator: async () => {
@@ -119,7 +139,8 @@ function installGraphRenderer(initial: AgentGraphClientSnapshot): {
     container,
     root,
     async setSnapshot(next) {
-      snapshots.set(next.rootSessionId, next);
+      snapshots.set(next.graphId, next);
+      currentGraphIds.set(next.rootSessionId, next.graphId);
       await act(async () => {
         for (const listener of [...listeners]) listener();
         await Promise.resolve();
@@ -160,6 +181,44 @@ async function renderPanel(
 }
 
 describe('AgentGraphPanel dismiss', () => {
+  it('switches to a historical epoch without exposing current-graph controls', async () => {
+    const current = snapshot({ graphId: 'graph-2', status: 'active' });
+    const previous = snapshot({ graphId: 'graph-1', status: 'completed' });
+    const harness = installGraphRenderer(current, [previous]);
+    await act(async () => {
+      harness.root.render(
+        createElement(AgentGraphPanel, {
+          rootSessionId: 'session-1',
+          enabled: true,
+          locale: 'en',
+          onOpenSession: () => undefined,
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    const selector = harness.container.querySelector('[role="combobox"]');
+    assert.ok(selector);
+    assert.match(harness.container.textContent ?? '', /Stop graph/);
+    await act(async () => {
+      (selector as HTMLElement).click();
+      await Promise.resolve();
+    });
+    const historyOption = [...document.querySelectorAll('[role="option"]')].find((option) =>
+      option.textContent?.includes('History'),
+    );
+    assert.ok(historyOption);
+    await act(async () => {
+      (historyOption as HTMLElement).click();
+      await Promise.resolve();
+    });
+
+    assert.match(harness.container.textContent ?? '', /#1 · History \(read-only\)/);
+    assert.doesNotMatch(harness.container.textContent ?? '', /Stop graph/);
+    assert.equal(harness.container.querySelector('.maka-agent-graph-dismiss'), null);
+    await act(async () => harness.root.unmount());
+  });
+
   it('shows dismiss only after the graph has settled', async () => {
     const active = await renderPanel(snapshot({ graphId: 'graph-1', status: 'active' }));
     assert.ok(active.container.querySelector('.maka-agent-graph-panel'));

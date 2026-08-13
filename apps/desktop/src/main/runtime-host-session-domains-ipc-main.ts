@@ -7,7 +7,11 @@ import type {
 } from '@maka/runtime/stream-graph-read-model';
 import type { GoalState } from '@maka/runtime/goal-state';
 import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
-import type { GoalProjection, SessionDomainChange } from '@maka/runtime-host/protocol';
+import type {
+  AgentGraphEpochSummary,
+  GoalProjection,
+  SessionDomainChange,
+} from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserver } from './runtime-host-session-observer.js';
 import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
@@ -28,6 +32,7 @@ type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
   | 'getRuntimeResource'
   | 'getPlanState'
   | 'listRuntimeResources'
+  | 'listAgentGraphEpochs'
   | 'listTasks'
   | 'queryAgentGraph'
   | 'queryAgentGraphOperator'
@@ -188,15 +193,25 @@ export function registerRuntimeHostSessionDomainsIpc(
   );
   handleReconnectableRead(
     ipcMain,
+    'graphs:listEpochs',
+    async (_event, rootSessionId: unknown): Promise<readonly AgentGraphEpochSummary[]> =>
+      deps.client.listAgentGraphEpochs(requiredId(rootSessionId, 'root Session')),
+  );
+  handleReconnectableRead(
+    ipcMain,
     'graphs:inspectOperator',
     async (
       _event,
       rootSessionId: unknown,
       operatorId: unknown,
+      graphId?: unknown,
     ): Promise<AgentGraphOperatorInspection> =>
       mutableGraphInspection(
         await deps.client.queryAgentGraphOperator({
           rootSessionId: requiredId(rootSessionId, 'root Session'),
+          ...(graphId === undefined
+            ? {}
+            : { graphId: requiredId(graphId, 'Agent graph') }),
           operatorId: requiredId(operatorId, 'Agent graph operator'),
         }),
       ),
@@ -287,18 +302,31 @@ function toDesktopGoal(goal: GoalProjection): GoalState {
   };
 }
 
-function snapshotOptions(value: unknown): AgentGraphClientSnapshotOptions {
+function snapshotOptions(
+  value: unknown,
+): AgentGraphClientSnapshotOptions & { readonly graphId?: string } {
   if (value === undefined) return {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError('Invalid agent graph snapshot options');
   }
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== 'terminalCursor')) {
+  if (Object.keys(record).some((key) => key !== 'graphId' && key !== 'terminalCursor')) {
     throw new TypeError('Invalid agent graph snapshot options');
   }
-  return record.terminalCursor === undefined
-    ? {}
-    : { terminalCursor: requiredId(record.terminalCursor, 'Agent graph terminal cursor', 2_048) };
+  return {
+    ...(record.graphId === undefined
+      ? {}
+      : { graphId: requiredId(record.graphId, 'Agent graph') }),
+    ...(record.terminalCursor === undefined
+      ? {}
+      : {
+          terminalCursor: requiredId(
+            record.terminalCursor,
+            'Agent graph terminal cursor',
+            2_048,
+          ),
+        }),
+  };
 }
 
 function mutableGraphSnapshot(

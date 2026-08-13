@@ -462,6 +462,8 @@ type ShellCopy = {
     graphModeEnabledTitle: string;
     graphModeDisabledTitle: string;
     graphModeStatusDescription: string;
+    graphHistoryTitle: string;
+    graphHistoryDescription: string;
     resizeWorkbar: string;
   };
 };
@@ -1166,6 +1168,8 @@ const SHELL_COPY_BY_LOCALE = {
       graphModeEnabledTitle: 'Graph Mode 已开启',
       graphModeDisabledTitle: 'Graph Mode 未开启',
       graphModeStatusDescription: '使用 /graph on、/graph off，或 /graph <任务> 单次运行。',
+      graphHistoryTitle: 'Graph 历史',
+      graphHistoryDescription: '请在 Agent Graph 面板的运行轮次菜单中查看历史记录。',
       resizeWorkbar: '调整任务工作栏宽度',
     },
   },
@@ -1696,6 +1700,8 @@ const SHELL_COPY_BY_LOCALE = {
       graphModeEnabledTitle: 'Graph Mode is on',
       graphModeDisabledTitle: 'Graph Mode is off',
       graphModeStatusDescription: 'Use /graph on, /graph off, or /graph <task> for one turn.',
+      graphHistoryTitle: 'Graph history',
+      graphHistoryDescription: 'Use the run menu in the Agent Graph panel to inspect history.',
       resizeWorkbar: 'Resize task workbar',
     },
   },

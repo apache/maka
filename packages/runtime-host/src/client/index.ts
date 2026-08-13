@@ -67,7 +67,11 @@ export {
 } from './connect-or-spawn.js';
 export { runHostedExecution } from './hosted-execution.js';
 export { type ClientCapabilityProvider } from './client-capability.js';
-export { startRuntimeHostCapabilityProviderService } from './capability-provider-service.js';
+export { readRuntimeHostAgentGraphEpochs } from './agent-graph-reader.js';
+export {
+  startRuntimeHostCapabilityProviderService,
+  type RuntimeHostCapabilityProviderService,
+} from './capability-provider-service.js';
 export { loadOrCreateRuntimeHostClientInstanceId } from './client-instance-identity.js';
 export { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
 export {

@@ -82,6 +82,7 @@ import type {
 } from './transcript-contract.js';
 import type { PetPackManifestV1 } from '@maka/core/pet';
 import type {
+  AgentGraphEpochSummary,
   OperationInput,
   OperationOutput,
 } from '@maka/runtime-host/protocol';
@@ -497,13 +498,15 @@ export interface MakaBridge {
     subscribeChanges(handler: (event: DeepResearchChangedEvent) => void): () => void;
   };
   graphs: {
+    listEpochs(rootSessionId: string): Promise<AgentGraphEpochSummary[]>;
     getSnapshot(
       rootSessionId: string,
-      options?: AgentGraphClientSnapshotOptions,
+      options?: AgentGraphClientSnapshotOptions & { graphId?: string },
     ): Promise<AgentGraphClientSnapshot>;
     inspectOperator(
       rootSessionId: string,
       operatorId: string,
+      graphId?: string,
     ): Promise<AgentGraphOperatorInspection>;
     stop(rootSessionId: string): Promise<void>;
     subscribe(

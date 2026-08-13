@@ -2251,6 +2251,10 @@ function AppShellContent({
         );
         return true;
       }
+      if (graphCommand.kind === 'history') {
+        toastApi.info(shellCopy.graphHistoryTitle, shellCopy.graphHistoryDescription);
+        return true;
+      }
       if (graphCommand.kind === 'set_mode') {
         const changed = await setGraphMode(graphCommand.mode === 'graph');
         if (changed) {
