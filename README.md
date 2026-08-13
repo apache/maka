@@ -66,6 +66,14 @@ The signed and notarized Desktop app is available from [GitHub Releases](https:/
 
 Computer Use is not included in this first public build. Intel Macs, Windows, and Linux packages are not supported yet.
 
+### Windows x64 preview
+
+Windows is still an unsigned preview, not a supported release tier. When a release includes Windows
+assets, follow the [Windows preview installation and verification guide](docs/windows-support.md#install-the-windows-x64-preview)
+before running `Maka-<version>-win-x64.exe`. SmartScreen will identify the installer as coming from
+an unknown publisher; do not bypass that warning unless the downloaded SHA-256 matches the checksum
+published with the same release.
+
 ### Requirements
 
 - Node.js 22.19 or newer (CI uses Node.js 24);
