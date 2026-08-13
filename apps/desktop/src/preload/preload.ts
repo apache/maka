@@ -23,6 +23,13 @@ import type {
   DesktopProjectSnapshot,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+import {
+  DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+  assertDesktopTranscriptBatch,
+  type DesktopTranscriptBatch,
+  type DesktopTranscriptHandle,
+  type DesktopTranscriptOpenResult,
+} from './transcript-contract.js';
 import type {
   DesktopDiagnosticCopyResult,
   DesktopErrorDiagnosticInput,
@@ -63,7 +70,7 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { SessionChangedEvent, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type { SessionChangedEvent, SessionSummary } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type { ExternalSessionSummary } from '@maka/core/external-session';
@@ -677,9 +684,6 @@ const makaBridge = {
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome> {
       return invokeActiveRuntimeHost('sessions:steer', sessionId, text);
     },
-    readMessages(sessionId: string): Promise<StoredMessage[]> {
-      return invokeActiveRuntimeHost('sessions:readMessages', sessionId);
-    },
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel> {
       return invokeActiveRuntimeHost('sessions:readExecutionBoundary', sessionId);
     },
@@ -694,8 +698,17 @@ const makaBridge = {
     ): () => void {
       return subscribeActiveRuntimeHostEvent('sessions:active-interactions-changed', handler);
     },
-    listTurns(sessionId: string): Promise<TurnRecord[]> {
-      return invokeActiveRuntimeHost('sessions:listTurns', sessionId);
+    queryTurnContributions(
+      sessionId: string,
+      throughSequence: number | null,
+      position: number,
+    ): Promise<OperationOutput<'session.turns.query'>> {
+      return ipcRenderer.invoke(
+        'sessions:queryTurnContributions',
+        sessionId,
+        throughSequence,
+        position,
+      );
     },
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void> {
       return invokeActiveRuntimeHost('sessions:regenerateTurn', sessionId, input);
@@ -822,6 +835,60 @@ const makaBridge = {
     },
     abandonSessionCopy(sessionId: string): Promise<void> {
       return invokeActiveRuntimeHost('sessions:abandonSessionCopy', sessionId);
+    },
+  },
+  transcripts: {
+    async open(
+      sessionId: string,
+      handler: (batch: DesktopTranscriptBatch) => void,
+    ): Promise<DesktopTranscriptHandle> {
+      const consumerId = crypto.randomUUID();
+      const channel = `sessions:transcript:${consumerId}`;
+      let generation: string | undefined;
+      let closed = false;
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        value: unknown,
+      ) => {
+        if (closed) return;
+        const batch = assertDesktopTranscriptBatch(value);
+        if (batch.reset || generation === undefined) generation = batch.generation;
+        if (batch.generation === generation) handler(batch);
+      };
+      ipcRenderer.on(channel, listener);
+      let opened: DesktopTranscriptOpenResult;
+      try {
+        opened = await ipcRenderer.invoke('sessions:transcript:open', sessionId, consumerId);
+      } catch (error) {
+        closed = true;
+        ipcRenderer.off(channel, listener);
+        throw error;
+      }
+      generation ??= opened.generation;
+      const range = (
+        operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-around',
+        anchorSequence: number | null,
+        maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+      ): Promise<void> =>
+        ipcRenderer.invoke(operation, {
+          consumerId,
+          generation,
+          anchorSequence,
+          maxBytes,
+        });
+      return {
+        ...opened,
+        loadBefore: (anchorSequence, maxBytes) =>
+          range('sessions:transcript:load-before', anchorSequence, maxBytes),
+        loadAround: (sequence, maxBytes) =>
+          range('sessions:transcript:load-around', sequence, maxBytes),
+        async close() {
+          if (closed) return;
+          closed = true;
+          ipcRenderer.off(channel, listener);
+          await ipcRenderer.invoke('sessions:transcript:close', consumerId);
+        },
+      };
     },
   },
   externalSessions: {

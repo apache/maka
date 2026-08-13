@@ -518,6 +518,75 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('pages turn contributions at a fixed transcript watermark', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-contributions-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(session.id, [
+        { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'one' },
+        {
+          type: 'assistant',
+          id: 'assistant-1',
+          turnId: 'turn-1',
+          ts: 2,
+          text: 'answer',
+          modelId: 'model-1',
+        },
+        {
+          type: 'turn_state',
+          id: 'state-1',
+          turnId: 'turn-1',
+          ts: 3,
+          status: 'completed',
+          partialOutputRetained: true,
+        },
+        { type: 'user', id: 'user-2', turnId: 'turn-2', ts: 4, text: 'two' },
+      ]);
+
+      const first = await store.readTurnContributionsSnapshot(session.id, null, 0, 2);
+      assert.equal(first.throughSequence, 3);
+      assert.equal(first.nextPosition, 2);
+      assert.deepEqual(first.contributions, [
+        {
+          turnId: 'turn-1',
+          firstSequence: 0,
+          latestState: null,
+          hasAssistantMessage: true,
+          hasAssistantOutput: true,
+          hasToolResult: false,
+          hasFailedToolResult: false,
+          hasAbortNote: false,
+        },
+      ]);
+
+      await store.appendMessage(session.id, {
+        type: 'assistant',
+        id: 'assistant-2',
+        turnId: 'turn-2',
+        ts: 5,
+        text: 'later',
+        modelId: 'model-1',
+      });
+      const second = await store.readTurnContributionsSnapshot(
+        session.id,
+        first.throughSequence,
+        first.nextPosition!,
+        2,
+      );
+      assert.equal(second.throughSequence, 3);
+      assert.deepEqual(
+        second.contributions.map((entry) => entry.turnId),
+        ['turn-1', 'turn-2'],
+      );
+      assert.equal(second.contributions[0]?.latestState?.message.status, 'completed');
+      assert.equal(second.nextPosition, null);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('clears unread when the current read marker is already the latest visible message', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-read-marker-'));
     const store = createSessionStore(root);

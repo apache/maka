@@ -52,6 +52,7 @@ import {
   type SessionModelTarget,
   type SessionReadMarkerSetInput,
   type SessionUpdateResult,
+  type SessionTurnsQueryInput,
 } from '../protocol/index.js';
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
@@ -68,6 +69,7 @@ type SessionCatalogStores = Pick<
   | 'readCatalogRecord'
   | 'readExecutionBoundary'
   | 'readHeaderRecordSnapshot'
+  | 'readTurnContributionsSnapshot'
   | 'updateHeaderVersioned'
 >;
 
@@ -124,6 +126,7 @@ export class HostSessionCatalogCoordinator {
     'session.workspace.relocate': (input) => this.#relocateWorkspace(input),
     'session.read_marker.set': (input) => this.#setReadMarker(input),
     'session.execution_boundary.query': (input) => this.#queryExecutionBoundary(input),
+    'session.turns.query': (input) => this.#queryTurns(input),
   };
 
   readonly #stores: SessionCatalogStores;
@@ -224,6 +227,31 @@ export class HostSessionCatalogCoordinator {
         'persistence_failed',
         'Session execution boundary is unavailable',
       );
+    }
+  }
+
+  async #queryTurns(
+    input: SessionTurnsQueryInput,
+  ): Promise<OperationOutcome<'session.turns.query'>> {
+    try {
+      const page = await this.#stores.readTurnContributionsSnapshot(
+        input.sessionId,
+        input.throughSequence,
+        input.position,
+        input.maxMessages,
+      );
+      return {
+        ok: true,
+        result: {
+          sessionId: input.sessionId,
+          throughSequence: page.throughSequence,
+          contributions: page.contributions,
+          nextPosition: page.nextPosition,
+        },
+      };
+    } catch (error) {
+      if (isNotFound(error)) return turnsFailure('not_found', 'Session does not exist');
+      return turnsFailure('persistence_failed', 'Session turns are unavailable');
     }
   }
 
@@ -1082,6 +1110,13 @@ function executionBoundaryFailure(
   code: OperationError<'session.execution_boundary.query'>['code'],
   message: string,
 ): Extract<OperationOutcome<'session.execution_boundary.query'>, { readonly ok: false }> {
+  return { ok: false, error: { code, message } };
+}
+
+function turnsFailure(
+  code: OperationError<'session.turns.query'>['code'],
+  message: string,
+): Extract<OperationOutcome<'session.turns.query'>, { readonly ok: false }> {
   return { ok: false, error: { code, message } };
 }
 

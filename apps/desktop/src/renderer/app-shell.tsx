@@ -182,6 +182,7 @@ import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellLayout } from './use-shell-layout';
 import { useShellResume } from './use-shell-resume';
 import { recoverOrphanedCompanionCopies } from './quote-companion-core';
+import { desktopSessionsWithTurnIndex } from './session-turn-index.js';
 import { useSideConversationWorkspace } from './use-side-conversation-workspace';
 
 function rebaseWorkspaceFileReferences(
@@ -337,6 +338,7 @@ function AppShellContent({
     clearRuntimeHostSessionState,
     messages,
     setMessages,
+    transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,
     messageRetryPendingRef,
@@ -384,6 +386,7 @@ function AppShellContent({
   const [newChatSwarmModeActive, setNewChatSwarmModeActive] = useState(false);
   const [newChatGraphModeActive, setNewChatGraphModeActive] = useState(false);
   const [pendingOrchestrationModeBySession, setPendingOrchestrationModeBySession] = useState<Record<string, boolean>>({});
+  const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
   // P3: session ids with a live embedded-browser view. The right-side
   // BrowserPanel mounts only for these, so ordinary chats reserve no space.
@@ -612,7 +615,7 @@ function AppShellContent({
   useLayoutEffect(() => {
     if (companionRecoveryStartedRef.current) return;
     companionRecoveryStartedRef.current = true;
-    void recoverOrphanedCompanionCopies(window.maka.sessions);
+    void recoverOrphanedCompanionCopies(desktopSessionsWithTurnIndex());
   }, []);
   const onCompanionForkVisibilityChange = useCallback(
     (event: Parameters<typeof applyCompanionForkVisibilityEvent>[1]) =>
@@ -1879,6 +1882,7 @@ function AppShellContent({
     setMessageLoadErrorBySession,
     setMessageRetryPendingBySession,
     setMessages,
+    transcriptRangeRef,
     setNavSelection,
     setLiveTurnBySession,
     setInteractionBySession,
@@ -2315,6 +2319,7 @@ function AppShellContent({
     setMessageLoadErrorBySession,
     setMessageLoadPending,
     setMessages,
+    transcriptRangeRef,
     setSessionEventHealthBySession,
     toastApi,
   });
@@ -2471,6 +2476,38 @@ function AppShellContent({
   }
 
   const activeMessageLoadError = activeId ? messageLoadErrorBySession[activeId] : undefined;
+  let activeTranscriptRange;
+  try {
+    const controller = transcriptRangeRef.current;
+    const range = controller?.store.range();
+    if (range?.sessionId === activeId) activeTranscriptRange = range;
+  } catch {
+    activeTranscriptRange = undefined;
+  }
+  async function loadTranscriptHistory(target: 'earlier' | 'latest') {
+    const controller = transcriptRangeRef.current;
+    const sessionId = activeId;
+    if (!controller || !sessionId || historyLoadPendingSessionId) return;
+    setHistoryLoadPendingSessionId(sessionId);
+    try {
+      if (target === 'earlier') await controller.loadBefore();
+      else await controller.loadLatest();
+      if (transcriptRangeRef.current === controller && activeIdRef.current === sessionId) {
+        setMessages([...controller.store.snapshot().messages]);
+      }
+    } catch (error) {
+      toastApi.error(
+        desktopConversationCopy.actions.messageReadFailedTitle,
+        localizedShellErrorMessage(
+          error,
+          desktopConversationCopy.actions.operationFailedFallback,
+          uiLocale,
+        ),
+      );
+    } finally {
+      setHistoryLoadPendingSessionId((current) => current === sessionId ? undefined : current);
+    }
+  }
   const homeSurfaceActive =
     navSelection.section === 'sessions' &&
     messages.length === 0 &&
@@ -2937,6 +2974,11 @@ function AppShellContent({
                   <ChatMessageSurface
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
+                hasOlderHistory={activeTranscriptRange?.hasOlder === true}
+                hasNewerHistory={activeTranscriptRange?.hasNewer === true}
+                historyLoadPending={historyLoadPendingSessionId === activeId}
+                onLoadEarlierHistory={() => void loadTranscriptHistory('earlier')}
+                onReturnToLatestHistory={() => void loadTranscriptHistory('latest')}
                 liveContentSeedRevision={activeEventSeed.sessionId === activeId
                   ? activeEventSeed.revision
                   : 0}

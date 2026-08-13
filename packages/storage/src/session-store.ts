@@ -55,6 +55,7 @@ import {
   type SessionSummary,
   type StoredMessage,
   type TurnRecord,
+  type TurnStateMessage,
   type UserMessage,
 } from '@maka/core/session';
 
@@ -188,6 +189,23 @@ export interface SessionTranscriptStoragePage {
   readonly next: { readonly position: number; readonly byteOffset: number | null } | null;
 }
 
+export interface SessionTurnContribution {
+  readonly turnId: string;
+  readonly firstSequence: number;
+  readonly latestState: { readonly sequence: number; readonly message: TurnStateMessage } | null;
+  readonly hasAssistantMessage: boolean;
+  readonly hasAssistantOutput: boolean;
+  readonly hasToolResult: boolean;
+  readonly hasFailedToolResult: boolean;
+  readonly hasAbortNote: boolean;
+}
+
+export interface SessionTurnContributionPage {
+  readonly throughSequence: number | null;
+  readonly contributions: readonly SessionTurnContribution[];
+  readonly nextPosition: number | null;
+}
+
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
@@ -204,6 +222,12 @@ export interface SessionStore {
     request: SessionTranscriptPageRequest,
   ): Promise<SessionTranscriptStoragePage>;
   readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null>;
+  readTurnContributionsSnapshot(
+    sessionId: string,
+    throughSequence: number | null,
+    position: number,
+    maxMessages: number,
+  ): Promise<SessionTurnContributionPage>;
   /** Read durable messages for startup recovery. */
   readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]>;
   /** Derive durable turns without triggering connection-lock self-healing. */
@@ -662,6 +686,16 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null> {
     await this.ensureReady();
     return this.metadata.readTranscriptHighWater(sessionId);
+  }
+
+  async readTurnContributionsSnapshot(
+    sessionId: string,
+    throughSequence: number | null,
+    position: number,
+    maxMessages: number,
+  ): Promise<SessionTurnContributionPage> {
+    await this.ensureReady();
+    return this.metadata.readTurnContributions(sessionId, throughSequence, position, maxMessages);
   }
 
   async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {

@@ -33,6 +33,7 @@ import { SCHEDULED_TASK_OPERATION_SPECS } from './scheduled-task.js';
 import { SESSION_CATALOG_OPERATION_SPECS } from './session-catalog.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
 import { SESSION_TRANSCRIPT_OPERATION_SPECS } from './session-transcript.js';
+import { SESSION_TURNS_OPERATION_SPECS } from './session-turns.js';
 import { SESSION_REVISION_OPERATION_SPECS } from './session-revision.js';
 import { SESSION_RETIREMENT_OPERATION_SPECS } from './session-retirement.js';
 import { SESSION_EFFECT_OPERATION_SPECS } from './session-effects.js';
@@ -145,6 +146,7 @@ export * from './session-catalog.js';
 export * from './session-revision.js';
 export * from './session-retirement.js';
 export * from './session-transcript.js';
+export * from './session-turns.js';
 export * from './session-effects.js';
 export * from './skill-catalog.js';
 export * from './usage-pricing.js';
@@ -174,6 +176,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   INTERACTION_OPERATION_SPECS,
   SESSION_CONTINUITY_OPERATION_SPECS,
   SESSION_TRANSCRIPT_OPERATION_SPECS,
+  SESSION_TURNS_OPERATION_SPECS,
   SESSION_CATALOG_OPERATION_SPECS,
   SESSION_EFFECT_OPERATION_SPECS,
   SESSION_REVISION_OPERATION_SPECS,
@@ -273,6 +276,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'session.revision.create',
   'session.transcript.page',
   'session.transcript.overlay.release',
+  'session.turns.query',
   'session.workspace.relocate',
   'skill.catalog.invocable.query',
   'skill.catalog.mutate',

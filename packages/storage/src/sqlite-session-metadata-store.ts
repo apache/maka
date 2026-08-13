@@ -85,6 +85,8 @@ import {
   type SessionTranscriptMessageLookupRequest,
   type SessionTranscriptPageRequest,
   type SessionTranscriptStoragePage,
+  type SessionTurnContribution,
+  type SessionTurnContributionPage,
 } from './session-store.js';
 import {
   isDiscardableConversationCopy,
@@ -1606,6 +1608,127 @@ export class SqliteSessionMetadataStore {
       .prepare('SELECT MAX(sequence) AS high_water FROM session_messages WHERE session_id = ?')
       .get(sessionId) as { high_water?: unknown };
     return nullableStoredMessageSequence(row.high_water, sessionId);
+  }
+
+  async readTurnContributions(
+    sessionId: string,
+    throughSequence: number | null,
+    position: number,
+    maxMessages: number,
+  ): Promise<SessionTurnContributionPage> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    if (
+      (throughSequence !== null &&
+        (!Number.isSafeInteger(throughSequence) || throughSequence < 0)) ||
+      !Number.isSafeInteger(position) ||
+      position < 0 ||
+      !Number.isSafeInteger(maxMessages) ||
+      maxMessages < 1 ||
+      maxMessages > 256
+    ) {
+      throw new Error('Invalid Session turn contribution request');
+    }
+    return this.readTransaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      const highWaterRow = this.db
+        .prepare('SELECT MAX(sequence) AS high_water FROM session_messages WHERE session_id = ?')
+        .get(sessionId) as { high_water?: unknown };
+      const actualHighWater = nullableStoredMessageSequence(highWaterRow.high_water, sessionId);
+      const fixedThrough = throughSequence ?? actualHighWater;
+      if (fixedThrough === null) {
+        return { throughSequence: null, contributions: [], nextPosition: null };
+      }
+      if (actualHighWater === null || fixedThrough > actualHighWater) {
+        throw new Error(`Session turn watermark is ahead of durable storage: ${sessionId}`);
+      }
+      const rows = this.db
+        .prepare(
+          `
+          SELECT sequence,
+            json_extract(record_json, '$.turnId') AS turn_id,
+            CASE
+              WHEN json_extract(record_json, '$.type') = 'turn_state' THEN record_json
+              ELSE NULL
+            END AS turn_state_json,
+            CASE
+              WHEN json_extract(record_json, '$.type') = 'assistant' THEN 1
+              ELSE 0
+            END AS has_assistant_message,
+            CASE
+              WHEN json_extract(record_json, '$.type') = 'assistant'
+                AND length(trim(COALESCE(json_extract(record_json, '$.text'), ''))) > 0 THEN 1
+              ELSE 0
+            END AS has_assistant_output,
+            CASE WHEN json_extract(record_json, '$.type') = 'tool_result' THEN 1 ELSE 0 END
+              AS has_tool_result,
+            CASE
+              WHEN json_extract(record_json, '$.type') = 'tool_result'
+                AND json_extract(record_json, '$.isError') = 1 THEN 1
+              ELSE 0
+            END AS has_failed_tool_result,
+            CASE
+              WHEN json_extract(record_json, '$.type') = 'system_note'
+                AND json_extract(record_json, '$.kind') = 'abort' THEN 1
+              ELSE 0
+            END AS has_abort_note
+          FROM session_messages
+          WHERE session_id = ? AND sequence >= ? AND sequence <= ?
+          ORDER BY sequence ASC
+          LIMIT ?
+        `,
+        )
+        .all(
+          sessionId,
+          position,
+          fixedThrough,
+          maxMessages,
+        ) as unknown as SessionTurnContributionRow[];
+      const contributions = new Map<string, SessionTurnContribution>();
+      for (const row of rows) {
+        const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+        if (typeof row.turn_id !== 'string' || row.turn_id.length === 0) continue;
+        const current = contributions.get(row.turn_id) ?? {
+          turnId: row.turn_id,
+          firstSequence: sequence,
+          latestState: null,
+          hasAssistantMessage: false,
+          hasAssistantOutput: false,
+          hasToolResult: false,
+          hasFailedToolResult: false,
+          hasAbortNote: false,
+        };
+        let latestState = current.latestState;
+        if (row.turn_state_json !== null) {
+          const message = decodeStoredMessage(JSON.parse(row.turn_state_json) as unknown);
+          if (message.type !== 'turn_state') {
+            throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+          }
+          latestState = { sequence, message };
+        }
+        contributions.set(row.turn_id, {
+          ...current,
+          latestState,
+          hasAssistantMessage: current.hasAssistantMessage || row.has_assistant_message === 1,
+          hasAssistantOutput: current.hasAssistantOutput || row.has_assistant_output === 1,
+          hasToolResult: current.hasToolResult || row.has_tool_result === 1,
+          hasFailedToolResult: current.hasFailedToolResult || row.has_failed_tool_result === 1,
+          hasAbortNote: current.hasAbortNote || row.has_abort_note === 1,
+        });
+      }
+      const lastSequence = rows.at(-1)?.sequence;
+      const nextPosition =
+        rows.length === maxMessages &&
+        typeof lastSequence === 'number' &&
+        lastSequence < fixedThrough
+          ? lastSequence + 1
+          : null;
+      return {
+        throughSequence: fixedThrough,
+        contributions: [...contributions.values()],
+        nextPosition,
+      };
+    });
   }
 
   async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
@@ -4227,6 +4350,17 @@ interface SessionMetadataRow {
   payload_json: string;
   metadata_version: number;
   committed_at: number;
+}
+
+interface SessionTurnContributionRow {
+  readonly sequence?: unknown;
+  readonly turn_id?: unknown;
+  readonly turn_state_json: string | null;
+  readonly has_assistant_message?: unknown;
+  readonly has_assistant_output?: unknown;
+  readonly has_tool_result?: unknown;
+  readonly has_failed_tool_result?: unknown;
+  readonly has_abort_note?: unknown;
 }
 
 interface OwnedAgentGraphOperatorRow extends SessionMetadataRow {

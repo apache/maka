@@ -1,5 +1,5 @@
 import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
-import type { SessionChangedReason, StoredMessage } from '@maka/core/session';
+import type { SessionChangedReason, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { AgentGraphClientChangedEvent } from '@maka/runtime/stream-graph-coordinator';
 import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
 import {
@@ -17,18 +17,41 @@ import type {
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 import {
+  DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES,
+  type DesktopTranscriptBatch,
+  type DesktopTranscriptOpenResult,
+  type DesktopTranscriptRangeRequest,
+} from '../preload/transcript-contract.js';
+import {
   type PreparedSessionSubscription,
   RuntimeHostSessionSubscriptionOwner,
   SessionRemovedSubscriptionError,
 } from "./runtime-host-session-subscription-owner.js";
+import {
+  type DesktopTranscriptReplica,
+  type DesktopTranscriptReplicaChange,
+} from './desktop-transcript-replica.js';
+import {
+  encodeDesktopTranscriptChange,
+  encodeDesktopTranscriptSnapshot,
+} from './desktop-transcript-ipc.js';
 
-type SessionObserverClient = Pick<DesktopRuntimeHostClient, "openSession">;
+type SessionObserverClient = Pick<DesktopRuntimeHostClient, 'openSession'> &
+  Partial<Pick<DesktopRuntimeHostClient, 'listSessionTurns'>>;
 
 export interface RuntimeHostSessionObserverTarget {
   readonly id: number;
   send(channel: string, event: SessionEvent): void;
   once(event: "destroyed", listener: () => void): void;
   off(event: "destroyed", listener: () => void): void;
+}
+
+export interface RuntimeHostTranscriptTarget {
+  readonly id: number;
+  send(channel: string, batch: DesktopTranscriptBatch): void;
+  once(event: 'destroyed', listener: () => void): void;
+  off(event: 'destroyed', listener: () => void): void;
 }
 
 export interface RuntimeHostSessionObserverDeps {
@@ -65,12 +88,20 @@ interface ObservedSessionState {
   readonly sessionId: string;
   readonly targets: Map<number, ObserverTargetGroup>;
   readonly watchedTurnIds: Set<string>;
+  readonly transcriptConsumers: Map<string, TranscriptConsumer>;
   readonly subscriptionOwner: RuntimeHostSessionSubscriptionOwner;
-  transcript?: StoredMessage[];
-  transcriptConsumed: boolean;
+  replica?: DesktopTranscriptReplica;
   snapshot?: SessionContinuitySnapshot;
   projector?: RuntimeHostSessionProjector;
+  transcriptAccess: number;
   closing: boolean;
+}
+
+interface TranscriptConsumer {
+  readonly consumerId: string;
+  readonly target: RuntimeHostTranscriptTarget;
+  readonly destroyedListener: () => void;
+  generation: string;
 }
 
 interface ObserverRegistration {
@@ -95,7 +126,7 @@ interface SubscriptionFailureIdentity {
 export class RuntimeHostSessionObserver {
   readonly #states = new Map<string, ObservedSessionState>();
   readonly #observers = new Map<string, ObserverRegistration>();
-  readonly #transcriptRefreshes = new Map<string, Promise<StoredMessage[]>>();
+  readonly #transcriptConsumers = new Map<string, ObservedSessionState>();
   readonly #client: SessionObserverClient;
   readonly #emitSessionsChanged: RuntimeHostSessionObserverDeps["emitSessionsChanged"];
   readonly #emitSessionDomainChanged: (change: SessionDomainChange) => void;
@@ -115,6 +146,7 @@ export class RuntimeHostSessionObserver {
   readonly #recoverConnectionClosed: boolean;
   readonly #now: () => number;
   #closed = false;
+  #transcriptAccessClock = 0;
 
   constructor(deps: RuntimeHostSessionObserverDeps) {
     this.#client = deps.client;
@@ -135,25 +167,81 @@ export class RuntimeHostSessionObserver {
     this.#now = deps.now ?? Date.now;
   }
 
-  async readMessages(sessionId: string): Promise<StoredMessage[]> {
+  async openTranscript(
+    sessionId: string,
+    consumerId: string,
+    target: RuntimeHostTranscriptTarget,
+  ): Promise<DesktopTranscriptOpenResult> {
     this.#assertOpen();
-    const existing = this.#states.get(sessionId);
-    if (existing) {
-      await existing.subscriptionOwner.waitUntilReady();
-      if (!existing.transcriptConsumed) {
-        existing.transcriptConsumed = true;
-        return cloneMessages(existing.transcript ?? []);
-      }
+    if (this.#transcriptConsumers.has(consumerId)) {
+      throw new Error('Desktop transcript consumer identity was reused');
     }
-    if (!existing) {
-      const state = this.#state(sessionId);
-      await state.subscriptionOwner.waitUntilReady();
-      state.transcriptConsumed = true;
-      const transcript = cloneMessages(state.transcript ?? []);
-      void this.#closeIfIdle(state);
-      return transcript;
+    const state = this.#state(sessionId);
+    await state.subscriptionOwner.waitUntilReady();
+    const replica = state.replica;
+    if (!replica) throw new Error('Desktop transcript replica is unavailable');
+    const destroyedListener = () => {
+      void this.closeTranscript(consumerId);
+    };
+    const consumer: TranscriptConsumer = {
+      consumerId,
+      target,
+      destroyedListener,
+      generation: replica.generation,
+    };
+    state.transcriptConsumers.set(consumerId, consumer);
+    this.#transcriptConsumers.set(consumerId, state);
+    target.once('destroyed', destroyedListener);
+    try {
+      this.#sendTranscriptBatches(consumer, encodeDesktopTranscriptSnapshot(replica.snapshot()));
+    } catch (error) {
+      this.#detachTranscriptConsumer(state, consumer);
+      await this.#closeIfIdle(state);
+      throw error;
     }
-    return this.#loadCurrentTranscript(sessionId);
+    this.#touchReplica(state);
+    const readThroughMessageId = replica.latestVisibleMessageId();
+    return {
+      sessionId,
+      generation: replica.generation,
+      hostEpoch: replica.hostEpoch,
+      readThroughMessageId,
+    };
+  }
+
+  async loadTranscriptBefore(
+    request: DesktopTranscriptRangeRequest,
+    targetId?: number,
+  ): Promise<void> {
+    const { state, replica } = this.#requireTranscriptConsumer(request, targetId);
+    await replica.loadBefore(request.anchorSequence, requireTranscriptRangeBytes(request.maxBytes));
+    this.#touchReplica(state);
+  }
+
+  async loadTranscriptAround(
+    request: DesktopTranscriptRangeRequest,
+    targetId?: number,
+  ): Promise<void> {
+    const { state, replica } = this.#requireTranscriptConsumer(request, targetId);
+    if (request.anchorSequence === null) {
+      throw new Error('Desktop transcript around request requires an anchor');
+    }
+    await replica.loadAround(
+      request.anchorSequence,
+      requireTranscriptRangeBytes(request.maxBytes),
+    );
+    this.#touchReplica(state);
+  }
+
+  async closeTranscript(consumerId: string, targetId?: number): Promise<void> {
+    const state = this.#transcriptConsumers.get(consumerId);
+    const consumer = state?.transcriptConsumers.get(consumerId);
+    if (!state || !consumer) return;
+    if (targetId !== undefined && consumer.target.id !== targetId) {
+      throw new Error('Desktop transcript consumer belongs to another renderer');
+    }
+    this.#detachTranscriptConsumer(state, consumer);
+    await this.#closeIfIdle(state);
   }
 
   async snapshot(sessionId: string): Promise<SessionContinuitySnapshot> {
@@ -226,8 +314,8 @@ export class RuntimeHostSessionObserver {
     const root = state.snapshot?.rootTurn;
     if (root && root.turnId === turnId && isTerminalTurn(root)) {
       this.#finishWatchedTurn(state, turnId, "completed");
-      void this.#closeIfIdle(state);
     }
+    void this.#closeIfIdle(state);
   }
 
   activeInteraction(
@@ -322,6 +410,10 @@ export class RuntimeHostSessionObserver {
       client: this.#client,
       sessionId,
       now: this.#now,
+      transcriptReplicaOptions: {
+        onChange: (replica, change) =>
+          this.#broadcastTranscriptChange(state, replica, change),
+      },
       commit: (subscription, recovered) =>
         this.#commitSubscription(state, subscription, recovered),
       acceptFrame: (frame) => this.#acceptFrame(state, frame),
@@ -336,6 +428,7 @@ export class RuntimeHostSessionObserver {
           "[runtime-host-session-observer] subscription recovered",
           subscriptionFailureIdentity(state, error),
         );
+        void this.#closeIfIdle(state);
       },
       recoveryFailed: (initialError, error) => {
         console.error(
@@ -353,8 +446,9 @@ export class RuntimeHostSessionObserver {
       sessionId,
       targets: new Map(),
       watchedTurnIds: new Set(),
+      transcriptConsumers: new Map(),
       subscriptionOwner,
-      transcriptConsumed: false,
+      transcriptAccess: 0,
       closing: false,
     };
     this.#states.set(sessionId, state);
@@ -370,7 +464,11 @@ export class RuntimeHostSessionObserver {
     }
   }
 
-  #acceptFrame(state: ObservedSessionState, frame: SubscriptionFrame): void {
+  async #acceptFrame(state: ObservedSessionState, frame: SubscriptionFrame): Promise<void> {
+    if (frame.kind === 'subscription.transcript_advanced') {
+      await state.replica?.advance(frame.throughSequence);
+      return;
+    }
     if (frame.kind === "subscription.runtime_resource_pty_data") {
       this.#emitRuntimeResourcePtyData({
         sessionId: frame.sessionId,
@@ -514,27 +612,47 @@ export class RuntimeHostSessionObserver {
     this.#publishSubscriptionFailure(state, error);
   }
 
-  #commitSubscription(
+  async #commitSubscription(
     state: ObservedSessionState,
     subscription: PreparedSessionSubscription,
     recovered: boolean,
-  ): void {
+  ): Promise<void> {
     if (state.closing || this.#states.get(state.sessionId) !== state) {
       throw new Error("Runtime Host Session observer closed before commit");
     }
     const previousSnapshot = state.snapshot;
     const projector = new RuntimeHostSessionProjector(
       subscription.snapshot,
-      subscription.transcript,
+      subscription.replica.projectionSeed,
       this.#now,
       subscription.activeAssistantStreams,
     );
+    const terminalTurnIds = new Set<string>();
+    for (const turnId of state.watchedTurnIds) {
+      if (subscription.snapshot.rootTurn?.turnId !== turnId) terminalTurnIds.add(turnId);
+    }
+    if (previousSnapshot?.rootTurn && !isTerminalTurn(previousSnapshot.rootTurn)) {
+      const nextRoot = subscription.snapshot.rootTurn;
+      if (!nextRoot || nextRoot.runId !== previousSnapshot.rootTurn.runId) {
+        terminalTurnIds.add(previousSnapshot.rootTurn.turnId);
+      }
+    }
+    const recordedTurns = await this.#readMissingRecordedTurns(
+      subscription.replica,
+      terminalTurnIds,
+    );
+    if (state.closing || this.#states.get(state.sessionId) !== state) {
+      throw new Error('Runtime Host Session observer closed before commit');
+    }
     const replacement =
       previousSnapshot
         ? replacementProjection(
             previousSnapshot,
             projector,
-            subscription.transcript,
+            previousSnapshot.rootTurn
+              ? subscription.replica.messagesForTurn(previousSnapshot.rootTurn.turnId)
+              : [],
+            recordedTurns,
           )
         : undefined;
     const goalChanged = previousSnapshot
@@ -542,9 +660,12 @@ export class RuntimeHostSessionObserver {
       : false;
 
     state.snapshot = structuredClone(subscription.snapshot);
-    state.transcript = subscription.transcript;
-    state.transcriptConsumed = false;
+    const previousReplica = state.replica;
+    state.replica = subscription.replica;
     state.projector = projector;
+    previousReplica?.close();
+    this.#resetTranscriptConsumers(state, subscription.replica);
+    this.#touchReplica(state);
 
     if (replacement) {
       for (const event of replacement.terminalEvents) {
@@ -585,11 +706,11 @@ export class RuntimeHostSessionObserver {
     this.#finishPersistedWatchedTurns(
       state,
       projector,
-      subscription.transcript,
+      subscription.replica,
+      recordedTurns,
     );
 
     if (recovered) this.#emitSubscriptionRecovered(state.sessionId);
-    void this.#closeIfIdle(state);
   }
 
   #emitActiveInteractions(state: ObservedSessionState): void {
@@ -605,44 +726,54 @@ export class RuntimeHostSessionObserver {
   #finishPersistedWatchedTurns(
     state: ObservedSessionState,
     projector: RuntimeHostSessionProjector,
-    transcript: readonly StoredMessage[],
+    replica: DesktopTranscriptReplica,
+    recordedTurns: ReadonlyMap<string, TurnRecord>,
   ): void {
+    const root = projector.snapshot.rootTurn;
     for (const turnId of [...state.watchedTurnIds]) {
-      if (projector.seedStoredTerminal(turnId, transcript).length > 0) {
+      if (root?.turnId === turnId && isTerminalTurn(root)) {
+        this.#finishWatchedTurn(state, turnId, 'completed');
+        continue;
+      }
+      const events = projector.seedStoredTerminal(turnId, replica.messagesForTurn(turnId));
+      const recorded = recordedTurns.get(turnId);
+      if (
+        events.some(isTerminalSessionEvent) ||
+        (recorded && projector.seedRecordedTerminal(recorded).length > 0)
+      ) {
         this.#finishWatchedTurn(state, turnId, "completed");
       }
     }
   }
 
-  async #loadCurrentTranscript(sessionId: string): Promise<StoredMessage[]> {
-    let refresh = this.#transcriptRefreshes.get(sessionId);
-    if (!refresh) {
-      refresh = this.#readCurrentTranscript(sessionId);
-      this.#transcriptRefreshes.set(sessionId, refresh);
-      const release = () => {
-        if (this.#transcriptRefreshes.get(sessionId) === refresh) {
-          this.#transcriptRefreshes.delete(sessionId);
-        }
-      };
-      void refresh.then(release, release);
-    }
-    return refresh.then(cloneMessages);
-  }
-
-  async #readCurrentTranscript(sessionId: string): Promise<StoredMessage[]> {
-    const handle = await this.#client.openSession(sessionId);
-    void drainFrames(handle.events).catch(() => undefined);
-    try {
-      return await handle.transcript;
-    } finally {
-      await handle.close();
-    }
+  async #readMissingRecordedTurns(
+    replica: DesktopTranscriptReplica,
+    turnIds: ReadonlySet<string>,
+  ): Promise<Map<string, TurnRecord>> {
+    const missing = [...turnIds].filter(
+      (turnId) => !hasStoredTerminal(replica.messagesForTurn(turnId)),
+    );
+    if (missing.length === 0 || !this.#client.listSessionTurns) return new Map();
+    const wanted = new Set(missing);
+    return new Map(
+      (await this.#client.listSessionTurns(replica.sessionId))
+        .filter((turn) => wanted.has(turn.turnId))
+        .map((turn) => [turn.turnId, turn]),
+    );
   }
 
   async #closeIfIdle(state: ObservedSessionState): Promise<void> {
-    if (state.targets.size > 0 || state.watchedTurnIds.size > 0) return;
+    if (
+      state.targets.size > 0 ||
+      state.watchedTurnIds.size > 0 ||
+      state.transcriptConsumers.size > 0
+    ) return;
     await Promise.resolve();
-    if (state.targets.size === 0 && state.watchedTurnIds.size === 0) {
+    if (
+      state.targets.size === 0 &&
+      state.watchedTurnIds.size === 0 &&
+      state.transcriptConsumers.size === 0
+    ) {
       await this.#closeState(state);
     }
   }
@@ -687,6 +818,10 @@ export class RuntimeHostSessionObserver {
         this.#states.delete(state.sessionId);
       for (const group of state.targets.values())
         this.#detachTarget(state, group);
+      for (const consumer of state.transcriptConsumers.values()) {
+        this.#detachTranscriptConsumer(state, consumer);
+      }
+      state.replica?.close();
     }
     await state.subscriptionOwner.close();
   }
@@ -725,6 +860,118 @@ export class RuntimeHostSessionObserver {
     if (this.#closed)
       throw new Error("Runtime Host Session observer is closed");
   }
+
+  #broadcastTranscriptChange(
+    state: ObservedSessionState,
+    replica: DesktopTranscriptReplica,
+    change: DesktopTranscriptReplicaChange,
+  ): void {
+    if (state.replica !== replica || state.closing) return;
+    state.projector?.noteTranscriptMessageIds(
+      change.durableUpserts.map((entry) => entry.message.id),
+    );
+    this.#sendTranscriptChange(state, replica, change);
+    this.#touchReplica(state);
+    void this.#closeIfIdle(state);
+  }
+
+  #sendTranscriptChange(
+    state: ObservedSessionState,
+    replica: DesktopTranscriptReplica,
+    change: DesktopTranscriptReplicaChange,
+  ): void {
+    const batches = encodeDesktopTranscriptChange(
+      {
+        sessionId: replica.sessionId,
+        generation: replica.generation,
+        hostEpoch: replica.hostEpoch,
+      },
+      change,
+    );
+    for (const consumer of [...state.transcriptConsumers.values()]) {
+      try {
+        this.#sendTranscriptBatches(consumer, batches);
+      } catch {
+        this.#detachTranscriptConsumer(state, consumer);
+      }
+    }
+  }
+
+  #resetTranscriptConsumers(
+    state: ObservedSessionState,
+    replica: DesktopTranscriptReplica,
+  ): void {
+    const batches = encodeDesktopTranscriptSnapshot(replica.snapshot());
+    for (const consumer of [...state.transcriptConsumers.values()]) {
+      consumer.generation = replica.generation;
+      try {
+        this.#sendTranscriptBatches(consumer, batches);
+      } catch {
+        this.#detachTranscriptConsumer(state, consumer);
+      }
+    }
+  }
+
+  #sendTranscriptBatches(
+    consumer: TranscriptConsumer,
+    batches: readonly DesktopTranscriptBatch[],
+  ): void {
+    const channel = transcriptChannel(consumer.consumerId);
+    for (const batch of batches) consumer.target.send(channel, batch);
+  }
+
+  #requireTranscriptConsumer(
+    request: DesktopTranscriptRangeRequest,
+    targetId?: number,
+  ): {
+    state: ObservedSessionState;
+    replica: DesktopTranscriptReplica;
+  } {
+    const state = this.#transcriptConsumers.get(request.consumerId);
+    const consumer = state?.transcriptConsumers.get(request.consumerId);
+    const replica = state?.replica;
+    if (!state || !consumer || !replica) {
+      throw new Error('Desktop transcript consumer does not exist');
+    }
+    if (targetId !== undefined && consumer.target.id !== targetId) {
+      throw new Error('Desktop transcript consumer belongs to another renderer');
+    }
+    if (consumer.generation !== request.generation || replica.generation !== request.generation) {
+      throw new Error('Desktop transcript generation changed');
+    }
+    return { state, replica };
+  }
+
+  #detachTranscriptConsumer(
+    state: ObservedSessionState,
+    consumer: TranscriptConsumer,
+  ): void {
+    if (state.transcriptConsumers.get(consumer.consumerId) !== consumer) return;
+    state.transcriptConsumers.delete(consumer.consumerId);
+    this.#transcriptConsumers.delete(consumer.consumerId);
+    consumer.target.off('destroyed', consumer.destroyedListener);
+  }
+
+  #touchReplica(state: ObservedSessionState): void {
+    state.transcriptAccess = ++this.#transcriptAccessClock;
+    let total = 0;
+    const replicas: Array<{ state: ObservedSessionState; replica: DesktopTranscriptReplica }> = [];
+    for (const candidate of this.#states.values()) {
+      if (!candidate.replica) continue;
+      total += candidate.replica.residentBytes;
+      replicas.push({ state: candidate, replica: candidate.replica });
+    }
+    replicas.sort((left, right) => left.state.transcriptAccess - right.state.transcriptAccess);
+    for (const candidate of replicas) {
+      if (total <= DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES) break;
+      const before = candidate.replica.residentBytes;
+      const change = candidate.replica.trimDurable(
+        Math.max(0, before - (total - DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES)),
+      );
+      if (change) this.#sendTranscriptChange(candidate.state, candidate.replica, change);
+      total -= before - candidate.replica.residentBytes;
+    }
+  }
 }
 
 function interactionToolUseId(interaction: InteractionPendingSnapshot): string {
@@ -735,6 +982,21 @@ function interactionToolUseId(interaction: InteractionPendingSnapshot): string {
 
 function sessionEventChannel(sessionId: string): string {
   return `sessions:event:${sessionId}`;
+}
+
+function transcriptChannel(consumerId: string): string {
+  return `sessions:transcript:${consumerId}`;
+}
+
+function requireTranscriptRangeBytes(value: number): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES
+  ) {
+    throw new Error('Invalid Desktop transcript range byte limit');
+  }
+  return value;
 }
 
 function sameGoal(
@@ -749,24 +1011,15 @@ function sameGoal(
   );
 }
 
-function cloneMessages(messages: readonly StoredMessage[]): StoredMessage[] {
-  return messages.map((message) => structuredClone(message));
-}
-
-async function drainFrames(
-  frames: AsyncIterable<SubscriptionFrame>,
-): Promise<void> {
-  for await (const _frame of frames) {
-    // A one-shot transcript read still owns a live Host subscription until it
-    // closes. Drain bounded frames so transcript pagination cannot be evicted
-    // as a slow consumer.
-  }
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function replacementProjection(
   previous: SessionContinuitySnapshot,
   projector: RuntimeHostSessionProjector,
   transcript: readonly StoredMessage[],
+  recordedTurns: ReadonlyMap<string, TurnRecord>,
 ): {
   terminalEvents: SessionEvent[];
   activeEvents: SessionEvent[];
@@ -782,6 +1035,10 @@ function replacementProjection(
         previousRoot.turnId,
         transcript,
       );
+      if (!stored.some(isTerminalSessionEvent)) {
+        const recorded = recordedTurns.get(previousRoot.turnId);
+        if (recorded) stored.push(...projector.seedRecordedTerminal(recorded));
+      }
       if (!stored.some(isTerminalSessionEvent)) {
         throw new RuntimeHostSubscriptionError(
           "projection_revision_invalid",
@@ -808,6 +1065,14 @@ function replacementProjection(
       terminalEvents.filter(isTerminalSessionEvent).map((event) => event.turnId),
     ),
   };
+}
+
+function hasStoredTerminal(messages: readonly StoredMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.type === 'turn_state' &&
+      message.status !== 'running',
+  );
 }
 
 function isTerminalSessionEvent(

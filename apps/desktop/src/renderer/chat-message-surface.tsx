@@ -18,6 +18,7 @@ import type { SessionHealthNoticeView } from './use-shell-chat-model';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
+import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { selectLiveTurn } from './use-app-shell-session-ui-reads';
 import { useAppShellSessionUiSelector } from './use-app-shell-session-ui-selector';
 import { useDeepResearchRun } from './use-deep-research-run';
@@ -68,6 +69,11 @@ interface ChatMessageSurfaceProps extends Omit<
   connections: LlmConnection[];
   onRefreshConnections: () => Promise<void> | void;
   onSkip: () => Promise<void> | void;
+  hasOlderHistory: boolean;
+  hasNewerHistory: boolean;
+  historyLoadPending: boolean;
+  onLoadEarlierHistory: () => void;
+  onReturnToLatestHistory: () => void;
 }
 
 function captureLiveContent(
@@ -101,9 +107,16 @@ export function ChatMessageSurface({
   connections,
   onRefreshConnections,
   onSkip,
+  hasOlderHistory,
+  hasNewerHistory,
+  historyLoadPending,
+  onLoadEarlierHistory,
+  onReturnToLatestHistory,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
-  const copy = getShellCopy(useUiLocale()).app;
+  const locale = useUiLocale();
+  const copy = getShellCopy(locale).app;
+  const transcriptCopy = getDesktopConversationCopy(locale).actions;
   // Every session-health-notice CTA routes to 设置 · 模型 (U1); this is the
   // action button's visible label.
   const goToModelsLabel = copy.goToModels;
@@ -201,6 +214,28 @@ export function ChatMessageSurface({
 
   return (
     <>
+      {(hasOlderHistory || hasNewerHistory) && (
+        <div className="maka-transcript-history-controls">
+          {hasOlderHistory && (
+            <Button
+              label={historyLoadPending ? transcriptCopy.loadingEarlier : transcriptCopy.loadEarlier}
+              variant="ghost"
+              size="sm"
+              isDisabled={historyLoadPending}
+              onClick={onLoadEarlierHistory}
+            />
+          )}
+          {hasNewerHistory && (
+            <Button
+              label={transcriptCopy.returnLatest}
+              variant="ghost"
+              size="sm"
+              isDisabled={historyLoadPending}
+              onClick={onReturnToLatestHistory}
+            />
+          )}
+        </div>
+      )}
       <ChatView
         {...chatViewRest}
         liveTurn={liveTurn}

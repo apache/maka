@@ -1,6 +1,7 @@
 import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
 import { type SessionEvent } from '@maka/core/events';
 import {
+  createRuntimeHostSessionProjectionSeed,
   RuntimeHostSessionProjector,
   isRuntimeHostTerminalTurn as isTerminalTurn,
   type RuntimeHostTerminalTurn as TerminalTurnSnapshot,
@@ -137,7 +138,7 @@ export class RuntimeHostSessionChannel {
     this.messages.push(...(messages ?? []).map((message) => structuredClone(message)));
     this.#projector = new RuntimeHostSessionProjector(
       this.snapshot,
-      this.messages,
+      createRuntimeHostSessionProjectionSeed(this.messages, this.snapshot.rootTurn?.turnId),
       this.#now,
       subscription.activeAssistantStreams,
     );
@@ -350,7 +351,7 @@ export class RuntimeHostSessionChannel {
     this.snapshot = nextSnapshot;
     this.#projector = new RuntimeHostSessionProjector(
       nextSnapshot,
-      this.messages,
+      createRuntimeHostSessionProjectionSeed(this.messages, nextSnapshot.rootTurn?.turnId),
       this.#now,
       this.#subscription.activeAssistantStreams,
     );

@@ -40,7 +40,7 @@ import type {
 } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { SessionChangedEvent, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type { SessionChangedEvent, SessionSummary } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type { ExternalSessionSummary } from '@maka/core/external-session';
@@ -77,6 +77,10 @@ import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
 import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
+import type {
+  DesktopTranscriptBatch,
+  DesktopTranscriptHandle,
+} from './transcript-contract.js';
 import type { PetPackManifestV1 } from '@maka/core/pet';
 import type {
   OperationInput,
@@ -429,7 +433,6 @@ export interface MakaBridge {
     >;
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
-    readMessages(sessionId: string): Promise<StoredMessage[]>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;
     subscribeActiveInteractions(
@@ -438,7 +441,11 @@ export interface MakaBridge {
         interactions: ActiveInteractionRequestEvent[];
       }) => void,
     ): () => void;
-    listTurns(sessionId: string): Promise<TurnRecord[]>;
+    queryTurnContributions(
+      sessionId: string,
+      throughSequence: number | null,
+      position: number,
+    ): Promise<OperationOutput<'session.turns.query'>>;
     compact(sessionId: string): Promise<void>;
     resumeLatest(sessionId: string): Promise<
       | { disposition: 'started'; runId: string; turnId: string }
@@ -491,6 +498,12 @@ export interface MakaBridge {
     remove(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
     cleanupSessionCopy(sessionId: string): Promise<void>;
     abandonSessionCopy(sessionId: string): Promise<void>;
+  };
+  transcripts: {
+    open(
+      sessionId: string,
+      handler: (batch: DesktopTranscriptBatch) => void,
+    ): Promise<DesktopTranscriptHandle>;
   };
   externalSessions: {
     listSources(): Promise<{ adapterIds: string[] }>;

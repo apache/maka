@@ -364,6 +364,15 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.readTranscriptMessagesSnapshot(sessionId, request)),
       readTranscriptHighWaterSnapshot: (sessionId) =>
         run(() => sessionStore.readTranscriptHighWaterSnapshot(sessionId)),
+      readTurnContributionsSnapshot: (sessionId, throughSequence, position, maxMessages) =>
+        run(() =>
+          sessionStore.readTurnContributionsSnapshot(
+            sessionId,
+            throughSequence,
+            position,
+            maxMessages,
+          ),
+        ),
       readMessagesForRecovery: (sessionId) =>
         run(() => sessionStore.readMessagesForRecovery(sessionId)),
       listTurnsSnapshot: (sessionId) => run(() => sessionStore.listTurnsSnapshot(sessionId)),

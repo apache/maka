@@ -55,6 +55,7 @@ export {
 } from './reconnect-lifecycle.js';
 export {
   RuntimeHostSubscriptionError,
+  type DecodedSessionTranscriptPage,
   type RuntimeHostSessionSubscription,
   type RuntimeHostSubscriptionFailureReason,
 } from './session-subscription.js';

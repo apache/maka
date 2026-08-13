@@ -8,6 +8,7 @@ import {
   hasNewTaskReloadIntent,
   markNewTaskReloadIntent,
 } from './new-task-reload-intent';
+import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
 
 type ToastApi = {
   error(title: string, description?: string): void;
@@ -21,6 +22,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const selectionRevisionRef = useRef(0);
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);
   const [messages, setMessages] = useState<StoredMessage[]>([]);
+  const transcriptRangeRef = useRef<DesktopTranscriptRangeController | undefined>(undefined);
   const [messageLoadPending, setMessageLoadPending] = useState(false);
   const messageRetryPendingRef = useRef<Set<string>>(new Set());
   const stopPendingRef = useRef<Set<string>>(new Set());
@@ -81,6 +83,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     clearRuntimeHostSessionState,
     messages,
     setMessages,
+    transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,
     messageRetryPendingRef,

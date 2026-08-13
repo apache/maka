@@ -81,6 +81,7 @@ function createActionsDeps() {
     setMessageLoadErrorBySession: () => undefined,
     setMessageRetryPendingBySession: () => undefined,
     setMessages: () => undefined,
+    transcriptRangeRef: { current: undefined },
     setNavSelection: () => undefined,
     setLiveTurnBySession: () => undefined,
     setInteractionBySession: () => undefined,
@@ -144,7 +145,6 @@ describe('composer first-send cleanup', () => {
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
         }),
-        readMessages: async () => [],
       },
     });
 
@@ -181,7 +181,6 @@ describe('composer first-send cleanup', () => {
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
         }),
-        readMessages: async () => [],
       },
     });
 
@@ -232,7 +231,6 @@ describe('composer first-send cleanup', () => {
         remove: async (sessionId: string) => {
           removed.push(sessionId);
         },
-        readMessages: async () => [],
       },
     });
 
@@ -389,23 +387,15 @@ describe('composer send failure feedback', () => {
 describe('a send in flight versus a stale session list', () => {
   const sessionId = 'session-a';
 
-  // Echoes the sent turn back through `readMessages`, which is what `send()`
-  // waits on before it reports success — a window that never shows the user
-  // message would time the send out rather than exercise the race.
   function sendingWindow() {
-    let sentTurnId: string | undefined;
     return {
       sessions: {
         create: async () => ({ id: sessionId }),
-        send: async (_sessionId: string, command: { turnId: string }) => {
-          sentTurnId = command.turnId;
-          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
-        },
-        readMessages: async () => (
-          sentTurnId
-            ? [{ type: 'user', id: `user-${sentTurnId}`, turnId: sentTurnId, ts: 1, text: 'hello' }]
-            : []
-        ),
+        send: async () => ({
+          ok: true,
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
       },
     };
   }

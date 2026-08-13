@@ -15,6 +15,7 @@ import {
   type RuntimeHostSessionExecutionIpcDeps,
 } from "../runtime-host-session-execution-ipc-main.js";
 import { RuntimeHostSessionObserver } from "../runtime-host-session-observer.js";
+import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
 
 test("advances the Host read marker through the last visible message", async () => {
   const readMarkers: unknown[] = [];
@@ -61,14 +62,11 @@ test("advances the Host read marker through the last visible message", async () 
     ipc,
   );
 
-  assert.equal(
-    ((await ipc.invoke("sessions:readMessages", "session-1")) as unknown[])
-      .length,
-    3,
-  );
+  await ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1');
   assert.deepEqual(readMarkers, [
     { sessionId: "session-1", readThroughMessageId: "assistant-1" },
   ]);
+  await ipc.invoke('sessions:transcript:close', 'consumer-1');
   await observer.close();
 });
 
@@ -630,6 +628,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     getSession: unavailable,
     ingestAttachment: unavailable,
     interruptTurn: unavailable,
+    querySessionTurnContributions: unavailable,
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,
@@ -667,7 +666,7 @@ function observerWithTranscript(
   });
   return new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: {
           schemaVersion: 3,
           session: {
@@ -714,7 +713,7 @@ type IpcHandler = Parameters<Pick<IpcMain, "handle">["handle"]>[1];
 
 function ipcHarness() {
   const handlers = new Map<string, IpcHandler>();
-  const sender = Object.assign(new EventEmitter(), { id: 9 });
+  const sender = Object.assign(new EventEmitter(), { id: 9, send() {} });
   return {
     handle(channel: string, handler: IpcHandler) {
       assert.equal(

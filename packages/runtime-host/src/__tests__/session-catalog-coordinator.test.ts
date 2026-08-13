@@ -836,6 +836,11 @@ function createFixture(
     readCatalogRecord: async () => catalogRecord(header, revision),
     readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),
     readHeaderRecordSnapshot: async () => headerSnapshot(header, revision),
+    readTurnContributionsSnapshot: async () => ({
+      throughSequence: null,
+      contributions: [],
+      nextPosition: null,
+    }),
     updateHeaderVersioned: async (_sessionId, patch, expectedRevision) => {
       if (expectedRevision !== revision) {
         throw new SessionMetadataVersionConflictError(sessionId, expectedRevision, revision);

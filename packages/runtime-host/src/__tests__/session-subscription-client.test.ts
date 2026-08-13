@@ -402,6 +402,111 @@ test('reassembles a large message from bounded backward pages', async () => {
   );
 });
 
+test('decodes one bounded page without walking the remaining transcript', async () => {
+  const message = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'hello',
+  };
+  const encoded = Buffer.from(JSON.stringify(message), 'utf8');
+  const splitAt = Math.floor(encoded.byteLength / 2);
+  const requests: Array<{ cursor: string | null; maxBytes: number }> = [];
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-bounded-page', {
+      throughSequence: 4,
+      overlayMessageCount: 0,
+      durable: {
+        ...transcriptPage({
+          rawBytes: encoded.byteLength - splitAt,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 4,
+              byteOffset: splitAt,
+              totalBytes: encoded.byteLength,
+              payloadDigest: null,
+              data: encoded.subarray(splitAt).toString('base64'),
+            },
+          ],
+          nextCursor: 'complete-message',
+        }),
+        throughSequence: 4,
+      },
+      overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 4 },
+    }),
+    async () => undefined,
+    async (input) => {
+      requests.push({ cursor: input.cursor, maxBytes: input.maxBytes });
+      return {
+        ...transcriptPage({
+          rawBytes: splitAt,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 4,
+              byteOffset: 0,
+              totalBytes: encoded.byteLength,
+              payloadDigest: null,
+              data: encoded.subarray(0, splitAt).toString('base64'),
+            },
+          ],
+          nextCursor: 'older-records',
+        }),
+        throughSequence: 4,
+      };
+    },
+  );
+
+  const decoded = await subscription.decodeTranscriptPage(
+    subscription.transcriptBootstrap!.durable,
+    decodeStoredMessage,
+  );
+
+  assert.deepEqual(decoded, {
+    messages: [{ identity: 4, message }],
+    nextCursor: 'older-records',
+  });
+  assert.deepEqual(requests, [{ cursor: 'complete-message', maxBytes: splitAt }]);
+
+  requests.length = 0;
+  await assert.rejects(
+    subscription.decodeTranscriptPage(
+      subscription.transcriptBootstrap!.durable,
+      decodeStoredMessage,
+      encoded.byteLength - 1,
+    ),
+    RangeError,
+  );
+  assert.deepEqual(requests, []);
+});
+
+test('loads and releases only the active overlay', async () => {
+  const overlay = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'active',
+  };
+  const bytes = Buffer.from(JSON.stringify(overlay), 'utf8');
+  let releases = 0;
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-overlay-only', overlayBootstrap(bytes)),
+    async () => undefined,
+    async () => {
+      throw new Error('durable transcript must not be read');
+    },
+    async () => {
+      releases += 1;
+    },
+  );
+
+  assert.deepEqual(await subscription.loadTranscriptOverlay(decodeStoredMessage), [overlay]);
+  assert.equal(releases, 1);
+});
+
 test('releases a materialized overlay through the connection-bound control operation', async () => {
   const message = Buffer.from(
     JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'overlay' }),

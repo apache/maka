@@ -40,6 +40,7 @@ import {
   type StagedCompanionQuote,
 } from './quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
+import { desktopSessionsWithTurnIndex } from './session-turn-index.js';
 
 export interface UseQuoteCompanionInput {
   /** Stable owner for the currently mounted panel generation. */
@@ -248,7 +249,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
 
       setPreparing(true);
       const promise = ensureCompanionFork({
-        api: window.maka.sessions,
+        api: desktopSessionsWithTurnIndex(),
         sourceSession,
         panelId,
         name,
@@ -307,7 +308,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         const id = companionIdRef.current ?? pendingForkIdRef.current;
         if (id && sourceSessionId) {
           void dismissCompanionCopy(
-            window.maka.sessions,
+            desktopSessionsWithTurnIndex(),
             sourceSessionId,
             panelId,
             id,
@@ -321,7 +322,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           });
         } else if (sourceSessionId) {
           void abandonPendingCompanionCopy(
-            window.maka.sessions,
+            desktopSessionsWithTurnIndex(),
             sourceSessionId,
             panelId,
           );
@@ -350,7 +351,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         return false;
       }
       const result = await performCompanionTurn({
-        api: window.maka.sessions,
+        api: desktopSessionsWithTurnIndex(),
         sourceSession,
         panelId,
         name: `${copyRef.current.namePrefix}${label}`,

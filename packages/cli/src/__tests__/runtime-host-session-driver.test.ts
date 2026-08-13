@@ -1300,6 +1300,14 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
     return (await this.transcript).map(decodeMessage);
   }
 
+  async loadTranscriptOverlay<T>(_decodeMessage: (value: unknown) => T): Promise<T[]> {
+    return [];
+  }
+
+  async decodeTranscriptPage(): Promise<never> {
+    throw new Error('Fake subscription does not expose transcript pages');
+  }
+
   async loadTranscriptPage(): Promise<never> {
     throw new Error('Fake subscription does not expose transcript pages');
   }

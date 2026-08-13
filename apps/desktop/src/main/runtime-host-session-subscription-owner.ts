@@ -1,5 +1,3 @@
-import type { StoredMessage } from '@maka/core/session';
-import { RuntimeHostSessionProjector } from "@maka/runtime-host/adapter";
 import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 import type {
   SessionAssistantStreamIdentity,
@@ -10,23 +8,29 @@ import type {
   DesktopRuntimeHostClient,
   DesktopRuntimeHostSession,
 } from "./runtime-host-client.js";
+import {
+  DesktopTranscriptReplica,
+  type DesktopTranscriptReplicaOptions,
+} from './desktop-transcript-replica.js';
 
-const MAX_PENDING_FRAMES = 512;
+const MAX_PENDING_FRAMES = 32;
+const MAX_PENDING_FRAME_BYTES = 256 * 1024;
 
 type SessionSubscriptionClient = Pick<DesktopRuntimeHostClient, "openSession">;
 
 export interface PreparedSessionSubscription {
   readonly snapshot: SessionContinuitySnapshot;
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
-  readonly transcript: StoredMessage[];
+  readonly replica: DesktopTranscriptReplica;
 }
 
 export interface RuntimeHostSessionSubscriptionOwnerDeps {
   readonly client: SessionSubscriptionClient;
   readonly sessionId: string;
   readonly now: () => number;
-  commit(subscription: PreparedSessionSubscription, recovered: boolean): void;
-  acceptFrame(frame: SubscriptionFrame): void;
+  readonly transcriptReplicaOptions?: DesktopTranscriptReplicaOptions;
+  commit(subscription: PreparedSessionSubscription, recovered: boolean): void | Promise<void>;
+  acceptFrame(frame: SubscriptionFrame): void | Promise<void>;
   recoveryStarted(error: Error): void;
   recoveryCompleted(error: Error): void;
   recoveryFailed(initialError: Error, error: Error): void;
@@ -37,6 +41,8 @@ interface SubscriptionAttempt {
   readonly handle: DesktopRuntimeHostSession;
   readonly pendingFrames: SubscriptionFrame[];
   readonly failed: Promise<Error>;
+  pendingFrameBytes: number;
+  replica?: DesktopTranscriptReplica;
   phase: "preparing" | "active";
   failure?: Error;
   fail(error: Error): void;
@@ -78,13 +84,17 @@ export class RuntimeHostSessionSubscriptionOwner {
     const attempt = this.#attempt;
     this.#attempt = undefined;
     attempt?.fail(ownerClosed());
+    attempt?.replica?.close();
     await attempt?.handle.close().catch(() => undefined);
   }
 
   async #establish(failed?: SubscriptionAttempt, initialError?: Error): Promise<void> {
     let recoveryError = initialError;
     if (recoveryError) this.#deps.recoveryStarted(recoveryError);
-    if (failed) await failed.handle.close().catch(() => undefined);
+    if (failed) {
+      failed.replica?.close();
+      await failed.handle.close().catch(() => undefined);
+    }
 
     while (true) {
       this.#assertOpen();
@@ -107,14 +117,18 @@ export class RuntimeHostSessionSubscriptionOwner {
 
       try {
         if (attempt.failure) throw attempt.failure;
-        this.#deps.commit(prepared, recoveryError !== undefined);
+        await this.#deps.commit(prepared, recoveryError !== undefined);
         if (attempt.failure) throw attempt.failure;
-        attempt.phase = "active";
-        for (const frame of attempt.pendingFrames.splice(0)) {
-          this.#deps.acceptFrame(frame);
+        while (attempt.pendingFrames.length > 0) {
+          const frame = attempt.pendingFrames.shift()!;
+          attempt.pendingFrameBytes -= Buffer.byteLength(JSON.stringify(frame), 'utf8');
+          await this.#deps.acceptFrame(frame);
+          if (attempt.failure) throw attempt.failure;
         }
+        attempt.phase = "active";
       } catch (error) {
         if (this.#attempt === attempt) this.#attempt = undefined;
+        attempt.replica?.close();
         await attempt.handle.close().catch(() => undefined);
         const failure = asError(error);
         if (isRecoverableSubscriptionFailure(failure)) {
@@ -151,6 +165,7 @@ export class RuntimeHostSessionSubscriptionOwner {
       handle,
       pendingFrames: [],
       failed,
+      pendingFrameBytes: 0,
       phase: "preparing",
       fail(error) {
         if (attempt.failure) return;
@@ -163,32 +178,27 @@ export class RuntimeHostSessionSubscriptionOwner {
 
     try {
       const loaded = await Promise.race([
-        handle.transcript.then(
-          (transcript) => ({ kind: "transcript" as const, transcript }),
+        DesktopTranscriptReplica.prepare(handle, this.#deps.transcriptReplicaOptions).then(
+          (replica) => ({ kind: "replica" as const, replica }),
           (error: unknown) => ({ kind: "failure" as const, error: asError(error) }),
         ),
         failed.then((error) => ({ kind: "failure" as const, error })),
       ]);
       if (loaded.kind === "failure") throw loaded.error;
+      attempt.replica = loaded.replica;
       if (attempt.failure) throw attempt.failure;
       if (this.#closed || this.#attempt !== attempt) throw ownerClosed();
-      validatePendingFrames(
-        handle.snapshot,
-        handle.activeAssistantStreams,
-        loaded.transcript,
-        attempt.pendingFrames,
-        this.#deps.now,
-      );
       return {
         attempt,
         prepared: {
           snapshot: structuredClone(handle.snapshot),
           activeAssistantStreams: structuredClone(handle.activeAssistantStreams),
-          transcript: loaded.transcript,
+          replica: loaded.replica,
         },
       };
     } catch (error) {
       if (this.#attempt === attempt) this.#attempt = undefined;
+      attempt.replica?.close();
       await handle.close().catch(() => undefined);
       throw error;
     }
@@ -201,16 +211,21 @@ export class RuntimeHostSessionSubscriptionOwner {
         if (frame.kind === "subscription.closed") {
           throw subscriptionClosedError(frame.reason);
         }
-        if (attempt.phase === "preparing") {
-          if (attempt.pendingFrames.length >= MAX_PENDING_FRAMES) {
+        if (attempt.phase === 'preparing') {
+          const frameBytes = Buffer.byteLength(JSON.stringify(frame), 'utf8');
+          if (
+            attempt.pendingFrames.length >= MAX_PENDING_FRAMES ||
+            attempt.pendingFrameBytes + frameBytes > MAX_PENDING_FRAME_BYTES
+          ) {
             throw new RuntimeHostSubscriptionError(
-              "slow_consumer",
-              "Runtime Host Session transcript could not keep up with live events",
+              'slow_consumer',
+              'Runtime Host Session transcript could not keep up with live events',
             );
           }
           attempt.pendingFrames.push(frame);
+          attempt.pendingFrameBytes += frameBytes;
         } else {
-          this.#deps.acceptFrame(frame);
+          await this.#deps.acceptFrame(frame);
         }
       }
       if (!this.#closed) {
@@ -240,22 +255,6 @@ export class RuntimeHostSessionSubscriptionOwner {
   #assertOpen(): void {
     if (this.#closed) throw ownerClosed();
   }
-}
-
-function validatePendingFrames(
-  snapshot: SessionContinuitySnapshot,
-  activeAssistantStreams: readonly SessionAssistantStreamIdentity[],
-  transcript: readonly StoredMessage[],
-  frames: readonly SubscriptionFrame[],
-  now: () => number,
-): void {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot,
-    transcript,
-    now,
-    activeAssistantStreams,
-  );
-  for (const frame of frames) projector.accept(frame);
 }
 
 function subscriptionClosedError(

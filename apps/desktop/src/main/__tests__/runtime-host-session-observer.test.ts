@@ -14,13 +14,14 @@ import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
 } from "../runtime-host-session-observer.js";
+import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
 
 test("joins an active Turn without losing or replaying assistant text", async () => {
   const transcript = deferred<StoredMessage[]>();
   const events = new AsyncFrameQueue();
   const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
   let closeCount = 0;
-  const handle: DesktopRuntimeHostSession = {
+  const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
     activeAssistantStreams: [activeText('message-1')],
     transcript: transcript.promise,
@@ -29,7 +30,7 @@ test("joins an active Turn without losing or replaying assistant text", async ()
       closeCount += 1;
       events.end();
     },
-  };
+  });
   const observer = new RuntimeHostSessionObserver({
     client: { openSession: async () => handle },
     emitSessionsChanged() {},
@@ -112,7 +113,7 @@ test("restores renderer observation after the Host connection is replaced", asyn
   const secondEvents = new AsyncFrameQueue();
   const firstObserver = new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),
@@ -126,7 +127,7 @@ test("restores renderer observation after the Host connection is replaced", asyn
   });
   const secondObserver = new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [activeText('message-1')],
         transcript: Promise.resolve([
@@ -414,7 +415,7 @@ test("does not publish a terminal error while an owner-managed connection is rep
   };
   const observer = new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),
@@ -442,7 +443,7 @@ test("keeps a native Turn watched without a renderer and releases it at terminal
   let closeCount = 0;
   const observer = new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),
@@ -487,7 +488,7 @@ test("does not let an older terminal projection finish a newer watched Turn", as
   const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
   const observer = new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
         transcript: transcript.promise,
@@ -568,7 +569,7 @@ test("invalidates the transcript when another client starts a Turn", async () =>
   }> = [];
   const observer = new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot({
           rootTurn: {
             sessionId: "session-1",
@@ -643,7 +644,7 @@ test("abandons a watched Turn when the Session is removed", async () => {
   let closeCount = 0;
   const observer = new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),
@@ -684,7 +685,7 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
       openSession: async () => {
         openCount += 1;
         const events = openCount === 1 ? firstEvents : secondEvents;
-        return {
+        return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
           activeAssistantStreams:
             openCount === 1 ? [] : [activeText('message-1')],
@@ -706,7 +707,7 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
           async close() {
             events.end();
           },
-        };
+        });
       },
     },
     emitSessionsChanged: (reason, sessionId) =>
@@ -764,7 +765,7 @@ test("retries an initial subscription closed before commit and resyncs once", as
       openSession: async () => {
         openCount += 1;
         const first = openCount === 1;
-        return {
+        return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
           activeAssistantStreams: [],
           transcript: first ? firstTranscript.promise : secondTranscript.promise,
@@ -772,7 +773,7 @@ test("retries an initial subscription closed before commit and resyncs once", as
           async close() {
             (first ? firstEvents : secondEvents).end();
           },
-        };
+        });
       },
     },
     emitSessionsChanged() {},
@@ -790,20 +791,14 @@ test("retries an initial subscription closed before commit and resyncs once", as
       observingSettled = true;
     },
   );
-  await waitFor(() => firstEvents.nextCount > 0);
-
-  firstTranscript.resolve([]);
-  queueMicrotask(() => {
-    queueMicrotask(() => {
-      firstEvents.push({
-        kind: "subscription.closed",
-        hostEpoch: "host-1",
-        subscriptionId: "subscription-1",
-        sequence: 1,
-        reason: "slow_consumer",
-      });
-    });
+  firstEvents.push({
+    kind: "subscription.closed",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 1,
+    reason: "slow_consumer",
   });
+  firstTranscript.resolve([]);
   await waitFor(() => openCount === 2);
   assert.equal(observingSettled, false);
   assert.deepEqual(recoveredSessions, []);
@@ -826,7 +821,7 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
       openSession: async () => {
         openCount += 1;
         if (openCount === 1) {
-          return {
+          return runtimeHostSessionFixture({
             snapshot: continuitySnapshot(),
             activeAssistantStreams: [],
             transcript: firstTranscript.promise,
@@ -834,9 +829,9 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
             async close() {
               firstEvents.end();
             },
-          };
+          });
         }
-        return {
+        return runtimeHostSessionFixture({
           snapshot: continuitySnapshot({
             projectionRevision: 2,
             rootTurn: {
@@ -862,7 +857,7 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
             replacementCloseCount += 1;
             secondEvents.end();
           },
-        };
+        });
       },
     },
     emitSessionsChanged() {},
@@ -871,8 +866,6 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
     },
   });
   const watching = observer.watchTurn("session-1", "turn-1");
-  await waitFor(() => firstEvents.nextCount > 0);
-
   firstEvents.push({
     kind: "subscription.closed",
     hostEpoch: "host-1",
@@ -880,6 +873,7 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
     sequence: 1,
     reason: "slow_consumer",
   });
+  firstTranscript.resolve([]);
   await watching;
   await waitFor(() => replacementCloseCount === 1);
 
@@ -891,6 +885,7 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
   const firstEvents = new AsyncFrameQueue();
   const replacementEvents = new AsyncFrameQueue();
   const finalEvents = new AsyncFrameQueue();
+  const replacementTranscript = deferred<StoredMessage[]>();
   const finalTranscript = deferred<StoredMessage[]>();
   let openCount = 0;
   const observer = new RuntimeHostSessionObserver({
@@ -898,7 +893,7 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
       openSession: async () => {
         openCount += 1;
         if (openCount === 1) {
-          return {
+          return runtimeHostSessionFixture({
             snapshot: continuitySnapshot(),
             activeAssistantStreams: [],
             transcript: Promise.resolve([]),
@@ -906,20 +901,20 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
             async close() {
               firstEvents.end();
             },
-          };
+          });
         }
         if (openCount === 2) {
-          return {
+          return runtimeHostSessionFixture({
             snapshot: continuitySnapshot(),
             activeAssistantStreams: [],
-            transcript: deferred<StoredMessage[]>().promise,
+            transcript: replacementTranscript.promise,
             events: replacementEvents,
             async close() {
               replacementEvents.end();
             },
-          };
+          });
         }
-        return {
+        return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
           activeAssistantStreams: [activeText('message-1')],
           transcript: finalTranscript.promise,
@@ -927,7 +922,7 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
           async close() {
             finalEvents.end();
           },
-        };
+        });
       },
     },
     emitSessionsChanged() {},
@@ -943,7 +938,7 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
     sequence: 1,
     reason: "slow_consumer",
   });
-  await waitFor(() => openCount === 2 && replacementEvents.nextCount > 0);
+  await waitFor(() => openCount === 2);
 
   const joining = observer.observe(
     "session-1",
@@ -966,6 +961,7 @@ test("keeps a joining observer pending across repeated catch-up eviction", async
     sequence: 1,
     reason: "slow_consumer",
   });
+  replacementTranscript.resolve([]);
   await waitFor(() => openCount === 3);
   await Promise.resolve();
   assert.equal(joiningSettled, false);
@@ -1004,10 +1000,16 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
   let openCount = 0;
   const observer = new RuntimeHostSessionObserver({
     client: {
+      listSessionTurns: async () => [{
+        turnId: 'turn-1',
+        status: 'completed' as const,
+        statusSource: 'recorded' as const,
+        partialOutputRetained: true,
+      }],
       openSession: async () => {
         openCount += 1;
         if (openCount === 1) {
-          return {
+          return runtimeHostSessionFixture({
             snapshot: continuitySnapshot({
               interactions: { pending: [firstInteraction] },
             }),
@@ -1017,9 +1019,9 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
             async close() {
               firstEvents.end();
             },
-          };
+          });
         }
-        return {
+        return runtimeHostSessionFixture({
           snapshot: continuitySnapshot({
             projectionRevision: 3,
             goal: activeGoal(),
@@ -1035,22 +1037,6 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
           transcript: Promise.resolve([
             {
               type: "assistant" as const,
-              id: "message-1",
-              turnId: "turn-1",
-              ts: 10,
-              text: "First answer",
-              modelId: "test-model",
-            },
-            {
-              type: "turn_state" as const,
-              id: "terminal-1",
-              turnId: "turn-1",
-              ts: 20,
-              status: "completed" as const,
-              partialOutputRetained: true,
-            },
-            {
-              type: "assistant" as const,
               id: "message-2",
               turnId: "turn-2",
               ts: 30,
@@ -1062,7 +1048,7 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
           async close() {
             secondEvents.end();
           },
-        };
+        });
       },
     },
     emitSessionsChanged(reason) {
@@ -1129,7 +1115,7 @@ test("shares one Host subscription and one delivery per renderer target", async 
     client: {
       openSession: async () => {
         openCount += 1;
-        return {
+        return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
           activeAssistantStreams: [],
           transcript: Promise.resolve([]),
@@ -1138,7 +1124,7 @@ test("shares one Host subscription and one delivery per renderer target", async 
             closeCount += 1;
             events.end();
           },
-        };
+        });
       },
     },
     emitSessionsChanged() {},
@@ -1165,7 +1151,7 @@ test("releases the renderer destroyed listener when its last observer leaves", a
   const destroyed = new EventEmitter();
   const observer = new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),
@@ -1200,7 +1186,7 @@ test("closes a Host handle that arrives after the observer is closed", async () 
   const observing = observer.observe("session-1", "observer-1", eventTarget(8));
 
   await observer.close();
-  opened.resolve({
+  opened.resolve(runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
     activeAssistantStreams: [],
     transcript: Promise.resolve([]),
@@ -1208,59 +1194,10 @@ test("closes a Host handle that arrives after the observer is closed", async () 
     async close() {
       closeCount += 1;
     },
-  });
+  }));
 
   await assert.rejects(observing, /closed while opening/);
   assert.equal(closeCount, 1);
-});
-
-test("drains live frames while refreshing the canonical transcript", async () => {
-  const initialEvents = new AsyncFrameQueue();
-  const refreshEvents = new AsyncFrameQueue();
-  const refreshTranscript = deferred<StoredMessage[]>();
-  let openCount = 0;
-  const observer = new RuntimeHostSessionObserver({
-    client: {
-      openSession: async () => {
-        openCount += 1;
-        if (openCount === 1) {
-          return {
-            snapshot: continuitySnapshot(),
-            activeAssistantStreams: [],
-            transcript: Promise.resolve([]),
-            events: initialEvents,
-            async close() {
-              initialEvents.end();
-            },
-          };
-        }
-        return {
-          snapshot: continuitySnapshot(),
-          activeAssistantStreams: [],
-          transcript: refreshTranscript.promise,
-          events: refreshEvents,
-          async close() {
-            refreshEvents.end();
-          },
-        };
-      },
-    },
-    emitSessionsChanged() {},
-  });
-  await observer.observe("session-1", "observer-1", eventTarget(9));
-  await observer.readMessages("session-1");
-
-  const refreshing = observer.readMessages("session-1");
-  const concurrentRefresh = observer.readMessages("session-1");
-  await waitFor(() => refreshEvents.nextCount > 0);
-  refreshTranscript.resolve([]);
-
-  assert.deepEqual(await Promise.all([refreshing, concurrentRefresh]), [
-    [],
-    [],
-  ]);
-  assert.equal(openCount, 2);
-  await observer.close();
 });
 
 test("rehydrates pending interactions and publishes answer acknowledgements", async () => {
@@ -1287,7 +1224,7 @@ test("rehydrates pending interactions and publishes answer acknowledgements", as
   const events = new AsyncFrameQueue();
   const observer = new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot({ interactions: { pending: [pending] } }),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),
@@ -1325,7 +1262,7 @@ test("projects Host queue revisions and newly delivered steering messages", asyn
   const events = new AsyncFrameQueue();
   const observer = new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),
@@ -1404,7 +1341,7 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
   const graphChanges: unknown[] = [];
   const observer = new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),

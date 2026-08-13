@@ -27,6 +27,7 @@ import {
   showSkillInvocationFeedback,
   skillInvocationDisplayText,
 } from './skill-invocation-feedback.js';
+import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
 
 export type PendingAttachment = {
   /** Unique per staged item; keys the preview cache and its cleanup, so a
@@ -61,12 +62,9 @@ import {
   noRealConnectionReasonFromError,
   noRealConnectionSetupDescription,
 } from './model-connection-errors.js';
-import { readSettledMessages, type RefreshMessagesOptions } from './session-message-settlement.js';
+import type { RefreshMessagesOptions } from './session-message-settlement.js';
 
 export type { RefreshMessagesOptions };
-
-const USER_MESSAGE_VISIBLE_TIMEOUT_MS = 1_200;
-const USER_MESSAGE_VISIBLE_POLL_MS = 40;
 
 type ComposerImportOwner = {
   sessionId: string | undefined;
@@ -153,6 +151,7 @@ export function createAppShellChatActions(deps: {
   setMessageLoadErrorBySession: MessageLoadErrorUpdater;
   setMessageRetryPendingBySession: BooleanRecordUpdater;
   setMessages: MessageListUpdater;
+  transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
   setNavSelection: (selection: NavSelection) => void;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
    * window opens before any SessionEvent arrives (turn_started is not one). */
@@ -186,6 +185,7 @@ export function createAppShellChatActions(deps: {
     setMessageLoadErrorBySession,
     setMessageRetryPendingBySession,
     setMessages,
+    transcriptRangeRef,
     setNavSelection,
     setLiveTurnBySession,
     setInteractionBySession,
@@ -401,9 +401,6 @@ export function createAppShellChatActions(deps: {
             },
           );
         }
-        if (activeIdRef.current === session.id) {
-          await refreshMessagesUntilTurn(session.id, turnId);
-        }
         await refreshSessions();
         return true;
       }
@@ -449,7 +446,6 @@ export function createAppShellChatActions(deps: {
           inlineReferences: sendResult.inlineReferences ?? [],
         },
       );
-      await refreshMessagesUntilTurn(sessionId, turnId);
       return true;
     } catch (error) {
       await discardUnsentSession();
@@ -543,19 +539,22 @@ export function createAppShellChatActions(deps: {
 
   async function refreshMessages(sessionId: string, options: RefreshMessagesOptions = {}): Promise<boolean> {
     try {
-      const result = await readSettledMessages(sessionId, options);
-      const next = result.messages;
-      if (activeIdRef.current === sessionId) {
-        markSessionReadLocally(sessionId, next);
-        setMessages(next);
-        setMessageLoadErrorBySession((current) => {
-          if (!current[sessionId]) return current;
-          const updated = { ...current };
-          delete updated[sessionId];
-          return updated;
-        });
-      }
-      return result.settled;
+      if (activeIdRef.current !== sessionId) return false;
+      const range = transcriptRangeRef.current?.store;
+      if (!range) return false;
+      const snapshot = range.snapshot();
+      if (snapshot.sessionId !== sessionId) return false;
+      const next = [...snapshot.messages];
+      markSessionReadLocally(sessionId, next);
+      setMessages(next);
+      setMessageLoadErrorBySession((current) => {
+        if (!current[sessionId]) return current;
+        const updated = { ...current };
+        delete updated[sessionId];
+        return updated;
+      });
+      return options.requiredAssistantMessageId === undefined ||
+        range.hasDurableMessage(options.requiredAssistantMessageId);
     } catch (error) {
       if (activeIdRef.current === sessionId) {
         const message = messageRefreshErrorMessage(error, uiLocale);
@@ -574,36 +573,6 @@ export function createAppShellChatActions(deps: {
       await refreshMessages(sessionId);
     } finally {
       clearPendingSessionAction(sessionId, messageRetryPendingRef, setMessageRetryPendingBySession);
-    }
-  }
-
-  async function refreshMessagesUntilTurn(sessionId: string, turnId: string): Promise<void> {
-    const deadline = Date.now() + USER_MESSAGE_VISIBLE_TIMEOUT_MS;
-    while (Date.now() <= deadline) {
-      // PR-FE-BUG-HUNT-4 (kenji bug-hunt 2026-06-24 LOW): bail if the
-      // user navigated away from the session this poll was started for.
-      // Previously the loop kept burning IPC bandwidth for the full
-      // 1200ms after a session switch (the setState was gated, but the
-      // readMessages call still fired every 40ms). Now we stop the
-      // polling cycle itself.
-      if (activeIdRef.current !== sessionId) return;
-      try {
-        const next = await window.maka.sessions.readMessages(sessionId);
-        if (activeIdRef.current !== sessionId) return;
-        const hasSentUserTurn = next.some((message) => message.type === 'user' && message.turnId === turnId);
-        if (hasSentUserTurn) {
-          markSessionReadLocally(sessionId, next);
-          setMessages(next);
-          return;
-        }
-      } catch {
-        // Keep the current visible messages while the bounded retry loop
-        // waits for the async send path to persist the first user message.
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, USER_MESSAGE_VISIBLE_POLL_MS));
-    }
-    if (activeIdRef.current === sessionId) {
-      await refreshMessages(sessionId);
     }
   }
 

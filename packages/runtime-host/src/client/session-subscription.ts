@@ -46,10 +46,21 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap | null;
   loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
+  loadTranscriptOverlay<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
+  decodeTranscriptPage<T>(
+    page: SessionTranscriptPage,
+    decodeMessage: (value: unknown) => T,
+    maxMessageBytes?: number,
+  ): Promise<DecodedSessionTranscriptPage<T>>;
   loadTranscriptPage(
     input: Omit<SessionTranscriptPageInput, 'subscriptionId'>,
   ): Promise<SessionTranscriptPage>;
   close(): Promise<void>;
+}
+
+export interface DecodedSessionTranscriptPage<T> {
+  readonly messages: readonly { readonly identity: number; readonly message: T }[];
+  readonly nextCursor: string | null;
 }
 
 interface QueuedFrame {
@@ -152,6 +163,70 @@ export class ClientSessionSubscription
       throw error;
     });
     return this.#transcriptTask.then((messages) => messages.map(decodeMessage));
+  }
+
+  loadTranscriptOverlay<T>(decodeMessage: (value: unknown) => T): Promise<T[]> {
+    this.#assertTranscriptReadable();
+    const bootstrap = this.transcriptBootstrap;
+    if (!bootstrap) {
+      return Promise.reject(
+        new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session subscription was opened without transcript access',
+        ),
+      );
+    }
+    return this.#loadAndReleaseTranscriptOverlay(bootstrap).then((messages) =>
+      messages.map((entry) => decodeMessage(entry.value)),
+    );
+  }
+
+  async decodeTranscriptPage<T>(
+    page: SessionTranscriptPage,
+    decodeMessage: (value: unknown) => T,
+    maxMessageBytes = Number.MAX_SAFE_INTEGER,
+  ): Promise<DecodedSessionTranscriptPage<T>> {
+    this.#assertTranscriptReadable();
+    this.#assertTranscriptPage(page, {
+      source: page.source,
+      direction: page.direction,
+      throughSequence: page.throughSequence,
+      maxBytes: Math.max(1, page.rawBytes),
+    });
+    const assembler = new TranscriptFragmentAssembler(page.source, page.direction, maxMessageBytes);
+    assembler.accept(page.fragments);
+    let cursor = page.nextCursor;
+    while (assembler.continuationBytes !== null) {
+      if (cursor === null) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript message ended before every fragment arrived',
+        );
+      }
+      const requestedCursor = cursor;
+      const continuation = await this.loadTranscriptPage({
+        source: page.source,
+        direction: page.direction,
+        throughSequence: page.throughSequence,
+        cursor,
+        anchorSequence: null,
+        maxBytes: Math.min(SESSION_TRANSCRIPT_PAGE_MAX_BYTES, assembler.continuationBytes),
+      });
+      if (continuation.nextCursor === requestedCursor) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript cursor did not advance',
+        );
+      }
+      assembler.accept(continuation.fragments);
+      cursor = continuation.nextCursor;
+    }
+    return {
+      messages: assembler
+        .finish()
+        .map((entry) => ({ identity: entry.identity, message: decodeMessage(entry.value) })),
+      nextCursor: cursor,
+    };
   }
 
   loadTranscriptPage(
@@ -446,10 +521,17 @@ class TranscriptFragmentAssembler {
   constructor(
     private readonly source: 'durable' | 'overlay',
     private readonly direction: 'older' | 'newer',
+    private readonly maxMessageBytes = Number.MAX_SAFE_INTEGER,
   ) {}
 
   accept(fragments: readonly SessionTranscriptFragment[]): void {
     for (const fragment of fragments) this.#accept(fragment);
+  }
+
+  get continuationBytes(): number | null {
+    const current = this.#current;
+    if (!current) return null;
+    return this.direction === 'older' ? current.edge : current.totalBytes - current.edge;
   }
 
   finish(): Array<{ identity: number; value: unknown }> {
@@ -504,6 +586,9 @@ class TranscriptFragmentAssembler {
   }
 
   #start(identity: number, totalBytes: number, payloadDigest: `sha256:${string}` | null): void {
+    if (totalBytes > this.maxMessageBytes) {
+      throw new RangeError('Session transcript message exceeds the local byte limit');
+    }
     if (
       this.#lastStartedIdentity !== undefined &&
       (this.direction === 'older'
