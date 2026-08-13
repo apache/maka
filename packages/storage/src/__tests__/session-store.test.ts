@@ -244,8 +244,10 @@ describe('SQLite SessionStore', () => {
         byteOffset: oversized.fragments[0]!.byteOffset,
       });
       const fragments = [...oversized.fragments];
-      let continuation: { readonly position: number; readonly byteOffset: number | null } | null =
-        oversized.next;
+      let continuation: {
+        readonly position: number;
+        readonly byteOffset: number | null;
+      } | null = oversized.next;
       while (continuation?.position === 3 && continuation.byteOffset !== null) {
         const page = await store.readTranscriptPageSnapshot(session.id, {
           direction: 'older',
@@ -323,10 +325,12 @@ describe('SQLite SessionStore', () => {
     const legacy = new DatabaseSync(path);
     const legacyRecord = JSON.stringify(message);
     legacy
-      .prepare(`
+      .prepare(
+        `
         UPDATE session_messages SET record_json = ?
         WHERE session_id = ? AND sequence = 0
-      `)
+      `,
+      )
       .run(legacyRecord, sessionId);
     legacy.exec(`
       DROP TABLE session_message_chunks;
@@ -378,11 +382,13 @@ describe('SQLite SessionStore', () => {
     const inspect = new DatabaseSync(path);
     try {
       inspect
-        .prepare(`
+        .prepare(
+          `
           UPDATE session_message_chunks
           SET data = zeroblob(length(data))
           WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
-        `)
+        `,
+        )
         .run(sessionId);
     } finally {
       inspect.close();
@@ -404,16 +410,20 @@ describe('SQLite SessionStore', () => {
       const rewritten = new DatabaseSync(path);
       try {
         const chunk = rewritten
-          .prepare(`
+          .prepare(
+            `
             SELECT data FROM session_message_chunks
             WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
-          `)
+          `,
+          )
           .get(sessionId) as { data: Uint8Array };
         rewritten
-          .prepare(`
+          .prepare(
+            `
             UPDATE session_message_chunks SET sha256 = ?
             WHERE session_id = ? AND sequence = 0 AND chunk_index = 1
-          `)
+          `,
+          )
           .run(createHash('sha256').update(chunk.data).digest('hex'), sessionId);
       } finally {
         rewritten.close();
@@ -512,6 +522,291 @@ describe('SQLite SessionStore', () => {
         text: 'three',
       });
       assert.deepEqual(changed, [session.id]);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('pages turn contributions at a fixed transcript watermark', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-contributions-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(session.id, [
+        { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'one' },
+        {
+          type: 'assistant',
+          id: 'assistant-1',
+          turnId: 'turn-1',
+          ts: 2,
+          text: 'answer',
+          modelId: 'model-1',
+        },
+        {
+          type: 'turn_state',
+          id: 'state-1',
+          turnId: 'turn-1',
+          ts: 3,
+          status: 'completed',
+          partialOutputRetained: true,
+        },
+        { type: 'user', id: 'user-2', turnId: 'turn-2', ts: 4, text: 'two' },
+      ]);
+
+      const first = await store.readTurnContributionsSnapshot(session.id, null, 0, 1);
+      assert.equal(first.throughSequence, 3);
+      assert.equal(first.nextPosition, 3);
+      assert.deepEqual(first.contributions, [
+        {
+          turnId: 'turn-1',
+          firstSequence: 0,
+          latestState: {
+            sequence: 2,
+            message: {
+              type: 'turn_state',
+              id: 'state-1',
+              turnId: 'turn-1',
+              ts: 3,
+              status: 'completed',
+              partialOutputRetained: true,
+            },
+          },
+          userPromptPreview: 'one',
+          hasAssistantMessage: true,
+          hasAssistantOutput: true,
+          hasToolResult: false,
+          hasFailedToolResult: false,
+          hasAbortNote: false,
+        },
+      ]);
+
+      await store.appendMessage(session.id, {
+        type: 'assistant',
+        id: 'assistant-2',
+        turnId: 'turn-2',
+        ts: 5,
+        text: 'later',
+        modelId: 'model-1',
+      });
+      const second = await store.readTurnContributionsSnapshot(
+        session.id,
+        first.throughSequence,
+        first.nextPosition!,
+        1,
+      );
+      assert.equal(second.throughSequence, 3);
+      assert.deepEqual(
+        second.contributions.map((entry) => entry.turnId),
+        ['turn-2'],
+      );
+      assert.equal(second.nextPosition, null);
+
+      await store.appendMessage(session.id, {
+        type: 'assistant',
+        id: 'assistant-large',
+        turnId: 'turn-large',
+        ts: 6,
+        text: 'x'.repeat(70 * 1024),
+        modelId: 'model-1',
+      });
+      const chunked = await store.readTurnContributionsSnapshot(session.id, null, 0, 128);
+      assert.deepEqual(
+        chunked.contributions.find((entry) => entry.turnId === 'turn-large'),
+        {
+          turnId: 'turn-large',
+          firstSequence: 5,
+          latestState: null,
+          userPromptPreview: null,
+          hasAssistantMessage: true,
+          hasAssistantOutput: true,
+          hasToolResult: false,
+          hasFailedToolResult: false,
+          hasAbortNote: false,
+        },
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('bounds turn contribution source scanning independently of turn count', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-source-bound-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 1_025 }, (_, index) => ({
+          type: 'assistant' as const,
+          id: `assistant-${index}`,
+          turnId: 'turn-1',
+          ts: index,
+          text: 'x',
+          modelId: 'model-1',
+        })),
+      );
+
+      const first = await store.readTurnContributionsSnapshot(session.id, null, 0, 128);
+      assert.equal(first.nextPosition, 1_024);
+      assert.equal(first.contributions.length, 1);
+      const second = await store.readTurnContributionsSnapshot(
+        session.id,
+        first.throughSequence,
+        first.nextPosition!,
+        128,
+      );
+      assert.equal(second.nextPosition, null);
+      assert.equal(second.contributions.length, 1);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('samples a bounded prompt landmark index across the durable transcript', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-landmarks-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 40 }, (_, index) => [
+          {
+            type: 'user' as const,
+            id: `user-${index}`,
+            turnId: `turn-${index}`,
+            ts: index * 2,
+            text: index === 20 ? 'x'.repeat(70 * 1024) : `prompt ${index}`,
+          },
+          {
+            type: 'assistant' as const,
+            id: `assistant-${index}`,
+            turnId: `turn-${index}`,
+            ts: index * 2 + 1,
+            text: 'answer',
+            modelId: 'model-1',
+          },
+        ]).flat(),
+      );
+
+      const snapshot = await store.readTurnLandmarksSnapshot(session.id, 8);
+
+      assert.equal(snapshot.throughSequence, 79);
+      assert.ok(snapshot.landmarks.length <= 8);
+      assert.ok(snapshot.landmarks.length > 1);
+      assert.equal(
+        snapshot.landmarks.some((landmark) => landmark.turnId === 'turn-20'),
+        false,
+      );
+      assert.deepEqual(
+        [...snapshot.landmarks].sort((left, right) => left.sequence - right.sequence),
+        snapshot.landmarks,
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps every prompt landmark when long turns fit within the landmark limit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-landmarks-long-turns-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 3 }, (_, turnIndex) => [
+          {
+            type: 'user' as const,
+            id: `user-${turnIndex}`,
+            turnId: `turn-${turnIndex}`,
+            ts: turnIndex * 10_000,
+            text: `prompt ${turnIndex}`,
+          },
+          ...Array.from({ length: turnIndex === 0 ? 1_000 : 4_000 }, (_, messageIndex) => ({
+            type: 'assistant' as const,
+            id: `assistant-${turnIndex}-${messageIndex}`,
+            turnId: `turn-${turnIndex}`,
+            ts: turnIndex * 10_000 + messageIndex + 1,
+            text: 'x',
+            modelId: 'model-1',
+          })),
+        ]).flat(),
+      );
+      const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+      try {
+        const insert = database.prepare(`
+          INSERT INTO core_root_turn_admissions(session_id, turn_id, admitted_at, record_json)
+          VALUES (?, ?, ?, ?)
+        `);
+        for (let turnIndex = 0; turnIndex < 3; turnIndex += 1) {
+          insert.run(
+            session.id,
+            `turn-${turnIndex}`,
+            turnIndex,
+            JSON.stringify({ userMessageId: `user-${turnIndex}` }),
+          );
+        }
+      } finally {
+        database.close();
+      }
+
+      const snapshot = await store.readTurnLandmarksSnapshot(session.id, 64);
+
+      assert.deepEqual(
+        snapshot.landmarks.map((landmark) => landmark.turnId),
+        ['turn-0', 'turn-1', 'turn-2'],
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps legacy prompts when newer turns have indexed admissions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-turn-landmarks-mixed-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 10 }, (_, index) => [
+          {
+            type: 'user' as const,
+            id: `user-${index}`,
+            turnId: `turn-${index}`,
+            ts: index * 2,
+            text: `prompt ${index}`,
+          },
+          {
+            type: 'assistant' as const,
+            id: `assistant-${index}`,
+            turnId: `turn-${index}`,
+            ts: index * 2 + 1,
+            text: 'answer',
+            modelId: 'model-1',
+          },
+        ]).flat(),
+      );
+      const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+      try {
+        database
+          .prepare(`
+          INSERT INTO core_root_turn_admissions(session_id, turn_id, admitted_at, record_json)
+          VALUES (?, ?, ?, ?)
+        `)
+          .run(session.id, 'turn-9', 9, JSON.stringify({ userMessageId: 'user-9' }));
+      } finally {
+        database.close();
+      }
+
+      const snapshot = await store.readTurnLandmarksSnapshot(session.id, 8);
+
+      assert.equal(snapshot.landmarks.length, 8);
+      assert.equal(snapshot.landmarks[0]?.turnId, 'turn-0');
+      assert.equal(snapshot.landmarks.at(-1)?.turnId, 'turn-9');
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });

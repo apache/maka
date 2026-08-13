@@ -3,6 +3,7 @@ import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
 import { relayModelProfile } from '@maka/core/model-thinking';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
+import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { PermissionMode } from '@maka/core/permission';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
 import {
@@ -186,9 +187,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
    * provider call has already completed and billed.
    */
   let accountingAuthorityFailed = false;
-  const recordModelCallAttempt = async (attempt: ModelCallAttempt): Promise<void> => {
+  const recordModelCallAttempt = async (
+    commit: ModelCallCommit<ModelCallAttempt>,
+  ): Promise<void> => {
+    const attempt = commit.attempt;
     try {
-      await input.context.recordModelCallAttempt?.(attempt);
+      // Forwarded whole. Taking `attempt` alone here is what silently dropped
+      // the derived latest-context row before it reached storage (#2323).
+      await input.context.recordModelCallAttempt?.(commit);
     } catch (error) {
       accountingAuthorityFailed = true;
       throw error;

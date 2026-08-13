@@ -205,6 +205,9 @@ export function QuoteCompanionPanel(props: {
             <Composer
               ref={composerRef}
               onSend={async (text) => {
+                // Mid-turn the same submit is steering — the side chat has no
+                // slash commands, so the split is just the turn's state.
+                if (companion.streaming) return companion.steer(text);
                 try {
                   preflightAttachmentItems(pendingAttachments, locale);
                 } catch (error) {
@@ -227,7 +230,6 @@ export function QuoteCompanionPanel(props: {
                 return accepted;
               }}
               onStop={() => void companion.stop()}
-              onStreamingSubmit={(text: string) => companion.steer(text)}
               hidden={Boolean(activeInteraction)}
               streaming={companion.streaming}
               processing={companion.processing}

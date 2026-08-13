@@ -23,6 +23,13 @@ import type {
   DesktopProjectSnapshot,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+import {
+  DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+  assertDesktopTranscriptBatch,
+  type DesktopTranscriptBatch,
+  type DesktopTranscriptHandle,
+  type DesktopTranscriptOpenResult,
+} from './transcript-contract.js';
 import type {
   DesktopDiagnosticCopyResult,
   DesktopErrorDiagnosticInput,
@@ -63,7 +70,7 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { SessionChangedEvent, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type { ExternalSessionSummary } from '@maka/core/external-session';
@@ -110,6 +117,7 @@ import {
   isSessionTrace,
   type SessionTrace,
 } from '@maka/core/session-trace';
+import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import {
   DAILY_REVIEW_RANGES,
   normalizeDailyReviewConfig,
@@ -478,7 +486,10 @@ async function bridgeResult<T>(operation: () => Promise<T>, code: string): Promi
   } catch (error) {
     return {
       ok: false,
-      error: { code, message: error instanceof Error ? error.message : String(error) },
+      error: {
+        code,
+        message: error instanceof Error ? error.message : String(error),
+      },
     };
   }
 }
@@ -515,7 +526,10 @@ const makaBridge = {
       return ipcRenderer.invoke('runtime-host-ssh-terminal:getSnapshot');
     },
     write(sessionId: string, data: string) {
-      return ipcRenderer.invoke('runtime-host-ssh-terminal:write', { sessionId, data });
+      return ipcRenderer.invoke('runtime-host-ssh-terminal:write', {
+        sessionId,
+        data,
+      });
     },
     resize(sessionId: string, cols: number, rows: number) {
       return ipcRenderer.invoke('runtime-host-ssh-terminal:resize', {
@@ -676,9 +690,6 @@ const makaBridge = {
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome> {
       return invokeActiveRuntimeHost('sessions:steer', sessionId, text);
     },
-    readMessages(sessionId: string): Promise<StoredMessage[]> {
-      return invokeActiveRuntimeHost('sessions:readMessages', sessionId);
-    },
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel> {
       return invokeActiveRuntimeHost('sessions:readExecutionBoundary', sessionId);
     },
@@ -695,6 +706,9 @@ const makaBridge = {
     },
     listTurns(sessionId: string): Promise<TurnRecord[]> {
       return invokeActiveRuntimeHost('sessions:listTurns', sessionId);
+    },
+    listTurnLandmarks(sessionId) {
+      return invokeActiveRuntimeHost('sessions:listTurnLandmarks', sessionId);
     },
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void> {
       return invokeActiveRuntimeHost('sessions:regenerateTurn', sessionId, input);
@@ -821,6 +835,110 @@ const makaBridge = {
     },
     abandonSessionCopy(sessionId: string): Promise<void> {
       return invokeActiveRuntimeHost('sessions:abandonSessionCopy', sessionId);
+    },
+  },
+  transcripts: {
+    async open(
+      sessionId: string,
+      handler: (batch: DesktopTranscriptBatch) => void,
+      registerCancellation?: (cancel: () => void) => void,
+    ): Promise<DesktopTranscriptHandle> {
+      const consumerId = crypto.randomUUID();
+      const channel = `sessions:transcript:${consumerId}`;
+      let generation: string | undefined;
+      let closed = false;
+      let requestClose = () => {};
+      let consumerScope: DesktopHostRef | undefined;
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        scope: unknown,
+        value: unknown,
+      ) => {
+        if (closed) return;
+        let batch: DesktopTranscriptBatch;
+        try {
+          const host = requireDesktopHostRef(scope);
+          if (
+            !activeRuntimeHost ||
+            host.hostId !== activeRuntimeHost.hostId ||
+            host.targetEpoch !== activeRuntimeHost.targetEpoch
+          ) return;
+          batch = assertDesktopTranscriptBatch(value);
+          if (batch.reset || generation === undefined) {
+            generation = batch.generation;
+            consumerScope = host;
+          }
+          if (batch.generation === generation) handler(batch);
+        } catch (error) {
+          requestClose();
+          throw error;
+        }
+        if (consumerScope) {
+          void ipcRenderer.invoke(
+            'sessions:transcript:ack',
+            consumerScope,
+            consumerId,
+            batch.generation,
+            batch.deliverySequence,
+          ).catch(requestClose);
+        }
+      };
+      ipcRenderer.on(channel, listener);
+      const openDispatch = activeRuntimeHostRef().then((scope) => {
+        consumerScope = scope;
+        return {
+          completion: ipcRenderer.invoke(
+            'sessions:transcript:open',
+            scope,
+            sessionId,
+            consumerId,
+          ) as Promise<DesktopTranscriptOpenResult>,
+        };
+      });
+      let closeTask: Promise<void> | undefined;
+      requestClose = () => {
+        if (closed) return;
+        closed = true;
+        ipcRenderer.off(channel, listener);
+        closeTask = releaseSessionObservation(openDispatch, () =>
+          ipcRenderer.invoke('sessions:transcript:close', consumerId),
+        );
+        void closeTask.catch(() => undefined);
+      };
+      registerCancellation?.(requestClose);
+      let opened: DesktopTranscriptOpenResult;
+      try {
+        opened = await openDispatch.then(({ completion }) => completion);
+      } catch (error) {
+        closed = true;
+        ipcRenderer.off(channel, listener);
+        throw error;
+      }
+      if (closed) throw new Error('Desktop transcript open was cancelled');
+      generation ??= opened.generation;
+      const range = (
+        operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-around',
+        anchorSequence: number | null,
+        maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+      ): Promise<void> =>
+        ipcRenderer.invoke(operation, consumerScope, {
+          consumerId,
+          generation,
+          anchorSequence,
+          maxBytes,
+        }) as Promise<void>;
+      return {
+        ...opened,
+        loadBefore: (anchorSequence, maxBytes) =>
+          range('sessions:transcript:load-before', anchorSequence, maxBytes),
+        loadAround: (sequence, maxBytes) =>
+          range('sessions:transcript:load-around', sequence, maxBytes),
+        async close() {
+          if (closed) return;
+          requestClose();
+          await closeTask;
+        },
+      };
     },
   },
   externalSessions: {
@@ -1127,7 +1245,15 @@ const makaBridge = {
   },
   attachments: {
     pickFiles(): Promise<
-      | { ok: true; files: { approvalId: string; name: string; mimeType?: string; size: number }[] }
+      | {
+          ok: true;
+          files: {
+            approvalId: string;
+            name: string;
+            mimeType?: string;
+            size: number;
+          }[];
+        }
       | { ok: false; reason: 'cancelled' }
     > {
       return ipcRenderer.invoke('attachments:pickFiles');
@@ -1334,19 +1460,29 @@ const makaBridge = {
       return mutateScheduledTask({ kind: 'update', taskId: id, patch });
     },
     setEnabled(id: string, enabled: boolean): Promise<ScheduledTask> {
-      return mutateScheduledTask({ kind: enabled ? 'resume' : 'pause', taskId: id });
+      return mutateScheduledTask({
+        kind: enabled ? 'resume' : 'pause',
+        taskId: id,
+      });
     },
     triggerNow(id: string): Promise<ScheduledTask> {
       return mutateScheduledTask({ kind: 'trigger_now', taskId: id });
     },
     snooze(id: string): Promise<ScheduledTask> {
-      return mutateScheduledTask({ kind: 'snooze', taskId: id, delayMs: 10 * 60 * 1000 });
+      return mutateScheduledTask({
+        kind: 'snooze',
+        taskId: id,
+        delayMs: 10 * 60 * 1000,
+      });
     },
     clearRunHistory(id: string): Promise<ScheduledTask> {
       return mutateScheduledTask({ kind: 'clear_history', taskId: id });
     },
     async delete(id: string): Promise<void> {
-      await runtimeHost.command('scheduled-task.mutate', { kind: 'delete', taskId: id });
+      await runtimeHost.command('scheduled-task.mutate', {
+        kind: 'delete',
+        taskId: id,
+      });
     },
     subscribeChanges(handler: (event: { type: 'scheduled_tasks_changed'; reason: string; taskId?: string; ts: number }) => void): () => void {
       return subscribeActiveRuntimeHostEvent('scheduled-tasks:changed', handler);
@@ -1422,6 +1558,20 @@ const makaBridge = {
     trace(sessionId: string): Promise<Result<SessionTrace>> {
       return bridgeResult(() => loadSessionTrace(sessionId), 'INSPECTOR_TRACE_FAILED');
     },
+    /**
+     * What the session's context is made of right now (#2323).
+     *
+     * A different question from "what happened in this session", and it has
+     * its own typed owner on the Host — the same snapshot `/context` prints.
+     * The Inspector asks that owner rather than widening the trace, so the two
+     * surfaces cannot drift into two implementations of one fact.
+     */
+    context(sessionId: string): Promise<Result<ContextDiagnosticsResult>> {
+      return bridgeResult(
+        () => runtimeHost.query('context.diagnostics.query', { sessionId }),
+        'INSPECTOR_CONTEXT_FAILED',
+      );
+    },
   },
   dailyReview: {
     day(offsetDays: number, daySpan?: number): Promise<Result<DailyReviewSummary>> {
@@ -1436,7 +1586,9 @@ const makaBridge = {
       }, 'DAILY_REVIEW_DAY_FAILED');
     },
     async getConfig(): Promise<DailyReviewConfig> {
-      const result = await runtimeHost.query('daily-review.query', { kind: 'config' });
+      const result = await runtimeHost.query('daily-review.query', {
+        kind: 'config',
+      });
       if (result.kind !== 'config') throw new Error('Invalid Daily Review config');
       return result.config;
     },
@@ -1458,7 +1610,10 @@ const makaBridge = {
       return listDailyReviewArchives();
     },
     async getArchive(archiveId: string): Promise<DailyReviewArchive | null> {
-      const result = await runtimeHost.query('daily-review.query', { kind: 'archive', archiveId });
+      const result = await runtimeHost.query('daily-review.query', {
+        kind: 'archive',
+        archiveId,
+      });
       if (result.kind !== 'archive') throw new Error('Invalid Daily Review archive');
       return result.archive;
     },
@@ -1529,7 +1684,11 @@ const makaBridge = {
           ok: true;
           includedData: ConfigCategory[];
           result: {
-            connections?: { created: number; overwritten: number; skipped: number };
+            connections?: {
+              created: number;
+              overwritten: number;
+              skipped: number;
+            };
             settings?: { applied: boolean };
             credentials?: { applied: number; skipped: number };
             memory?: { applied: boolean };
@@ -1726,7 +1885,10 @@ const makaBridge = {
     },
     setPinned(skillRef: string, pinned: boolean): Promise<
       | { ok: true; skill: SkillEntry }
-      | { ok: false; reason: 'not_found' | 'blocked_path' | 'state_error' | 'write_failed' }
+      | {
+          ok: false;
+          reason: 'not_found' | 'blocked_path' | 'state_error' | 'write_failed';
+        }
     > {
       return invokeActiveRuntimeHost('skills:setPinned', skillRef, pinned);
     },

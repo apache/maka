@@ -47,7 +47,7 @@ describe('SqliteSessionMetadataStore', () => {
         turnId: 'turn-legacy',
         ts: 5,
         text: 'private message text',
-        origin: { kind: 'automation', automationId: 'legacy-automation' },
+        origin: { kind: 'future_trigger', triggerId: 'future-trigger' },
       });
       database
         .prepare(`
@@ -2184,6 +2184,7 @@ function fullHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
     llmConnectionSlug: 'openai',
     connectionLocked: true,
     model: 'gpt-5',
+    toolProfile: 'headless-coding-v1',
     thinkingLevel: 'high',
     permissionMode: 'ask',
     collaborationMode: 'agent',

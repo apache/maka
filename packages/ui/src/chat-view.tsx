@@ -6,7 +6,7 @@ import {
 } from './icons.js';
 import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
-import { PromptAnchorRail } from './prompt-anchor-rail.js';
+import { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
 import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type { ProviderType } from '@maka/core/llm-connections';
@@ -167,6 +167,16 @@ export function ChatView(props: {
    */
   scrollTargetTurn?: { turnId: string; nonce: number };
   scrollBehavior: ScrollBehavior;
+  hasOlderHistory?: boolean;
+  historyLoadPending?: boolean;
+  onLoadEarlierHistory?(): Promise<void> | void;
+  returnToLatest?: {
+    label: string;
+    isPending: boolean;
+    onClick(): Promise<void> | void;
+  };
+  transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
+  onLoadTranscriptTurn?(target: { turnId: string; sequence: number }): void;
   /**
    * PR109f: when the active session is a branched session
    * (`parentSessionId` set on its summary), show a banner above the
@@ -319,7 +329,7 @@ export function ChatView(props: {
   // per-entry comparison is O(1) per turn because an unaffected turn keeps its
   // object identity, so its text is the same string reference.
   const promptRailTurnsRef = useRef<ReadonlyArray<{ turnId: string; label: string; reply: string }>>([]);
-  const promptRailTurns = useMemo(() => {
+  const loadedPromptRailTurns = useMemo(() => {
     const next = turns
       .filter((turn) => (turn.user?.text ?? '').trim().length > 0)
       .map((turn) => ({
@@ -340,6 +350,19 @@ export function ChatView(props: {
     promptRailTurnsRef.current = next;
     return next;
   }, [turns]);
+  const promptRailTurns = useMemo(() => {
+    const index = props.transcriptTurnIndex;
+    if (!index || index.length === 0) return loadedPromptRailTurns;
+    const loadedByTurnId = new Map(loadedPromptRailTurns.map((turn) => [turn.turnId, turn]));
+    return index.map((turn) => ({
+        ...(loadedByTurnId.get(turn.turnId) ?? {
+          turnId: turn.turnId,
+          label: turn.label,
+          reply: '',
+        }),
+        sequence: turn.sequence,
+      }));
+  }, [loadedPromptRailTurns, props.transcriptTurnIndex]);
   // Stable event wrappers (advanced-use-latest): parent handlers are
   // recreated per render upstream; routing through refs keeps the
   // memoized TurnView's function props identity-stable without
@@ -378,11 +401,16 @@ export function ChatView(props: {
     return items;
   }, [props.conversationItems]);
   const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
+  const turnIdsRef = useRef(turnIds);
+  turnIdsRef.current = turnIds;
+  const loadTranscriptTurnRef = useRef(props.onLoadTranscriptTurn);
+  loadTranscriptTurnRef.current = props.onLoadTranscriptTurn;
   const chatLayout = useChatLayoutContext();
   if (!chatLayout) {
     throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
   }
   const scrollRef = chatLayout.scrollContainerRef;
+  const [latestNavigationNonce, setLatestNavigationNonce] = useState(0);
   // #2052: the first commit after a session switch mounts only a tail window
   // of turns; the rest arrive in idle chunks with scroll compensation. The
   // full `turns` array above still feeds deriveTurnPresentation and the
@@ -420,6 +448,12 @@ export function ChatView(props: {
     targetTurnId: props.scrollTargetTurn?.turnId,
     seededGeometry,
   });
+  const navigatePromptRailFallback = useCallback((turn: PromptAnchorRailTurn) => {
+    if (turnIdsRef.current.has(turn.turnId)) revealTurn(turn.turnId);
+    else if (turn.sequence !== undefined) {
+      loadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
+    }
+  }, [revealTurn]);
   useEffect(() => {
     if (!turnsFilled && !seededGeometry && scrollRef.current) {
       setLookupPass((count) => count + 1);
@@ -478,6 +512,10 @@ export function ChatView(props: {
     target: props.scrollTargetTurn,
     behavior: props.scrollBehavior,
     warmupReady: turnsFilled,
+    hasOlderHistory: props.hasOlderHistory,
+    historyLoadPending: props.historyLoadPending,
+    onLoadEarlierHistory: props.onLoadEarlierHistory,
+    latestNavigationNonce,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
@@ -575,6 +613,21 @@ export function ChatView(props: {
 
   return (
     <main className="maka-main agents-chat-panel agents-chat-view-root">
+      {props.returnToLatest ? (
+        <div className="maka-transcript-history-controls">
+          <Button
+            label={props.returnToLatest.label}
+            variant="ghost"
+            size="sm"
+            isDisabled={props.returnToLatest.isPending}
+            onClick={() => {
+              void Promise.resolve(props.returnToLatest?.onClick()).then(() => {
+                setLatestNavigationNonce((nonce) => nonce + 1);
+              });
+            }}
+          />
+        </div>
+      ) : null}
       <SessionContextLayer
         sessionName={props.activeSession.name}
         branch={props.branchBanner}
@@ -601,9 +654,9 @@ export function ChatView(props: {
         <PromptAnchorRail
           turns={promptRailTurns}
           scrollRef={scrollRef}
-          scrollBehavior={props.scrollBehavior}
-          onNavigateFallback={revealTurn}
-          mountedTurnsRevision={mountStart}
+          onNavigateFallback={navigatePromptRailFallback}
+          onNavigateStart={chatLayout.unlockAutoFollow}
+          transcriptFilled={turnsFilled}
         />
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"

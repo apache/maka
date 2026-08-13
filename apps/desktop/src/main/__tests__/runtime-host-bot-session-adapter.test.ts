@@ -12,7 +12,7 @@ import {
   createRuntimeHostBotSessionAdapter,
   type RuntimeHostBotSessionAdapterDeps,
 } from '../runtime-host-bot-session-adapter.js';
-import type { DesktopRuntimeHostSession } from '../runtime-host-client.js';
+import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 
 type BotClient = RuntimeHostBotSessionAdapterDeps['client'];
 
@@ -114,7 +114,7 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
   const events = new AsyncFrameQueue();
   const changes: unknown[] = [];
   let closeCount = 0;
-  const handle: DesktopRuntimeHostSession = {
+  const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(null),
     activeAssistantStreams: [],
     transcript: Promise.resolve([]),
@@ -123,7 +123,7 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
       closeCount += 1;
       events.end();
     },
-  };
+  });
   const client = botClient({
     openSession: async () => handle,
     startTurn: async (input) => {
@@ -170,7 +170,7 @@ test('accepts an empty reset delta as the authoritative Bot reply', async () => 
   const events = new AsyncFrameQueue();
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),
@@ -211,7 +211,7 @@ test('returns blocked Skill feedback without waiting for a Turn that was not cre
   let closeCount = 0;
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),
@@ -265,7 +265,7 @@ async function runProjectedTurn(rootTurn: TurnSnapshot) {
   const events = new AsyncFrameQueue();
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),

@@ -9,6 +9,8 @@ import {
   verifyToolchainDirectory,
 } from './toolchain-verification.js';
 
+const BUNDLED_EXTERNAL_WRAPPER = '/opt/maka-agent/packages/eval/dist/harbor-external-subject.js';
+
 export function createExternalSubjectAdapter(): SubjectAdapter {
   const verifiedToolchains = new Map<string, ToolchainIdentity>();
   return {
@@ -66,7 +68,8 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
           args: config.args.map((argument) =>
             argument
               .replaceAll('{{task.input}}', context.taskInput)
-              .replaceAll('{{task.id}}', cell.task.id),
+              .replaceAll('{{task.id}}', cell.task.id)
+              .replaceAll('{{task.cwd}}', context.cwd),
           ),
           credentialEnvironment: config.credentialEnvironment,
           ...(Object.keys(config.environment).length === 0 && !identity
@@ -80,19 +83,6 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
           ...(config.result === 'exit-code' ? { captureStdout: false } : {}),
         });
         const decoded = execution.stdout.length === 0 ? undefined : decodeResult(execution.stdout);
-        if (execution.termination === 'cancelled') {
-          return {
-            usage: decoded?.usage ?? null,
-            costUsd: decoded?.costUsd ?? null,
-            durationMs: Date.now() - startedAt,
-            status: 'indeterminate' as const,
-            failureReason: 'external subject cancelled',
-            artifacts: [
-              ...(decoded?.artifacts ?? []),
-              { kind: 'external_process', exitCode: execution.exitCode },
-            ],
-          };
-        }
         if (execution.termination === 'framework_timeout') {
           return {
             usage: decoded?.usage ?? null,
@@ -104,6 +94,18 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
               ...(decoded?.artifacts ?? []),
               { kind: 'external_process', exitCode: execution.exitCode },
             ],
+          };
+        }
+        if (execution.diagnostic?.category === 'execution-scope-unavailable') {
+          return {
+            usage: null,
+            costUsd: null,
+            durationMs: Date.now() - startedAt,
+            status: context.signal?.aborted
+              ? ('indeterminate' as const)
+              : ('infra_failed' as const),
+            failureReason: 'external subject execution scope was unavailable',
+            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
           };
         }
         if (config.result === 'exit-code') {
@@ -119,6 +121,28 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
                   : ('failed' as const),
             failureReason:
               execution.exitCode === 0 ? null : `external subject exited ${execution.exitCode}`,
+            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
+          };
+        }
+        if (execution.diagnostic?.category.startsWith('result-frame-')) {
+          return {
+            usage: null,
+            costUsd: null,
+            durationMs: Date.now() - startedAt,
+            status: context.signal?.aborted
+              ? ('indeterminate' as const)
+              : ('infra_failed' as const),
+            failureReason: 'external subject result transport failed',
+            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
+          };
+        }
+        if (execution.exitCode !== 0) {
+          return {
+            usage: null,
+            costUsd: null,
+            durationMs: Date.now() - startedAt,
+            status: context.signal?.aborted ? ('indeterminate' as const) : ('failed' as const),
+            failureReason: `external subject exited ${execution.exitCode}`,
             artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
           };
         }
@@ -205,6 +229,9 @@ function decodeConfig(
   if (result !== 'protocol-v1' && result !== 'exit-code') {
     throw new Error('external subject result is invalid');
   }
+  if (result === 'protocol-v1' && !bundledProfile(config.args)) {
+    throw new Error('external subject protocol-v1 requires the bundled result wrapper');
+  }
   return {
     command: text(config.command, 'external subject command'),
     args: config.args,
@@ -218,8 +245,17 @@ function wrapperToolchain(
   config: ExternalSubjectConfig,
   executorConfig: JsonObject,
 ): { profile: ExternalProfile; sourceEnv: string } | undefined {
-  if (!config.args[0]?.endsWith('/harbor-external-subject.js')) return undefined;
-  const profile = config.args[1];
+  const profile = bundledProfile(config.args);
+  if (!profile) return undefined;
+  const target = TOOLCHAIN_IDENTITIES[profile].root;
+  const mount = executorMounts(executorConfig).find((candidate) => candidate.target === target);
+  if (!mount) throw new Error(`${profile} toolchain mount is missing`);
+  return { profile, sourceEnv: mount.sourceEnv };
+}
+
+function bundledProfile(args: readonly string[]): ExternalProfile | undefined {
+  if (args[0] !== BUNDLED_EXTERNAL_WRAPPER) return undefined;
+  const profile = args[1];
   if (
     profile !== 'codex' &&
     profile !== 'claude-code' &&
@@ -231,10 +267,7 @@ function wrapperToolchain(
   ) {
     return undefined;
   }
-  const target = TOOLCHAIN_IDENTITIES[profile].root;
-  const mount = executorMounts(executorConfig).find((candidate) => candidate.target === target);
-  if (!mount) throw new Error(`${profile} toolchain mount is missing`);
-  return { profile, sourceEnv: mount.sourceEnv };
+  return profile;
 }
 
 function uniqueSubjects(cells: readonly import('./experiment.js').ExperimentCell[]) {

@@ -60,7 +60,12 @@ export interface WebFetchRequest {
 }
 
 /** Non-URL navigation target; web results continue to use `url`. */
-export type SearchResultTarget = { kind: 'thread'; sessionId: string; turnId?: string };
+export type SearchResultTarget = {
+  kind: 'thread';
+  sessionId: string;
+  turnId?: string;
+  sequence?: number;
+};
 
 export interface SearchResult {
   source: SearchSourceKind;

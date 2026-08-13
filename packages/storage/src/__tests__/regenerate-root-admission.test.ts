@@ -65,6 +65,28 @@ test('regenerate admission durably binds the immutable source Turn', async () =>
   }
 });
 
+test('new root admissions reject removed Automation authority', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-legacy-automation-admission-'));
+  try {
+    const store = createSqliteAgentRunStore(root);
+    await assert.rejects(
+      () =>
+        store.admitRootTurn(
+          admissionInput({
+            execution: {
+              kind: 'legacy_automation',
+              automationId: 'automation-1',
+            } as RootExecutionDescriptor,
+          }),
+        ),
+      /removed Automation authority/,
+    );
+    store.close?.();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function admissionInput(overrides: Partial<AdmitRootTurnInput> = {}): AdmitRootTurnInput {
   return {
     sessionId: 'root-session',

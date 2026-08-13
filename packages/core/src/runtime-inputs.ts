@@ -7,6 +7,7 @@ import type {
   BackendKind,
   SessionBlockedReason,
   SessionStatus,
+  SessionToolProfile,
   SubagentSessionParent,
   SubagentSessionRuntime,
   SubagentSessionSpawn,
@@ -37,6 +38,8 @@ export interface CreateSessionInput {
   model?: string;
   /** Per-model reasoning-depth variant; `undefined` = model default. */
   thinkingLevel?: ThinkingLevel;
+  /** Immutable versioned prompt/tool contract for this Session. */
+  toolProfile?: SessionToolProfile;
   permissionMode: PermissionMode;
   /** Defaults to `agent`. */
   collaborationMode?: CollaborationMode;
@@ -103,6 +106,7 @@ export interface UserMessageInput extends MessageContent {
 /** Non-user trigger source for a turn. */
 export type TurnOrigin =
   | { kind: 'scheduled_task'; scheduledTaskId: string }
+  | { kind: 'legacy_automation'; automationId: string }
   | { kind: 'goal'; goalId: string }
   | {
       kind: 'agent_graph';

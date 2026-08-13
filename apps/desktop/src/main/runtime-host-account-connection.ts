@@ -90,8 +90,12 @@ export async function synchronizeRuntimeHostAccountConnection(
     providerType,
   );
   if (!connection) throw new Error('Account Connection is missing');
-  const fetched = await client.fetchConnectionModels(connection.connectionId);
-  if (fetched.kind !== 'committed') return;
+  // Discovery is best effort. Selecting a default must not depend on it: a
+  // connection whose inventory came from the curated fallback still has usable
+  // models, and leaving `defaultTarget` empty makes every later operation that
+  // needs a default — new Session, send, external Session import — fail with a
+  // reason the user cannot see from the error it produces.
+  await client.fetchConnectionModels(connection.connectionId).catch(() => undefined);
   const catalog = await client.loadConnectionCatalog();
   if (catalog.defaultTarget !== null) return;
   const updated = findRuntimeHostAccountConnection(catalog, providerType);

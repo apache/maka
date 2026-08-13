@@ -1,3 +1,21 @@
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts
+index d1bfeeb..b4a0e62 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts
+@@ -61,6 +61,13 @@ export interface ChatLayoutContextValue {
+     scrollContainerRef: React.RefObject<HTMLElement | null>;
+     /** Callback ref for the message list content element — layout observes it for size changes. */
+     contentRef: (el: HTMLElement | null) => void;
++    /**
++     * Release auto-follow because the host is navigating the transcript
++     * itself. The scroll-direction unlock cannot see such a move when the
++     * host mounts content before scrolling: that scroll event carries a
++     * changed scrollHeight and is read as a resize artefact.
++     */
++    unlockAutoFollow?: () => void;
+ }
+ export declare const ChatLayoutContext: import("react").Context<ChatLayoutContextValue | null>;
+ export declare function useChatLayoutContext(): ChatLayoutContextValue | null;
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
 index ff34874..9ec8d7a 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
@@ -15,7 +33,7 @@ index ff34874..9ec8d7a 100644
  export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ea27cd5..790ae68 100644
+index ea27cd5..7102f8d 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 @@ -28,7 +28,7 @@
@@ -56,6 +74,23 @@ index ea27cd5..790ae68 100644
    const defaultScrollButton = /*#__PURE__*/_jsx(ChatLayoutScrollButton, {
      isVisible: scroll.isScrolledUp || newMsgs.hasNewMessages,
      label: newMsgs.hasNewMessages ? t('@astryx.chatLayout.newMessages') : undefined,
+@@ -223,8 +238,14 @@ export function ChatLayout({
+   // --- Layout context ---
+   const layoutContext = useMemo(() => ({
+     scrollContainerRef,
+-    contentRef: newMsgs.contentRef
+-  }), [scrollContainerRef, newMsgs.contentRef]);
++    contentRef: newMsgs.contentRef,
++    // maka: programmatic navigation seam. A host that scrolls the transcript
++    // itself (jumping to an earlier turn) has no way to tell auto-follow that
++    // the move was intentional: the scroll-up unlock is skipped whenever the
++    // event arrives with a changed scrollHeight, which is exactly what a host
++    // that mounts content before scrolling produces.
++    unlockAutoFollow: scroll.unlock
++  }), [scrollContainerRef, newMsgs.contentRef, scroll.unlock]);
+ 
+   // --- Derived styles ---
+   const showEmpty = !hasVisibleContent(children);
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 index 791909e..5c6199e 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
@@ -177,7 +212,7 @@ index 867ed5a..4b8f835 100644
    sources,
    citationStyle = 'label',
 @@ -1065,7 +1066,9 @@ export function Markdown({
-
+ 
    // Smooth bursty streamed chunks into a steady character-by-character reveal.
    // When not streaming, the hook returns children unchanged (no-op).
 -  const smoothedText = useStreamingText(children, isStreaming);
@@ -227,7 +262,7 @@ index 867ed5a..4b8f835 100644
 @@ -1146,9 +1157,6 @@ export function Markdown({
        children: inlineNodes.map((node, i) => renderInline(node, i, onLinkClick, cursor, citationCtx, LinkComponent, inlinePlugins, components))
      });
-
+ 
 -    // Store current inline nodes for next render's boundary calculation.
 -    prevInlineNodesRef.current = inlineNodes;
 -    prevBlocksRef.current = [];
@@ -237,7 +272,7 @@ index 867ed5a..4b8f835 100644
 @@ -1161,11 +1169,6 @@ export function Markdown({
      children: blocks.map((block, i) => renderBlock(block, i, blocks.length, density, headingLevelStart, onLinkClick, cursor, citationCtx, contentWidth ? typeof contentWidth === 'number' ? `${contentWidth}px` : contentWidth : null, contentAlign, LinkComponent, inlinePlugins, components, t))
    });
-
+ 
 -  // Store current blocks for next render's boundary calculation.
 -  // This ref write is safe under StrictMode: both invocations produce the same
 -  // blocks (same smoothedText → same useMemo result), so both write the same value.
@@ -277,7 +312,7 @@ index ae17b68..5a70b1d 100644
  /**
   * Smooths bursty streamed text into a steady character-by-character reveal.
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js
-index d5e9ac9..ab0b20b 100644
+index d5e9ac9..77f131b 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js
 +++ b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js
 @@ -21,7 +21,7 @@
@@ -288,7 +323,7 @@ index d5e9ac9..ab0b20b 100644
 +import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
  import { useMediaQuery } from "./useMediaQuery.js";
  import { useTheme } from "../theme/useTheme.js";
-
+ 
 @@ -103,56 +103,74 @@ export function useStreamingText(targetText, isStreaming, options) {
      const tick = speed === 'fast' ? base / 20 : base / 10;
      return Math.max(4, Math.round(tick));
@@ -370,7 +405,7 @@ index d5e9ac9..ab0b20b 100644
 +  useLayoutEffect(() => {
 +    presentationRef.current = presentation;
 +  }, [presentation]);
-
+ 
    // Animation loop
    useEffect(() => {
 -    if (!isStreaming || speed === 'instant' || prefersReducedMotion) {
@@ -411,6 +446,7 @@ index d5e9ac9..ab0b20b 100644
 -  return targetText.slice(0, displayedLen);
 +  return targetText.slice(0, renderedPresentation.displayedLen);
  }
+\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 index 234a2e4..e3f1842 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
@@ -430,7 +466,7 @@ index a6f850b..b6e0f2a 100644
 @@ -9,7 +9,7 @@
   * @position Core implementation; renders markdown as Astryx components
   */
-
+ 
 -import {useMemo, useRef} from 'react';
 +import {useMemo, useRef, useState} from 'react';
  import type React from 'react';
@@ -454,20 +490,20 @@ index a6f850b..b6e0f2a 100644
    sources,
    citationStyle = 'label',
 @@ -1620,7 +1623,9 @@ export function Markdown({
-
+ 
    // Smooth bursty streamed chunks into a steady character-by-character reveal.
    // When not streaming, the hook returns children unchanged (no-op).
 -  const smoothedText = useStreamingText(children, isStreaming);
 +  const smoothedText = useStreamingText(children, isStreaming, {
 +    settledText,
 +  });
-
+ 
    const incrementalStateRef = useRef<IncrementalState>(
      createIncrementalState(),
 @@ -1674,20 +1679,43 @@ export function Markdown({
      return Math.min(Math.ceil(duration / tickMs), 12);
    }, [token]);
-
+ 
 -  const prevBlocksRef = useRef<BlockNode[]>([]);
 -  const prevInlineNodesRef = useRef<InlineNode[]>([]);
 -  const boundariesRef = useRef<number[]>([]);
@@ -519,24 +555,24 @@ index a6f850b..b6e0f2a 100644
 +      boundaries,
 +    });
 +  }
-
+ 
    const cursor: StreamingCursor = {
      offset: 0,
 @@ -1727,10 +1755,6 @@ export function Markdown({
        </span>
      );
-
+ 
 -    // Store current inline nodes for next render's boundary calculation.
 -    prevInlineNodesRef.current = inlineNodes;
 -    prevBlocksRef.current = [];
 -
      return renderedInline;
    }
-
+ 
 @@ -1770,12 +1794,6 @@ export function Markdown({
      </div>
    );
-
+ 
 -  // Store current blocks for next render's boundary calculation.
 -  // This ref write is safe under StrictMode: both invocations produce the same
 -  // blocks (same smoothedText → same useMemo result), so both write the same value.
@@ -545,7 +581,7 @@ index a6f850b..b6e0f2a 100644
 -
    return rendered;
  }
-
+ 
 diff --git a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
 index 02c069f..acdc18a 100644
 --- a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
@@ -553,12 +589,12 @@ index 02c069f..acdc18a 100644
 @@ -22,7 +22,7 @@
   * - /packages/core/src/hooks/useStreamingText.test.ts (tests)
   */
-
+ 
 -import {useEffect, useMemo, useRef, useState} from 'react';
 +import {useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
  import {useMediaQuery} from './useMediaQuery';
  import {useTheme} from '../theme/useTheme';
-
+ 
 @@ -40,6 +40,60 @@ export interface UseStreamingTextOptions {
     * @default 'natural'
     */
@@ -618,12 +654,12 @@ index 02c069f..acdc18a 100644
 +      : targetText.length,
 +  };
  }
-
+ 
  // Fallback values when no Theme provider is present
 @@ -117,35 +171,6 @@ export function useStreamingText(
      return Math.max(4, Math.round(tick));
    }, [token, speed]);
-
+ 
 -  const [displayedLen, setDisplayedLen] = useState(0);
 -  const targetRef = useRef(targetText);
 -  const displayedLenRef = useRef(0);
@@ -690,14 +726,14 @@ index 02c069f..acdc18a 100644
 +  useLayoutEffect(() => {
 +    presentationRef.current = presentation;
 +  }, [presentation]);
-
+ 
    // Animation loop
    useEffect(() => {
 -    if (!isStreaming || speed === 'instant' || prefersReducedMotion) {
 +    if (!progressive) {
        return;
      }
-
+ 
 @@ -164,14 +219,19 @@ export function useStreamingText(
        const elapsed = now - lastTickRef.current;
        if (elapsed >= tickMs) {
@@ -725,19 +761,19 @@ index 02c069f..acdc18a 100644
 +          setPresentation(next);
          }
        }
-
+ 
 @@ -185,11 +245,11 @@ export function useStreamingText(
          rafRef.current = null;
        }
      };
 -  }, [isStreaming, charsPerTick, tickMs, speed, prefersReducedMotion]);
 +  }, [progressive, charsPerTick, tickMs]);
-
+ 
 -  if (!isStreaming || speed === 'instant' || prefersReducedMotion) {
 +  if (!progressive) {
      return targetText;
    }
-
+ 
 -  return targetText.slice(0, displayedLen);
 +  return targetText.slice(0, renderedPresentation.displayedLen);
  }

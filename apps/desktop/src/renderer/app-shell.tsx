@@ -95,6 +95,7 @@ import {
 import { McpPage } from './mcp-page';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
+import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../preload/transcript-contract.js';
 import {
   isAppUpdateInstallFailure,
   requestDownloadedAppUpdate,
@@ -337,6 +338,7 @@ function AppShellContent({
     clearRuntimeHostSessionState,
     messages,
     setMessages,
+    transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,
     messageRetryPendingRef,
@@ -370,7 +372,10 @@ function AppShellContent({
     removeAttachment,
     clearSubmittedAttachments,
     clearAllAttachments,
-  } = useAppShellComposerAttachments({ draftKey: attachmentDraftKey, toastApi });
+  } = useAppShellComposerAttachments({
+    draftKey: attachmentDraftKey,
+    toastApi,
+  });
   const {
     pendingQuotes,
     addQuote,
@@ -384,6 +389,12 @@ function AppShellContent({
   const [newChatSwarmModeActive, setNewChatSwarmModeActive] = useState(false);
   const [newChatGraphModeActive, setNewChatGraphModeActive] = useState(false);
   const [pendingOrchestrationModeBySession, setPendingOrchestrationModeBySession] = useState<Record<string, boolean>>({});
+  const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
+  const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
+    sessionId: string;
+    throughSequence: number | null;
+    turns: readonly { turnId: string; sequence: number; label: string }[];
+  }>();
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
   // P3: session ids with a live embedded-browser view. The right-side
   // BrowserPanel mounts only for these, so ordinary chats reserve no space.
@@ -1073,11 +1084,11 @@ function AppShellContent({
     });
   }
 
-  function openSessionInChat(sessionId: string, turnId?: string): void {
+  function openSessionInChat(sessionId: string, turnId?: string, sequence?: number): void {
     setNavSelection({ section: 'sessions', filter: 'chats' });
     setActiveId(sessionId);
     if (turnId) {
-      setSearchScrollTarget({ sessionId, turnId, nonce: Date.now() });
+      setSearchScrollTarget({ sessionId, turnId, sequence, nonce: Date.now() });
     } else {
       setSearchScrollTarget(null);
     }
@@ -1827,7 +1838,9 @@ function AppShellContent({
     onArchive: archiveProject,
     onRestore: restoreProject,
     ...(projectCapabilities.chooseClientDirectory
-      ? { onRelink: (projectId: string) => relinkProject(projectId).then(() => undefined) }
+      ? {
+          onRelink: (projectId: string) => relinkProject(projectId).then(() => undefined),
+        }
       : {}),
   };
 
@@ -1880,6 +1893,7 @@ function AppShellContent({
     setMessageLoadErrorBySession,
     setMessageRetryPendingBySession,
     setMessages,
+    transcriptRangeRef,
     setNavSelection,
     setLiveTurnBySession,
     setInteractionBySession,
@@ -1949,6 +1963,12 @@ function AppShellContent({
       revision && activeIdRef.current === revision.draftSessionId,
     );
     const slashCommand = parseDesktopSlashCommand(text);
+    // The composer has one submit; mid-turn it means steering, and this is
+    // where that reading lives. Slash commands are exempt because they are
+    // control instructions to the shell, not text for the running turn.
+    if (!slashCommand && (turnActive || activeStreamingLive)) {
+      return steerWithText(text);
+    }
     if (
       revisionSend &&
       revision &&
@@ -2142,15 +2162,6 @@ function AppShellContent({
     }
   }
 
-  function submitWhileStreaming(
-    text: string,
-    metadata?: ComposerSendMetadata,
-  ): Promise<boolean | void> {
-    return parseDesktopSlashCommand(text)
-      ? sendWithAttachments(text, metadata)
-      : steerWithText(text);
-  }
-
   const stop = createAppShellStopAction({
     uiLocale,
     activeIdRef,
@@ -2319,9 +2330,79 @@ function AppShellContent({
     setMessageLoadErrorBySession,
     setMessageLoadPending,
     setMessages,
+    transcriptRangeRef,
     setSessionEventHealthBySession,
     toastApi,
   });
+  let newestDurablePromptSequence: number | null = null;
+  try {
+    const controller = transcriptRangeRef.current;
+    if (controller && controller.store.range().sessionId === activeId) {
+      newestDurablePromptSequence = controller.store.newestDurableUserSequence();
+    }
+  } catch {
+    newestDurablePromptSequence = null;
+  }
+  useEffect(() => {
+    const sessionId = activeId;
+    if (!sessionId) {
+      setTranscriptTurnIndex(undefined);
+      return;
+    }
+    let disposed = false;
+    if (
+      transcriptTurnIndex?.sessionId === sessionId &&
+      (newestDurablePromptSequence === null ||
+        (transcriptTurnIndex.throughSequence !== null &&
+          newestDurablePromptSequence <= transcriptTurnIndex.throughSequence))
+    ) return;
+    void window.maka.sessions.listTurnLandmarks(sessionId).then(
+      (snapshot) => {
+        if (disposed || activeIdRef.current !== sessionId) return;
+        setTranscriptTurnIndex({
+          sessionId,
+          throughSequence: snapshot.throughSequence,
+          turns: snapshot.landmarks,
+        });
+      },
+      () => undefined,
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [activeId, activeIdRef, newestDurablePromptSequence, transcriptTurnIndex]);
+  useEffect(() => {
+    const target = searchScrollTarget;
+    if (!target || target.sessionId !== activeId || target.sequence === undefined) return;
+    const sequence = target.sequence;
+    const controller = transcriptRangeRef.current;
+    if (!controller) return;
+    let disposed = false;
+    void controller.ready()
+      .then(() => controller.loadAround(sequence))
+      .then(() => {
+        if (
+          disposed ||
+          transcriptRangeRef.current !== controller ||
+          activeIdRef.current !== target.sessionId
+        ) return;
+        setMessages([...controller.store.snapshot().messages]);
+      })
+      .catch((error) => {
+        if (disposed || activeIdRef.current !== target.sessionId) return;
+        setMessageLoadErrorBySession((current) => ({
+          ...current,
+          [target.sessionId]: localizedShellErrorMessage(
+            error,
+            desktopConversationCopy.actions.operationFailedFallback,
+            uiLocale,
+          ),
+        }));
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [activeId, searchScrollTarget?.nonce]);
   useShellRunUpdates({ activeId, setShellRunUpdatesBySession });
   useSessionEventHealthPolling({
     activeId,
@@ -2475,6 +2556,38 @@ function AppShellContent({
   }
 
   const activeMessageLoadError = activeId ? messageLoadErrorBySession[activeId] : undefined;
+  let activeTranscriptRange;
+  try {
+    const controller = transcriptRangeRef.current;
+    const range = controller?.store.range();
+    if (range?.sessionId === activeId) activeTranscriptRange = range;
+  } catch {
+    activeTranscriptRange = undefined;
+  }
+  async function loadTranscriptHistory(target: 'earlier' | 'latest') {
+    const controller = transcriptRangeRef.current;
+    const sessionId = activeId;
+    if (!controller || !sessionId || historyLoadPendingSessionId) return;
+    setHistoryLoadPendingSessionId(sessionId);
+    try {
+      if (target === 'earlier') {
+        await controller.loadBefore(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
+      } else {
+        await controller.loadLatest();
+      }
+    } catch (error) {
+      toastApi.error(
+        desktopConversationCopy.actions.messageReadFailedTitle,
+        localizedShellErrorMessage(
+          error,
+          desktopConversationCopy.actions.operationFailedFallback,
+          uiLocale,
+        ),
+      );
+    } finally {
+      setHistoryLoadPendingSessionId((current) => current === sessionId ? undefined : current);
+    }
+  }
   const homeSurfaceActive =
     navSelection.section === 'sessions' &&
     messages.length === 0 &&
@@ -2550,7 +2663,9 @@ function AppShellContent({
       style={
         sessionListCollapsed
           ? undefined
-          : ({ '--maka-sidenav-width': `${sessionListWidth}px` } as CSSProperties)
+          : ({
+              '--maka-sidenav-width': `${sessionListWidth}px`,
+            } as CSSProperties)
       }
     >
       <LiveTurnReconciler
@@ -2799,7 +2914,6 @@ function AppShellContent({
                   processing={showProcessingIndicator && !activeStreamingLive}
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendWithAttachments}
-                  onStreamingSubmit={submitWhileStreaming}
                   onStop={stop}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
@@ -2945,6 +3059,11 @@ function AppShellContent({
                   <ChatMessageSurface
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
+                hasOlderHistory={activeTranscriptRange?.hasOlder === true}
+                hasNewerHistory={activeTranscriptRange?.hasNewer === true}
+                historyLoadPending={historyLoadPendingSessionId === activeId}
+                onLoadEarlierHistory={() => loadTranscriptHistory('earlier')}
+                onReturnToLatestHistory={() => loadTranscriptHistory('latest')}
                 liveContentSeedRevision={activeEventSeed.sessionId === activeId
                   ? activeEventSeed.revision
                   : 0}
@@ -3009,6 +3128,14 @@ function AppShellContent({
                           }
                     : undefined
                 }
+                transcriptTurnIndex={
+                  transcriptTurnIndex && transcriptTurnIndex.sessionId === activeId
+                    ? transcriptTurnIndex.turns
+                    : undefined
+                }
+                onLoadTranscriptTurn={activeId
+                  ? (target) => openSessionInChat(activeId, target.turnId, target.sequence)
+                  : undefined}
                 scrollBehavior={readScrollMotionBehavior()}
                 branchBanner={branchBanner}
                 onBranchBannerClick={handleBranchBannerClick}

@@ -519,6 +519,42 @@ test('migrates the released transcript query grant when opening an existing acce
   }
 });
 
+test('adds bounded turn landmarks to an existing turn-query grant', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-turn-landmarks-'));
+  const credential = 'maka_rh_existing_turn_client';
+  try {
+    await writeFile(
+      join(directory, 'runtime-host-access.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        credentials: [
+          {
+            credentialId: 'existing-turn-client',
+            credentialHash: createHash('sha256').update(credential).digest('hex'),
+            principalId: 'existing-turn-client',
+            principalKind: 'remote_owner',
+            status: 'active',
+            operationGrants: ['host.status', 'session.turns.query'],
+            canPublishClientCapabilities: false,
+            canUseHostPaths: false,
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const authority = await openRuntimeHostAccessAuthority(directory);
+    assert.deepEqual(authority.authenticate(credential)?.operationGrants, [
+      'host.status',
+      'session.turns.query',
+      'session.turn_landmarks.query',
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('a rejected required WebSocket listener releases Local IPC and root ownership', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-websocket-startup-rollback-'));
   const root = join(base, 'root');

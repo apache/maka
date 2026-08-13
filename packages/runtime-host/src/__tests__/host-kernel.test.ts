@@ -113,9 +113,71 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('accepts a ready successor after an earlier Candidate fails', async () => {
+  test('reports an operational migration blocker as a permanent election failure', async () => {
     await withHostPaths(async (paths) => {
       let launches = 0;
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 1_000,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: () => {
+            launches += 1;
+            return {
+              spawned: Promise.resolve({
+                pid: process.pid,
+                startupFailure: Promise.resolve({
+                  reason: 'operational_state_migration_blocked' as const,
+                }),
+              }),
+            };
+          },
+        },
+      );
+
+      assert.deepEqual(result, { kind: 'failed', reason: 'operational_state_migration_blocked' });
+      assert.equal(launches, 1);
+    });
+  });
+
+  test('treats a rejected Candidate report as unavailable election evidence', async () => {
+    await withHostPaths(async (paths) => {
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 100,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: () => ({
+            spawned: Promise.resolve({
+              pid: process.pid,
+              startupFailure: Promise.reject(new Error('report failed')),
+            }),
+          }),
+        },
+      );
+
+      assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+    });
+  });
+
+  test('accepts a ready successor launched before a migration blocker is observed', async () => {
+    await withHostPaths(async (paths) => {
+      let launches = 0;
+      let reportBlocker:
+        | ((failure: { reason: 'operational_state_migration_blocked' }) => void)
+        | undefined;
       const result = await connectOrSpawnRuntimeHostWithDependencies(
         {
           rootPath: paths.root,
@@ -129,9 +191,19 @@ describe('non-serving Runtime Host kernel', () => {
           random: () => 0.5,
           launchCandidate: (input) => {
             launches += 1;
+            if (launches === 1) {
+              return {
+                spawned: Promise.resolve({
+                  pid: process.pid,
+                  startupFailure: new Promise((resolve) => {
+                    reportBlocker = resolve;
+                  }),
+                }),
+              };
+            }
+            reportBlocker?.({ reason: 'operational_state_migration_blocked' });
             return launchTestRuntimeHostCandidate(paths, {
               ...input,
-              ...(launches === 1 ? { env: { MAKA_TEST_STARTUP_ERROR_CODE: 'EACCES' } } : {}),
             });
           },
         },

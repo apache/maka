@@ -143,6 +143,7 @@ import { startupStep, whileAwaitingPerson } from "./startup-step.js";
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
 import {
   parseDesktopSessionResourceKey,
+  requireDesktopHostRef,
   type DesktopHostRef,
 } from "../preload/runtime-host-identity.js";
 
@@ -1081,6 +1082,35 @@ function registerPersistentClientIpc(): void {
     }
     await owner?.unobserveSession(observerId);
   });
+  ipcMain.handle('sessions:transcript:close', async (event, consumerId: unknown) => {
+    if (typeof consumerId !== 'string' || consumerId.length === 0 || consumerId.length > 256) {
+      throw new Error('Invalid transcript consumer identity');
+    }
+    await owner?.closeTranscript(consumerId, event.sender.id);
+  });
+  ipcMain.handle(
+    'sessions:transcript:ack',
+    (event, scope: unknown, consumerId: unknown, generation: unknown, deliverySequence: unknown) => {
+      const active = activeRuntimeHostRef();
+      if (!active) throw new Error('Desktop Runtime Host identity is unavailable');
+      requireDesktopHostRef(scope, active);
+      if (typeof consumerId !== 'string' || consumerId.length === 0 || consumerId.length > 256) {
+        throw new Error('Invalid transcript consumer identity');
+      }
+      if (typeof generation !== 'string' || generation.length === 0 || generation.length > 256) {
+        throw new Error('Invalid transcript generation');
+      }
+      if (!Number.isSafeInteger(deliverySequence) || Number(deliverySequence) < 0) {
+        throw new Error('Invalid transcript delivery');
+      }
+      owner?.acknowledgeTranscript(
+        consumerId,
+        generation,
+        Number(deliverySequence),
+        event.sender.id,
+      );
+    },
+  );
   ipcMain.handle("runtime-host:activeIdentity", () => {
     const scope = activeRuntimeHostRef();
     if (!scope) throw new Error("Desktop Runtime Host identity is unavailable");
@@ -1266,6 +1296,7 @@ function resolveDesktopE2eFixture(): ReturnType<typeof resolveE2eFixture> {
       process.env.MAKA_E2E_FIXTURE_LOCALE,
       process.env.MAKA_E2E_FIXTURE_TIMEZONE,
       process.env.MAKA_E2E_FIXTURE_PLATFORM,
+      process.env.MAKA_E2E_FIXTURE_SCROLL_MOTION,
     );
   } catch (error) {
     if (!process.env.MAKA_E2E_FIXTURE) throw error;

@@ -1,4 +1,4 @@
-/* Codex-style prompt navigation rail: one tick per user prompt, pinned to the
+/* Codex-style prompt navigation rail: bounded prompt landmarks pinned to the
    right edge of the chat scrollport. Low-key by default, brightens on hover;
    each tick jumps to that prompt and the active turn's tick stays highlighted.
    The tick bar draws in `currentColor` so active/hover just shift the neutral
@@ -74,7 +74,12 @@
   /* `safe` so the max-height above can never strand the first ticks past an
      unscrollable overflow edge, which plain centring does. */
   justify-content: safe center;
-  gap: var(--space-1);
+  /* No gap on purpose: a gap between ticks is a band where the pointer is over
+     the rail but over no tick, so the hover falloff drops out and picks up
+     again every few pixels of travel. The ticks carry the same rhythm in their
+     own padding instead (see the tick's `padding-block`), which keeps the
+     pitch identical and leaves the column continuous — moving down the rail
+     hands the hover from one tick straight to the next. */
   padding: var(--space-1);
   pointer-events: auto;
   opacity: var(--opacity-muted);
@@ -106,7 +111,10 @@
   appearance: none;
   border: 0;
   margin: 0;
-  padding: var(--space-0-5) 0;
+  /* Holds the rail's rhythm now that the rail itself has no gap: half of this
+     used to be the gap, so the pitch between bars is unchanged and the hit
+     boxes tile instead of leaving a dead band between them. */
+  padding: var(--space-1) 0;
   background: transparent;
   color: var(--muted-foreground);
   display: flex;
@@ -134,6 +142,12 @@
    pointer (0 = hovered) and rests at the falloff distance, so the whole ramp is
    one expression and the resting width is its own tail. */
 .maka-prompt-rail-tick-bar {
+  /* Load-bearing since #2580 put the tick on Astryx's Button: the bar used to
+     be a direct child of the flex tick, which blockified it, and now it sits
+     inside the Button's own label span in normal flow. An inline box takes no
+     width or height, so without this the bar computes to 0x0 and the whole
+     rail paints nothing. */
+  display: block;
   width: calc(14px + ((3 - var(--maka-prompt-rail-proximity, 3)) * 3px));
   height: 3px;
   border-radius: var(--radius-pill);
@@ -170,6 +184,16 @@
   background: var(--foreground);
   pointer-events: none;
   transition: top var(--duration-large) var(--ease-out-strong);
+}
+
+/* The glide is for reading: it carries the eye between neighbouring prompts as
+   the transcript scrolls. A click is the opposite — the reader picked the
+   destination, and the same 280ms spent crossing twenty prompts instead of one
+   reads as the bar flying off across the rail. `jumpTo` in
+   prompt-anchor-rail.tsx holds this attribute until the scroll it started has
+   settled, so the highlight is placed at each turn the jump passes through. */
+.maka-prompt-rail[data-jumping="true"] .maka-prompt-rail-indicator {
+  transition: none;
 }
 
 /* No active prompt yet (a transcript that has not been scrolled) leaves the

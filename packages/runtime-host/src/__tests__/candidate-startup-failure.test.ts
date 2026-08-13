@@ -24,6 +24,24 @@ test('preserves the primary startup classification through cleanup aggregation',
   );
 });
 
+test('preserves an operational migration blocker through the Candidate boundary', () => {
+  const blocker = Object.assign(new Error('private migration detail'), {
+    code: 'operational_state_migration_blocked',
+  });
+  const failure = classifyCandidateStartupFailure(
+    new AggregateError([blocker, new Error('cleanup failed')], 'startup failed', {
+      cause: blocker,
+    }),
+  );
+
+  assert.deepEqual(failure, { reason: 'operational_state_migration_blocked' });
+  assert.deepEqual(
+    candidateStartupFailureForExitCode(candidateStartupFailureExitCode(failure)),
+    failure,
+  );
+  assert.equal(JSON.stringify(failure).includes('private'), false);
+});
+
 test('does not classify cleanup errors as the primary startup failure', () => {
   const primary = new Error('primary recovery failure');
   const cleanup = Object.assign(new Error('secondary cleanup failure'), { errcode: 10 });

@@ -115,6 +115,99 @@ test('production composition closes long-term memory after a later startup failu
   });
 });
 
+test('production recovery preserves legacy Automation history and closes an orphaned admission', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const historical = await stores.sessionStore.create({
+      cwd: root,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const pending = await stores.sessionStore.create({
+      cwd: root,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const admitted = await stores.agentRunStore.admitRootTurn({
+      sessionId: pending.id,
+      turnId: 'legacy-automation-turn',
+      proposedRunId: 'legacy-automation-run',
+      proposedUserMessageId: 'legacy-automation-message',
+      execution: { kind: 'scheduled_task', scheduledTaskId: 'legacy-automation' },
+      previousRootTurnId: null,
+      normalizedInput: { text: 'Run the legacy Automation' },
+      sourceMessages: [],
+      admittedAt: 1,
+    });
+    assert.equal(admitted.kind, 'admitted');
+
+    const Database = (require('node:sqlite') as typeof import('node:sqlite')).DatabaseSync;
+    const database = new Database(join(root, 'runtime.sqlite'));
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      database
+        .prepare(`
+          INSERT INTO session_messages(
+            session_id, sequence, message_id, message_type, message_ts, record_json
+          ) VALUES (?, 0, ?, 'user', 1, ?)
+        `)
+        .run(
+          historical.id,
+          'historical-automation-message',
+          JSON.stringify({
+            type: 'user',
+            id: 'historical-automation-message',
+            turnId: 'historical-automation-turn',
+            ts: 1,
+            text: 'Historical Automation prompt',
+            origin: { kind: 'automation', automationId: 'historical-automation' },
+          }),
+        );
+      const row = database
+        .prepare(`
+          SELECT record_json
+          FROM core_root_turn_admissions
+          WHERE session_id = ? AND turn_id = 'legacy-automation-turn'
+        `)
+        .get(pending.id) as { record_json: string };
+      const record = JSON.parse(row.record_json) as Record<string, unknown>;
+      record.execution = { kind: 'automation', automationId: 'legacy-automation' };
+      database
+        .prepare(`
+          UPDATE core_root_turn_admissions
+          SET record_json = ?
+          WHERE session_id = ? AND turn_id = 'legacy-automation-turn'
+        `)
+        .run(JSON.stringify(record), pending.id);
+      database.exec('COMMIT');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
+    database.close();
+
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      const history = await stores.sessionStore.readMessages(historical.id);
+      assert.deepEqual(history[0]?.type === 'user' ? history[0].origin : undefined, {
+        kind: 'legacy_automation',
+        automationId: 'historical-automation',
+      });
+      const recoveredRun = await stores.agentRunStore.readRun(pending.id, 'legacy-automation-run');
+      assert.equal(recoveredRun.status, 'failed');
+      assert.equal(recoveredRun.legacyAutomationId, 'legacy-automation');
+      assert.equal(recoveredRun.failureClass, 'app_restarted');
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('composition drain preserves usage admission until active Runtime work settles', async () => {
   await withCompositionRoot(async ({ owner }) => {
     const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));

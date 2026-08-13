@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
-import { RuntimeHostSessionProjector } from '../adapter/session-projector.js';
+import {
+  createRuntimeHostSessionProjectionSeed,
+  RuntimeHostSessionProjector,
+} from '../adapter/session-projector.js';
 import type { SessionContinuitySnapshot, SubscriptionFrame } from '../protocol/index.js';
 
 test('applies authoritative replacement once and does not complete it again at Turn terminal', () => {
   const projector = new RuntimeHostSessionProjector(
     snapshot(),
-    [assistant('message-1', 'draft')],
+    createRuntimeHostSessionProjectionSeed([assistant('message-1', 'draft')], snapshot()),
     () => 10,
     [{ kind: 'text', turnId: 'turn-1', messageId: 'message-1' }],
   );
@@ -54,9 +57,12 @@ test('seeds only streams identified as active by the Host catch-up state', () =>
       thinking: { text: 'still working' },
     },
   ];
-  const projector = new RuntimeHostSessionProjector(snapshot(), transcript, () => 10, [
-    { kind: 'thinking', turnId: 'turn-1', messageId: 'active-step' },
-  ]);
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed(transcript, snapshot()),
+    () => 10,
+    [{ kind: 'thinking', turnId: 'turn-1', messageId: 'active-step' }],
+  );
 
   assert.deepEqual(
     projector
@@ -81,10 +87,15 @@ test('does not replay settled transcript steps when the active step reaches term
       thinking: { text: 'active thought' },
     },
   ];
-  const projector = new RuntimeHostSessionProjector(snapshot(), transcript, () => 10, [
-    { kind: 'text', turnId: 'turn-1', messageId: 'active-step' },
-    { kind: 'thinking', turnId: 'turn-1', messageId: 'active-step' },
-  ]);
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed(transcript, snapshot()),
+    () => 10,
+    [
+      { kind: 'text', turnId: 'turn-1', messageId: 'active-step' },
+      { kind: 'thinking', turnId: 'turn-1', messageId: 'active-step' },
+    ],
+  );
 
   assert.deepEqual(
     projector
@@ -174,7 +185,12 @@ function snapshot(overrides: Partial<SessionContinuitySnapshot> = {}): SessionCo
       status: 'running',
     },
     goal: null,
-    queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
+    queue: {
+      hostEpoch: 'host-1',
+      queueRevision: 0,
+      steering: [],
+      followup: [],
+    },
     interactions: { pending: [] },
     ...overrides,
   };

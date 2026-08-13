@@ -246,6 +246,7 @@ async function withE2eWindow(
     locale,
     platform,
     showWindow,
+    scrollMotion,
     invocableSkills,
     gitReviewExtraFiles,
   }: {
@@ -253,6 +254,8 @@ async function withE2eWindow(
     readinessSelector: string;
     e2eFixtureScenario?: string;
     locale?: 'zh' | 'en';
+    /** Opt this window back into animated scrolling; see `scroll-motion-policy`. */
+    scrollMotion?: 'auto' | 'smooth';
     /** #1312: force app:info's platform so the window boots natively into that platform's `data-os` cascade. */
     platform?: 'darwin' | 'win32' | 'linux';
     /** Show fixtures whose contract depends on compositor-paced frames. */
@@ -286,6 +289,7 @@ async function withE2eWindow(
         scenario: e2eFixtureScenario,
         locale,
         platform,
+        scrollMotion,
         // xvfb throttles a hidden window's compositor to ~1fps. Geometry
         // fixtures opt in locally; every fixture is visible on isolated CI X.
         showWindow: showWindow || isCiLinuxDisplay(),
@@ -338,6 +342,9 @@ export const test = base.extend<{
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
   linkColorWindow: Page;
+  projectSidebarWindow: Page;
+  promptRailWindow: Page;
+  promptRailMotionWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
@@ -373,6 +380,44 @@ export const test = base.extend<{
       seed: false,
       readinessSelector: '.settingsBotConfigDocLink',
       e2eFixtureScenario: 'settings-bots-onboarding',
+    }, use);
+  },
+  // A real project with several sessions. Shown because the contract under
+  // test is native focus order across independently interactive row controls.
+  projectSidebarWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-maka-contract="search-modal"]',
+      e2eFixtureScenario: 'sidebar-search-modal-open',
+      locale: 'zh',
+      showWindow: true,
+    }, use);
+  },
+  // A multi-prompt transcript for the prompt anchor rail. Shown, because every
+  // assertion in prompt-rail.spec.ts is geometry the compositor has to settle.
+  promptRailWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      // A rendered turn, deliberately not the rail: Playwright treats a
+      // zero-area element as hidden, so gating readiness on a tick would turn
+      // every rail regression into a 20s cold-start timeout instead of the
+      // assertion that names it.
+      readinessSelector: '[data-turn-id]',
+      e2eFixtureScenario: 'chat-prompt-rail',
+      showWindow: true,
+    }, use);
+  },
+  // The same transcript, scrolling the way the shipped app scrolls. Separate
+  // from `promptRailWindow` because it is only the jump that needs a scroll
+  // still in flight, and paying for one everywhere costs several seconds per
+  // window and settles less predictably.
+  promptRailMotionWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-turn-id]',
+      e2eFixtureScenario: 'chat-prompt-rail',
+      showWindow: true,
+      scrollMotion: 'smooth',
     }, use);
   },
 });

@@ -1,0 +1,90 @@
+#!/bin/sh
+set -eu
+
+ALLOWLIST=/opt/egress-sidecar/allowlist.txt
+GOST_PORT=12345
+GOST_MARK=114514
+NFTABLES_RULESET_NAME=gost_egress
+PROXY_HOST=maka-eval-mitmproxy
+PROXY_PORT=8080
+
+remove_nftables() {
+  nft delete table inet "$NFTABLES_RULESET_NAME" 2>/dev/null || true
+}
+
+resolve_proxy_ip() {
+  getent ahostsv4 "$PROXY_HOST" | awk 'NR == 1 { print $1 }'
+}
+
+setup_proxy_only() {
+  proxy_ip="$(resolve_proxy_ip)"
+  if [ -z "$proxy_ip" ]; then
+    echo "could not resolve Eval egress proxy" >&2
+    exit 1
+  fi
+  : > "$ALLOWLIST"
+  sleep 2
+  nft --file - <<EOF
+add table inet $NFTABLES_RULESET_NAME
+flush table inet $NFTABLES_RULESET_NAME
+
+table inet $NFTABLES_RULESET_NAME {
+  chain output {
+    type nat hook output priority dstnat; policy accept;
+
+    meta mark $GOST_MARK return
+    fib daddr type local return
+    ip daddr $proxy_ip tcp dport $PROXY_PORT return
+    meta l4proto tcp redirect to :$GOST_PORT
+  }
+
+  chain egress {
+    type filter hook output priority filter; policy accept;
+
+    meta mark $GOST_MARK accept
+    fib daddr type local accept
+    ip daddr $proxy_ip tcp dport $PROXY_PORT accept
+    ip protocol icmp accept
+    ip6 nexthdr icmpv6 accept
+    meta l4proto != tcp reject
+  }
+}
+EOF
+  echo "ok: Eval proxy-only egress applied ($proxy_ip:$PROXY_PORT)"
+}
+
+case "${1:-}" in
+  allow-all)
+    remove_nftables
+    : > "$ALLOWLIST"
+    echo "ok: allow all egress"
+    ;;
+  deny-all)
+    : > "$ALLOWLIST"
+    sleep 2
+    setup_proxy_only
+    ;;
+  allow)
+    shift
+    if [ "$#" -ne 1 ] || [ "$1" != "$PROXY_HOST" ]; then
+      echo "Eval egress policy accepts only $PROXY_HOST" >&2
+      exit 2
+    fi
+    setup_proxy_only
+    ;;
+  show)
+    if nft list table inet "$NFTABLES_RULESET_NAME" >/dev/null 2>&1; then
+      echo "mode: Eval proxy-only"
+      echo "proxy: $PROXY_HOST:$PROXY_PORT"
+    else
+      echo "mode: allow-all"
+    fi
+    ;;
+  rules)
+    nft list table inet "$NFTABLES_RULESET_NAME" 2>/dev/null || echo "mode: allow-all"
+    ;;
+  *)
+    echo "Usage: network-policy {show|allow-all|deny-all|allow|rules}" >&2
+    exit 2
+    ;;
+esac

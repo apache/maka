@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import { createArrivalBottomPin, type ArrivalBottomPin } from './arrival-bottom-pin.js';
+import { captureChatScrollAnchor, restoreChatScrollAnchor } from './chat-scroll-anchor.js';
 import { createTurnSizeWarmup } from './turn-size-warmup.js';
 
 export function useChatScroll(input: {
@@ -17,9 +18,76 @@ export function useChatScroll(input: {
    * 250px placeholder size for the life of the session.
    */
   warmupReady?: boolean;
+  hasOlderHistory?: boolean;
+  historyLoadPending?: boolean;
+  onLoadEarlierHistory?(): Promise<void> | void;
+  latestNavigationNonce?: number;
 }) {
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
   const arrivalPin = useRef<ArrivalBottomPin | null>(null);
+  const loadEarlierRef = useRef(input.onLoadEarlierHistory);
+  loadEarlierRef.current = input.onLoadEarlierHistory;
+  const sessionIdRef = useRef(input.sessionId);
+  sessionIdRef.current = input.sessionId;
+  const historyLoadPendingRef = useRef(input.historyLoadPending);
+  historyLoadPendingRef.current = input.historyLoadPending;
+  const canLoadEarlier = input.onLoadEarlierHistory !== undefined;
+  const earlierLoadRequest = useRef<object | null>(null);
+
+  useEffect(() => {
+    earlierLoadRequest.current = null;
+  }, [input.sessionId]);
+
+  useEffect(() => {
+    const root = input.scrollRef.current;
+    if (!root || !input.hasOlderHistory || !canLoadEarlier) return;
+    let previousScrollTop = root.scrollTop;
+    const requestEarlier = (): void => {
+      if (historyLoadPendingRef.current || earlierLoadRequest.current) return;
+      const scrollHeight = root.scrollHeight;
+      const anchor = captureChatScrollAnchor(root);
+      const sessionId = sessionIdRef.current;
+      const request = {};
+      earlierLoadRequest.current = request;
+      arrivalPin.current?.release();
+      void Promise.resolve(loadEarlierRef.current?.()).catch(() => undefined).finally(() => {
+        window.requestAnimationFrame(() => {
+          if (
+            earlierLoadRequest.current === request &&
+            sessionIdRef.current === sessionId &&
+            input.scrollRef.current === root &&
+            root.isConnected &&
+            !restoreChatScrollAnchor(root, anchor)
+          ) {
+            root.scrollTop += root.scrollHeight - scrollHeight;
+          }
+          if (earlierLoadRequest.current === request) earlierLoadRequest.current = null;
+        });
+      });
+    };
+    const nearStart = (): boolean =>
+      root.scrollTop <= Math.max(640, root.clientHeight * 2);
+    const onScroll = (): void => {
+      const nextScrollTop = root.scrollTop;
+      if (nextScrollTop < previousScrollTop && nearStart()) requestEarlier();
+      previousScrollTop = nextScrollTop;
+    };
+    const onWheel = (event: WheelEvent): void => {
+      if (event.deltaY < 0 && nearStart()) requestEarlier();
+    };
+    root.addEventListener('scroll', onScroll, { passive: true });
+    root.addEventListener('wheel', onWheel, { passive: true });
+    return () => {
+      root.removeEventListener('scroll', onScroll);
+      root.removeEventListener('wheel', onWheel);
+    };
+  }, [
+    input.hasOlderHistory,
+    input.historyLoadPending,
+    canLoadEarlier,
+    input.scrollRef,
+    input.sessionId,
+  ]);
 
   // ChatLayout owns steady-state following. A session change is product
   // navigation rather than content growth, so the new transcript must be at its
@@ -59,7 +127,7 @@ export function useChatScroll(input: {
       arrivalPin.current = null;
       delete viewport.dataset.arrivalPin;
     };
-  }, [input.sessionId, input.hasTurns, input.scrollRef]);
+  }, [input.sessionId, input.hasTurns, input.scrollRef, input.latestNavigationNonce]);
 
   // Withdraw a previous transcript's terminal marker in the same commit that
   // changes the session. ChatLayout owns the DOM ref, so on the first mount its
@@ -129,7 +197,13 @@ export function useChatScroll(input: {
       window.clearTimeout(settleTimer);
       cancelWarmup?.();
     };
-  }, [input.sessionId, input.hasTurns, input.warmupReady, input.scrollRef]);
+  }, [
+    input.sessionId,
+    input.hasTurns,
+    input.warmupReady,
+    input.scrollRef,
+    input.latestNavigationNonce,
+  ]);
 
   useEffect(() => {
     const target = input.target;

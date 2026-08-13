@@ -32,7 +32,7 @@ import {
   type CompanionErrorCode,
   type EnsureCompanionForkResult,
 } from './quote-companion-core';
-import { readSettledMessages } from './session-message-settlement';
+import { mergeSettledMessages, readSettledMessages } from './session-message-settlement';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import {
   snapshotCompanionQuotes,
@@ -173,7 +173,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const subscribeToFork = useCallback((forkId: string) => {
     void readSettledMessages(forkId)
       .then(({ messages }) => {
-        if (mountedRef.current) setAllMessages(messages);
+        if (mountedRef.current) {
+          setAllMessages((current) => mergeSettledMessages(current, messages));
+        }
       })
       .catch(() => {
         if (mountedRef.current) setError(copyRef.current.errors.settlementFailed);
@@ -199,12 +201,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         // so the finished exchange never flickers away.
         void readSettledMessages(forkId, {
           ...(requiredAssistantMessageId(liveTurnRef.current)
-            ? { requiredAssistantMessageId: requiredAssistantMessageId(liveTurnRef.current) }
+                ? {
+                    requiredAssistantMessageId: requiredAssistantMessageId(liveTurnRef.current),
+                  }
             : {}),
           })
           .then(({ messages: next }) => {
             if (!mountedRef.current || activeTurnIdRef.current !== settledTurnId) return;
-            setAllMessages(next);
+            setAllMessages((current) => mergeSettledMessages(current, next));
             setLiveTurn((prev) => (prev ? reconcileTerminalLiveTurn(prev, next) : prev));
             activeTurnIdRef.current = null;
             turnInFlightRef.current = false;
@@ -306,25 +310,18 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         const sourceSessionId = sourceSessionIdRef.current;
         const id = companionIdRef.current ?? pendingForkIdRef.current;
         if (id && sourceSessionId) {
-          void dismissCompanionCopy(
-            window.maka.sessions,
-            sourceSessionId,
-            panelId,
-            id,
-          ).then((cleaned) => {
-            if (cleaned) {
-              onForkVisibilityChangeRef.current?.({
-                type: 'cleanup-succeeded',
-                sessionId: id,
-              });
-            }
-          });
-        } else if (sourceSessionId) {
-          void abandonPendingCompanionCopy(
-            window.maka.sessions,
-            sourceSessionId,
-            panelId,
+          void dismissCompanionCopy(window.maka.sessions, sourceSessionId, panelId, id).then(
+            (cleaned) => {
+              if (cleaned) {
+                onForkVisibilityChangeRef.current?.({
+                  type: 'cleanup-succeeded',
+                  sessionId: id,
+                });
+              }
+            },
           );
+        } else if (sourceSessionId) {
+          void abandonPendingCompanionCopy(window.maka.sessions, sourceSessionId, panelId);
         }
       });
     };
@@ -385,7 +382,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         // automatic connection/model rebound in the read-only model label.
         void readSettledMessages(result.forkId)
           .then(({ messages: next }) => {
-            if (mountedRef.current) setAllMessages(next);
+            if (mountedRef.current) {
+              setAllMessages((current) => mergeSettledMessages(current, next));
+            }
           })
           .catch(() => {});
         void window.maka.sessions

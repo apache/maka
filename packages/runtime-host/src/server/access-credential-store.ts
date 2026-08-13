@@ -15,6 +15,11 @@ const TRANSCRIPT_QUERY_REPLACEMENT_GRANTS = [
   'session.transcript.page',
   'session.transcript.overlay.release',
 ] as const satisfies readonly OperationKey[];
+const TURN_QUERY_GRANT = 'session.turns.query';
+const TURN_QUERY_REPLACEMENT_GRANTS = [
+  TURN_QUERY_GRANT,
+  'session.turn_landmarks.query',
+] as const satisfies readonly OperationKey[];
 
 export const ACCESS_FILE_NAME = 'runtime-host-access.json';
 
@@ -199,7 +204,11 @@ function migrateStoredOperationGrants(grants: readonly string[]): readonly strin
   const seen = new Set<string>();
   for (const stored of grants) {
     const replacements =
-      stored === LEGACY_TRANSCRIPT_QUERY_GRANT ? TRANSCRIPT_QUERY_REPLACEMENT_GRANTS : [stored];
+      stored === LEGACY_TRANSCRIPT_QUERY_GRANT
+        ? TRANSCRIPT_QUERY_REPLACEMENT_GRANTS
+        : stored === TURN_QUERY_GRANT
+          ? TURN_QUERY_REPLACEMENT_GRANTS
+          : [stored];
     for (const replacement of replacements) {
       if (seen.has(replacement)) continue;
       seen.add(replacement);

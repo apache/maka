@@ -85,6 +85,9 @@ import {
   type SessionTranscriptMessageLookupRequest,
   type SessionTranscriptPageRequest,
   type SessionTranscriptStoragePage,
+  type SessionTurnContribution,
+  type SessionTurnContributionPage,
+  type SessionTurnLandmarkSnapshot,
 } from './session-store.js';
 import {
   isDiscardableConversationCopy,
@@ -107,6 +110,9 @@ import {
 export { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
 
 const SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE = 256;
+const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_MESSAGES = 1_024;
+const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_BYTES = 4 * 1024 * 1024;
+const SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES = 32;
 
 const require = createRequire(import.meta.url);
 const AGENT_GRAPH_CONTROL_DELETE_TABLES = [...SQLITE_AGENT_GRAPH_CONTROL_TABLES].reverse();
@@ -1388,7 +1394,12 @@ export class SqliteSessionMetadataStore {
       const throughSequence =
         request.throughSequence === undefined ? actualHighWater : request.throughSequence;
       if (throughSequence === null) {
-        return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
+        return {
+          throughSequence: null,
+          fragments: [],
+          rawBytes: 0,
+          next: null,
+        };
       }
       if (actualHighWater === null || throughSequence > actualHighWater) {
         throw new Error(`Session transcript watermark is ahead of durable storage: ${sessionId}`);
@@ -1608,6 +1619,316 @@ export class SqliteSessionMetadataStore {
     return nullableStoredMessageSequence(row.high_water, sessionId);
   }
 
+  async readTurnContributions(
+    sessionId: string,
+    throughSequence: number | null,
+    position: number,
+    maxContributions: number,
+  ): Promise<SessionTurnContributionPage> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    if (
+      (throughSequence !== null &&
+        (!Number.isSafeInteger(throughSequence) || throughSequence < 0)) ||
+      !Number.isSafeInteger(position) ||
+      position < 0 ||
+      !Number.isSafeInteger(maxContributions) ||
+      maxContributions < 1 ||
+      maxContributions > 128
+    ) {
+      throw new Error('Invalid Session turn contribution request');
+    }
+    return this.readTransaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      const highWaterRow = this.db
+        .prepare('SELECT MAX(sequence) AS high_water FROM session_messages WHERE session_id = ?')
+        .get(sessionId) as { high_water?: unknown };
+      const actualHighWater = nullableStoredMessageSequence(highWaterRow.high_water, sessionId);
+      const fixedThrough = throughSequence ?? actualHighWater;
+      if (fixedThrough === null) {
+        return { throughSequence: null, contributions: [], nextPosition: null };
+      }
+      if (actualHighWater === null || fixedThrough > actualHighWater) {
+        throw new Error(`Session turn watermark is ahead of durable storage: ${sessionId}`);
+      }
+      const contributions = new Map<string, SessionTurnContribution>();
+      let nextPosition: number | null = position;
+      let sourceMessages = 0;
+      let sourceBytes = 0;
+      while (nextPosition <= fixedThrough) {
+        const rows = this.db
+          .prepare(
+            `
+            SELECT message.sequence, message.record_json, payload.record_bytes, payload.sha256
+            FROM session_messages AS message
+            LEFT JOIN session_message_payloads AS payload
+              ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+            WHERE message.session_id = ?
+              AND message.sequence >= ?
+              AND message.sequence <= ?
+            ORDER BY message.sequence ASC
+            LIMIT 128
+          `,
+          )
+          .all(sessionId, nextPosition, fixedThrough) as StoredSessionMessagePayloadRow[];
+        if (rows.length === 0) {
+          throw new StoredSessionMessageIncompatibleError(sessionId, nextPosition);
+        }
+        for (const row of rows) {
+          const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+          const recordBytes = storedMessageRecordBytes(row, sessionId, sequence);
+          if (
+            sourceMessages > 0 &&
+            (sourceMessages >= SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_MESSAGES ||
+              sourceBytes + recordBytes > SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_BYTES)
+          ) {
+            return {
+              throughSequence: fixedThrough,
+              contributions: [...contributions.values()],
+              nextPosition: sequence,
+            };
+          }
+          const message = decodeStoredMessageRecordRow(this.db, sessionId, row);
+          sourceMessages += 1;
+          sourceBytes += recordBytes;
+          if (!('turnId' in message) || typeof message.turnId !== 'string') {
+            nextPosition = sequence + 1;
+            continue;
+          }
+          const turnId = message.turnId;
+          if (turnId && !contributions.has(turnId) && contributions.size >= maxContributions) {
+            nextPosition = sequence;
+            return {
+              throughSequence: fixedThrough,
+              contributions: [...contributions.values()],
+              nextPosition,
+            };
+          }
+          contributions.set(
+            turnId,
+            foldTurnContribution(contributions.get(turnId), turnId, sequence, message),
+          );
+          nextPosition = sequence + 1;
+        }
+      }
+      return {
+        throughSequence: fixedThrough,
+        contributions: [...contributions.values()],
+        nextPosition: null,
+      };
+    });
+  }
+
+  async readTurnLandmarks(
+    sessionId: string,
+    maxLandmarks: number,
+  ): Promise<SessionTurnLandmarkSnapshot> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    if (!Number.isSafeInteger(maxLandmarks) || maxLandmarks < 1 || maxLandmarks > 64) {
+      throw new Error('Invalid Session turn landmark limit');
+    }
+    return this.readTransaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      const throughRow = this.db
+        .prepare(
+          `
+          SELECT sequence AS through_sequence
+          FROM session_messages
+          WHERE session_id = ?
+          ORDER BY sequence DESC
+          LIMIT 1
+        `,
+        )
+        .get(sessionId) as { through_sequence?: unknown } | undefined;
+      const throughSequence = nullableStoredMessageSequence(
+        throughRow?.through_sequence,
+        sessionId,
+      );
+      if (throughSequence === null) {
+        return { throughSequence: null, landmarks: [] };
+      }
+
+      const promptRows = this.db
+        .prepare(
+          `
+          SELECT admission.admitted_at, message.sequence
+          FROM core_root_turn_admissions AS admission
+          JOIN session_messages AS message
+            ON message.session_id = admission.session_id
+            AND message.message_id = json_extract(admission.record_json, '$.userMessageId')
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE admission.session_id = ? AND payload.sequence IS NULL
+          ORDER BY admission.admitted_at ASC, admission.turn_id ASC
+          LIMIT ?
+        `,
+        )
+        .all(sessionId, maxLandmarks + 1) as TurnLandmarkCandidateRow[];
+      const selected = new Set<number>();
+      if (promptRows.length <= maxLandmarks) {
+        for (const row of promptRows) {
+          selected.add(requireStoredMessageSequence(row.sequence, sessionId));
+        }
+      }
+
+      const forward = this.db.prepare(`
+        SELECT admission.admitted_at, message.sequence
+        FROM core_root_turn_admissions AS admission
+        JOIN session_messages AS message
+          ON message.session_id = admission.session_id
+          AND message.message_id = json_extract(admission.record_json, '$.userMessageId')
+        LEFT JOIN session_message_payloads AS payload
+          ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+        WHERE admission.session_id = ? AND admission.admitted_at >= ? AND payload.sequence IS NULL
+        ORDER BY admission.admitted_at ASC, admission.turn_id ASC
+        LIMIT 1
+      `);
+      const backward = this.db.prepare(`
+        SELECT admission.admitted_at, message.sequence
+        FROM core_root_turn_admissions AS admission
+        JOIN session_messages AS message
+          ON message.session_id = admission.session_id
+          AND message.message_id = json_extract(admission.record_json, '$.userMessageId')
+        LEFT JOIN session_message_payloads AS payload
+          ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+        WHERE admission.session_id = ? AND admission.admitted_at < ? AND payload.sequence IS NULL
+        ORDER BY admission.admitted_at DESC, admission.turn_id DESC
+        LIMIT 1
+      `);
+      if (promptRows.length > maxLandmarks) {
+        const firstAdmittedAt = requireTurnLandmarkAdmittedAt(promptRows[0]?.admitted_at);
+        const lastRow = this.db
+          .prepare(
+            `
+            SELECT admitted_at
+            FROM core_root_turn_admissions
+            WHERE session_id = ?
+            ORDER BY admitted_at DESC, turn_id DESC
+            LIMIT 1
+          `,
+          )
+          .get(sessionId) as TurnLandmarkCandidateRow | undefined;
+        const lastAdmittedAt = requireTurnLandmarkAdmittedAt(lastRow?.admitted_at);
+        for (let index = 0; index < maxLandmarks; index += 1) {
+          const target =
+            maxLandmarks === 1
+              ? lastAdmittedAt
+              : firstAdmittedAt +
+                Math.floor(((lastAdmittedAt - firstAdmittedAt) * index) / (maxLandmarks - 1));
+          const candidates = [
+            ...(forward.all(sessionId, target) as TurnLandmarkCandidateRow[]),
+            ...(backward.all(sessionId, target) as TurnLandmarkCandidateRow[]),
+          ];
+          let nearest: TurnLandmarkCandidateRow | undefined;
+          for (const candidate of candidates) {
+            const admittedAt = requireTurnLandmarkAdmittedAt(candidate.admitted_at);
+            if (
+              nearest === undefined ||
+              Math.abs(admittedAt - target) <
+                Math.abs(requireTurnLandmarkAdmittedAt(nearest.admitted_at) - target)
+            ) {
+              nearest = candidate;
+            }
+          }
+          if (nearest) selected.add(requireStoredMessageSequence(nearest.sequence, sessionId));
+        }
+      }
+      const firstIndexedSequence =
+        promptRows.length > 0
+          ? requireStoredMessageSequence(promptRows[0]?.sequence, sessionId)
+          : null;
+      const legacyThrough =
+        firstIndexedSequence === null ? throughSequence : firstIndexedSequence - 1;
+      if (legacyThrough >= 0) {
+        const firstRow = this.db
+          .prepare(
+            `
+            SELECT sequence AS first_sequence
+            FROM session_messages
+            WHERE session_id = ?
+            ORDER BY sequence ASC
+            LIMIT 1
+          `,
+          )
+          .get(sessionId) as { first_sequence?: unknown } | undefined;
+        const firstSequence = nullableStoredMessageSequence(firstRow?.first_sequence, sessionId);
+        if (firstSequence === null || firstSequence > legacyThrough) {
+          throw new StoredSessionMessageIncompatibleError(sessionId, legacyThrough);
+        }
+        const forwardLegacy = this.db.prepare(`
+          SELECT message.sequence, message.message_type, payload.sequence AS payload_sequence
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id = ? AND message.sequence >= ? AND message.sequence <= ?
+          ORDER BY message.sequence ASC
+          LIMIT ${SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES}
+        `);
+        const backwardLegacy = this.db.prepare(`
+          SELECT message.sequence, message.message_type, payload.sequence AS payload_sequence
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id = ? AND message.sequence < ? AND message.sequence >= ?
+          ORDER BY message.sequence DESC
+          LIMIT ${SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES}
+        `);
+        const targetCount = Math.min(maxLandmarks, legacyThrough - firstSequence + 1);
+        for (let index = 0; index < targetCount; index += 1) {
+          const target =
+            targetCount === 1
+              ? legacyThrough
+              : firstSequence +
+                Math.floor(((legacyThrough - firstSequence) * index) / (targetCount - 1));
+          const candidates = [
+            ...(forwardLegacy.all(sessionId, target, legacyThrough) as LegacyTurnLandmarkRow[]),
+            ...(backwardLegacy.all(sessionId, target, firstSequence) as LegacyTurnLandmarkRow[]),
+          ];
+          let nearest: number | undefined;
+          for (const candidate of candidates) {
+            const sequence = requireStoredMessageSequence(candidate.sequence, sessionId);
+            if (candidate.message_type !== 'user' || candidate.payload_sequence !== null) continue;
+            if (nearest === undefined || Math.abs(sequence - target) < Math.abs(nearest - target)) {
+              nearest = sequence;
+            }
+          }
+          if (nearest !== undefined) selected.add(nearest);
+        }
+      }
+
+      const selectedSequences = [...selected].sort((left, right) => left - right);
+      const sampledSequences =
+        selectedSequences.length <= maxLandmarks
+          ? selectedSequences
+          : Array.from(
+              { length: maxLandmarks },
+              (_, index) =>
+                selectedSequences[
+                  maxLandmarks === 1
+                    ? selectedSequences.length - 1
+                    : Math.floor(((selectedSequences.length - 1) * index) / (maxLandmarks - 1))
+                ]!,
+            );
+      const landmarks = readStoredMessageRows(this.db, sessionId, sampledSequences).flatMap(
+        ({ sequence, recordJson }) => {
+          let message: StoredMessage;
+          try {
+            message = decodeStoredMessage(JSON.parse(recordJson) as unknown);
+          } catch (error) {
+            throw new StoredSessionMessageIncompatibleError(sessionId, sequence, { cause: error });
+          }
+          if (message.type !== 'user') {
+            throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+          }
+          const label = (message.displayText ?? message.text).trim();
+          return label ? [{ turnId: message.turnId, sequence, label }] : [];
+        },
+      );
+      return { throughSequence, landmarks };
+    });
+  }
+
   async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
     return this.readMessagesWith(sessionId, decodeStoredMessage);
   }
@@ -1621,10 +1942,12 @@ export class SqliteSessionMetadataStore {
     if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
     const sequences = (
       this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT sequence FROM session_messages
           WHERE session_id = ? ORDER BY sequence DESC LIMIT ?
-        `)
+        `,
+        )
         .all(sessionId, limit) as Array<{ sequence?: unknown }>
     )
       .map((row) => requireStoredMessageSequence(row.sequence, sessionId))
@@ -3477,7 +3800,10 @@ export class SqliteSessionMetadataStore {
   private insertSessionMessagesSync(
     sessionId: string,
     firstSequence: number,
-    entries: readonly { readonly message: StoredMessage; readonly json: string }[],
+    entries: readonly {
+      readonly message: StoredMessage;
+      readonly json: string;
+    }[],
   ): void {
     const insertMessage = this.db.prepare(`
       INSERT INTO session_messages(
@@ -4879,6 +5205,130 @@ function decodeStoredMessageRow(
   }
 }
 
+interface StoredSessionMessagePayloadRow {
+  readonly sequence?: unknown;
+  readonly record_json?: unknown;
+  readonly record_bytes?: unknown;
+  readonly sha256?: unknown;
+}
+
+interface TurnLandmarkCandidateRow {
+  readonly sequence?: unknown;
+  readonly admitted_at?: unknown;
+}
+
+interface LegacyTurnLandmarkRow {
+  readonly sequence?: unknown;
+  readonly message_type?: unknown;
+  readonly payload_sequence?: unknown;
+}
+
+function requireTurnLandmarkAdmittedAt(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Invalid root Turn admission timestamp');
+  }
+  return value;
+}
+
+function storedMessageRecordBytes(
+  row: StoredSessionMessagePayloadRow,
+  sessionId: string,
+  sequence: number,
+): number {
+  if (row.record_bytes !== null) {
+    return requireTranscriptRecordByteLength(row.record_bytes, sessionId, sequence);
+  }
+  if (
+    typeof row.record_json !== 'string' ||
+    row.record_json === SQLITE_SESSION_MESSAGE_CHUNK_MARKER
+  ) {
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+  }
+  return Buffer.byteLength(row.record_json, 'utf8');
+}
+
+function decodeStoredMessageRecordRow(
+  db: DatabaseSync,
+  sessionId: string,
+  row: StoredSessionMessagePayloadRow,
+): StoredMessage {
+  const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+  return decodeStoredMessageRow(
+    {
+      sequence,
+      record_json: readStoredMessageRecordJson(db, sessionId, sequence, row),
+    },
+    sessionId,
+  );
+}
+
+function readStoredMessageRecordJson(
+  db: DatabaseSync,
+  sessionId: string,
+  sequence: number,
+  row: StoredSessionMessagePayloadRow,
+): string {
+  let recordJson: string;
+  if (row.record_bytes === null) {
+    if (
+      typeof row.record_json !== 'string' ||
+      row.record_json === SQLITE_SESSION_MESSAGE_CHUNK_MARKER
+    ) {
+      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+    }
+    recordJson = row.record_json;
+  } else {
+    const recordBytes = requireTranscriptRecordByteLength(row.record_bytes, sessionId, sequence);
+    if (
+      row.record_json !== SQLITE_SESSION_MESSAGE_CHUNK_MARKER ||
+      recordBytes <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES ||
+      typeof row.sha256 !== 'string'
+    ) {
+      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+    }
+    const data = readChunkedTranscriptRecord(db, sessionId, sequence, recordBytes);
+    if (createHash('sha256').update(data).digest('hex') !== row.sha256) {
+      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+    }
+    recordJson = data.toString('utf8');
+  }
+  return recordJson;
+}
+
+function foldTurnContribution(
+  current: SessionTurnContribution | undefined,
+  turnId: string,
+  sequence: number,
+  message: StoredMessage,
+): SessionTurnContribution {
+  const contribution = current ?? {
+    turnId,
+    firstSequence: sequence,
+    latestState: null,
+    userPromptPreview: null,
+    hasAssistantMessage: false,
+    hasAssistantOutput: false,
+    hasToolResult: false,
+    hasFailedToolResult: false,
+    hasAbortNote: false,
+  };
+  const userPrompt = message.type === 'user' ? (message.displayText ?? message.text).trim() : '';
+  return {
+    ...contribution,
+    latestState: message.type === 'turn_state' ? { sequence, message } : contribution.latestState,
+    userPromptPreview: contribution.userPromptPreview ?? (userPrompt || null),
+    hasAssistantMessage: contribution.hasAssistantMessage || message.type === 'assistant',
+    hasAssistantOutput:
+      contribution.hasAssistantOutput ||
+      (message.type === 'assistant' && message.text.trim().length > 0),
+    hasToolResult: contribution.hasToolResult || message.type === 'tool_result',
+    hasFailedToolResult:
+      contribution.hasFailedToolResult || (message.type === 'tool_result' && message.isError),
+    hasAbortNote:
+      contribution.hasAbortNote || (message.type === 'system_note' && message.kind === 'abort'),
+  };
+}
+
 function readStoredMessageRows(
   db: DatabaseSync,
   sessionId: string,
@@ -4897,39 +5347,16 @@ function readStoredMessageRows(
         ORDER BY message.sequence
       `,
     )
-    .all(sessionId, ...sequences) as Array<{
-    sequence?: unknown;
-    record_json?: unknown;
-    record_bytes?: unknown;
-    sha256?: unknown;
-  }>;
+    .all(sessionId, ...sequences) as StoredSessionMessagePayloadRow[];
   if (rows.length !== sequences.length) {
     throw new StoredSessionMessageIncompatibleError(sessionId, -1);
   }
   return rows.map((row) => {
     const sequence = requireStoredMessageSequence(row.sequence, sessionId);
-    if (row.record_bytes === null) {
-      if (
-        typeof row.record_json !== 'string' ||
-        row.record_json === SQLITE_SESSION_MESSAGE_CHUNK_MARKER
-      ) {
-        throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
-      }
-      return { sequence, recordJson: row.record_json };
-    }
-    const recordBytes = requireTranscriptRecordByteLength(row.record_bytes, sessionId, sequence);
-    if (
-      row.record_json !== SQLITE_SESSION_MESSAGE_CHUNK_MARKER ||
-      recordBytes <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES ||
-      typeof row.sha256 !== 'string'
-    ) {
-      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
-    }
-    const data = readChunkedTranscriptRecord(db, sessionId, sequence, recordBytes);
-    if (createHash('sha256').update(data).digest('hex') !== row.sha256) {
-      throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
-    }
-    return { sequence, recordJson: data.toString('utf8') };
+    return {
+      sequence,
+      recordJson: readStoredMessageRecordJson(db, sessionId, sequence, row),
+    };
   });
 }
 
@@ -4940,12 +5367,14 @@ function readChunkedTranscriptRecord(
   recordBytes: number,
 ): Buffer {
   const rows = db
-    .prepare(`
+    .prepare(
+      `
       SELECT chunk_index, data, sha256
       FROM session_message_chunks
       WHERE session_id = ? AND sequence = ?
       ORDER BY chunk_index
-    `)
+    `,
+    )
     .all(sessionId, sequence) as Array<{
     chunk_index?: unknown;
     data?: unknown;
@@ -5116,7 +5545,10 @@ function readTranscriptSlices(
             ON message.session_id = ? AND message.sequence = requested.sequence
         `,
       )
-      .all(...inlineParameters, sessionId) as Array<{ sequence?: unknown; data?: unknown }>;
+      .all(...inlineParameters, sessionId) as Array<{
+      sequence?: unknown;
+      data?: unknown;
+    }>;
     for (const row of inlineRows) {
       const sequence = requireStoredMessageSequence(row.sequence, sessionId);
       if (!(row.data instanceof Uint8Array)) {
@@ -5138,7 +5570,9 @@ function validateTranscriptRecord(
       JSON.parse(typeof data === 'string' ? data : data.toString('utf8')) as unknown,
     );
   } catch (error) {
-    throw new StoredSessionMessageIncompatibleError(sessionId, sequence, { cause: error });
+    throw new StoredSessionMessageIncompatibleError(sessionId, sequence, {
+      cause: error,
+    });
   }
 }
 

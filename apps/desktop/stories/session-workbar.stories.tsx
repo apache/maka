@@ -4,6 +4,7 @@ import type { GitReviewSnapshot } from '@maka/core/git-review';
 import type { SessionSummary } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
 import type { SessionTrace } from '@maka/core/session-trace';
+import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
 import { SessionWorkbar } from '../src/renderer/session-workbar';
 import {
@@ -410,32 +411,69 @@ const populatedTrace: SessionTrace = {
   },
 };
 
+const populatedContext: ContextDiagnosticsResult = {
+  status: 'available',
+  providerId: 'zai',
+  modelId: 'glm-5.1',
+  completedAt: NOW + 42_900,
+  inputTokens: 18_900,
+  // Providers that cache always count the hits, and most real sessions carry
+  // one — the bar splits the prompt only when the snapshot reports it.
+  cacheReadInputTokens: 15_200,
+  contextWindow: 200_000,
+  composition: {
+    segments: [
+      { kind: 'system_instructions', bytes: 12_000 },
+      { kind: 'tool_definitions', bytes: 42_000 },
+      { kind: 'messages', bytes: 21_800 },
+      { kind: 'other', bytes: 400 },
+    ],
+    tools: [
+      { name: 'Bash', bytes: 9_400 },
+      { name: 'Read', bytes: 7_100 },
+      { name: 'Edit', bytes: 6_300 },
+      { name: 'Grep', bytes: 5_200 },
+      { name: 'mcp__Claude_Browser__computer', bytes: 4_800 },
+      { name: 'WebFetch', bytes: 3_900 },
+      { name: 'Write', bytes: 3_100 },
+      { name: 'Glob', bytes: 2_200 },
+    ],
+  },
+};
+
+/** A ledger written before tool schemas carried a name: bytes, no names. */
 /**
- * The same session with its latest prompt resized, rather than a second copy
- * of the fixture: what the near-limit story is about is the size of one call,
- * and a fork would drift from `populatedTrace` on every other axis.
+ * The same session with its latest prompt resized. The bar reads the snapshot
+ * now, so "near the limit" is a property of the snapshot rather than of a
+ * trace attempt (#2323).
  */
-const nearLimitTrace: SessionTrace = {
-  ...populatedTrace,
-  turns: populatedTrace.turns.map((turn, index) =>
-    index !== populatedTrace.turns.length - 1
-      ? turn
-      : {
-          ...turn,
-          steps: turn.steps.map((step) =>
-            step.kind !== 'model_call'
-              ? step
-              : {
-                  ...step,
-                  attempts: step.attempts.map((attempt) => ({
-                    ...attempt,
-                    inputTokens: 186_400,
-                    cacheReadInputTokens: 151_800,
-                  })),
-                },
-          ),
-        },
-  ),
+const nearLimitContext: ContextDiagnosticsResult = {
+  ...populatedContext,
+  ...(populatedContext.status === 'available'
+    ? { inputTokens: 186_400, cacheReadInputTokens: 151_800 }
+    : {}),
+};
+
+const unnamedToolsContext: ContextDiagnosticsResult = {
+  ...populatedContext,
+  composition: {
+    segments: populatedContext.status === 'available' ? populatedContext.composition!.segments : [],
+    unlabelledToolBytes: 42_000,
+  },
+};
+
+/**
+ * The durable metering record named this request; the best-effort capture that
+ * would have explained it never landed. A real state, and the one the panel
+ * must state rather than render as an empty prompt.
+ */
+const unrecordedContext: ContextDiagnosticsResult = {
+  status: 'available',
+  providerId: 'zai',
+  modelId: 'glm-5.1',
+  completedAt: NOW + 42_900,
+  inputTokens: 18_900,
+  contextWindow: 200_000,
 };
 
 const emptyTrace: SessionTrace = {
@@ -474,6 +512,8 @@ function bridge(options: {
   tasksFail?: boolean;
   trace?: SessionTrace;
   traceFail?: boolean;
+  /** The context snapshot the composition block reads (#2323). */
+  context?: ContextDiagnosticsResult;
   recordFilePath?: string;
 } = {}) {
   return withScopedMakaBridge({
@@ -507,6 +547,10 @@ function bridge(options: {
         options.traceFail
           ? { ok: false, error: { message: '追踪读取失败：无法读取运行记录' } }
           : { ok: true, data: options.trace ?? emptyTrace },
+      context: async () => ({
+        ok: true,
+        data: options.context ?? { status: 'unavailable', reason: 'no_completed_request' },
+      }),
     },
     gitReview: {
       read: async () => ({
@@ -612,7 +656,7 @@ export const Files: Story = {
 // denied tool sits in the raw record under the coverage notice the projection
 // raises when records are missing.
 export const Trace: Story = {
-  decorators: [bridge({ trace: populatedTrace })],
+  decorators: [bridge({ trace: populatedTrace, context: populatedContext })],
   render: () => <Workbar tab="inspector" />,
 };
 
@@ -621,7 +665,26 @@ export const Trace: Story = {
 // before a compaction, and the state a reader is most likely to open the tab
 // for. Same session as Trace, sized differently, so the two read side by side.
 export const TraceContextNearLimit: Story = {
-  decorators: [bridge({ trace: nearLimitTrace })],
+  decorators: [bridge({ trace: populatedTrace, context: nearLimitContext })],
+  render: () => <Workbar tab="inspector" />,
+};
+
+// Real path: 会话工作栏 → 追踪 on a session recorded before tool schemas carried
+// a name — the shape of every ledger written prior to #2323. The composition
+// block still has to show those bytes, as unnamed tools rather than as a
+// missing category, which is what gating the tool list on the NAMED rows alone
+// silently broke.
+export const TraceUnnamedTools: Story = {
+  decorators: [bridge({ trace: populatedTrace, context: unnamedToolsContext })],
+  render: () => <Workbar tab="inspector" />,
+};
+
+// Real path: 会话工作栏 → 追踪 when the durable metering record names the latest
+// request but its best-effort capture never landed — the composition block has
+// to SAY so, since an absent section reads as "nothing to explain" and a zero
+// reads as an empty prompt.
+export const TraceCompositionUnrecorded: Story = {
+  decorators: [bridge({ trace: populatedTrace, context: unrecordedContext })],
   render: () => <Workbar tab="inspector" />,
 };
 

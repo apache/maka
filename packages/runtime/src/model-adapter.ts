@@ -47,6 +47,7 @@ import {
   withProviderGenerateTracking,
   type ProviderRequestTracker,
 } from './provider-request-telemetry.js';
+import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
 import {
   createOpenAiChatReasoningTransportState,
   openAiChatReasoningFieldProviderOptions,
@@ -136,6 +137,14 @@ export interface ModelAdapterStreamInput {
   }) => RepairableAiSdkToolCall | null | Promise<RepairableAiSdkToolCall | null>;
   /** Main-agent provider-call tracker. Auxiliary calls track their own generates. */
   providerRequestTracker?: ProviderRequestTracker;
+  /**
+   * The compaction boundary the messages of THIS call were projected under
+   * (#2323). Travels with the messages rather than being read from session
+   * state at settlement, which is why it is an argument here at all: the
+   * caller dispatches once per physical request and knows which fold each one
+   * was built from; nothing downstream can recover that afterwards.
+   */
+  historyCompactBoundary?: ContextDiagnosticsCompaction;
   /** Turn-scoped continuation lane. Omitted callers keep the full-request path. */
   continuationKey?: string;
 }
@@ -235,6 +244,9 @@ export class ModelAdapter {
                 params,
                 abortSignal: input.abortSignal,
                 doStream,
+                ...(input.historyCompactBoundary
+                  ? { historyCompactBoundary: input.historyCompactBoundary }
+                  : {}),
               }),
           },
         })

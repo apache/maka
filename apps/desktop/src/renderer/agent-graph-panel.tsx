@@ -5,11 +5,18 @@ import type {
   AgentGraphClientSnapshot,
 } from '@maka/runtime/stream-graph-read-model';
 import { IconButton } from '@maka/ui';
-import { ICON_SIZE, ChevronDown } from '@maka/ui/icons';
+import { ICON_SIZE, ChevronDown, X } from '@maka/ui/icons';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Spinner } from '@astryxdesign/core/Spinner';
+import {
+  dismissAgentGraphPanel,
+  isAgentGraphPanelDismissible,
+  reconcileAgentGraphPanelDismissals,
+  shouldShowAgentGraphPanel,
+  type AgentGraphPanelDismissals,
+} from './agent-graph-panel-visibility.js';
 
 type GraphPanelCopy = {
   title: string;
@@ -17,6 +24,7 @@ type GraphPanelCopy = {
   retry: string;
   collapse: string;
   expand: string;
+  dismiss: string;
   stop: string;
   stopping: string;
   stopFailed: string;
@@ -40,6 +48,7 @@ export function getAgentGraphPanelCopy(locale: UiLocale): GraphPanelCopy {
       retry: '重试',
       collapse: '收起 Agent Graph',
       expand: '展开 Agent Graph',
+      dismiss: '关闭 Agent Graph',
       stop: '停止 Graph',
       stopping: '停止中…',
       stopFailed: '停止 Graph 失败，请重试。',
@@ -82,6 +91,7 @@ export function getAgentGraphPanelCopy(locale: UiLocale): GraphPanelCopy {
     retry: 'Retry',
     collapse: 'Collapse Agent Graph',
     expand: 'Expand Agent Graph',
+    dismiss: 'Dismiss Agent Graph',
     stop: 'Stop graph',
     stopping: 'Stopping…',
     stopFailed: 'Could not stop the graph. Try again.',
@@ -131,6 +141,7 @@ export function AgentGraphPanel(props: {
   const [stopPending, setStopPending] = useState(false);
   const [stopError, setStopError] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [dismissedBySession, setDismissedBySession] = useState<AgentGraphPanelDismissals>({});
   const contentId = useId();
   const refreshRef = useRef<() => void>(() => {});
   const copy = getAgentGraphPanelCopy(props.locale);
@@ -185,6 +196,22 @@ export function AgentGraphPanel(props: {
     };
   }, [props.rootSessionId, props.enabled]);
 
+  useEffect(() => {
+    setDismissedBySession((current) =>
+      reconcileAgentGraphPanelDismissals(
+        current,
+        props.rootSessionId,
+        snapshot
+          ? {
+              rootSessionId: snapshot.rootSessionId,
+              graphId: snapshot.graphId,
+              status: snapshot.status,
+            }
+          : undefined,
+      ),
+    );
+  }, [props.rootSessionId, snapshot]);
+
   const progress = useMemo(() => {
     const settled = snapshot?.operators.filter((operator) =>
       ['completed', 'failed', 'aborted', 'cancelled'].includes(operator.status),
@@ -197,7 +224,19 @@ export function AgentGraphPanel(props: {
     (snapshot.scheduleRevision > 0 ||
       snapshot.operators.length > 0 ||
       snapshot.omitted.operators > 0);
-  if (!props.enabled && !hasGraphActivity && !error) return null;
+  if (
+    !shouldShowAgentGraphPanel({
+      enabled: props.enabled,
+      hasGraphActivity,
+      error,
+      sessionId: props.rootSessionId,
+      graphId: snapshot?.graphId,
+      status: snapshot?.status,
+      dismissedBySession,
+    })
+  ) {
+    return null;
+  }
 
   const stopGraph = async (): Promise<void> => {
     if (stopPending) return;
@@ -213,6 +252,8 @@ export function AgentGraphPanel(props: {
   };
   const stopAvailable =
     snapshot !== undefined && ['active', 'waiting', 'closing'].includes(snapshot.status);
+  const dismissAvailable =
+    snapshot !== undefined && isAgentGraphPanelDismissible(snapshot.status);
 
   return (
     <section
@@ -242,6 +283,21 @@ export function AgentGraphPanel(props: {
               label={stopPending ? copy.stopping : copy.stop}
               isDisabled={stopPending}
               onClick={() => void stopGraph()}
+            />
+          ) : null}
+          {dismissAvailable && snapshot ? (
+            <IconButton
+              variant="ghost"
+              size="sm"
+              className="maka-agent-graph-dismiss"
+              label={copy.dismiss}
+              tooltip={copy.dismiss}
+              icon={<X size={ICON_SIZE.chrome} aria-hidden="true" />}
+              onClick={() => {
+                setDismissedBySession((current) =>
+                  dismissAgentGraphPanel(current, props.rootSessionId, snapshot.graphId),
+                );
+              }}
             />
           ) : null}
           <IconButton

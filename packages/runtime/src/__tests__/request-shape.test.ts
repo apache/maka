@@ -165,6 +165,29 @@ describe('prepared provider request capture', () => {
     assert.ok(result.segments.every((segment) => /^sha256:[a-f0-9]{64}$/.test(segment.hash)));
   });
 
+  test('names a tool schema from the payload, and only that segment kind', () => {
+    // A size nobody can attribute is not actionable: "tool definitions are 40%"
+    // names no tool to remove (#2323).
+    const result = requestShape.capturePreparedProviderRequest({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      instructions: 'system',
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [{ name: 'Bash', inputSchema: { type: 'object' } }, { inputSchema: {} }],
+      providerOptions: {},
+    });
+
+    const labels = result.segments.map((segment) => [segment.kind, segment.label] as const);
+    assert.deepEqual(labels, [
+      ['tool_schema', 'Bash'],
+      // A tool the payload does not name gets no invented one.
+      ['tool_schema', undefined],
+      ['system_prompt', undefined],
+      ['message', undefined],
+      ['provider_options', undefined],
+    ]);
+  });
+
   test('versions and hashes non-provider-options request parameters for comparison', () => {
     const capture = (providerOptions: Record<string, unknown>, maxOutputTokens?: number) =>
       requestShape.capturePreparedProviderRequest({

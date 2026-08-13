@@ -6,6 +6,7 @@ import type { UiLocale } from './ui-locale.js';
 export type E2eFixtureScenario =
   | 'fetched-empty'
   | 'turn-narrative'
+  | 'chat-prompt-rail'
   | 'settings-data'
   | 'settings-bots-onboarding'
   | 'settings-general'
@@ -23,6 +24,13 @@ export interface E2eFixtureState {
   activeSessionId?: string;
   openSettingsSection?: SettingsSection;
   reducedMotion?: boolean;
+  /**
+   * Opt a fixture back into animated scrolling. Captures collapse scroll
+   * motion so a screenshot never depends on when it settles, which also means
+   * no fixture can exercise a scroll that is still in flight — and that is
+   * precisely what the prompt rail's jump has to survive.
+   */
+  scrollMotion?: 'auto' | 'smooth';
   theme?: 'light' | 'dark' | 'auto';
   locale?: UiLocale;
   timezone?: string;

@@ -2912,7 +2912,7 @@ const BOTTOM_PICKER_MARGIN_ROWS = 4;
 // silently clipping the last command.
 const EDITOR_AUTOCOMPLETE_MAX_VISIBLE = 24;
 
-function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
+export function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
   if (diagnostics.status === 'unavailable') {
     return diagnostics.reason === 'no_completed_request'
       ? 'Context unavailable\nNo completed provider request exists for this session.'
@@ -2957,18 +2957,42 @@ function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
   }
 
   lines.push('', 'Estimated breakdown');
-  if (diagnostics.segments.length === 0) {
-    lines.push('  Unavailable', '    no captured request segments');
+  const composition = diagnostics.composition;
+  if (!composition) {
+    // The metering record named this request; no capture explained it. Said
+    // plainly, because a silent "0 tokens" would read as an empty prompt.
+    lines.push('  Unavailable', '    this request left no composition on record');
   } else {
-    const labels: Record<(typeof diagnostics.segments)[number]['kind'], string> = {
+    const labels: Record<(typeof composition.segments)[number]['kind'], string> = {
       system_instructions: 'System instructions',
       tool_definitions: 'Tool definitions',
       messages: 'Messages',
       other: 'Other options',
     };
-    for (const segment of diagnostics.segments) {
+    for (const segment of composition.segments) {
       lines.push(
-        `  ${labels[segment.kind]}: ≈${formatContextCount(segment.estimatedTokens)} tokens`,
+        `  ${labels[segment.kind]}: ≈${formatContextCount(estimateContextTokens(segment.bytes))} tokens`,
+      );
+    }
+    // Per tool, because that is the only row a reader can act on: "tool
+    // definitions ≈ 40%" names nothing to remove (#2323).
+    if (composition.tools && composition.tools.length > 0) {
+      lines.push('', 'By tool');
+      for (const tool of composition.tools) {
+        lines.push(
+          `  ${tool.name}: ≈${formatContextCount(estimateContextTokens(tool.bytes))} tokens`,
+        );
+      }
+      if (composition.remainingTools) {
+        const remainder = composition.remainingTools;
+        lines.push(
+          `  ${remainder.count} more tool${remainder.count === 1 ? '' : 's'}: ≈${formatContextCount(estimateContextTokens(remainder.bytes))} tokens`,
+        );
+      }
+    }
+    if (composition.unlabelledToolBytes !== undefined) {
+      lines.push(
+        `  Unnamed tools: ≈${formatContextCount(estimateContextTokens(composition.unlabelledToolBytes))} tokens`,
       );
     }
   }
@@ -2985,6 +3009,16 @@ function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
     lines.push('', 'History compaction', '  Unavailable for this request');
   }
   return lines.join('\n');
+}
+
+/**
+ * The estimate lives here, at the surface that shows it, and prints with a `≈`
+ * every time. The Host reports measured bytes; four-bytes-per-token is a rule
+ * of thumb over serialized JSON, and one that is wrong for an attachment's
+ * base64 in a direction nobody downstream can correct (#2323).
+ */
+function estimateContextTokens(bytes: number): number {
+  return Math.ceil(bytes / 4);
 }
 
 function formatContextCount(value: number): string {

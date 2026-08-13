@@ -889,14 +889,18 @@ export function configureSqliteSessionMetadataDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON');
 }
 
-export function migrateSqliteSessionMetadataDatabase(db: DatabaseSync): void {
+export function migrateSqliteSessionMetadataDatabase(
+  db: DatabaseSync,
+  options: { transaction?: 'self' | 'caller' } = {},
+): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS session_metadata_schema (
       scope TEXT PRIMARY KEY,
       version INTEGER NOT NULL CHECK (version >= 0)
     )
   `);
-  db.exec('BEGIN IMMEDIATE');
+  const ownsTransaction = options.transaction !== 'caller';
+  if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
   try {
     const current = readSqliteSessionMetadataSchemaVersion(db);
     if (current > SQLITE_SESSION_METADATA_SCHEMA_VERSION) {
@@ -918,9 +922,9 @@ export function migrateSqliteSessionMetadataDatabase(db: DatabaseSync): void {
         ON CONFLICT(scope) DO UPDATE SET version = excluded.version
       `).run(version);
     }
-    db.exec('COMMIT');
+    if (ownsTransaction) db.exec('COMMIT');
   } catch (error) {
-    rollback(db);
+    if (ownsTransaction) rollback(db);
     throw error;
   }
 }

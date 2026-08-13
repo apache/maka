@@ -189,7 +189,8 @@
   -webkit-app-region: no-drag;
 }
 
-.maka-session-row {
+.maka-session-row,
+.maka-project-row {
   position: relative;
   min-width: 0;
   -webkit-app-region: no-drag;
@@ -268,9 +269,9 @@
   min-height: var(--h-control-sm, 24px);
 }
 
-/* SideNavItem owns the row button and only supports non-interactive
- * endContent. The action menu occupies the reserved trailing slot visually,
- * but remains its sibling in the DOM so neither control contains the other. */
+/* SideNavItem owns each row button and only supports non-interactive
+ * endContent. Action menus occupy a reserved trailing slot visually, but stay
+ * siblings in the DOM so neither control contains the other. */
 .maka-session-row-action {
   position: absolute;
   inset-block-start: calc(
@@ -282,6 +283,33 @@
   align-items: center;
   justify-content: center;
   width: var(--h-control-sm, 24px);
+}
+
+/* A collapsible project keeps Astryx's 24px disclosure after endContent. Match
+ * the placeholder's original slot immediately before that disclosure: row
+ * gutter + disclosure + SideNavItem gap. Empty projects have no disclosure and
+ * use the default trailing inset above. */
+.maka-project-row
+  > .maka-session-row-action[data-position="before-disclosure"] {
+  inset-inline-end: calc(var(--space-2) + var(--space-6) + var(--space-2));
+}
+
+/* The sibling menu is visually part of the project header, but Astryx's
+ * hover/pressed paint lives on the navigation button itself. Restore that
+ * feedback only while the direct project action is targeted; a plain wrapper
+ * :hover selector would also light the header over nested session rows. */
+@media (hover: hover) {
+  .maka-project-row:has(> .maka-session-row-action:hover)
+    > div
+    > .astryx-side-nav-item {
+    background-color: var(--color-overlay-hover);
+  }
+}
+
+.maka-project-row:has(> .maka-session-row-action button:active)
+  > div
+  > .astryx-side-nav-item {
+  background-color: var(--color-overlay-pressed);
 }
 
 .maka-session-row-trailing-spacer {

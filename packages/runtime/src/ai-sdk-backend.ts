@@ -103,6 +103,7 @@ import type {
   ToolResultOutput,
   UserContent,
 } from './model-protocol.js';
+import type { ModelCallCommit } from '@maka/core/agent-run';
 import Ajv, { type AnySchema, type ErrorObject, type ValidateFunction } from 'ajv';
 import Ajv2019 from 'ajv/dist/2019.js';
 import Ajv2020 from 'ajv/dist/2020.js';
@@ -149,6 +150,10 @@ import type { ActiveToolResultPruneDiagnosticPatch } from './active-tool-result-
 import { toolResultOutput } from './tool-result-output.js';
 import { buildActiveCompactionHeadAnchor } from './active-full-compact.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
+import {
+  contextDiagnosticsCompactionOf,
+  type ContextDiagnosticsCompaction,
+} from './context-diagnostics.js';
 import type { ProviderImageBudget } from './ai-sdk-compaction.js';
 import {
   AiSdkCompaction,
@@ -798,7 +803,12 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    * Canonical metering sink. Separate from `recordProviderRequestAttempt`, which
    * stays a diagnostic trace: this one carries the accounting record.
    */
-  recordModelCallAttempt?: (attempt: ModelCallAttempt) => void | Promise<void>;
+  /**
+   * Commits one settled provider request: the canonical attempt and, when it
+   * is the completed main call, the derived latest-context row it authorises.
+   * One object so a layer cannot forward half of it (#2323).
+   */
+  recordModelCallAttempt?: (commit: ModelCallCommit<ModelCallAttempt>) => void | Promise<void>;
   /**
    * Pre-dispatch accounting gate, paired with `recordModelCallAttempt` and read
    * only when it is present. Throws when the canonical record could not be
@@ -1650,6 +1660,27 @@ export class AiSdkBackend implements AgentBackend {
       // turn start) so a mid-turn summary only re-reads the newly folded span.
       midTurnState.previousCheckpoint = priorReplay.latestHistoryCompactCheckpoint;
     }
+    /**
+     * The fold THIS request's prompt was built under (#2323).
+     *
+     * Called once per physical dispatch rather than once per send, because the
+     * boundary moves between dispatches of the same send: mid-turn capacity
+     * compaction advances it before a later step, and overflow recovery
+     * advances it before it resends the request the provider just rejected.
+     * Sealed from session state at settlement it would be whichever fold
+     * arrived last — not the one the sealed prompt was actually made of.
+     *
+     * Mid-turn state is the single rolling authority whenever the turn has one:
+     * it is seeded just above from the pre-turn checkpoint and is what both of
+     * those folds write to. A turn without that seam can only have been built
+     * under the pre-turn checkpoint.
+     */
+    const requestHistoryCompactBoundary = (): ContextDiagnosticsCompaction | undefined => {
+      const checkpoint = midTurnState
+        ? midTurnState.previousCheckpoint
+        : priorReplay.latestHistoryCompactCheckpoint;
+      return checkpoint ? contextDiagnosticsCompactionOf(checkpoint) : undefined;
+    };
 
     // --- Background pump: streamText → stream → normalize → queue ---
     const pumpDone: Promise<void> = (async () => {
@@ -2111,6 +2142,10 @@ export class AiSdkBackend implements AgentBackend {
                 ? nestableToolSnapshot(providerTools, activeToolsForRequest)
                 : undefined;
             const requestWatchdog = watchdogState.current;
+            // Read here, beside the messages it describes: `attemptMessages` is
+            // rebuilt in place by overflow recovery, and the boundary it folded
+            // under must travel with that rebuild, not with the step.
+            const historyCompactBoundary = requestHistoryCompactBoundary();
             result = await this.modelAdapter.startStream({
               model,
               messages: attemptMessages,
@@ -2140,6 +2175,7 @@ export class AiSdkBackend implements AgentBackend {
                 providerRequestAbortController.signal,
               ]),
               ...(providerRequestTracker ? { providerRequestTracker } : {}),
+              ...(historyCompactBoundary ? { historyCompactBoundary } : {}),
               continuationKey: scope.turnId,
             });
 
@@ -3322,7 +3358,11 @@ export class AiSdkBackend implements AgentBackend {
     }
     let runtimeContext = budgeted?.events ?? priorRuntimeContext;
     let contextBudgetDiagnostic = budgeted?.diagnostic;
-    let latestHistoryCompactCheckpoint = contextBudget?.historyCompact?.checkpoint;
+    // The checkpoint this projection was replayed THROUGH, not the one the
+    // policy happens to carry: a loaded checkpoint that missed its prefix or
+    // failed the replay fit left the raw prefix in these events, and a caller
+    // asking what the prompt was built from must not be told otherwise (#2323).
+    let latestHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
     if (preparedContextBudget.diagnosticPatch) {
       contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
         contextBudgetDiagnostic ??
@@ -3364,6 +3404,10 @@ export class AiSdkBackend implements AgentBackend {
             if (oversizedRetainedTurn && !writePatch.fallbackCheckpoint) {
               contextBudgetExhaustedDetail = 'summarizer_failed';
             }
+            // Fail-open rebuilds the context around the older checkpoint, so
+            // that one — not the fold this send failed to write — is the
+            // boundary the prompt now stands on.
+            latestHistoryCompactCheckpoint = writePatch.fallbackCheckpoint;
             runtimeContext = writePatch.fallbackCheckpoint
               ? buildHistoryCompactCheckpointFailOpenContext(
                   writePatch.fallbackCheckpoint,
@@ -3393,7 +3437,10 @@ export class AiSdkBackend implements AgentBackend {
               writePatch.replacementBlocks,
             );
           } else {
+            // Back to the raw prior ledger: whatever boundary the projection
+            // stood on a moment ago is not in this context any more.
             runtimeContext = priorRuntimeContext;
+            latestHistoryCompactCheckpoint = undefined;
             contextBudgetDiagnostic = buildContextBudgetDiagnosticShell(
               priorRuntimeContext,
               runtimeContext,
@@ -3553,6 +3600,13 @@ export class AiSdkBackend implements AgentBackend {
       }
     }
 
+    // The boundary belongs to the runtime-event projection above. A gate that
+    // falls back to the stored-message projection returns a prompt no
+    // checkpoint shaped, so it reports none rather than one the request never
+    // stood on (#2323).
+    const replayBoundary = (fromRuntimeReplay: boolean) =>
+      fromRuntimeReplay && latestHistoryCompactCheckpoint ? { latestHistoryCompactCheckpoint } : {};
+
     const plan = buildRuntimeEventModelReplayPlan(
       runtimeContext,
       // `runtimeContext` may be a budget/history-search slice; the tool-turn
@@ -3570,7 +3624,7 @@ export class AiSdkBackend implements AgentBackend {
         diagnostics: plan.diagnostics,
         runtimeEventCount: runtimeContext.length,
         ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
-        ...(latestHistoryCompactCheckpoint ? { latestHistoryCompactCheckpoint } : {}),
+        ...replayBoundary(Boolean(input.continuation)),
       };
     }
 
@@ -3586,7 +3640,7 @@ export class AiSdkBackend implements AgentBackend {
         diagnostics: plan.diagnostics,
         runtimeEventCount: runtimeContext.length,
         ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
-        ...(latestHistoryCompactCheckpoint ? { latestHistoryCompactCheckpoint } : {}),
+        ...replayBoundary(Boolean(input.continuation)),
       };
     }
 
@@ -3598,7 +3652,7 @@ export class AiSdkBackend implements AgentBackend {
         diagnostics: plan.diagnostics,
         runtimeEventCount: runtimeContext.length,
         ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
-        ...(latestHistoryCompactCheckpoint ? { latestHistoryCompactCheckpoint } : {}),
+        ...replayBoundary(true),
       };
     }
 
@@ -3614,7 +3668,7 @@ export class AiSdkBackend implements AgentBackend {
         diagnostics: plan.diagnostics,
         runtimeEventCount: runtimeContext.length,
         ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
-        ...(latestHistoryCompactCheckpoint ? { latestHistoryCompactCheckpoint } : {}),
+        ...replayBoundary(Boolean(input.continuation)),
       };
     }
 
@@ -3625,7 +3679,7 @@ export class AiSdkBackend implements AgentBackend {
       diagnostics: plan.diagnostics,
       runtimeEventCount: runtimeContext.length,
       ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
-      ...(latestHistoryCompactCheckpoint ? { latestHistoryCompactCheckpoint } : {}),
+      ...replayBoundary(true),
     };
   }
 

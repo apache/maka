@@ -14,7 +14,6 @@
       "frameworkVersion": "0.20.0",
       "pythonPathEnv": "MAKA_EVAL_HARBOR_PYTHON",
       "trialsRootEnv": "MAKA_EVAL_TRIALS_DIR",
-      "containerCwd": "/app",
       "environment": { "type": "docker", "delete": true },
       "preparationEnvironment": [
         "DOCKER_HOST",
@@ -30,6 +29,14 @@
         "no_proxy",
         "SSH_AUTH_SOCK"
       ],
+      "egressProxy": {
+        "composeSourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
+        "composeRelativePath": "packages/eval/harbor/docker-compose-egress-proxy.yaml",
+        "networkPolicyRelativePath": "packages/eval/harbor/egress-proxy/network-policy",
+        "proxyUrl": "http://maka-eval-mitmproxy:8080",
+        "allowedHost": "maka-eval-mitmproxy",
+        "containerCaPath": "/opt/maka-egress/mitmproxy-ca-cert.pem"
+      },
       "mounts": [
         {
           "sourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
@@ -89,14 +96,15 @@
         "nodePath": "/opt/maka-node-toolchain/bin/node",
         "shimPath": "/opt/maka-agent/packages/eval/dist/harbor-maka-subject.js",
         "runtimeHostsPath": "/tmp/maka-runtime-hosts",
+        "hostSettlementTimeoutMs": 120000,
         "connectionSlug": "env-deepseek",
         "baseUrl": "https://api.deepseek.com",
-        "webTools": "disabled",
         "model": "deepseek-v4-flash",
         "thinkingLevel": "max",
         "permissionMode": "bypass",
         "collaborationMode": "agent",
-        "orchestrationMode": "default"
+        "orchestrationMode": "default",
+        "toolProfile": "headless-coding-v1"
       }
     },
     {
@@ -146,6 +154,7 @@
           "--disallowedTools",
           "WebSearch",
           "WebFetch",
+          "FetchURL",
           "--dangerously-skip-permissions",
           "--model",
           "deepseek-v4-flash",
@@ -242,9 +251,9 @@
           "/opt/maka-zcode-toolchain/bin/node",
           "/opt/maka-zcode-toolchain/resources/glm/zcode.cjs",
           "--cwd",
-          "/app",
+          "{{task.cwd}}",
           "--disallowedTools",
-          "WebSearch,WebFetch",
+          "WebSearch,WebFetch,FetchURL",
           "--prompt",
           "{{task.input}}"
         ]

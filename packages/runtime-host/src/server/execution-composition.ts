@@ -128,6 +128,7 @@ import {
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostInteractiveTurnCoordinator } from './interactive-turn-coordinator.js';
 import { ensureBootstrapRuntimePolicy } from './bootstrap-runtime-policy.js';
+import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
 import { MemoryExtractionSessionLane } from './memory-extraction-session-lane.js';
@@ -644,7 +645,10 @@ export async function createExecutionRuntimeHostComposition(
               childTools: childAgentTools.childTools,
               worktreePatchWriteBackAvailable: true,
             }),
-            memoryExtraction,
+            ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction ===
+            false
+              ? {}
+              : { memoryExtraction }),
             artifacts: openedArtifactStore,
             executionArtifacts,
             usage: openedUsageStores,
@@ -692,11 +696,18 @@ export async function createExecutionRuntimeHostComposition(
           openedPlanStore.readState(sessionId),
           runtimePolicyStores.runtimePolicy.getSnapshot(),
         ]);
+        const runProfile = hostedExecutionRunProfile(header.toolProfile);
         return createInteractiveRunComposer({
           runtimePolicy: runtimePolicySnapshot,
           skills,
           memory: requireMemory(memory),
           taskLedger,
+          ...(runProfile
+            ? {
+                boundToolNames: runProfile.toolNames,
+                toolProfile: header.toolProfile,
+              }
+            : {}),
           ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
           builtinTools,
           hostTools: [...hostTools, ...graphTools],

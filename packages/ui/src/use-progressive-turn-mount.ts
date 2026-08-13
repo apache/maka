@@ -10,6 +10,11 @@ import {
 } from './progressive-turn-mount.js';
 import { prefixHeightFor, type TurnGeometryRecord } from './turn-size-index.js';
 import { createBrowserWarmupScheduler, type WarmupScheduler } from './turn-size-warmup.js';
+import {
+  captureChatScrollAnchor,
+  restoreChatScrollAnchor,
+  type ChatScrollAnchor,
+} from './chat-scroll-anchor.js';
 
 /**
  * React adapter for the #2052 progressive transcript mount.
@@ -64,15 +69,28 @@ export function useProgressiveTurnMount(input: {
   const [mountWindow, setMountWindow] = useState<MountWindowState>(() =>
     initialMountWindow(input.sessionId, input.turnIds.length, config),
   );
+  const previousFirstTurnIdRef = useRef(input.turnIds[0]);
+  const previousFirstTurnId = previousFirstTurnIdRef.current;
+  const prependedCount =
+    mountWindow.key === input.sessionId && previousFirstTurnId !== undefined
+      ? Math.max(0, input.turnIds.indexOf(previousFirstTurnId))
+      : 0;
   const reconciled = reconcileMountWindow(
     mountWindow,
     { key: input.sessionId, length: input.turnIds.length },
     config,
     ensureIndex,
+    prependedCount,
   );
   if (reconciled !== mountWindow) setMountWindow(reconciled);
 
-  const beforeFillRef = useRef<ViewportMetrics | undefined>(undefined);
+  useLayoutEffect(() => {
+    previousFirstTurnIdRef.current = input.turnIds[0];
+  }, [input.sessionId, input.turnIds]);
+
+  const beforeFillRef = useRef<(
+    ViewportMetrics & { anchor?: ChatScrollAnchor }
+  ) | undefined>(undefined);
   const schedulerRef = useRef<WarmupScheduler | undefined>(undefined);
   if (schedulerRef.current === undefined) {
     schedulerRef.current = input.scheduler ?? createBrowserWarmupScheduler();
@@ -83,9 +101,16 @@ export function useProgressiveTurnMount(input: {
     if (!scheduler || reconciled.start === 0) return;
     return scheduler.requestIdle(() => {
       const root = input.scrollRef.current;
-      beforeFillRef.current = root
-        ? { scrollTop: root.scrollTop, scrollHeight: root.scrollHeight, clientHeight: root.clientHeight }
-        : undefined;
+      if (root) {
+        beforeFillRef.current = {
+          scrollTop: root.scrollTop,
+          scrollHeight: root.scrollHeight,
+          clientHeight: root.clientHeight,
+          anchor: captureChatScrollAnchor(root),
+        };
+      } else {
+        beforeFillRef.current = undefined;
+      }
       setMountWindow((current) => fillMountWindow(current, config));
     });
   }, [reconciled.start, reconciled.key, config, input.scrollRef]);
@@ -96,7 +121,9 @@ export function useProgressiveTurnMount(input: {
     if (!before) return;
     const root = input.scrollRef.current;
     if (!root) return;
-    root.scrollTop = compensateFillScroll(before, root.scrollHeight).scrollTop;
+    if (!restoreChatScrollAnchor(root, before.anchor)) {
+      root.scrollTop = compensateFillScroll(before, root.scrollHeight).scrollTop;
+    }
   }, [reconciled.start, input.scrollRef]);
 
   // Fill progress published the way the warm-up publishes its own terminal

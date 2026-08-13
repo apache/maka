@@ -18,10 +18,19 @@ Delete when that guard passes against an unpatched package.
 
 ## `@astryxdesign/core@0.3.0`
 
-Three published component seams drop host-owned state or semantics:
+Four published component seams drop host-owned state or semantics:
 
 - `ChatLayout` needs a conversation identity that resets scroll/unread state
   without remounting its composer slot and discarding the live draft.
+- `ChatLayout` owns auto-follow and publishes no way to say "this scroll is
+  deliberate navigation, release it". Its scroll-direction unlock cannot infer
+  that: it discards any scroll event carrying a changed `scrollHeight` as a
+  resize artefact, and a host that mounts a turn before scrolling to it
+  produces exactly that. Without the seam the prompt rail's jump into an
+  unmounted turn is dragged straight back to the bottom (#2923), and no call
+  site can fix it — re-aiming frame by frame wins the mount and then loses to
+  the follow spring that outlives it. `unlockAutoFollow` on
+  `ChatLayoutContextValue` publishes the hook's existing `unlock`.
 - `ChatToolCalls` needs a stable row slot for product styling and E2E geometry.
 - `List` must forward its published `aria-label` to the rendered list element.
 

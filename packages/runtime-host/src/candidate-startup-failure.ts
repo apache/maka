@@ -1,4 +1,7 @@
-export type CandidateStartupFailureReason = 'stored_data_incompatible' | 'internal_startup_failure';
+export type CandidateStartupFailureReason =
+  | 'stored_data_incompatible'
+  | 'operational_state_migration_blocked'
+  | 'internal_startup_failure';
 
 export interface CandidateStartupFailure {
   readonly reason: CandidateStartupFailureReason;
@@ -6,6 +9,7 @@ export interface CandidateStartupFailure {
 
 const EXIT_CODE_BY_REASON: Readonly<Record<CandidateStartupFailureReason, number>> = {
   stored_data_incompatible: 65,
+  operational_state_migration_blocked: 78,
   internal_startup_failure: 70,
 };
 
@@ -14,7 +18,18 @@ export function classifyCandidateStartupFailure(error: unknown): CandidateStartu
   if (errors.some((candidate) => errorCode(candidate) === 'stored_session_message_incompatible')) {
     return { reason: 'stored_data_incompatible' };
   }
+  if (errors.some((candidate) => errorCode(candidate) === 'operational_state_migration_blocked')) {
+    return { reason: 'operational_state_migration_blocked' };
+  }
   return { reason: 'internal_startup_failure' };
+}
+
+export function isPermanentCandidateStartupFailure(
+  failure: CandidateStartupFailure | undefined,
+): failure is CandidateStartupFailure & {
+  readonly reason: Exclude<CandidateStartupFailureReason, 'internal_startup_failure'>;
+} {
+  return failure !== undefined && failure.reason !== 'internal_startup_failure';
 }
 
 export function candidateStartupFailureExitCode(failure: CandidateStartupFailure): number {

@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 
-type OpenSessionInChat = (sessionId: string, turnId?: string) => void;
+type OpenSessionInChat = (sessionId: string, turnId?: string, sequence?: number) => void;
 
 /**
  * Owns the search-modal slice (issue #1043): the open flag, the scroll-target
@@ -15,6 +15,7 @@ export function useShellSearch({ openSessionInChatRef }: { openSessionInChatRef:
   const [searchScrollTarget, setSearchScrollTarget] = useState<{
     sessionId: string;
     turnId: string;
+    sequence?: number;
     nonce: number;
   } | null>(null);
 
@@ -27,8 +28,8 @@ export function useShellSearch({ openSessionInChatRef }: { openSessionInChatRef:
     [],
   );
 
-  const searchModalOnNavigate = useCallback((sessionId: string, turnId?: string) => {
-    openSessionInChatRef.current(sessionId, turnId);
+  const searchModalOnNavigate = useCallback((sessionId: string, turnId?: string, sequence?: number) => {
+    openSessionInChatRef.current(sessionId, turnId, sequence);
   }, [openSessionInChatRef]);
 
   return {

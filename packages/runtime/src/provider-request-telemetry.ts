@@ -11,6 +11,9 @@ import {
   type PreparedRequestSegment,
 } from './request-shape.js';
 import { rawFinishReasonString } from './model-protocol.js';
+import { latestContextProjectionInput } from './latest-context-snapshot.js';
+import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
+import type { ModelCallCommit } from '@maka/core/agent-run';
 
 export type ProviderRequestCacheValueSource = 'provider' | 'derived';
 
@@ -149,7 +152,12 @@ export interface ModelCallAccountingInput {
    */
   providerId?: string;
   callKind: ModelCallKind;
-  record: (attempt: ModelCallAttempt) => void | Promise<void>;
+  /**
+   * Commits the attempt, and with it the derived latest-context row when this
+   * request is one that answers "what is the context made of" (#2323). One
+   * call, so the two cannot fail or arrive independently.
+   */
+  record: (commit: ModelCallCommit<ModelCallAttempt>) => void | Promise<void>;
   /** Resolves cost at settlement time; absent means the price is unknown. */
   resolveCost?: (usage: ProviderRequestUsage) => ResolvedModelCallCost | undefined;
   /**
@@ -174,11 +182,23 @@ export interface TrackProviderStreamInput {
   params: Record<string, unknown>;
   abortSignal?: AbortSignal;
   doStream: () => PromiseLike<ProviderStreamResult>;
+  /**
+   * The compaction boundary THIS request's prompt was built from (#2323).
+   *
+   * Per request rather than per tracker: one tracker spans every physical
+   * request of a send, and mid-turn compaction or overflow recovery can
+   * prepare the next request against a different boundary. Read at settlement
+   * it would be whatever the session holds by then — a boundary this prompt
+   * may never have seen.
+   */
+  historyCompactBoundary?: ContextDiagnosticsCompaction;
 }
 
 export interface TrackProviderGenerateInput {
   providerId: string;
   modelId: string;
+  /** As `TrackProviderStreamInput.historyCompactBoundary`. */
+  historyCompactBoundary?: ContextDiagnosticsCompaction;
   params: Record<string, unknown>;
   abortSignal?: AbortSignal;
   doGenerate: () => PromiseLike<ProviderGenerateResult>;
@@ -401,7 +421,7 @@ export class ProviderRequestTracker {
     capture: StoredCapture,
     input: Pick<
       TrackProviderStreamInput | TrackProviderGenerateInput,
-      'providerId' | 'modelId' | 'abortSignal'
+      'providerId' | 'modelId' | 'abortSignal' | 'historyCompactBoundary'
     >,
   ): {
     observeOutput(): void;
@@ -481,6 +501,10 @@ export class ProviderRequestTracker {
           logicalCallId,
           usage,
           contextWindow,
+          // Frozen when THIS request was prepared, so a checkpoint published
+          // mid-flight by another turn cannot be sealed into a prompt built
+          // before it existed.
+          historyCompactBoundary: input.historyCompactBoundary,
         });
       });
       await accountingSettlement;
@@ -518,6 +542,7 @@ export class ProviderRequestTracker {
       logicalCallId: string;
       usage: ProviderRequestUsage | undefined;
       contextWindow: number | undefined;
+      historyCompactBoundary: ContextDiagnosticsCompaction | undefined;
     },
   ): Promise<void> {
     const accounting = this.input.accounting;
@@ -574,8 +599,16 @@ export class ProviderRequestTracker {
         : {}),
     };
 
+    // Only a completed MAIN call describes the conversation's own context, so
+    // only that one carries the derived row. A failed, aborted or compaction
+    // call commits its metering alone and leaves the last answer standing.
+    const latestContext =
+      attempt.callKind === 'main' && attempt.status === 'completed'
+        ? latestContextProjectionInput(attempt, record.segments, context.historyCompactBoundary)
+        : undefined;
+
     try {
-      await accounting.record(attempt);
+      await accounting.record({ attempt, ...(latestContext ? { latestContext } : {}) });
     } catch {
       // Reported through the run's accounting-incomplete signal by the sink
       // itself. Settlement must not fail the turn the call already completed.

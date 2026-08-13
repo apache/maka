@@ -15,6 +15,8 @@ import {
   ToolLedgerCorruptionError,
   ToolLedgerRejectionError,
 } from '@maka/core/tool-ledger-scanner';
+import type { ModelCallCommit } from '@maka/core/agent-run';
+
 import { Buffer } from 'node:buffer';
 import { isDeepStrictEqual } from 'node:util';
 import { redactSecrets } from '@maka/core/redaction';
@@ -468,7 +470,8 @@ export class AgentRun {
    * handler, and the seam swallows this so a billed, completed response is
    * never failed by its own bookkeeping.
    */
-  recordModelCallAttempt(attempt: ModelCallAttempt): Promise<void> {
+  recordModelCallAttempt(commit: ModelCallCommit<ModelCallAttempt>): Promise<void> {
+    const { attempt, latestContext } = commit;
     if (!this.input.runStore) return Promise.resolve();
     return this.enqueueRequiredRunStoreWrite('append model call attempt', async () => {
       await this.input.runStore?.appendEvent(
@@ -483,7 +486,10 @@ export class AgentRun {
           ts: attempt.completedAt,
           data: { ...attempt },
         },
-        { durable: true },
+        // The latest-context projection rides this durable append rather than
+        // racing it: one commit for the request, and derived state that cannot
+        // survive a metering write that failed (#2323).
+        { durable: true, ...(latestContext ? { latestContext } : {}) },
       );
     });
   }

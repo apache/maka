@@ -23,7 +23,11 @@ import type {
   SandboxBoundarySettlement,
   SettleSandboxBoundaryRequest,
 } from '@maka/core/sandbox-boundary';
-import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
+import type {
+  CreateSessionInput,
+  SessionListFilter,
+  UserMessageInput,
+} from '@maka/core/runtime-inputs';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { QueueEnqueueOutcome, SessionEvent, ShellRunSnapshotResult } from '@maka/core/events';
 import type {
@@ -114,6 +118,31 @@ import {
   fingerprintAgentGraphRunnableIntent,
 } from '../stream-graph-admission.js';
 import type { AgentGraphRunnableIntent } from '../stream-graph-readiness.js';
+
+test('sendMessage rejects removed Automation as a live trigger', async () => {
+  const runStore = new MemoryAgentRunStore();
+  const manager = new SessionManager({
+    store: new MemorySessionStore(),
+    runStore,
+    runtimeEventStore: runStore,
+    backends: new BackendRegistry(),
+    newId: nextId(),
+    now: nextNow(1),
+  });
+  const session = await manager.createSession(makeInput());
+
+  await assert.rejects(
+    () =>
+      drain(
+        manager.sendMessage(session.id, {
+          turnId: 'legacy-turn',
+          text: 'automated prompt',
+          origin: { kind: 'legacy_automation', automationId: 'automation-1' },
+        } as UserMessageInput),
+      ),
+    /removed Automation authority/,
+  );
+});
 
 /**
  * "A turn is running" is a fact about the live process, so the read model takes
@@ -3920,7 +3949,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
           resolveModel: () => summarizerModel,
         }),
         recordHistoryCompactCheckpoint: () => {},
-        recordModelCallAttempt: (attempt) => {
+        recordModelCallAttempt: ({ attempt }) => {
           modelCalls.push(attempt);
         },
       }),

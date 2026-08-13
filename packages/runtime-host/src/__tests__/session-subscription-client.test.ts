@@ -402,9 +402,157 @@ test('reassembles a large message from bounded backward pages', async () => {
   );
 });
 
+test('decodes one bounded page without walking the remaining transcript', async () => {
+  const message = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'hello',
+  };
+  const encoded = Buffer.from(JSON.stringify(message), 'utf8');
+  const splitAt = Math.floor(encoded.byteLength / 2);
+  const requests: Array<{ cursor: string | null; maxBytes: number }> = [];
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-bounded-page', {
+      throughSequence: 4,
+      overlayMessageCount: 0,
+      durable: {
+        ...transcriptPage({
+          rawBytes: encoded.byteLength - splitAt,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 4,
+              byteOffset: splitAt,
+              totalBytes: encoded.byteLength,
+              payloadDigest: null,
+              data: encoded.subarray(splitAt).toString('base64'),
+            },
+          ],
+          nextCursor: 'complete-message',
+        }),
+        throughSequence: 4,
+      },
+      overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 4 },
+    }),
+    async () => undefined,
+    async (input) => {
+      requests.push({ cursor: input.cursor, maxBytes: input.maxBytes });
+      return {
+        ...transcriptPage({
+          rawBytes: splitAt,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 4,
+              byteOffset: 0,
+              totalBytes: encoded.byteLength,
+              payloadDigest: null,
+              data: encoded.subarray(0, splitAt).toString('base64'),
+            },
+          ],
+          nextCursor: 'older-records',
+        }),
+        throughSequence: 4,
+      };
+    },
+  );
+
+  const assemblyDeltas: number[] = [];
+  const decoded = await subscription.decodeTranscriptPage(
+    subscription.transcriptBootstrap!.durable,
+    decodeStoredMessage,
+    undefined,
+    (deltaBytes) => assemblyDeltas.push(deltaBytes),
+  );
+
+  assert.deepEqual(decoded, {
+    messages: [{ identity: 4, message }],
+    nextCursor: 'older-records',
+  });
+  assert.deepEqual(requests, [{ cursor: 'complete-message', maxBytes: splitAt }]);
+  assert.deepEqual(assemblyDeltas, [encoded.byteLength, -encoded.byteLength]);
+
+  requests.length = 0;
+  await assert.rejects(
+    subscription.decodeTranscriptPage(
+      subscription.transcriptBootstrap!.durable,
+      decodeStoredMessage,
+      encoded.byteLength - 1,
+    ),
+    RangeError,
+  );
+  assert.deepEqual(requests, []);
+});
+
+test('loads and releases only the active overlay', async () => {
+  const overlay = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'active',
+  };
+  const bytes = Buffer.from(JSON.stringify(overlay), 'utf8');
+  let releases = 0;
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-overlay-only', overlayBootstrap(bytes)),
+    async () => undefined,
+    async () => {
+      throw new Error('durable transcript must not be read');
+    },
+    async () => {
+      releases += 1;
+    },
+  );
+
+  assert.deepEqual(await subscription.loadTranscriptOverlay(decodeStoredMessage), [overlay]);
+  assert.equal(releases, 1);
+  await assert.rejects(
+    subscription.loadTranscriptOverlay(decodeStoredMessage),
+    hasSubscriptionReason('correlation_changed'),
+  );
+  assert.equal(releases, 1);
+});
+
+test('rejects an oversized active overlay before releasing it', async () => {
+  const overlay = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'active',
+  };
+  const bytes = Buffer.from(JSON.stringify(overlay), 'utf8');
+  let releases = 0;
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-overlay-limit', overlayBootstrap(bytes)),
+    async () => undefined,
+    async () => {
+      throw new Error('durable transcript must not be read');
+    },
+    async () => {
+      releases += 1;
+    },
+  );
+
+  await assert.rejects(
+    subscription.loadTranscriptOverlay(decodeStoredMessage, bytes.byteLength - 1),
+    RangeError,
+  );
+  assert.equal(releases, 0);
+});
+
 test('releases a materialized overlay through the connection-bound control operation', async () => {
   const message = Buffer.from(
-    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'overlay' }),
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'overlay',
+    }),
     'utf8',
   );
   await withProtocolPeer(
@@ -424,7 +572,9 @@ test('releases a materialized overlay through the connection-bound control opera
       const release = decodeClientFrame(await transport.read(1_000));
       assert.ok(!('kind' in release));
       assert.equal(release.operation, 'session.transcript.overlay.release');
-      assert.deepEqual(release.input, { subscriptionId: opened.subscriptionId });
+      assert.deepEqual(release.input, {
+        subscriptionId: opened.subscriptionId,
+      });
       await writeProtocolFrame(transport, {
         requestId: release.requestId,
         operation: 'session.transcript.overlay.release',
@@ -439,7 +589,13 @@ test('releases a materialized overlay through the connection-bound control opera
         transcript: { kind: 'tail', maxBytes: 16 * 1024 },
       });
       assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [
-        { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'overlay' },
+        {
+          type: 'user',
+          id: 'user-1',
+          turnId: 'turn-1',
+          ts: 1,
+          text: 'overlay',
+        },
       ]);
       await subscription.close();
     },
@@ -448,7 +604,13 @@ test('releases a materialized overlay through the connection-bound control opera
 
 test('fails the connection when overlay release is not confirmed', async () => {
   const message = Buffer.from(
-    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'overlay' }),
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'overlay',
+    }),
     'utf8',
   );
   await withProtocolPeer(
@@ -491,7 +653,13 @@ test('fails the connection when overlay release is not confirmed', async () => {
 
 test('keeps the connection usable when close wins the overlay release race', async () => {
   const message = Buffer.from(
-    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'overlay' }),
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'overlay',
+    }),
     'utf8',
   );
   await withProtocolPeer(
@@ -552,7 +720,13 @@ test('keeps the connection usable when close wins the overlay release race', asy
       const loading = subscription.loadTranscript(decodeStoredMessage);
       await subscription.close();
       assert.deepEqual(await loading, [
-        { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'overlay' },
+        {
+          type: 'user',
+          id: 'user-1',
+          turnId: 'turn-1',
+          ts: 1,
+          text: 'overlay',
+        },
       ]);
       assert.equal((await connection.request('host.status', {})).hostEpoch, connection.hostEpoch);
     },
@@ -561,7 +735,13 @@ test('keeps the connection usable when close wins the overlay release race', asy
 
 test('rejects a durable sequence gap', async () => {
   const message = Buffer.from(
-    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'hello',
+    }),
     'utf8',
   );
   const fragment = {
@@ -598,7 +778,13 @@ test('rejects a durable sequence gap', async () => {
 
 test('rejects a durable message that does not match its payload digest', async () => {
   const message = Buffer.from(
-    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'hello',
+    }),
     'utf8',
   );
   const subscription = new ClientSessionSubscription(
@@ -626,15 +812,29 @@ test('rejects a durable message that does not match its payload digest', async (
     },
   );
 
+  const assemblyDeltas: number[] = [];
   await assert.rejects(
-    () => subscription.loadTranscript(decodeStoredMessage),
+    () =>
+      subscription.decodeTranscriptPage(
+        subscription.transcriptBootstrap!.durable,
+        decodeStoredMessage,
+        undefined,
+        (deltaBytes) => assemblyDeltas.push(deltaBytes),
+      ),
     hasSubscriptionReason('correlation_changed'),
   );
+  assert.deepEqual(assemblyDeltas, [message.byteLength, -message.byteLength]);
 });
 
 test('rejects a transcript cursor that does not advance', async () => {
   const message = Buffer.from(
-    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'hello',
+    }),
     'utf8',
   );
   const repeated = transcriptPage({
@@ -671,7 +871,13 @@ test('rejects a transcript cursor that does not advance', async () => {
 
 test('rejects an overlay that terminates before its declared high-water', async () => {
   const message = Buffer.from(
-    JSON.stringify({ type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 1, text: '' }),
+    JSON.stringify({
+      type: 'assistant',
+      id: 'assistant-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: '',
+    }),
     'utf8',
   );
   const subscription = new ClientSessionSubscription(
@@ -710,7 +916,13 @@ test('rejects an overlay that terminates before its declared high-water', async 
 
 test('acknowledges the overlay only after complete materialization', async () => {
   const message = Buffer.from(
-    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'ok' }),
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'ok',
+    }),
     'utf8',
   );
   let releases = 0;
@@ -735,7 +947,13 @@ test('acknowledges the overlay only after complete materialization', async () =>
 
 test('acknowledges a complete overlay before waiting for durable continuation pages', async () => {
   const durableMessage = Buffer.from(
-    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'history' }),
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'history',
+    }),
     'utf8',
   );
   const overlayMessage = Buffer.from(
@@ -815,7 +1033,13 @@ test('acknowledges a complete overlay before waiting for durable continuation pa
 
 test('close stops transcript pagination after the in-flight page', async () => {
   const message = Buffer.from(
-    JSON.stringify({ type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' }),
+    JSON.stringify({
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'hello',
+    }),
     'utf8',
   );
   const page = deferred<ReturnType<typeof transcriptPage>>();
