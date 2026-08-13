@@ -327,16 +327,20 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
         previousTarget.input,
         previousTarget.observations,
       );
+      rollbackTarget.hostId = previousTarget.hostId;
       this.#target = rollbackTarget;
       this.#publishState({
         epoch: rollbackTarget.epoch,
         target: rollbackTarget.target,
         readiness: 'connecting',
+        ...(rollbackTarget.hostId ? { hostId: rollbackTarget.hostId } : {}),
       });
+      this.#ipcMain.activate(rollbackTarget.epoch);
       try {
         rollbackTarget.lifecycle = await this.#startLifecycle(rollbackTarget, false);
       } catch (rollbackError) {
         rollbackTarget.valid = false;
+        this.#ipcMain.deactivate(rollbackTarget.epoch);
         await rollbackTarget.observations.close();
         const failure = new AggregateError(
           [switchError, rollbackError],

@@ -195,7 +195,7 @@ Host profile 是 Client-owned connection configuration，不是 Host state。内
 
 选择 profile 只决定 Client 连接哪个 Host，不会移动 Project 或 Session、改变 Host Epoch，也不会修改所选 Host。所有 remote transport 最终都进入同一 authenticated WebSocket connector，绝不 fallback 到本地 discovery 或 candidate spawn。Tunnel 是 connection-scoped resource：reconnect 会创建新 tunnel，tunnel 关闭或丢失也会关闭对应 connection。每次远程连接都固定 profile 中的 State Root identity；endpoint 给出不同 root 时必须失败。
 
-Desktop 会在当前进程内应用新 profile，不需要重启应用。每个 target generation 独占自己的 connection 与 Session observations，因此为某一 generation 捕获的 request 或 live event 不能跨到另一 generation。切换失败时会尝试恢复之前的 target；如果新旧 target 都无法连接，Desktop 会明确报告当前没有 active Host。
+Desktop 会在当前进程内应用新 profile，不需要重启应用。每个 target generation 独占自己的 connection 与 live-event scope，因此为某一 generation 捕获的 request 或 event 不能跨到另一 generation。切换失败时会尝试恢复之前的 target；如果新旧 target 都无法连接，Desktop 会明确报告当前没有 active Host。
 
 Desktop 使用 Host handshake 已验证的 root identity 与当前 target generation，共同作为每个 Host-backed IPC request 和 event 的 scope。Desktop 仍只有一个 active Host 时，preload 会把现有产品 API 绑定到该 scope，main process 在分发给 domain handler 前统一校验。相同 target 重连时会保留该绑定；切换 profile 时，即使两个 profile 指向同一个 root，也会使旧绑定失效。Browser control、diagnostics 等 persistent Client-local surface 也使用同一道 fence。这个 scope 用于防止跨 target 误路由，不是 authentication boundary。
 

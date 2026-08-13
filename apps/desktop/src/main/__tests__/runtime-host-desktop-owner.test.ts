@@ -260,7 +260,12 @@ test('restores the previous Runtime Host when a target switch fails', async () =
   const restored = candidateHarness();
   const starts: DesktopRuntimeHostCandidateStartInput[] = [];
   const fatalErrors: Error[] = [];
-  const activations: Array<{ epoch: string; profileId: string }> = [];
+  const states: Array<{
+    epoch: string;
+    profileId: string;
+    readiness: string;
+    hostId?: string;
+  }> = [];
   const owner = await startRuntimeHostDesktopOwner(
     {} as DesktopRuntimeHostCandidateStartInput,
     {
@@ -269,11 +274,17 @@ test('restores the previous Runtime Host when a target switch fails', async () =
         if (starts.length === 2) {
           return { kind: 'failed', reason: 'host_unresponsive' };
         }
+        if (starts.length === 3) assert.equal(input.isTargetActive?.(), true);
         return ready(starts.length === 1 ? first.candidate : restored.candidate);
       },
       onFatalError: (error) => fatalErrors.push(error),
-      onTargetStateChanged: ({ epoch, target, readiness }) => {
-        if (readiness === 'ready') activations.push({ epoch, profileId: target.profile.id });
+      onTargetStateChanged: (state) => {
+        states.push({
+          epoch: state.epoch,
+          profileId: state.target.profile.id,
+          readiness: state.readiness,
+          ...('hostId' in state && state.hostId ? { hostId: state.hostId } : {}),
+        });
       },
     },
   );
@@ -288,8 +299,13 @@ test('restores the previous Runtime Host when a target switch fails', async () =
   assert.equal(starts[0]?.isTargetActive?.(), false);
   assert.equal(starts[1]?.isTargetActive?.(), false);
   assert.equal(starts[2]?.isTargetActive?.(), true);
-  assert.deepEqual(activations.map(({ profileId }) => profileId), ["local", "local"]);
+  const activations = states.filter(({ readiness }) => readiness === 'ready');
+  assert.deepEqual(activations.map(({ profileId }) => profileId), ['local', 'local']);
   assert.notEqual(activations[0]?.epoch, activations[1]?.epoch);
+  const rollbackConnecting = states.at(-2);
+  assert.equal(rollbackConnecting?.readiness, 'connecting');
+  assert.equal(rollbackConnecting?.epoch, activations[1]?.epoch);
+  assert.equal(rollbackConnecting?.hostId, first.candidate.client.hostId);
   assert.deepEqual(fatalErrors, []);
   await owner.close();
 });
