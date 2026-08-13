@@ -53,6 +53,7 @@ process.once('SIGINT', interrupt);
 const logsRoot = rooted(systemRoot, '/logs/agent');
 const statePath = join(logsRoot, `${profile}.wrapper-state.json`);
 const meteringPath = join(logsRoot, `${profile}.metering.json`);
+const providerEventsPath = join(logsRoot, `${profile}.provider-events.jsonl`);
 const stdoutPath = join(logsRoot, `${profile}.jsonl`);
 const stderrPath = join(logsRoot, `${profile}.stderr.txt`);
 const artifacts: Record<string, unknown>[] = [];
@@ -74,7 +75,13 @@ try {
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.DEEPSEEK_API_KEY;
   if (!key) throw new Error('external subject credential is missing');
-  const proxy = await startMeteringProxy(baseUrl, key, profile === 'claude-code', meteringPath);
+  const proxy = await startMeteringProxy(
+    baseUrl,
+    key,
+    profile === 'claude-code',
+    meteringPath,
+    providerEventsPath,
+  );
   try {
     await writeState('proxy_started');
     const prepared = await prepareProfile(profile, proxy.baseUrl, systemRoot, command, args);
@@ -669,6 +676,7 @@ async function startMeteringProxy(
   upstreamKey: string,
   anthropic: boolean,
   meteringPath: string,
+  eventsPath: string,
 ): Promise<{
   baseUrl: string;
   usage(): Usage | null;
@@ -690,6 +698,7 @@ async function startMeteringProxy(
   let removedWebTools = 0;
   const requestModels = new Set<string>();
   const observedToolNames = new Set<string>();
+  const events = await createBoundedJsonlWriter(eventsPath, PERSISTED_STREAM_LIMIT_BYTES);
   let snapshotWrite = Promise.resolve();
   const persistSnapshot = () => {
     const snapshot = `${JSON.stringify({
@@ -712,12 +721,20 @@ async function startMeteringProxy(
   const providerTransport = createExternalProviderDispatcher(process.env.HTTPS_PROXY);
   const active = new Set<Promise<void>>();
   const server = createServer((request, response) => {
+    const requestId = requests + 1;
     const operation = (async () => {
       requests += 1;
       const projected = removeEvalWebTools(await readRequest(request));
       removedWebTools += projected.removed;
       if (projected.model) requestModels.add(projected.model);
       for (const name of projected.toolNames) observedToolNames.add(name);
+      await events.write({
+        type: 'provider_request',
+        requestId,
+        method: request.method ?? 'GET',
+        path: request.url ?? '/',
+        bodyBase64: projected.body.toString('base64'),
+      });
       const target = joinUpstream(upstreamBaseUrl, request.url ?? '/');
       const headers: Record<string, string> = {};
       for (const [name, value] of Object.entries(request.headers)) {
@@ -732,11 +749,29 @@ async function startMeteringProxy(
       }
       if (anthropic) headers['x-api-key'] = upstreamKey;
       else headers.authorization = `Bearer ${upstreamKey}`;
+      const upstreamAbort = new AbortController();
+      const abortUpstream = () => {
+        if (!upstreamAbort.signal.aborted) {
+          upstreamAbort.abort(new Error('provider proxy downstream disconnected'));
+        }
+      };
+      const closeUpstream = () => {
+        if (!response.writableEnded) abortUpstream();
+      };
+      request.once('aborted', abortUpstream);
+      response.once('close', closeUpstream);
       const upstream = await undiciFetch(target, {
         method: request.method,
         headers,
         body: projected.body.length === 0 ? undefined : new Uint8Array(projected.body),
         dispatcher: providerTransport.dispatcher,
+        signal: upstreamAbort.signal,
+      });
+      await events.write({
+        type: 'provider_response_start',
+        requestId,
+        status: upstream.status,
+        contentType: upstream.headers.get('content-type'),
       });
       response.statusCode = upstream.status;
       upstream.headers.forEach((value, name) => {
@@ -752,12 +787,20 @@ async function startMeteringProxy(
           for (;;) {
             const next = await reader.read();
             if (next.done) break;
-            response.write(Buffer.from(next.value));
-            parser.push(Buffer.from(next.value).toString('utf8'));
+            const bytes = Buffer.from(next.value);
+            await events.write({
+              type: 'provider_response_chunk',
+              requestId,
+              bodyBase64: bytes.toString('base64'),
+            });
+            response.write(bytes);
+            parser.push(bytes.toString('utf8'));
           }
         }
         response.end();
       } finally {
+        request.removeListener('aborted', abortUpstream);
+        response.removeListener('close', closeUpstream);
         const parsed = parser.finish();
         if (upstream.ok && parsed.admitted) {
           admittedRequests += 1;
@@ -767,11 +810,24 @@ async function startMeteringProxy(
             addUsage(total, parsed.usage);
           }
         }
+        await events.write({
+          type: 'provider_response_end',
+          requestId,
+          admitted: parsed.admitted,
+          usage: parsed.usage,
+        });
         await persistSnapshot();
       }
     })().catch((error: unknown) => {
-      response.statusCode = 502;
-      response.end(JSON.stringify({ error: safeFailure(error, 'provider proxy failed') }));
+      void events.write({
+        type: 'provider_error',
+        requestId,
+        error: safeFailure(error, 'provider proxy failed'),
+      });
+      if (!response.destroyed) {
+        response.statusCode = 502;
+        response.end(JSON.stringify({ error: safeFailure(error, 'provider proxy failed') }));
+      }
     });
     active.add(operation);
     void operation.finally(() => active.delete(operation));
@@ -799,6 +855,37 @@ async function startMeteringProxy(
       await snapshotWrite;
       await closeServer(server);
       await providerTransport.close();
+      await events.close();
+    },
+  };
+}
+
+async function createBoundedJsonlWriter(
+  path: string,
+  limitBytes: number,
+): Promise<{
+  write(value: unknown): Promise<void>;
+  close(): Promise<void>;
+}> {
+  const output = await open(path, 'w', 0o600);
+  let queue = Promise.resolve();
+  let persistedBytes = 0;
+  let closed = false;
+  return {
+    write(value: unknown): Promise<void> {
+      const line = Buffer.from(`${JSON.stringify(value)}\n`);
+      queue = queue.then(async () => {
+        if (closed || persistedBytes + line.byteLength > limitBytes) return;
+        await writeAll(output, line);
+        persistedBytes += line.byteLength;
+      });
+      return queue;
+    },
+    async close(): Promise<void> {
+      await queue;
+      if (closed) return;
+      closed = true;
+      await output.close();
     },
   };
 }

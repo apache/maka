@@ -195,7 +195,77 @@ test('unbounded tool diagnostics stay in the metering snapshot, not the relay fr
       await readFile(join(root, 'logs/agent/opencode.metering.json'), 'utf8'),
     ) as { toolNames: string[] };
     assert.deepEqual(snapshot.toolNames, [...toolNames].sort());
+    const providerEvents = (
+      await readFile(join(root, 'logs/agent/opencode.provider-events.jsonl'), 'utf8')
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; bodyBase64?: string });
+    assert.equal(providerEvents[0]?.type, 'provider_request');
+    assert.match(
+      Buffer.from(providerEvents[0]?.bodyBase64 ?? '', 'base64').toString('utf8'),
+      /tool_199/u,
+    );
+    assert.equal(
+      providerEvents.some(({ type }) => type === 'provider_response_chunk'),
+      true,
+    );
+    assert.equal(providerEvents.at(-1)?.type, 'provider_response_end');
   } finally {
+    server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('downstream cancellation aborts an in-flight upstream provider request', async () => {
+  const server = createServer(() => undefined);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const root = await mkdtemp(join(tmpdir(), 'maka-provider-abort-'));
+  const child = join(root, 'child.mjs');
+  await writeFile(
+    child,
+    [
+      'const controller=new AbortController();',
+      'setTimeout(()=>controller.abort(),50);',
+      "await fetch(`${process.env.DEEPSEEK_BASE_URL}/responses`,{method:'POST',body:'{}',signal:controller.signal}).catch(()=>{});",
+      "console.log(JSON.stringify({type:'error'}));",
+      '',
+    ].join('\n'),
+  );
+  try {
+    const wrapper = new URL('../harbor-external-subject.js', import.meta.url);
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [
+        wrapper.pathname,
+        'opencode',
+        `http://127.0.0.1:${address.port}`,
+        root,
+        process.execPath,
+        child,
+      ],
+      {
+        env: {
+          ...process.env,
+          OPENAI_API_KEY: 'upstream-test-key',
+          MAKA_EVAL_RESULT_TOKEN: RESULT_TOKEN,
+        },
+        timeout: 2_000,
+      },
+    );
+    const result = decodeResultFrame(stdout) as { status: string };
+    assert.equal(result.status, 'infra_failed');
+    assert.match(
+      await readFile(join(root, 'logs/agent/opencode.provider-events.jsonl'), 'utf8'),
+      /provider_error/u,
+    );
+  } finally {
+    server.closeAllConnections();
     server.close();
     await rm(root, { recursive: true, force: true });
   }

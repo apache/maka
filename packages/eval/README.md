@@ -63,7 +63,10 @@ after Harbor finalization, Eval inventories the complete trial `agent/` director
 so trajectory, metering, wrapper-state, and runtime-event files remain tied to the scored result.
 External CLI specs terminate option parsing or bind the prompt inside one option value so task text
 that begins with `-` cannot become a CLI flag. Relay results contain only bounded metering counts;
-the complete observed model and tool-name lists remain in the hashed metering artifact.
+the complete observed model and tool-name lists remain in the hashed metering artifact. The
+provider proxy also writes a bounded credential-free request/response JSONL trace, so a timed-out
+CLI that never flushes stdout still leaves model I/O tied to its usage; downstream disconnects
+cancel the corresponding upstream request instead of holding finalization open.
 The local image tag remains a machine deployment identity rather than a registry digest; digest
 pinning is tracked in issue #2953.
 
