@@ -103,6 +103,7 @@
           "--dangerously-bypass-approvals-and-sandbox",
           "--model",
           "deepseek-v4-flash",
+          "--",
           "{{task.input}}"
         ]
       }
@@ -129,6 +130,7 @@
           "--dangerously-skip-permissions",
           "--model",
           "deepseek-v4-flash",
+          "--",
           "{{task.input}}"
         ]
       }
@@ -153,6 +155,7 @@
           "max",
           "--output-format",
           "stream-json",
+          "--",
           "{{task.input}}"
         ]
       }

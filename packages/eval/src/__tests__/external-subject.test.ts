@@ -75,6 +75,116 @@ test('classifies missing executor process scope as infrastructure failure', asyn
   assert.equal(result.failureReason, 'external subject execution scope was unavailable');
 });
 
+test('recovers settled provider usage when the external result frame is unavailable', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-opencode-recovery-'));
+  const sourceEnv = 'MAKA_TEST_OPENCODE_RECOVERY_TOOLCHAIN';
+  const previous = process.env[sourceEnv];
+  const usage = {
+    inputTokens: 100,
+    outputTokens: 20,
+    cacheReadTokens: 80,
+    cacheWriteTokens: 0,
+    reasoningTokens: 10,
+    totalTokens: 120,
+  };
+  try {
+    const executable = join(root, 'bin/opencode');
+    await mkdir(join(root, 'bin'), { recursive: true });
+    await writeFile(executable, 'opencode');
+    const digest = createHash('sha256').update('opencode').digest('hex');
+    await writeFile(join(root, 'checksums.sha256'), `${digest}  bin/opencode\n`);
+    await writeFile(
+      join(root, 'manifest.json'),
+      `${JSON.stringify({ fingerprint: TOOLCHAIN_IDENTITIES.opencode.fingerprint })}\n`,
+    );
+    process.env[sourceEnv] = root;
+    const cell = {
+      ...externalCell({
+        command: '/opt/maka-node-toolchain/bin/node',
+        args: [
+          '/opt/maka-agent/packages/eval/dist/harbor-external-subject.js',
+          'opencode',
+          'https://api.deepseek.com',
+          '/',
+          '/opt/maka-opencode-toolchain/bin/opencode',
+        ],
+        credentialEnvironment: { DEEPSEEK_API_KEY: 'PROVIDER_KEY' },
+      }),
+      executor: {
+        kind: 'harbor',
+        config: {
+          mounts: [
+            {
+              sourceEnv,
+              target: TOOLCHAIN_IDENTITIES.opencode.root,
+              readOnly: true,
+            },
+          ],
+        },
+      },
+    } satisfies ExperimentCell;
+    const adapter = createExternalSubjectAdapter();
+    await adapter.prepare?.({ spec: {} as ExperimentSpec, cells: [cell] });
+    for (const execution of [
+      {
+        termination: 'framework_timeout' as const,
+        exitCode: 124,
+        stdout: '',
+        diagnostic: {
+          category: 'result-frame-missing' as const,
+          bytes: 0,
+          sha256: '0'.repeat(64),
+        },
+      },
+      {
+        termination: 'exited' as const,
+        exitCode: 1,
+        stdout: '',
+        diagnostic: {
+          category: 'result-frame-missing' as const,
+          bytes: 0,
+          sha256: '0'.repeat(64),
+        },
+      },
+    ]) {
+      const result = await adapter.execute({
+        cell,
+        context: {
+          cwd: '/workspace',
+          taskInput: 'solve',
+          metadata: {},
+          execute: async (input) => {
+            assert.equal(input.recoveryPath, '/logs/agent/opencode.provider-usage.json');
+            return {
+              ...execution,
+              recovery: {
+                schemaVersion: 'maka.external_provider_usage.v1',
+                profile: 'opencode',
+                usage,
+                costUsd: 0.01,
+                requests: 2,
+                admittedRequests: 2,
+                usageRequests: 2,
+                usageComplete: true,
+                removedWebTools: 0,
+                models: ['deepseek-v4-flash'],
+                toolNames: ['bash'],
+              },
+            };
+          },
+        },
+      });
+      assert.deepEqual(result.usage, usage);
+      assert.equal(result.costUsd, 0.01);
+      assert.equal(result.status, 'failed');
+    }
+  } finally {
+    if (previous === undefined) delete process.env[sourceEnv];
+    else process.env[sourceEnv] = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('requires the bundled wrapper for the structured result contract', () => {
   for (const args of [[], ['/tmp/harbor-external-subject.js', 'codex']]) {
     const cell = externalCell({ command: '/opt/tool', args });

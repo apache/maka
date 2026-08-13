@@ -180,6 +180,12 @@ async function runHarnessAttempt(
     }
     await state.closeRelay();
   }
+  if (hasValue && finalizationEvidence && finalizationConfirmed(finalizationEvidence)) {
+    value = {
+      ...value!,
+      artifacts: [...value!.artifacts, ...(await collectedArtifactInventory(state.trialPath))],
+    };
+  }
   if (
     hasValue &&
     (state.transport.failure || cleanupAction || state.diagnostic?.category !== 'none')
@@ -254,6 +260,7 @@ function relayContext(state: RelayState, signal?: AbortSignal): SubjectExecution
           credentials,
           resultToken,
           captureStdout: input.captureStdout ?? true,
+          ...(input.recoveryPath ? { recoveryPath: input.recoveryPath } : {}),
         })
       ) {
         throw new Error('relay transport is unavailable');
@@ -276,6 +283,10 @@ function relayContext(state: RelayState, signal?: AbortSignal): SubjectExecution
         (executed.termination !== 'exited' && executed.termination !== 'framework_timeout') ||
         typeof executed.exitCode !== 'number' ||
         typeof executed.stdout !== 'string' ||
+        (executed.recovery !== undefined &&
+          (!executed.recovery ||
+            typeof executed.recovery !== 'object' ||
+            Array.isArray(executed.recovery))) ||
         !validProcessDiagnostic(executed.diagnostic)
       ) {
         state.transport.failure ??= {
@@ -290,6 +301,7 @@ function relayContext(state: RelayState, signal?: AbortSignal): SubjectExecution
         termination: executed.termination,
         exitCode: executed.exitCode,
         stdout: executed.stdout,
+        ...(executed.recovery === undefined ? {} : { recovery: executed.recovery as JsonObject }),
         diagnostic: executed.diagnostic,
       };
     },
@@ -697,7 +709,6 @@ async function readVerification(
     failureReason: score === null ? 'verifier produced no reward' : null,
     artifacts: [
       { kind: 'trial', framework: cell.executor.kind, trialName: state.trialName },
-      ...(await collectedArtifactInventory(state.trialPath)),
       ...(egressAudit
         ? [
             {
@@ -713,12 +724,12 @@ async function readVerification(
 }
 
 async function collectedArtifactInventory(trialPath: string): Promise<JsonObject[]> {
-  const root = join(trialPath, 'artifacts', 'logs', 'artifacts');
   const files: JsonObject[] = [];
   const targets = [
-    join(root, basename(MAKA_RUNTIME_ARTIFACT_PATH)),
-    join(root, basename(MAKA_SUBJECT_STDOUT_PATH)),
-    join(root, basename(MAKA_SUBJECT_STDERR_PATH)),
+    join(trialPath, 'artifacts', 'logs', 'artifacts', basename(MAKA_RUNTIME_ARTIFACT_PATH)),
+    join(trialPath, 'artifacts', 'logs', 'artifacts', basename(MAKA_SUBJECT_STDOUT_PATH)),
+    join(trialPath, 'artifacts', 'logs', 'artifacts', basename(MAKA_SUBJECT_STDERR_PATH)),
+    join(trialPath, 'agent'),
   ];
   for (const target of targets) {
     await walkCollectedArtifacts(trialPath, target, files).catch((error: NodeJS.ErrnoException) => {

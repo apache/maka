@@ -19,6 +19,10 @@ export function isInferenceAdmissionEvent(
   return false;
 }
 
+export function isSuccessfulInferenceResponse(status: number, model: string | undefined): boolean {
+  return status >= 200 && status < 300 && typeof model === 'string' && model.length > 0;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

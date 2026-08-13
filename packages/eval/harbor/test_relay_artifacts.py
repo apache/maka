@@ -40,6 +40,9 @@ class ArtifactEnvironment:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
 
+    async def download_file(self, source, target):
+        shutil.copyfile(self.root / source.lstrip("/"), target)
+
 
 class RelayArtifactTest(unittest.IsolatedAsyncioTestCase):
     async def test_framed_transport_outputs_are_persisted_without_changing_the_carrier(self):
@@ -60,6 +63,24 @@ class RelayArtifactTest(unittest.IsolatedAsyncioTestCase):
                 "diagnostic\n",
             )
             self.assertEqual(result.stdout, "framed-result\n")
+
+    async def test_provider_usage_checkpoint_is_read_before_container_teardown(self):
+        relay = load_relay()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = ArtifactEnvironment(root)
+            source = root / "logs/agent/opencode.provider-usage.json"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                '{"schemaVersion":"maka.external_provider_usage.v1","usageRequests":2}\n'
+            )
+
+            recovered = await relay._read_recovery(
+                environment,
+                {"recoveryPath": "/logs/agent/opencode.provider-usage.json"},
+            )
+
+            self.assertEqual(recovered["usageRequests"], 2)
 
 
 if __name__ == "__main__":
