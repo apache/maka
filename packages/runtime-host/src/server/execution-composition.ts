@@ -113,11 +113,14 @@ import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
 import { HostExtensionController } from './extension-controller.js';
 import {
+  InstalledToolPackageExtensionLoader,
   StaticTrustedToolExtensionLoader,
   type StaticTrustedToolExtensionRevision,
 } from './extension-loader.js';
 import { HostExtensionRuntime } from './extension-runtime.js';
 import { HostExtensionStateStore } from './extension-state-store.js';
+import { ToolPackageStore } from './tool-package-store.js';
+import { HostToolPackageManagementTools } from './tool-package-management-tools.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
@@ -213,11 +216,24 @@ export async function createExecutionRuntimeHostComposition(
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
   await stores.sessionStore.ready();
   const extensions = new HostExtensionRuntime();
+  const toolPackageStore = new ToolPackageStore(context.owner.controlDirectory);
+  const extensionLoader = new InstalledToolPackageExtensionLoader(
+    new StaticTrustedToolExtensionLoader(options.trustedToolExtensions),
+    toolPackageStore,
+  );
   const extensionController = new HostExtensionController(
     extensions,
-    new StaticTrustedToolExtensionLoader(options.trustedToolExtensions),
+    extensionLoader,
     new HostExtensionStateStore(context.owner.controlDirectory),
     context.requestDrain,
+  );
+  extensions.registerHostTools(
+    new HostToolPackageManagementTools(
+      context.owner.controlDirectory,
+      extensionController,
+      extensions,
+      toolPackageStore,
+    ).tools(),
   );
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let taskLedgerStore:

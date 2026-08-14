@@ -2,10 +2,13 @@ import {
   ExtensionLifecycleKernel,
   type ExtensionBindingInput,
   type ExtensionBindingInspection,
+  type ExtensionActivationContext,
   type ExtensionCompositionSnapshot,
+  type ExtensionPreparationContext,
   type ExtensionRevisionDefinition,
 } from '@maka/runtime/extension-lifecycle-kernel';
 import {
+  contributeExtensionTool,
   ExtensionToolContributionRegistry,
   defineTrustedToolExtensionRevision,
   type ExtensionToolContributionInspection,
@@ -18,6 +21,21 @@ export type HostTrustedToolExtensionRevisionInput = Omit<
   TrustedToolExtensionRevisionInput,
   'registry'
 >;
+
+export interface HostPreparedToolExtensionRevisionInput {
+  readonly extensionId: string;
+  readonly revision: string;
+  readonly toolNames: readonly string[];
+  readonly prepare: (context: ExtensionPreparationContext) => Promise<{
+    readonly tools: readonly MakaTool[];
+    readonly healthCheck?: () => void | Promise<void>;
+    readonly dispose?: () => void | Promise<void>;
+  }>;
+}
+
+export type HostToolExtensionRevisionInput =
+  | HostTrustedToolExtensionRevisionInput
+  | HostPreparedToolExtensionRevisionInput;
 
 export interface HostExtensionToolResolver {
   resolveTools(scopeId: string, coreTools: readonly MakaTool[]): readonly MakaTool[];
@@ -34,6 +52,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   readonly #lifecycle = new ExtensionLifecycleKernel();
   readonly #tools: ExtensionToolContributionRegistry;
   readonly #scopeIds = new Set<string>();
+  #hostTools: readonly MakaTool[] = Object.freeze([]);
   #draining = false;
   #closed = false;
   #closeTask: Promise<void> | undefined;
@@ -55,6 +74,32 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
         registry: this.#tools,
       }),
     );
+  }
+
+  installToolRevision(input: HostToolExtensionRevisionInput): Promise<void> {
+    if ('tools' in input) return this.installTrustedToolRevision(input);
+    this.#assertMutable();
+    const definition: ExtensionRevisionDefinition = Object.freeze({
+      extensionId: input.extensionId,
+      revision: input.revision,
+      contributions: Object.freeze(
+        input.toolNames.map((_, index) =>
+          Object.freeze({ id: `${input.extensionId}.tool-${index + 1}`, kind: 'tool' }),
+        ),
+      ),
+      prepare: async (context: ExtensionPreparationContext) => {
+        const prepared = await input.prepare(context);
+        return {
+          ...(prepared.healthCheck ? { healthCheck: prepared.healthCheck } : {}),
+          activate: (activation: ExtensionActivationContext) => {
+            for (const tool of prepared.tools)
+              contributeExtensionTool(activation, this.#tools, tool);
+          },
+          ...(prepared.dispose ? { dispose: prepared.dispose } : {}),
+        };
+      },
+    });
+    return this.#lifecycle.install(definition);
   }
 
   activate(input: ExtensionBindingInput): Promise<ExtensionBindingInspection> {
@@ -123,7 +168,14 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
 
   resolveTools(scopeId: string, coreTools: readonly MakaTool[]): readonly MakaTool[] {
     if (this.#closed) throw new Error('Runtime Host Extension authority is closed');
-    return this.#tools.compose(scopeId, coreTools);
+    return this.#tools.compose(scopeId, [...coreTools, ...this.#hostTools]);
+  }
+
+  registerHostTools(tools: readonly MakaTool[]): void {
+    this.#assertMutable();
+    if (this.#hostTools.length > 0)
+      throw new Error('Runtime Host Extension Tools are already registered');
+    this.#hostTools = Object.freeze(tools.map((tool) => Object.freeze({ ...tool })));
   }
 
   beginDrain(): void {

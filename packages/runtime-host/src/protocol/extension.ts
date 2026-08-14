@@ -6,7 +6,7 @@ import {
   requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
-import { defineOperation } from './operation-spec.js';
+import { defineHostPathOperation, defineOperation } from './operation-spec.js';
 
 export const EXTENSION_CATALOG_MAX_REVISIONS = 256;
 export const EXTENSION_CATALOG_MAX_BINDINGS = 256;
@@ -75,6 +75,19 @@ export interface ExtensionCatalogMutateResult {
   readonly binding: ExtensionBindingProjection | null;
 }
 
+export interface ToolPackageInstallInput {
+  readonly sourcePath: string;
+}
+
+export type ToolPackageInstallResult = TrustedExtensionRevisionProjection;
+
+export interface ToolPackageUninstallInput {
+  readonly extensionId: string;
+  readonly revision: string;
+}
+
+export interface ToolPackageUninstallResult {}
+
 export const EXTENSION_OPERATION_SPECS = {
   'extension.catalog.query': defineOperation<
     ExtensionCatalogQueryInput,
@@ -97,6 +110,28 @@ export const EXTENSION_OPERATION_SPECS = {
     errors: MUTATION_ERRORS,
     decodeInput: decodeExtensionCatalogMutateInput,
     decodeOutput: decodeExtensionCatalogMutateResult,
+  }),
+  'extension.package.install': defineHostPathOperation<
+    ToolPackageInstallInput,
+    ToolPackageInstallResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeToolPackageInstallInput,
+    decodeOutput: decodeToolPackageInstallResult,
+  }),
+  'extension.package.uninstall': defineOperation<
+    ToolPackageUninstallInput,
+    ToolPackageUninstallResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeToolPackageUninstallInput,
+    decodeOutput: decodeToolPackageUninstallResult,
   }),
 } as const;
 
@@ -178,6 +213,31 @@ export function decodeExtensionCatalogMutateResult(value: unknown): ExtensionCat
   return {
     binding: result.binding === null ? null : decodeBindingProjection(result.binding),
   };
+}
+
+export function decodeToolPackageInstallInput(value: unknown): ToolPackageInstallInput {
+  const input = requireExactRecord(value, 'Tool package install input', ['sourcePath']);
+  return { sourcePath: requireUtf8String(input.sourcePath, 'Tool package sourcePath', 16 * 1024) };
+}
+
+export function decodeToolPackageInstallResult(value: unknown): ToolPackageInstallResult {
+  return decodeRevisionProjection(value);
+}
+
+export function decodeToolPackageUninstallInput(value: unknown): ToolPackageUninstallInput {
+  const input = requireExactRecord(value, 'Tool package uninstall input', [
+    'extensionId',
+    'revision',
+  ]);
+  return {
+    extensionId: requireEntityId(input.extensionId, 'extension extensionId'),
+    revision: decodeRevision(input.revision),
+  };
+}
+
+export function decodeToolPackageUninstallResult(value: unknown): ToolPackageUninstallResult {
+  requireExactRecord(value, 'Tool package uninstall result', []);
+  return {};
 }
 
 function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProjection {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -265,6 +265,140 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
     await rm(base, { recursive: true, force: true });
   }
 });
+
+test('installed Tool package works through real UDS, provider execution, sandbox, restart, and uninstall', {
+  timeout: 120_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-package-extension-e2e-'));
+  const root = join(base, 'interactive');
+  const source = join(base, 'weather-package');
+  const invocationLog = join(root, 'package-weather-invocations.jsonl');
+  const provider = await startProvider();
+  let host: RuntimeHostKernel | undefined;
+  let client: RuntimeHostConnection | undefined;
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+
+  try {
+    await createWeatherPackage(source);
+    await seedProvider(root, provider.baseUrl);
+    ({ host, client } = await startHost(root, []));
+    const installed = await client.request('extension.package.install', { sourcePath: source });
+    assert.equal(installed.extensionId, 'package-weather');
+    assert.deepEqual(installed.toolNames, ['Weather']);
+    assert.match(installed.revision, /^sha256-[a-f0-9]{64}$/u);
+
+    await createSession(client, 'package-extension-session', root);
+    const enabled = await client.request('extension.catalog.mutate', {
+      kind: 'enable',
+      bindingId: 'package-weather-binding',
+      scopeId: 'package-extension-session',
+      extensionId: installed.extensionId,
+      revision: installed.revision,
+    });
+    assert.equal(enabled.binding?.status, 'active');
+    const first = await runTurn(
+      client,
+      provider,
+      'package-extension-session',
+      'call installed package weather',
+    );
+    assert.equal(first.tools.includes('Weather'), true);
+    assert.match(first.toolResult ?? '', /"source":"installed-package"/u);
+    assert.match(first.toolResult ?? '', /"temperature":31/u);
+    assert.equal((await readFile(invocationLog, 'utf8')).trim().split('\n').length, 1);
+
+    await client.close();
+    client = undefined;
+    await host.close();
+    host = undefined;
+    ({ host, client } = await startHost(root, []));
+    const recovered = await client.request('extension.catalog.query', {});
+    assert.equal(recovered.bindings[0]?.status, 'active');
+    assert.equal(recovered.revisions[0]?.revision, installed.revision);
+    const afterRestart = await runTurn(
+      client,
+      provider,
+      'package-extension-session',
+      'call recovered package weather',
+    );
+    assert.match(afterRestart.toolResult ?? '', /"source":"installed-package"/u);
+    assert.equal((await readFile(invocationLog, 'utf8')).trim().split('\n').length, 2);
+
+    await client.request('extension.catalog.mutate', {
+      kind: 'remove',
+      bindingId: 'package-weather-binding',
+    });
+    await client.request('extension.package.uninstall', {
+      extensionId: installed.extensionId,
+      revision: installed.revision,
+    });
+    assert.deepEqual(await client.request('extension.catalog.query', {}), {
+      revisions: [],
+      bindings: [],
+    });
+    const removed = await runTurn(
+      client,
+      provider,
+      'package-extension-session',
+      'uninstalled package must disappear',
+    );
+    assert.equal(removed.tools.includes('Weather'), false);
+  } finally {
+    await client?.close().catch(() => undefined);
+    await host?.close().catch(() => undefined);
+    await provider.close();
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+async function createWeatherPackage(source: string): Promise<void> {
+  await mkdir(join(source, 'dist'), { recursive: true });
+  await writeFile(
+    join(source, 'maka.tool.json'),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        id: 'package-weather',
+        version: '1.0.0',
+        entry: 'dist/index.mjs',
+        tools: [
+          {
+            name: 'Weather',
+            description: 'Read deterministic weather from an installed package.',
+            handler: 'Weather',
+            inputSchema: {
+              type: 'object',
+              properties: { city: { type: 'string' } },
+              required: ['city'],
+              additionalProperties: false,
+            },
+            category: 'file_write',
+            recoveryMode: 'never_auto_retry',
+          },
+        ],
+        permissions: { workspace: 'write', network: false },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(
+    join(source, 'dist', 'index.mjs'),
+    `import { appendFile } from 'node:fs/promises';
+import { join } from 'node:path';
+export default {
+  Weather: async ({ city }, context) => {
+    await appendFile(join(context.cwd, 'package-weather-invocations.jsonl'), JSON.stringify({ city, sessionId: context.sessionId }) + '\\n', 'utf8');
+    return { source: 'installed-package', city, temperature: 31 };
+  },
+};
+`,
+  );
+}
 
 function extensionRevision(
   revision: string,

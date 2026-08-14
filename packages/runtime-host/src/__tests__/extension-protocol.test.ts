@@ -3,6 +3,8 @@ import { test } from 'node:test';
 import {
   decodeExtensionCatalogMutateInput,
   decodeExtensionCatalogQueryResult,
+  decodeToolPackageInstallInput,
+  decodeToolPackageUninstallInput,
 } from '../protocol/extension.js';
 import { operationAllowsRemoteOwner } from '../protocol/operations.js';
 
@@ -77,6 +79,22 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       }),
     /Invalid extension revision/,
   );
+  assert.deepEqual(decodeToolPackageInstallInput({ sourcePath: '/tmp/weather-tool' }), {
+    sourcePath: '/tmp/weather-tool',
+  });
+  assert.deepEqual(
+    decodeToolPackageUninstallInput({
+      extensionId: 'weather',
+      revision: `sha256-${'a'.repeat(64)}`,
+    }),
+    { extensionId: 'weather', revision: `sha256-${'a'.repeat(64)}` },
+  );
+  assert.throws(
+    () => decodeToolPackageInstallInput({ sourcePath: '/tmp/weather-tool', source: 'inline' }),
+    /Unknown Tool package install input field/u,
+  );
   assert.equal(operationAllowsRemoteOwner('extension.catalog.query'), false);
   assert.equal(operationAllowsRemoteOwner('extension.catalog.mutate'), false);
+  assert.equal(operationAllowsRemoteOwner('extension.package.install'), false);
+  assert.equal(operationAllowsRemoteOwner('extension.package.uninstall'), false);
 });

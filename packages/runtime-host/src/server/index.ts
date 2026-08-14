@@ -32,14 +32,25 @@ export { createUnavailableDomainOperationHandlers } from './operation-dispatcher
 export {
   HostExtensionRuntime,
   type HostExtensionToolResolver,
+  type HostPreparedToolExtensionRevisionInput,
+  type HostToolExtensionRevisionInput,
   type HostTrustedToolExtensionRevisionInput,
 } from './extension-runtime.js';
 export {
   HostExtensionLoaderError,
+  InstalledToolPackageExtensionLoader,
   StaticTrustedToolExtensionLoader,
   type HostTrustedToolExtensionLoader,
   type StaticTrustedToolExtensionRevision,
 } from './extension-loader.js';
+export {
+  ToolPackageStore,
+  ToolPackageStoreError,
+  decodeToolPackageManifest,
+  type InstalledToolPackage,
+  type ToolPackageManifest,
+  type ToolPackageManifestTool,
+} from './tool-package-store.js';
 export {
   RuntimeHostRootAlreadyOwnedError,
   startExecutionRuntimeHostService,

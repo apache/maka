@@ -5,6 +5,9 @@ import {
   type ExtensionCatalogMutateResult,
   type ExtensionCatalogQueryResult,
   type OperationOutcome,
+  type ToolPackageInstallInput,
+  type ToolPackageInstallResult,
+  type ToolPackageUninstallInput,
 } from '../protocol/index.js';
 import type { ExtensionOperationHandlerMap } from './operation-dispatcher.js';
 import {
@@ -30,6 +33,8 @@ export class HostExtensionController {
   readonly handlers: ExtensionOperationHandlerMap = {
     'extension.catalog.query': () => this.#query(),
     'extension.catalog.mutate': (input) => this.#mutate(input),
+    'extension.package.install': (input) => this.#installPackage(input),
+    'extension.package.uninstall': (input) => this.#uninstallPackage(input),
   };
 
   readonly #bindings = new Map<string, PersistedExtensionBinding>();
@@ -70,10 +75,77 @@ export class HostExtensionController {
       return queryFailure('persistence_failed', 'Extension state is unavailable');
     }
     const result: ExtensionCatalogQueryResult = {
-      revisions: this.loader.list(),
+      revisions: await this.loader.list(),
       bindings: this.#bindingProjections(),
     };
     return { ok: true, result };
+  }
+
+  #installPackage(
+    input: ToolPackageInstallInput,
+  ): Promise<OperationOutcome<'extension.package.install'>> {
+    if (this.#draining) {
+      return Promise.resolve(packageFailure('host_draining', 'Runtime Host is draining'));
+    }
+    return this.#serializeMutation(async () => {
+      if (this.#persistenceFailure) {
+        return packageFailure('persistence_failed', 'Extension state is unavailable');
+      }
+      if (!this.loader.installPackage) {
+        return packageFailure('operation_unavailable', 'Tool package installation is unavailable');
+      }
+      try {
+        const result: ToolPackageInstallResult = await this.loader.installPackage(input.sourcePath);
+        return { ok: true, result };
+      } catch (error) {
+        return packageLoaderFailure(error, 'install');
+      }
+    });
+  }
+
+  #uninstallPackage(
+    input: ToolPackageUninstallInput,
+  ): Promise<OperationOutcome<'extension.package.uninstall'>> {
+    if (this.#draining) {
+      return Promise.resolve(packageFailure('host_draining', 'Runtime Host is draining'));
+    }
+    return this.#serializeMutation(async () => {
+      if (this.#persistenceFailure) {
+        return packageFailure('persistence_failed', 'Extension state is unavailable');
+      }
+      if (!this.loader.uninstallPackage) {
+        return packageFailure(
+          'operation_unavailable',
+          'Tool package uninstallation is unavailable',
+        );
+      }
+      const referenced = [...this.#bindings.values()].find(
+        (binding) =>
+          binding.extensionId === input.extensionId &&
+          uniqueRevisions(binding).includes(input.revision),
+      );
+      if (referenced) {
+        return packageFailure(
+          'operation_conflict',
+          `Tool package revision is retained by binding ${referenced.bindingId}`,
+        );
+      }
+      try {
+        if (
+          this.runtime
+            .installedRevisions()
+            .some(
+              (item) => item.extensionId === input.extensionId && item.revision === input.revision,
+            )
+        ) {
+          await this.runtime.uninstall(input.extensionId, input.revision);
+        }
+        await this.loader.uninstallPackage(input.extensionId, input.revision);
+        return { ok: true, result: {} };
+      } catch (error) {
+        return packageLoaderFailure(error, 'uninstall');
+      }
+    });
   }
 
   #mutate(
@@ -300,7 +372,7 @@ export class HostExtensionController {
     ) {
       return;
     }
-    await this.runtime.installTrustedToolRevision(await this.loader.load(extensionId, revision));
+    await this.runtime.installToolRevision(await this.loader.load(extensionId, revision));
   }
 
   async #garbageCollectRevisions(): Promise<void> {
@@ -468,6 +540,37 @@ function mutationFailure(
   message: string,
 ): OperationOutcome<'extension.catalog.mutate'> {
   return { ok: false, error: { code, message } };
+}
+
+function packageFailure(
+  code:
+    | 'host_draining'
+    | 'operation_unavailable'
+    | 'not_found'
+    | 'operation_conflict'
+    | 'invalid_request'
+    | 'persistence_failed',
+  message: string,
+): OperationOutcome<'extension.package.install'> & OperationOutcome<'extension.package.uninstall'> {
+  return { ok: false, error: { code, message } };
+}
+
+function packageLoaderFailure(
+  error: unknown,
+  operation: 'install' | 'uninstall',
+): OperationOutcome<'extension.package.install'> & OperationOutcome<'extension.package.uninstall'> {
+  if (error instanceof HostExtensionLoaderError) {
+    const code =
+      error.code === 'not_found'
+        ? 'not_found'
+        : error.code === 'invalid_definition'
+          ? operation === 'install'
+            ? 'invalid_request'
+            : 'operation_conflict'
+          : 'persistence_failed';
+    return packageFailure(code, error.message);
+  }
+  return packageFailure('operation_conflict', boundedErrorMessage(error));
 }
 
 function compareBinding(
