@@ -7,6 +7,10 @@ mod broker_authorization_tests;
 mod broker_framing;
 #[cfg(test)]
 mod broker_framing_tests;
+mod broker_pipe;
+mod broker_pipe_security;
+#[cfg(test)]
+mod broker_pipe_security_tests;
 mod protocol;
 #[cfg(test)]
 mod protocol_tests;
@@ -18,6 +22,7 @@ use std::process::ExitCode;
 
 use broker_authorization::BrokerAuthorizer;
 use broker_framing::{decode_frame, encode_frame};
+use broker_pipe::serve_once;
 use protocol::{BrokerLaunchOutcome, BrokerLaunchRequest, BrokerLaunchResponse, LaunchRequest};
 
 fn main() -> ExitCode {
@@ -41,6 +46,26 @@ fn run() -> Result<u8, String> {
             return Err("--self-probe does not accept arguments".to_owned());
         }
         return windows_launcher::self_probe();
+    }
+    if first == "--broker-serve-once" {
+        let pipe_name = args.next().ok_or_else(|| {
+            "--broker-serve-once requires pipe name, account SID, and profile digest".to_owned()
+        })?;
+        let account_sid = args.next().ok_or_else(|| {
+            "--broker-serve-once requires pipe name, account SID, and profile digest".to_owned()
+        })?;
+        let profile_digest = args.next().ok_or_else(|| {
+            "--broker-serve-once requires pipe name, account SID, and profile digest".to_owned()
+        })?;
+        if args.next().is_some() {
+            return Err("--broker-serve-once accepts exactly three arguments".to_owned());
+        }
+        serve_once(
+            &pipe_name.to_string_lossy(),
+            &account_sid.to_string_lossy(),
+            &profile_digest.to_string_lossy(),
+        )?;
+        return Ok(0);
     }
     let (mode, request_path) = if first == "--atomic" {
         let path = args

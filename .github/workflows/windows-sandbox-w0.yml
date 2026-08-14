@@ -33,6 +33,9 @@ jobs:
       - name: Verify launcher and broker authorization
         working-directory: experiments/windows-sandbox/launcher
         run: cargo test --locked
+      - name: Verify secure broker pipe
+        shell: pwsh
+        run: ./experiments/windows-sandbox/broker-pipe-smoke.ps1
       - name: Probe atomic Job launch candidate
         shell: pwsh
         run: ./experiments/windows-sandbox/atomic-launch-smoke.ps1

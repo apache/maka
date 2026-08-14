@@ -1,0 +1,88 @@
+$ErrorActionPreference = 'Stop'
+
+$launcher = Join-Path $PSScriptRoot 'launcher\target\debug\maka-windows-sandbox-spike.exe'
+if (-not (Test-Path -LiteralPath $launcher)) {
+  throw "Missing launcher binary: $launcher"
+}
+
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$pipeSuffix = "maka-sandbox-ci-$PID"
+$pipeName = "\\.\pipe\$pipeSuffix"
+$digest = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+$start = [Diagnostics.ProcessStartInfo]::new()
+$start.FileName = $launcher
+$start.UseShellExecute = $false
+$start.CreateNoWindow = $true
+$start.RedirectStandardOutput = $true
+$start.RedirectStandardError = $true
+$start.ArgumentList.Add('--broker-serve-once')
+$start.ArgumentList.Add($pipeName)
+$start.ArgumentList.Add($sid)
+$start.ArgumentList.Add($digest)
+$server = [Diagnostics.Process]::Start($start)
+
+$client = $null
+try {
+  $client = [IO.Pipes.NamedPipeClientStream]::new(
+    '.',
+    $pipeSuffix,
+    [IO.Pipes.PipeDirection]::InOut,
+    [IO.Pipes.PipeOptions]::None
+  )
+  $client.Connect(10000)
+  $request = @{
+    version = 1
+    requestId = 'pipe-smoke'
+    clientPid = $PID
+    clientNonce = '0123456789abcdef0123456789abcdef'
+    profileDigest = $digest
+    launch = @{
+      version = 1
+      requestId = 'pipe-smoke-launch'
+      executable = $env:ComSpec
+      arguments = @('/d', '/c', 'exit 0')
+      cwd = $PSScriptRoot
+      readRoots = @()
+      writeRoots = @()
+      network = 'enabled'
+      environment = @{}
+    }
+  }
+  $payload = [Text.Encoding]::UTF8.GetBytes(($request | ConvertTo-Json -Depth 5 -Compress))
+  $prefix = [BitConverter]::GetBytes([uint32]$payload.Length)
+  $client.Write($prefix, 0, $prefix.Length)
+  $client.Write($payload, 0, $payload.Length)
+  $client.Flush()
+
+  $responsePrefix = [byte[]]::new(4)
+  $read = $client.Read($responsePrefix, 0, 4)
+  if ($read -ne 4) { throw 'Broker returned a truncated response prefix' }
+  $responseLength = [BitConverter]::ToUInt32($responsePrefix, 0)
+  if ($responseLength -eq 0 -or $responseLength -gt 65536) {
+    throw "Broker returned invalid response length: $responseLength"
+  }
+  $responsePayload = [byte[]]::new($responseLength)
+  $offset = 0
+  while ($offset -lt $responseLength) {
+    $count = $client.Read($responsePayload, $offset, $responseLength - $offset)
+    if ($count -eq 0) { throw 'Broker returned a truncated response payload' }
+    $offset += $count
+  }
+  $response = [Text.Encoding]::UTF8.GetString($responsePayload) | ConvertFrom-Json
+  if ($response.requestId -ne 'pipe-smoke' -or
+      $response.outcome.kind -ne 'rejected' -or
+      $response.outcome.code -ne 'launch_handoff_not_implemented') {
+    throw "Unexpected broker response: $($response | ConvertTo-Json -Compress)"
+  }
+  Write-Host "Secure broker pipe authorization verified: $($response | ConvertTo-Json -Compress)"
+} finally {
+  if ($client) { $client.Dispose() }
+  if (-not $server.WaitForExit(10000)) {
+    $server.Kill($true)
+    throw 'Broker server did not exit after serving one request'
+  }
+  if ($server.ExitCode -ne 0) {
+    throw "Broker server failed: $($server.StandardError.ReadToEnd())"
+  }
+  $server.Dispose()
+}
