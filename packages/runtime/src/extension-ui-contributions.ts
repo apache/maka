@@ -8,20 +8,18 @@ import type {
 export const EXTENSION_UI_DOCUMENT_MAX_BYTES = 1024 * 1024;
 export const EXTENSION_UI_SURFACES = ['app.root', 'app.overlay'] as const;
 export type ExtensionUiSurface = (typeof EXTENSION_UI_SURFACES)[number];
-export const EXTENSION_UI_ROOT_MODES = ['replace', 'embed'] as const;
-export type ExtensionUiRootMode = (typeof EXTENSION_UI_ROOT_MODES)[number];
 
 export interface ExtensionUiContribution {
   readonly id: string;
   readonly surface: ExtensionUiSurface;
-  /** app.root may replace the product snapshot or derive a new snapshot by embedding into it. */
-  readonly rootMode?: ExtensionUiRootMode;
   readonly priority: number;
   readonly document: string;
   /** Sandboxed documents are offline unless this explicit capability is true. */
   readonly network: boolean;
   readonly hostState?: boolean;
   readonly hostMethods?: readonly string[];
+  /** Explicit authority for a full-root document to drive Maka Sessions. */
+  readonly sessionAccess?: boolean;
 }
 
 export interface ExtensionUiContributionInspection {
@@ -31,13 +29,13 @@ export interface ExtensionUiContributionInspection {
   readonly revision: string;
   readonly id: string;
   readonly surface: ExtensionUiSurface;
-  readonly rootMode: ExtensionUiRootMode;
   readonly priority: number;
   readonly document: string;
   readonly documentSha256: string;
   readonly network: boolean;
   readonly hostState: boolean;
   readonly hostMethods: readonly string[];
+  readonly sessionAccess: boolean;
 }
 
 export class ExtensionUiContributionError extends Error {
@@ -87,10 +85,9 @@ export class ExtensionUiContributionRegistry {
     const entry: RegisteredUi = Object.freeze({
       ...context,
       ...contribution,
-      rootMode:
-        contribution.surface === 'app.root' ? (contribution.rootMode ?? 'replace') : 'replace',
       hostState: contribution.hostState === true,
       hostMethods: Object.freeze([...(contribution.hostMethods ?? [])]),
+      sessionAccess: contribution.sessionAccess === true,
       documentSha256: createHash('sha256').update(contribution.document).digest('hex'),
       token: Symbol(contribution.id),
     });
@@ -192,16 +189,6 @@ export function validateExtensionUiContribution(contribution: ExtensionUiContrib
   if (!EXTENSION_UI_SURFACES.includes(contribution.surface)) {
     throw new ExtensionUiContributionError('invalid_ui', 'UI surface is invalid');
   }
-  if (
-    contribution.rootMode !== undefined &&
-    (!EXTENSION_UI_ROOT_MODES.includes(contribution.rootMode) ||
-      contribution.surface !== 'app.root')
-  ) {
-    throw new ExtensionUiContributionError(
-      'invalid_ui',
-      'UI rootMode is only valid for app.root and must be replace or embed',
-    );
-  }
   if (!Number.isSafeInteger(contribution.priority) || Math.abs(contribution.priority) > 10_000) {
     throw new ExtensionUiContributionError('invalid_ui', 'UI priority is invalid');
   }
@@ -217,6 +204,15 @@ export function validateExtensionUiContribution(contribution: ExtensionUiContrib
   }
   if (contribution.hostState !== undefined && typeof contribution.hostState !== 'boolean') {
     throw new ExtensionUiContributionError('invalid_ui', 'UI Host state capability is invalid');
+  }
+  if (contribution.sessionAccess !== undefined && typeof contribution.sessionAccess !== 'boolean') {
+    throw new ExtensionUiContributionError('invalid_ui', 'UI Session access capability is invalid');
+  }
+  if (contribution.sessionAccess === true && contribution.surface !== 'app.root') {
+    throw new ExtensionUiContributionError(
+      'invalid_ui',
+      'Only a complete app.root UI may request Session access',
+    );
   }
   if (
     contribution.hostMethods !== undefined &&

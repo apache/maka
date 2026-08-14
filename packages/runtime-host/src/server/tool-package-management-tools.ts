@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
 import type {
+  ExtensionCatalogMutateResult,
   ExtensionCatalogQueryResult,
   ExtensionUiStateValue,
   OperationKey,
@@ -238,7 +239,7 @@ export class HostToolPackageManagementTools {
     return Object.freeze({
       name: 'manage_tool',
       description:
-        'Activate, update, stop, or delete a Tool package for the current session. Activation persists with the session until stopped.',
+        'Activate, update, stop, or delete a Tool package for the current session. Activation persists with the session until stopped. Successful activate/update results include the exact Tool declarations and inputSchema to use with invoke_tool.',
       parameters: manageInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
@@ -248,7 +249,7 @@ export class HostToolPackageManagementTools {
         switch (input.action) {
           case 'activate': {
             const revision = requireRevision(input);
-            return unwrap(
+            const result = unwrap(
               await this.controller.handlers['extension.catalog.mutate'](
                 {
                   kind: 'enable',
@@ -260,14 +261,18 @@ export class HostToolPackageManagementTools {
                 this.#connection,
               ),
             );
+            return this.#withToolDeclarations(result, input.extensionId, revision);
           }
-          case 'update':
-            return unwrap(
+          case 'update': {
+            const revision = requireRevision(input);
+            const result = unwrap(
               await this.controller.handlers['extension.catalog.mutate'](
-                { kind: 'update', bindingId, revision: requireRevision(input) },
+                { kind: 'update', bindingId, revision },
                 this.#connection,
               ),
             );
+            return this.#withToolDeclarations(result, input.extensionId, revision);
+          }
           case 'stop':
             return unwrap(
               await this.controller.handlers['extension.catalog.mutate'](
@@ -297,6 +302,24 @@ export class HostToolPackageManagementTools {
         }
       },
     });
+  }
+
+  async #withToolDeclarations(
+    result: ExtensionCatalogMutateResult,
+    extensionId: string,
+    revision: string,
+  ): Promise<Record<string, unknown>> {
+    const installed = await this.store.load(extensionId, revision);
+    return {
+      ...result,
+      tools: installed.manifest.tools.map((tool) => ({
+        name: tool.name,
+        ...(tool.displayName ? { displayName: tool.displayName } : {}),
+        description: tool.description,
+        inputSchema: structuredClone(tool.inputSchema),
+        ...(tool.visualization ? { visualization: tool.visualization } : {}),
+      })),
+    };
   }
 
   #invokeTool(): MakaTool {

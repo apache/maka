@@ -74,13 +74,13 @@ export interface ExtensionUiContributionProjection {
   readonly revision: string;
   readonly id: string;
   readonly surface: 'app.root' | 'app.overlay';
-  readonly rootMode: 'replace' | 'embed';
   readonly priority: number;
   readonly document: string;
   readonly documentSha256: string;
   readonly network: boolean;
   readonly hostState?: boolean;
   readonly hostMethods?: readonly string[];
+  readonly sessionAccess?: boolean;
 }
 
 export interface ExtensionUiSnapshotResult {
@@ -501,24 +501,17 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     'revision',
     'id',
     'surface',
-    ...(candidate && Object.hasOwn(candidate, 'rootMode') ? ['rootMode'] : []),
     'priority',
     'document',
     'documentSha256',
     'network',
     ...(candidate && Object.hasOwn(candidate, 'hostState') ? ['hostState'] : []),
     ...(candidate && Object.hasOwn(candidate, 'hostMethods') ? ['hostMethods'] : []),
+    ...(candidate && Object.hasOwn(candidate, 'sessionAccess') ? ['sessionAccess'] : []),
   ];
   const item = requireExactRecord(value, 'extension UI contribution', fields);
   if (item.surface !== 'app.root' && item.surface !== 'app.overlay') {
     throw invalidProtocolFrame('Invalid extension UI surface');
-  }
-  const rootMode = item.rootMode ?? 'replace';
-  if (rootMode !== 'replace' && rootMode !== 'embed') {
-    throw invalidProtocolFrame('Invalid extension UI root mode');
-  }
-  if (item.surface !== 'app.root' && rootMode !== 'replace') {
-    throw invalidProtocolFrame('Only app.root may embed into the official snapshot');
   }
   if (!Number.isSafeInteger(item.priority) || Math.abs(item.priority as number) > 10_000) {
     throw invalidProtocolFrame('Invalid extension UI priority');
@@ -535,7 +528,6 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     revision: decodeRevision(item.revision),
     id: requireUtf8String(item.id, 'extension UI contribution id', 128),
     surface: item.surface,
-    rootMode,
     priority: item.priority as number,
     document: requireUtf8String(item.document, 'extension UI document', 1024 * 1024),
     documentSha256: requireUtf8String(item.documentSha256, 'extension UI document digest', 128),
@@ -548,6 +540,14 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
       : {
           hostMethods: (item.hostMethods as unknown[]).map((method) =>
             requireUtf8String(method, 'extension UI Host method', 128),
+          ),
+        }),
+    ...(item.sessionAccess === undefined
+      ? {}
+      : {
+          sessionAccess: decodeBoolean(
+            item.sessionAccess,
+            'extension UI Session access capability',
           ),
         }),
   };

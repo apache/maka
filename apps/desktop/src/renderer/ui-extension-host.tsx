@@ -17,7 +17,7 @@ const REFRESH_MS = 1_000;
 export function UiExtensionHost({
   officialSnapshot,
 }: {
-  officialSnapshot: (extensionSurface?: ReactNode) => ReactNode;
+  officialSnapshot: () => ReactNode;
 }) {
   const [snapshot, setSnapshot] = useState<ExtensionUiSnapshotResult | null>(null);
   const [safeMode, setSafeMode] = useState(false);
@@ -61,24 +61,33 @@ export function UiExtensionHost({
   );
   const selectedRoot = safeMode ? selected.official : selected.root;
   return (
-    <div className="maka-ui-extension-shell" data-ui-safe-mode={safeMode || undefined}>
-      {selectedRoot.kind === 'sandboxed' && selectedRoot.contribution.rootMode === 'replace' ? (
-        <SandboxedUiFrame contribution={selectedRoot.contribution} layer="root" />
+    <div
+      className="maka-ui-extension-shell"
+      data-ui-safe-mode={safeMode || undefined}
+      data-ui-composition-id={safeMode ? 'dev.maka.desktop@desktop-build' : snapshot?.digest}
+    >
+      {selectedRoot.kind === 'sandboxed' ? (
+        <SandboxedUiFrame
+          contribution={selectedRoot.contribution}
+          layer="root"
+          onSafeMode={() => setSafeMode(true)}
+        />
       ) : (
         <div
           className="maka-ui-official-snapshot"
           data-extension-id={selectedRoot.extensionId}
           data-extension-revision={selectedRoot.revision}
         >
-          {officialSnapshot(
-            selectedRoot.kind === 'sandboxed' ? (
-              <SandboxedUiFrame contribution={selectedRoot.contribution} layer="embedded" />
-            ) : undefined,
-          )}
+          {officialSnapshot()}
         </div>
       )}
       {!safeMode && selected.overlays.map((item) => (
-        <SandboxedUiFrame key={`${item.extensionId}:${item.id}`} contribution={item} layer="overlay" />
+        <SandboxedUiFrame
+          key={`${item.extensionId}:${item.id}`}
+          contribution={item}
+          layer="overlay"
+          onSafeMode={() => setSafeMode(true)}
+        />
       ))}
     </div>
   );
@@ -140,9 +149,11 @@ export function selectUiSnapshots(
 function SandboxedUiFrame({
   contribution,
   layer,
+  onSafeMode,
 }: {
   contribution: ExtensionUiContributionProjection;
-  layer: 'root' | 'embedded' | 'overlay';
+  layer: 'root' | 'overlay';
+  onSafeMode: () => void;
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const token = useMemo(
@@ -158,13 +169,19 @@ function SandboxedUiFrame({
       }
       const request = decodeBridgeRequest(event.data, token);
       if (!request) return;
+      if (request.kind === 'safe_mode') {
+        onSafeMode();
+        return;
+      }
       const identity = {
         scopeId: DESKTOP_UI_SCOPE,
         bindingId: contribution.bindingId,
         extensionId: contribution.extensionId,
         revision: contribution.revision,
       };
-      const operation = request.kind === 'invoke'
+      const operation = isSessionBridgeRequest(request)
+        ? runSessionBridgeRequest(contribution, request)
+        : request.kind === 'invoke'
         ? window.maka.runtimeHost.command('extension.ui.rpc.invoke', {
           ...identity,
           method: request.method,
@@ -188,7 +205,7 @@ function SandboxedUiFrame({
     };
     window.addEventListener('message', receive);
     return () => window.removeEventListener('message', receive);
-  }, [contribution, token]);
+  }, [contribution, onSafeMode, token]);
   return (
     <iframe
       ref={frameRef}
@@ -222,22 +239,97 @@ function isBridgeReady(value: unknown, token: string): boolean {
 }
 
 type UiBridgeRequest =
+  | { id: string; kind: 'safe_mode' }
   | { id: string; kind: 'get' | 'delete'; key: string }
   | { id: string; kind: 'set'; key: string; value: unknown }
-  | { id: string; kind: 'invoke'; method: string; args: unknown };
+  | { id: string; kind: 'invoke'; method: string; args: unknown }
+  | { id: string; kind: 'session_list' }
+  | { id: string; kind: 'session_send'; sessionId?: string; text: string }
+  | { id: string; kind: 'session_stop'; sessionId: string };
 
 function decodeBridgeRequest(value: unknown, token: string): UiBridgeRequest | null {
   if (!value || typeof value !== 'object') return null;
   const request = value as Record<string, unknown>;
   if (request.channel !== 'maka-ui-bridge/v1' || request.token !== token) return null;
   if (typeof request.id !== 'string' || !/^[0-9]{1,16}$/u.test(request.id)) return null;
+  if (request.kind === 'safe_mode') return { id: request.id, kind: request.kind };
   if (request.kind === 'invoke') {
     if (typeof request.method !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/u.test(request.method)) return null;
     return { id: request.id, kind: request.kind, method: request.method, args: request.args };
+  }
+  if (request.kind === 'session_list') return { id: request.id, kind: request.kind };
+  if (request.kind === 'session_send') {
+    if (
+      (request.sessionId !== undefined && !isBridgeIdentifier(request.sessionId)) ||
+      typeof request.text !== 'string' ||
+      request.text.trim().length === 0 ||
+      request.text.length > 64 * 1024
+    ) return null;
+    return {
+      id: request.id,
+      kind: request.kind,
+      ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+      text: request.text,
+    };
+  }
+  if (request.kind === 'session_stop') {
+    if (!isBridgeIdentifier(request.sessionId)) return null;
+    return { id: request.id, kind: request.kind, sessionId: request.sessionId };
   }
   if (request.kind !== 'get' && request.kind !== 'set' && request.kind !== 'delete') return null;
   if (typeof request.key !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(request.key)) return null;
   return request.kind === 'set'
     ? { id: request.id, kind: request.kind, key: request.key, value: request.value }
     : { id: request.id, kind: request.kind, key: request.key };
+}
+
+function isBridgeIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 128 && !/[\r\n\0]/u.test(value);
+}
+
+function isSessionBridgeRequest(
+  request: UiBridgeRequest,
+): request is Extract<UiBridgeRequest, { kind: `session_${string}` }> {
+  return request.kind === 'session_list' ||
+    request.kind === 'session_send' ||
+    request.kind === 'session_stop';
+}
+
+async function runSessionBridgeRequest(
+  contribution: ExtensionUiContributionProjection,
+  request: Extract<UiBridgeRequest, { kind: `session_${string}` }>,
+): Promise<unknown> {
+  if (contribution.surface !== 'app.root' || contribution.sessionAccess !== true) {
+    throw new Error('This UI Revision has no Session capability');
+  }
+  if (request.kind === 'session_list') {
+    const sessions = await window.maka.sessions.list();
+    return {
+      sessions: sessions.map((session) => ({
+        id: session.id,
+        name: session.name,
+        status: session.status,
+        lastMessageAt: session.lastMessageAt,
+        lastMessagePreview: session.lastMessagePreview,
+        runningTurnIds: session.runningTurnIds ?? [],
+        model: session.model,
+      })),
+    };
+  }
+  if (request.kind === 'session_stop') {
+    await window.maka.sessions.stop(request.sessionId, { source: 'stop_button' });
+    return { ok: true };
+  }
+  const session = request.sessionId
+    ? (await window.maka.sessions.list()).find(({ id }) => id === request.sessionId)
+    : await window.maka.sessions.create();
+  if (!session) throw new Error('Maka Session does not exist');
+  const turnId = crypto.randomUUID();
+  const result = await window.maka.sessions.send(session.id, {
+    type: 'send',
+    turnId,
+    text: request.text.trim(),
+  });
+  if (!result.ok) throw new Error('Prompt was rejected by Skill invocation');
+  return { ok: true, sessionId: session.id, turnId };
 }

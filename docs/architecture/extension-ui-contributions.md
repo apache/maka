@@ -13,18 +13,20 @@ The fixed Desktop bootstrap is deliberately thin:
 Theme + Runtime Host readiness + UI snapshot loader
   -> official Maka UI snapshot (trusted fallback)
   -> or one committed app.root Revision
-       -> replace: a complete client snapshot
-       -> embed: official snapshot + one sandboxed extension workspace
   -> plus committed app.overlay contributions
 ```
 
 The existing Maka `AppShell` is therefore a shipped UI snapshot, not an
-unreplaceable collection of small slots. An `app.root` Revision may replace the
-whole client surface, or derive a new UI version with `rootMode: embed`: Maka
-keeps the official navigation, conversation, Composer, responsive layout and
-theme frame, while the Revision supplies the sandboxed workspace body inside
-that layout. This is composition, not a fixed-position sidecar. The official
-snapshot remains available as the fail-open recovery surface.
+unreplaceable product frame. An `app.root` Revision replaces the whole client
+surface. Maka does not inject navigation, conversation, Composer, responsive
+layout, or a workspace region around it. The selected root owns those product
+decisions. The official snapshot remains only as the fail-open recovery surface.
+
+The snapshot digest is the identity of the admitted UI Composition: the exact
+ordered committed Binding/Revision contribution set. The Renderer switches one
+complete digest at a time and stamps it on the root host. A candidate Revision
+is invisible until its Binding commits, so a failed candidate cannot partially
+mutate the current Composition.
 `Cmd/Ctrl+Shift+Backspace` enters renderer-local safe mode without mutating the
 installed Binding.
 
@@ -51,6 +53,14 @@ the trusted Desktop message broker, strict Runtime Host protocol codecs, and an
 active Binding/Revision check before reaching root-private durable state. The
 iframe never chooses its Extension identity and a stale frame loses authority
 immediately after update, stop, or rollback.
+
+A complete root may additionally request `permissions.sessionAccess`. Import
+confirmation and Agent definition expose this authority explicitly. The frame
+then receives only `window.makaUI.sessions.list/send/stop`; the trusted parent
+validates identities and prompt size, creates Turn ids, and returns a bounded
+Session projection. This does not expose the Maka preload object, Runtime Host
+protocol, paths, credentials, attachments, settings, or arbitrary Session APIs.
+Overlay contributions cannot exercise this capability.
 
 Packages may also declare an allowlist of Host method names and an ES module
 that implements them. `window.makaUI.invoke(name, args)` crosses the same
@@ -99,13 +109,14 @@ the same Extension id and exact Revision.
 
 ## Current boundary
 
-The shipped bridge provides typed durable Host state and declared
-request/response Host methods, not arbitrary Electron or Runtime Host access.
+The shipped bridge provides typed durable Host state, declared request/response
+Host methods, and the separately granted bounded Session surface, not arbitrary
+Electron or Runtime Host access.
 `publish_ui_state` remains the explicit seam for unrelated Tool and UI
 Revisions. Same-Revision packages may opt into the declared visualization seam;
 no arbitrary Tool can select or mutate an unrelated UI. Push event subscriptions
-and DOM access to the official snapshot remain
-out of scope. The one-second Desktop snapshot refresh is also a temporary
+and DOM access to the official snapshot remain out of scope. The one-second UI
+Composition refresh is also a temporary
 transport seam; a future catalog-change subscription can replace it without
 changing package or lifecycle semantics.
 

@@ -96,8 +96,23 @@ test('Agent can inspect, define, test, activate, immediately invoke, update safe
     const activated = (await manage.impl(
       { action: 'activate', extensionId: 'calculator', revision: v1.revision },
       context,
-    )) as { binding: { status: string } };
+    )) as {
+      binding: { status: string };
+      tools: Array<{ name: string; inputSchema: Record<string, unknown> }>;
+    };
     assert.equal(activated.binding.status, 'active');
+    assert.deepEqual(activated.tools, [
+      {
+        name: 'Add',
+        description: 'Add two numbers',
+        inputSchema: {
+          type: 'object',
+          properties: { left: { type: 'number' }, right: { type: 'number' } },
+          required: ['left', 'right'],
+          additionalProperties: false,
+        },
+      },
+    ]);
     assert.ok(runtime.resolveTools('session-agent', []).some(({ name }) => name === 'Add'));
 
     const invoke = requireTool(runtime, 'invoke_tool');

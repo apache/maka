@@ -65,11 +65,8 @@ export function App({
       <Theme theme={makaTheme} mode={astryxMode}>
         {runtimeHostReady ? (
           <UiExtensionHost
-            officialSnapshot={(extensionSurface) => (
-              <AppShell
-                initialOnboardingSnapshot={initialOnboardingSnapshot}
-                extensionSurface={extensionSurface}
-              />
+            officialSnapshot={() => (
+              <AppShell initialOnboardingSnapshot={initialOnboardingSnapshot} />
             )}
           />
         ) : (

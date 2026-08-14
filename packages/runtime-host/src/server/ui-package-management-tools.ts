@@ -15,7 +15,6 @@ const SURFACES = ['app.root', 'app.overlay'] as const;
 const contribution = z.object({
   id: z.string().min(1).max(128),
   surface: z.enum(SURFACES),
-  rootMode: z.enum(['replace', 'embed']).default('replace'),
   priority: z.number().int().min(-10_000).max(10_000),
   document: z
     .string()
@@ -26,7 +25,11 @@ const defineInput = z.object({
   id: z.string().min(1).max(128),
   version: z.string().min(1).max(128),
   ui: z.array(contribution).min(1).max(16),
-  permissions: z.object({ network: z.boolean(), hostState: z.boolean().default(false) }),
+  permissions: z.object({
+    network: z.boolean(),
+    hostState: z.boolean().default(false),
+    sessionAccess: z.boolean().default(false),
+  }),
   host: z
     .object({
       source: z
@@ -137,7 +140,7 @@ export class HostUiPackageManagementTools {
     return Object.freeze({
       name: 'define_ui',
       description:
-        'Validate and install an immutable UI revision. app.root with rootMode=replace fully replaces the product surface; rootMode=embed derives a new Maka UI snapshot by embedding the document into the official AppShell layout. app.overlay remains independent. It is inactive until test_ui and manage_ui. Documents run in opaque-origin sandboxed iframes without Electron or Maka preload authority. Set permissions.hostState=true for window.makaUI getState/setState/deleteState. Add host.source plus declared methods for sandboxed package-private backend handlers callable with window.makaUI.invoke(name, args).',
+        'Validate and install an immutable UI revision. app.root owns the complete product surface; app.overlay is an independent additive layer. There is no fixed embed region. It is inactive until test_ui and manage_ui. Documents run in opaque-origin sandboxed iframes without Electron or Maka preload authority. Set permissions.hostState=true for durable package state. Set permissions.sessionAccess=true only for a complete root that must list/create/send/stop Maka Sessions through the typed window.makaUI.sessions bridge. Add host.source plus declared methods for sandboxed package-private backend handlers callable with window.makaUI.invoke(name, args).',
       parameters: defineInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
@@ -169,7 +172,6 @@ export class HostUiPackageManagementTools {
           const manifestUi = input.ui.map((item, index) => ({
             id: item.id,
             surface: item.surface,
-            rootMode: item.rootMode,
             priority: item.priority,
             document: `documents/${index + 1}.html`,
           }));
@@ -238,7 +240,6 @@ export class HostUiPackageManagementTools {
             installed.manifest.ui.map(async (item) => ({
               id: item.id,
               surface: item.surface,
-              rootMode: item.rootMode,
               priority: item.priority,
               document: await this.store.readDocument(installed, item.document),
               network: installed.manifest.permissions.network,
@@ -246,6 +247,7 @@ export class HostUiPackageManagementTools {
               hostMethods: Object.freeze(
                 installed.manifest.host?.methods.map(({ name }) => name) ?? [],
               ),
+              sessionAccess: installed.manifest.permissions.sessionAccess,
             })),
           ),
           healthCheck: () => service.healthCheck(installed),

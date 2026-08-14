@@ -46,6 +46,10 @@ describe('Desktop UI extension shell', () => {
     assert.match(bridged, /setState/);
     assert.match(bridged, /deleteState/);
     assert.match(bridged, /invoke/);
+    assert.match(bridged, /session_list/);
+    assert.match(bridged, /session_send/);
+    assert.match(bridged, /session_stop/);
+    assert.match(bridged, /safe_mode/);
     assert.match(bridged, /test-token/);
   });
 
@@ -72,6 +76,29 @@ describe('Desktop UI extension shell', () => {
     assert.match(response.headers.get('content-security-policy') ?? '', /script-src 'unsafe-inline'/);
     assert.match(await response.text(), /makaUI/);
   });
+
+  test('injects the emergency recovery bridge even without extension permissions', async () => {
+    const token = '12345678-1234-4123-8123-123456789abc';
+    const contribution = item('root', 'app.root', 1);
+    const handler = createUiExtensionFrameRequestHandler(() => ({
+      request: async () => ({
+        scopeId: 'desktop-ui',
+        digest: 'sha256-test',
+        contributions: [contribution],
+      }),
+    }));
+    const response = await handler(new Request(uiExtensionFrameUrl({
+      scopeId: 'desktop-ui',
+      bindingId: contribution.bindingId,
+      extensionId: contribution.extensionId,
+      revision: contribution.revision,
+      contributionId: contribution.id,
+      token,
+    })));
+    const document = await response.text();
+    assert.match(document, /safe_mode/);
+    assert.match(document, /makaUI/);
+  });
 });
 
 function item(
@@ -85,7 +112,6 @@ function item(
     revision: '1',
     id,
     surface,
-    rootMode: 'replace',
     priority,
     document: '<p>demo</p>',
     documentSha256: 'sha256',

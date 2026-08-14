@@ -38,6 +38,7 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
           detail: [
             `${manifest.ui.length} UI contribution${manifest.ui.length === 1 ? '' : 's'}`,
             `Host state: ${manifest.permissions.hostState ? 'allowed' : 'not allowed'}`,
+            `Session control: ${manifest.permissions.sessionAccess ? 'allowed' : 'not allowed'}`,
             `Host methods: ${manifest.hostMethods.length === 0 ? 'none' : manifest.hostMethods.join(', ')}`,
             `Network: ${manifest.permissions.network ? 'allowed' : 'blocked'}`,
           ].join('\n'),
@@ -103,7 +104,7 @@ async function listUiExtensions(client: DesktopRuntimeHostClient) {
     });
 }
 
-async function previewManifest(sourcePath: string): Promise<{ id: string; version: string; ui: unknown[]; hostMethods: string[]; permissions: { network: boolean; hostState: boolean } }> {
+async function previewManifest(sourcePath: string): Promise<{ id: string; version: string; ui: unknown[]; hostMethods: string[]; permissions: { network: boolean; hostState: boolean; sessionAccess: boolean } }> {
   const encoded = await readFile(join(sourcePath, 'maka.ui.json'), 'utf8');
   if (Buffer.byteLength(encoded, 'utf8') > 256 * 1024) throw new Error('UI Extension manifest is too large');
   const value = JSON.parse(encoded) as Record<string, unknown>;
@@ -118,7 +119,11 @@ async function previewManifest(sourcePath: string): Promise<{ id: string; versio
     version: value.version,
     ui: value.ui,
     hostMethods: hostMethods as string[],
-    permissions: { network: permissions?.network === true, hostState: permissions?.hostState === true },
+    permissions: {
+      network: permissions?.network === true,
+      hostState: permissions?.hostState === true,
+      sessionAccess: permissions?.sessionAccess === true,
+    },
   };
 }
 

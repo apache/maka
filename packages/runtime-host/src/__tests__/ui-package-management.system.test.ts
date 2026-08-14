@@ -232,7 +232,7 @@ test('UI package Store rejects symlinks and detects installed content corruption
   }
 });
 
-test('one immutable package Revision carries a Tool and an embedded Maka UI snapshot', async () => {
+test('one immutable package Revision carries a Tool and a complete Maka root snapshot', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-combined-extension-'));
   const source = join(root, 'source');
   const control = join(root, 'control');
@@ -252,12 +252,11 @@ test('one immutable package Revision carries a Tool and an embedded Maka UI snap
           {
             id: 'project-canvas',
             surface: 'app.root',
-            rootMode: 'embed',
             priority: 200,
             document: 'documents/project-canvas.html',
           },
         ],
-        permissions: { network: false, hostState: true },
+        permissions: { network: false, hostState: true, sessionAccess: true },
       }),
     );
     await writeFile(join(source, 'documents', 'project-canvas.html'), '<main>canvas</main>');
@@ -328,7 +327,8 @@ test('one immutable package Revision carries a Tool and an embedded Maka UI snap
         true,
       );
     }
-    assert.equal(runtime.inspectUi(DESKTOP_UI_EXTENSION_SCOPE)[0]?.rootMode, 'embed');
+    assert.equal(runtime.inspectUi(DESKTOP_UI_EXTENSION_SCOPE)[0]?.surface, 'app.root');
+    assert.equal(runtime.inspectUi(DESKTOP_UI_EXTENSION_SCOPE)[0]?.sessionAccess, true);
     assert.ok(
       runtime.resolveTools('session-1', []).some(({ name }) => name === 'project_plan_commit'),
     );

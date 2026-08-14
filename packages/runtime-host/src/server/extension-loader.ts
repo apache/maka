@@ -302,7 +302,6 @@ async function uiPackageRevisionInput(
           Object.freeze({
             id: item.id,
             surface: item.surface,
-            rootMode: item.rootMode,
             priority: item.priority,
             document: await store.readDocument(installed, item.document),
             network: installed.manifest.permissions.network,
@@ -310,6 +309,7 @@ async function uiPackageRevisionInput(
             hostMethods: Object.freeze(
               installed.manifest.host?.methods.map(({ name }) => name) ?? [],
             ),
+            sessionAccess: installed.manifest.permissions.sessionAccess,
           }),
         ),
       ),

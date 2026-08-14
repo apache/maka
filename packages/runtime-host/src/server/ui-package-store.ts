@@ -5,9 +5,7 @@ import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import { isCanonicalExtensionId } from '@maka/runtime/extension-lifecycle-kernel';
 import {
   EXTENSION_UI_DOCUMENT_MAX_BYTES,
-  EXTENSION_UI_ROOT_MODES,
   EXTENSION_UI_SURFACES,
-  type ExtensionUiRootMode,
   type ExtensionUiSurface,
 } from '@maka/runtime/extension-ui-contributions';
 
@@ -21,7 +19,6 @@ const REVISION_PATTERN = /^sha256-[a-f0-9]{64}$/u;
 export interface UiPackageManifestContribution {
   readonly id: string;
   readonly surface: ExtensionUiSurface;
-  readonly rootMode: ExtensionUiRootMode;
   readonly priority: number;
   readonly document: string;
 }
@@ -42,7 +39,11 @@ export interface UiPackageManifest {
   readonly version: string;
   readonly ui: readonly UiPackageManifestContribution[];
   readonly host?: UiPackageManifestHost;
-  readonly permissions: { readonly network: boolean; readonly hostState: boolean };
+  readonly permissions: {
+    readonly network: boolean;
+    readonly hostState: boolean;
+    readonly sessionAccess: boolean;
+  };
 }
 
 export interface InstalledUiPackage {
@@ -225,13 +226,7 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
   }
   const ids = new Set<string>();
   const ui = record.ui.map((value, index): UiPackageManifestContribution => {
-    const candidate = value as Record<string, unknown> | null;
-    const item = exactRecord(
-      value,
-      candidate && Object.hasOwn(candidate, 'rootMode')
-        ? ['id', 'surface', 'rootMode', 'priority', 'document']
-        : ['id', 'surface', 'priority', 'document'],
-    );
+    const item = exactRecord(value, ['id', 'surface', 'priority', 'document']);
     const contributionId = boundedString(item.id, `ui[${index}].id`, 128);
     if (ids.has(contributionId))
       throw invalidPackage(`UI contribution id repeats: ${contributionId}`);
@@ -239,34 +234,34 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
     if (!EXTENSION_UI_SURFACES.includes(item.surface as ExtensionUiSurface)) {
       throw invalidPackage(`UI contribution surface is invalid: ${String(item.surface)}`);
     }
-    const rootMode = item.rootMode ?? 'replace';
-    if (!EXTENSION_UI_ROOT_MODES.includes(rootMode as ExtensionUiRootMode)) {
-      throw invalidPackage(`UI contribution rootMode is invalid: ${String(rootMode)}`);
-    }
-    if (item.surface !== 'app.root' && rootMode !== 'replace') {
-      throw invalidPackage('Only app.root may use rootMode embed');
-    }
     if (!Number.isSafeInteger(item.priority) || Math.abs(item.priority as number) > 10_000) {
       throw invalidPackage('UI contribution priority is invalid');
     }
     return Object.freeze({
       id: contributionId,
       surface: item.surface as ExtensionUiSurface,
-      rootMode: rootMode as ExtensionUiRootMode,
       priority: item.priority as number,
       document: packagePath(item.document, `ui[${index}].document`),
     });
   });
   const permissionRecord = record.permissions as Record<string, unknown> | null;
-  const permissionKeys =
-    permissionRecord && Object.hasOwn(permissionRecord, 'hostState')
-      ? ['network', 'hostState']
-      : ['network'];
+  const permissionKeys = ['network'];
+  if (permissionRecord && Object.hasOwn(permissionRecord, 'hostState')) {
+    permissionKeys.push('hostState');
+  }
+  if (permissionRecord && Object.hasOwn(permissionRecord, 'sessionAccess')) {
+    permissionKeys.push('sessionAccess');
+  }
   const permissions = exactRecord(record.permissions, permissionKeys);
   if (typeof permissions.network !== 'boolean')
     throw invalidPackage('UI network permission is invalid');
   if (permissions.hostState !== undefined && typeof permissions.hostState !== 'boolean')
     throw invalidPackage('UI Host state permission is invalid');
+  if (permissions.sessionAccess !== undefined && typeof permissions.sessionAccess !== 'boolean')
+    throw invalidPackage('UI Session access permission is invalid');
+  if (permissions.sessionAccess === true && !ui.some(({ surface }) => surface === 'app.root')) {
+    throw invalidPackage('Only a complete app.root UI may request Session access');
+  }
   const host = record.host === undefined ? undefined : decodeHost(record.host);
   return Object.freeze({
     schemaVersion: 1,
@@ -277,6 +272,7 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
     permissions: Object.freeze({
       network: permissions.network,
       hostState: permissions.hostState === true,
+      sessionAccess: permissions.sessionAccess === true,
     }),
   });
 }

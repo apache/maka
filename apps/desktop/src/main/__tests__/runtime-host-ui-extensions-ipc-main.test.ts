@@ -18,7 +18,7 @@ test('user import previews, confirms, installs, and enables one UI package', asy
       version: '1',
       ui: [{ id: 'root', surface: 'app.root', priority: 1, document: 'documents/root.html' }],
       host: { entry: 'host/service.mjs', methods: [{ name: 'hello', handler: 'hello' }] },
-      permissions: { network: false, hostState: true },
+      permissions: { network: false, hostState: true, sessionAccess: true },
     }));
     await writeFile(join(root, 'documents', 'root.html'), '<main>hello</main>');
     await writeFile(join(root, 'host', 'service.mjs'), 'export default { hello: () => "world" };');

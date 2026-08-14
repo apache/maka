@@ -114,13 +114,13 @@ export class HostExtensionController {
           revision: item.revision,
           id: item.id,
           surface: item.surface,
-          rootMode: item.rootMode,
           priority: item.priority,
           document: item.document,
           documentSha256: item.documentSha256,
           network: item.network,
           hostState: item.hostState,
           hostMethods: item.hostMethods,
+          sessionAccess: item.sessionAccess,
         }),
       );
     const digest = createHash('sha256').update(JSON.stringify(contributions)).digest('hex');

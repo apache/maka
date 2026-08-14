@@ -45,9 +45,7 @@ export function createUiExtensionFrameRequestHandler(
       const document = withUiSandboxPolicy(
         contribution.document,
         contribution.network,
-        contribution.hostState || (contribution.hostMethods?.length ?? 0) > 0
-          ? identity.token
-          : undefined,
+        identity.token,
       );
       return new Response(document, {
         status: 200,
