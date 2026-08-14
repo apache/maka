@@ -67,3 +67,5 @@ try {
   if (-not $server.HasExited) { $server.Kill($true) }
   $server.Dispose()
 }
+
+exit 0
