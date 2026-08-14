@@ -70,7 +70,6 @@ export function createAppShellSessionRowActions(deps: {
 
   async function flagSession(sessionId: string, flagged: boolean) {
     return runSessionRowAction(sessionId, 'flag', flagged ? copy.flagFailedTitle : copy.unflagFailedTitle, async () => {
-      const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
       await window.maka.sessions.setFlagged(sessionId, flagged, { revisionFamily: true });
       await refreshSessions();
     });
@@ -91,7 +90,6 @@ export function createAppShellSessionRowActions(deps: {
 
   async function unarchiveSession(sessionId: string) {
     return runSessionRowAction(sessionId, 'archive', copy.unarchiveFailedTitle, async () => {
-      const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
       await window.maka.sessions.unarchive(sessionId, { revisionFamily: true });
       await refreshSessions();
     });
@@ -99,7 +97,6 @@ export function createAppShellSessionRowActions(deps: {
 
   async function renameSession(sessionId: string, name: string) {
     return runSessionRowAction(sessionId, 'rename', copy.renameFailedTitle, async () => {
-      const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
       await window.maka.sessions.rename(sessionId, name, { revisionFamily: true });
       await refreshSessions();
     });

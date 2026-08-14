@@ -477,7 +477,7 @@ function SettingsPageBody(props: {
         />
       );
     case 'tasks':
-      return <TasksSettingsPage />;
+      return <TasksSettingsPage onOpenSession={props.onOpenSession} />;
     case 'data':
       return <DataSettingsPage />;
     case 'permissions':

@@ -4,18 +4,19 @@ export type SettingsTasksCopy = {
   filterAria: string;
   filterAll: string;
   filterArchived: string;
-  columnTask: string;
-  columnProject: string;
-  columnUpdated: string;
   noProject: string;
   selectAllAria: string;
   selectRowAria(name: string): string;
   selectedCount(count: number): string;
-  clearSelection: string;
+  openTaskAria(name: string): string;
   restore: string;
   restoring: string;
+  archive: string;
+  archiving: string;
   delete: string;
   deleting: string;
+  retry: string;
+  loadingLabel: string;
   importTitle: string;
   importDescription: string;
   importAction: string;
@@ -27,6 +28,9 @@ export type SettingsTasksCopy = {
   archivedBadge: string;
   restoredToast(count: number): string;
   restoreFailedTitle: string;
+  archivedToast(count: number): string;
+  archiveFailedTitle: string;
+  partialFailure(count: number): string;
   deleteConfirmTitle(count: number): string;
   deleteConfirmBody: string;
   deleteConfirmAction: string;
@@ -41,18 +45,19 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     filterAria: '任务范围',
     filterAll: '全部',
     filterArchived: '已归档',
-    columnTask: '任务',
-    columnProject: '项目',
-    columnUpdated: '最后活动',
     noProject: '无项目',
     selectAllAria: '全选当前列表',
     selectRowAria: (name: string) => `选择「${name}」`,
     selectedCount: (count: number) => `已选 ${count} 条`,
-    clearSelection: '取消选择',
+    openTaskAria: (name: string) => `打开「${name}」`,
     restore: '恢复',
     restoring: '恢复中…',
+    archive: '归档',
+    archiving: '归档中…',
     delete: '删除',
     deleting: '删除中…',
+    retry: '重试',
+    loadingLabel: '正在载入任务',
     importTitle: '从其他工具导入',
     importDescription: '把其他 agent 工具里的历史任务导入 Maka。',
     importAction: '导入任务',
@@ -64,6 +69,9 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     archivedBadge: '已归档',
     restoredToast: (count: number) => `已恢复 ${count} 条任务`,
     restoreFailedTitle: '恢复任务失败',
+    archivedToast: (count: number) => `已归档 ${count} 条任务`,
+    archiveFailedTitle: '归档任务失败',
+    partialFailure: (count: number) => `${count} 条未能完成`,
     deleteConfirmTitle: (count: number) => `删除 ${count} 条任务？`,
     deleteConfirmBody: '任务及其全部消息会被永久删除，无法撤销。',
     deleteConfirmAction: '永久删除',
@@ -76,18 +84,19 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     filterAria: 'Task scope',
     filterAll: 'All',
     filterArchived: 'Archived',
-    columnTask: 'Task',
-    columnProject: 'Project',
-    columnUpdated: 'Last activity',
     noProject: 'No project',
     selectAllAria: 'Select every task in this list',
     selectRowAria: (name: string) => `Select ${name}`,
     selectedCount: (count: number) => `${count} selected`,
-    clearSelection: 'Clear selection',
+    openTaskAria: (name: string) => `Open ${name}`,
     restore: 'Restore',
     restoring: 'Restoring…',
+    archive: 'Archive',
+    archiving: 'Archiving…',
     delete: 'Delete',
     deleting: 'Deleting…',
+    retry: 'Try again',
+    loadingLabel: 'Loading tasks',
     importTitle: 'Import from another tool',
     importDescription: 'Bring task history from other agent tools into Maka.',
     importAction: 'Import tasks',
@@ -97,13 +106,16 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     emptyArchivedTitle: 'Nothing archived',
     emptyArchivedBody: 'Archive a task from the rail to restore or permanently delete it here.',
     archivedBadge: 'Archived',
-    restoredToast: (count: number) => `Restored ${count} tasks`,
+    restoredToast: (count: number) => (count === 1 ? 'Restored 1 task' : `Restored ${count} tasks`),
     restoreFailedTitle: 'Could not restore the tasks',
-    deleteConfirmTitle: (count: number) => `Delete ${count} tasks?`,
+    archivedToast: (count: number) => (count === 1 ? 'Archived 1 task' : `Archived ${count} tasks`),
+    archiveFailedTitle: 'Could not archive the tasks',
+    partialFailure: (count: number) => (count === 1 ? '1 task did not finish' : `${count} tasks did not finish`),
+    deleteConfirmTitle: (count: number) => (count === 1 ? 'Delete 1 task?' : `Delete ${count} tasks?`),
     deleteConfirmBody: 'The tasks and all of their messages are removed permanently. This cannot be undone.',
     deleteConfirmAction: 'Delete permanently',
     cancel: 'Cancel',
-    deletedToast: (count: number) => `Deleted ${count} tasks`,
+    deletedToast: (count: number) => (count === 1 ? 'Deleted 1 task' : `Deleted ${count} tasks`),
     deleteFailedTitle: 'Could not delete the tasks',
     importedToast: (name: string) => `Imported ${name}`,
   },
