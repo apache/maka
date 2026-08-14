@@ -56,9 +56,7 @@ test('fails closed for unsupported deny and exact-path rules', () => {
     ...createReadOnlyPermissionProfile(),
     fileSystem: {
       kind: 'restricted',
-      entries: [
-        { kind: 'path', access: 'read', path: String.raw`C:\file.txt`, match: 'exact' },
-      ],
+      entries: [{ kind: 'path', access: 'read', path: String.raw`C:\file.txt`, match: 'exact' }],
     },
   };
   assert.throws(() => compileWindowsSandboxPolicy(command(exact)), /exact-path entries/);

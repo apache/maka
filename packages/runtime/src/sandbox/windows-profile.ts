@@ -1,9 +1,6 @@
 import { win32 } from 'node:path';
 
-import type {
-  FileSystemSandboxEntry,
-  PermissionProfile,
-} from '@maka/core/permission-profile';
+import type { FileSystemSandboxEntry, PermissionProfile } from '@maka/core/permission-profile';
 
 import type { SandboxCommand, SandboxPathContext } from './types.js';
 
