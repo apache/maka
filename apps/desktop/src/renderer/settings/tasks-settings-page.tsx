@@ -11,7 +11,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
-import { List, ListItem } from '@astryxdesign/core';
+import { HStack, List, ListItem, Text } from '@astryxdesign/core';
 import {
   SegmentedControl,
   SegmentedControlItem,
@@ -220,11 +220,11 @@ export function TasksSettingsPage() {
                 }
                 onChange={(checked) => toggleAll(checked)}
               />
-              <span className="settingsRowMeta">
+              <Text type="supporting" size="sm" color="secondary">
                 {effectiveSelection.length > 0
                   ? copy.selectedCount(effectiveSelection.length)
                   : null}
-              </span>
+              </Text>
               {effectiveSelection.length > 0 && (
                 <>
                   {restorable.length > 0 && (
@@ -260,24 +260,24 @@ export function TasksSettingsPage() {
                     />
                   }
                   endContent={
-                    <span className="settingsRowMeta">
+                    <HStack gap={2} vAlign="center">
                       {/* The archived badge only earns its place in the `all`
                           view, where archived and active rows sit together.
                           In the archived view every row carries it. */}
                       {scope === 'all' && session.isArchived && (
                         <Badge variant="neutral" label={copy.archivedBadge} />
                       )}
-                      <span>
+                      <Text type="supporting" size="sm" color="secondary">
                         {session.projectId
                           ? (projectNames.get(session.projectId) ?? copy.noProject)
                           : copy.noProject}
-                      </span>
-                      <span>
+                      </Text>
+                      <Text type="supporting" size="sm" color="secondary">
                         {session.lastMessageAt
                           ? formatCompactTimestamp(session.lastMessageAt, Date.now(), locale)
                           : '—'}
-                      </span>
-                    </span>
+                      </Text>
+                    </HStack>
                   }
                 />
               ))}
