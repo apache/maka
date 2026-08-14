@@ -358,6 +358,7 @@ async function collectFiles(root: string, directory: string, paths: string[]): P
     withFileTypes: true,
   });
   for (const entry of entries.sort(compareDirent)) {
+    if (entry.name === '.git') continue;
     const path = directory ? `${directory}/${entry.name}` : entry.name;
     packagePath(path, 'file path');
     if (entry.isSymbolicLink())

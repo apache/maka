@@ -240,6 +240,8 @@ test('one immutable package Revision carries a Tool and an embedded Maka UI snap
   try {
     await mkdir(join(source, 'documents'), { recursive: true });
     await mkdir(join(source, 'dist'), { recursive: true });
+    await mkdir(join(source, '.git'), { recursive: true });
+    await writeFile(join(source, '.git', 'HEAD'), 'ref: refs/heads/main\n');
     await writeFile(
       join(source, 'maka.ui.json'),
       JSON.stringify({
@@ -294,6 +296,8 @@ test('one immutable package Revision carries a Tool and an embedded Maka UI snap
     assert.deepEqual(installed.toolNames, ['project_plan_commit']);
     assert.deepEqual(installed.uiContributionIds, ['project-canvas']);
     assert.equal((await loader.list()).length, 1);
+    await writeFile(join(source, '.git', 'HEAD'), 'ref: refs/heads/other\n');
+    assert.equal((await loader.installPackage(source)).revision, installed.revision);
 
     await runtime.installRevision(await loader.load(installed.extensionId, installed.revision));
     const controller = new HostExtensionController(
