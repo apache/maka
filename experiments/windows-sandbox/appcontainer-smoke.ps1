@@ -83,6 +83,7 @@ try {
   if ($LASTEXITCODE -eq 0 -or ($reparseOutput -join "`n") -notmatch 'reparse point') {
     throw "AppContainer accepted a reparse-point root: $($reparseOutput -join "`n")"
   }
+  $global:LASTEXITCODE = 0
   Write-Host "AppContainer token and atomic Job boundary verified: $rendered"
 } finally {
   $listener.Stop()
