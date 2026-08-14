@@ -27,3 +27,11 @@ assignment is explicitly not the atomic Job guarantee; the W0 privileged-broker
 prototype must still prove `PROC_THREAD_ATTRIBUTE_JOB_LIST`. It intentionally
 rejects restricted-network and filesystem-root requests until the identity, ACL,
 and network prototypes exist.
+
+The current Windows 2025 evidence records an incompatibility in the
+unprivileged candidate: `CreateProcessWithTokenW` creates the restricted child,
+but both the native launcher self-probe and `cmd.exe /d /c exit 0` fail to finish
+initialization before the 30-second safety deadline. The launcher terminates the
+child and returns failure. The CI lane treats this exact bounded, fail-closed
+result as evidence; any other launch error still fails the job. This candidate
+does not satisfy W0 and must not be connected to the product.
