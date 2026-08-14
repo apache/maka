@@ -18,6 +18,7 @@ import type {
   PermissionSnapshot,
 } from '@maka/core/capabilities';
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
+import type { SessionSummary } from '@maka/core/session';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';
@@ -662,6 +663,111 @@ const makaBridge = {
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
 
+// 已归档任务 lists through the same session catalog the rail reads, so its
+// fixture is sessions + projects rather than a settings patch. Archived and
+// active tasks both appear so the page's own projection is what filters them,
+// and one task sits in no project so the fallback label renders.
+const archivedTaskSessions: SessionSummary[] = [
+  {
+    id: 'task-spawn',
+    name: 'Single agent_spawn with local_read for runtime/src inspection',
+    projectId: 'proj-maka',
+    isFlagged: false,
+    isArchived: true,
+    labels: [],
+    hasUnread: false,
+    status: 'done',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'zai-live',
+    connectionLocked: true,
+    model: 'glm-4.7',
+    permissionMode: 'ask',
+    lastMessageAt: NOW - 6 * 24 * 60 * 60 * 1000,
+  },
+  {
+    id: 'task-child',
+    name: 'Spawning Child Agent to Inspect Runtime Source Directory',
+    projectId: 'proj-maka',
+    isFlagged: false,
+    isArchived: true,
+    labels: [],
+    hasUnread: false,
+    status: 'done',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'zai-live',
+    connectionLocked: true,
+    model: 'glm-4.7',
+    permissionMode: 'ask',
+    lastMessageAt: NOW - 6 * 24 * 60 * 60 * 1000,
+  },
+  {
+    id: 'task-sort',
+    name: '修复归档任务在导轨里的排序',
+    projectId: 'proj-astryx',
+    isFlagged: false,
+    isArchived: true,
+    labels: [],
+    hasUnread: false,
+    status: 'done',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'zai-live',
+    connectionLocked: true,
+    model: 'glm-4.7',
+    permissionMode: 'ask',
+    lastMessageAt: NOW - 14 * 24 * 60 * 60 * 1000,
+  },
+  {
+    id: 'task-unfiled',
+    name: 'Analyze entire project',
+    isFlagged: false,
+    isArchived: true,
+    labels: [],
+    hasUnread: false,
+    status: 'done',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'zai-live',
+    connectionLocked: true,
+    model: 'glm-4.7',
+    permissionMode: 'ask',
+    lastMessageAt: NOW - 32 * 24 * 60 * 60 * 1000,
+  },
+  {
+    id: 'task-active',
+    name: 'An active task the page must not list',
+    projectId: 'proj-maka',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    hasUnread: false,
+    status: 'done',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'zai-live',
+    connectionLocked: true,
+    model: 'glm-4.7',
+    permissionMode: 'ask',
+    lastMessageAt: NOW - 60_000,
+  },
+];
+
+const withArchivedTasksBridge = withScopedMakaBridge({
+  ...makaBridge,
+  sessions: {
+    list: async () => archivedTaskSessions,
+    subscribeChanges: () => () => undefined,
+    unarchive: async () => undefined,
+    remove: async () => undefined,
+  },
+  projects: {
+    getSnapshot: async () => ({
+      projects: [
+        { id: 'proj-maka', name: 'maka-agent' },
+        { id: 'proj-astryx', name: 'astryx-design' },
+      ],
+    }),
+    subscribeChanges: () => () => undefined,
+  },
+} satisfies Record<string, unknown>);
+
 // #1364: list-page variants — empty vs populated vs long-content, per the
 // tracking issue's expected deliverables.
 
@@ -1089,4 +1195,10 @@ export const HealthCenter: Story = {
 export const About: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="about" />,
+};
+
+// Real path: 设置 → 已归档任务, after archiving tasks from the rail's row menu.
+export const ArchivedTasks: Story = {
+  decorators: [withArchivedTasksBridge],
+  render: () => <SettingsStory section="tasks" />,
 };

@@ -3,8 +3,7 @@ import { describe, it } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
 import {
   archivedTaskRows,
-  filterArchivedTasks,
-  NO_PROJECT_FILTER,
+  matchesArchivedTaskQuery,
 } from '../../renderer/settings/task-catalog-rows.js';
 
 function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
@@ -115,56 +114,29 @@ describe('archivedTaskRows', () => {
   });
 });
 
-describe('filterArchivedTasks', () => {
-  const rows = [
-    summary('a', { name: 'Rebuild the session rail', isArchived: true, projectId: 'p1' }),
-    summary('b', { name: 'Fix the CI type error', isArchived: true, projectId: 'p2' }),
-    summary('c', { name: 'Weather in Guiyang', isArchived: true }),
-  ];
-  const projectNameOf = (id: string) => ({ p1: 'maka-agent', p2: 'astryx' })[id];
-  const all = { query: '', projectId: null };
+describe('matchesArchivedTaskQuery', () => {
+  const projectNameOf = (session: SessionSummary) =>
+    session.projectId === 'p1' ? 'astryx-design' : '无项目';
 
-  it('passes everything through when nothing is asked of it', () => {
-    assert.deepEqual(
-      filterArchivedTasks(rows, all, projectNameOf).map((s) => s.id),
-      ['a', 'b', 'c'],
-    );
+  it('keeps every task while the box is empty or only whitespace', () => {
+    const task = summary('a', { name: 'rail sorting' });
+    assert.equal(matchesArchivedTaskQuery(task, '', projectNameOf), true);
+    assert.equal(matchesArchivedTaskQuery(task, '   ', projectNameOf), true);
   });
 
-  it('matches the task name case-insensitively', () => {
-    assert.deepEqual(
-      filterArchivedTasks(rows, { ...all, query: '  RAIL ' }, projectNameOf).map((s) => s.id),
-      ['a'],
-    );
+  it('matches the task name regardless of case or surrounding spaces', () => {
+    const task = summary('a', { name: 'Fix rail sorting' });
+    assert.equal(matchesArchivedTaskQuery(task, '  RAIL ', projectNameOf), true);
+    assert.equal(matchesArchivedTaskQuery(task, 'compaction', projectNameOf), false);
   });
 
-  it('matches the project name, which is on screen next to the task', () => {
-    assert.deepEqual(
-      filterArchivedTasks(rows, { ...all, query: 'astryx' }, projectNameOf).map((s) => s.id),
-      ['b'],
-    );
+  it('matches the project name, because the row shows it too', () => {
+    const task = summary('a', { name: 'Fix rail sorting', projectId: 'p1' });
+    assert.equal(matchesArchivedTaskQuery(task, 'astryx', projectNameOf), true);
   });
 
-  it('narrows to one project', () => {
-    assert.deepEqual(
-      filterArchivedTasks(rows, { ...all, projectId: 'p1' }, projectNameOf).map((s) => s.id),
-      ['a'],
-    );
-  });
-
-  it('narrows to tasks that belong to no project', () => {
-    assert.deepEqual(
-      filterArchivedTasks(rows, { ...all, projectId: NO_PROJECT_FILTER }, projectNameOf).map(
-        (s) => s.id,
-      ),
-      ['c'],
-    );
-  });
-
-  it('applies the search and the project filter together', () => {
-    assert.deepEqual(
-      filterArchivedTasks(rows, { query: 'fix', projectId: 'p1' }, projectNameOf).map((s) => s.id),
-      [],
-    );
+  it('matches the no-project label for a task that belongs to none', () => {
+    const task = summary('a', { name: 'Analyze entire project' });
+    assert.equal(matchesArchivedTaskQuery(task, '无项目', projectNameOf), true);
   });
 });
