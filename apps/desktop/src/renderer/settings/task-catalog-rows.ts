@@ -1,41 +1,43 @@
-import { isLinkedSubagentSession, type SessionSummary } from '@maka/core/session';
-import { collapseSessionRevisions } from '@maka/core/session-revisions';
+import type { SessionSummary } from '@maka/core/session';
+import { deriveSessionRail } from '../session-rail.js';
 
 /**
- * The archived tasks, as tasks rather than as sessions.
+ * The archived tasks, counted the way the rail counts tasks.
  *
  * `sessions.list()` returns the physical session catalog, which is not the set
- * of things a person calls a task. Two projections stand between them, and the
- * rail already applies both through `deriveSessionRail`:
+ * of things a person calls a task: edit-and-resend produces one session per
+ * revision, and a linked subagent session belongs to the task that spawned it.
+ * `deriveSessionRail` already owns both rules — including the one that is easy
+ * to get wrong on a second pass, that a linked child whose parent is gone stays
+ * a row of its own instead of vanishing from every surface at once. Reusing it
+ * is what makes a row here mean what a row there means; a second projection
+ * would only mean it approximately.
  *
- * - Edit-and-resend produces one physical session per revision. They are one
- *   task, and they archive, restore, and delete as one family.
- * - A linked subagent session belongs to the task that spawned it. It is not
- *   a task of its own, and it disappears with its parent — surfacing it here
- *   would offer a delete no other surface offers.
- *
- * Collapsing before the archived filter is deliberate: the representative
- * version is a property of the whole family, not of the filter. Input order is
- * the store's own recency order and every step preserves it.
+ * The rail additionally hides in-flight companion forks, which is a transient
+ * property of the shell's own view and not of the archived catalog.
  */
-export function archivedTaskRows(sessions: readonly SessionSummary[]): SessionSummary[] {
-  return collapseSessionRevisions(sessions).filter(
-    (session) => session.isArchived && !isLinkedSubagentSession(session),
-  );
+export function archivedTaskRows(
+  sessions: readonly SessionSummary[],
+  activeId: string | undefined,
+): SessionSummary[] {
+  return deriveSessionRail(sessions, activeId, (session) => session.isArchived).sessions;
 }
 
 /**
  * Whether a task answers to what was typed in the search box.
  *
- * The project name is searchable because it is on screen: a row reads
- * "name" over "project · date", so both halves should answer to the same box.
+ * The project name is searchable because it is on screen: a row reads "name"
+ * over "project · date", so both halves answer to the same box. They are
+ * joined by a newline rather than a space so a query can never match across
+ * the seam and produce a row whose highlight the reader cannot find. A task
+ * whose project could not be resolved answers to its name alone, never to a
+ * placeholder it did not display.
  */
 export function matchesArchivedTaskQuery(
   session: SessionSummary,
   query: string,
-  projectNameOf: (session: SessionSummary) => string,
+  projectLabelOf: (session: SessionSummary) => string | undefined,
 ): boolean {
-  const needle = query.trim().toLocaleLowerCase();
-  if (needle.length === 0) return true;
-  return `${session.name} ${projectNameOf(session)}`.toLocaleLowerCase().includes(needle);
+  const haystack = [session.name, projectLabelOf(session)].filter(Boolean).join('\n');
+  return haystack.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
 }

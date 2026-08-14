@@ -19,6 +19,7 @@ import type {
 } from '@maka/core/capabilities';
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
 import type { SessionSummary } from '@maka/core/session';
+import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';
@@ -27,6 +28,8 @@ import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
 import type { ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
+import type { ProjectRecord } from '@maka/core/project';
+import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
 import { withScopedMakaBridge } from '../maka-bridge';
 const STORY_PLATFORM = 'darwin' as const;
 
@@ -663,110 +666,110 @@ const makaBridge = {
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
 
-// 已归档任务 lists through the same session catalog the rail reads, so its
-// fixture is sessions + projects rather than a settings patch. Archived and
-// active tasks both appear so the page's own projection is what filters them,
-// and one task sits in no project so the fallback label renders.
+// 已归档任务 renders the shell's catalog, so its fixture is sessions +
+// projects rather than a settings patch. The set is chosen to exercise the
+// projection itself: a revision family that must fold to one row, a linked
+// subagent whose parent is present (hidden) and one whose parent is gone
+// (listed), a task in no project, and an active task the page must drop.
+function archivedTask(
+  id: string,
+  name: string,
+  ageDays: number,
+  overrides: Partial<SessionSummary> = {},
+): SessionSummary {
+  return {
+    id,
+    name,
+    isFlagged: false,
+    isArchived: true,
+    labels: [],
+    hasUnread: false,
+    status: 'done',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'zai-live',
+    connectionLocked: true,
+    model: 'glm-4.7',
+    permissionMode: 'ask',
+    lastMessageAt: NOW - ageDays * 24 * 60 * 60 * 1000,
+    ...overrides,
+  };
+}
+
+function storyLinkedTo(parentSessionId: string): Partial<SessionSummary> {
+  return {
+    subagentParent: {
+      kind: 'subagent',
+      parentSessionId,
+      spawnedBy: { parentRunId: 'run-1', parentTurnId: 'turn-1', toolCallId: 'call-1' },
+      lifecycle: 'foreground',
+    },
+  };
+}
+
 const archivedTaskSessions: SessionSummary[] = [
-  {
-    id: 'task-spawn',
-    name: 'Single agent_spawn with local_read for runtime/src inspection',
+  archivedTask('task-spawn', 'Single agent_spawn with local_read for runtime/src inspection', 6, {
     projectId: 'proj-maka',
-    isFlagged: false,
-    isArchived: true,
-    labels: [],
-    hasUnread: false,
-    status: 'done',
-    backend: 'ai-sdk',
-    llmConnectionSlug: 'zai-live',
-    connectionLocked: true,
-    model: 'glm-4.7',
-    permissionMode: 'ask',
-    lastMessageAt: NOW - 6 * 24 * 60 * 60 * 1000,
-  },
-  {
-    id: 'task-child',
-    name: 'Spawning Child Agent to Inspect Runtime Source Directory',
+  }),
+  // Folds with `task-spawn-v2` into one row.
+  archivedTask('task-spawn-v2', 'Single agent_spawn, second attempt', 5, {
     projectId: 'proj-maka',
-    isFlagged: false,
-    isArchived: true,
-    labels: [],
-    hasUnread: false,
-    status: 'done',
-    backend: 'ai-sdk',
-    llmConnectionSlug: 'zai-live',
-    connectionLocked: true,
-    model: 'glm-4.7',
-    permissionMode: 'ask',
-    lastMessageAt: NOW - 6 * 24 * 60 * 60 * 1000,
-  },
-  {
-    id: 'task-sort',
-    name: '修复归档任务在导轨里的排序',
-    projectId: 'proj-astryx',
-    isFlagged: false,
-    isArchived: true,
-    labels: [],
-    hasUnread: false,
-    status: 'done',
-    backend: 'ai-sdk',
-    llmConnectionSlug: 'zai-live',
-    connectionLocked: true,
-    model: 'glm-4.7',
-    permissionMode: 'ask',
-    lastMessageAt: NOW - 14 * 24 * 60 * 60 * 1000,
-  },
-  {
-    id: 'task-unfiled',
-    name: 'Analyze entire project',
-    isFlagged: false,
-    isArchived: true,
-    labels: [],
-    hasUnread: false,
-    status: 'done',
-    backend: 'ai-sdk',
-    llmConnectionSlug: 'zai-live',
-    connectionLocked: true,
-    model: 'glm-4.7',
-    permissionMode: 'ask',
-    lastMessageAt: NOW - 32 * 24 * 60 * 60 * 1000,
-  },
-  {
-    id: 'task-active',
-    name: 'An active task the page must not list',
+    revisionRootSessionId: 'task-spawn',
+    revisionParentSessionId: 'task-spawn',
+  }),
+  // Hidden: its parent is on the list, so it is part of that task.
+  archivedTask('task-child', 'Inspect the runtime source directory', 6, {
     projectId: 'proj-maka',
-    isFlagged: false,
-    isArchived: false,
-    labels: [],
-    hasUnread: false,
-    status: 'done',
-    backend: 'ai-sdk',
-    llmConnectionSlug: 'zai-live',
-    connectionLocked: true,
-    model: 'glm-4.7',
-    permissionMode: 'ask',
-    lastMessageAt: NOW - 60_000,
-  },
+    ...storyLinkedTo('task-spawn'),
+  }),
+  // Listed: its parent is gone, so nothing else can reach it.
+  archivedTask('task-orphan', 'Leftover subagent run', 9, {
+    projectId: 'proj-maka',
+    ...storyLinkedTo('deleted-parent'),
+  }),
+  archivedTask('task-sort', '修复归档任务在导轨里的排序', 14, { projectId: 'proj-astryx' }),
+  archivedTask('task-unfiled', 'Analyze entire project', 32),
+  archivedTask('task-active', 'An active task the page must not list', 0, { isArchived: false }),
 ];
 
-const withArchivedTasksBridge = withScopedMakaBridge({
-  ...makaBridge,
-  sessions: {
-    list: async () => archivedTaskSessions,
-    subscribeChanges: () => () => undefined,
-    unarchive: async () => undefined,
-    remove: async () => undefined,
-  },
-  projects: {
-    getSnapshot: async () => ({
-      projects: [
-        { id: 'proj-maka', name: 'maka-agent' },
-        { id: 'proj-astryx', name: 'astryx-design' },
-      ],
-    }),
-    subscribeChanges: () => () => undefined,
-  },
-} satisfies Record<string, unknown>);
+const archivedTaskProjects: ProjectRecord[] = [
+  { id: 'proj-maka', name: 'maka-agent', locations: [], available: true },
+  { id: 'proj-astryx', name: 'astryx-design', locations: [], available: true },
+];
+
+/**
+ * Story-local stand-in for the shell's catalog. Restoring, deleting and
+ * clearing really remove rows, because a story whose buttons resolve to
+ * nothing shows a list that cannot answer the question it is there to answer.
+ */
+function useArchivedTasksStoryBridge(): ArchivedTasksBridge {
+  const [sessions, setSessions] = useState<SessionSummary[]>(archivedTaskSessions);
+  // Both writes go out with `revisionFamily: true`, so a row takes its whole
+  // edit-and-resend family with it. Dropping only the id on screen would leave
+  // an older revision behind and show a list the real app never produces.
+  const drop = (ids: readonly string[]) => {
+    setSessions((current) => {
+      const doomed = new Set(ids.flatMap((id) => revisionFamilySessionIds(current, id)));
+      return current.filter((session) => !doomed.has(session.id));
+    });
+  };
+  return {
+    sessions,
+    activeId: undefined,
+    projects: archivedTaskProjects,
+    onRestore: (sessionId) =>
+      setSessions((current) => {
+        const family = new Set(revisionFamilySessionIds(current, sessionId));
+        return current.map((session) =>
+          family.has(session.id) ? { ...session, isArchived: false } : session,
+        );
+      }),
+    onDelete: (sessionId) => drop([sessionId]),
+    onPurge: async (sessionIds) => {
+      drop(sessionIds);
+      return [];
+    },
+  };
+}
 
 // #1364: list-page variants — empty vs populated vs long-content, per the
 // tracking issue's expected deliverables.
@@ -953,10 +956,20 @@ function makeBotAttentionBridge(settings: AppSettings) {
 
 const withBotAttentionBridge = withScopedMakaBridge(makeBotAttentionBridge(botAttentionSettings));
 
+const NO_ARCHIVED_TASKS: ArchivedTasksBridge = {
+  sessions: [],
+  activeId: undefined,
+  projects: [],
+  onRestore: noop,
+  onDelete: noop,
+  onPurge: async () => [],
+};
+
 function SettingsStory(props: {
   section: SettingsSection;
   connections?: LlmConnection[];
   defaultSlug?: string | null;
+  archivedTasks?: ArchivedTasksBridge;
 }) {
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
@@ -999,6 +1012,7 @@ function SettingsStory(props: {
           initialFocusRef={initialFocusRef}
           onOpenDailyReview={noop}
           onOpenSession={noop}
+          archivedTasks={props.archivedTasks ?? NO_ARCHIVED_TASKS}
         />
       </div>
     </ToastProvider>
@@ -1199,6 +1213,8 @@ export const About: Story = {
 
 // Real path: 设置 → 已归档任务, after archiving tasks from the rail's row menu.
 export const ArchivedTasks: Story = {
-  decorators: [withArchivedTasksBridge],
-  render: () => <SettingsStory section="tasks" />,
+  decorators: [withSettingsBridge],
+  render: function ArchivedTasksStory() {
+    return <SettingsStory section="archived-tasks" archivedTasks={useArchivedTasksStoryBridge()} />;
+  },
 };

@@ -23,6 +23,7 @@ export interface AppShellSessionRowActions {
   unarchiveSession(sessionId: string): Promise<void>;
   renameSession(sessionId: string, name: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
+  purgeSessions(sessionIds: readonly string[]): Promise<string[]>;
 }
 
 export function createAppShellSessionRowActions(deps: {
@@ -126,11 +127,50 @@ export function createAppShellSessionRowActions(deps: {
     });
   }
 
+  /**
+   * Deletes a set of tasks in one sweep and answers with the ids the catalog
+   * still reports.
+   *
+   * The delete IPC commits the removal before it releases renderer resources,
+   * so a rejection there does not mean the task survived. Settling the outcome
+   * against the refreshed catalog instead of against the rejections is the only
+   * way the caller can say something true about what is left — and it is what
+   * decides which families are safe to clear from the renderer.
+   *
+   * No confirm and no toast: the caller announced the set and owns the wording
+   * for a sweep, which is the one thing single-row delete cannot phrase.
+   */
+  async function purgeSessions(sessionIds: readonly string[]): Promise<string[]> {
+    const familiesBySessionId = new Map<string, string[]>();
+    for (const sessionId of sessionIds) {
+      // Captured before the write: the family is read off the live catalog,
+      // which no longer lists it afterwards.
+      familiesBySessionId.set(sessionId, revisionFamilySessionIds(sessionsRef.current, sessionId));
+      try {
+        await window.maka.sessions.remove(sessionId, { revisionFamily: true });
+      } catch {
+        // One task failing is no reason to abandon the rest.
+      }
+    }
+    const remaining = await refreshSessions();
+    const remainingIds = new Set(remaining.map((session) => session.id));
+    for (const [sessionId, familyIds] of familiesBySessionId) {
+      if (remainingIds.has(sessionId)) continue;
+      if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
+        setActiveId(undefined);
+        setMessages([]);
+      }
+      for (const id of familyIds) clearSessionRendererState(id);
+    }
+    return sessionIds.filter((sessionId) => remainingIds.has(sessionId));
+  }
+
   return {
     flagSession,
     archiveSession,
     unarchiveSession,
     renameSession,
     deleteSession,
+    purgeSessions,
   };
 }

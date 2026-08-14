@@ -4,11 +4,10 @@ import { Button } from '@astryxdesign/core/Button';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
+import { Item } from '@astryxdesign/core/Item';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
-import { List, ListItem } from '@astryxdesign/core/List';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
-import { HStack, StackItem, VStack } from '@astryxdesign/core/Stack';
-import { Toolbar } from '@astryxdesign/core/Toolbar';
+import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import { type ExternalSessionSummary } from '@maka/core/external-session';
@@ -202,56 +201,6 @@ export function ExternalSessionImportDialog(props: {
   const catalogEmpty =
     adapterId !== null && !catalogLoading && !catalogError && catalog.sessions.length === 0;
 
-  // Collected rather than interleaved: alerts are one band at the top of the
-  // dialog, so the list below never shifts as errors come and go.
-  const alerts = [
-    sourceError && (
-      <Banner
-        key="source"
-        status="error"
-        title={copy.loadFailedTitle}
-        description={sourceError}
-        endContent={
-          <Button variant="ghost" size="sm" label={copy.retry} onClick={() => void loadSources()} />
-        }
-      />
-    ),
-    catalogError && (
-      <Banner
-        key="catalog"
-        status="error"
-        title={copy.loadFailedTitle}
-        description={catalogError}
-        endContent={
-          adapterId === null ? undefined : (
-            <Button
-              variant="ghost"
-              size="sm"
-              label={copy.retry}
-              onClick={() => void loadCatalog(adapterId)}
-            />
-          )
-        }
-      />
-    ),
-    importError && (
-      <Banner
-        key="import"
-        status="error"
-        title={copy.importFailedTitle}
-        description={importError}
-      />
-    ),
-    uncertainSourceId !== null && (
-      <Banner
-        key="uncertain"
-        status="warning"
-        title={copy.importOutcomeUnknownTitle}
-        description={copy.importOutcomeUnknownDescription}
-      />
-    ),
-  ].filter(Boolean);
-
   return (
     <Dialog
       isOpen={props.isOpen}
@@ -267,139 +216,162 @@ export function ExternalSessionImportDialog(props: {
           <DialogHeader
             startContent={<Upload size={ICON_SIZE.chrome} aria-hidden="true" />}
             title={copy.title}
-            subtitle={copy.description}
             onOpenChange={handleOpenChange}
           />
         }
         content={
-          // Padding 0 so the catalog runs edge to edge with dividers, the way
-          // Astryx wants dense scannable records. Every non-list block carries
-          // its own inset instead.
-          <LayoutContent padding={0}>
-            {alerts.length > 0 && (
-              <VStack gap={2} padding={4}>
-                {alerts}
-              </VStack>
-            )}
+          <LayoutContent>
+            <VStack gap={4}>
+              <Text type="body" color="secondary">
+                {copy.description}
+              </Text>
 
-            {/* The source picker and the archived filter are contextual
-                controls over the list below them, which is what a muted
-                Toolbar above a content area is for. A single source needs no
-                picker — one segment of a segmented control is not a choice. */}
-            {adapterIds.length > 0 && (
-              <Toolbar
-                label={copy.filtersAria}
-                size="sm"
-                variant="muted"
-                dividers={['bottom']}
-                startContent={
-                  adapterIds.length > 1 && adapterId !== null ? (
-                    <SegmentedControl
-                      label={copy.sourceLabel}
-                      value={adapterId}
-                      size="sm"
-                      onChange={(value) => setAdapterId(value)}
-                    >
-                      {adapterIds.map((id) => (
-                        <SegmentedControlItem
-                          key={id}
-                          value={id}
-                          label={sourceLabel(id, copy.codex)}
-                        />
-                      ))}
-                    </SegmentedControl>
-                  ) : (
-                    <Text type="supporting" size="sm" color="secondary">
-                      {sourceLabel(adapterId ?? '', copy.codex)}
-                    </Text>
-                  )
-                }
-                endContent={
-                  <CheckboxInput
-                    label={copy.includeArchived}
-                    value={includeArchived}
-                    onChange={setIncludeArchived}
-                    isDisabled={catalogLoading || importing}
-                  />
-                }
-              />
-            )}
+              {adapterIds.length > 0 && adapterId !== null && (
+                <div className="maka-external-session-import-source">
+                  <SegmentedControl
+                    className="maka-external-session-import-source-list"
+                    label={copy.sourceLabel}
+                    value={adapterId}
+                    layout="fill"
+                    size="sm"
+                    onChange={(value) => setAdapterId(value)}
+                  >
+                    {adapterIds.map((id) => (
+                      <SegmentedControlItem
+                        key={id}
+                        value={id}
+                        label={sourceLabel(id, copy.codex)}
+                      />
+                    ))}
+                  </SegmentedControl>
+                </div>
+              )}
 
-            {(sourceLoading || catalogLoading) && (
-              <div
-                className="maka-external-session-import-loading"
-                role="status"
-                aria-live="polite"
-              >
-                <Spinner size="lg" />
-                <Text type="supporting" color="secondary">
-                  {copy.loading}
-                </Text>
-              </div>
-            )}
-
-            {noSource && <EmptyState isCompact title={copy.unavailableTitle} />}
-            {catalogEmpty && <EmptyState isCompact title={copy.emptyTitle} />}
-
-            {catalog.sessions.length > 0 && (
-              <List
-                density="balanced"
-                hasDividers
-                aria-label={copy.title}
-                aria-busy={loadingMore || undefined}
-              >
-                {catalog.sessions.map((session) => {
-                  const timestamp = session.updatedAt ?? session.createdAt;
-                  const meta = [
-                    session.cwd,
-                    timestamp !== undefined ? dateFormatter.format(timestamp) : null,
-                    session.archived ? copy.archived : null,
-                  ]
-                    .filter(Boolean)
-                    .join(' · ');
-                  return (
-                    <ListItem
-                      key={session.id}
-                      label={session.name}
-                      description={meta}
-                      isSelected={selectedId === session.id}
-                      onClick={() => {
-                        setSelectedId(session.id);
-                        setImportError(null);
-                      }}
-                    />
-                  );
-                })}
-              </List>
-            )}
-
-            {catalog.nextCursor !== null && adapterId !== null && (
-              <HStack hAlign="center" padding={3}>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  label={loadingMore ? copy.loadingMore : copy.loadMore}
-                  isDisabled={loadingMore}
-                  onClick={() => void loadCatalog(adapterId, catalog.nextCursor ?? undefined)}
+              {adapterIds.length > 0 && (
+                <CheckboxInput
+                  label={copy.includeArchived}
+                  value={includeArchived}
+                  onChange={setIncludeArchived}
+                  isDisabled={catalogLoading || importing}
                 />
-              </HStack>
-            )}
+              )}
+
+              {sourceLoading && (
+                <div className="maka-external-session-import-loading" role="status" aria-live="polite">
+                  <Spinner size="lg" />
+                  <Text type="supporting" color="secondary">
+                    {copy.loading}
+                  </Text>
+                </div>
+              )}
+
+              {sourceError && (
+                <Banner
+                  status="error"
+                  title={copy.loadFailedTitle}
+                  description={sourceError}
+                  endContent={<Button variant="ghost" size="sm" label={copy.retry} onClick={() => void loadSources()} />}
+                />
+              )}
+
+              {noSource && (
+                <EmptyState isCompact title={copy.unavailableTitle} />
+              )}
+
+              {catalogError && (
+                <Banner
+                  status="error"
+                  title={copy.loadFailedTitle}
+                  description={catalogError}
+                  endContent={
+                    adapterId === null ? undefined : (
+                      <Button variant="ghost" size="sm" label={copy.retry} onClick={() => void loadCatalog(adapterId)} />
+                    )
+                  }
+                />
+              )}
+
+              {importError && (
+                <Banner status="error" title={copy.importFailedTitle} description={importError} />
+              )}
+
+              {uncertainSourceId !== null && (
+                <Banner
+                  status="warning"
+                  title={copy.importOutcomeUnknownTitle}
+                  description={copy.importOutcomeUnknownDescription}
+                />
+              )}
+
+              {catalogLoading && (
+                <div className="maka-external-session-import-loading" role="status" aria-live="polite">
+                  <Spinner size="lg" />
+                  <Text type="supporting" color="secondary">
+                    {copy.loading}
+                  </Text>
+                </div>
+              )}
+
+              {catalogEmpty && (
+                <EmptyState isCompact title={copy.emptyTitle} />
+              )}
+
+              {catalog.sessions.length > 0 && (
+                <div
+                  className="maka-external-session-import-list"
+                  role="group"
+                  aria-label={copy.title}
+                  aria-busy={loadingMore || undefined}
+                >
+                  {catalog.sessions.map((session) => {
+                    const timestamp = session.updatedAt ?? session.createdAt;
+                    const meta = [
+                      session.cwd,
+                      timestamp !== undefined ? dateFormatter.format(timestamp) : null,
+                      session.archived ? copy.archived : null,
+                    ].filter(Boolean).join(' · ');
+                    return (
+                      <Item
+                        key={session.id}
+                        className="maka-external-session-import-row"
+                        label={session.name}
+                        description={meta}
+                        isSelected={selectedId === session.id}
+                        onClick={() => {
+                          setSelectedId(session.id);
+                          setImportError(null);
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+
+              {catalog.nextCursor !== null && adapterId !== null && (
+                <HStack hAlign="center">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    label={loadingMore ? copy.loadingMore : copy.loadMore}
+                    isDisabled={loadingMore}
+                    onClick={() => void loadCatalog(adapterId, catalog.nextCursor ?? undefined)}
+                  />
+                </HStack>
+              )}
+
+              {adapterIds.length > 0 && (
+                <Text type="supporting" size="sm" color="secondary">
+                  {copy.duplicateNote}
+                </Text>
+              )}
+            </VStack>
           </LayoutContent>
         }
         footer={
-          <LayoutFooter hasDivider>
-            <HStack gap={2} vAlign="center">
-              {/* The duplicate caveat belongs next to the button that would
-                  create the duplicate, not as a footnote under the list. */}
-              <StackItem size="fill">
-                {adapterIds.length > 0 && (
-                  <Text type="supporting" size="sm" color="secondary">
-                    {copy.duplicateNote}
-                  </Text>
-                )}
-              </StackItem>
+          <LayoutFooter>
+            <HStack gap={2} hAlign="end">
               <Button
-                variant="secondary"
+                variant="ghost"
                 label={copy.cancel}
                 isDisabled={importing}
                 onClick={() => handleOpenChange(false)}
@@ -407,7 +379,9 @@ export function ExternalSessionImportDialog(props: {
               <Button
                 variant="primary"
                 label={importing ? copy.importing : copy.import}
-                isDisabled={selectedId === null || importing || selectedId === uncertainSourceId}
+                isDisabled={
+                  selectedId === null || importing || selectedId === uncertainSourceId
+                }
                 isLoading={importing}
                 onClick={() => void importSelected()}
               />

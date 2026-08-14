@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import { formatCompactTimestamp } from '@maka/core/relative-time';
@@ -7,18 +7,33 @@ import { Archive, ICON_SIZE, Search } from '@maka/ui/icons';
 import { HStack, StackItem } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { TextInput } from '@astryxdesign/core/TextInput';
-import { getSettingsTasksCopy, type SettingsTasksCopy } from '../locales/settings-tasks-copy.js';
-import { createSessionListRefresher } from '../session-read-state.js';
-import { settingsActionErrorMessage } from './settings-error-copy';
+import { getSettingsTasksCopy } from '../locales/settings-tasks-copy.js';
 import { SettingsPage, SettingsSection } from './settings-section';
-import { SettingsSkeletonStack } from './settings-skeleton';
 import { archivedTaskRows, matchesArchivedTaskQuery } from './task-catalog-rows';
-import { useActionGuard } from './use-action-guard';
 
-type TaskAction = 'restore' | 'delete' | 'purge';
+/**
+ * Everything this page needs from the shell's session catalog, as one prop so
+ * the three components between the shell and this page forward a value they do
+ * not have to understand.
+ */
+export interface ArchivedTasksBridge {
+  sessions: readonly SessionSummary[];
+  activeId: string | undefined;
+  projects: readonly ProjectRecord[];
+  onRestore(sessionId: string): void;
+  onDelete(sessionId: string): void;
+  /**
+   * Deletes every id and answers with the ones the catalog still reports.
+   * Judging the sweep by what survived rather than by what rejected is what
+   * keeps the report true: the delete IPC commits the removal before it
+   * releases renderer resources, so a rejection does not mean a task is still
+   * there.
+   */
+  onPurge(sessionIds: readonly string[]): Promise<readonly string[]>;
+}
 
-export interface TasksSettingsPageProps {
-  onOpenSession?: (sessionId: string) => void;
+export interface TasksSettingsPageProps extends ArchivedTasksBridge {
+  onOpenSession?(sessionId: string): void;
 }
 
 /**
@@ -26,223 +41,86 @@ export interface TasksSettingsPageProps {
  *
  * The rail is a navigator for active tasks: single selection, 260px, always on
  * screen. Cleaning up archived ones is the opposite shape — you need the
- * project and the date to decide, and you do it rarely. That work never fit in
- * the rail, which is why archived tasks lived there as a filter row that could
- * only ever restore one task at a time.
+ * project and the date to decide, and you do it rarely.
  *
  * The carrier is the entity-list one this repo already uses for projects, the
  * permission centre and the provider catalog: `SettingsSection` over a
- * `List`/`ListItem` group. An archived task is an entity, not a preference,
- * and the settings surface should not have one page speaking a different
- * visual language from the other six.
+ * `List`/`ListItem` group. An archived task is an entity, not a preference.
  *
- * Actions are per row — `恢复` in the open, `打开` and `彻底删除` behind the
- * row menu — plus one section-level `清空全部`. There is no multi-select: the
- * middle case it would serve (restore five of eleven) is rare enough that it
- * does not pay for a checkbox column, a select-all cell, and a strip of batch
- * buttons that shifts the list down the moment you tick a row.
- *
- * It reads the catalog through the same refresher and the same projection the
- * rail uses (`archivedTaskRows`), so a row here means what a row there means.
- * Mutations reach the rail through the shared `sessions.subscribeChanges`
- * broadcast; neither surface pushes state at the other.
+ * This page owns no session state. Rows come from the shell's catalog through
+ * the rail's own projection, and restoring or deleting one calls the rail's own
+ * row action — the same confirm, the same cleanup, the same toasts. A second
+ * copy of that machinery would drift from the rail's the first time either side
+ * changed. What is genuinely new here is finding a task by name or project, and
+ * clearing a set of them in one pass.
  */
-export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
+export function TasksSettingsPage(props: TasksSettingsPageProps) {
   const locale = useUiLocale();
   const copy = getSettingsTasksCopy(locale);
   const toast = useToast();
   const mountedRef = useMountedRef();
-  // One latch for the whole page: 清空全部 walks the same tasks the row
-  // actions write to, so letting two overlap would race over rows the first
-  // is already removing.
-  const guard = useActionGuard<TaskAction>();
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [projects, setProjects] = useState<readonly ProjectRecord[]>([]);
   const [query, setQuery] = useState('');
-  const [loaded, setLoaded] = useState(false);
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  const sessionsRef = useRef<SessionSummary[]>([]);
-  const refresherRef = useRef<ReturnType<typeof createSessionListRefresher> | null>(null);
-  if (refresherRef.current === null) {
-    // The same seam the rail lists through: single-flight with a generation
-    // guard, so a burst of change events collapses into one trailing read and
-    // a slow response can never overwrite a newer one. Read boundaries stay
-    // empty because this page shows no unread state.
-    refresherRef.current = createSessionListRefresher({
-      listSessions: () => window.maka.sessions.list(),
-      readBoundaries: () => ({}),
-      currentSessions: () => sessionsRef.current,
-      commitSessions: (next) => {
-        sessionsRef.current = next;
-        if (mountedRef.current) {
-          setSessions(next);
-          setLoadFailed(false);
-        }
-      },
-      onError: () => {
-        if (mountedRef.current) setLoadFailed(true);
-      },
-    });
-  }
-
-  const load = useCallback(async () => {
-    await refresherRef.current?.refresh();
-    try {
-      const snapshot = await window.maka.projects.getSnapshot();
-      if (mountedRef.current) setProjects(snapshot.projects);
-    } catch {
-      // A missing project snapshot costs a row its project name, not the page.
-    }
-    if (mountedRef.current) setLoaded(true);
-  }, [mountedRef]);
-
-  useEffect(() => {
-    void load();
-    // Every writer in the app broadcasts here, including the rail's own row
-    // menu, so this page stays correct while it is open behind the modal.
-    const unsubscribeSessions = window.maka.sessions.subscribeChanges(() => void load());
-    const unsubscribeProjects = window.maka.projects.subscribeChanges(() => void load());
-    return () => {
-      unsubscribeSessions();
-      unsubscribeProjects();
-    };
-  }, [load]);
+  const [purging, setPurging] = useState(false);
 
   const projectNames = useMemo(() => {
     const names = new Map<string, string>();
-    for (const project of projects) names.set(project.id, project.name);
+    for (const project of props.projects) names.set(project.id, project.name);
     return names;
-  }, [projects]);
+  }, [props.projects]);
 
-  const projectNameOf = useCallback(
-    (session: SessionSummary) =>
-      session.projectId ? (projectNames.get(session.projectId) ?? copy.noProject) : copy.noProject,
+  /**
+   * `无项目` is a fact about the task, not a stand-in for a project this page
+   * failed to look up — a row that cannot resolve its project says nothing
+   * rather than something false.
+   */
+  const projectLabelOf = useCallback(
+    (session: SessionSummary): string | undefined =>
+      session.projectId ? projectNames.get(session.projectId) : copy.noProject,
     [copy.noProject, projectNames],
   );
 
   // Store order is already recency-first with a stable id tie-break, and the
   // projection preserves it, so there is nothing left to sort here.
-  const archived = useMemo(() => archivedTaskRows(sessions), [sessions]);
+  const archived = useMemo(
+    () => archivedTaskRows(props.sessions, props.activeId),
+    [props.activeId, props.sessions],
+  );
+  const isSearching = query.trim().length > 0;
   const visible = useMemo(
-    () => archived.filter((session) => matchesArchivedTaskQuery(session, query, projectNameOf)),
-    [archived, projectNameOf, query],
+    () => archived.filter((session) => matchesArchivedTaskQuery(session, query, projectLabelOf)),
+    [archived, projectLabelOf, query],
   );
 
-  async function runTaskAction(
-    action: TaskAction,
-    run: () => Promise<void>,
-    failureTitle: string,
-    successMessage: string,
-  ) {
-    if (!guard.begin(action)) return;
-    setBusy(true);
-    try {
-      await run();
-      toast.success(successMessage);
-    } catch (error) {
-      toast.error(failureTitle, settingsActionErrorMessage(error, locale));
-    } finally {
-      guard.finish();
-      if (mountedRef.current) setBusy(false);
-    }
-    await load();
-  }
+  // What the button would delete, kept current through the confirm dialog: the
+  // set can move while it is up, and the one thing this must never do is
+  // delete a task someone restored in the meantime.
+  const purgeTargetsRef = useRef<string[]>([]);
+  purgeTargetsRef.current = (isSearching ? visible : archived).map((session) => session.id);
 
-  async function restoreTask(session: SessionSummary) {
-    await runTaskAction(
-      'restore',
-      // `revisionFamily` matches the rail's own row action: a task and its
-      // revisions archive and restore as one unit, never half a family.
-      () => window.maka.sessions.unarchive(session.id, { revisionFamily: true }),
-      copy.restoreFailedTitle,
-      copy.restoredToast,
-    );
-  }
-
-  async function deleteTask(session: SessionSummary) {
+  async function purge() {
+    const announced = purgeTargetsRef.current.length;
     const confirmed = await toast.confirm({
-      title: copy.deleteConfirmTitle(session.name),
-      description: copy.deleteConfirmBody,
-      confirmLabel: copy.deleteConfirmAction,
+      title: isSearching
+        ? copy.purgeMatchesConfirmTitle(announced)
+        : copy.purgeAllConfirmTitle(announced),
+      description: copy.purgeConfirmBody,
+      confirmLabel: copy.purgeConfirmAction,
       cancelLabel: copy.cancel,
       destructive: true,
     });
     if (!confirmed) return;
-    await runTaskAction(
-      'delete',
-      () => window.maka.sessions.remove(session.id, { revisionFamily: true }),
-      copy.deleteFailedTitle,
-      copy.deletedToast,
-    );
-  }
-
-  /**
-   * Clears every archived task, not the search result: the button says 全部,
-   * and one that quietly stopped at what the box happens to match would
-   * delete a different set than the one it named.
-   */
-  async function purgeAll() {
-    const ids = archived.map((session) => session.id);
-    if (ids.length === 0) return;
-    const confirmed = await toast.confirm({
-      title: copy.purgeConfirmTitle(ids.length),
-      description: copy.purgeConfirmBody,
-      confirmLabel: copy.deleteConfirmAction,
-      cancelLabel: copy.cancel,
-      destructive: true,
-    });
-    if (!confirmed || !guard.begin('purge')) return;
-    setBusy(true);
-    // Sequential, and each task is isolated: these are versioned writes, and
-    // one task failing is no reason to abandon the rest.
-    let firstError: unknown;
-    let failed = 0;
-    for (const id of ids) {
-      try {
-        await window.maka.sessions.remove(id, { revisionFamily: true });
-      } catch (error) {
-        failed += 1;
-        firstError ??= error;
+    const ids = purgeTargetsRef.current;
+    setPurging(true);
+    try {
+      const remaining = await props.onPurge(ids);
+      if (remaining.length === 0) {
+        toast.success(copy.purgedToast(ids.length));
+      } else {
+        toast.error(copy.purgeFailedTitle, copy.purgeFailedBody(remaining.length));
       }
+    } finally {
+      if (mountedRef.current) setPurging(false);
     }
-    guard.finish();
-    if (mountedRef.current) setBusy(false);
-    if (failed === ids.length) {
-      toast.error(copy.purgeFailedTitle, settingsActionErrorMessage(firstError, locale));
-    } else if (failed > 0) {
-      toast.error(copy.purgeFailedTitle, copy.partialFailure(failed));
-    } else {
-      toast.success(copy.purgedToast(ids.length));
-    }
-    await load();
-  }
-
-  if (!loaded) {
-    return (
-      <SettingsPage>
-        <SettingsSkeletonStack label={copy.loadingLabel} />
-      </SettingsPage>
-    );
-  }
-
-  if (loadFailed) {
-    return (
-      <SettingsPage>
-        <EmptyState
-          title={copy.loadFailed}
-          actions={
-            <Button
-              variant="secondary"
-              size="sm"
-              clickAction={() => void load()}
-              label={copy.retry}
-            />
-          }
-        />
-      </SettingsPage>
-    );
   }
 
   // Nothing archived at all is a different situation from a search that
@@ -257,14 +135,15 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
 
   return (
     <SettingsPage as="section" aria-label={copy.listAria}>
-      {/* Search and 清空全部 share one row: as a section action the button
-          landed a full 32px page rhythm below the box, alone on its own line. */}
+      {/* Search and the clear button share one row: as a section action the
+          button landed a full 32px page rhythm below the box, alone on its
+          own line. */}
       <HStack gap={2} vAlign="center">
         <StackItem size="fill">
           <TextInput
             label={copy.searchLabel}
             isLabelHidden
-            placeholder={copy.searchPlaceholder}
+            placeholder={copy.searchLabel}
             value={query}
             onChange={setQuery}
             startIcon={Search}
@@ -272,11 +151,14 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
             width="100%"
           />
         </StackItem>
+        {/* While a search is on screen the button deletes what is on screen.
+            One that said 全部 and deleted a set the reader could not see would
+            be answering a question nobody asked. */}
         <Button
           variant="destructive"
-          isDisabled={busy}
-          clickAction={() => void purgeAll()}
-          label={copy.purge}
+          isDisabled={purging || purgeTargetsRef.current.length === 0}
+          clickAction={() => void purge()}
+          label={isSearching ? copy.purgeMatches(visible.length) : copy.purgeAll}
         />
       </HStack>
       <SettingsSection>
@@ -284,64 +166,48 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
           <EmptyState isCompact title={copy.noMatchTitle} description={copy.noMatchBody} />
         ) : (
           <List density="balanced" hasDividers aria-label={copy.listAria}>
-            {visible.map((session) => (
-              <ArchivedTaskRow
-                key={session.id}
-                session={session}
-                project={projectNameOf(session)}
-                copy={copy}
-                locale={locale}
-                isBusy={busy}
-                onRestore={() => void restoreTask(session)}
-                onDelete={() => void deleteTask(session)}
-                onOpen={onOpenSession ? () => onOpenSession(session.id) : undefined}
-              />
-            ))}
+            {visible.map((session) => {
+              const updated = session.lastMessageAt
+                ? formatCompactTimestamp(session.lastMessageAt, Date.now(), locale)
+                : undefined;
+              const description = [projectLabelOf(session), updated].filter(Boolean).join(' · ');
+              return (
+                <ListItem
+                  key={session.id}
+                  label={session.name}
+                  description={description.length > 0 ? description : undefined}
+                  startContent={<Archive size={ICON_SIZE.control} aria-hidden="true" />}
+                  endContent={
+                    <>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        isDisabled={purging}
+                        clickAction={() => props.onRestore(session.id)}
+                        label={copy.restore}
+                        // Every row's button reads 恢复; only the accessible
+                        // name can say which task it restores.
+                        aria-label={copy.restoreTask(session.name)}
+                      />
+                      <MoreMenu
+                        label={copy.moreActions(session.name)}
+                        size="sm"
+                        isDisabled={purging}
+                        items={[
+                          ...(props.onOpenSession
+                            ? [{ label: copy.open, onClick: () => props.onOpenSession?.(session.id) }]
+                            : []),
+                          { label: copy.delete, onClick: () => props.onDelete(session.id) },
+                        ]}
+                      />
+                    </>
+                  }
+                />
+              );
+            })}
           </List>
         )}
       </SettingsSection>
     </SettingsPage>
-  );
-}
-
-function ArchivedTaskRow(props: {
-  session: SessionSummary;
-  project: string;
-  copy: SettingsTasksCopy;
-  locale: ReturnType<typeof useUiLocale>;
-  isBusy: boolean;
-  onRestore: () => void;
-  onDelete: () => void;
-  onOpen?: () => void;
-}) {
-  const { copy, session } = props;
-  const updated = session.lastMessageAt
-    ? formatCompactTimestamp(session.lastMessageAt, Date.now(), props.locale)
-    : undefined;
-  return (
-    <ListItem
-      label={session.name}
-      description={updated ? `${props.project} · ${updated}` : props.project}
-      startContent={<Archive size={ICON_SIZE.control} aria-hidden="true" />}
-      endContent={
-        <>
-          <Button
-            variant="secondary"
-            size="sm"
-            isDisabled={props.isBusy}
-            clickAction={props.onRestore}
-            label={copy.restore}
-          />
-          <MoreMenu
-            label={copy.moreActions(session.name)}
-            size="sm"
-            items={[
-              ...(props.onOpen ? [{ label: copy.open, onClick: props.onOpen }] : []),
-              { label: copy.delete, onClick: props.onDelete },
-            ]}
-          />
-        </>
-      }
-    />
   );
 }

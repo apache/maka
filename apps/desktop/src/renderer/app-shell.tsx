@@ -135,6 +135,7 @@ import { AppShellTopbarActions, AppShellWorkspaceTopActions } from './app-shell-
 import { updateReminderFromStatus } from './app-shell-app-update';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { AppShellOverlays } from './app-shell-overlays';
+import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
 import { derivePetActivityState } from './custom-pet-companion-model';
 import { createAppShellDailyReviewBridge } from './app-shell-daily-review-bridge';
@@ -1088,7 +1089,13 @@ function AppShellContent({
   }
 
   function openSessionInChat(sessionId: string, turnId?: string, sequence?: number): void {
-    setNavSelection({ section: 'sessions', filter: 'chats' });
+    // Land on the filter that actually lists this session. Search, the command
+    // palette and Settings can all target an archived one, and `chats` excludes
+    // those — the session would open with no rail row to select.
+    const archived = sessionsRef.current.some(
+      (session) => session.id === sessionId && session.isArchived,
+    );
+    setNavSelection({ section: 'sessions', filter: archived ? 'archived' : 'chats' });
     setActiveId(sessionId);
     if (turnId) {
       setSearchScrollTarget({ sessionId, turnId, sequence, nonce: Date.now() });
@@ -1830,6 +1837,20 @@ function AppShellContent({
   const worktreeSessionIds = useMemo(
     () => deriveWorktreeSessionIds(visibleSessions, projects),
     [visibleSessions, projects],
+  );
+  // 已归档任务 reads the shell's catalog rather than listing again behind the
+  // modal, and writes through the same row actions the rail uses — one owner
+  // for restoring and deleting a task, whichever surface asked.
+  const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
+    () => ({
+      sessions,
+      activeId,
+      projects,
+      onRestore: (sessionId) => void sessionRowActionHandlers.unarchiveSession(sessionId),
+      onDelete: (sessionId) => void sessionRowActionHandlers.deleteSession(sessionId),
+      onPurge: (sessionIds) => sessionRowActionHandlers.purgeSessions(sessionIds),
+    }),
+    [sessions, activeId, projects],
   );
   const { startModeSession } = useStableActions(createAppShellSessionStartActions, {
     uiLocale,
@@ -3356,6 +3377,7 @@ function AppShellContent({
           closeSettings();
           openSessionInChat(sessionId);
         }}
+        archivedTasks={archivedTasksBridge}
         helpOpen={helpOpen}
         closeHelp={closeHelp}
         searchModalOpen={searchModalOpen}
