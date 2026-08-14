@@ -122,6 +122,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #model: string;
   #llmConnectionSlug: string;
   #thinkingLevel: ThinkingLevel | undefined;
+  // Construction-time default a fresh Session is created with. Per-session
+  // elevations (the picker, a resumed Session's boundary) update
+  // `#permissionMode` only; `startNewSession` falls back to this so Full
+  // access never leaks into a fresh Session (#3020).
+  readonly #defaultPermissionMode: PermissionMode;
   #permissionMode: PermissionMode;
   #activeBoundaryDisplayMode: PermissionMode | undefined;
   #orchestrationMode: OrchestrationMode;
@@ -164,7 +169,8 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     };
     this.#model = input.model;
     this.#llmConnectionSlug = input.llmConnectionSlug;
-    this.#permissionMode = input.permissionMode ?? 'ask';
+    this.#defaultPermissionMode = input.permissionMode ?? 'ask';
+    this.#permissionMode = this.#defaultPermissionMode;
     this.#orchestrationMode = input.orchestrationMode ?? 'default';
   }
 
@@ -550,6 +556,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#sessionGeneration += 1;
     this.#channelGeneration += 1;
     this.#sessionId = null;
+    // A fresh Session starts at the construction-time default. Leaving a
+    // previous Session's elevation in `#permissionMode` would both misreport
+    // the mode and create the next Session with it (#3020). Full access stays
+    // an explicit per-session opt-in; `setPermissionMode` can still raise the
+    // mode before the first prompt creates the Session.
+    this.#permissionMode = this.#defaultPermissionMode;
     this.#activeBoundaryDisplayMode = undefined;
     void this.#replaceChannel(undefined);
   }
