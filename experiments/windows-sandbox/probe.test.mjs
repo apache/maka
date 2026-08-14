@@ -19,18 +19,19 @@ test('reports matching allowed and denied observations', () => {
         deniedRead: join(root, 'missing-read.txt'),
         allowedWrite,
         deniedWrite: join(root, 'missing-parent', 'write.txt'),
-        network: { host: '127.0.0.1', port: 9, expected: 'denied', timeoutMs: 500 },
         forbiddenEnvironment: ['MAKA_W0_TEST_SECRET'],
       }),
     );
 
+    const env = { ...process.env };
+    delete env.MAKA_W0_TEST_SECRET;
     const result = spawnSync(
       process.execPath,
       ['experiments/windows-sandbox/probe.mjs', '--manifest', manifestPath],
       {
         cwd: process.cwd(),
         encoding: 'utf8',
-        env: { ...process.env, MAKA_W0_TEST_SECRET: undefined },
+        env,
       },
     );
     assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -47,7 +48,6 @@ test('reports matching allowed and denied observations', () => {
         { operation: 'read_denied', expected: 'denied', actual: 'denied' },
         { operation: 'write_allowed', expected: 'allowed', actual: 'allowed' },
         { operation: 'write_denied', expected: 'denied', actual: 'denied' },
-        { operation: 'network_connect', expected: 'denied', actual: 'denied' },
         { operation: 'environment:MAKA_W0_TEST_SECRET', expected: 'absent', actual: 'absent' },
         { operation: 'descendant_launch', expected: 'managed', actual: 'managed' },
       ],

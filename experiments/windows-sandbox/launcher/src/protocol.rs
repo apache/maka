@@ -66,6 +66,9 @@ fn validate_path(value: &str, field: &str) -> Result<(), String> {
     if !path.is_absolute() {
         return Err(format!("{field} must be absolute"));
     }
+    if value.contains('/') || (value.ends_with('\\') && !is_windows_root(value)) {
+        return Err(format!("{field} must use canonical Windows separators"));
+    }
     if path
         .components()
         .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
@@ -73,4 +76,9 @@ fn validate_path(value: &str, field: &str) -> Result<(), String> {
         return Err(format!("{field} must be lexically canonical"));
     }
     Ok(())
+}
+
+fn is_windows_root(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 3 && bytes[1] == b':' && bytes[2] == b'\\' && bytes[0].is_ascii_alphabetic()
 }

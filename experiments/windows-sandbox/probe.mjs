@@ -43,7 +43,11 @@ async function observeNetwork(network) {
     };
     socket.setTimeout(network.timeoutMs ?? 1500, () => finish('denied'));
     socket.once('connect', () => finish('allowed'));
-    socket.once('error', () => finish('denied'));
+    socket.once('error', (error) => {
+      // ECONNREFUSED proves that the route reached the host; it is not a
+      // network denial. Timeout and unreachable errors are the deny evidence.
+      finish(error.code === 'ECONNREFUSED' ? 'allowed' : 'denied');
+    });
   });
   observations.push({ operation: 'network_connect', expected: network.expected, actual });
 }

@@ -34,6 +34,10 @@ test('rejects unknown versions', () => {
 
 test('rejects relative and non-canonical paths', () => {
   assert.throws(() => parseLaunchRequest({ ...validRequest(), cwd: 'workspace' }), /absolute/u);
+  if (process.platform === 'win32') {
+    assert.throws(() => parseLaunchRequest({ ...validRequest(), cwd: 'C:/sandbox/workspace' }), /canonical/u);
+    assert.throws(() => parseLaunchRequest({ ...validRequest(), cwd: 'C:\\sandbox\\workspace\\' }), /canonical/u);
+  }
   assert.throws(
     () =>
       parseLaunchRequest({
