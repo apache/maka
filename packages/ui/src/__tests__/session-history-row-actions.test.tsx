@@ -107,3 +107,30 @@ test('renders collapsible project navigation and row actions as sibling controls
   assert.equal(projectButtons[1], navigation);
   assert.doesNotMatch(markup, /<button\b(?:(?!<\/button>)[\s\S])*<button\b/);
 });
+
+test('groups multiple pinned sessions first and sorts each section by recent activity', () => {
+  const sessions: SessionSummary[] = [
+    { ...session, id: 'recent', name: 'Recent', lastMessageAt: 30, isFlagged: false },
+    { ...session, id: 'pinned-old', name: 'Pinned old', lastMessageAt: 10, isFlagged: true },
+    { ...session, id: 'pinned-new', name: 'Pinned new', lastMessageAt: 20, isFlagged: true },
+  ];
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <SessionHistoryList
+        sessions={sessions}
+        onSelectSession={() => undefined}
+        rowActions={rowActions}
+      />
+    </LocaleProvider>,
+  );
+
+  const { document } = parseHTML(markup);
+  const rows = [...document.querySelectorAll<HTMLElement>('[data-maka-contract="session-row"]')];
+  assert.deepEqual(rows.map((row) => row.dataset.sessionId), [
+    'pinned-new',
+    'pinned-old',
+    'recent',
+  ]);
+  assert.match(markup, /Pinned/);
+  assert.match(markup, /Recent/);
+});
