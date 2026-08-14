@@ -121,6 +121,54 @@ describe('turn virtualizer', () => {
     assert.equal(afterAppend.end - afterAppend.start, 40);
   });
 
+  it('does not inherit an undersized window while transcript turns arrive', () => {
+    const firstIds = ids(1);
+    const firstLayout = buildTurnVirtualLayout(firstIds, undefined);
+    const first = initialTurnVirtualWindow(firstLayout);
+
+    const shortIds = ids(10);
+    const short = reconcileTurnVirtualWindow(
+      firstIds,
+      buildTurnVirtualLayout(shortIds, undefined),
+      first,
+    );
+    assert.deepEqual([short.start, short.end], [0, 10]);
+
+    const longIds = ids(200);
+    const long = reconcileTurnVirtualWindow(
+      firstIds,
+      buildTurnVirtualLayout(longIds, undefined),
+      first,
+    );
+    assert.deepEqual([long.start, long.end], [160, 200]);
+  });
+
+  it('recovers an undersized viewport window instead of oscillating between turns', () => {
+    const layout = buildTurnVirtualLayout(
+      ids(10),
+      new Map([
+        ['t4', 4_800],
+        ['t5', 1_000],
+      ]),
+    );
+    const undersized = turnVirtualWindowForRange(layout, 4, 5);
+    const recovered = stableTurnVirtualWindowForViewport(
+      layout,
+      undersized,
+      { scrollTop: 5_000, clientHeight: 800 },
+    );
+
+    assert.deepEqual([recovered.start, recovered.end], [0, 10]);
+    assert.deepEqual(
+      stableTurnVirtualWindowForViewport(
+        layout,
+        recovered,
+        { scrollTop: 5_000, clientHeight: 800 },
+      ),
+      recovered,
+    );
+  });
+
   it('brings an explicit target into the bounded window', () => {
     const turnIds = ids(1_000);
     const layout = buildTurnVirtualLayout(turnIds, undefined);

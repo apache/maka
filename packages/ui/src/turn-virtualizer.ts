@@ -109,6 +109,10 @@ export function stableTurnVirtualWindowForViewport(
   viewport: { scrollTop: number; clientHeight: number },
   options: TurnVirtualWindowOptions = {},
 ): TurnVirtualWindow {
+  const minimumSize = Math.min(layout.turnIds.length, INITIAL_TURN_WINDOW_SIZE);
+  if (current.end - current.start < minimumSize) {
+    return turnVirtualWindowForViewport(layout, viewport, options);
+  }
   const overscan = nonNegative(options.overscanPx, DEFAULT_TURN_OVERSCAN_PX);
   const scrollTop = clamp(viewport.scrollTop, 0, layout.totalHeight);
   const requiredStart = Math.max(0, scrollTop - overscan);
@@ -188,6 +192,12 @@ export function reconcileTurnVirtualWindow(
   }
   const retained = retainedRange({ ensureIndex, retainRange }, nextIds.length);
   ({ start, end } = includeRange(start, end, retained));
+  ({ start, end } = expandRange(
+    start,
+    end,
+    Math.min(nextIds.length, INITIAL_TURN_WINDOW_SIZE),
+    nextIds.length,
+  ));
   if (end - start > MAX_TURN_WINDOW_SIZE) {
     const focus = ensureIndex ?? (retained === undefined
       ? Math.floor((start + end) / 2)

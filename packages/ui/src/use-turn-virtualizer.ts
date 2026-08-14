@@ -14,6 +14,7 @@ import {
   DEFAULT_TURN_GAP,
   DEFAULT_TURN_WINDOW_SIZE,
   initialTurnVirtualWindow,
+  MAX_TURN_WINDOW_SIZE,
   reconcileTurnVirtualWindow,
   stableTurnVirtualWindowForViewport,
   turnVirtualWindowForRange,
@@ -58,13 +59,28 @@ export function useTurnVirtualizer(input: {
     : -1;
   const ensureIndex = candidateEnsureIndex < 0 ? undefined : candidateEnsureIndex;
   const retainRange = root ? interactiveTurnRange(root, input.turnIds) : undefined;
+  const virtualizationRequired = input.turnIds.length > MAX_TURN_WINDOW_SIZE;
   const [state, setState] = useState<VirtualState>(() => ({
     sessionId: input.sessionId,
     turnIds: input.turnIds,
     window: initialTurnVirtualWindow(layout, undefined, ensureIndex),
   }));
   let current = state;
-  if (state.sessionId !== input.sessionId || !sameTurnIds(state.turnIds, input.turnIds)) {
+  if (!virtualizationRequired) {
+    const fullWindow = turnVirtualWindowForRange(layout, 0, input.turnIds.length);
+    current = {
+      sessionId: input.sessionId,
+      turnIds: input.turnIds,
+      window: fullWindow,
+    };
+    if (
+      state.sessionId !== current.sessionId
+      || !sameTurnIds(state.turnIds, current.turnIds)
+      || !sameWindow(state.window, fullWindow)
+    ) {
+      setState(current);
+    }
+  } else if (state.sessionId !== input.sessionId || !sameTurnIds(state.turnIds, input.turnIds)) {
     const reconciled = state.sessionId === input.sessionId
       ? reconcileTurnVirtualWindow(state.turnIds, layout, state.window, ensureIndex, retainRange)
       : initialTurnVirtualWindow(layout, undefined, ensureIndex);
@@ -158,7 +174,7 @@ export function useTurnVirtualizer(input: {
     let frame = 0;
     const updateWindow = (): void => {
       frame = 0;
-      if (pendingReveal.current) return;
+      if (!virtualizationRequired || pendingReveal.current) return;
       installWindow(stableTurnVirtualWindowForViewport(
         layoutRef.current,
         stateRef.current.window,
@@ -167,13 +183,14 @@ export function useTurnVirtualizer(input: {
       ));
     };
     const scheduleWindow = (): void => {
+      if (!virtualizationRequired) return;
       if (frame === 0) frame = window.requestAnimationFrame(updateWindow);
     };
     const resizeObserver = new ResizeObserver((entries) => {
       const nextGap = turnLayoutGap(root, DEFAULT_TURN_GAP);
       const nextLayoutKey = turnLayoutKey(root, nextGap);
       let changed = nextLayoutKey !== layoutKey;
-      const anchor = captureChatScrollAnchor(root);
+      const anchor = virtualizationRequired ? captureChatScrollAnchor(root) : undefined;
       for (const entry of entries) {
         const element = entry.target as HTMLElement;
         const turnId = element.dataset.virtualTurnId;
@@ -187,7 +204,7 @@ export function useTurnVirtualizer(input: {
           ) || changed;
         }
       }
-      if (changed) {
+      if (changed && anchor) {
         pendingAnchor.current = anchor;
         setGeometryRevision((revision) => revision + 1);
       }
@@ -226,7 +243,7 @@ export function useTurnVirtualizer(input: {
       mutationObserver.disconnect();
       resizeObserver.disconnect();
     };
-  }, [input.sessionId, input.scrollRef, installWindow, layoutKey]);
+  }, [input.sessionId, input.scrollRef, installWindow, layoutKey, virtualizationRequired]);
 
   return {
     start: current.window.start,
