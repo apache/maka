@@ -3,8 +3,12 @@ import { describe, test } from 'node:test';
 import type { ExtensionUiContributionProjection } from '@maka/runtime-host/protocol';
 import {
   selectUiSnapshots,
-  withUiSandboxPolicy,
 } from '../../renderer/ui-extension-host.js';
+import {
+  withUiSandboxPolicy,
+} from '../ui-extension-frame-document.js';
+import { createUiExtensionFrameRequestHandler } from '../ui-extension-frame-protocol.js';
+import { uiExtensionFrameUrl } from '../../renderer/ui-extension-frame-url.js';
 
 describe('Desktop UI extension shell', () => {
   test('selects one deterministic root and ordered independent overlays', () => {
@@ -33,11 +37,40 @@ describe('Desktop UI extension shell', () => {
     assert.doesNotMatch(plain, /makaUI/);
     const bridged = withUiSandboxPolicy('<main>Hello</main>', false, 'test-token');
     assert.match(bridged, /maka-ui-bridge\/v1/);
+    assert.match(bridged, /maka-ui-bridge-ready\/v1/);
+    assert.match(bridged, /maka-ui-host-ready\/v1/);
+    assert.match(bridged, /queued\.push/);
+    assert.match(bridged, /setInterval\(announce,50\)/);
+    assert.match(bridged, /clearInterval\(retry\)/);
     assert.match(bridged, /getState/);
     assert.match(bridged, /setState/);
     assert.match(bridged, /deleteState/);
     assert.match(bridged, /invoke/);
     assert.match(bridged, /test-token/);
+  });
+
+  test('serves active UI bytes from an isolated scheme instead of srcdoc CSP inheritance', async () => {
+    const token = '12345678-1234-4123-8123-123456789abc';
+    const contribution = item('root', 'app.root', 1);
+    const url = uiExtensionFrameUrl({
+      scopeId: 'desktop-ui',
+      bindingId: contribution.bindingId,
+      extensionId: contribution.extensionId,
+      revision: contribution.revision,
+      contributionId: contribution.id,
+      token,
+    });
+    const handler = createUiExtensionFrameRequestHandler(() => ({
+      request: async () => ({
+        scopeId: 'desktop-ui',
+        digest: 'sha256-test',
+        contributions: [{ ...contribution, hostState: true }],
+      }),
+    }));
+    const response = await handler(new Request(url));
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-security-policy') ?? '', /script-src 'unsafe-inline'/);
+    assert.match(await response.text(), /makaUI/);
   });
 });
 

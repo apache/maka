@@ -1,4 +1,8 @@
 import {
+  isCanonicalExtensionId,
+  isCanonicalExtensionScopeId,
+} from '@maka/runtime/extension-lifecycle-kernel';
+import {
   requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
@@ -252,7 +256,7 @@ export function decodeExtensionCatalogQueryInput(value: unknown): ExtensionCatal
 
 export function decodeExtensionUiSnapshotInput(value: unknown): ExtensionUiSnapshotInput {
   const input = requireExactRecord(value, 'extension UI snapshot input', ['scopeId']);
-  return { scopeId: requireEntityId(input.scopeId, 'extension UI scopeId') };
+  return { scopeId: decodeExtensionScopeId(input.scopeId, 'extension UI scopeId') };
 }
 
 export function decodeExtensionUiSnapshotResult(value: unknown): ExtensionUiSnapshotResult {
@@ -265,7 +269,7 @@ export function decodeExtensionUiSnapshotResult(value: unknown): ExtensionUiSnap
     throw invalidProtocolFrame('Invalid extension UI contributions');
   }
   const decoded = {
-    scopeId: requireEntityId(result.scopeId, 'extension UI scopeId'),
+    scopeId: decodeExtensionScopeId(result.scopeId, 'extension UI scopeId'),
     digest: requireUtf8String(result.digest, 'extension UI digest', 128),
     contributions: result.contributions.map(decodeUiContributionProjection),
   };
@@ -343,9 +347,9 @@ export function decodeExtensionUiRpcInvokeInput(value: unknown): ExtensionUiRpcI
     'args',
   ]);
   const decoded = {
-    scopeId: requireEntityId(input.scopeId, 'extension UI scopeId'),
+    scopeId: decodeExtensionScopeId(input.scopeId, 'extension UI scopeId'),
     bindingId: requireEntityId(input.bindingId, 'extension bindingId'),
-    extensionId: requireEntityId(input.extensionId, 'extension extensionId'),
+    extensionId: decodeExtensionId(input.extensionId),
     revision: decodeRevision(input.revision),
     method: requireUtf8String(input.method, 'extension UI RPC method', 128),
     args: decodeUiStateValue(input.args),
@@ -396,8 +400,8 @@ export function decodeExtensionCatalogMutateInput(value: unknown): ExtensionCata
       return {
         kind: 'enable',
         bindingId: requireEntityId(input.bindingId, 'extension bindingId'),
-        scopeId: requireEntityId(input.scopeId, 'extension scopeId'),
-        extensionId: requireEntityId(input.extensionId, 'extension extensionId'),
+        scopeId: decodeExtensionScopeId(input.scopeId, 'extension scopeId'),
+        extensionId: decodeExtensionId(input.extensionId),
         revision: decodeRevision(input.revision),
       };
     }
@@ -451,7 +455,7 @@ export function decodeToolPackageUninstallInput(value: unknown): ToolPackageUnin
     'revision',
   ]);
   return {
-    extensionId: requireEntityId(input.extensionId, 'extension extensionId'),
+    extensionId: decodeExtensionId(input.extensionId),
     revision: decodeRevision(input.revision),
   };
 }
@@ -477,7 +481,7 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     throw invalidProtocolFrame('Invalid trusted extension contribution names');
   }
   return {
-    extensionId: requireEntityId(revision.extensionId, 'extension extensionId'),
+    extensionId: decodeExtensionId(revision.extensionId),
     revision: decodeRevision(revision.revision),
     toolNames: revision.toolNames.map((name) =>
       requireUtf8String(name, 'extension tool name', 128),
@@ -518,7 +522,7 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
   }
   return {
     bindingId: requireEntityId(item.bindingId, 'extension bindingId'),
-    extensionId: requireEntityId(item.extensionId, 'extension extensionId'),
+    extensionId: decodeExtensionId(item.extensionId),
     revision: decodeRevision(item.revision),
     id: requireUtf8String(item.id, 'extension UI contribution id', 128),
     surface: item.surface,
@@ -541,9 +545,9 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
 
 function decodeUiStateIdentity(input: Record<string, unknown>): ExtensionUiStateQueryInput {
   return {
-    scopeId: requireEntityId(input.scopeId, 'extension UI scopeId'),
+    scopeId: decodeExtensionScopeId(input.scopeId, 'extension UI scopeId'),
     bindingId: requireEntityId(input.bindingId, 'extension bindingId'),
-    extensionId: requireEntityId(input.extensionId, 'extension extensionId'),
+    extensionId: decodeExtensionId(input.extensionId),
     revision: decodeRevision(input.revision),
     key: requireUtf8String(input.key, 'extension UI state key', 128),
   };
@@ -581,8 +585,8 @@ function decodeBindingProjection(value: unknown): ExtensionBindingProjection {
   ]);
   return {
     bindingId: requireEntityId(binding.bindingId, 'extension bindingId'),
-    scopeId: requireEntityId(binding.scopeId, 'extension scopeId'),
-    extensionId: requireEntityId(binding.extensionId, 'extension extensionId'),
+    scopeId: decodeExtensionScopeId(binding.scopeId, 'extension scopeId'),
+    extensionId: decodeExtensionId(binding.extensionId),
     desiredRevision: decodeRevision(binding.desiredRevision),
     lastGoodRevision:
       binding.lastGoodRevision === null ? null : decodeRevision(binding.lastGoodRevision),
@@ -599,6 +603,18 @@ function decodeRevision(value: unknown): string {
   const revision = requireUtf8String(value, 'extension revision', EXTENSION_REVISION_MAX_BYTES);
   if (/[\r\n]/u.test(revision)) throw invalidProtocolFrame('Invalid extension revision');
   return revision;
+}
+
+function decodeExtensionId(value: unknown): string {
+  if (!isCanonicalExtensionId(value)) {
+    throw invalidProtocolFrame('Invalid extension extensionId');
+  }
+  return value;
+}
+
+function decodeExtensionScopeId(value: unknown, label: string): string {
+  if (!isCanonicalExtensionScopeId(value)) throw invalidProtocolFrame(`Invalid ${label}`);
+  return value;
 }
 
 function decodeBoolean(value: unknown, label: string): boolean {

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type {
   ExtensionUiContributionProjection,
   ExtensionUiSnapshotResult,
   ExtensionUiStateValue,
 } from '@maka/runtime-host/protocol';
+import { uiExtensionFrameUrl } from './ui-extension-frame-url.js';
 
 const DESKTOP_UI_SCOPE = 'desktop-ui';
 const REFRESH_MS = 1_000;
@@ -140,9 +141,13 @@ function SandboxedUiFrame({
     () => crypto.randomUUID(),
     [contribution.bindingId, contribution.revision, contribution.id],
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
     const receive = (event: MessageEvent) => {
       if (event.source !== frameRef.current?.contentWindow) return;
+      if (isBridgeReady(event.data, token)) {
+        postBridgeReady(frameRef.current, token);
+        return;
+      }
       const request = decodeBridgeRequest(event.data, token);
       if (!request) return;
       const identity = {
@@ -186,28 +191,26 @@ function SandboxedUiFrame({
       data-contribution-id={contribution.id}
       sandbox="allow-scripts allow-modals"
       referrerPolicy="no-referrer"
-      srcDoc={withUiSandboxPolicy(
-        contribution.document,
-        contribution.network,
-        contribution.hostState || (contribution.hostMethods?.length ?? 0) > 0 ? token : undefined,
-      )}
+      src={uiExtensionFrameUrl({
+        scopeId: DESKTOP_UI_SCOPE,
+        bindingId: contribution.bindingId,
+        extensionId: contribution.extensionId,
+        revision: contribution.revision,
+        contributionId: contribution.id,
+        token,
+      })}
     />
   );
 }
 
-export function withUiSandboxPolicy(document: string, network: boolean, bridgeToken?: string): string {
-  const networkPolicy = network
-    ? "connect-src https: wss:; img-src data: blob: https:; media-src blob: https:; font-src data: https:;"
-    : "connect-src 'none'; img-src data: blob:; media-src blob:; font-src data:;";
-  const policy = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; navigate-to 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; ${networkPolicy}">`;
-  const bridge = bridgeToken ? `<script>${bridgeBootstrap(bridgeToken)}</script>` : '';
-  const head = /^\s*(?:<!doctype[^>]*>\s*)?<html(?:\s[^>]*)?>\s*<head(?:\s[^>]*)?>/iu;
-  if (head.test(document)) return document.replace(head, (match) => `${match}${policy}${bridge}`);
-  return `<!doctype html><html><head>${policy}${bridge}</head><body>${document}</body></html>`;
+function postBridgeReady(frame: HTMLIFrameElement | null, token: string): void {
+  frame?.contentWindow?.postMessage({ channel: 'maka-ui-host-ready/v1', token }, '*');
 }
 
-function bridgeBootstrap(token: string): string {
-  return `(function(){const token=${JSON.stringify(token)},pending=new Map();let sequence=0;window.addEventListener('message',function(event){const data=event.data;if(event.source!==parent||!data||data.channel!=='maka-ui-host/v1'||data.token!==token)return;const task=pending.get(data.id);if(!task)return;pending.delete(data.id);data.ok?task.resolve(data.result):task.reject(new Error(data.error||'Host request failed'));});function call(message){return new Promise(function(resolve,reject){const id=String(++sequence);pending.set(id,{resolve,reject});parent.postMessage(Object.assign({channel:'maka-ui-bridge/v1',token,id},message),'*');});}Object.defineProperty(window,'makaUI',{value:Object.freeze({getState:function(key){return call({kind:'get',key:key});},setState:function(key,value){return call({kind:'set',key:key,value:value});},deleteState:function(key){return call({kind:'delete',key:key});},invoke:function(method,args){return call({kind:'invoke',method:method,args:args===undefined?null:args});}}),writable:false,configurable:false});})();`;
+function isBridgeReady(value: unknown, token: string): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const message = value as Record<string, unknown>;
+  return message.channel === 'maka-ui-bridge-ready/v1' && message.token === token;
 }
 
 type UiBridgeRequest =

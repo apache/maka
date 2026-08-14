@@ -105,7 +105,23 @@ export class HostExtensionController {
     if (this.#persistenceFailure) {
       return uiSnapshotFailure('persistence_failed', 'Extension state is unavailable');
     }
-    const contributions = this.runtime.inspectUi(input.scopeId);
+    const contributions: ExtensionUiSnapshotResult['contributions'] = this.runtime
+      .inspectUi(input.scopeId)
+      .map((item) =>
+        Object.freeze({
+          bindingId: item.bindingId,
+          extensionId: item.extensionId,
+          revision: item.revision,
+          id: item.id,
+          surface: item.surface,
+          priority: item.priority,
+          document: item.document,
+          documentSha256: item.documentSha256,
+          network: item.network,
+          hostState: item.hostState,
+          hostMethods: item.hostMethods,
+        }),
+      );
     const digest = createHash('sha256').update(JSON.stringify(contributions)).digest('hex');
     const result: ExtensionUiSnapshotResult = {
       scopeId: input.scopeId,

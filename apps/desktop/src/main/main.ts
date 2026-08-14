@@ -1,8 +1,21 @@
-import { app, dialog } from 'electron';
+import { app, dialog, protocol } from 'electron';
 import { installMainProcessLogCapture } from './main-process-diagnostics.js';
 import { isIsolatedE2e } from './startup-context.js';
 
 installMainProcessLogCapture();
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'maka-ui',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: false,
+      corsEnabled: false,
+      bypassCSP: false,
+    },
+  },
+]);
 
 // The macOS app menu title and app.getName() consumers read this name. Set it
 // before ready, unchanged from its historical pre-ready position.

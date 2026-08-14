@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
+import { decodeExtensionUiSnapshotResult } from '../protocol/extension.js';
 import { HostExtensionController } from '../server/extension-controller.js';
 import {
   InstalledToolPackageExtensionLoader,
@@ -106,6 +107,9 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
       connection,
     );
     assert.equal(snapshot.ok && snapshot.result.contributions[0]?.document, '<h1>two</h1>');
+    assert.ok(snapshot.ok);
+    assert.doesNotThrow(() => decodeExtensionUiSnapshotResult(snapshot.result));
+    assert.equal('scopeId' in snapshot.result.contributions[0]!, false);
     const digest = snapshot.ok && snapshot.result.digest;
     assert.deepEqual(
       await fixture.controller.handlers['extension.ui.rpc.invoke'](
