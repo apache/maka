@@ -11,7 +11,9 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
-use windows_sys::Win32::Storage::FileSystem::{PIPE_ACCESS_DUPLEX, ReadFile, WriteFile};
+use windows_sys::Win32::Storage::FileSystem::{
+    FlushFileBuffers, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+};
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_WAIT,
@@ -116,6 +118,9 @@ unsafe fn serve_once_with_security(
         let response_frame = encode_frame(&response_payload)
             .map_err(|error| format!("response frame rejected: {error:?}"))?;
         unsafe { write_all(pipe, &response_frame)? };
+        if unsafe { FlushFileBuffers(pipe) } == 0 {
+            return Err(last_error("FlushFileBuffers(broker response)"));
+        }
         Ok(())
     })();
     unsafe {
