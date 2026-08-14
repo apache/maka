@@ -30,14 +30,17 @@ import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
 import {
   fitLine,
+  formatTokenCount,
   formatToolResultContent,
   formatUnknown,
   limitText,
   markdownTheme,
   renderIndented,
 } from './pi-transcript-format.js';
+import { goalStatusLineText, isLiveGoalStatus } from './pi-goal.js';
 import { renderToolBlock } from './pi-transcript-tools.js';
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
+import type { GoalProjection } from '@maka/runtime-host/protocol';
 
 export interface MakaPiUsageSummary {
   /** Cumulative cost in USD across the session. */
@@ -143,6 +146,7 @@ const LIVE_TOOL_BUFFER_MAX_CHUNKS = 512;
 export type MakaPiTranscriptEntry =
   | { kind: 'user'; text: string }
   | { kind: 'legacy_automation'; text: string }
+  | { kind: 'goal_continuation'; text: string }
   | { kind: 'assistant'; messageId: string; text: string }
   | { kind: 'thinking'; messageId: string; text: string; expanded: boolean }
   | {
@@ -194,6 +198,12 @@ export interface MakaPiTranscriptMetadata {
   providerRetry?: ProviderRetryEvent;
   /** Resolved locale for primary TUI guidance. Defaults to English for direct embeddings. */
   uiLocale?: UiLocale;
+  /**
+   * Latest known goal projection for the session, or null when no goal is
+   * set. The status line shows live goals only (active/waiting/paused);
+   * terminal goals leave no segment, matching the desktop chip.
+   */
+  goal?: GoalProjection | null;
 }
 
 export function createMakaPiTranscriptState(): MakaPiTranscriptState {
@@ -809,7 +819,12 @@ function chatItemToTranscriptEntries(item: ChatItem): MakaPiTranscriptEntry[] {
     case 'user':
       return [
         {
-          kind: item.message.origin?.kind === 'legacy_automation' ? 'legacy_automation' : 'user',
+          kind:
+            item.message.origin?.kind === 'legacy_automation'
+              ? 'legacy_automation'
+              : item.message.origin?.kind === 'goal'
+                ? 'goal_continuation'
+                : 'user',
           text: item.message.displayText ?? item.message.text,
         },
       ];
@@ -1243,6 +1258,8 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
       return renderUserBlock(entry.text, width);
     case 'legacy_automation':
       return renderLegacyAutomationBlock(entry.text, width);
+    case 'goal_continuation':
+      return renderGoalContinuationBlock(entry.text, width);
     case 'assistant':
       return renderAssistantBlock(entry.text, width);
     case 'thinking':
@@ -1261,6 +1278,8 @@ function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): 
       return `user|${width}|${entry.text.length}`;
     case 'legacy_automation':
       return `legacy_automation|${width}|${entry.text}`;
+    case 'goal_continuation':
+      return `goal_continuation|${width}|${entry.text}`;
     case 'assistant':
       // text_complete authoritatively replaces streamed text, including with a
       // same-length final, so the full value must participate in the cache key.
@@ -1323,6 +1342,21 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
     parts.push(ansi.accent('swarm'));
   } else if (metadata.orchestrationMode === 'graph') {
     parts.push(ansi.accent('graph'));
+  }
+  // An autonomous goal burns tokens between prompts; it must never be
+  // invisible. Terminal goals show nothing (the desktop chip hides them too).
+  if (metadata.goal && isLiveGoalStatus(metadata.goal.status)) {
+    const text = goalStatusLineText(metadata.goal, Date.now());
+    // paused gets warning salience: the loop stopped burning but stays armed
+    // and resumable, which the user must not miss. waiting is a normal
+    // transient between turns, so it stays dim like the other chrome.
+    parts.push(
+      metadata.goal.status === 'active'
+        ? ansi.accent(text)
+        : metadata.goal.status === 'paused'
+          ? ansi.yellow(text)
+          : ansi.dim(text),
+    );
   }
   const usage = metadata.usage;
   if (usage) {
@@ -1460,12 +1494,6 @@ function shortenCwd(cwd: string, homeDir?: string): string {
   if (home && cwd.startsWith(home + '/')) return `~${cwd.slice(home.length)}`;
   if (home && cwd === home) return '~';
   return cwd;
-}
-
-function formatTokenCount(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
-  return String(tokens);
 }
 
 function formatCost(costUsd: number): string {
@@ -1663,12 +1691,27 @@ function renderUserBlock(text: string, width: number): string[] {
   return renderIndented(text, width, 2).map((line) => fitLine(`${prefix} ${line.slice(2)}`, width));
 }
 
-function renderLegacyAutomationBlock(text: string, width: number): string[] {
+/** Provenance header + indented body for non-human-authored prompts. */
+function renderProvenanceBlock(
+  label: string,
+  accent: boolean,
+  text: string,
+  width: number,
+): string[] {
   if (!text.trim()) return [];
+  const styled = accent ? ansi.accent(label) : ansi.dim(label);
   return [
-    fitLine(ansi.dim('Legacy Automation (history only)'), width),
+    fitLine(styled, width),
     ...renderIndented(text, width, 2).map((line) => fitLine(line, width)),
   ];
+}
+
+function renderLegacyAutomationBlock(text: string, width: number): string[] {
+  return renderProvenanceBlock('Legacy Automation (history only)', false, text, width);
+}
+
+function renderGoalContinuationBlock(text: string, width: number): string[] {
+  return renderProvenanceBlock('Goal continuation (autonomous)', true, text, width);
 }
 
 /** An assistant turn: bare markdown prose, no speaker label or indent. */

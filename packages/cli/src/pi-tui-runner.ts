@@ -115,6 +115,7 @@ import {
   type MakaSlashCommand,
 } from './pi-tui-pickers.js';
 import { formatMakaResumeCommand } from './cli-invocation.js';
+import { goalSummaryLines } from './pi-goal.js';
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
 
 export interface MakaPiTuiInput {
@@ -335,6 +336,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     rejectClosed = reject;
   });
 
+  // The driver is the single read authority for goal state: metadata() reads
+  // the live projection on every render, and the subscription exists only to
+  // re-render when a host-pushed transition lands. No cached copy, so the
+  // status line and `/goal` can never drift from the driver's snapshot.
+  const unsubscribeGoalChanges = input.driver.subscribeGoalChanges?.(() => {
+    requestRender();
+  });
+
   const metadata = (): MakaPiTranscriptMetadata => ({
     title: input.title,
     cwd,
@@ -351,6 +360,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     turnElapsedMs: turnStartedAt !== undefined ? Date.now() - turnStartedAt : undefined,
     providerRetry: state.providerRetry,
     uiLocale: locale,
+    goal: input.driver.getGoal?.() ?? null,
   });
 
   const transcript = new MakaTranscriptComponent(state, metadata);
@@ -607,6 +617,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const restoreTerminal = () => {
     removeProcessHandlers();
     unsubscribeSessionTitleChanges();
+    unsubscribeGoalChanges?.();
     unsubscribeStartedTurns();
     unsubscribeResolvedInteractions();
     unsubscribeTranscriptReplacements();
@@ -1020,6 +1031,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           });
           requestRender();
         }
+        return;
+      }
+      // Read-only status commands answer locally even mid-turn instead of
+      // steering into the model as prompt text: an autonomous goal loop keeps
+      // a turn running almost by definition, and that is exactly when the
+      // user reaches for `/goal` (review finding on turnRunning routing).
+      if (prompt.trim().split(/\s+/, 1)[0] === '/goal') {
+        editor.addToHistory(prompt);
+        handleSlashCommand(prompt, 0);
         return;
       }
       steerRunningTurn(prompt);
@@ -2387,6 +2407,27 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   type TuiSlashCommandId = SlashCommandIdForSurface<'tui'>;
   type TuiSlashCommandHandler = Omit<MakaSlashCommand, 'name' | 'aliases'>;
 
+  const showGoalSummary = () => {
+    // Read the live projection at request time: /goal is the one place the
+    // user asks for the state *right now*.
+    if (!input.driver.getGoal) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: 'Goal status is unavailable on this runtime.',
+      });
+      requestRender();
+      return;
+    }
+    const goal = input.driver.getGoal();
+    state.entries.push({
+      kind: 'notice',
+      level: 'info',
+      text: goal ? goalSummaryLines(goal, Date.now()).join('\n') : 'No goal set.',
+    });
+    requestRender();
+  };
+
   const slashCommandHandlers = {
     context: {
       description: primaryGuidance.commands.context,
@@ -2432,6 +2473,24 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       description: primaryGuidance.commands.exit,
       run: () => {
         beginGracefulClose();
+      },
+    },
+    goal: {
+      description: 'Show the autonomous goal for this session',
+      run: (parts: string[]) => {
+        if (parts.length !== 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Usage: /goal',
+          });
+          requestRender();
+          return;
+        }
+        // Read-only, so no runControl busy gate: an autonomous loop keeps the
+        // session busy almost by definition, and that is exactly when the user
+        // wants to inspect it.
+        showGoalSummary();
       },
     },
     help: {

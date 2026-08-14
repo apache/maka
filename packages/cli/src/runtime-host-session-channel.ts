@@ -19,6 +19,7 @@ import {
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   SessionContinuitySnapshot,
   SubscriptionFrame,
+  type GoalProjection,
 } from '@maka/runtime-host/protocol';
 import type { MakaPreparedSessionTurn } from './session-driver.js';
 
@@ -42,6 +43,12 @@ export interface RuntimeHostSessionChannelOptions {
   onInteractionResolved: (pending: InteractionPendingSnapshot) => void;
   onTurnTerminal: (turn: TerminalTurnSnapshot) => void;
   onTranscriptReplaced: (turnId: string, messages: readonly StoredMessage[]) => void;
+  /**
+   * Fired when the folded session projection's goal changes (set / settle /
+   * pause / resume / clear). The projection stream is the authoritative push
+   * channel for goal state — the same one the desktop observer diffs.
+   */
+  onGoalChanged: (goal: GoalProjection | null) => void;
   onRecovered: () => void;
 }
 
@@ -58,6 +65,7 @@ export class RuntimeHostSessionChannel {
   readonly #onInteractionResolved: (pending: InteractionPendingSnapshot) => void;
   readonly #onTurnTerminal: (turn: TerminalTurnSnapshot) => void;
   readonly #onTranscriptReplaced: (turnId: string, messages: readonly StoredMessage[]) => void;
+  readonly #onGoalChanged: (goal: GoalProjection | null) => void;
   readonly #onRecovered: () => void;
   readonly #turns = new Map<string, SessionEventQueue>();
   readonly #pendingFrames: SubscriptionFrame[] = [];
@@ -92,6 +100,7 @@ export class RuntimeHostSessionChannel {
     this.#onInteractionResolved = options.onInteractionResolved;
     this.#onTurnTerminal = options.onTurnTerminal;
     this.#onTranscriptReplaced = options.onTranscriptReplaced;
+    this.#onGoalChanged = options.onGoalChanged;
     this.#onRecovered = options.onRecovered;
   }
 
@@ -355,6 +364,9 @@ export class RuntimeHostSessionChannel {
       ...messages.map((message) => structuredClone(message)),
     );
     this.snapshot = nextSnapshot;
+    if (!sameGoalProjection(previousSnapshot.goal, nextSnapshot.goal)) {
+      this.#onGoalChanged(nextSnapshot.goal === null ? null : structuredClone(nextSnapshot.goal));
+    }
     this.#projector = new RuntimeHostSessionProjector(
       nextSnapshot,
       createRuntimeHostSessionProjectionSeed(this.messages, nextSnapshot),
@@ -468,9 +480,16 @@ export class RuntimeHostSessionChannel {
     const previousPendingIds = new Set(
       this.snapshot.interactions.pending.map((interaction) => interaction.interactionId),
     );
+    const previousGoal = this.snapshot.goal;
     const update = this.#projector?.accept(frame);
     if (!update || !this.#projector) return;
     this.snapshot = this.#projector.snapshot;
+    if (!sameGoalProjection(previousGoal, this.snapshot.goal)) {
+      // Clone like the canonical-replacement path above: listeners receive
+      // their own copy, so a mutating listener cannot corrupt the live
+      // snapshot regardless of which path delivered the change.
+      this.#onGoalChanged(this.snapshot.goal === null ? null : structuredClone(this.snapshot.goal));
+    }
     for (const interaction of this.snapshot.interactions.pending) {
       if (previousPendingIds.has(interaction.interactionId)) continue;
       const pending = structuredClone(interaction);
@@ -595,4 +614,14 @@ function sameTerminalTurn(
     previous.runId === next.runId &&
     previous.terminalEventId === next.terminalEventId
   );
+}
+
+/**
+ * Goal identity + revision: GoalManager.commit bumps the revision on every
+ * accepted transition, so this pair detects every set/settle/pause/resume/
+ * clear without a field-by-field compare.
+ */
+function sameGoalProjection(a: GoalProjection | null, b: GoalProjection | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.goalId === b.goalId && a.revision === b.revision;
 }

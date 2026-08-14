@@ -12,6 +12,7 @@ import type {
 import { RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
+  type GoalProjection,
   type InteractionPendingSnapshot,
   type OperationInput,
   type OperationOutput,
@@ -64,6 +65,89 @@ describe('Runtime Host Maka Session driver', () => {
       }),
       /requires an explicit Project/,
     );
+  });
+
+  test('exposes the session goal from the pushed continuity snapshot', async () => {
+    const armedGoal = goalProjection({ status: 'active' });
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ goal: armedGoal }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'session-id',
+    });
+
+    // No session attached yet: no channel, no goal.
+    assert.equal(driver.getGoal!(), null);
+
+    const observations: Array<string | null> = [];
+    const unsubscribe = driver.subscribeGoalChanges!((goal) =>
+      observations.push(goal === null ? null : `${goal.status}@${goal.revision}`),
+    );
+
+    await driver.createSession({
+      cwd: '/repo',
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    // Channel adoption publishes the snapshot's goal without any RPC.
+    assert.equal(driver.getGoal!()?.goalId, 'goal-1');
+    assert.deepEqual(observations, ['active@1']);
+    assert.equal(
+      connection.requests.some(({ operation }) => operation === 'goal.query'),
+      false,
+    );
+
+    // A pushed projection frame with a bumped revision updates the read and
+    // notifies listeners — this is how an abort auto-pause reaches the TUI.
+    const pausedGoal = goalProjection({ status: 'paused', revision: 2, pausedAt: 90 });
+    subscription.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      snapshot: continuitySnapshot({ goal: pausedGoal, projectionRevision: 2 }),
+    });
+    await waitFor(() => driver.getGoal!()?.status === 'paused');
+    assert.deepEqual(observations, ['active@1', 'paused@2']);
+
+    // An unchanged goal in a later frame must not re-notify. Proven by the
+    // exact sequence: if it had notified, a duplicate 'paused@2' would appear
+    // before the 'cleared@3' below.
+    subscription.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 2,
+      snapshot: continuitySnapshot({ goal: pausedGoal, projectionRevision: 3 }),
+    });
+    subscription.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 3,
+      snapshot: continuitySnapshot({
+        goal: goalProjection({ status: 'cleared', revision: 3 }),
+        projectionRevision: 4,
+      }),
+    });
+    await waitFor(() => observations.length === 3);
+    assert.deepEqual(observations, ['active@1', 'paused@2', 'cleared@3']);
+
+    // startNewSession drops the channel: goal reads null and listeners hear it.
+    driver.startNewSession();
+    assert.equal(driver.getGoal!(), null);
+    assert.deepEqual(observations, ['active@1', 'paused@2', 'cleared@3', null]);
+
+    unsubscribe();
   });
 
   test('honors explicit Project intent before inheriting the current workspace', async () => {
@@ -1440,6 +1524,27 @@ function continuitySnapshot(
     goal: null,
     queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
     interactions: { pending: [] },
+    ...overrides,
+  };
+}
+
+function goalProjection(overrides: Partial<GoalProjection> = {}): GoalProjection {
+  return {
+    goalId: 'goal-1',
+    revision: 1,
+    sessionId: 'session-id',
+    condition: 'Ship the feature',
+    status: 'active',
+    setAt: 1,
+    iterations: 2,
+    maxIterations: 50,
+    consecutiveNoProgress: 0,
+    blockCap: 8,
+    tokenBudget: 100_000,
+    tokensSpent: 12_000,
+    lastReason: null,
+    achievedAt: null,
+    pausedAt: null,
     ...overrides,
   };
 }

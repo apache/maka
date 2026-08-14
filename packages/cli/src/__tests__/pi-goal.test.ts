@@ -1,0 +1,129 @@
+import assert from 'node:assert/strict';
+import { describe, test } from 'node:test';
+import { GOAL_STATUSES, type GoalStatus } from '@maka/core/goal';
+import type { GoalProjection } from '@maka/runtime-host/protocol';
+import { formatTokenCount } from '../pi-transcript-format.js';
+import {
+  formatGoalElapsed,
+  goalElapsedMs,
+  goalStatusLabel,
+  goalStatusLineText,
+  goalSummaryLines,
+  isLiveGoalStatus,
+} from '../pi-goal.js';
+
+function goal(overrides: Partial<GoalProjection> = {}): GoalProjection {
+  return {
+    goalId: 'goal-1',
+    revision: 1,
+    sessionId: 'session-1',
+    condition: 'Ship the feature',
+    status: 'active',
+    setAt: 1_000,
+    iterations: 3,
+    maxIterations: 50,
+    consecutiveNoProgress: 0,
+    blockCap: 8,
+    tokenBudget: null,
+    tokensSpent: 0,
+    lastReason: null,
+    achievedAt: null,
+    pausedAt: null,
+    ...overrides,
+  };
+}
+
+describe('pi-goal display helpers', () => {
+  test('every declared goal status has a label and a live/terminal classification', () => {
+    // Exhaustiveness guard: a new GoalStatus must make a deliberate choice in
+    // both places instead of silently falling through.
+    for (const status of GOAL_STATUSES) {
+      assert.equal(typeof goalStatusLabel(status), 'string', status);
+      assert.notEqual(goalStatusLabel(status), '', status);
+      assert.equal(typeof isLiveGoalStatus(status), 'boolean', status);
+    }
+    assert.deepEqual(
+      GOAL_STATUSES.filter((status) => isLiveGoalStatus(status)),
+      ['active', 'waiting', 'paused'],
+    );
+  });
+
+  test('elapsed freezes at pausedAt for a paused goal and never goes negative', () => {
+    const paused = goal({ status: 'paused', setAt: 1_000, pausedAt: 61_000 });
+    assert.equal(goalElapsedMs(paused, 600_000), 60_000);
+    assert.equal(goalElapsedMs(goal({ setAt: 10_000 }), 5_000), 0);
+  });
+
+  test('formatGoalElapsed is compact', () => {
+    assert.equal(formatGoalElapsed(0), '0s');
+    assert.equal(formatGoalElapsed(59_000), '59s');
+    assert.equal(formatGoalElapsed(60_000), '1m');
+    assert.equal(formatGoalElapsed(90 * 60_000), '1h 30m');
+    assert.equal(formatGoalElapsed(2 * 3_600_000), '2h');
+    assert.equal(formatGoalElapsed(26 * 3_600_000), '1d 2h');
+  });
+
+  test('status-line text: active shows elapsed, waiting and paused show the state name', () => {
+    const now = 61_000;
+    assert.equal(goalStatusLineText(goal({ setAt: 1_000 }), now), 'goal 3/50 1m');
+    assert.equal(goalStatusLineText(goal({ status: 'waiting' }), now), 'goal waiting 3/50');
+    assert.equal(
+      goalStatusLineText(goal({ status: 'paused', pausedAt: 31_000 }), now),
+      'goal paused 3/50',
+    );
+  });
+
+  test('summary lines include budget only when set and the evaluator note only when present', () => {
+    const plain = goalSummaryLines(goal(), 61_000);
+    assert.equal(plain.length, 2);
+    assert.match(plain[0]!, /^Goal: Ship the feature$/);
+    assert.match(plain[1]!, /active · 3\/50 iterations · 1m$/);
+
+    const detailed = goalSummaryLines(
+      goal({ tokenBudget: 100_000, tokensSpent: 45_200, lastReason: 'tests still failing' }),
+      61_000,
+    );
+    assert.deepEqual(detailed.slice(2), [
+      'Tokens: 45k / 100k',
+      'Last evaluator note: tests still failing',
+    ]);
+  });
+
+  test('summary collapses embedded whitespace and labels a cleared goal as cleared', () => {
+    const messy = goalSummaryLines(
+      goal({ condition: 'Ship the\n  feature', lastReason: 'line one\nline   two' }),
+      61_000,
+    );
+    assert.equal(messy[0], 'Goal: Ship the feature');
+    assert.equal(messy.at(-1), 'Last evaluator note: line one line two');
+
+    // A cleared goal keeps its terminal record; the summary must not present
+    // the condition as if it were still armed.
+    const cleared = goalSummaryLines(goal({ status: 'cleared' }), 61_000);
+    assert.equal(cleared[0], 'Cleared goal: Ship the feature');
+    assert.match(cleared[1]!, /^Status: cleared /);
+  });
+
+  test('summary hides elapsed for terminal verdicts that carry no freeze timestamp', () => {
+    const terminal = [
+      'cleared',
+      'impossible',
+      'stalled',
+      'budget_limited',
+      'max_iterations',
+    ] as const;
+    for (const status of terminal) {
+      const lines = goalSummaryLines(goal({ status }), 61_000);
+      assert.equal(lines[1], `Status: ${goalStatusLabel(status)} · 3/50 iterations`, status);
+    }
+  });
+
+  test('summary keeps the frozen elapsed for an achieved goal', () => {
+    const lines = goalSummaryLines(goal({ status: 'achieved', achievedAt: 61_000 }), 600_000);
+    assert.match(lines[1]!, /achieved · 3\/50 iterations · 1m$/);
+  });
+
+  test('token formatting is the shared status-line formatter', () => {
+    assert.equal(formatTokenCount(45_200), '45k');
+  });
+});

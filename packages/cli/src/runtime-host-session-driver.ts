@@ -36,6 +36,7 @@ import {
   SessionUpdateResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   WorkspaceTarget,
+  type GoalProjection,
 } from '@maka/runtime-host/protocol';
 import {
   RuntimeHostSessionChannel,
@@ -136,6 +137,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #sessionGeneration = 0;
   #channelGeneration = 0;
   readonly #startedTurnListeners = new Set<(turn: MakaAttachedSessionTurn) => void>();
+  readonly #goalListeners = new Set<(goal: GoalProjection | null) => void>();
   readonly #pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
   readonly #claimedTurnIds = new Set<string>();
   readonly #shellRunListeners = new Set<(update: ShellRunUpdate) => void>();
@@ -620,6 +622,18 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return this.#sessionId;
   }
 
+  getGoal(): GoalProjection | null {
+    // The session subscription's continuity snapshot carries the goal
+    // projection and is folded on every pushed frame, so this read is as
+    // fresh as the host's last broadcast — no RPC, no staleness window.
+    return this.#channel?.snapshot.goal ?? null;
+  }
+
+  subscribeGoalChanges(listener: (goal: GoalProjection | null) => void): () => void {
+    this.#goalListeners.add(listener);
+    return () => this.#goalListeners.delete(listener);
+  }
+
   async getContextDiagnostics(): Promise<ContextDiagnostics> {
     if (!this.#sessionId) return { status: 'unavailable', reason: 'no_completed_request' };
     const diagnostics = await this.#request('context.diagnostics.query', {
@@ -729,6 +743,8 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   async #replaceChannel(next: RuntimeHostSessionChannel | undefined): Promise<void> {
     const previous = this.#channel;
     this.#channel = next;
+    const goal = next?.snapshot.goal ?? null;
+    for (const listener of this.#goalListeners) listener(goal);
     await previous?.close().catch(() => undefined);
   }
 
@@ -914,6 +930,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn),
       onTranscriptReplaced: (turnId, messages) =>
         this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect'),
+      onGoalChanged: (goal) => {
+        // A closing channel from a previous session can still be draining a
+        // frame when the swap happens; only the live session may publish.
+        if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) return;
+        for (const listener of this.#goalListeners) listener(goal);
+      },
       onRecovered: () => this.#refreshRuntimeResources(sessionId),
     });
   }

@@ -22,6 +22,7 @@ import { type UserQuestionResponse } from '@maka/core/user-question';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type ContextDiagnostics } from '@maka/runtime/context-diagnostics';
+import type { GoalProjection } from '@maka/runtime-host/protocol';
 import type {
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
@@ -4801,6 +4802,143 @@ describe('Maka Pi TUI runner', () => {
     });
   });
 
+  describe('/goal command', () => {
+    const armedGoal: GoalProjection = {
+      goalId: 'goal-1',
+      revision: 3,
+      sessionId: 'session-1',
+      condition: 'Ship the feature',
+      status: 'active',
+      setAt: Date.now() - 60_000,
+      iterations: 2,
+      maxIterations: 50,
+      consecutiveNoProgress: 0,
+      blockCap: 8,
+      tokenBudget: 100_000,
+      tokensSpent: 12_000,
+      lastReason: 'tests still failing',
+      achievedAt: null,
+      pausedAt: null,
+    };
+
+    test('/goal prints the live goal summary and the status line carries the indicator', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      driver.goal = armedGoal;
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'claude-sonnet-4-5',
+        connectionSlug: 'claude-subscription',
+        permissionMode: 'ask',
+        terminal,
+      });
+
+      // The startup read must pick the goal up before any turn runs, and the
+      // status line must show the loop while it burns tokens.
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('goal 2/50'));
+
+      terminal.input('/goal');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes('Goal: Ship the feature'),
+      );
+      const output = plainTerminalOutput(terminal.output());
+      assert.match(output, /Status: active · 2\/50 iterations/);
+      assert.match(output, /Tokens: 12k \/ 100k/);
+      assert.match(output, /Last evaluator note: tests still failing/);
+      // No model turn was burned to answer a status question.
+      assert.equal(driver.prompts.length, 0);
+
+      // A host-pushed transition (e.g. the abort auto-pause after Ctrl+C)
+      // reaches the status line without any user action.
+      driver.pushGoal({
+        ...armedGoal,
+        status: 'paused',
+        revision: 4,
+        pausedAt: Date.now(),
+      });
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('goal paused 2/50'));
+
+      exitMaka(terminal);
+      await Promise.race([
+        run,
+        delay(CLOSE_BUDGET_MS).then(() => {
+          throw new Error('TUI did not close during test cleanup');
+        }),
+      ]);
+    });
+
+    test('/goal during a running turn answers locally instead of steering into the model', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SteeringTurnDriver();
+      driver.goal = armedGoal;
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('start the work');
+      terminal.input('\r');
+      await waitFor(() => terminal.progressStates.at(-1) === true);
+
+      // The primary use case: inspect the loop while it is burning tokens.
+      // Steering "/goal" into the model would confuse it and spend a turn on
+      // a status question.
+      terminal.input('/goal');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes('Goal: Ship the feature'),
+      );
+      assert.deepEqual(driver.steered, []);
+
+      terminal.input('\x1b');
+      terminal.input('\x1b');
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+      // Interrupt refills the editor with the cleared queue; clear it before /exit.
+      terminal.input('\x03');
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('/goal with no goal armed says so, and a bad subcommand shows usage', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'claude-sonnet-4-5',
+        connectionSlug: 'claude-subscription',
+        permissionMode: 'ask',
+        terminal,
+      });
+
+      terminal.input('/goal');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('No goal set.'));
+
+      terminal.input('/goal later');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Usage: /goal'));
+
+      exitMaka(terminal);
+      await Promise.race([
+        run,
+        delay(CLOSE_BUDGET_MS).then(() => {
+          throw new Error('TUI did not close during test cleanup');
+        }),
+      ]);
+    });
+  });
+
   test('"quit now" and "请 exit" are sent as ordinary prompts, not the exit word', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -5272,6 +5410,7 @@ class InterruptibleTurnDriver implements MakaSessionDriver {
 // be exercised end-to-end without a real runtime.
 class SteeringTurnDriver implements MakaSessionDriver {
   stopCalls = 0;
+  goal: GoalProjection | null = null;
   readonly steered: string[] = [];
   readonly queuedMessages: string[] = [];
   readonly turnOrchestrations: Array<MakaPreparePromptOptions['turnOrchestration']> = [];
@@ -5301,6 +5440,10 @@ class SteeringTurnDriver implements MakaSessionDriver {
   }
 
   async *compactSession(): AsyncIterable<never> {}
+
+  getGoal(): GoalProjection | null {
+    return this.goal;
+  }
 
   // Queue contents travel on ONE path, exactly like the runtime: enqueues
   // emit a `queue_update` through the parked turn stream; the outcome only
@@ -5921,6 +6064,8 @@ class SlashCommandDriver implements MakaSessionDriver {
   startNewSessionCalls = 0;
   resumeCalls = 0;
   contextDiagnosticsRequests = 0;
+  goal: GoalProjection | null = null;
+  readonly goalListeners = new Set<(goal: GoalProjection | null) => void>();
   contextDiagnostics: ContextDiagnostics = {
     status: 'unavailable',
     reason: 'no_completed_request',
@@ -5947,6 +6092,21 @@ class SlashCommandDriver implements MakaSessionDriver {
   async getContextDiagnostics(): Promise<ContextDiagnostics> {
     this.contextDiagnosticsRequests += 1;
     return this.contextDiagnostics;
+  }
+
+  getGoal(): GoalProjection | null {
+    return this.goal;
+  }
+
+  subscribeGoalChanges(listener: (goal: GoalProjection | null) => void): () => void {
+    this.goalListeners.add(listener);
+    return () => this.goalListeners.delete(listener);
+  }
+
+  /** Simulates a host-pushed goal projection change. */
+  pushGoal(goal: GoalProjection | null): void {
+    this.goal = goal;
+    for (const listener of this.goalListeners) listener(goal);
   }
 
   preparePrompt(
