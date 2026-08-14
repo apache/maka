@@ -69,22 +69,22 @@ describe('single live-turn handoff', () => {
       phase: 'streamed',
       steps: [{
         stepId: 'assistant-1',
-        thinking: { text: '先检查', truncated: false, complete: true },
+        thinking: { text: '先检查', truncated: false, complete: false },
         text: { text: '最终答案', truncated: false, complete: true },
         tools: [{
           toolUseId: 'tool-1',
           toolName: 'Bash',
           stepId: 'assistant-1',
-          status: 'completed',
+          status: 'running',
           args: {},
           result: { kind: 'text', text: 'ok' },
         }],
       }],
     });
 
-    // The render-layer fold keeps answer text as the grouping boundary, but
-    // adds no second Processing disclosure around the native reasoning and
-    // tool-call disclosures. Order is product-facing; vendor class names are not.
+    // Live processing stays expanded, so its visible order remains stable
+    // across the handoff. Historical processing is allowed to stay unmounted
+    // until the user opens its disclosure.
     assert.equal((markup.match(/data-processing="block"/g) ?? []).length, 0);
     assert.ok(markup.indexOf('深度思考') >= 0);
     assert.ok(markup.indexOf('深度思考') < markup.indexOf('最终答案'));
