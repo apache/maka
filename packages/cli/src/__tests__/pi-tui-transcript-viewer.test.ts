@@ -117,6 +117,27 @@ describe('TranscriptViewerOverlay', () => {
     assert.equal(closed, 2);
   });
 
+  test('prioritizes content and keeps a valid range in tiny viewports', () => {
+    const document = ['line 1', 'line 2', 'line 3'];
+    let viewportRows = 2;
+    const viewer = new TranscriptViewerOverlay({
+      renderTranscript: () => document,
+      viewportRows: () => viewportRows,
+      onChange: () => {},
+      onClose: () => {},
+    });
+
+    assert.deepEqual(plain(viewer.render(30)).map(trim), ['TRANSCRIPT 3-3 of 3', 'line 3']);
+
+    viewportRows = 1;
+    assert.deepEqual(plain(viewer.render(30)).map(trim), ['TRANSCRIPT 0-0 of 3']);
+
+    viewportRows = 4;
+    const resized = plain(viewer.render(30)).map(trim);
+    assert.deepEqual(resized.slice(0, 3), ['TRANSCRIPT 2-3 of 3', 'line 2', 'line 3']);
+    assert.match(resized[3] ?? '', /PgUp\/PgDn page/);
+  });
+
   test('renders through a detached geometry projection', () => {
     const state = createMakaPiTranscriptState();
     const entry = { kind: 'user' as const, text: 'oldest prompt' };
@@ -157,7 +178,10 @@ describe('TranscriptViewerOverlay', () => {
 
     const liveLines = plain(transcript.render(40));
     assert.ok(liveLines.some((line) => line.includes('settled text')));
-    assert.equal(liveLines.some((line) => line.includes('background update')), false);
+    assert.equal(
+      liveLines.some((line) => line.includes('background update')),
+      false,
+    );
   });
 });
 

@@ -71,7 +71,9 @@ export class TranscriptViewerOverlay implements Component {
   render(width: number): string[] {
     const safeWidth = Math.max(1, width);
     const viewportRows = Math.max(1, Math.floor(this.input.viewportRows()));
-    const showFooter = viewportRows > 1;
+    // A two-row terminal is still more useful with one document row than with
+    // navigation chrome only. The footer appears once header + body + footer fit.
+    const showFooter = viewportRows > 2;
     this.bodyRows = Math.max(0, viewportRows - (showFooter ? VIEWER_CHROME_ROWS : 1));
 
     const document = [...this.input.renderTranscript(safeWidth)];
@@ -80,20 +82,20 @@ export class TranscriptViewerOverlay implements Component {
     this.top = this.followsEnd ? maxTop : clamp(this.top, 0, maxTop);
 
     const visible = document.slice(this.top, this.top + this.bodyRows);
-    const start = document.length === 0 ? 0 : this.top + 1;
-    const end = document.length === 0 ? 0 : Math.min(document.length, this.top + this.bodyRows);
+    const start = visible.length === 0 ? 0 : this.top + 1;
+    const end = visible.length === 0 ? 0 : this.top + visible.length;
     const header = padLine(
       `${ansi.bold('TRANSCRIPT')} ${ansi.dim(`${start}-${end} of ${document.length}`)}`,
       safeWidth,
     );
-    if (!showFooter) return [header];
-
     const body = [
       ...visible.map((line) => padLine(line, safeWidth)),
       ...Array.from({ length: Math.max(0, this.bodyRows - visible.length) }, () =>
         ' '.repeat(safeWidth),
       ),
     ];
+    if (!showFooter) return [header, ...body];
+
     const footer = padLine(
       ansi.dim('↑/↓ scroll · PgUp/PgDn page · Home/End jump · q/Esc close'),
       safeWidth,
