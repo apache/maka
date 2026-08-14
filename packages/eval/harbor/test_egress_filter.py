@@ -158,45 +158,44 @@ class EgressFilterTest(unittest.TestCase):
                 MODULE.http_connect(allowed)
                 self.assertIsNone(allowed.response, host)
 
-    def test_tcp_start_kills_raw_tunnels_and_records_them(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            killed: list[str] = []
-            flow = type(
-                "Flow",
-                (),
-                {"server_conn": SimpleNamespace(address=("ssh.github.com", 443))},
-            )()
-            flow.kill = lambda: killed.append("killed")
-            MODULE.tcp_start(flow)
-            self.assertEqual(killed, ["killed"])
-            record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
-            self.assertEqual(record["ruleId"], "raw_tunnel")
-            self.assertEqual(record["host"], "ssh.github.com")
-            self.assertEqual(record["normalizedPath"], ":443")
-
-    def test_tcp_message_drops_raw_payloads(self) -> None:
-        message = SimpleNamespace(content=b"SSH-2.0-test\r\n")
-        killed: list[str] = []
-        flow = SimpleNamespace(messages=[message], killable=True)
-        flow.kill = lambda: killed.append("killed")
-        MODULE.tcp_message(flow)
-        self.assertEqual(message.content, b"")
-        self.assertEqual(killed, ["killed"])
-
     def test_next_layer_replaces_raw_tcp_with_a_closer(self) -> None:
-        class TCPLayer:
+        class FakeTCPLayer:
             pass
 
+        class CloseConnection:
+            def __init__(self, connection: object) -> None:
+                self.connection = connection
+
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            context = SimpleNamespace(server=SimpleNamespace(address=("ssh.github.com", 443)))
-            nextlayer = SimpleNamespace(layer=TCPLayer(), context=context)
+            previous_tcp = MODULE.TCPLayer
+            previous_commands = MODULE.proxy_commands
+            self.addCleanup(setattr, MODULE, "TCPLayer", previous_tcp)
+            self.addCleanup(setattr, MODULE, "proxy_commands", previous_commands)
+            MODULE.TCPLayer = FakeTCPLayer
+            MODULE.proxy_commands = SimpleNamespace(CloseConnection=CloseConnection)
+            client = object()
+            server = SimpleNamespace(address=("ssh.github.com", 443))
+            context = SimpleNamespace(client=client, server=server, layers=[], options=None)
+            nextlayer = SimpleNamespace(layer=FakeTCPLayer(), context=context)
             MODULE.next_layer(nextlayer)
             self.assertIsInstance(nextlayer.layer, MODULE.CloseRawLayer)
+            self.assertIsInstance(nextlayer.layer, MODULE.Layer)
+            commands = list(nextlayer.layer.handle_event(object()))
+            self.assertEqual([command.connection for command in commands], [client, server])
+            self.assertTrue(all(isinstance(command, CloseConnection) for command in commands))
             record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
             self.assertEqual(record["ruleId"], "raw_tunnel")
             self.assertEqual(record["host"], "ssh.github.com")
+
+    def test_next_layer_leaves_non_tcp_layers_alone(self) -> None:
+        class HTTPLayer:
+            pass
+
+        original = HTTPLayer()
+        nextlayer = SimpleNamespace(layer=original, context=SimpleNamespace())
+        MODULE.next_layer(nextlayer)
+        self.assertIs(nextlayer.layer, original)
 
     def test_audit_escapes_line_separators_so_python_and_typescript_agree(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -103,8 +103,12 @@ except ImportError:
 
 try:
     from mitmproxy.proxy import commands as proxy_commands
+    from mitmproxy.proxy.layer import Layer
+    from mitmproxy.proxy.layers.tcp import TCPLayer
 except ImportError:
     proxy_commands = None
+    Layer = object
+    TCPLayer = None
 
 
 def request(flow: object) -> None:
@@ -119,21 +123,9 @@ def http_connect(flow: object) -> None:
     apply_http_policy(flow, raw_url)
 
 
-def tcp_start(flow: object) -> None:
-    record_raw_tunnel(flow)
-    kill_flow(flow)
-
-
-def tcp_message(flow: object) -> None:
-    messages = getattr(flow, "messages", None)
-    if messages:
-        messages[-1].content = b""
-    kill_flow(flow)
-
-
 def next_layer(nextlayer: object) -> None:
     current = getattr(nextlayer, "layer", None)
-    if current is None or type(current).__name__ != "TCPLayer":
+    if TCPLayer is None or not isinstance(current, TCPLayer):
         return
     context = getattr(nextlayer, "context", None)
     record_raw_tunnel(context)
@@ -198,18 +190,16 @@ def record_raw_tunnel(flow: object) -> None:
         pass
 
 
-def kill_flow(flow: object) -> None:
-    kill = getattr(flow, "kill", None)
-    if callable(kill) and getattr(flow, "killable", True):
-        try:
-            kill()
-        except Exception:
-            pass
-
-
-class CloseRawLayer:
+class CloseRawLayer(Layer):
     def __init__(self, context: object) -> None:
-        self.context = context
+        if Layer is object:
+            self.context = context
+            return
+        if getattr(context, "layers", None) is None:
+            context.layers = []
+        if getattr(context, "options", None) is None:
+            context.options = type("Options", (), {"proxy_debug": False})()
+        super().__init__(context)
 
     def handle_event(self, event: object):
         if proxy_commands is None:
