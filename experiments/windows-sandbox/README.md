@@ -60,6 +60,7 @@ non-zero, fail-closed outcome.
 
 `launcher --appcontainer <request.json>` is the isolated-identity candidate. It
 combines an AppContainer token with the same atomic Job attribute and supplies
-no network capabilities. The current smoke only proves the identity and process
-boundary with an empty filesystem policy. Requests containing filesystem roots
-still fail closed until the ACL grant/restore ledger is implemented.
+no network capabilities. The smoke proves the identity and process boundary,
+denial of a user-readable file outside the container, and denial of a live
+loopback endpoint. Requests containing filesystem roots still fail closed until
+the ACL grant/restore ledger is implemented.

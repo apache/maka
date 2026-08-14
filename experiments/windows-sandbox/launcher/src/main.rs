@@ -19,7 +19,9 @@ mod windows_launcher;
 
 use std::env;
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use broker_authorization::BrokerAuthorizer;
 use broker_framing::{decode_frame, encode_frame};
@@ -47,6 +49,21 @@ fn run() -> Result<u8, String> {
             return Err("--self-probe does not accept arguments".to_owned());
         }
         return windows_launcher::self_probe();
+    }
+    if first == "--boundary-probe" {
+        let denied_path = args
+            .next()
+            .ok_or_else(|| "--boundary-probe requires denied path and loopback port".to_owned())?;
+        let port = args
+            .next()
+            .ok_or_else(|| "--boundary-probe requires denied path and loopback port".to_owned())?
+            .to_string_lossy()
+            .parse::<u16>()
+            .map_err(|error| format!("invalid boundary-probe port: {error}"))?;
+        if args.next().is_some() {
+            return Err("--boundary-probe accepts exactly two arguments".to_owned());
+        }
+        return boundary_probe(&denied_path.to_string_lossy(), port);
     }
     if first == "--broker-serve-once" {
         let pipe_name = args.next().ok_or_else(|| {
@@ -128,6 +145,17 @@ fn run() -> Result<u8, String> {
         }
         _ => unreachable!(),
     }
+}
+
+fn boundary_probe(denied_path: &str, port: u16) -> Result<u8, String> {
+    let file_denied = fs::read(denied_path).is_err();
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let network_denied = TcpStream::connect_timeout(&address, Duration::from_secs(2)).is_err();
+    println!("{{\"fileDenied\":{file_denied},\"networkDenied\":{network_denied}}}");
+    if !file_denied || !network_denied {
+        return Err("AppContainer boundary allowed a denied resource".to_owned());
+    }
+    Ok(0)
 }
 
 fn validate_broker_request(source: &str) -> Result<u8, String> {
