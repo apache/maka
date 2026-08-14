@@ -2,64 +2,63 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import { formatCompactTimestamp } from '@maka/core/relative-time';
-import { Badge, Button, EmptyState, useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { ChevronRight, ICON_SIZE } from '@maka/ui/icons';
+import { Button, EmptyState, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { ChevronRight, ICON_SIZE, Search } from '@maka/ui/icons';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { HStack, List, ListItem, Text } from '@astryxdesign/core';
 import { IconButton } from '@astryxdesign/core/IconButton';
-import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
+import { Selector } from '@astryxdesign/core/Selector';
+import { TextInput } from '@astryxdesign/core/TextInput';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { getSettingsTasksCopy, type SettingsTasksCopy } from '../locales/settings-tasks-copy.js';
-import { ExternalSessionImportDialog } from '../external-session-import-dialog.js';
 import { createSessionListRefresher } from '../session-read-state.js';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
-import { projectTaskRows, type TaskScope } from './task-catalog-rows';
+import { archivedTaskRows, filterArchivedTasks, NO_PROJECT_FILTER } from './task-catalog-rows';
 import { useActionGuard } from './use-action-guard';
 
-type BatchAction = 'restore' | 'archive' | 'delete';
+type BatchAction = 'restore' | 'delete' | 'purge';
 
 export interface TasksSettingsPageProps {
   onOpenSession?: (sessionId: string) => void;
 }
 
 /**
- * Settings · 活动 · 任务管理 — the management view of the task catalog.
+ * Settings · 活动 · 已归档任务 — where archived tasks are restored or deleted.
  *
- * The rail is a navigator: single selection, 260px, always on screen. Managing
- * tasks is the opposite shape — you act on several at once, you need to see
- * the project and the date to decide, and you do it rarely. That work never
- * fit in the rail, which is why archived tasks lived there as a filter row
- * that could only ever restore one task at a time.
+ * The rail is a navigator for active tasks: single selection, 260px, always on
+ * screen. Cleaning up archived ones is the opposite shape — you act on several
+ * at once, you need the project and the date to decide, and you do it rarely.
+ * That work never fit in the rail, which is why archived tasks lived there as
+ * a filter row that could only ever restore one task at a time.
  *
- * This page reads the same catalog the rail does, through the same refresher
- * and the same row projection (`projectTaskRows`), so a row here means exactly
- * what a row there means. Mutations reach the rail through the shared
- * `sessions.subscribeChanges` broadcast; neither surface pushes state at the
- * other.
+ * The page lists only archived tasks. An all/archived switch would be a false
+ * choice: archived is a subset of all, so the two scopes overlap and every row
+ * then needs a badge to say which one it is. One scope needs no badge, and the
+ * batch actions stop depending on what happens to be selected — restore and
+ * delete, always both, always meaningful.
  *
- * The layout follows Astryx's bulk-selection pattern: scope and import are
- * section-header actions, and a `muted` Toolbar sits above the list holding
- * select-all, the count, and the batch actions. The toolbar is always
- * mounted — a toolbar that appears on first selection would push the list it
- * belongs to down the page.
+ * It reads the catalog through the same refresher and the same projection the
+ * rail uses (`archivedTaskRows`), so a row here means what a row there means.
+ * Mutations reach the rail through the shared `sessions.subscribeChanges`
+ * broadcast; neither surface pushes state at the other.
  */
 export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
   const locale = useUiLocale();
   const copy = getSettingsTasksCopy(locale);
   const toast = useToast();
   const mountedRef = useMountedRef();
-  // One latch for the whole page: every batch acts on the same selection, so
-  // letting two overlap would race over rows the first is already removing.
+  // One latch for the whole page: both batches act on the same selection, so
+  // letting them overlap would race over rows the first is already removing.
   const guard = useActionGuard<BatchAction>();
-  const [scope, setScope] = useState<TaskScope>('all');
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [projects, setProjects] = useState<readonly ProjectRecord[]>([]);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [query, setQuery] = useState('');
+  const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
   const [pending, setPending] = useState<BatchAction | null>(null);
 
   const sessionsRef = useRef<SessionSummary[]>([]);
@@ -117,28 +116,38 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
 
   // Store order is already recency-first with a stable id tie-break, and the
   // projection preserves it, so there is nothing left to sort here.
-  const visible = useMemo(() => projectTaskRows(sessions, scope), [sessions, scope]);
+  const archived = useMemo(() => archivedTaskRows(sessions), [sessions]);
+  const visible = useMemo(
+    () =>
+      filterArchivedTasks(archived, { query, projectId: projectFilter }, (id) =>
+        projectNames.get(id),
+      ),
+    [archived, projectFilter, projectNames, query],
+  );
 
-  // Selection survives a background refresh but not a scope switch: the rows
-  // you were acting on are no longer the rows on screen.
-  const visibleById = useMemo(() => new Map(visible.map((s) => [s.id, s])), [visible]);
+  // Only projects that actually hold an archived task: a filter offering
+  // choices that all resolve to an empty list is not a filter.
+  const projectOptions = useMemo(() => {
+    const ids = new Set<string>();
+    let hasUnassigned = false;
+    for (const session of archived) {
+      if (session.projectId) ids.add(session.projectId);
+      else hasUnassigned = true;
+    }
+    const options = [...ids].map((id) => ({ value: id, label: projectNames.get(id) ?? id }));
+    options.sort((a, b) => a.label.localeCompare(b.label));
+    if (hasUnassigned) options.push({ value: NO_PROJECT_FILTER, label: copy.noProject });
+    return options;
+  }, [archived, copy.noProject, projectNames]);
+
+  // Selection survives a background refresh, but only over rows still on
+  // screen: restoring a task takes it off this page, and so does typing a
+  // query that excludes it.
+  const visibleIds = useMemo(() => new Set(visible.map((s) => s.id)), [visible]);
   const effectiveSelection = useMemo(
-    () => [...selected].filter((id) => visibleById.has(id)),
-    [selected, visibleById],
+    () => [...selected].filter((id) => visibleIds.has(id)),
+    [selected, visibleIds],
   );
-  const restorable = useMemo(
-    () => effectiveSelection.filter((id) => visibleById.get(id)?.isArchived),
-    [effectiveSelection, visibleById],
-  );
-  const archivable = useMemo(
-    () => effectiveSelection.filter((id) => !visibleById.get(id)?.isArchived),
-    [effectiveSelection, visibleById],
-  );
-
-  function changeScope(next: TaskScope) {
-    setScope(next);
-    setSelected(new Set());
-  }
 
   function toggleRow(sessionId: string, checked: boolean) {
     setSelected((current) => {
@@ -189,7 +198,7 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
   async function restoreSelected() {
     await runBatch(
       'restore',
-      restorable,
+      effectiveSelection,
       // `revisionFamily` matches the rail's own row action: a task and its
       // revisions archive and restore as one unit, never half a family.
       (id) => window.maka.sessions.unarchive(id, { revisionFamily: true }),
@@ -198,21 +207,10 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
     );
   }
 
-  async function archiveSelected() {
-    await runBatch(
-      'archive',
-      archivable,
-      (id) => window.maka.sessions.archive(id, { revisionFamily: true }),
-      copy.archiveFailedTitle,
-      copy.archivedToast,
-    );
-  }
-
-  async function deleteSelected() {
-    const ids = effectiveSelection;
+  async function confirmDelete(action: BatchAction, ids: readonly string[], title: string) {
     if (ids.length === 0) return;
     const confirmed = await toast.confirm({
-      title: copy.deleteConfirmTitle(ids.length),
+      title,
       description: copy.deleteConfirmBody,
       confirmLabel: copy.deleteConfirmAction,
       cancelLabel: copy.cancel,
@@ -220,7 +218,7 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
     });
     if (!confirmed) return;
     await runBatch(
-      'delete',
+      action,
       ids,
       (id) => window.maka.sessions.remove(id, { revisionFamily: true }),
       copy.deleteFailedTitle,
@@ -228,13 +226,23 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
     );
   }
 
-  const allSelected = visible.length > 0 && effectiveSelection.length === visible.length;
-  const busy = pending !== null;
+  async function deleteSelected() {
+    await confirmDelete('delete', effectiveSelection, copy.deleteConfirmTitle(effectiveSelection.length));
+  }
 
-  function taskList() {
-    if (!loaded) return <SettingsSkeletonStack label={copy.loadingLabel} />;
-    if (loadFailed) {
-      return (
+  // Clears what is on screen, not the whole archive. The list is the filter's
+  // result, so emptying it must mean emptying that result — a button that
+  // silently reached past the filter would delete tasks the person cannot see.
+  async function purgeVisible() {
+    const ids = visible.map((session) => session.id);
+    await confirmDelete('purge', ids, copy.purgeConfirmTitle(ids.length));
+  }
+
+  if (!loaded) return <SettingsPage>{<SettingsSkeletonStack label={copy.loadingLabel} />}</SettingsPage>;
+
+  if (loadFailed) {
+    return (
+      <SettingsPage>
         <EmptyState
           title={copy.loadFailed}
           actions={
@@ -246,21 +254,32 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
             />
           }
         />
-      );
-    }
-    if (visible.length === 0) {
-      return (
-        <EmptyState
-          title={scope === 'archived' ? copy.emptyArchivedTitle : copy.emptyAllTitle}
-          description={scope === 'archived' ? copy.emptyArchivedBody : copy.emptyAllBody}
-        />
-      );
-    }
+      </SettingsPage>
+    );
+  }
+
+  // Nothing archived at all is a different situation from a filter that
+  // matched nothing, and only one of them is worth a page-level empty state.
+  if (archived.length === 0) {
     return (
-      <>
+      <SettingsPage>
+        <EmptyState title={copy.emptyTitle} description={copy.emptyBody} />
+      </SettingsPage>
+    );
+  }
+
+  const allSelected = visible.length > 0 && effectiveSelection.length === visible.length;
+  const hasSelection = effectiveSelection.length > 0;
+  const busy = pending !== null;
+
+  return (
+    <SettingsPage>
+      <SettingsSection variant="rows">
         {/* Always mounted, never conditional: a toolbar that appears on first
-            selection pushes the list it belongs to down the page. Empty end
-            slot, stable height. */}
+            selection pushes the list it belongs to down the page. The filters
+            hold the start slot; the end slot swaps between clearing what the
+            filters produced and acting on what is selected, inside a stable
+            height. */}
         <Toolbar
           label={copy.batchActionsAria}
           size="sm"
@@ -271,35 +290,46 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
               <CheckboxInput
                 label={copy.selectAllAria}
                 isLabelHidden
-                value={allSelected ? true : effectiveSelection.length > 0 ? 'indeterminate' : false}
+                value={allSelected ? true : hasSelection ? 'indeterminate' : false}
                 onChange={(checked) => toggleAll(checked)}
               />
-              <Text type="supporting" size="sm" color="secondary">
-                {effectiveSelection.length > 0
-                  ? copy.selectedCount(effectiveSelection.length)
-                  : copy.totalCount(visible.length)}
-              </Text>
+              <TextInput
+                label={copy.searchLabel}
+                isLabelHidden
+                placeholder={copy.searchPlaceholder}
+                value={query}
+                onChange={setQuery}
+                startIcon={Search}
+                hasClear
+                width={240}
+              />
+              {projectOptions.length > 1 && (
+                <Selector
+                  label={copy.projectFilterLabel}
+                  isLabelHidden
+                  variant="ghost"
+                  placeholder={copy.allProjects}
+                  hasClear
+                  value={projectFilter}
+                  onChange={setProjectFilter}
+                  options={projectOptions}
+                  width={180}
+                />
+              )}
             </>
           }
           endContent={
-            effectiveSelection.length > 0 ? (
+            hasSelection ? (
               <>
-                {restorable.length > 0 && (
-                  <Button
-                    variant="ghost"
-                    isDisabled={busy}
-                    clickAction={() => void restoreSelected()}
-                    label={pending === 'restore' ? copy.restoring : copy.restore}
-                  />
-                )}
-                {archivable.length > 0 && (
-                  <Button
-                    variant="ghost"
-                    isDisabled={busy}
-                    clickAction={() => void archiveSelected()}
-                    label={pending === 'archive' ? copy.archiving : copy.archive}
-                  />
-                )}
+                <Text type="supporting" size="sm" color="secondary">
+                  {copy.selectedCount(effectiveSelection.length)}
+                </Text>
+                <Button
+                  variant="ghost"
+                  isDisabled={busy}
+                  clickAction={() => void restoreSelected()}
+                  label={pending === 'restore' ? copy.restoring : copy.restore}
+                />
                 <Button
                   variant="destructive"
                   isDisabled={busy}
@@ -307,75 +337,48 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
                   label={pending === 'delete' ? copy.deleting : copy.delete}
                 />
               </>
-            ) : undefined
+            ) : (
+              <>
+                <Text type="supporting" size="sm" color="secondary">
+                  {copy.totalCount(visible.length)}
+                </Text>
+                {visible.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    isDisabled={busy}
+                    clickAction={() => void purgeVisible()}
+                    label={pending === 'purge' ? copy.deleting : copy.purge}
+                  />
+                )}
+              </>
+            )
           }
         />
-        <List density="balanced" hasDividers>
-          {visible.map((session) => (
-            <TaskRow
-              key={session.id}
-              session={session}
-              copy={copy}
-              locale={locale}
-              scope={scope}
-              projectName={
-                session.projectId ? projectNames.get(session.projectId) : undefined
-              }
-              isSelected={selected.has(session.id)}
-              onToggle={(checked) => toggleRow(session.id, checked)}
-              onOpen={onOpenSession ? () => onOpenSession(session.id) : undefined}
-            />
-          ))}
-        </List>
-      </>
-    );
-  }
-
-  return (
-    <SettingsPage>
-      <SettingsSection
-        variant="bare"
-        action={
-          <HStack gap={2} vAlign="center">
-            <SegmentedControl
-              value={scope}
-              onChange={(next) => changeScope(next as TaskScope)}
-              label={copy.filterAria}
-              size="sm"
-            >
-              <SegmentedControlItem value="all" label={copy.filterAll} />
-              <SegmentedControlItem value="archived" label={copy.filterArchived} />
-            </SegmentedControl>
-            <Button
-              variant="secondary"
-              size="sm"
-              clickAction={() => setImportOpen(true)}
-              label={copy.importAction}
-            />
-          </HStack>
-        }
-      >
-        {taskList()}
+        {visible.length === 0 ? (
+          <EmptyState isCompact title={copy.noMatchTitle} description={copy.noMatchBody} />
+        ) : (
+          <List density="balanced" hasDividers>
+            {visible.map((session) => (
+              <TaskRow
+                key={session.id}
+                session={session}
+                copy={copy}
+                locale={locale}
+                projectName={session.projectId ? projectNames.get(session.projectId) : undefined}
+                isSelected={selected.has(session.id)}
+                onToggle={(checked) => toggleRow(session.id, checked)}
+                onOpen={onOpenSession ? () => onOpenSession(session.id) : undefined}
+              />
+            ))}
+          </List>
+        )}
       </SettingsSection>
-
-      {/* Self-contained here rather than routed through AppShell's overlay
-          stack: importing from a management page should land the task in the
-          catalog and stay put. AppShell's own entry opens the imported task in
-          chat, which would throw you out of the page you are working in. */}
-      <ExternalSessionImportDialog
-        isOpen={importOpen}
-        onOpenChange={setImportOpen}
-        onImported={(session) => {
-          toast.success(copy.importedToast(session.name));
-          void load();
-        }}
-      />
     </SettingsPage>
   );
 }
 
 /**
- * One task row.
+ * One archived task.
  *
  * The row surface selects rather than opens. Astryx's `interactiveRef` makes
  * the whole row an enlarged tap target for the checkbox it already contains,
@@ -387,7 +390,6 @@ function TaskRow({
   session,
   copy,
   locale,
-  scope,
   projectName,
   isSelected,
   onToggle,
@@ -396,7 +398,6 @@ function TaskRow({
   session: SessionSummary;
   copy: SettingsTasksCopy;
   locale: ReturnType<typeof useUiLocale>;
-  scope: TaskScope;
   projectName: string | undefined;
   isSelected: boolean;
   onToggle: (checked: boolean) => void;
@@ -419,12 +420,6 @@ function TaskRow({
       }
       endContent={
         <HStack gap={2} vAlign="center">
-          {/* The archived badge only earns its place in the `all` view, where
-              archived and active rows sit together. In the archived view every
-              row carries it. */}
-          {scope === 'all' && session.isArchived && (
-            <Badge variant="neutral" label={copy.archivedBadge} />
-          )}
           <Text type="supporting" size="sm" color="secondary">
             {projectName ?? copy.noProject}
           </Text>
