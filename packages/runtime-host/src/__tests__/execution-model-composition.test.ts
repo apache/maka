@@ -93,6 +93,7 @@ const SUMMARY_TEXT = '## Goal\nContinue hosted real-model execution.';
 const CLIENT_CAPABILITY_RESULT_TEXT = 'HOSTED_CLIENT_CAPABILITY_RESULT_SENTINEL';
 const CHILD_AGENT_RESULT_TEXT = 'HOSTED_CHILD_AGENT_RESULT_SENTINEL';
 const WEB_RESEARCH_CHILD_RESULT_TEXT = 'HOSTED_WEB_RESEARCH_RESULT_SENTINEL';
+const TOOL_AUTHOR_PARENT_RESULT_TEXT = 'HOSTED_TOOL_AUTHOR_PARENT_ACCEPTED';
 const MAX_IMPLEMENTATION_CHILD_PTY_READS = 5;
 const MIN_IMPLEMENTATION_CHILD_REQUESTS = 6;
 const MAX_IMPLEMENTATION_CHILD_REQUESTS =
@@ -1541,6 +1542,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
       'local_read',
       'web_research',
       'implementation',
+      'tool_author',
     ]);
     // A child now carries the archive decoder alongside its allowlist (#2026).
     // Its own placeholders name `ArchiveRead`, so the ceiling that governs
@@ -1617,6 +1619,177 @@ test('production Host executes a durable runnable child with an exact tool ceili
       (typedSpawnResult as { artifactIds?: readonly string[] }).artifactIds,
       childArtifacts.map((artifact) => artifact.id),
     );
+  } finally {
+    try {
+      await composition?.close();
+    } finally {
+      try {
+        await owner.close();
+      } finally {
+        await provider.close();
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test('production Host lets a child install and test a Tool before the parent accepts it', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-tool-author-'));
+  const root = join(base, 'interactive');
+  const project = join(base, 'project');
+  const provider = await startProvider();
+  provider.configureToolAuthorChildFlow();
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  const context: ConnectionContext = {
+    hostEpoch: 'tool-author-test-epoch',
+    connectionId: 'tool-author-test-client',
+    surface: 'tui',
+    principal: 'local_os_user',
+    acquireResidency: () => ({ release() {} }),
+  };
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  try {
+    await mkdir(project);
+    await writeFile(join(project, 'numbers.txt'), '20\n22\n');
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'hosted-tool-author-provider',
+        name: 'Hosted Tool author provider',
+        providerType: 'moonshot',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    assert.equal(
+      (
+        await policy.credentialVault.set({
+          locator: {
+            scope: 'connection',
+            connectionId: connection.connectionId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: API_KEY,
+        })
+      ).kind,
+      'committed',
+    );
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID, 32_768);
+
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const parent = await execution.sessionStore.create({
+      cwd: project,
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'hosted-tool-author-provider',
+      model: MODEL_ID,
+      permissionMode: 'bypass',
+    });
+    composition = await createExecutionRuntimeHostComposition({
+      owner,
+      hostEpoch: context.hostEpoch,
+      acquireResidency: context.acquireResidency,
+      retainUntilProcessExit: () => undefined,
+      requestDrain: () => undefined,
+    });
+    await composition.recover();
+
+    const terminal = await waitForTerminal(
+      composition,
+      parent.id,
+      'hosted-tool-author-parent-turn',
+      await startTurn(
+        composition,
+        parent.id,
+        'hosted-tool-author-parent-turn',
+        'Delegate Tool creation, then independently accept and invoke the installed candidate.',
+        context,
+      ),
+      context,
+    );
+    assert.equal(terminal.status, 'completed');
+
+    const requests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(requests.length, 10, JSON.stringify(providerRequestTrace(requests)));
+    const childToolNames = [
+      'ArchiveRead',
+      'Glob',
+      'Grep',
+      'Read',
+      'define_tool',
+      'inspect_tools',
+      'test_tool',
+    ];
+    for (const request of requests.slice(2, 6)) {
+      assert.deepEqual(toolNames(request.body), childToolNames);
+    }
+    assert.equal(childToolNames.includes('manage_tool'), false);
+    assert.equal(childToolNames.includes('invoke_tool'), false);
+    assert.equal(childToolNames.includes('Write'), false);
+    assert.equal(childToolNames.includes('Bash'), false);
+
+    const sessions = await execution.sessionStore.listForRecovery();
+    const child = sessions.find((session) => session.subagentRuntime?.profile === 'tool_author');
+    assert.ok(child);
+    assert.equal(child?.subagentParent?.parentSessionId, parent.id);
+    assert.equal(child?.cwd, project);
+    assert.equal(child?.subagentWorkspace, undefined);
+    if (!child) return;
+    const childRuns = await execution.agentRunStore.listSessionRuns(child.id);
+    assert.equal(childRuns.length, 1);
+    assert.equal(childRuns[0]?.status, 'completed');
+    const childEvents = await execution.runtimeEventStore.readRuntimeEvents(
+      child.id,
+      childRuns[0]!.runId,
+    );
+    assert.ok(
+      childEvents.some(
+        (event) =>
+          event.content?.kind === 'function_response' && event.content.name === 'define_tool',
+      ),
+    );
+    assert.ok(
+      childEvents.some(
+        (event) =>
+          event.content?.kind === 'function_response' && event.content.name === 'test_tool',
+      ),
+    );
+
+    const parentEvents = await execution.runtimeEventStore.readRuntimeEvents(
+      parent.id,
+      terminal.runId,
+    );
+    assert.ok(
+      parentEvents.some(
+        (event) =>
+          event.content?.kind === 'function_response' && event.content.name === 'manage_tool',
+      ),
+    );
+    assert.ok(
+      parentEvents.some(
+        (event) =>
+          event.content?.kind === 'function_response' && event.content.name === 'invoke_tool',
+      ),
+    );
+    const parentMessages = await execution.sessionStore.readMessagesSnapshot(parent.id);
+    const parentAssistant = parentMessages.find(
+      (message) =>
+        message.type === 'assistant' && message.turnId === 'hosted-tool-author-parent-turn',
+    );
+    assert.equal(parentAssistant?.type, 'assistant');
+    if (parentAssistant?.type === 'assistant') {
+      assert.equal(parentAssistant.text, TOOL_AUTHOR_PARENT_RESULT_TEXT);
+    }
   } finally {
     try {
       await composition?.close();
@@ -1770,6 +1943,7 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.deepEqual(toolParameterEnum(requests[1]?.body, 'agent_spawn', 'profile'), [
       'local_read',
       'implementation',
+      'tool_author',
     ]);
     const childToolNames = [
       'ArchiveRead',
@@ -3175,6 +3349,7 @@ type ProviderFlow =
       readonly toolName: string;
     }
   | { readonly kind: 'child_agent' }
+  | { kind: 'tool_author_child_agent'; revision?: string }
   | {
       readonly kind: 'implementation_child_agent';
       ptyReadCount: number;
@@ -3187,6 +3362,7 @@ async function startProvider(): Promise<{
   readonly requests: ProviderRequest[];
   configureClientCapability(input: { groupId: string; toolName: string }): void;
   configureChildAgentFlow(): void;
+  configureToolAuthorChildFlow(): void;
   configureImplementationChildAgentFlow(): void;
   configureAgentGraphFlow(): void;
   close(): Promise<void>;
@@ -3211,6 +3387,10 @@ async function startProvider(): Promise<{
     configureChildAgentFlow: () => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
       flow = { kind: 'child_agent' };
+    },
+    configureToolAuthorChildFlow: () => {
+      if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
+      flow = { kind: 'tool_author_child_agent' };
     },
     configureImplementationChildAgentFlow: () => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
@@ -3275,7 +3455,9 @@ async function handleProviderRequest(
     return;
   }
   if (
-    (flow.kind === 'child_agent' || flow.kind === 'implementation_child_agent') &&
+    (flow.kind === 'child_agent' ||
+      flow.kind === 'implementation_child_agent' ||
+      flow.kind === 'tool_author_child_agent') &&
     streamRequestIndex === 1
   ) {
     assert.ok(toolNames(body).includes('load_tools'));
@@ -3284,19 +3466,115 @@ async function handleProviderRequest(
     return;
   }
   if (
-    (flow.kind === 'child_agent' || flow.kind === 'implementation_child_agent') &&
+    (flow.kind === 'child_agent' ||
+      flow.kind === 'implementation_child_agent' ||
+      flow.kind === 'tool_author_child_agent') &&
     streamRequestIndex === 2
   ) {
     assert.ok(toolNames(body).includes('agent_spawn'));
     respondProviderToolCall(response, streamRequestIndex, 'agent_spawn', {
-      profile: flow.kind === 'child_agent' ? 'local_read' : 'implementation',
+      profile:
+        flow.kind === 'child_agent'
+          ? 'local_read'
+          : flow.kind === 'tool_author_child_agent'
+            ? 'tool_author'
+            : 'implementation',
       task:
         flow.kind === 'child_agent'
           ? 'Inspect the hosted child execution boundary without changing files.'
-          : 'Create implementation.txt with the requested sentinel.',
-      isolation: flow.kind === 'child_agent' ? 'same_workspace' : 'worktree',
-      write_back: flow.kind === 'child_agent' ? 'summary' : 'patch',
+          : flow.kind === 'tool_author_child_agent'
+            ? 'Create, install, and sandbox-test a Tool that adds two numbers.'
+            : 'Create implementation.txt with the requested sentinel.',
+      isolation: flow.kind === 'implementation_child_agent' ? 'worktree' : 'same_workspace',
+      write_back: flow.kind === 'implementation_child_agent' ? 'patch' : 'summary',
     });
+    return;
+  }
+  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 3) {
+    assert.deepEqual(toolNames(body), [
+      'ArchiveRead',
+      'Glob',
+      'Grep',
+      'Read',
+      'define_tool',
+      'inspect_tools',
+      'test_tool',
+    ]);
+    respondProviderToolCall(response, streamRequestIndex, 'inspect_tools', {});
+    return;
+  }
+  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 4) {
+    respondProviderToolCall(response, streamRequestIndex, 'define_tool', {
+      id: 'child-calculator',
+      version: '1.0.0',
+      source:
+        "export default { Add: ({ left, right }) => ({ sum: left + right, author: 'child' }) };",
+      tools: [
+        {
+          name: 'Add',
+          description: 'Add two numbers using the child-authored candidate.',
+          handler: 'Add',
+          inputSchema: {
+            type: 'object',
+            properties: { left: { type: 'number' }, right: { type: 'number' } },
+            required: ['left', 'right'],
+            additionalProperties: false,
+          },
+          category: 'read',
+          recoveryMode: 'replay_safe',
+        },
+      ],
+      permissions: { workspace: 'none', network: false },
+    });
+    return;
+  }
+  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 5) {
+    const installed = requireLatestToolResult(body);
+    assert.equal(typeof installed.revision, 'string');
+    flow.revision = installed.revision as string;
+    respondProviderToolCall(response, streamRequestIndex, 'test_tool', {
+      extensionId: 'child-calculator',
+      revision: flow.revision,
+      toolName: 'Add',
+      args: { left: 20, right: 22 },
+    });
+    return;
+  }
+  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 6) {
+    assert.deepEqual(requireLatestToolResult(body), { sum: 42, author: 'child' });
+    respondProviderText(
+      response,
+      `Installed and tested child-calculator revision ${flow.revision}.`,
+    );
+    return;
+  }
+  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 7) {
+    assert.ok(flow.revision);
+    assert.ok(toolNames(body).includes('manage_tool'));
+    respondProviderToolCall(response, streamRequestIndex, 'manage_tool', {
+      action: 'activate',
+      extensionId: 'child-calculator',
+      revision: flow.revision,
+    });
+    return;
+  }
+  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 8) {
+    respondProviderToolCall(response, streamRequestIndex, 'invoke_tool', {
+      toolName: 'Add',
+      args: { left: 19, right: 23 },
+    });
+    return;
+  }
+  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 9) {
+    assert.deepEqual(requireLatestToolResult(body), { sum: 42, author: 'child' });
+    respondProviderToolCall(response, streamRequestIndex, 'manage_tool', {
+      action: 'stop',
+      extensionId: 'child-calculator',
+    });
+    return;
+  }
+  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 10) {
+    respondProviderText(response, TOOL_AUTHOR_PARENT_RESULT_TEXT);
     return;
   }
   if (flow.kind === 'child_agent' && streamRequestIndex === 3) {

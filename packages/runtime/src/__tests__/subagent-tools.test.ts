@@ -20,6 +20,9 @@ import {
   LOCAL_READ_AGENT_ID,
   LOCAL_READ_AGENT_DEFINITION,
   LOCAL_READ_AGENT_PROFILE,
+  TOOL_AUTHOR_AGENT_DEFINITION,
+  TOOL_AUTHOR_AGENT_ID,
+  TOOL_AUTHOR_AGENT_PROFILE,
   WEB_RESEARCH_AGENT_ID,
   WEB_RESEARCH_AGENT_DEFINITION,
   WEB_RESEARCH_AGENT_PROFILE,
@@ -225,6 +228,38 @@ describe('subagent tools', () => {
     });
   });
 
+  test('built-in catalog exposes Tool author only with the bounded authoring surface', () => {
+    const tools = [
+      testCatalogTool('Read', 'read'),
+      testCatalogTool('Glob', 'read'),
+      testCatalogTool('Grep', 'read'),
+      testCatalogTool('inspect_tools', 'read'),
+      testCatalogTool('define_tool', 'file_write'),
+      testCatalogTool('test_tool', 'shell_unsafe'),
+      testCatalogTool('manage_tool', 'file_write'),
+      testCatalogTool('invoke_tool', 'shell_unsafe'),
+    ];
+    const definition = listBuiltinAgentDefinitions({ tools }).find(
+      (candidate) => candidate.id === TOOL_AUTHOR_AGENT_ID,
+    );
+    expect(definition?.availability).toEqual({ status: 'available' });
+    expect(definition?.profile).toBe(TOOL_AUTHOR_AGENT_PROFILE);
+    expect(definition?.tools).toEqual([
+      'Read',
+      'Glob',
+      'Grep',
+      'inspect_tools',
+      'define_tool',
+      'test_tool',
+    ]);
+    expect(TOOL_AUTHOR_AGENT_DEFINITION.contract.workspace).toBe(AGENT_WORKSPACE_SAME_WORKSPACE);
+    expect(TOOL_AUTHOR_AGENT_DEFINITION.contract.defaultWriteBack).toBe(AGENT_WRITE_BACK_SUMMARY);
+    expect(TOOL_AUTHOR_AGENT_DEFINITION.tools).not.toContain('manage_tool');
+    expect(TOOL_AUTHOR_AGENT_DEFINITION.tools).not.toContain('invoke_tool');
+    expect(TOOL_AUTHOR_AGENT_DEFINITION.tools).not.toContain('Write');
+    expect(TOOL_AUTHOR_AGENT_DEFINITION.tools).not.toContain('Bash');
+  });
+
   test('agent definition policy uses the explicit tool allowlist', () => {
     expect(
       evaluateAgentDefinitionToolAccess(
@@ -309,6 +344,11 @@ describe('subagent tools', () => {
         categoryHint: 'subagent',
         impl: async () => ({}),
       },
+      testCatalogTool('inspect_tools', 'read'),
+      testCatalogTool('define_tool', 'file_write'),
+      testCatalogTool('test_tool', 'shell_unsafe'),
+      testCatalogTool('manage_tool', 'file_write'),
+      testCatalogTool('invoke_tool', 'shell_unsafe'),
     ]);
 
     expect(tools.map((tool) => tool.name)).toEqual([
@@ -322,6 +362,9 @@ describe('subagent tools', () => {
       'Bash',
       'WriteStdin',
       'StopBackgroundTask',
+      'inspect_tools',
+      'define_tool',
+      'test_tool',
     ]);
     expect([...CHILD_AGENT_TOOL_NAMES]).toEqual([
       'Read',
@@ -334,6 +377,9 @@ describe('subagent tools', () => {
       'Bash',
       'WriteStdin',
       'StopBackgroundTask',
+      'inspect_tools',
+      'define_tool',
+      'test_tool',
     ]);
   });
 

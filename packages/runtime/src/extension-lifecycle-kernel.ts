@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 const ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
+const SCOPE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const MAX_ID_LENGTH = 128;
 
 export type ExtensionEffectDisposer = () => void | Promise<void>;
@@ -425,7 +426,7 @@ export class ExtensionLifecycleKernel {
 
   disposeScope(scopeId: string): Promise<void> {
     return this.#mutate(async () => {
-      validateId('scopeId', scopeId);
+      validateScopeId(scopeId);
       const records = this.#scopeBindings(scopeId);
       for (const record of records) record.enabled = false;
       const failures: EffectCleanupFailure[] = [];
@@ -456,7 +457,7 @@ export class ExtensionLifecycleKernel {
   }
 
   inspectScope(scopeId: string): readonly ExtensionBindingInspection[] {
-    validateId('scopeId', scopeId);
+    validateScopeId(scopeId);
     return Object.freeze(this.#scopeBindings(scopeId).map((record) => this.#inspectRecord(record)));
   }
 
@@ -472,7 +473,7 @@ export class ExtensionLifecycleKernel {
   }
 
   composition(scopeId: string): ExtensionCompositionSnapshot {
-    validateId('scopeId', scopeId);
+    validateScopeId(scopeId);
     const entries = this.#scopeBindings(scopeId)
       .flatMap((binding): ExtensionCompositionEntry[] => {
         const current = binding.current;
@@ -975,9 +976,15 @@ function normalizeDefinition(definition: ExtensionRevisionDefinition): Installed
 function validateBindingInput(input: ExtensionBindingInput): void {
   if (!input || typeof input !== 'object') invalidDefinition('Binding input is required');
   validateId('bindingId', input.bindingId);
-  validateId('scopeId', input.scopeId);
+  validateScopeId(input.scopeId);
   validateId('extensionId', input.extensionId);
   validateRevision(input.revision);
+}
+
+function validateScopeId(value: string): void {
+  if (typeof value !== 'string' || value.length > MAX_ID_LENGTH || !SCOPE_ID_PATTERN.test(value)) {
+    invalidDefinition(`Invalid scopeId: ${String(value)}`);
+  }
 }
 
 function validateId(label: string, value: string): void {

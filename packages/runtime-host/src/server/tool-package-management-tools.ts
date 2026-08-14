@@ -21,6 +21,7 @@ const MANAGEMENT_TOOL_NAMES = new Set([
   'manage_tool',
   'invoke_tool',
 ]);
+const AUTHOR_TOOL_NAMES = new Set(['inspect_tools', 'define_tool', 'test_tool']);
 const CATEGORIES = [
   'read',
   'web_read',
@@ -122,6 +123,11 @@ export class HostToolPackageManagementTools {
       this.#manageTool(),
       this.#invokeTool(),
     ]);
+  }
+
+  /** Safe child-authoring subset: install and test candidates without binding or deleting them. */
+  authorTools(): readonly MakaTool[] {
+    return Object.freeze(this.tools().filter((tool) => AUTHOR_TOOL_NAMES.has(tool.name)));
   }
 
   #inspectTool(): MakaTool {

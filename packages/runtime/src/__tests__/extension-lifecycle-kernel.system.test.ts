@@ -68,6 +68,26 @@ test('system: a real TCP provider is health-checked, consumed, restarted, and fu
   assert.deepEqual(kernel.composition('session-system').entries, []);
 });
 
+test('system: opaque Session UUID scopes can start with a digit and still dispose cleanly', async () => {
+  const kernel = new ExtensionLifecycleKernel();
+  const scopeId = '1e34fea8-6ab9-4699-ad74-20c4bb498f48';
+  await kernel.install({
+    extensionId: 'uuid-scope-tool',
+    revision: '1',
+    prepare: () => ({ activate: () => undefined }),
+  });
+
+  const activated = await kernel.activate(
+    binding('uuid-scope-binding', scopeId, 'uuid-scope-tool', '1'),
+  );
+  assert.equal(activated.status, 'active');
+  assert.equal(kernel.inspectScope(scopeId).length, 1);
+  assert.equal(kernel.composition(scopeId).entries.length, 1);
+
+  await kernel.disposeScope(scopeId);
+  assert.deepEqual(kernel.inspectScope(scopeId), []);
+});
+
 test('system: real event listeners and timers do not survive stop or restart', async () => {
   const kernel = new ExtensionLifecycleKernel();
   const bus = new EventEmitter();

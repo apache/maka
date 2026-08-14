@@ -227,14 +227,13 @@ export async function createExecutionRuntimeHostComposition(
     new HostExtensionStateStore(context.owner.controlDirectory),
     context.requestDrain,
   );
-  extensions.registerHostTools(
-    new HostToolPackageManagementTools(
-      context.owner.controlDirectory,
-      extensionController,
-      extensions,
-      toolPackageStore,
-    ).tools(),
+  const toolPackageManagement = new HostToolPackageManagementTools(
+    context.owner.controlDirectory,
+    extensionController,
+    extensions,
+    toolPackageStore,
   );
+  extensions.registerHostTools(toolPackageManagement.tools());
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let taskLedgerStore:
     | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
@@ -422,7 +421,7 @@ export async function createExecutionRuntimeHostComposition(
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
-      hostTools,
+      hostTools: [...hostTools, ...toolPackageManagement.authorTools()],
       worktreePatchWriteBackAvailable: true,
     });
     const openedGraphControlStore = createAgentGraphControlStore(

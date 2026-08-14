@@ -17,6 +17,8 @@ export const WEB_RESEARCH_AGENT_ID = 'web-research';
 export const WEB_RESEARCH_AGENT_PROFILE = 'web_research';
 export const IMPLEMENTATION_AGENT_ID = 'implementation';
 export const IMPLEMENTATION_AGENT_PROFILE = 'implementation';
+export const TOOL_AUTHOR_AGENT_ID = 'tool-author';
+export const TOOL_AUTHOR_AGENT_PROFILE = 'tool_author';
 export const BUILTIN_AGENT_PROFILES = SUBAGENT_PROFILES;
 export const AGENT_INVOCATION_FOREGROUND = 'foreground';
 export const AGENT_CONTEXT_ISOLATED = 'isolated';
@@ -195,10 +197,36 @@ export const IMPLEMENTATION_AGENT_DEFINITION: AgentDefinition = {
   ].join('\n'),
 };
 
+export const TOOL_AUTHOR_AGENT_DEFINITION: AgentDefinition = {
+  definitionVersion: 1,
+  id: TOOL_AUTHOR_AGENT_ID,
+  profile: TOOL_AUTHOR_AGENT_PROFILE,
+  name: 'Tool Author',
+  description:
+    'Build, install, and sandbox-test immutable Tool package candidates without editing the workspace or activating them for the parent Agent.',
+  contract: {
+    capability: TOOL_AUTHOR_AGENT_PROFILE,
+    invocation: AGENT_INVOCATION_FOREGROUND,
+    context: AGENT_CONTEXT_ISOLATED,
+    workspace: AGENT_WORKSPACE_SAME_WORKSPACE,
+    defaultWriteBack: AGENT_WRITE_BACK_SUMMARY,
+    supportedWriteBack: [AGENT_WRITE_BACK_SUMMARY],
+  },
+  permissionMode: 'execute',
+  tools: ['Read', 'Glob', 'Grep', 'inspect_tools', 'define_tool', 'test_tool'],
+  systemPrompt: [
+    'You are a foreground Tool author child agent.',
+    'Use inspect_tools before authoring, define_tool to seal and install an immutable candidate revision, and test_tool to execute that exact revision in the real sandbox.',
+    'Do not modify workspace source files and do not ask the parent Agent to install source code for you.',
+    'You cannot activate a Tool for the parent Session. Return the installed extension id, revision, declared Tool names, permissions, and concrete test evidence so the parent can independently accept or reject it.',
+  ].join('\n'),
+};
+
 export const BUILTIN_AGENT_DEFINITIONS: readonly AgentDefinition[] = [
   LOCAL_READ_AGENT_DEFINITION,
   WEB_RESEARCH_AGENT_DEFINITION,
   IMPLEMENTATION_AGENT_DEFINITION,
+  TOOL_AUTHOR_AGENT_DEFINITION,
 ];
 
 export function listBuiltinAgentDefinitions(

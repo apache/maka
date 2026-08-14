@@ -116,6 +116,92 @@ test('Agent can inspect, define, test, activate, immediately invoke, update safe
   }
 });
 
+test('child author installs and sandbox-tests a candidate before the parent accepts it', {
+  timeout: 60_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-child-tool-author-'));
+  const store = new ToolPackageStore(root);
+  const runtime = new HostExtensionRuntime();
+  const controller = new HostExtensionController(
+    runtime,
+    new InstalledToolPackageExtensionLoader(new StaticTrustedToolExtensionLoader(), store),
+    new HostExtensionStateStore(root),
+    () => assert.fail('Tool author failure must not drain the Host'),
+  );
+  const management = new HostToolPackageManagementTools(root, controller, runtime, store);
+  runtime.registerHostTools(management.tools());
+  const child = toolContext(root, 'session-child-author');
+  const parent = toolContext(root, 'session-parent-owner');
+
+  try {
+    await controller.recover();
+    const authorTools = new Map(management.authorTools().map((tool) => [tool.name, tool]));
+    assert.deepEqual([...authorTools.keys()], ['inspect_tools', 'define_tool', 'test_tool']);
+    assert.equal(authorTools.has('manage_tool'), false);
+    assert.equal(authorTools.has('invoke_tool'), false);
+
+    const define = authorTools.get('define_tool');
+    assert.ok(define);
+    const candidate = (await define.impl(
+      definition(
+        '1.0.0',
+        `export default { Add: ({ left, right }) => ({ sum: left + right, author: 'child' }) };`,
+      ),
+      child,
+    )) as { revision: string };
+    assert.match(candidate.revision, /^sha256-/u);
+
+    const testCandidate = authorTools.get('test_tool');
+    assert.ok(testCandidate);
+    assert.deepEqual(
+      await testCandidate.impl(
+        {
+          extensionId: 'calculator',
+          revision: candidate.revision,
+          toolName: 'Add',
+          args: { left: 4, right: 6 },
+        },
+        child,
+      ),
+      { sum: 10, author: 'child' },
+    );
+
+    assert.equal(
+      runtime.resolveTools(child.sessionId, []).some(({ name }) => name === 'Add'),
+      false,
+    );
+    assert.equal(
+      runtime.resolveTools(parent.sessionId, []).some(({ name }) => name === 'Add'),
+      false,
+    );
+
+    const manage = management.tools().find(({ name }) => name === 'manage_tool');
+    assert.ok(manage);
+    await manage.impl(
+      { action: 'activate', extensionId: 'calculator', revision: candidate.revision },
+      parent,
+    );
+    assert.equal(
+      runtime.resolveTools(child.sessionId, []).some(({ name }) => name === 'Add'),
+      false,
+    );
+    assert.equal(
+      runtime.resolveTools(parent.sessionId, []).some(({ name }) => name === 'Add'),
+      true,
+    );
+
+    const invoke = management.tools().find(({ name }) => name === 'invoke_tool');
+    assert.ok(invoke);
+    assert.deepEqual(await invoke.impl({ toolName: 'Add', args: { left: 8, right: 9 } }, parent), {
+      sum: 17,
+      author: 'child',
+    });
+  } finally {
+    await runtime.close().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function definition(version: string, source: string): Record<string, unknown> {
   return {
     id: 'calculator',
@@ -148,9 +234,9 @@ function requireTool(runtime: HostExtensionRuntime, name: string): MakaTool {
   return tool;
 }
 
-function toolContext(cwd: string): MakaToolContext {
+function toolContext(cwd: string, sessionId = 'session-agent'): MakaToolContext {
   return {
-    sessionId: 'session-agent',
+    sessionId,
     runId: 'run-agent',
     turnId: 'turn-agent',
     cwd,
