@@ -26,13 +26,14 @@ export const DEFAULT_TURN_OVERSCAN_PX = 1_000;
 export const DEFAULT_TURN_WINDOW_SIZE = 60;
 export const MAX_TURN_WINDOW_SIZE = 100;
 export const INITIAL_TURN_WINDOW_SIZE = 2;
+export const MIN_TURN_WINDOW_SIZE = 2;
 const TURN_WINDOW_SHIFT_SIZE = 8;
 
 export function estimatedTurnHeight(heights: ReadonlyMap<string, number> | undefined): number {
   if (!heights || heights.size === 0) return DEFAULT_TURN_ESTIMATED_HEIGHT;
   let total = 0;
   for (const height of heights.values()) total += height;
-  return Math.max(DEFAULT_TURN_ESTIMATED_HEIGHT, total / heights.size);
+  return (DEFAULT_TURN_ESTIMATED_HEIGHT + total) / (heights.size + 1);
 }
 
 export function turnVirtualizationRequired(
@@ -127,9 +128,17 @@ export function stableTurnVirtualWindowForViewport(
   viewport: { scrollTop: number; clientHeight: number },
   options: TurnVirtualWindowOptions = {},
 ): TurnVirtualWindow {
-  const minimumSize = Math.min(layout.turnIds.length, INITIAL_TURN_WINDOW_SIZE);
+  const minimumSize = Math.min(layout.turnIds.length, MIN_TURN_WINDOW_SIZE);
   if (current.end - current.start < minimumSize) {
     return turnVirtualWindowForViewport(layout, viewport, options);
+  }
+  if (
+    current.start === 0
+    && current.end === layout.turnIds.length
+    && current.end - current.start > minimumSize
+  ) {
+    const bounded = turnVirtualWindowForViewport(layout, viewport, options);
+    if (bounded.end - bounded.start < current.end - current.start) return bounded;
   }
   const overscan = nonNegative(options.overscanPx, DEFAULT_TURN_OVERSCAN_PX);
   const scrollTop = clamp(viewport.scrollTop, 0, layout.totalHeight);
@@ -202,14 +211,14 @@ export function reconcileTurnVirtualWindow(
   const nextIds = nextLayout.turnIds;
   if (nextIds.length === 0) return windowFor(nextLayout, 0, 0);
   if (previousIds.length === 0 || previous.end <= previous.start) {
-    return initialTurnVirtualWindow(nextLayout, INITIAL_TURN_WINDOW_SIZE, ensureIndex);
+    return initialTurnVirtualWindow(nextLayout, MIN_TURN_WINDOW_SIZE, ensureIndex);
   }
   const firstId = previousIds[previous.start];
   const lastId = previousIds[previous.end - 1];
   let start = firstId === undefined ? -1 : nextIds.indexOf(firstId);
   const last = lastId === undefined ? -1 : nextIds.indexOf(lastId);
   if (start < 0 || last < start) {
-    return initialTurnVirtualWindow(nextLayout, INITIAL_TURN_WINDOW_SIZE, ensureIndex);
+    return initialTurnVirtualWindow(nextLayout, MIN_TURN_WINDOW_SIZE, ensureIndex);
   }
   let end = last + 1;
   if (previous.end === previousIds.length) {
@@ -222,7 +231,7 @@ export function reconcileTurnVirtualWindow(
   ({ start, end } = expandRange(
     start,
     end,
-    Math.min(nextIds.length, INITIAL_TURN_WINDOW_SIZE),
+    Math.min(nextIds.length, MIN_TURN_WINDOW_SIZE),
     nextIds.length,
   ));
   if (end - start > MAX_TURN_WINDOW_SIZE) {

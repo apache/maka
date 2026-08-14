@@ -102,7 +102,7 @@
    read. Native sticky positioning keeps the header in the transcript flow,
    so it leaves naturally at the card boundary and does not disturb ChatLayout
    scroll anchoring while reasoning or tool output continues to stream. */
-.maka-turn :is(.maka-deep-thinking, .maka-processing-block, .maka-tool-activity-card) {
+.maka-turn :is(.maka-deep-thinking, .maka-tool-activity-card) {
   --maka-activity-sticky-top: var(--space-2);
   --maka-activity-header-height: var(--h-control-sm);
 }

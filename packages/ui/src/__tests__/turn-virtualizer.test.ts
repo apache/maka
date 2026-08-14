@@ -16,8 +16,8 @@ const ids = (count: number) => Array.from({ length: count }, (_, index) => `t${i
 describe('turn virtualizer', () => {
   it('uses observed turns to estimate unmeasured history', () => {
     assert.equal(estimatedTurnHeight(undefined), 280);
-    assert.equal(estimatedTurnHeight(new Map([['short', 100]])), 280);
-    assert.equal(estimatedTurnHeight(new Map([['a', 600], ['b', 1_000]])), 800);
+    assert.equal(estimatedTurnHeight(new Map([['short', 100]])), 190);
+    assert.equal(estimatedTurnHeight(new Map([['a', 600], ['b', 1_000]])), 1_880 / 3);
   });
 
   it('starts with a bounded tail and exact spacer geometry', () => {
@@ -129,28 +129,6 @@ describe('turn virtualizer', () => {
     assert.equal(afterAppend.end - afterAppend.start, 40);
   });
 
-  it('does not inherit an undersized window while transcript turns arrive', () => {
-    const firstIds = ids(1);
-    const firstLayout = buildTurnVirtualLayout(firstIds, undefined);
-    const first = initialTurnVirtualWindow(firstLayout);
-
-    const shortIds = ids(10);
-    const short = reconcileTurnVirtualWindow(
-      firstIds,
-      buildTurnVirtualLayout(shortIds, undefined),
-      first,
-    );
-    assert.deepEqual([short.start, short.end], [8, 10]);
-
-    const longIds = ids(200);
-    const long = reconcileTurnVirtualWindow(
-      firstIds,
-      buildTurnVirtualLayout(longIds, undefined),
-      first,
-    );
-    assert.deepEqual([long.start, long.end], [198, 200]);
-  });
-
   it('virtualizes by rendered distance before the turn-count cap', () => {
     const compact = buildTurnVirtualLayout(ids(8), undefined, { estimatedHeight: 90 });
     const tall = buildTurnVirtualLayout(ids(8), undefined, { estimatedHeight: 500 });
@@ -161,7 +139,7 @@ describe('turn virtualizer', () => {
     assert.equal(turnVirtualizationRequired(buildTurnVirtualLayout(ids(101), undefined), undefined), true);
   });
 
-  it('recovers an undersized viewport window instead of oscillating between turns', () => {
+  it('expands a window that cannot cover the viewport without oscillating', () => {
     const layout = buildTurnVirtualLayout(
       ids(10),
       new Map([

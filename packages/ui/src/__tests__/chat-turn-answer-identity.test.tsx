@@ -85,29 +85,6 @@ const RUNNING_TOOL: TurnTimelineItem = {
   items: [{ toolUseId: 'tool-1', toolName: 'read', status: 'running', args: {} }],
 };
 
-test('mounts historical processing detail only when it is opened', async () => {
-  const { container, root } = domRoot();
-  await renderTurn(root, turnWith([
-    { kind: 'thinking', text: 'private reasoning', messageId: 'thinking-1', live: false },
-    {
-      kind: 'tools',
-      items: [{ toolUseId: 'tool-1', toolName: 'read', status: 'completed', args: {} }],
-    },
-    { kind: 'text', text: 'the answer', messageId: 'answer-1', live: false },
-  ]));
-
-  const trigger = container.querySelector('.maka-processing-block [role="button"]');
-  assert.ok(trigger);
-  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
-  assert.equal(container.querySelector('.maka-deep-thinking'), null);
-  assert.equal(container.querySelector('.maka-tool-activity-card'), null);
-
-  await act(() => trigger.dispatchEvent(new window.Event('click', { bubbles: true })));
-  assert.equal(trigger.getAttribute('aria-expanded'), 'true');
-  assert.ok(container.querySelector('.maka-deep-thinking'));
-  assert.ok(container.querySelector('.maka-tool-activity-card'));
-});
-
 /**
  * Keying the answer by its first timeline entry made the key change whenever
  * that entry did, so React unmounted the answer and mounted a copy — taking

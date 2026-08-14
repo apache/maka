@@ -14,8 +14,8 @@ import {
   DEFAULT_TURN_GAP,
   DEFAULT_TURN_WINDOW_SIZE,
   estimatedTurnHeight,
-  INITIAL_TURN_WINDOW_SIZE,
   initialTurnVirtualWindow,
+  MIN_TURN_WINDOW_SIZE,
   reconcileTurnVirtualWindow,
   stableTurnVirtualWindowForViewport,
   turnVirtualWindowForRange,
@@ -90,26 +90,17 @@ export function useTurnVirtualizer(input: {
       setState(current);
     }
   } else if (state.sessionId !== input.sessionId || !sameTurnIds(state.turnIds, input.turnIds)) {
-    const reconciled = state.sessionId === input.sessionId
-      ? reconcileTurnVirtualWindow(state.turnIds, layout, state.window, ensureIndex, retainRange)
+    const sameSession = state.sessionId === input.sessionId;
+    const reconciled = sameSession
+      ? reconcileTurnVirtualWindow(state.turnIds, layout, state.window, undefined, retainRange)
       : initialTurnVirtualWindow(layout, undefined, ensureIndex);
     current = {
       sessionId: input.sessionId,
       turnIds: input.turnIds,
-      window: ensureIndex !== undefined
+      window: !sameSession && ensureIndex !== undefined
         && reconciled.end - reconciled.start > DEFAULT_TURN_WINDOW_SIZE
         ? initialTurnVirtualWindow(layout, DEFAULT_TURN_WINDOW_SIZE, ensureIndex)
         : reconciled,
-    };
-    setState(current);
-  } else if (
-    ensureIndex !== undefined
-    && ensureIndex >= 0
-    && (ensureIndex < state.window.start || ensureIndex >= state.window.end)
-  ) {
-    current = {
-      ...state,
-      window: initialTurnVirtualWindow(layout, undefined, ensureIndex),
     };
     setState(current);
   } else {
@@ -128,25 +119,46 @@ export function useTurnVirtualizer(input: {
   useLayoutEffect(() => {
     layoutRef.current = layout;
     stateRef.current = current;
-    if (ensureIndex !== undefined) handledTargetKey.current = targetKey;
+    if (
+      ensureIndex !== undefined
+      && ensureIndex >= current.window.start
+      && ensureIndex < current.window.end
+    ) {
+      handledTargetKey.current = targetKey;
+    }
   }, [current, ensureIndex, layout, targetKey]);
 
-  const installWindow = useCallback((next: TurnVirtualWindow, anchor = true) => {
+  const installWindow = useCallback((next: TurnVirtualWindow, anchor = true): boolean => {
     const root = input.scrollRef.current;
-    if (sameWindow(stateRef.current.window, next)) return;
+    if (sameWindow(stateRef.current.window, next)) return false;
     if (anchor && root) pendingAnchor.current = captureChatScrollAnchor(root);
     if (root) handOffExcludedInteraction(root, stateRef.current.turnIds, next);
     setState((previous) => sameWindow(previous.window, next)
       ? previous
       : { ...previous, window: next });
+    return true;
   }, [input.scrollRef]);
+
+  useLayoutEffect(() => {
+    if (ensureIndex === undefined) return;
+    const window = stateRef.current.window;
+    if (ensureIndex >= window.start && ensureIndex < window.end) {
+      handledTargetKey.current = targetKey;
+      return;
+    }
+    installWindow(initialTurnVirtualWindow(layoutRef.current, undefined, ensureIndex));
+  }, [ensureIndex, installWindow, targetKey]);
+
+  useLayoutEffect(() => {
+    pendingReveal.current = undefined;
+  }, [input.sessionId]);
 
   const revealTurn = useCallback((turnId: string) => {
     const index = stateRef.current.turnIds.indexOf(turnId);
-    const next = initialTurnVirtualWindow(layoutRef.current, DEFAULT_TURN_WINDOW_SIZE, index);
     if (index < 0) return;
+    const next = initialTurnVirtualWindow(layoutRef.current, DEFAULT_TURN_WINDOW_SIZE, index);
     pendingReveal.current = turnId;
-    installWindow(next);
+    if (!installWindow(next)) pendingReveal.current = undefined;
   }, [installWindow]);
 
   useLayoutEffect(() => {
@@ -157,18 +169,18 @@ export function useTurnVirtualizer(input: {
       pendingAnchor.current = undefined;
     }
     const reveal = pendingReveal.current;
+    pendingReveal.current = undefined;
     if (reveal) {
       const target = root.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(reveal)}"]`);
       if (target) {
         target.scrollIntoView({ behavior: 'auto', block: 'start' });
-        pendingReveal.current = undefined;
         const targetIndex = stateRef.current.turnIds.indexOf(reveal);
         installWindow(turnVirtualWindowForViewport(
           layoutRef.current,
           { scrollTop: root.scrollTop, clientHeight: root.clientHeight },
           {
             ensureIndex: targetIndex < 0 ? undefined : targetIndex,
-            preferredTurns: INITIAL_TURN_WINDOW_SIZE,
+            preferredTurns: MIN_TURN_WINDOW_SIZE,
           },
         ), false);
       }
@@ -192,7 +204,7 @@ export function useTurnVirtualizer(input: {
         stateRef.current.window,
         { scrollTop: root.scrollTop, clientHeight: root.clientHeight },
         {
-          preferredTurns: INITIAL_TURN_WINDOW_SIZE,
+          preferredTurns: MIN_TURN_WINDOW_SIZE,
           retainRange: interactiveTurnRange(root, stateRef.current.turnIds),
         },
       ));
@@ -219,8 +231,8 @@ export function useTurnVirtualizer(input: {
           ) || changed;
         }
       }
-      if (changed && anchor) {
-        pendingAnchor.current = anchor;
+      if (changed) {
+        if (anchor) pendingAnchor.current = anchor;
         setGeometryRevision((revision) => revision + 1);
       }
       scheduleWindow();

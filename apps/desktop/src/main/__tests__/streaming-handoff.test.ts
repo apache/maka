@@ -82,10 +82,8 @@ describe('single live-turn handoff', () => {
       }],
     });
 
-    // Live processing stays expanded, so its visible order remains stable
-    // across the handoff. Historical processing is allowed to stay unmounted
-    // until the user opens its disclosure.
-    assert.equal((markup.match(/data-processing="block"/g) ?? []).length, 0);
+    // Thinking and tools own their disclosures; do not wrap them in another.
+    assert.equal((markup.match(/maka-processing-block/g) ?? []).length, 0);
     assert.ok(markup.indexOf('深度思考') >= 0);
     assert.ok(markup.indexOf('深度思考') < markup.indexOf('最终答案'));
     assert.ok(markup.indexOf('最终答案') < markup.indexOf('Bash'));
