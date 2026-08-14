@@ -23,6 +23,9 @@ jobs:
           node-version: '24'
       - name: Verify closed launcher protocol
         run: node --test experiments/windows-sandbox/*.test.mjs
+      - name: Record atomic launcher capability
+        shell: pwsh
+        run: ./experiments/windows-sandbox/atomic-launch-capability.ps1
       - name: Build process-containment launcher
         working-directory: experiments/windows-sandbox/launcher
         run: cargo build --locked
