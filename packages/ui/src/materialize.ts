@@ -312,6 +312,7 @@ export type TurnTimelineItem =
       kind: "user";
       message: ChatItem;
       messageId: string;
+      steeringEventId?: string;
     }
   | {
       kind: "thinking";
@@ -448,9 +449,19 @@ export function overlayLiveTurn(
   }
   for (const message of liveTurn.pendingSteering ?? []) liveSteeringIds.add(message.id);
   const timeline: TurnTimelineItem[] = [];
-  for (const item of current.timeline) {
+  const lastSettledContentIndex = current.timeline.findLastIndex((item) => item.kind !== "user");
+  const deferredSteering: Extract<TurnTimelineItem, { kind: "user" }>[] = [];
+  for (const [index, item] of current.timeline.entries()) {
     if (item.kind !== "tools") {
       if (item.kind === "user" && liveSteeringIds.has(item.messageId)) continue;
+      if (
+        item.kind === "user" &&
+        item.steeringEventId !== undefined &&
+        index > lastSettledContentIndex
+      ) {
+        deferredSteering.push(item);
+        continue;
+      }
       if (liveContentKeys.has(`${item.kind}\0${item.messageId}`)) continue;
       timeline.push(item);
       continue;
@@ -511,6 +522,7 @@ export function overlayLiveTurn(
     }
   }
   appendLiveSteering(liveTurn.pendingSteering ?? []);
+  timeline.push(...deferredSteering);
   const mergedTimeline = mergeAdjacentTimeline(timeline);
   const next = {
     ...current,
@@ -927,6 +939,7 @@ function buildTurnTimeline(
         kind: "user",
         message: chatItemFromUserMessage(message),
         messageId: message.id,
+        ...(message.steeringEventId ? { steeringEventId: message.steeringEventId } : {}),
       });
     } else if (message.type === "tool_call") {
       const item = toolItemByUseId.get(message.id);

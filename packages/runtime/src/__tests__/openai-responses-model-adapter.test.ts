@@ -108,20 +108,26 @@ describe('OpenAI Responses ModelAdapter continuation', () => {
           stream: convertArrayToReadableStream<LanguageModelV4StreamPart>(
             providerCall === 1
               ? firstReasoningToolStep()
-              : [
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'response-metadata',
-                    id: 'resp-2',
-                    modelId: 'gpt-5',
-                    timestamp: new Date(0),
-                  },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'stop', raw: 'stop' },
-                    usage: ZERO_USAGE,
-                  },
-                ],
+              : providerCall === 2
+                ? [
+                    { type: 'stream-start', warnings: [] },
+                    {
+                      type: 'response-metadata',
+                      id: 'resp-2',
+                      modelId: 'gpt-5',
+                      timestamp: new Date(0),
+                    },
+                    {
+                      type: 'finish',
+                      finishReason: { unified: 'stop', raw: 'stop' },
+                      usage: ZERO_USAGE,
+                    },
+                  ]
+                : [
+                    { type: 'stream-start', warnings: [] },
+                    { type: 'text-start', id: 'text-3' },
+                    { type: 'text-delta', id: 'text-3', delta: 'partial' },
+                  ],
           ),
         };
       },
@@ -141,8 +147,10 @@ describe('OpenAI Responses ModelAdapter continuation', () => {
       openAiResponsesTransportState: transport,
     });
     const user: ModelMessage = { role: 'user', content: 'inspect it' };
-    await drain(adapter, model, [user], ['shell']);
+    const firstOutcome = await drain(adapter, model, [user], ['shell']);
 
+    assert.equal(firstOutcome.kind, 'completed');
+    assert.equal(firstOutcome.continuation, 'pending');
     assert.deepEqual(pending, {
       requestMessages: [user],
       responseId: 'resp-1',
@@ -184,6 +192,11 @@ describe('OpenAI Responses ModelAdapter continuation', () => {
       previousResponseId: 'resp-1',
     });
     assert.equal(calls[1]?.headers?.['x-maka-openai-responses-lane'], 'turn-1');
+
+    const truncated = await drain(adapter, model, [user], ['shell']);
+    assert.equal(truncated.kind, 'truncated');
+    assert.equal(pending, undefined);
+    assert.equal(baseline, undefined);
   });
 });
 
@@ -224,7 +237,7 @@ async function drain(
   model: MockLanguageModelV4,
   messages: ModelMessage[],
   activeTools: string[],
-): Promise<void> {
+) {
   const result = await adapter.startStream({
     model,
     messages,
@@ -236,4 +249,5 @@ async function drain(
     continuationKey: 'turn-1',
   });
   for await (const event of result.events) void event;
+  return await result.outcome;
 }

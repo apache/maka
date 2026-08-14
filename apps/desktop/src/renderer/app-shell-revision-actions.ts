@@ -16,6 +16,7 @@ import {
   type SessionCopyAttemptPhase,
   type SessionCopyAttemptKey,
 } from './session-copy-attempt.js';
+import { readSettledMessages } from './session-message-settlement.js';
 
 type RefBox<T> = { current: T };
 type MessageListUpdater = (
@@ -91,6 +92,7 @@ export function createAppShellRevisionActions(deps: {
     upsertSessionSummary,
   } = deps;
   const copy = getDesktopConversationCopy(uiLocale).actions;
+  let revisionPreparationAbort: AbortController | undefined;
 
   function revisionCopyKey(sourceSessionId: string, sourceTurnId: string): SessionCopyAttemptKey {
     return {
@@ -290,6 +292,9 @@ export function createAppShellRevisionActions(deps: {
     }
     const sourceSessionId = startedDraft.sourceSessionId;
     let preparedSessionId: string | undefined;
+    const preparationAbort = new AbortController();
+    revisionPreparationAbort?.abort();
+    revisionPreparationAbort = preparationAbort;
     try {
       const newSession = await window.maka.sessions.reviseBeforeTurn(sourceSessionId, {
         sourceTurnId: startedDraft.sourceTurnId,
@@ -307,20 +312,24 @@ export function createAppShellRevisionActions(deps: {
       upsertSessionSummary(newSession);
       openSessionInChat(newSession.id);
       setMessages([]);
-      const loaded = await refreshMessages(newSession.id);
+      const { messages: preparedMessages, settled } = await readSettledMessages(newSession.id, {
+        signal: preparationAbort.signal,
+      });
+      if (!settled) throw new Error('Revised Session transcript did not become ready');
       if (
-        !loaded ||
         activeIdRef.current !== newSession.id ||
         revisionDraftRef.current !== prepared
       ) {
         await rollbackPreparedRevision(startedDraft, newSession.id, text);
         return false;
       }
+      setMessages(preparedMessages);
       composerRef.current?.focus();
       toastApi.info(copy.revisionReadyTitle, copy.revisionReadyDescription);
       await refreshSessions();
       return true;
     } catch (error) {
+      if (preparationAbort.signal.aborted) return false;
       if (preparedSessionId) {
         await rollbackPreparedRevision(startedDraft, preparedSessionId, text);
       }
@@ -334,10 +343,13 @@ export function createAppShellRevisionActions(deps: {
         );
       }
       return false;
+    } finally {
+      if (revisionPreparationAbort === preparationAbort) revisionPreparationAbort = undefined;
     }
   }
 
   async function cancelRevisionDraft(): Promise<void> {
+    revisionPreparationAbort?.abort();
     const draft = revisionDraftRef.current;
     if (!draft) return;
     const cleanupSessionId = draft.copyPhase !== 'reserved'

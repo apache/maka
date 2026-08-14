@@ -863,14 +863,31 @@ describe('Runtime Host Maka Session driver', () => {
     assert.deepEqual(await published.promise, permission);
   });
 
-  test('reads a fresh Host transcript when listing rewind targets', async () => {
+  test('keeps Host-triggered prompts out of rewind', async () => {
     const attached = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const messages: StoredMessage[] = [
+      userMessage('turn-new', 'Newest prompt'),
+      {
+        ...userMessage('turn-automation', 'Automated prompt'),
+        origin: { kind: 'legacy_automation', automationId: 'automation-1' },
+      },
+      {
+        ...userMessage('turn-automation', 'Steer the automated turn'),
+        id: 'user-turn-automation-steering',
+        steeringEventId: 'runtime-event-steering',
+      },
+    ];
     const current = new FakeSubscription(
       continuitySnapshot(),
-      Promise.resolve([userMessage('turn-new', 'Newest prompt')]),
+      Promise.resolve(messages),
       'subscription-2',
     );
-    const connection = new FakeConnection([attached, current]);
+    const direct = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve(messages),
+      'subscription-3',
+    );
+    const connection = new FakeConnection([attached, current, direct]);
     const driver = createRuntimeHostMakaSessionDriver({
       connection: connection.value,
       cwd: '/tmp',
@@ -882,6 +899,14 @@ describe('Runtime Host Maka Session driver', () => {
     assert.deepEqual(await driver.listRewindTargets(), [
       { turnId: 'turn-new', label: 'Newest prompt' },
     ]);
+    await assert.rejects(
+      driver.rewindToTurn('turn-automation'),
+      /Host-triggered prompts are read-only/,
+    );
+    assert.equal(
+      connection.requests.some(({ operation }) => operation === 'session.revision.create'),
+      false,
+    );
   });
 
   test('reopens a failed Session channel before starting the next turn', async () => {
@@ -1253,6 +1278,7 @@ class FakeConnection {
 class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<SubscriptionFrame> {
   readonly hostEpoch = 'host-1';
   readonly activeAssistantStreams = [];
+  readonly transcriptBootstrap = null;
   readonly subscriptionId: string;
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<{
@@ -1297,6 +1323,18 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
 
   async loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]> {
     return (await this.transcript).map(decodeMessage);
+  }
+
+  async loadTranscriptOverlay<T>(_decodeMessage: (value: unknown) => T): Promise<T[]> {
+    return [];
+  }
+
+  async decodeTranscriptPage(): Promise<never> {
+    throw new Error('Fake subscription does not expose transcript pages');
+  }
+
+  async loadTranscriptPage(): Promise<never> {
+    throw new Error('Fake subscription does not expose transcript pages');
   }
 
   async close(): Promise<void> {
@@ -1385,7 +1423,7 @@ function assistantMessage(turnId: string, text: string): StoredMessage {
   };
 }
 
-function userMessage(turnId: string, text: string): StoredMessage {
+function userMessage(turnId: string, text: string): Extract<StoredMessage, { type: 'user' }> {
   return { type: 'user', id: `user-${turnId}`, turnId, ts: 9, text };
 }
 

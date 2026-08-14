@@ -43,15 +43,18 @@ describe('Runtime Host maka run adapter', () => {
           return publicCommandContext(input);
         },
       },
+      { clientDataRoot: '/client-data', cliCommand: 'npm run cli:dev --' },
     );
 
     assert.equal(exitCode, 2);
     assert.equal(contextCreations, 0);
     assert.match(stderr.join(''), /model_connection_disabled/);
-    assert.match(stderr.join(''), /repair connection "openai-main" in `maka`/);
+    assert.match(stderr.join(''), /repair connection "openai-main" in `npm run cli:dev --`/);
   });
 
-  test('routes a remote run through the selected Host profile and canonical Project', async () => {
+  test('routes both launch roots through the selected Host profile and canonical Project', async () => {
+    let selectedWorkspaceRoot: string | undefined;
+    let selectedClientDataRoot: string | undefined;
     let selectedProfile: string | undefined;
     let contextInput: MakaRunContextInput | undefined;
     const connection = remoteReadinessConnection();
@@ -68,7 +71,9 @@ describe('Runtime Host maka run adapter', () => {
         newId: () => 'turn-remote',
       },
       {
-        connect: async (_rootPath, profileId) => {
+        connect: async (rootPath, profileId, clientDataRoot) => {
+          selectedWorkspaceRoot = rootPath;
+          selectedClientDataRoot = clientDataRoot;
           selectedProfile = profileId;
           return {
             connection,
@@ -88,9 +93,12 @@ describe('Runtime Host maka run adapter', () => {
           return publicCommandContext(input);
         },
       },
+      { clientDataRoot: '/client-data', cliCommand: 'npm run cli:dev --' },
     );
 
     assert.equal(exitCode, 0);
+    assert.equal(selectedWorkspaceRoot, '/runtime-host-data');
+    assert.equal(selectedClientDataRoot, '/client-data');
     assert.equal(selectedProfile, 'office');
     assert.equal(contextInput?.projectId, 'project-1');
   });

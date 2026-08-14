@@ -1,81 +1,171 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  decodeSessionTranscriptQueryInput,
-  decodeSessionTranscriptQueryResult,
+  decodeSessionTranscriptBootstrap,
+  decodeSessionTranscriptPage,
+  decodeSessionTranscriptPageInput,
+  encodeProtocolMessage,
   HOST_OPERATION_SPECS,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RuntimeHostProtocolError,
-  SESSION_TRANSCRIPT_CHUNK_MAX_BYTES,
+  SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
 } from '../protocol/index.js';
 
-test('Session transcript protocol keeps exact bounded chunk cursors', () => {
-  assert.deepEqual(
-    decodeSessionTranscriptQueryInput({ kind: 'start', subscriptionId: 'subscription-1' }),
-    { kind: 'start', subscriptionId: 'subscription-1' },
-  );
-  const input = {
-    kind: 'continue' as const,
-    subscriptionId: 'subscription-1',
-    snapshotId: 'snapshot-1',
-    messageIndex: 2,
-    byteOffset: 3,
-  };
-  assert.deepEqual(decodeSessionTranscriptQueryInput(input), input);
-  const output = {
-    kind: 'chunk' as const,
-    snapshotId: 'snapshot-1',
-    sessionId: 'session-1',
-    messageCount: 4,
-    messageIndex: 2,
-    byteOffset: 3,
-    data: Buffer.alloc(SESSION_TRANSCRIPT_CHUNK_MAX_BYTES).toString('base64'),
-    next: { messageIndex: 3, byteOffset: 0 },
-  };
-  assert.deepEqual(decodeSessionTranscriptQueryResult(output), output);
+const input = {
+  subscriptionId: 'subscription-1',
+  source: 'durable' as const,
+  direction: 'older' as const,
+  throughSequence: 3,
+  cursor: null,
+  anchorSequence: 2,
+  maxBytes: 1024,
+};
+const payloadDigest = `sha256:${'a'.repeat(64)}` as const;
+
+const page = {
+  kind: 'page' as const,
+  sessionId: 'session-1',
+  source: 'durable' as const,
+  direction: 'older' as const,
+  throughSequence: 3,
+  rawBytes: 4,
+  fragments: [
+    {
+      kind: 'durable' as const,
+      sequence: 2,
+      byteOffset: 0,
+      totalBytes: 4,
+      payloadDigest: null,
+      data: Buffer.from('test').toString('base64'),
+    },
+  ],
+  nextCursor: 'opaque-cursor',
+};
+
+test('Session transcript protocol accepts bounded correlated pages and bootstraps', () => {
+  assert.deepEqual(decodeSessionTranscriptPageInput(input), input);
+  assert.deepEqual(decodeSessionTranscriptPage(page), page);
   assert.doesNotThrow(() =>
-    HOST_OPERATION_SPECS['session.transcript.query'].assertOutputForInput?.(input, output),
+    HOST_OPERATION_SPECS['session.transcript.page'].assertOutputForInput?.(input, page),
+  );
+
+  const bootstrap = {
+    throughSequence: 3,
+    overlayMessageCount: 0,
+    durable: { ...page, direction: 'older' as const },
+    overlay: {
+      kind: 'page' as const,
+      sessionId: 'session-1',
+      source: 'overlay' as const,
+      direction: 'older' as const,
+      throughSequence: 3,
+      rawBytes: 0,
+      fragments: [],
+      nextCursor: null,
+    },
+  };
+  assert.deepEqual(decodeSessionTranscriptBootstrap(bootstrap), bootstrap);
+  assert.throws(
+    () => decodeSessionTranscriptBootstrap({ ...bootstrap, overlayMessageCount: 4_097 }),
+    isProtocolError,
+  );
+  const release = { subscriptionId: 'subscription-1' };
+  assert.deepEqual(
+    HOST_OPERATION_SPECS['session.transcript.overlay.release'].decodeInput(release),
+    release,
+  );
+  assert.deepEqual(
+    HOST_OPERATION_SPECS['session.transcript.overlay.release'].decodeOutput(release),
+    release,
   );
 });
 
-test('Session transcript protocol rejects open, malformed, and uncorrelated values', () => {
+test('a maximum single-fragment continuation remains transport safe', () => {
+  const data = Buffer.alloc(SESSION_TRANSCRIPT_PAGE_MAX_BYTES, 0x61);
+  const result = {
+    ...page,
+    sessionId: 's'.repeat(128),
+    rawBytes: data.byteLength,
+    fragments: [
+      {
+        kind: 'durable' as const,
+        sequence: 2,
+        byteOffset: 1,
+        totalBytes: data.byteLength + 1,
+        payloadDigest,
+        data: data.toString('base64'),
+      },
+    ],
+    nextCursor: 'c'.repeat(1_024),
+  };
+  assert.deepEqual(decodeSessionTranscriptPage(result), result);
+  const encoded = encodeProtocolMessage({
+    requestId: 'r'.repeat(128),
+    operation: 'session.transcript.page',
+    ok: true,
+    result,
+  });
+  assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES);
+});
+
+test('a maximum multi-message page remains transport safe', () => {
+  const fragmentBytes = SESSION_TRANSCRIPT_PAGE_MAX_BYTES / 256;
+  const result = {
+    ...page,
+    sessionId: 's'.repeat(128),
+    direction: 'newer' as const,
+    throughSequence: Number.MAX_SAFE_INTEGER,
+    rawBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+    fragments: Array.from({ length: 256 }, (_, sequence) => ({
+      kind: 'durable' as const,
+      sequence,
+      byteOffset: 0,
+      totalBytes: fragmentBytes,
+      payloadDigest,
+      data: Buffer.alloc(fragmentBytes, 0x61).toString('base64'),
+    })),
+    nextCursor: 'c'.repeat(1_024),
+  };
+  assert.deepEqual(decodeSessionTranscriptPage(result), result);
+  assert.ok(
+    encodeProtocolMessage({
+      requestId: 'r'.repeat(128),
+      operation: 'session.transcript.page',
+      ok: true,
+      result,
+    }).byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES,
+  );
+});
+
+test('Session transcript protocol rejects malformed and uncorrelated values', () => {
+  assert.throws(
+    () => decodeSessionTranscriptPageInput({ ...input, cursor: 'cursor', anchorSequence: 2 }),
+    isProtocolError,
+  );
   assert.throws(
     () =>
-      decodeSessionTranscriptQueryInput({
-        kind: 'start',
-        subscriptionId: 'subscription-1',
-        sessionId: 'session-1',
+      decodeSessionTranscriptPage({
+        ...page,
+        fragments: [{ ...page.fragments[0], data: 'not base64' }],
       }),
     isProtocolError,
   );
   assert.throws(
     () =>
-      decodeSessionTranscriptQueryResult({
-        kind: 'chunk',
-        snapshotId: 'snapshot-1',
-        sessionId: 'session-1',
-        messageCount: 1,
-        messageIndex: 0,
-        byteOffset: 0,
-        data: 'not base64',
-        next: null,
+      HOST_OPERATION_SPECS['session.transcript.page'].assertOutputForInput?.(input, {
+        ...page,
+        throughSequence: 4,
       }),
     isProtocolError,
   );
   assert.throws(
     () =>
-      HOST_OPERATION_SPECS['session.transcript.query'].assertOutputForInput?.(
-        {
-          kind: 'continue',
-          subscriptionId: 'subscription-1',
-          snapshotId: 'snapshot-1',
-          messageIndex: 0,
-          byteOffset: 4,
-        },
-        {
-          kind: 'snapshot_expired',
-          snapshotId: 'different-snapshot',
-        },
-      ),
+      decodeSessionTranscriptBootstrap({
+        throughSequence: 3,
+        overlayMessageCount: 0,
+        durable: page,
+        overlay: { ...page, source: 'overlay', throughSequence: 2 },
+      }),
     isProtocolError,
   );
 });

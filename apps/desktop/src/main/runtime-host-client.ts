@@ -4,6 +4,7 @@ import type { PlanSessionState, PlanUserControlInput } from "@maka/core/plan";
 import {
   decodeStoredMessage,
   type StoredMessage,
+  type TurnRecord,
 } from "@maka/core/session";
 import type { Task } from "@maka/core/task-ledger";
 import type {
@@ -21,6 +22,7 @@ import {
 import type { PricingConfig } from "@maka/core/usage-stats/types";
 import {
   type ClientCapabilityProvider,
+  type DecodedSessionTranscriptPage,
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
@@ -67,6 +69,7 @@ import {
   type QueueRetractInput,
   type QueueRetractResult,
   type SessionCatalogFilter,
+  SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
   type SessionCatalogItem,
@@ -74,6 +77,11 @@ import {
   type SessionConfiguration,
   type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
+  type SessionTranscriptBootstrap,
+  type SessionTranscriptPage,
+  type SessionTranscriptPageInput,
+  mergeSessionTurnContributions,
+  projectSessionTurnContribution,
   type SessionConversationCopyInput,
   type SessionConversationCopyResult,
   type SessionCreateInput,
@@ -127,10 +135,25 @@ export class DesktopRuntimeHostClientError extends Error {
 }
 
 export interface DesktopRuntimeHostSession {
+  readonly hostEpoch: string;
+  readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
-  readonly transcript: Promise<StoredMessage[]>;
+  readonly transcriptBootstrap: SessionTranscriptBootstrap;
   readonly events: AsyncIterable<SubscriptionFrame>;
+  loadTranscript(): Promise<StoredMessage[]>;
+  loadTranscriptOverlay(
+    maxMessageBytes?: number,
+    accountAssemblyBytes?: (deltaBytes: number) => void,
+  ): Promise<StoredMessage[]>;
+  decodeTranscriptPage(
+    page: SessionTranscriptPage,
+    maxMessageBytes?: number,
+    accountAssemblyBytes?: (deltaBytes: number) => void,
+  ): Promise<DecodedSessionTranscriptPage<StoredMessage>>;
+  loadTranscriptPage(
+    input: Omit<SessionTranscriptPageInput, "subscriptionId">,
+  ): Promise<SessionTranscriptPage>;
   close(): Promise<void>;
 }
 
@@ -1262,6 +1285,7 @@ export class DesktopRuntimeHostClient {
     this.#assertOpen();
     const subscription = await this.connection.openSessionSubscription({
       sessionId,
+      transcript: { kind: "tail", maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
     });
     if (this.#closeTask) {
       await subscription.close().catch(() => undefined);
@@ -1272,6 +1296,57 @@ export class DesktopRuntimeHostClient {
     );
     this.#sessions.add(session);
     return session;
+  }
+
+  async listSessionTurns(sessionId: string): Promise<TurnRecord[]> {
+    this.#assertOpen();
+    const contributions = new Map<
+      string,
+      OperationOutput<'session.turns.query'>['contributions'][number]
+    >();
+    let throughSequence: number | null = null;
+    let position = 0;
+    const positions = new Set<number>();
+    while (true) {
+      if (positions.has(position)) throw invalidProjection('Session turns');
+      positions.add(position);
+      const page: OperationOutput<'session.turns.query'> = await this.request(
+        'session.turns.query', {
+          sessionId,
+          throughSequence,
+          position,
+          maxContributions: 128,
+        },
+      );
+      throughSequence = page.throughSequence;
+      for (const contribution of page.contributions) {
+        const current = contributions.get(contribution.turnId);
+        if (!current) {
+          contributions.set(contribution.turnId, contribution);
+          continue;
+        }
+        contributions.set(
+          contribution.turnId,
+          mergeSessionTurnContributions(current, contribution),
+        );
+      }
+      if (page.nextPosition === null) break;
+      if (page.nextPosition <= position) throw invalidProjection('Session turns');
+      position = page.nextPosition;
+    }
+    return [...contributions.values()]
+      .sort((left, right) => left.firstSequence - right.firstSequence)
+      .map(projectSessionTurnContribution);
+  }
+
+  async listSessionTurnLandmarks(
+    sessionId: string,
+  ): Promise<OperationOutput<'session.turn_landmarks.query'>> {
+    this.#assertOpen();
+    return this.request('session.turn_landmarks.query', {
+      sessionId,
+      maxLandmarks: 64,
+    });
   }
 
   close(): Promise<void> {
@@ -1391,21 +1466,63 @@ export class DesktopRuntimeHostClient {
 }
 
 class DesktopSessionHandle implements DesktopRuntimeHostSession {
+  readonly hostEpoch: string;
+  readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
-  readonly transcript: Promise<StoredMessage[]>;
+  readonly transcriptBootstrap: SessionTranscriptBootstrap;
   readonly events: AsyncIterable<SubscriptionFrame>;
   #closeTask: Promise<void> | undefined;
+  #transcriptTask: Promise<StoredMessage[]> | undefined;
 
   constructor(
     private readonly subscription: RuntimeHostSessionSubscription,
     private readonly onClose: () => void,
   ) {
+    if (!subscription.transcriptBootstrap) {
+      throw new Error("Desktop Session subscription omitted its transcript bootstrap");
+    }
+    this.hostEpoch = subscription.hostEpoch;
+    this.subscriptionId = subscription.subscriptionId;
     this.snapshot = subscription.snapshot;
     this.activeAssistantStreams = subscription.activeAssistantStreams;
+    this.transcriptBootstrap = subscription.transcriptBootstrap;
     this.events = subscription;
-    this.transcript = subscription.loadTranscript(decodeStoredMessage);
-    void this.transcript.catch(() => undefined);
+  }
+
+  loadTranscript(): Promise<StoredMessage[]> {
+    this.#transcriptTask ??= this.subscription.loadTranscript(decodeStoredMessage);
+    return this.#transcriptTask;
+  }
+
+  loadTranscriptOverlay(
+    maxMessageBytes?: number,
+    accountAssemblyBytes?: (deltaBytes: number) => void,
+  ): Promise<StoredMessage[]> {
+    return this.subscription.loadTranscriptOverlay(
+      decodeStoredMessage,
+      maxMessageBytes,
+      accountAssemblyBytes,
+    );
+  }
+
+  decodeTranscriptPage(
+    page: SessionTranscriptPage,
+    maxMessageBytes?: number,
+    accountAssemblyBytes?: (deltaBytes: number) => void,
+  ): Promise<DecodedSessionTranscriptPage<StoredMessage>> {
+    return this.subscription.decodeTranscriptPage(
+      page,
+      decodeStoredMessage,
+      maxMessageBytes,
+      accountAssemblyBytes,
+    );
+  }
+
+  loadTranscriptPage(
+    input: Omit<SessionTranscriptPageInput, "subscriptionId">,
+  ): Promise<SessionTranscriptPage> {
+    return this.subscription.loadTranscriptPage(input);
   }
 
   close(): Promise<void> {

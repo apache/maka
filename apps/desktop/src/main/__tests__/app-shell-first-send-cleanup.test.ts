@@ -19,6 +19,7 @@ import { describe, it } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
 import type { LiveTurnProjection } from '@maka/ui';
 import { applyLiveTurnEvent } from '@maka/ui';
+import type { DesktopTranscriptRangeController } from '../../renderer/desktop-transcript-range-store.js';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
 import { createAppShellSessionUiStateController } from '../../renderer/app-shell-session-ui-state.js';
 import { settledSessionTransientIds } from '../../renderer/settled-session-transients.js';
@@ -82,6 +83,7 @@ function createActionsDeps() {
     setMessageLoadErrorBySession: () => undefined,
     setMessageRetryPendingBySession: () => undefined,
     setMessages: () => undefined,
+    transcriptRangeRef: { current: undefined },
     setNavSelection: () => undefined,
     setLiveTurnBySession: () => undefined,
     setInteractionBySession: () => undefined,
@@ -147,7 +149,6 @@ describe('composer first-send cleanup', () => {
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
         }),
-        readMessages: async () => [],
       },
     });
 
@@ -186,7 +187,6 @@ describe('composer first-send cleanup', () => {
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
         }),
-        readMessages: async () => [],
       },
     });
 
@@ -234,12 +234,11 @@ describe('composer first-send cleanup', () => {
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
         }),
-        // A successful send must never reach this — refreshMessagesUntilTurn
-        // and the rest of the happy path run after the cleanup window closes.
+        // A successful send must never reach this — the happy path runs after
+        // the cleanup window closes.
         remove: async (sessionId: string) => {
           removed.push(sessionId);
         },
-        readMessages: async () => [],
       },
     });
 
@@ -279,6 +278,52 @@ describe('composer first-send cleanup', () => {
     }
 
     assert.deepEqual(removed, []);
+  });
+
+  it('returns a sparse existing session to latest before sending', async () => {
+    const latest = deferred<void>();
+    const order: string[] = [];
+    const activeIdRef = { current: 'existing-session' as string | undefined };
+    const transcript = {
+      store: {
+        range: () => ({ sessionId: 'existing-session', hasNewer: true }),
+        snapshot: () => ({ messages: [] }),
+      },
+      async loadLatest() {
+        order.push('latest');
+        await latest.promise;
+      },
+    } as unknown as DesktopTranscriptRangeController;
+    const transcriptRangeRef = { current: transcript as DesktopTranscriptRangeController | undefined };
+    const restoreWindow = installWindow({
+      sessions: {
+        send: async () => {
+          order.push('send');
+          return {
+            ok: true,
+            disposition: 'turn_started',
+            turnId: 'turn-1',
+            attachments: [],
+            skillInvocation: { loaded: [], failed: [] },
+          };
+        },
+      },
+    });
+
+    try {
+      const sending = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        transcriptRangeRef,
+      }).send('hello');
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(order, ['latest']);
+      latest.resolve();
+      assert.equal(await sending, true);
+      assert.deepEqual(order, ['latest', 'send']);
+    } finally {
+      restoreWindow();
+    }
   });
 });
 
@@ -396,29 +441,17 @@ describe('composer send failure feedback', () => {
 describe('a send in flight versus a stale session list', () => {
   const sessionId = 'session-a';
 
-  // Echoes the sent turn back through `readMessages`, which is what `send()`
-  // waits on before it reports success — a window that never shows the user
-  // message would time the send out rather than exercise the race.
   function sendingWindow() {
-    let sentTurnId: string | undefined;
     return {
       sessions: {
         create: async () => ({ id: sessionId }),
-        send: async (_sessionId: string, command: { turnId: string }) => {
-          sentTurnId = command.turnId;
-          return {
-            ok: true,
-            disposition: 'turn_started',
-            turnId: command.turnId,
-            attachments: [],
-            skillInvocation: { loaded: [], failed: [] },
-          };
-        },
-        readMessages: async () => (
-          sentTurnId
-            ? [{ type: 'user', id: `user-${sentTurnId}`, turnId: sentTurnId, ts: 1, text: 'hello' }]
-            : []
-        ),
+        send: async (_sessionId: string, command: { turnId: string }) => ({
+          ok: true,
+          disposition: 'turn_started',
+          turnId: command.turnId,
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
       },
     };
   }
@@ -494,13 +527,20 @@ describe('queued mid-turn send rollback (#1954 review 4.2)', () => {
     const controller = createAppShellSessionUiStateController();
     const resolved: string[] = [];
     const refreshReads: string[] = [];
+    const transcript = {
+      async ready() {
+        return undefined;
+      },
+      store: {
+        snapshot: () => {
+          refreshReads.push(sessionId);
+          return { sessionId, messages: [] };
+        },
+      },
+    } as unknown as DesktopTranscriptRangeController;
     const restoreWindow = installWindow({
       sessions: {
         send: async () => ({ ok: true, disposition: 'steering' }),
-        readMessages: async (readSessionId: string) => {
-          refreshReads.push(readSessionId);
-          return [];
-        },
         remove: async () => undefined,
       },
     });
@@ -508,6 +548,7 @@ describe('queued mid-turn send rollback (#1954 review 4.2)', () => {
       const actions = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: sessionId },
+        transcriptRangeRef: { current: transcript },
         setLiveTurnBySession: controller.setLiveTurnBySession,
       });
       const result = await actions.send('steer the running turn', undefined, {
@@ -521,7 +562,7 @@ describe('queued mid-turn send rollback (#1954 review 4.2)', () => {
     }
     // The queued branch resolves the session even though no new turn opened.
     assert.deepEqual(resolved, [sessionId]);
-    // And it refreshes the transcript (readMessages round-trips once).
+    // And it refreshes the transcript through the range controller.
     assert.deepEqual(refreshReads, [sessionId]);
     // The optimistic arm was disarmed: no unconfirmed live turn survives.
     const armed = controller.getState().liveTurnBySession[sessionId];
@@ -544,10 +585,6 @@ describe('Host-named turn rebind (#1954 review P2-2)', () => {
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
         }),
-        // `refreshMessagesUntilTurn` waits for the sent turn in the transcript.
-        readMessages: async () => [
-          { type: 'user', id: 'user-host-turn-1', turnId: 'host-turn-1', ts: 1, text: 'hello' },
-        ],
       },
     });
     try {

@@ -35,10 +35,9 @@ export const DEFAULT_MOUNT_WINDOW: MountWindowConfig = {
   // a tail of this size stays well under one 120Hz frame budget while still
   // filling the viewport on ordinary window heights.
   initialWindow: 10,
-  // Small enough that a fill step cannot become its own long frame, large
-  // enough that a 30-turn session finishes filling within a handful of idle
-  // callbacks.
-  fillChunk: 4,
+  // A historical turn can contain a large rendered answer, so idle filling
+  // adds one turn per commit instead of coupling several expensive renders.
+  fillChunk: 1,
 };
 
 function tailStart(length: number, config: MountWindowConfig): number {
@@ -75,9 +74,12 @@ export function reconcileMountWindow(
   next: { key: string | undefined; length: number },
   config: MountWindowConfig,
   ensureIndex?: number,
+  prependedCount = 0,
 ): MountWindowState {
   let start = state.start;
-  if (state.key !== next.key || next.length - state.length > config.initialWindow) {
+  if (state.key === next.key && next.length > state.length && prependedCount > 0) {
+    start = Math.min(next.length, start + prependedCount);
+  } else if (state.key !== next.key || next.length - state.length > config.initialWindow) {
     start = tailStart(next.length, config);
   } else if (start >= next.length && next.length > 0) {
     start = tailStart(next.length, config);

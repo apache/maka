@@ -624,7 +624,7 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
         kind: 'text',
         ...normalizeMessageContent(value.content as unknown as MessageContent),
         ...(value.content.origin !== undefined
-          ? { origin: value.content.origin as TurnOrigin }
+          ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
         ...(value.content.steering === true ? { steering: true as const } : {}),
       },
@@ -693,20 +693,38 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
 }
 
 function isTurnOrigin(value: unknown): value is TurnOrigin {
-  if (!isRecord(value)) return false;
+  return decodeTurnOrigin(value) !== undefined;
+}
+
+function decodeTurnOrigin(value: unknown): TurnOrigin | undefined {
+  if (!isRecord(value)) return undefined;
   if (value.kind === 'scheduled_task') {
-    return Object.keys(value).length === 2 && typeof value.scheduledTaskId === 'string';
+    return Object.keys(value).length === 2 && typeof value.scheduledTaskId === 'string'
+      ? { kind: 'scheduled_task', scheduledTaskId: value.scheduledTaskId }
+      : undefined;
+  }
+  if (value.kind === 'automation' || value.kind === 'legacy_automation') {
+    return Object.keys(value).length === 2 && typeof value.automationId === 'string'
+      ? { kind: 'legacy_automation', automationId: value.automationId }
+      : undefined;
   }
   if (value.kind === 'goal') {
-    return Object.keys(value).length === 2 && typeof value.goalId === 'string';
+    return Object.keys(value).length === 2 && typeof value.goalId === 'string'
+      ? { kind: 'goal', goalId: value.goalId }
+      : undefined;
   }
-  return (
-    value.kind === 'agent_graph' &&
+  return value.kind === 'agent_graph' &&
     Object.keys(value).length === 4 &&
     typeof value.graphId === 'string' &&
     typeof value.wakeId === 'string' &&
     typeof value.attemptId === 'string'
-  );
+    ? {
+        kind: 'agent_graph',
+        graphId: value.graphId,
+        wakeId: value.wakeId,
+        attemptId: value.attemptId,
+      }
+    : undefined;
 }
 
 function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {

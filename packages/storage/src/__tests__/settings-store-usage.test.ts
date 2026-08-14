@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
 import { createSessionStore } from '../session-store.js';
@@ -26,6 +27,50 @@ async function seedSession(workspaceRoot: string, messages: StoredMessage[]): Pr
 }
 
 describe('SettingsStore.usageStats request logs', () => {
+  it('does not migrate session metadata when operational state is rejected', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-usage-rejected-'));
+    const databasePath = join(workspaceRoot, 'runtime.sqlite');
+    try {
+      const sessions = createSessionStore(workspaceRoot);
+      await sessions.close?.();
+
+      const database = new DatabaseSync(databasePath);
+      database
+        .prepare(`UPDATE session_metadata_schema SET version = 21 WHERE scope = 'session_metadata'`)
+        .run();
+      database
+        .prepare(
+          `INSERT INTO operational_schema_migrations(scope, version, applied_at)
+           VALUES ('future_scope', 1, 0)`,
+        )
+        .run();
+      database.close();
+
+      await assert.rejects(
+        () => createSettingsStore(workspaceRoot).usageStats('all'),
+        /Operational schema future_scope is unknown to this Maka build/,
+      );
+
+      const preserved = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        assert.equal(
+          (
+            preserved
+              .prepare(
+                `SELECT version FROM session_metadata_schema WHERE scope = 'session_metadata'`,
+              )
+              .get() as { version: number }
+          ).version,
+          21,
+        );
+      } finally {
+        preserved.close();
+      }
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it('uses canonical SQLite metadata for transcript-marker sessions', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-usage-sqlite-'));
     const sessions = createSessionStore(workspaceRoot);

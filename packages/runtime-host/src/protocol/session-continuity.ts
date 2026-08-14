@@ -23,9 +23,16 @@ import { defineOperation } from './operation-spec.js';
 import { decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
 import { decodeGoalProjection, type GoalProjection } from './goal.js';
 import { decodeRuntimeResourceRef } from './runtime-resource.js';
+import {
+  decodeSessionTranscriptBootstrap,
+  SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  type SessionTranscriptBootstrap,
+} from './session-transcript.js';
 
 export const SESSION_CONTINUITY_SCHEMA_VERSION = 3 as const;
 export const SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES = 56 * 1024;
+// Leave transport headroom for the response envelope and request correlation.
+export const SUBSCRIPTION_OPEN_RESULT_MAX_BYTES = 92 * 1024;
 export const SESSION_LIVE_DELTA_MAX_BYTES = 16 * 1024;
 // Core emits at most 8,192 UTF-16 code units per tool output event. A code unit
 // needs at most three UTF-8 bytes (an astral pair needs four bytes total).
@@ -66,6 +73,7 @@ export interface SessionContinuitySnapshot {
 
 export interface SubscriptionOpenInput {
   sessionId: string;
+  transcript: { kind: 'none' } | { kind: 'tail'; maxBytes: number };
 }
 
 export interface SubscriptionOpenResult {
@@ -74,6 +82,7 @@ export interface SubscriptionOpenResult {
   nextSequence: number;
   snapshot: SessionContinuitySnapshot;
   activeAssistantStreams: SessionAssistantStreamIdentity[];
+  transcript: SessionTranscriptBootstrap | null;
 }
 
 export interface SessionAssistantStreamIdentity {
@@ -168,6 +177,12 @@ export interface SessionEventFrame extends SubscriptionEnvelope {
   event: SessionToolEvent;
 }
 
+export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
+  kind: 'subscription.transcript_advanced';
+  sessionId: string;
+  throughSequence: number;
+}
+
 export const SESSION_DOMAINS = ['task', 'plan', 'deep_research', 'runtime_resource'] as const;
 export type SessionDomain = (typeof SESSION_DOMAINS)[number];
 export const SESSION_RUNTIME_RESOURCE_CHANGES_MAX = 64;
@@ -219,6 +234,7 @@ export type SubscriptionFrame =
   | SessionProjectionFrame
   | SessionDeltaFrame
   | SessionEventFrame
+  | SessionTranscriptAdvancedFrame
   | SessionDomainChangedFrame
   | SessionRuntimeResourcePtyDataFrame
   | AgentGraphChangedFrame
@@ -230,6 +246,7 @@ const SUBSCRIPTION_OPEN_ERRORS = [
   'operation_unavailable',
   'not_found',
   'operation_conflict',
+  'persistence_failed',
   'internal_failure',
 ] as const;
 
@@ -248,6 +265,24 @@ export const SESSION_CONTINUITY_OPERATION_SPECS = {
     errors: SUBSCRIPTION_OPEN_ERRORS,
     decodeInput: decodeSubscriptionOpenInput,
     decodeOutput: decodeSubscriptionOpenResult,
+    assertOutputForInput: (input, output) => {
+      if (output.snapshot.session.sessionId !== input.sessionId) {
+        throw invalidProtocolFrame('Session subscription opened for a different Session');
+      }
+      if (
+        input.transcript.kind === 'none' ? output.transcript !== null : output.transcript === null
+      ) {
+        throw invalidProtocolFrame('Session subscription transcript policy changed');
+      }
+      if (
+        input.transcript.kind === 'tail' &&
+        output.transcript &&
+        output.transcript.durable.rawBytes + output.transcript.overlay.rawBytes >
+          input.transcript.maxBytes
+      ) {
+        throw invalidProtocolFrame('Session transcript bootstrap exceeds requested byte limit');
+      }
+    },
   }),
   'subscription.close': defineOperation({
     mode: 'control',
@@ -305,6 +340,21 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
       sessionId: requireEntityId(record.sessionId, 'sessionId'),
       runId: requireEntityId(record.runId, 'runId'),
       event: decodeSessionToolEvent(record.event),
+    };
+  } else if (record.kind === 'subscription.transcript_advanced') {
+    assertExactKeys(record, 'Session transcript advanced frame', [
+      'kind',
+      'hostEpoch',
+      'subscriptionId',
+      'sequence',
+      'sessionId',
+      'throughSequence',
+    ]);
+    frame = {
+      kind: record.kind,
+      ...envelope,
+      sessionId: requireEntityId(record.sessionId, 'sessionId'),
+      throughSequence: requireCount(record.throughSequence, 'Session transcript watermark'),
     };
   } else if (record.kind === 'subscription.agent_graph_changed') {
     assertExactKeys(record, 'Agent graph changed frame', [
@@ -418,6 +468,7 @@ export function isSubscriptionFrameKind(value: unknown): value is SubscriptionFr
     value === 'subscription.session_projection' ||
     value === 'subscription.session_delta' ||
     value === 'subscription.session_event' ||
+    value === 'subscription.transcript_advanced' ||
     value === 'subscription.session_domain_changed' ||
     value === 'subscription.runtime_resource_pty_data' ||
     value === 'subscription.agent_graph_changed' ||
@@ -472,17 +523,39 @@ export function decodeSessionContinuitySnapshot(value: unknown): SessionContinui
 }
 
 function decodeSubscriptionOpenInput(value: unknown): SubscriptionOpenInput {
-  const record = requireExactRecord(value, 'subscription.open input', ['sessionId']);
-  return { sessionId: requireEntityId(record.sessionId, 'sessionId') };
+  const record = requireExactRecord(value, 'subscription.open input', ['sessionId', 'transcript']);
+  const transcript = requireRecord(record.transcript, 'subscription transcript policy');
+  if (transcript.kind === 'none') {
+    requireExactRecord(transcript, 'subscription transcript policy', ['kind']);
+    return {
+      sessionId: requireEntityId(record.sessionId, 'sessionId'),
+      transcript: { kind: 'none' },
+    };
+  }
+  const tail = requireExactRecord(transcript, 'subscription transcript policy', [
+    'kind',
+    'maxBytes',
+  ]);
+  if (tail.kind !== 'tail') throw invalidProtocolFrame('Invalid subscription transcript policy');
+  const maxBytes = requireCount(tail.maxBytes, 'Session transcript bootstrap byte limit');
+  if (maxBytes < 2 || maxBytes > SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES) {
+    throw invalidProtocolFrame('Invalid Session transcript bootstrap byte limit');
+  }
+  return {
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    transcript: { kind: 'tail', maxBytes },
+  };
 }
 
 function decodeSubscriptionOpenResult(value: unknown): SubscriptionOpenResult {
+  requireEncodedByteLimit(value, 'subscription.open result', SUBSCRIPTION_OPEN_RESULT_MAX_BYTES);
   const record = requireExactRecord(value, 'subscription.open result', [
     'hostEpoch',
     'subscriptionId',
     'nextSequence',
     'snapshot',
     'activeAssistantStreams',
+    'transcript',
   ]);
   const hostEpoch = requireId(record.hostEpoch, 'hostEpoch');
   const snapshot = decodeSessionContinuitySnapshot(record.snapshot);
@@ -493,6 +566,8 @@ function decodeSubscriptionOpenResult(value: unknown): SubscriptionOpenResult {
     nextSequence: requirePositiveCount(record.nextSequence, 'nextSequence'),
     snapshot,
     activeAssistantStreams: decodeActiveAssistantStreams(record.activeAssistantStreams, snapshot),
+    transcript:
+      record.transcript === null ? null : decodeSessionTranscriptBootstrap(record.transcript),
   };
 }
 

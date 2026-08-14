@@ -80,6 +80,22 @@ export function isContinuationStartRuntimeEvent(event: RuntimeEvent): boolean {
 }
 
 /**
+ * Whether the event can affect the StoredMessage projection or the state needed
+ * to construct one. Pure control-plane facts are intentionally absent so a
+ * transcript reader can stream past them without retaining the whole ledger.
+ */
+export function affectsRuntimeEventStoredMessageProjection(event: RuntimeEvent): boolean {
+  return (
+    event.content !== undefined ||
+    isTerminalRuntimeEvent(event) ||
+    event.actions?.permissionRequest !== undefined ||
+    event.actions?.permissionDecision !== undefined ||
+    event.actions?.permissionAnswerAccepted !== undefined ||
+    event.actions?.tokenUsage !== undefined
+  );
+}
+
+/**
  * Codes that mean the projection did not claim an event, at either severity.
  *
  * Severity decides whether a session still opens; this decides whether the

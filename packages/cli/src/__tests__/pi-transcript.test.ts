@@ -20,6 +20,26 @@ import {
 } from '../pi-transcript.js';
 
 describe('Maka Pi TUI transcript', () => {
+  test('renders stored legacy Automation prompts as read-only provenance', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      {
+        type: 'user',
+        id: 'message-1',
+        turnId: 'turn-1',
+        ts: 1,
+        text: 'automated prompt',
+        origin: { kind: 'legacy_automation', automationId: 'automation-1' },
+      },
+    ]);
+
+    assert.deepEqual(state.entries, [{ kind: 'legacy_automation', text: 'automated prompt' }]);
+    assert.match(
+      renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n'),
+      /Legacy Automation \(history only\).*automated prompt/s,
+    );
+  });
+
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'inspect the package');

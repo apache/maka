@@ -1,3 +1,4 @@
+import type { ModelCallCommit } from '@maka/core/agent-run';
 /**
  * Tests for buildLlmHistorySummarizer — the AI-SDK-backed LLM summary that
  * replaces the deterministic excerpt draft when wiring injects it.
@@ -104,7 +105,7 @@ describe('buildLlmHistorySummarizer', () => {
           connectionSlug: 'connection',
           providerId: 'provider',
           callKind: 'history_compact',
-          record: (attempt: ModelCallAttempt) => {
+          record: ({ attempt }: ModelCallCommit<ModelCallAttempt>) => {
             recorded.push(attempt);
           },
         },

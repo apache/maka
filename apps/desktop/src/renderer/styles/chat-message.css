@@ -304,3 +304,9 @@
   color: var(--info-text);
   padding: var(--space-0-5) var(--space-1-5);
 }
+.maka-transcript-history-controls {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 0;
+}

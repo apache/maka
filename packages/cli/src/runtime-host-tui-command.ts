@@ -3,6 +3,7 @@ import { createInterface } from 'node:readline/promises';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
 import { createForeignSessionStore } from '@maka/storage';
+import { formatMakaResumeHint } from './cli-invocation.js';
 import { connectRuntimeHostCli, RuntimeHostCliConflictError } from './runtime-host-cli-context.js';
 import { createRuntimeHostOnboardingSurface } from './runtime-host-onboarding.js';
 import type { MakaPiTuiTurnActivitySurface } from './pi-tui-contracts.js';
@@ -11,6 +12,8 @@ import { createRuntimeHostTuiContext } from './runtime-host-tui-context.js';
 import type { MakaSessionDriver } from './session-driver.js';
 
 export interface RunRuntimeHostTuiInput {
+  readonly cliCommand: string;
+  readonly clientDataRoot: string;
   readonly workspaceRoot: string;
   readonly cwd: string;
   readonly resumeSessionId?: string;
@@ -23,6 +26,7 @@ export interface RunRuntimeHostTuiInput {
 export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<number> {
   const foreignSessions = createForeignSessionStore();
   const contextInput = {
+    clientDataRoot: input.clientDataRoot,
     rootPath: input.workspaceRoot,
     cwd: input.cwd,
     ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
@@ -36,6 +40,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
   } catch (error) {
     if (!isMissingDefaultConnection(error) || input.resumeSessionId) throw error;
     const configured = await runFirstRunOnboarding(
+      input.clientDataRoot,
       input.workspaceRoot,
       input.cwd,
       input.hostProfileId,
@@ -70,6 +75,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       subscribeShellRunUpdates: (listener) => context.driver.subscribeShellRunUpdates(listener),
       listShellRunUpdates: (sessionId) => context.driver.listShellRunUpdates(sessionId),
       onProcessExit: input.onProcessExit,
+      cliCommand: input.cliCommand,
       resumeSessionId: input.resumeSessionId,
       resumeCwd: input.resumeCwd,
       ...(context.profile.kind === 'remote' && input.resumeSessionId
@@ -77,12 +83,10 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
         : {}),
     });
     const sessionId = context.driver.getSessionId();
-    if (sessionId)
-      process.stdout.write(
-        `Resume this session with:\n  maka --resume ${sessionId}${
-          context.profile.kind === 'remote' ? ` --host ${context.profile.id}` : ''
-        }\n`,
-      );
+    const hint = formatMakaResumeHint(input.cliCommand, sessionId, {
+      ...(context.profile.kind === 'remote' ? { hostProfileId: context.profile.id } : {}),
+    });
+    if (hint) process.stdout.write(`${hint}\n`);
     return 0;
   } finally {
     await context.close();
@@ -123,11 +127,13 @@ function waitForHostRetry(): Promise<void> {
 }
 
 async function runFirstRunOnboarding(
+  clientDataRoot: string,
   rootPath: string,
   cwd: string,
   hostProfileId?: string,
 ): Promise<boolean> {
   const connected = await connectRuntimeHostCli({
+    clientDataRoot,
     rootPath,
     surface: 'tui',
     ...(hostProfileId ? { profileId: hostProfileId } : {}),

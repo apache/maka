@@ -128,6 +128,7 @@ import {
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostInteractiveTurnCoordinator } from './interactive-turn-coordinator.js';
 import { ensureBootstrapRuntimePolicy } from './bootstrap-runtime-policy.js';
+import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
 import { MemoryExtractionSessionLane } from './memory-extraction-session-lane.js';
@@ -225,6 +226,7 @@ export async function createExecutionRuntimeHostComposition(
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
   let unsubscribeTaskLedger: (() => void) | undefined;
+  let unsubscribeTranscriptChanges: (() => void) | undefined;
   let managedWorkspaceOwner: ManagedWorkspaceOwner | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
   let projectCatalog: InteractiveProjectCatalogWriter | undefined;
@@ -518,6 +520,9 @@ export async function createExecutionRuntimeHostComposition(
       (sessionId) => sessionCatalogChanges.publish(sessionId),
     );
     const continuityCoordinator = continuity;
+    unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) =>
+      continuityCoordinator.enqueueCanonicalRefresh(sessionId),
+    );
     unsubscribeTaskLedger = taskLedger.subscribe(({ sessionId }) =>
       continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'task'),
     );
@@ -640,7 +645,10 @@ export async function createExecutionRuntimeHostComposition(
               childTools: childAgentTools.childTools,
               worktreePatchWriteBackAvailable: true,
             }),
-            memoryExtraction,
+            ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction ===
+            false
+              ? {}
+              : { memoryExtraction }),
             artifacts: openedArtifactStore,
             executionArtifacts,
             usage: openedUsageStores,
@@ -688,11 +696,18 @@ export async function createExecutionRuntimeHostComposition(
           openedPlanStore.readState(sessionId),
           runtimePolicyStores.runtimePolicy.getSnapshot(),
         ]);
+        const runProfile = hostedExecutionRunProfile(header.toolProfile);
         return createInteractiveRunComposer({
           runtimePolicy: runtimePolicySnapshot,
           skills,
           memory: requireMemory(memory),
           taskLedger,
+          ...(runProfile
+            ? {
+                boundToolNames: runProfile.toolNames,
+                toolProfile: header.toolProfile,
+              }
+            : {}),
           ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
           builtinTools,
           hostTools: [...hostTools, ...graphTools],
@@ -1321,6 +1336,7 @@ export async function createExecutionRuntimeHostComposition(
           () => openedUsageStores.close(),
           () => openedArtifactStore.close(),
           () => {
+            unsubscribeTranscriptChanges?.();
             unsubscribeTaskLedger?.();
             taskLedgerStore?.close();
           },
@@ -1550,6 +1566,7 @@ export async function createExecutionRuntimeHostComposition(
       errors.push(closeError);
     }
     try {
+      unsubscribeTranscriptChanges?.();
       unsubscribeTaskLedger?.();
       taskLedgerStore?.close();
     } catch (closeError) {

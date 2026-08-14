@@ -36,12 +36,19 @@ import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
 import { isTerminalRuntimeEvent, type RuntimeEvent } from '@maka/core/runtime-event';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import {
+  LATEST_CONTEXT_PROJECTION_TYPE,
+  supersedesLatestContext,
+  type LatestContextOrder,
+  type AgentRunProjectionKey,
+  type AgentRunAppendOptions,
+  type LatestContextProjectionInput,
   type AgentRunEvent,
   type AgentRunEventType,
   type AgentRunHeader,
   type AgentRunStore,
   type EmittedAgentRunEvent,
   type RootExecutionDescriptor,
+  isSessionInlineRun,
 } from '@maka/core/agent-run';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
@@ -178,11 +185,11 @@ export interface DurableAgentRunStore
   readEventsForEvidence(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventProjection(
     sessionId: string,
-    type: AgentRunEventType,
+    type: AgentRunProjectionKey,
   ): Promise<AgentRunEvent | null | undefined>;
   repairEventProjection(
     sessionId: string,
-    type: AgentRunEventType,
+    type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
     options?: { replaceEventId?: string },
   ): Promise<void>;
@@ -202,7 +209,25 @@ export interface ConversationCopyRuntimeEventBatch {
   readonly events: readonly RuntimeEvent[];
 }
 
+export interface RuntimeEventScanBudget {
+  readonly maxBatchBytes: number;
+  readonly maxRecordBytes: number;
+  readonly maxImmutableRecords: number;
+  readonly maxImmutableBytes: number;
+  readonly maxPartialRecords: number;
+  readonly maxPartialBytes: number;
+}
+
+export type RuntimeEventScanResult = { readonly status: 'complete' | 'limit_exceeded' };
+
 export interface DurableRuntimeEventStore extends RuntimeEventStore {
+  /** Visit one ordered, bounded SQLite snapshot without retaining the immutable ledger. */
+  scanRuntimeEvents(
+    sessionId: string,
+    runId: string,
+    budget: RuntimeEventScanBudget,
+    visit: (events: readonly RuntimeEvent[]) => void,
+  ): Promise<RuntimeEventScanResult>;
   readRuntimeEventsBounded(
     sessionId: string,
     runId: string,
@@ -413,7 +438,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     sessionId: string,
     runId: string,
     event: EmittedAgentRunEvent,
-    _options: { durable?: boolean } = {},
+    options: AgentRunAppendOptions = {},
   ): Promise<void> {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(runId, 'Invalid run id');
@@ -424,17 +449,70 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
         runId,
         turnId: header.turnId,
       });
-      const projection =
-        normalized.type === 'history_compact_checkpoint_recorded'
-          ? readSqliteAgentRunProjection(this.#lease.database, sessionId, normalized.type)
-          : undefined;
+      const type = normalized.type as AgentRunEventType;
+      const projectsCheckpoint = type === 'history_compact_checkpoint_recorded';
+      const projection = projectsCheckpoint
+        ? readSqliteAgentRunProjection(this.#lease.database, sessionId, type)
+        : undefined;
       insertAgentRunEvent(this.#lease.database, normalized);
-      if (normalized.type === 'history_compact_checkpoint_recorded') {
-        const projected = shouldPreserveCheckpointProjectionDuringAppend(projection, normalized)
+      if (projectsCheckpoint) {
+        const row = shouldPreserveCheckpointProjectionDuringAppend(projection, normalized)
           ? projection!
           : normalized;
-        writeSqliteAgentRunProjection(this.#lease.database, sessionId, normalized.type, projected);
+        writeSqliteAgentRunProjection(this.#lease.database, sessionId, type, row);
       }
+      // Derived state, committed with the event that authorises it (#2323).
+      // Inside THIS transaction, so the projection cannot outlive a metering
+      // append that failed, nor describe a request the ledger never recorded.
+      //
+      // Skipped for a subagent's run: those requests are real, but presenting
+      // one as the SESSION's latest context attributes another agent's prompt
+      // to this one. The header is already loaded here, so the check is free.
+      const latestContext = options.latestContext;
+      if (latestContext && isSessionInlineRun(header)) {
+        this.#writeLatestContextProjection(sessionId, normalized, latestContext);
+      }
+    });
+  }
+
+  /**
+   * Monotonic by the request's own completion, not by arrival.
+   *
+   * Overlapping turns append on independent queues, so a request that finished
+   * at 10 can arrive after one that finished at 20. Taking the newest arrival
+   * would move the answer backwards and leave a warm read disagreeing with a
+   * cold rebuild of the same ledger. Ties break on `attemptId` so two requests
+   * sharing a millisecond still order the same way everywhere.
+   */
+  #writeLatestContextProjection(
+    sessionId: string,
+    event: AgentRunEvent,
+    latest: LatestContextProjectionInput,
+  ): void {
+    const existing = readSqliteAgentRunProjection(
+      this.#lease.database,
+      sessionId,
+      LATEST_CONTEXT_PROJECTION_TYPE,
+    );
+    // Compared against the stored row's own completion, which the snapshot
+    // carries — not against an ordering field the row does not have, which is
+    // how the first version of this guard silently never fired. The rule
+    // itself is shared with the cold rebuild, so the two cannot disagree about
+    // which request is the latest one.
+    const current = existing?.data as { completedAt?: unknown; attemptId?: unknown } | undefined;
+    if (current && typeof current.completedAt === 'number') {
+      const incumbent = {
+        completedAt: current.completedAt,
+        attemptId: String(current.attemptId ?? ''),
+      };
+      const arriving = { completedAt: latest.orderedAt, attemptId: String(latest.attemptId) };
+      if (!supersedesLatestContext(arriving, incumbent)) return;
+    }
+    writeSqliteAgentRunProjection(this.#lease.database, sessionId, LATEST_CONTEXT_PROJECTION_TYPE, {
+      ...event,
+      type: LATEST_CONTEXT_PROJECTION_TYPE,
+      id: `latest-context-${latest.attemptId}`,
+      data: latest.snapshot,
     });
   }
 
@@ -479,7 +557,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
 
   async readEventProjection(
     sessionId: string,
-    type: AgentRunEventType,
+    type: AgentRunProjectionKey,
   ): Promise<AgentRunEvent | null | undefined> {
     assertSafeId(sessionId, 'Invalid session id');
     return readSqliteAgentRunProjection(this.#lease.database, sessionId, type);
@@ -487,7 +565,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
 
   async repairEventProjection(
     sessionId: string,
-    type: AgentRunEventType,
+    type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
     options: { replaceEventId?: string } = {},
   ): Promise<void> {
@@ -857,7 +935,9 @@ function insertAgentRunEvent(db: DatabaseSync, event: AgentRunEvent): void {
 function readSqliteAgentRunProjection(
   db: DatabaseSync,
   sessionId: string,
-  type: AgentRunEventType,
+  // A projection key, not necessarily an event type: `latest_context` names a
+  // derived row nothing ever appends under (#2323).
+  type: string,
 ): AgentRunEvent | null | undefined {
   const row = db
     .prepare(`
@@ -881,7 +961,7 @@ function readSqliteAgentRunProjection(
 function writeSqliteAgentRunProjection(
   db: DatabaseSync,
   sessionId: string,
-  type: AgentRunEventType,
+  type: string,
   event: AgentRunEvent | null,
 ): void {
   db.prepare(`
@@ -1015,13 +1095,17 @@ function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmissi
     input.skillInvocation === undefined
       ? undefined
       : decodeSkillInvocationResult(input.skillInvocation);
+  const execution = normalizeRootExecutionDescriptor(input.execution);
+  if (execution.kind === 'legacy_automation') {
+    throw new Error('New root admission cannot use removed Automation authority');
+  }
   const admission: RootTurnAdmission = {
     schemaVersion: ROOT_TURN_ADMISSION_SCHEMA_VERSION,
     sessionId: input.sessionId,
     turnId: input.turnId,
     runId: input.proposedRunId,
     userMessageId: input.proposedUserMessageId,
-    execution: normalizeRootExecutionDescriptor(input.execution),
+    execution,
     previousRootTurnId: input.previousRootTurnId,
     normalizedInput,
     ...(turnOrchestration ? { turnOrchestration } : {}),
@@ -1073,9 +1157,22 @@ function shouldPreserveCheckpointProjectionDuringAppend(
 function shouldPreserveProjectionDuringRepair(
   current: AgentRunEvent | null | undefined,
   candidate: AgentRunEvent | null,
-  type: AgentRunEventType,
+  type: AgentRunProjectionKey,
 ): boolean {
   if (!current) return false;
+  if (type === LATEST_CONTEXT_PROJECTION_TYPE) {
+    // Same ordering rule as the append-time guard, so repair and write cannot
+    // disagree about which request is the latest one. An incumbent whose order
+    // cannot be read is NOT preserved: the reader already treats an
+    // undecodable row as unanswered and rebuilds from the ledger, so keeping
+    // it would make that rebuild unwritable and leave every later refresh
+    // rescanning the whole session (#2323).
+    const incumbent = latestContextOrder(current);
+    if (!incumbent) return false;
+    const arriving = candidate && latestContextOrder(candidate);
+    if (!arriving) return true;
+    return !supersedesLatestContext(arriving, incumbent);
+  }
   if (type !== 'history_compact_checkpoint_recorded') return true;
   const currentSourceBound = historyCompactProjectionIsSourceBound(current);
   const candidateSourceBound = candidate ? historyCompactProjectionIsSourceBound(candidate) : false;
@@ -1088,6 +1185,19 @@ function shouldPreserveProjectionDuringRepair(
       candidateCoverage === undefined ||
       currentCoverage >= candidateCoverage)
   );
+}
+
+/**
+ * The ordering facts a stored latest-context row carries, or `undefined` when
+ * the row cannot state them — a damaged snapshot, or one written by a shape
+ * this build does not understand.
+ */
+function latestContextOrder(event: AgentRunEvent): LatestContextOrder | undefined {
+  const data = event.data as { completedAt?: unknown; attemptId?: unknown } | undefined;
+  if (!data || typeof data.completedAt !== 'number' || typeof data.attemptId !== 'string') {
+    return undefined;
+  }
+  return { completedAt: data.completedAt, attemptId: data.attemptId };
 }
 
 function historyCompactProjectionIsSourceBound(event: AgentRunEvent): boolean {
@@ -1141,7 +1251,7 @@ function historyCompactProjectionCoverage(event: AgentRunEvent): number | undefi
 function isProjectedAgentRunEvent(
   value: unknown,
   sessionId: string,
-  type: AgentRunEventType,
+  type: string,
 ): value is AgentRunEvent {
   if (!value || typeof value !== 'object') return false;
   const event = value as Partial<AgentRunEvent>;
@@ -1679,6 +1789,16 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
       throw new Error('Invalid root execution descriptor');
     }
     return Object.freeze({ kind: 'scheduled_task', scheduledTaskId: value.scheduledTaskId });
+  }
+  if (value.kind === 'automation' || value.kind === 'legacy_automation') {
+    if (
+      !hasExactKeys(value, ['kind', 'automationId']) ||
+      typeof value.automationId !== 'string' ||
+      !isSafeId(value.automationId)
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({ kind: 'legacy_automation', automationId: value.automationId });
   }
   if (value.kind === 'goal') {
     if (

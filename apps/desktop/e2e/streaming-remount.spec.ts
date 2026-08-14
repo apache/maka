@@ -24,8 +24,10 @@ test('remounting a live surface leaves accumulated output settled', async ({
   const sidebar = page.getByRole('navigation', { name: '对话列表' });
   await sidebar.getByRole('button', { name: '扩展' }).click();
   await expect(page.locator('[data-module="skills"]')).toBeVisible();
+  await expect(liveBubble).toHaveCount(0);
   await sidebar.getByRole('button', { name: '会话', exact: true }).click();
-  await liveBubble.waitFor({ state: 'attached' });
+  await expect(liveBubble).toHaveCount(1);
+  await expect(liveBubble).toContainText(accumulatedOutput);
 
   expect((await liveBubble.textContent())?.split(accumulatedOutput)).toHaveLength(2);
   expect(
@@ -49,7 +51,8 @@ test('remounting a live surface leaves accumulated output settled', async ({
   const steering = 'trigger rewrite after returning to this conversation';
   await composer.fill(steering);
   await composer.press('Enter');
-  await expect(liveBubble).toContainText('<redacted> NEW');
+  const finalText = 'prefix <redacted> NEW streamed after the remount';
+  await expect(liveBubble).toContainText(finalText);
 
   const observed = await page.evaluate(() => (
     window as typeof window & {
@@ -58,9 +61,8 @@ test('remounting a live surface leaves accumulated output settled', async ({
       };
     }
   ).__makaStreamingRemountObserved);
-  expect(observed?.texts.some((text) =>
-    text.includes('<redacted>') && !text.includes('NEW')
-  )).toBe(true);
+  expect(observed?.texts.some((text) => text.includes('<redacted>') && !text.includes(finalText)))
+    .toBe(true);
 });
 
 test('returning to a live conversation settles output accumulated while away', async ({

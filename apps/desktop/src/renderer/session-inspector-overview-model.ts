@@ -1,4 +1,8 @@
 import type {
+  ContextDiagnosticsResult,
+  ContextDiagnosticsSegment,
+} from '@maka/runtime-host/protocol';
+import type {
   SessionTrace,
   TraceModelAttempt,
   TraceModelCallStep,
@@ -44,9 +48,71 @@ export interface InspectorContextBudget {
   segments: readonly InspectorContextSegment[];
 }
 
+/**
+ * One row of "what was this prompt made of", sized in bytes and estimated in
+ * tokens (#2323).
+ *
+ * The estimate is made HERE, at the display layer, and never enters the trace:
+ * `bytes / 4` is a rule of thumb over serialized JSON, and a figure that has
+ * been rounded into the contract can no longer be labelled as an estimate where
+ * it is shown. The panel prints every one of these with a `≈`.
+ */
+export interface InspectorCompositionRow {
+  estimatedTokens: number;
+}
+
+export interface InspectorCompositionPart extends InspectorCompositionRow {
+  kind: ContextDiagnosticsSegment['kind'];
+}
+
+export interface InspectorCompositionTool extends InspectorCompositionRow {
+  name: string;
+}
+
+export interface InspectorComposition {
+  parts: readonly InspectorCompositionPart[];
+  /** The largest tool schemas, largest first — the ones worth removing. */
+  tools: readonly InspectorCompositionTool[];
+  /**
+   * Everything below the visible tools, folded rather than dropped.
+   *
+   * The BYTES add up: this row plus the visible ones equal the tool total. The
+   * token column does not, and cannot — each row is rounded up on its own, so
+   * a sum of estimates is not the estimate of the sum. That is why every
+   * figure carries `≈` and none of them is presented as a subtotal.
+   */
+  remainingTools?: { count: number; estimatedTokens: number };
+  /** Tool schemas the payload did not name; counted, never attributed. */
+  unlabelledTools?: { estimatedTokens: number };
+}
+
+/**
+ * Composition of the same request the bar measures, or the reason there is
+ * none.
+ *
+ * `unrecorded` is a real answer, not an empty one: metering is durable and the
+ * capture carrying the segments is best-effort, so a metered call with no
+ * breakdown on record happens, and rendering it as a prompt made of nothing
+ * would be the fabrication the ledger rules exist to prevent (#1679).
+ */
+export type InspectorCompositionState =
+  | { status: 'available'; composition: InspectorComposition }
+  | { status: 'unrecorded' };
+
 export interface InspectorOverviewModel {
   /** Absent when no completed main call reported both usage and a window. */
   context?: InspectorContextBudget;
+  /**
+   * What filled the context, from the Host operation that owns that question.
+   *
+   * Independent of `context` above, and that independence is the fix for a
+   * real hole: the bar needs a `contextWindow` to have a denominator, so a
+   * provider that reports usage without one used to take the whole section
+   * down with it. The snapshot answers on its own terms — a request with no
+   * window still explains itself, and a request with no capture says
+   * `unrecorded` instead of vanishing.
+   */
+  composition?: InspectorCompositionState;
   /**
    * cacheRead / input over the attempts that reported input, session-wide.
    * Absent when no input was metered at all — a rate over nothing is not
@@ -59,15 +125,39 @@ export interface InspectorOverviewModel {
   cacheHitRate?: number;
 }
 
-export function deriveInspectorOverviewModel(trace: SessionTrace | undefined): InspectorOverviewModel {
-  if (!trace || trace.turns.length === 0) return {};
+/**
+ * The overview reads two owners, and keeps them apart.
+ *
+ * The trace answers what happened and what it cost. The context snapshot
+ * answers what the context holds right now — its own Host operation, the one
+ * `/context` prints (#1580, #2323). Neither is derived from the other, so a
+ * session with a trace and no snapshot still shows its history, and a snapshot
+ * with no trace still sizes the window.
+ */
+export function deriveInspectorOverviewModel(
+  trace: SessionTrace | undefined,
+  diagnostics?: ContextDiagnosticsResult,
+): InspectorOverviewModel {
+  // Both halves of the context block come from the SAME snapshot. They used to
+  // be picked separately — the bar from the latest trace attempt that carried a
+  // window, the breakdown from the latest diagnostics — so a newest call
+  // without a window put one request's fullness above another request's
+  // contents. One source cannot disagree with itself (#2323).
+  const composition = compositionState(diagnostics);
+  const context = contextBudget(diagnostics);
+  if (!trace || trace.turns.length === 0) {
+    return {
+      ...(context ? { context } : {}),
+      ...(composition ? { composition } : {}),
+    };
+  }
 
   const modelSteps = trace.turns.flatMap(modelCallSteps);
   const cacheHitRate = sessionCacheHitRate(modelSteps.flatMap((step) => step.attempts));
-  const context = contextBudget(modelSteps);
 
   return {
     ...(context ? { context } : {}),
+    ...(composition ? { composition } : {}),
     ...(cacheHitRate !== undefined ? { cacheHitRate } : {}),
   };
 }
@@ -98,32 +188,22 @@ function sessionCacheHitRate(attempts: readonly TraceModelAttempt[]): number | u
 
 /**
  * The budget question a reader actually asks — "how full is the context right
- * now" — is answered by the most recent completed call whose provider counted
- * a prompt: its input total IS the context size the next call builds on.
+ * now" — answered by the snapshot's own metered prompt against the window that
+ * same call ran under. Absent when the provider reported no prompt, or no
+ * window to measure it against: a bar with no denominator is not a bar.
  */
-function contextBudget(steps: readonly TraceModelCallStep[]): InspectorContextBudget | undefined {
-  const candidates = steps
-    .filter((step) => step.callKind === 'main')
-    .flatMap((step) => step.attempts)
-    .filter(
-      (attempt) =>
-        attempt.status === 'completed' &&
-        attempt.inputTokens !== undefined &&
-        attempt.contextWindow !== undefined &&
-        attempt.contextWindow > 0,
-    );
-  const latest = candidates.reduce<TraceModelAttempt | undefined>(
-    (carry, attempt) => (carry === undefined || attempt.completedAt >= carry.completedAt ? attempt : carry),
-    undefined,
-  );
-  if (!latest) return undefined;
-  const usedTokens = latest.inputTokens!;
-  const windowTokens = latest.contextWindow!;
+function contextBudget(
+  diagnostics: ContextDiagnosticsResult | undefined,
+): InspectorContextBudget | undefined {
+  if (!diagnostics || diagnostics.status !== 'available') return undefined;
+  const usedTokens = diagnostics.inputTokens;
+  const windowTokens = diagnostics.contextWindow;
+  if (usedTokens === undefined || windowTokens === undefined || windowTokens <= 0) return undefined;
   // A cache figure larger than the prompt it belongs to is not a fact about
   // the window, so it is clamped rather than allowed to push `fresh` negative.
   const cacheRead =
-    latest.cacheReadInputTokens !== undefined
-      ? Math.min(latest.cacheReadInputTokens, usedTokens)
+    diagnostics.cacheReadInputTokens !== undefined
+      ? Math.min(diagnostics.cacheReadInputTokens, usedTokens)
       : undefined;
   const prompt: { kind: InspectorContextSegmentKind; tokens: number }[] =
     cacheRead === undefined
@@ -141,6 +221,76 @@ function contextBudget(steps: readonly TraceModelCallStep[]): InspectorContextBu
       { kind: 'free' as const, tokens: Math.max(0, windowTokens - usedTokens) },
     ].filter((segment) => segment.tokens > 0),
   };
+}
+
+/**
+ * How many tool rows are worth showing.
+ *
+ * The list exists so a reader can name a tool to remove, and that decision is
+ * made off the biggest few; a full registry printed at 4pt is a table, not an
+ * answer. What falls below the cut is folded into one row rather than dropped,
+ * so the parts still add up to the tool total above them.
+ */
+const VISIBLE_TOOL_ROWS = 5;
+
+function compositionState(
+  diagnostics: ContextDiagnosticsResult | undefined,
+): InspectorCompositionState | undefined {
+  // No snapshot at all is not a state to render: there is nothing to ask about
+  // yet. A snapshot that reports no request is the same — the panel's empty
+  // state already covers a session that has not run.
+  if (!diagnostics || diagnostics.status !== 'available') return undefined;
+  const composition = diagnostics.composition;
+  // A request the durable record names but no capture explains. Stated, so the
+  // reader knows the breakdown is missing rather than the prompt being empty.
+  if (!composition) return { status: 'unrecorded' };
+
+  const tools = composition.tools ?? [];
+  const visible = tools.slice(0, VISIBLE_TOOL_ROWS);
+  const hidden = tools.slice(VISIBLE_TOOL_ROWS);
+  // The Host already folded everything past ITS cap into `remainingTools`, so
+  // the panel's remainder is the locally hidden rows PLUS that fold. Counting
+  // only the local ones silently dropped every tool beyond the Host's 64 —
+  // 236 of them, and their bytes, on a 300-tool session (#2323).
+  const producerRemainder = composition.remainingTools;
+  const remainingCount = hidden.length + (producerRemainder?.count ?? 0);
+  const remainingBytes =
+    hidden.reduce((carry, tool) => carry + tool.bytes, 0) + (producerRemainder?.bytes ?? 0);
+
+  return {
+    status: 'available',
+    composition: {
+      parts: composition.segments.map((part) => ({
+        kind: part.kind,
+        estimatedTokens: estimateTokens(part.bytes),
+      })),
+      tools: visible.map((tool) => ({
+        name: tool.name,
+        estimatedTokens: estimateTokens(tool.bytes),
+      })),
+      ...(remainingCount > 0
+        ? {
+            remainingTools: {
+              count: remainingCount,
+              estimatedTokens: estimateTokens(remainingBytes),
+            },
+          }
+        : {}),
+      ...(composition.unlabelledToolBytes !== undefined
+        ? { unlabelledTools: { estimatedTokens: estimateTokens(composition.unlabelledToolBytes) } }
+        : {}),
+    },
+  };
+}
+
+/**
+ * The same four-bytes-per-token rule of thumb `/context` prints, kept at the
+ * display layer and rendered with a `≈` everywhere it appears. It is not a
+ * count: the bytes it divides are serialized JSON, and an attachment's base64
+ * makes it wrong in a direction nobody can correct for here.
+ */
+function estimateTokens(bytes: number): number {
+  return Math.ceil(bytes / 4);
 }
 
 function sum(attempts: readonly TraceModelAttempt[], pick: (attempt: TraceModelAttempt) => number | undefined): number {

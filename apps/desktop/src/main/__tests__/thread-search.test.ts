@@ -220,6 +220,7 @@ describe('runThreadSearch', () => {
       kind: 'thread',
       sessionId: 's1',
       turnId: 'turn-user',
+      sequence: 0,
     });
     assert.equal(messageHit.summary, '用户消息');
     assert.equal(messageHit.url, undefined);

@@ -781,6 +781,16 @@ function connectionHarness(
       activeSubscriptionFrames = subscriptionFrames;
       const closeSubscription = () => subscriptionFrames.end();
       closeSubscriptions.add(closeSubscription);
+      const emptyPage = {
+        kind: 'page' as const,
+        sessionId,
+        source: 'durable' as const,
+        direction: 'older' as const,
+        throughSequence: null,
+        rawBytes: 0,
+        fragments: [],
+        nextCursor: null,
+      };
       return {
         hostEpoch: `host-${label}`,
         subscriptionId: `subscription-${label}`,
@@ -788,7 +798,17 @@ function connectionHarness(
           projectionRevision: 1,
           session: { sessionId },
         },
+        activeAssistantStreams: [],
+        transcriptBootstrap: {
+          throughSequence: null,
+          overlayMessageCount: 0,
+          durable: emptyPage,
+          overlay: { ...emptyPage, source: 'overlay' },
+        },
         loadTranscript: async () => [],
+        loadTranscriptOverlay: async () => [],
+        decodeTranscriptPage: async () => ({ messages: [], nextCursor: null }),
+        loadTranscriptPage: async () => emptyPage,
         [Symbol.asyncIterator]: () => subscriptionFrames[Symbol.asyncIterator](),
         close: async () => closeSubscription(),
       };

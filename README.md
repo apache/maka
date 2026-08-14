@@ -124,10 +124,10 @@ npm run build
 Then start the TUI or run one Turn:
 
 ```sh
-npm --workspace maka-agent exec -- maka
-npm --workspace maka-agent exec -- maka run "Summarize this repository and identify its most important risk"
-npm --workspace maka-agent exec -- maka run --graph "Implement two independent slices, integrate them, then review the result"
-npm --workspace maka-agent exec -- maka --help
+npm run cli:dev
+npm run cli:dev -- run "Summarize this repository and identify its most important risk"
+npm run cli:dev -- run --graph "Implement two independent slices, integrate them, then review the result"
+npm run cli:dev -- --help
 ```
 
 The TUI also accepts `/graph on`, `/graph off`, and `/graph <task>`. Non-interactive
@@ -135,7 +135,9 @@ The TUI also accepts `/graph on`, `/graph off`, and `/graph <task>`. Non-interac
 supervisor output. Graph implementation operators use isolated Git worktrees, so
 the source project must be a clean Git worktree.
 
-The CLI reads the same model connections and workspace configuration written by Desktop. Evaluation specs and adapters live in [`packages/eval`](./packages/eval).
+The repository CLI uses the same `Maka Dev` profile as a development Desktop build. The
+released `maka` binary continues to use the `Maka` profile; the two profiles are not copied or
+synchronized automatically. Evaluation specs and adapters live in [`packages/eval`](./packages/eval).
 
 ## Architecture
 

@@ -66,7 +66,10 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     });
     owner = undefined;
     [desktop, tui] = await Promise.all([connect(root, 'desktop'), connect(root, 'tui')]);
-    const subscription = await desktop.openSessionSubscription({ sessionId: session.id });
+    const subscription = await desktop.openSessionSubscription({
+      sessionId: session.id,
+      transcript: { kind: 'none' },
+    });
 
     const first = await desktop.queryPlan({ kind: 'list_start', sessionId: session.id });
     assert.equal(first.kind, 'page');

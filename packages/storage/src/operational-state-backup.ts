@@ -19,15 +19,14 @@ import { withArtifactWriterLock } from './artifact-writer-lock.js';
 import { decodeStoredMessage } from './execution-record-codec.js';
 import {
   acquireOperationalStateDatabase,
+  inspectOperationalStateSchema,
   OPERATIONAL_STATE_DATABASE_NAME,
-  OPERATIONAL_STATE_SCHEMA_VERSION,
 } from './operational-state-store.js';
-import { SQLITE_ARTIFACT_SCHEMA_VERSION } from './sqlite-artifact-schema.js';
-import { SQLITE_CORE_EXECUTION_SCHEMA_VERSION } from './sqlite-core-execution-schema.js';
-import { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
-import { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
-import { SQLITE_USAGE_SCHEMA_VERSION } from './sqlite-usage-schema.js';
-import { SQLITE_WORKFLOW_SCHEMA_VERSION } from './sqlite-workflow-schema.js';
+import { assertCurrentOperationalTargetSchema } from './operational-target-schema.js';
+import {
+  SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
+  SQLITE_SESSION_MESSAGE_CHUNK_MARKER,
+} from './sqlite-session-metadata-schema.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
 
 export const OPERATIONAL_BACKUP_FORMAT = 'maka-operational-backup';
@@ -339,100 +338,11 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
       if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
         throw new Error('foreign_key_check failed');
       }
-      const expected = new Map<string, number>([
-        ['runtime', SQLITE_RUNTIME_SCHEMA_VERSION],
-        ['session_metadata', SQLITE_SESSION_METADATA_SCHEMA_VERSION],
-        ['core_execution', SQLITE_CORE_EXECUTION_SCHEMA_VERSION],
-        ['workflow', SQLITE_WORKFLOW_SCHEMA_VERSION],
-        ['usage', SQLITE_USAGE_SCHEMA_VERSION],
-        ['artifact', SQLITE_ARTIFACT_SCHEMA_VERSION],
-        ['operational', OPERATIONAL_STATE_SCHEMA_VERSION],
-      ]);
-      const rows = database
-        .prepare('SELECT scope, version FROM operational_schema_migrations')
-        .all() as Array<{ scope?: unknown; version?: unknown }>;
-      if (
-        rows.length !== expected.size ||
-        rows.some(
-          (entry) => typeof entry.scope !== 'string' || expected.get(entry.scope) !== entry.version,
-        )
-      ) {
+      if (inspectOperationalStateSchema(database).status !== 'current') {
         throw new Error('operational schema versions do not match');
       }
 
-      const requiredTables = [
-        'operational_schema_migrations',
-        'runtime_events',
-        'tool_journal_events',
-        'tool_operations',
-        'runtime_partial_snapshots',
-        'runtime_partial_segments',
-        'runtime_capabilities',
-        'runtime_continuation_claims',
-        'runtime_workspace_epochs',
-        'runtime_workspace_versions',
-        'runtime_workspace_heads',
-        'session_metadata_schema',
-        'session_metadata',
-        'session_metadata_labels',
-        'session_metadata_tombstones',
-        'subagent_spawns',
-        'agent_graph_intent_claims',
-        'agent_graph_schedule_updates',
-        'agent_graph_operator_provisions',
-        'agent_graph_client_projections',
-        'agent_graph_client_operator_projections',
-        'agent_graph_client_terminal_activity',
-        'agent_graph_client_applied_records',
-        'agent_graph_supervisor_wakes',
-        'agent_graph_supervisor_wake_attempts',
-        'sandbox_boundary_log',
-        'session_create_claims',
-        'session_catalog_state',
-        'session_catalog_projection',
-        'session_catalog_label_projection',
-        'session_messages',
-        'projects',
-        'project_locations',
-        'project_aliases',
-        'core_agent_runs',
-        'core_agent_run_events',
-        'core_agent_run_projections',
-        'core_root_turn_admissions',
-        'core_root_turn_start_rejections',
-        'core_root_source_message_proofs',
-        'core_interaction_requests',
-        'core_interaction_outcomes',
-        'core_message_host_epochs',
-        'core_message_receipts',
-        'core_shell_runs',
-        'workflow_task_ledger_events',
-        'workflow_task_ledger_projections',
-        'workflow_plan_events',
-        'workflow_plan_projections',
-        'workflow_deep_research_events',
-        'workflow_scheduled_tasks',
-        'workflow_scheduled_task_fires',
-        'workflow_quote_companion_cleanup',
-        'workflow_daily_review_state',
-        'workflow_daily_review_authority_state',
-        'workflow_daily_review_archives',
-        'usage_llm_calls',
-        'usage_tool_invocations',
-        'usage_model_call_attempts',
-        'usage_model_call_reprojection',
-        'usage_pricing_authority',
-        'usage_pricing_overrides',
-        'artifact_records',
-      ];
-      const tableExists = database.prepare(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-      );
-      for (const table of requiredTables) {
-        if (tableExists.get(table) === undefined) {
-          throw new Error(`required table is missing: ${table}`);
-        }
-      }
+      assertCurrentOperationalTargetSchema(database);
 
       const artifactRows = database
         .prepare(`
@@ -469,9 +379,13 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
 
       const messageRows = database
         .prepare(`
-          SELECT session_id, sequence, message_id, message_type, message_ts, record_json
-          FROM session_messages
-          ORDER BY session_id, sequence
+          SELECT message.session_id, message.sequence, message.message_id,
+            message.message_type, message.message_ts, message.record_json,
+            payload.record_bytes, payload.sha256
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          ORDER BY message.session_id, message.sequence
         `)
         .all() as Array<{
         session_id?: unknown;
@@ -480,17 +394,72 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         message_type?: unknown;
         message_ts?: unknown;
         record_json?: unknown;
+        record_bytes?: unknown;
+        sha256?: unknown;
       }>;
+      const readMessageChunks = database.prepare(`
+        SELECT chunk_index, data, sha256
+        FROM session_message_chunks
+        WHERE session_id = ? AND sequence = ?
+        ORDER BY chunk_index
+      `);
       for (const row of messageRows) {
         if (
           typeof row.session_id !== 'string' ||
           !Number.isSafeInteger(row.sequence) ||
           (row.sequence as number) < 0 ||
-          typeof row.record_json !== 'string'
+          typeof row.record_json !== 'string' ||
+          (row.record_bytes !== null && !Number.isSafeInteger(row.record_bytes))
         ) {
           throw new Error('session message index is invalid');
         }
-        const message = decodeStoredMessage(JSON.parse(row.record_json));
+        const chunks = readMessageChunks.all(row.session_id, row.sequence as number) as Array<{
+          chunk_index?: unknown;
+          data?: unknown;
+          sha256?: unknown;
+        }>;
+        const chunked = row.record_bytes !== null;
+        let encoded: Buffer;
+        if (chunked) {
+          if (
+            row.record_json !== SQLITE_SESSION_MESSAGE_CHUNK_MARKER ||
+            !Number.isSafeInteger(row.record_bytes) ||
+            (row.record_bytes as number) <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES ||
+            typeof row.sha256 !== 'string'
+          ) {
+            throw new Error('session message payload is invalid');
+          }
+          if (
+            chunks.some(
+              (chunk, index) =>
+                chunk.chunk_index !== index ||
+                !(chunk.data instanceof Uint8Array) ||
+                typeof chunk.sha256 !== 'string' ||
+                chunk.sha256 !== createHash('sha256').update(chunk.data).digest('hex'),
+            )
+          ) {
+            throw new Error('session message chunks do not match payload');
+          }
+          encoded = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.data as Uint8Array)));
+          if (
+            encoded.byteLength !== row.record_bytes ||
+            createHash('sha256').update(encoded).digest('hex') !== row.sha256
+          ) {
+            throw new Error('session message chunks do not match payload');
+          }
+        } else {
+          if (row.record_json === SQLITE_SESSION_MESSAGE_CHUNK_MARKER || chunks.length !== 0) {
+            throw new Error('session message payload is invalid');
+          }
+          encoded = Buffer.from(row.record_json, 'utf8');
+        }
+        const expectedChunks = chunked
+          ? Math.ceil(encoded.byteLength / SQLITE_SESSION_MESSAGE_CHUNK_BYTES)
+          : 0;
+        if (chunks.length !== expectedChunks) {
+          throw new Error('session message chunks do not match payload');
+        }
+        const message = decodeStoredMessage(JSON.parse(encoded.toString('utf8')));
         if (
           message.id !== row.message_id ||
           message.type !== row.message_type ||
@@ -509,7 +478,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
     }
   } catch (error) {
     // The reason has to reach the message: validation covers integrity,
-    // foreign keys, schema versions, ~60 required tables, Artifact payload
+    // foreign keys, schema versions, target schema, Artifact payload
     // reconciliation and message decoding, and a bare "is invalid" leaves an
     // operator with no way to tell those apart in a log that dropped `cause`.
     const reason = error instanceof Error ? error.message : String(error);

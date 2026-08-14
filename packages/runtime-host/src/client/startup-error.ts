@@ -11,7 +11,10 @@ export class RuntimeHostStartupError extends RuntimeHostPermanentReconnectError 
   readonly name = 'RuntimeHostStartupError';
 
   constructor(
-    readonly reason: 'stored_data_incompatible' | 'composition_mismatch',
+    readonly reason:
+      | 'stored_data_incompatible'
+      | 'operational_state_migration_blocked'
+      | 'composition_mismatch',
     message: string,
   ) {
     super(message);
@@ -24,6 +27,11 @@ export function runtimeHostStartupError(reason: RuntimeHostStartupFailureReason)
       return new RuntimeHostStartupError(
         reason,
         'Maka cannot read part of this workspace’s stored data. The workspace was left in place. Update Maka or report diagnostic code STORED_DATA_INCOMPATIBLE.',
+      );
+    case 'operational_state_migration_blocked':
+      return new RuntimeHostStartupError(
+        reason,
+        'Maka could not safely upgrade this workspace and left it unchanged. Reopen it with the previous Maka release to export or remove incompatible data, then try again. Diagnostic code: OPERATIONAL_STATE_MIGRATION_BLOCKED.',
       );
     case 'internal_startup_failure':
       return new Error(

@@ -52,6 +52,11 @@ import {
   type SessionModelTarget,
   type SessionReadMarkerSetInput,
   type SessionUpdateResult,
+  type SessionTurnsQueryInput,
+  type SessionTurnLandmarksQueryInput,
+  projectSessionTurnLandmarkForWire,
+  SESSION_TURN_QUERY_RESULT_MAX_BYTES,
+  projectSessionTurnContributionForWire,
 } from '../protocol/index.js';
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
@@ -68,6 +73,8 @@ type SessionCatalogStores = Pick<
   | 'readCatalogRecord'
   | 'readExecutionBoundary'
   | 'readHeaderRecordSnapshot'
+  | 'readTurnContributionsSnapshot'
+  | 'readTurnLandmarksSnapshot'
   | 'updateHeaderVersioned'
 >;
 
@@ -124,6 +131,8 @@ export class HostSessionCatalogCoordinator {
     'session.workspace.relocate': (input) => this.#relocateWorkspace(input),
     'session.read_marker.set': (input) => this.#setReadMarker(input),
     'session.execution_boundary.query': (input) => this.#queryExecutionBoundary(input),
+    'session.turn_landmarks.query': (input) => this.#queryTurnLandmarks(input),
+    'session.turns.query': (input) => this.#queryTurns(input),
   };
 
   readonly #stores: SessionCatalogStores;
@@ -227,6 +236,73 @@ export class HostSessionCatalogCoordinator {
     }
   }
 
+  async #queryTurns(
+    input: SessionTurnsQueryInput,
+  ): Promise<OperationOutcome<'session.turns.query'>> {
+    try {
+      let maxContributions = input.maxContributions;
+      let throughSequence = input.throughSequence;
+      while (true) {
+        const page = await this.#stores.readTurnContributionsSnapshot(
+          input.sessionId,
+          throughSequence,
+          input.position,
+          maxContributions,
+        );
+        throughSequence = page.throughSequence;
+        const result = {
+          sessionId: input.sessionId,
+          throughSequence: page.throughSequence,
+          contributions: page.contributions.map(projectSessionTurnContributionForWire),
+          nextPosition: page.nextPosition,
+        };
+        const resultBytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+        if (resultBytes <= SESSION_TURN_QUERY_RESULT_MAX_BYTES) {
+          return { ok: true, result };
+        }
+        if (maxContributions === 1) {
+          throw new Error('Session turn contribution exceeds the wire limit');
+        }
+        maxContributions = Math.max(
+          1,
+          Math.min(
+            maxContributions - 1,
+            Math.floor(
+              (page.contributions.length * SESSION_TURN_QUERY_RESULT_MAX_BYTES) / resultBytes,
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      if (isNotFound(error)) return turnsFailure('not_found', 'Session does not exist');
+      return turnsFailure('persistence_failed', 'Session turns are unavailable');
+    }
+  }
+
+  async #queryTurnLandmarks(
+    input: SessionTurnLandmarksQueryInput,
+  ): Promise<OperationOutcome<'session.turn_landmarks.query'>> {
+    try {
+      const snapshot = await this.#stores.readTurnLandmarksSnapshot(
+        input.sessionId,
+        input.maxLandmarks,
+      );
+      return {
+        ok: true,
+        result: {
+          sessionId: input.sessionId,
+          throughSequence: snapshot.throughSequence,
+          landmarks: snapshot.landmarks.map(projectSessionTurnLandmarkForWire),
+        },
+      };
+    } catch (error) {
+      if (isNotFound(error)) {
+        return turnLandmarksFailure('not_found', 'Session does not exist');
+      }
+      return turnLandmarksFailure('persistence_failed', 'Session turn landmarks are unavailable');
+    }
+  }
+
   async #create(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
     let prepared: PreparedSessionCreate;
     try {
@@ -270,6 +346,7 @@ export class HostSessionCatalogCoordinator {
               llmConnectionSlug: model.connectionSlug,
               model: model.model,
               ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+              ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
               permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
               collaborationMode: input.collaborationMode ?? 'agent',
               orchestrationMode: input.orchestrationMode ?? 'default',
@@ -738,7 +815,7 @@ function createRequestFingerprint(
   prepared: PreparedSessionCreate,
 ): string {
   const identity = [
-    'session.create.v3',
+    'session.create.v4',
     input.sessionId,
     input.workspace.kind === 'project'
       ? ['project', input.workspace.projectId]
@@ -749,6 +826,7 @@ function createRequestFingerprint(
       ? ['default']
       : ['explicit', input.modelTarget.connectionSlug, input.modelTarget.model],
     input.thinkingLevel ?? null,
+    input.toolProfile ?? null,
     prepared.permissionMode ?? ['runtime_default'],
     input.collaborationMode ?? 'agent',
     input.orchestrationMode ?? 'default',
@@ -1080,6 +1158,20 @@ function executionBoundaryFailure(
   code: OperationError<'session.execution_boundary.query'>['code'],
   message: string,
 ): Extract<OperationOutcome<'session.execution_boundary.query'>, { readonly ok: false }> {
+  return { ok: false, error: { code, message } };
+}
+
+function turnsFailure(
+  code: OperationError<'session.turns.query'>['code'],
+  message: string,
+): Extract<OperationOutcome<'session.turns.query'>, { readonly ok: false }> {
+  return { ok: false, error: { code, message } };
+}
+
+function turnLandmarksFailure(
+  code: OperationError<'session.turn_landmarks.query'>['code'],
+  message: string,
+): Extract<OperationOutcome<'session.turn_landmarks.query'>, { readonly ok: false }> {
   return { ok: false, error: { code, message } };
 }
 

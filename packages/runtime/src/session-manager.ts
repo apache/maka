@@ -155,6 +155,7 @@ import type {
   ProviderRequestCaptureLedgerRecord,
 } from './provider-request-telemetry.js';
 import { readLatestContextDiagnostics, type ContextDiagnostics } from './context-diagnostics.js';
+import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ShellRunProcessManager } from './shell-run-manager.js';
 import type { ActiveFullCompactBlock } from './active-full-compact.js';
 import type { SemanticCompactBlock } from './semantic-compact.js';
@@ -748,7 +749,7 @@ export interface BackendFactoryContext {
    * physical provider call. Distinct from the diagnostic row above: this one is
    * the metering source of truth (#1679).
    */
-  recordModelCallAttempt?: (attempt: ModelCallAttempt) => Promise<void>;
+  recordModelCallAttempt?: (commit: ModelCallCommit<ModelCallAttempt>) => Promise<void>;
   /** Immutable Run policy snapshot; provider dispatch waits for this durable commit. */
   recordRunComposition?: (runId: string, snapshot: RunCompositionSnapshot) => Promise<void>;
   loadHistoryCompactCheckpoint?: () => Promise<HistoryCompactCheckpoint | undefined>;
@@ -2096,6 +2097,9 @@ export class SessionManager {
     input: UserMessageInput,
     options: TurnStartOptions = {},
   ): AsyncIterable<SessionEvent> {
+    if (input.origin?.kind === 'legacy_automation') {
+      throw new Error('Live Turn cannot use removed Automation authority');
+    }
     const repair = input.agentId ? undefined : this.runtimeLedgerRepair;
     const admitTurn = repair
       ? async () => {
@@ -4736,6 +4740,13 @@ export class SessionManager {
       diagnostic = {
         executionKind: input.execution.kind,
         goalId: input.execution.goalId,
+      };
+    } else if (input.execution.kind === 'legacy_automation') {
+      headerExtras.legacyAutomationId = input.execution.automationId;
+      recoveryReason = 'legacy_automation_authority_removed';
+      diagnostic = {
+        executionKind: input.execution.kind,
+        automationId: input.execution.automationId,
       };
     } else if (input.execution.kind === 'agent_graph_supervisor_wake') {
       headerExtras.agentGraphWakeId = input.execution.wakeId;

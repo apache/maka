@@ -1,6 +1,7 @@
 import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
 import { type SessionEvent } from '@maka/core/events';
 import {
+  createRuntimeHostSessionProjectionSeed,
   RuntimeHostSessionProjector,
   isRuntimeHostTerminalTurn as isTerminalTurn,
   type RuntimeHostTerminalTurn as TerminalTurnSnapshot,
@@ -12,9 +13,10 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
-import type {
+import {
   InteractionAnsweredSnapshot,
   InteractionPendingSnapshot,
+  SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   SessionContinuitySnapshot,
   SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
@@ -98,6 +100,10 @@ export class RuntimeHostSessionChannel {
   ): Promise<RuntimeHostSessionChannelOpenResult> {
     const subscription = await options.connection.openSessionSubscription({
       sessionId: options.sessionId,
+      transcript: {
+        kind: 'tail',
+        maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+      },
     });
     const initialRoot = structuredClone(subscription.snapshot.rootTurn);
     const channel = new RuntimeHostSessionChannel(subscription, [], options, options.connection);
@@ -135,7 +141,7 @@ export class RuntimeHostSessionChannel {
     this.messages.push(...(messages ?? []).map((message) => structuredClone(message)));
     this.#projector = new RuntimeHostSessionProjector(
       this.snapshot,
-      this.messages,
+      createRuntimeHostSessionProjectionSeed(this.messages, this.snapshot),
       this.#now,
       subscription.activeAssistantStreams,
     );
@@ -299,7 +305,13 @@ export class RuntimeHostSessionChannel {
       await previous.close().catch(() => undefined);
       let replacement: RuntimeHostSessionSubscription;
       try {
-        replacement = await this.#connection.openSessionSubscription({ sessionId: this.sessionId });
+        replacement = await this.#connection.openSessionSubscription({
+          sessionId: this.sessionId,
+          transcript: {
+            kind: 'tail',
+            maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+          },
+        });
       } catch (error) {
         if (this.#canRecover(error)) continue;
         throw error;
@@ -345,7 +357,7 @@ export class RuntimeHostSessionChannel {
     this.snapshot = nextSnapshot;
     this.#projector = new RuntimeHostSessionProjector(
       nextSnapshot,
-      this.messages,
+      createRuntimeHostSessionProjectionSeed(this.messages, nextSnapshot),
       this.#now,
       this.#subscription.activeAssistantStreams,
     );
@@ -429,8 +441,8 @@ export class RuntimeHostSessionChannel {
       (error.reason === 'connection_closed' ||
         error.reason === 'sequence_gap' ||
         error.reason === 'projection_revision_invalid' ||
-        error.reason === 'slow_consumer' ||
-        error.reason === 'transcript_expired')
+        error.reason === 'transcript_release_failed' ||
+        error.reason === 'slow_consumer')
     );
   }
 
@@ -511,7 +523,10 @@ export class RuntimeHostSessionChannel {
 class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<SessionEvent> {
   readonly #items: SessionEvent[] = [];
   #waiting:
-    | { resolve(value: IteratorResult<SessionEvent>): void; reject(error: unknown): void }
+    | {
+        resolve(value: IteratorResult<SessionEvent>): void;
+        reject(error: unknown): void;
+      }
     | undefined;
   #done = false;
   #finishAfterItems = false;

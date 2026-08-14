@@ -5,9 +5,11 @@ import { isSessionStartMode, type SessionStartMode } from '@maka/core/explore-ag
 import {
   isSessionBlockedReason,
   isSessionStatus,
+  isSessionToolProfile,
   type SessionBlockedReason,
   type SessionStatus,
   type SessionSubagentProjection,
+  type SessionToolProfile,
 } from '@maka/core/session';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import type { ExecutionBoundarySummary } from '@maka/core/sandbox-boundary';
@@ -136,6 +138,7 @@ export interface SessionCreateInput {
   readonly labels?: readonly string[];
   readonly modelTarget: SessionModelTarget;
   readonly thinkingLevel?: ThinkingLevel;
+  readonly toolProfile?: SessionToolProfile;
   readonly permissionMode?: PermissionMode;
   readonly collaborationMode?: CollaborationMode;
   readonly orchestrationMode?: OrchestrationMode;
@@ -426,6 +429,7 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
       'name',
       'labels',
       'thinkingLevel',
+      'toolProfile',
       'permissionMode',
       'collaborationMode',
       'orchestrationMode',
@@ -441,6 +445,9 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
     ...(Object.hasOwn(input, 'thinkingLevel')
       ? { thinkingLevel: thinkingLevel(input.thinkingLevel) }
       : {}),
+    ...(Object.hasOwn(input, 'toolProfile')
+      ? { toolProfile: sessionToolProfile(input.toolProfile) }
+      : {}),
     ...(Object.hasOwn(input, 'permissionMode')
       ? { permissionMode: permissionMode(input.permissionMode) }
       : {}),
@@ -451,6 +458,11 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
       ? { orchestrationMode: orchestrationMode(input.orchestrationMode) }
       : {}),
   };
+}
+
+function sessionToolProfile(value: unknown): SessionToolProfile {
+  if (!isSessionToolProfile(value)) throw invalidProtocolFrame('Invalid Session tool profile');
+  return value;
 }
 
 function sessionStartMode(value: unknown): SessionStartMode {

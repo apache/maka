@@ -112,6 +112,109 @@ test('concurrent responses remain framed and correlated in reverse completion or
   );
 });
 
+test('transcript pages are serialized per connection before their responses are retained', async () => {
+  const pair = await openTransportPair();
+  const entered = Array.from({ length: 3 }, () => deferred());
+  const release = Array.from({ length: 3 }, () => deferred());
+  let calls = 0;
+  let active = 0;
+  let maxActive = 0;
+  const handlers: OperationHandlerMap = {
+    'host.status': async () => ({
+      ok: true,
+      result: {
+        hostEpoch: 'host-epoch',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+        connections: 1,
+        activeOperations: 1,
+        activeResidencies: 0,
+      },
+    }),
+    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createHandlers(async (input) => ({
+      ok: true,
+      result: runningSnapshot(input.sessionId, input.turnId),
+    })),
+    'session.transcript.page': async (input) => {
+      const index = calls;
+      calls += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      entered[index]?.resolve();
+      await release[index]?.promise;
+      active -= 1;
+      return {
+        ok: true,
+        result: {
+          kind: 'page',
+          sessionId: 'session-1',
+          source: input.source,
+          direction: input.direction,
+          throughSequence: input.throughSequence,
+          rawBytes: 0,
+          fragments: [],
+          nextCursor: null,
+        },
+      };
+    },
+  };
+  const session = new RuntimeHostConnectionSession({
+    transport: pair.serverTransport,
+    connection: acceptedConnection('serialized-transcript-pages'),
+    resolveHandlers: () => handlers,
+    resolveContinuity: () => undefined,
+    beginOperation: async () => ({
+      acquireResidency: () => ({ release() {} }),
+      seal() {},
+      finish() {},
+    }),
+    onTeardown() {},
+  });
+  const run = session.run();
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      await writeProtocolFrame(pair.clientTransport, {
+        requestId: `transcript-page-${index}`,
+        operation: 'session.transcript.page',
+        input: {
+          subscriptionId: 'subscription-1',
+          source: 'durable',
+          direction: 'older',
+          throughSequence: null,
+          cursor: null,
+          anchorSequence: null,
+          maxBytes: 512 * 1024,
+        },
+      });
+    }
+    await withTimeout(entered[0]!.promise, 1_000, 'first transcript page was not admitted');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 1);
+
+    for (let index = 0; index < 3; index += 1) {
+      release[index]!.resolve();
+      const response = decodeHostFrame(await pair.clientTransport.read(1_000));
+      assert.equal('kind' in response, false);
+      if (!('kind' in response)) assert.equal(response.requestId, `transcript-page-${index}`);
+      if (index < 2) {
+        await withTimeout(
+          entered[index + 1]!.promise,
+          1_000,
+          `transcript page ${index + 1} was not admitted`,
+        );
+      }
+    }
+    assert.equal(maxActive, 1);
+  } finally {
+    for (const gate of release) gate.resolve();
+    pair.clientTransport.abort();
+    await Promise.allSettled([run, pair.close()]);
+  }
+});
+
 test('the Client backpressures a healthy request burst at the Host connection limit', async () => {
   const requestCount = 96;
   const firstWaveEntered = deferred();
@@ -1276,7 +1379,7 @@ async function openSubscription(transport: FramedTransport, sessionId: string, r
   await writeProtocolFrame(transport, {
     requestId,
     operation: 'subscription.open',
-    input: { sessionId },
+    input: { sessionId, transcript: { kind: 'none' } },
   });
   const response = decodeHostFrame(await transport.read(1_000));
   if ('kind' in response || response.operation !== 'subscription.open' || !response.ok) {

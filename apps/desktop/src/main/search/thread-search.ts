@@ -211,7 +211,7 @@ export async function runThreadSearch(
     const messages = await deps.readMessages(session.id);
     if (!messages) continue;
 
-    for (const message of messages) {
+    for (const [sequence, message] of messages.entries()) {
       if (results.length >= maxResults) {
         truncated = true;
         break;
@@ -248,6 +248,7 @@ export async function runThreadSearch(
           kind: 'thread',
           sessionId: session.id,
           ...(turnId ? { turnId } : {}),
+          sequence,
         },
       });
     }

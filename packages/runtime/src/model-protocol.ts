@@ -395,16 +395,24 @@ export type ModelStreamEvent =
   | { kind: 'finish'; finishReason?: ModelFinishReason }
   | { kind: 'error'; failure: ModelFailure };
 
-/**
- * Maka-owned result of a single `ModelAdapter.startStream` provider call. The
- * backend consumes `events` for streaming + step accounting, awaits `usage`
- * for the final billing-relevant token totals, `finishReason` for the terminal
- * stop reason, and `request` for the final Maka-owned message projection. All
- * four are normalized to Maka-owned types; no AI SDK type crosses this surface.
- */
+export type ModelStepOutcome =
+  | {
+      kind: 'completed';
+      finishReason: ModelFinishReason;
+      usage?: NormalizedUsage;
+      request: ModelRequestMetadata;
+      continuation: 'none' | 'pending';
+    }
+  | {
+      kind: 'truncated' | 'retryable-failure' | 'terminal-failure' | 'aborted';
+      failure: ModelFailure;
+      usage?: NormalizedUsage;
+      request: ModelRequestMetadata;
+      continuation: 'none';
+    };
+
+/** One physical provider request: live output plus one authoritative settlement. */
 export interface ModelStreamResult {
   events: AsyncIterable<ModelStreamEvent>;
-  usage: Promise<NormalizedUsage | undefined>;
-  finishReason: Promise<ModelFinishReason | undefined>;
-  request: Promise<ModelRequestMetadata | undefined>;
+  outcome: Promise<ModelStepOutcome>;
 }

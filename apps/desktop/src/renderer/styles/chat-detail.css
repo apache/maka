@@ -659,6 +659,29 @@
   color: var(--destructive-text);
 }
 
+/* The line under a section heading that says what its figures are, rather than
+   reporting one. The composition block needs it because its unit is not the
+   unit of the bar above it: estimated bytes, not reported tokens (#2323). */
+.maka-inspector-section-note {
+  margin: 0;
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
+}
+
+/* One tier under a section title, for the per-tool list inside the estimate —
+   it belongs to the section above it rather than opening a new one. */
+.maka-inspector-section-subtitle {
+  color: var(--foreground-secondary);
+  margin-top: var(--space-1);
+}
+
+/* A tool name is an identifier, and an MCP one can be longer than the column;
+   it wraps rather than pushing the figure off the panel. */
+.maka-inspector-composition-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* The context window drawn as bands. Colour is the join between the track and
    its legend, so both read it from the same `data-segment` rules below and a
    band can never mean one thing in the bar and another in the list. */

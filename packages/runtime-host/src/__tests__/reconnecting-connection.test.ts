@@ -131,7 +131,13 @@ test('a Session observation reopens safely after its first connection starts dra
     connect: async () => replacement.connection,
   });
 
-  assert.equal(await connection.openSessionSubscription({ sessionId: 'session-1' }), subscription);
+  assert.equal(
+    await connection.openSessionSubscription({
+      sessionId: 'session-1',
+      transcript: { kind: 'none' },
+    }),
+    subscription,
+  );
   assert.equal(first.openedSubscriptions, 1);
   assert.equal(replacement.openedSubscriptions, 1);
   await connection.close();

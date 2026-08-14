@@ -28,7 +28,11 @@ import {
   type SlashCommandIdForSurface,
 } from '@maka/core/slash-command-catalog';
 import { type QueueEnqueueOutcome, type ShellRunUpdate } from '@maka/core/events';
-import { type SessionSummary } from '@maka/core/session';
+import {
+  deriveModelSwitchTranscript,
+  type SessionSummary,
+  type StoredMessage,
+} from '@maka/core/session';
 import {
   buildForeignSessionHandoffMessage,
   foreignSessionHandoffDisplayText,
@@ -98,6 +102,7 @@ import {
 import {
   MakaAutocompleteProvider,
   DirectoryPickerOverlay,
+  MODEL_SWITCH_CACHE_WARNING,
   ModelSearchOverlay,
   OnboardingWizard,
   PickerOverlay,
@@ -108,8 +113,11 @@ import {
   thinkingLevelPickerItems,
   type MakaSlashCommand,
 } from './pi-tui-pickers.js';
+import { formatMakaResumeCommand } from './cli-invocation.js';
 
 export interface MakaPiTuiInput {
+  /** Launcher command used in resume and recovery instructions. */
+  cliCommand?: string;
   title: string;
   driver: MakaSessionDriver;
   cwd: string;
@@ -230,6 +238,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
   const tui = new TUI(terminal);
   const state = createMakaPiTranscriptState();
+  let transcriptMessages: readonly StoredMessage[] = [];
+  const replaceTranscript = (messages: readonly StoredMessage[]): void => {
+    transcriptMessages = messages;
+    replaceTranscriptWithStoredMessages(state, messages);
+  };
   let cwd = input.cwd;
   let model = input.model;
   let connectionSlug = input.connectionSlug;
@@ -410,11 +423,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     input.driver.subscribeTranscriptReplacements?.((sessionId, turnId, messages, reason) => {
       if (closed || input.driver.getSessionId() !== sessionId) return;
       if (reason === 'reconnect') {
-        replaceTranscriptWithStoredMessages(state, messages);
+        replaceTranscript(messages);
         shellRunElapsedTicker.sync();
         requestRender();
         return;
       }
+      transcriptMessages = messages;
       if (reconcileToolsWithStoredMessages(state, turnId, messages)) {
         shellRunElapsedTicker.sync();
         requestRender();
@@ -1057,7 +1071,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       onPrepared: async (turn) => {
         if (authoritativeAttachedTurn) {
           adoptSessionMetadata(authoritativeAttachedTurn.summary);
-          replaceTranscriptWithStoredMessages(state, authoritativeAttachedTurn.messages);
+          replaceTranscript(authoritativeAttachedTurn.messages);
           shellRunHydration.reset();
           if (input.listShellRunUpdates) {
             await shellRunHydration.hydrate(authoritativeAttachedTurn.sessionId);
@@ -1256,6 +1270,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const setModel = async (nextModel: string) => {
+    if (nextModel === model) return;
+    const previousModel = deriveModelSwitchTranscript(transcriptMessages).lastUsedModel ?? model;
     await input.driver.setModel(nextModel);
     model = nextModel;
     // Same-connection switch: scope the choice lookup to the live connection
@@ -1272,7 +1288,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `Model: ${nextModel}`,
+      text: `Model changed: ${previousModel} → ${nextModel}`,
     });
     requestRender();
   };
@@ -1280,6 +1296,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Cross-connection /model: rebind the session to the chosen connection + model.
   // Updates the provider (and thus the thinking variants) and the status line.
   const setModelChoice = async (choice: ModelChoice) => {
+    if (choice.model === model && choice.connectionSlug === connectionSlug) return;
+    const previousModel = deriveModelSwitchTranscript(transcriptMessages).lastUsedModel ?? model;
+    const previousConnectionSlug = connectionSlug;
+    const previousChoice = modelChoices?.find(
+      (candidate) =>
+        candidate.model === previousModel && candidate.connectionSlug === previousConnectionSlug,
+    );
     await input.driver.setModel(choice.model, choice.connectionSlug);
     model = choice.model;
     connectionSlug = choice.connectionSlug;
@@ -1291,7 +1314,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `Model: ${choice.model} (${choice.connectionName || choice.connectionSlug})`,
+      text:
+        previousConnectionSlug === choice.connectionSlug
+          ? `Model changed: ${previousModel} → ${choice.model}`
+          : `Model changed: ${previousModel} (${previousChoice?.connectionName || previousConnectionSlug}) → ${choice.model} (${choice.connectionName || choice.connectionSlug})`,
     });
     requestRender();
   };
@@ -1316,7 +1342,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     activeTurn,
   }: MakaSessionSwitchResult): Promise<void> => {
     adoptSessionMetadata(summary);
-    replaceTranscriptWithStoredMessages(state, messages);
+    replaceTranscript(messages);
     shellRunHydration.reset();
     if (input.listShellRunUpdates) {
       await shellRunHydration.hydrate(summary.id);
@@ -1473,6 +1499,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       maxPrimaryColumnWidth: number;
       selectedIndex?: number;
       hint?: string;
+      notice?: string;
       onCancel?: () => void;
     },
   ): void => {
@@ -1481,7 +1508,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       maxPrimaryColumnWidth: options.maxPrimaryColumnWidth,
     });
     if (options.selectedIndex !== undefined) list.setSelectedIndex(options.selectedIndex);
-    const picker = new PickerOverlay(list, { title, rightLabel, hint: options.hint });
+    const picker = new PickerOverlay(list, {
+      title,
+      rightLabel,
+      hint: options.hint,
+      notice: options.notice,
+    });
     let overlay: OverlayHandle | undefined;
     list.onSelect = (item) => {
       overlay?.hide();
@@ -1962,7 +1994,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // same welcome block as a cold start — the welcome block is the "fresh
     // session, send a prompt to begin" cue. A notice here would make entries
     // non-empty and suppress it.
-    replaceTranscriptWithStoredMessages(state, []);
+    replaceTranscript([]);
     shellRunElapsedTicker.sync();
     requestRender();
   };
@@ -2039,6 +2071,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showModelList = () => {
     const choices = modelChoices;
+    const hasConversationHistory = state.entries.some(
+      (entry) => entry.kind === 'user' || entry.kind === 'assistant',
+    );
     // Cross-connection picker when the caller supplied choices across all ready
     // connections; otherwise the single-connection list (typed /model, tests).
     if (choices && choices.length > 0) {
@@ -2046,6 +2081,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       const picker = new ModelSearchOverlay(tui, {
         choices,
         current: { model, connectionSlug },
+        showCacheWarning: hasConversationHistory,
         onSelect: (choice) => {
           overlay?.hide();
           void runControl(() => setModelChoice(choice));
@@ -2062,7 +2098,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       (item) => {
         void runControl(() => setModel(item.value));
       },
-      { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 48 },
+      {
+        minPrimaryColumnWidth: 24,
+        maxPrimaryColumnWidth: 48,
+        notice: hasConversationHistory ? MODEL_SWITCH_CACHE_WARNING : undefined,
+      },
     );
   };
 
@@ -2846,7 +2886,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         }
         const recoveryHint =
           input.resumeCwd === undefined && message.startsWith('Session cwd no longer exists:')
-            ? ` Retry with: maka --resume ${input.resumeSessionId} --cwd <new-path>.`
+            ? ` Retry with: ${formatMakaResumeCommand(
+                input.cliCommand ?? 'maka',
+                input.resumeSessionId!,
+                { cwd: '<new-path>' },
+              )}.`
             : '';
         state.entries.push({
           kind: 'notice',
@@ -2868,7 +2912,7 @@ const BOTTOM_PICKER_MARGIN_ROWS = 4;
 // silently clipping the last command.
 const EDITOR_AUTOCOMPLETE_MAX_VISIBLE = 24;
 
-function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
+export function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
   if (diagnostics.status === 'unavailable') {
     return diagnostics.reason === 'no_completed_request'
       ? 'Context unavailable\nNo completed provider request exists for this session.'
@@ -2913,18 +2957,42 @@ function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
   }
 
   lines.push('', 'Estimated breakdown');
-  if (diagnostics.segments.length === 0) {
-    lines.push('  Unavailable', '    no captured request segments');
+  const composition = diagnostics.composition;
+  if (!composition) {
+    // The metering record named this request; no capture explained it. Said
+    // plainly, because a silent "0 tokens" would read as an empty prompt.
+    lines.push('  Unavailable', '    this request left no composition on record');
   } else {
-    const labels: Record<(typeof diagnostics.segments)[number]['kind'], string> = {
+    const labels: Record<(typeof composition.segments)[number]['kind'], string> = {
       system_instructions: 'System instructions',
       tool_definitions: 'Tool definitions',
       messages: 'Messages',
       other: 'Other options',
     };
-    for (const segment of diagnostics.segments) {
+    for (const segment of composition.segments) {
       lines.push(
-        `  ${labels[segment.kind]}: ≈${formatContextCount(segment.estimatedTokens)} tokens`,
+        `  ${labels[segment.kind]}: ≈${formatContextCount(estimateContextTokens(segment.bytes))} tokens`,
+      );
+    }
+    // Per tool, because that is the only row a reader can act on: "tool
+    // definitions ≈ 40%" names nothing to remove (#2323).
+    if (composition.tools && composition.tools.length > 0) {
+      lines.push('', 'By tool');
+      for (const tool of composition.tools) {
+        lines.push(
+          `  ${tool.name}: ≈${formatContextCount(estimateContextTokens(tool.bytes))} tokens`,
+        );
+      }
+      if (composition.remainingTools) {
+        const remainder = composition.remainingTools;
+        lines.push(
+          `  ${remainder.count} more tool${remainder.count === 1 ? '' : 's'}: ≈${formatContextCount(estimateContextTokens(remainder.bytes))} tokens`,
+        );
+      }
+    }
+    if (composition.unlabelledToolBytes !== undefined) {
+      lines.push(
+        `  Unnamed tools: ≈${formatContextCount(estimateContextTokens(composition.unlabelledToolBytes))} tokens`,
       );
     }
   }
@@ -2941,6 +3009,16 @@ function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
     lines.push('', 'History compaction', '  Unavailable for this request');
   }
   return lines.join('\n');
+}
+
+/**
+ * The estimate lives here, at the surface that shows it, and prints with a `≈`
+ * every time. The Host reports measured bytes; four-bytes-per-token is a rule
+ * of thumb over serialized JSON, and one that is wrong for an attachment's
+ * base64 in a direction nobody downstream can correct (#2323).
+ */
+function estimateContextTokens(bytes: number): number {
+  return Math.ceil(bytes / 4);
 }
 
 function formatContextCount(value: number): string {

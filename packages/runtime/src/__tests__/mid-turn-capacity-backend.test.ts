@@ -1,3 +1,4 @@
+import type { ModelCallCommit } from '@maka/core/agent-run';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { setImmediate as flushMacrotask } from 'node:timers/promises';
@@ -25,6 +26,10 @@ import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import {
+  LATEST_CONTEXT_PROJECTION_TYPE,
+  readLatestContextSnapshot,
+} from '../latest-context-snapshot.js';
+import {
   createTestAiSdkBackend,
   testToolResultArchive,
 } from './execution-boundary-test-helpers.js';
@@ -49,6 +54,11 @@ interface MidTurnFixture {
   ledger: RuntimeEvent[];
   /** Canonical accounting records settled during the turn (#1679). */
   modelCalls: ModelCallAttempt[];
+  /**
+   * The same settlements as whole commits, so a test can read the derived
+   * latest-context row the attempt authorised rather than only the attempt.
+   */
+  commits: ModelCallCommit<ModelCallAttempt>[];
   ledgerReads: number;
   events: SessionEvent[];
   messages: unknown[];
@@ -285,6 +295,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
   };
 
   const modelCalls: ModelCallAttempt[] = [];
+  const commits: ModelCallCommit<ModelCallAttempt>[] = [];
   const summarizerModel = new MockLanguageModelV4({
     doGenerate: {
       content: [{ type: 'text', text: 'MID_TURN_SUMMARY_SENTINEL' }],
@@ -417,8 +428,9 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     ...(options.meteredSummarizer
       ? {
           recordProviderRequestCapture: async () => ({ artifactId: 'artifact-mid-turn-capture' }),
-          recordModelCallAttempt: (attempt: ModelCallAttempt) => {
-            modelCalls.push(attempt);
+          recordModelCallAttempt: (commit: ModelCallCommit<ModelCallAttempt>) => {
+            commits.push(commit);
+            modelCalls.push(commit.attempt);
           },
         }
       : {}),
@@ -465,6 +477,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     anchor,
     ledger,
     modelCalls,
+    commits,
     events,
     messages,
     llmCalls,
@@ -604,6 +617,44 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       attempts.some((attempt) => attempt.callKind === 'main'),
       true,
       'and the send it interrupts still records its own',
+    );
+  });
+
+  test('each request seals the fold its own prompt was built under, not the send’s last one', async () => {
+    // The boundary is the one fact in the snapshot that moves DURING a send.
+    // Read from session state at settlement it would be the newest fold for
+    // every request of the send, including the two dispatched before the fold
+    // existed — a request reporting a compaction its prompt never saw. So this
+    // asserts the difference between requests of ONE send, which is the only
+    // assertion a per-tracker value could not also satisfy (#2323).
+    const fixture = buildFixture({ meteredSummarizer: true });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.recorded.length, 1, 'one mid-turn fold in this send');
+    const checkpoint = fixture.recorded[0]!;
+    const mainCommits = fixture.commits
+      .filter((commit) => decodeModelCallAttempt(commit.attempt).callKind === 'main')
+      .sort((a, b) => a.attempt.step - b.attempt.step);
+    assert.equal(mainCommits.length, 3, 'three physical requests, three sealed rows');
+
+    const boundaryOf = (commit: (typeof mainCommits)[number]) =>
+      readLatestContextSnapshot({
+        type: LATEST_CONTEXT_PROJECTION_TYPE,
+        data: commit.latestContext?.snapshot,
+      })?.compaction;
+
+    assert.equal(boundaryOf(mainCommits[0]!), undefined, 'nothing was folded yet');
+    assert.equal(boundaryOf(mainCommits[1]!), undefined, 'still nothing at the second request');
+    assert.deepEqual(
+      boundaryOf(mainCommits[2]!),
+      {
+        kind: 'history',
+        phase: 'mid_turn',
+        eventCount: checkpoint.coverage.eventCount,
+        turnCount: checkpoint.coverage.turnCount,
+        estimatedTokens: checkpoint.estimatedTokens,
+      },
+      'the request built after the fold reports that fold, in the checkpoint’s own numbers',
     );
   });
 

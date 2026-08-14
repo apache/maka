@@ -21,6 +21,7 @@ import {
   SESSION_LIVE_DELTA_MAX_BYTES,
   SESSION_TOOL_OUTPUT_DELTA_MAX_BYTES,
   SESSION_TOOL_NAME_MAX_BYTES,
+  SUBSCRIPTION_OPEN_RESULT_MAX_BYTES,
   TURN_MESSAGE_CONTENT_MAX_BYTES,
   TURN_MESSAGE_TEXT_MAX_BYTES,
   RUNTIME_POLICY_OPERATION_SPECS,
@@ -39,6 +40,10 @@ import {
 } from '../protocol/turn.js';
 
 describe('Runtime Host bootstrap protocol', () => {
+  test('publishes a new compatibility epoch for legacy Automation provenance', () => {
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 20);
+  });
+
   test('selects the highest mutually supported protocol and rejects a gap', () => {
     assert.equal(negotiateProtocol({ min: 0, max: 0 }, { min: 0, max: 0 }), 0);
     assert.equal(negotiateProtocol({ min: 1, max: 3 }, { min: 2, max: 4 }), 3);
@@ -57,6 +62,7 @@ describe('Runtime Host bootstrap protocol', () => {
         subscriptionId: 'subscription-1',
         nextSequence: 1,
         activeAssistantStreams: [{ kind: 'thinking', turnId: 'turn-1', messageId: 'message-1' }],
+        transcript: null,
         snapshot: continuitySnapshot('epoch-1'),
       },
     };
@@ -107,6 +113,22 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
+    const oversized = {
+      ...opened,
+      result: {
+        ...opened.result,
+        activeAssistantStreams: Array.from({ length: 1_000 }, (_, index) => ({
+          kind: 'text' as const,
+          turnId: 'turn-1',
+          messageId: `message-${index}-${'x'.repeat(96)}`,
+        })),
+      },
+    };
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(oversized.result), 'utf8') >
+        SUBSCRIPTION_OPEN_RESULT_MAX_BYTES,
+    );
+    assert.throws(() => decodeHostFrame(oversized), isInvalidFrame);
   });
 
   test('decodes only privacy-normalized bounded subscription live frames', () => {

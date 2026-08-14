@@ -134,7 +134,7 @@ test('startup recovery replays one admitted safe-boundary continuation without a
       },
     });
     const opened = await continuity.handlers['subscription.open'](
-      { sessionId: fixture.sessionId },
+      { sessionId: fixture.sessionId, transcript: { kind: 'none' } },
       operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId),
     );
     assert.equal(opened.ok, true, JSON.stringify(opened));
@@ -2080,7 +2080,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     const parentConnectionId = 'connection-waiting-parent';
     const parentConnection = continuity.attachConnection(parentConnectionId, parentSink);
     const parentOpened = await continuity.handlers['subscription.open'](
-      { sessionId: parent.id },
+      { sessionId: parent.id, transcript: { kind: 'none' } },
       operationContext(hostEpoch, acquireResidency, parentConnectionId),
     );
     assert.equal(parentOpened.ok, true);
@@ -2141,7 +2141,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
         const childContinuity = requireContinuity(continuity);
         const connection = childContinuity.attachConnection(childConnectionId, childSink);
         const opened = await childContinuity.handlers['subscription.open'](
-          { sessionId: ready.childSessionId },
+          { sessionId: ready.childSessionId, transcript: { kind: 'none' } },
           operationContext(hostEpoch, acquireResidency, childConnectionId),
         );
         assert.equal(opened.ok, true);

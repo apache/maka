@@ -14,6 +14,15 @@ test('rejects a Run header with multiple hosted root authorities', () => {
   );
 });
 
+test('decodes a released Automation Run as read-only legacy provenance', () => {
+  const decoded = decodeAgentRunHeader({
+    ...runHeader(),
+    automationId: 'automation-1',
+  });
+  assert.equal(decoded.legacyAutomationId, 'automation-1');
+  assert.equal(Object.hasOwn(decoded, 'automationId'), false);
+});
+
 function runHeader(): AgentRunHeader {
   return {
     runId: 'run-1',

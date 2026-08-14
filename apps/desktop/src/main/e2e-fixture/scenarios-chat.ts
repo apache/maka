@@ -1,5 +1,10 @@
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
-import { header, TURN_SESSION_ID } from './seed-helpers.js';
+import {
+  header,
+  PROMPT_RAIL_PROMPT_COUNT,
+  PROMPT_RAIL_SESSION_ID,
+  TURN_SESSION_ID,
+} from './seed-helpers.js';
 
 export function turnSession(now: number): SessionHeader {
   return header({
@@ -76,4 +81,44 @@ export function turnMessages(now: number): StoredMessage[] {
       costUsd: 0.0042,
     },
   ];
+}
+
+export function promptRailSession(now: number): SessionHeader {
+  return header({
+    id: PROMPT_RAIL_SESSION_ID,
+    name: '长对话提示词导航示例',
+    connection: 'zai-live',
+    model: 'glm-5.1',
+    now,
+    lastMessageAt: now - 60_000,
+  });
+}
+
+/**
+ * A plain multi-prompt conversation: no tools, no thinking, no usage rows.
+ * `prompt-rail.spec.ts` measures the rail against this, so every turn is just
+ * a prompt and a reply long enough to push the transcript past the scrollport.
+ */
+export function promptRailMessages(now: number): StoredMessage[] {
+  const messages: StoredMessage[] = [];
+  for (let index = 1; index <= PROMPT_RAIL_PROMPT_COUNT; index += 1) {
+    const turnId = `turn-prompt-rail-${index}`;
+    const ts = now - (PROMPT_RAIL_PROMPT_COUNT - index + 1) * 60_000;
+    messages.push({
+      type: 'user',
+      id: `msg-prompt-rail-user-${index}`,
+      turnId,
+      ts,
+      text: `第 ${index} 个问题：这一段的调用链路是怎样的？`,
+    });
+    messages.push({
+      type: 'assistant',
+      id: `msg-prompt-rail-assistant-${index}`,
+      turnId,
+      ts: ts + 1_000,
+      text: `第 ${index} 段回答。`.repeat(40),
+      modelId: 'glm-5.1',
+    });
+  }
+  return messages;
 }

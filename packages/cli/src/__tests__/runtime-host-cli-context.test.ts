@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
-import { basename } from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   connectRemoteRuntimeHostProfile,
+  createClientRuntimeHostProfileCatalog,
   RuntimeHostStartupError,
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
@@ -189,6 +192,64 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
   assert.equal(remoteInput?.credential, 'opaque-token');
   assert.equal(remoteInput?.clientInstanceId, '11111111-1111-4111-8111-111111111111');
   assert.equal(Object.hasOwn(context.profile, 'credential'), false);
+  await context.close();
+});
+
+test('remote CLI profile state and Client identity use the explicit Client Data Root', async (t) => {
+  const clientDataRoot = await mkdtemp(join(tmpdir(), 'maka-cli-client-root-'));
+  t.after(() => rm(clientDataRoot, { recursive: true, force: true }));
+  const rootId = 'b'.repeat(64);
+  await createClientRuntimeHostProfileCatalog(clientDataRoot).save(
+    {
+      id: 'office',
+      name: 'Office',
+      kind: 'remote',
+      transport: { kind: 'tls', url: 'wss://runtime.example.com/runtime-host' },
+      rootId,
+    },
+    'opaque-token',
+  );
+  let identityPath: string | undefined;
+  let credential: string | undefined;
+  const connection = {
+    rootId,
+    hostEpoch: 'host-remote',
+    connectionId: 'connection-remote',
+    selectedProtocol: 0,
+    closed: new Promise<void>(() => {}),
+    status: async () => ({ state: 'ready' }),
+    subscribeConfigurationChanges: () => () => {},
+    subscribeProjectCatalogChanges: () => () => {},
+    subscribeSessionCatalogChanges: () => () => {},
+    subscribeScheduledTaskChanges: () => () => {},
+    close: async () => {},
+  } as unknown as RuntimeHostConnection;
+
+  const context = await connectRuntimeHostCli(
+    {
+      rootPath: '/unused-local-root',
+      clientDataRoot,
+      surface: 'run',
+      profileId: 'office',
+    },
+    {
+      connectOrSpawn: async () => {
+        throw new Error('remote profile must not use local discovery');
+      },
+      connectRemoteProfile: async (input) => {
+        credential = input.credential;
+        return connection;
+      },
+      loadClientInstanceId: async (path) => {
+        identityPath = path;
+        return '22222222-2222-4222-8222-222222222222';
+      },
+      readConnectionCatalog: async () => ({ revision: 1, defaultTarget: null, connections: [] }),
+    },
+  );
+
+  assert.equal(credential, 'opaque-token');
+  assert.equal(identityPath, join(clientDataRoot, 'runtime-host-client.json'));
   await context.close();
 });
 

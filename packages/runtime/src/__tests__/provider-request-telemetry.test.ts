@@ -1,3 +1,4 @@
+import type { ModelCallCommit } from '@maka/core/agent-run';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -813,7 +814,7 @@ async function drain(stream: ReadableStream<unknown>): Promise<void> {
 
 describe('canonical model-call accounting', () => {
   function accountingTracker(overrides: {
-    record: (attempt: ModelCallAttempt) => void | Promise<void>;
+    record: ({ attempt }: ModelCallCommit<ModelCallAttempt>) => void | Promise<void>;
     resolveCost?: telemetry.ModelCallAccountingInput['resolveCost'];
     assertReady?: () => void;
     resolveRunId?: () => string | undefined;
@@ -845,8 +846,8 @@ describe('canonical model-call accounting', () => {
   test('emits a decodable priced record for a completed call', async () => {
     const recorded: ModelCallAttempt[] = [];
     const tracker = accountingTracker({
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
       resolveCost: () => ({ costUsd: 0.002, pricingRevision: 4 }),
     });
@@ -878,8 +879,8 @@ describe('canonical model-call accounting', () => {
     // nobody made. `missing` says the call happened and the meter did not read.
     const recorded: ModelCallAttempt[] = [];
     const tracker = accountingTracker({
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
       resolveCost: () => ({ costUsd: 0.002, pricingRevision: 4 }),
     });
@@ -909,8 +910,8 @@ describe('canonical model-call accounting', () => {
     const attempts: telemetry.ProviderRequestAttemptRecord[] = [];
     const tracker = accountingTracker({
       withoutCapture: true,
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
       recordAttempt: (a) => {
         attempts.push(a);
@@ -939,8 +940,8 @@ describe('canonical model-call accounting', () => {
   test('an unresolvable price records unpriced rather than zero', async () => {
     const recorded: ModelCallAttempt[] = [];
     const tracker = accountingTracker({
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
       resolveCost: () => undefined,
     });
@@ -961,8 +962,8 @@ describe('canonical model-call accounting', () => {
   test('retries of one step share a logicalCallId and increment the ordinal', async () => {
     const recorded: ModelCallAttempt[] = [];
     const tracker = accountingTracker({
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
     });
 
@@ -1030,8 +1031,8 @@ describe('canonical model-call accounting', () => {
     const recorded: ModelCallAttempt[] = [];
     const controller = new AbortController();
     const tracker = accountingTracker({
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
       resolveCost: () => ({ costUsd: 0.003 }),
     });
@@ -1070,7 +1071,7 @@ describe('canonical model-call accounting', () => {
     });
     let writes = 0;
     const tracker = accountingTracker({
-      record: async (attempt) => {
+      record: async ({ attempt }) => {
         const write = writes;
         writes += 1;
         if (write === 0) {
@@ -1112,8 +1113,8 @@ describe('canonical model-call accounting', () => {
   test('no canonical record is emitted without a resolvable run', async () => {
     const recorded: ModelCallAttempt[] = [];
     const tracker = accountingTracker({
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
       resolveRunId: () => undefined,
     });

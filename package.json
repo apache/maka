@@ -32,6 +32,7 @@
     "test:dist:serial": "node scripts/run-workspace-tests-parallel.mjs --serial",
     "dev": "npm --workspace @maka/desktop run dev:hmr --",
     "dev:full": "npm run build && npm --workspace @maka/desktop run start",
+    "cli:dev": "node packages/cli/dist/dev-cli.js",
     "build": "npm --workspace @maka/code-mode run build && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/eval run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build",
     "build:test": "npm run clean && npm --workspace @maka/code-mode run build && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/eval run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build:test",
     "clean": "node scripts/clean-build.mjs",
