@@ -44,6 +44,7 @@ const STDERR_OVERSIZED_LINE = '[stderr line omitted: exceeds diagnostic limit]';
 const STDERR_CONTINUATION = '[stderr continuation omitted]';
 const MAX_SUMMARIZED_ERROR_BLOCKS = 100;
 const OVERSIZED_TOOL_ERROR_CONTENT = 'server returned oversized error content';
+const MAX_CONSECUTIVE_TOOL_REFRESH_ATTEMPTS = 3;
 
 export interface McpClientManagerOptions {
   clientName?: string;
@@ -600,6 +601,7 @@ export class McpClientManager {
     entry: Connection,
     state: ToolRefreshState,
   ): Promise<McpToolDescriptor[]> {
+    let supersededAttempts = 0;
     while (true) {
       state.pending = false;
       let definitions: McpDiscoveredTool[] | undefined;
@@ -617,7 +619,17 @@ export class McpClientManager {
       ) {
         throw safeMcpOperationError(serverId, 'connection changed during tool refresh', failure);
       }
-      if (state.pending) continue;
+      if (state.pending) {
+        supersededAttempts += 1;
+        if (supersededAttempts >= MAX_CONSECUTIVE_TOOL_REFRESH_ATTEMPTS) {
+          throw safeMcpOperationError(
+            serverId,
+            'tool refresh failed',
+            new Error('tool list changed too frequently during discovery'),
+          );
+        }
+        continue;
+      }
       if (failure !== undefined) {
         throw safeMcpOperationError(serverId, 'tool refresh failed', failure);
       }

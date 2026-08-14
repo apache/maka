@@ -290,6 +290,29 @@ describe('McpClientManager remote transport E2E', () => {
     assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 2);
   });
 
+  test('bounds rediscovery when every tools list triggers a list-changed notification', async () => {
+    const fixture = await createRemoteFixture('sse');
+    const manager = createManager();
+    await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+    const binding = bindingFor(manager, 'remote', 'echo');
+    const listsBefore = countProtocolMethod(fixture, 'tools/list');
+
+    fixture.setNotifyOnEveryToolList(true);
+    await fixture.notifyToolListChanged();
+    await waitFor(() => /changed too frequently/u.test(manager.status('remote')?.error ?? ''));
+
+    assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 3);
+    assert.match(manager.status('remote')?.error ?? '', /changed too frequently/u);
+    assert.deepEqual(await manager.callTool(binding, { value: 'still-callable' }), {
+      content: [{ type: 'text', text: 'still-callable' }],
+      structuredContent: undefined,
+    });
+
+    const removal = manager.sync({ version: 1, mcpServers: {} });
+    assert.equal(await settlesWithin(removal, 1_000), true);
+    assert.equal(manager.status('remote'), undefined);
+  });
+
   test('does not let an old client refresh overwrite a replacement connection', async () => {
     const fixture = await createRemoteFixture('streamable-http');
     const manager = createManager();
@@ -747,6 +770,7 @@ interface RemoteFixture {
   setToolListMode(mode: ToolListMode): void;
   setHttpFailure(method: string, body: string): void;
   holdNextToolList(): { started: Promise<void>; release(): void };
+  setNotifyOnEveryToolList(enabled: boolean): void;
   notifyToolListChanged(): Promise<void>;
   close(): Promise<void>;
 }
@@ -768,6 +792,7 @@ async function createRemoteFixture(
   let toolListMode: ToolListMode = 'valid';
   let httpFailure: { method: string; body: string } | undefined;
   let nextToolListGate: InternalToolListGate | undefined;
+  let notifyOnEveryToolList = false;
   const sseTransports = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
   const httpServer = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -815,6 +840,7 @@ async function createRemoteFixture(
             gate.markStarted();
             await gate.waitForRelease;
           },
+          notifyOnEveryToolList: () => notifyOnEveryToolList,
         });
         await server.connect(transport);
         res.once('close', () => {
@@ -830,6 +856,7 @@ async function createRemoteFixture(
           advertiseTools: options.advertiseTools !== false,
           toolListMode: () => toolListMode,
           beforeToolList: async () => {},
+          notifyOnEveryToolList: () => notifyOnEveryToolList,
         });
         sseTransports.set(transport.sessionId, { transport, server });
         res.once('close', () => sseTransports.delete(transport.sessionId));
@@ -883,6 +910,9 @@ async function createRemoteFixture(
       nextToolListGate = { markStarted, waitForRelease };
       return { started, release };
     },
+    setNotifyOnEveryToolList: (enabled) => {
+      notifyOnEveryToolList = enabled;
+    },
     notifyToolListChanged: async () => {
       const servers = [...sseTransports.values()].map(({ server }) => server);
       if (servers.length === 0) throw new Error('no persistent MCP server is connected');
@@ -908,6 +938,7 @@ function createProtocolServer(options: {
   advertiseTools: boolean;
   toolListMode: () => ToolListMode;
   beforeToolList: () => Promise<void>;
+  notifyOnEveryToolList: () => boolean;
 }): McpServer {
   const server = new McpServer(
     { name: 'maka-remote-fixture', version: '1.0.0' },
@@ -916,6 +947,7 @@ function createProtocolServer(options: {
   server.setRequestHandler('tools/list', async () => {
     const mode = options.toolListMode();
     await options.beforeToolList();
+    if (options.notifyOnEveryToolList()) await server.sendToolListChanged();
     return {
       tools:
         mode === 'duplicate'
