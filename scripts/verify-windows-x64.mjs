@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { access, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -94,6 +95,7 @@ export async function verifyPackagedWindowsApp(
   const resources = join(appDirectory, 'resources');
   const executable = join(appDirectory, executableName);
   const appAsar = join(resources, 'app.asar');
+  const sandboxExecutable = join(resources, 'windows-sandbox', 'maka-windows-sandbox.exe');
 
   step('checking packaged resources');
   await requirePath(executable);
@@ -105,6 +107,46 @@ export async function verifyPackagedWindowsApp(
   if (machine !== amd64Machine) {
     throw new Error(`${executableName} must be x64, found PE machine 0x${machine.toString(16)}.`);
   }
+
+  step('smoking the packaged Windows sandbox');
+  const sandboxMachine = await readMachine(sandboxExecutable);
+  if (sandboxMachine !== amd64Machine) {
+    throw new Error(
+      `maka-windows-sandbox.exe must be x64, found PE machine 0x${sandboxMachine.toString(16)}.`,
+    );
+  }
+  const sandboxLaunch = {
+    version: 1,
+    requestId: 'packaged-sandbox-launch',
+    executable: sandboxExecutable,
+    arguments: ['--self-probe'],
+    cwd: dirname(sandboxExecutable),
+    readRoots: [],
+    writeRoots: [],
+    network: 'restricted',
+    environment: {},
+  };
+  const sandboxManifest = join(workingDirectory, 'packaged-sandbox-manifest.json');
+  await writeFile(
+    sandboxManifest,
+    JSON.stringify({
+      version: 1,
+      requestId: 'packaged-sandbox',
+      clientPid: 0,
+      clientNonce: '0123456789abcdef0123456789abcdef',
+      profileDigest: createHash('sha256').update(JSON.stringify(sandboxLaunch)).digest('hex'),
+      launch: sandboxLaunch,
+    }),
+    'utf8',
+  );
+  const sandboxProbe = await run(sandboxExecutable, ['--broker-local', sandboxManifest]);
+  if (
+    !sandboxProbe.stdout.includes('"appContainer":true') ||
+    !sandboxProbe.stdout.includes('"atomicJob":true')
+  ) {
+    throw new Error(`Packaged Windows sandbox probe failed: ${sandboxProbe.stdout}`);
+  }
+  await assertMissing(sandboxManifest);
 
   step('reading the product version resource');
   const { stdout } = await runPowerShell(
@@ -121,13 +163,6 @@ export async function verifyPackagedWindowsApp(
     },
     timeoutMs: 60_000,
   });
-
-  // No filesystem worker smoke here, unlike macOS. The worker exists to enforce
-  // a sandbox profile, and `isBuiltinFilesystemWorkerSandboxAvailable` is false
-  // on Windows (packages/runtime/src/sandbox/default-sandbox-manager.ts), so the
-  // app never launches it — file tools run through the workspace executor
-  // instead. Driving the worker by hand would only prove that a POSIX-only
-  // boundary check rejects Windows paths, which no Windows user can reach.
 
   step('smoking the packaged renderer');
   await smokeRenderer(executable, { workingDirectory });
