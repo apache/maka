@@ -53,7 +53,11 @@ describe('turn virtualizer', () => {
   });
 
   it('keeps the mounted window stable until the viewport reaches its overscan edge', () => {
-    const layout = buildTurnVirtualLayout(ids(120), undefined, { estimatedHeight: 200 });
+    const layout = buildTurnVirtualLayout(
+      ids(120),
+      undefined,
+      { estimatedHeight: 200, gap: 4 },
+    );
     const current = turnVirtualWindowForViewport(
       layout,
       { scrollTop: 0, clientHeight: 800 },
@@ -77,7 +81,11 @@ describe('turn virtualizer', () => {
   });
 
   it('retains focused and selected turns when a directional shift fits the hard cap', () => {
-    const layout = buildTurnVirtualLayout(ids(120), undefined, { estimatedHeight: 200 });
+    const layout = buildTurnVirtualLayout(
+      ids(120),
+      undefined,
+      { estimatedHeight: 200, gap: 4 },
+    );
     const current = turnVirtualWindowForRange(layout, 0, 60);
     const shifted = stableTurnVirtualWindowForViewport(
       layout,

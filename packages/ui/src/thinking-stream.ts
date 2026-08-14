@@ -29,11 +29,6 @@
  * in the `ReasoningPanel` header.
  */
 
-import {
-  appendRedactedDisplay,
-  redactIncrementalDisplayDelta,
-  type IncrementalDisplayRedactionState,
-} from './incremental-display-redaction.js';
 import { redactSecrets } from './redact.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getSharedUiCopy } from './shared-ui-copy.js';
@@ -57,8 +52,6 @@ export interface ApplyThinkingOptions {
   maxTotalChars?: number;
   /** Resolved UI locale for user-visible truncation markers. */
   locale?: UiLocale;
-  /** Bounded parser state carried between streaming deltas. */
-  redactionState?: IncrementalDisplayRedactionState;
 }
 
 export interface ApplyThinkingResult {
@@ -68,8 +61,6 @@ export interface ApplyThinkingResult {
   redacted: boolean;
   /** True if any drop / truncation happened during this call. */
   truncated: boolean;
-  /** Bounded parser state required to redact a later delta safely. */
-  redactionState?: IncrementalDisplayRedactionState;
 }
 
 /**
@@ -101,20 +92,15 @@ export function applyThinkingDelta(
   // violation. Drop it silently rather than coerce to '' and claim
   // redaction happened.
   if (typeof rawDelta !== 'string') {
-    return {
-      text: prev ?? '',
-      redacted: false,
-      truncated: false,
-      ...(options.redactionState === undefined ? {} : { redactionState: options.redactionState }),
-    };
+    return { text: prev ?? '', redacted: false, truncated: false };
   }
 
-  // L1: redact with any unfinished sensitive opener from the prior delta.
-  const redactedDelta = redactIncrementalDisplayDelta(rawDelta, options.redactionState);
-  const redactionHappened = redactedDelta.redacted;
+  // L1: secondary redaction.
+  const redactedDelta = redactSecrets(rawDelta);
+  const redactionHappened = redactedDelta !== rawDelta;
 
   // L2: per-delta cap. Tail-keep with marker prepended.
-  let delta = redactedDelta.text;
+  let delta = redactedDelta;
   let deltaTruncated = false;
   if (delta.length > maxDelta) {
     const keep = maxDelta - truncatedChunkMarker.length;
@@ -122,10 +108,11 @@ export function applyThinkingDelta(
     deltaTruncated = true;
   }
 
-  const appended = appendRedactedDisplay(prev ?? '', delta, options.redactionState);
+  // L3: append.
+  const appended = (prev ?? '') + delta;
 
   // L4: per-session total cap. Tail-keep most recent.
-  let result = appended.text;
+  let result = appended;
   let totalTruncated = false;
   if (result.length > maxTotal) {
     const keep = maxTotal - truncatedHeadMarker.length;
@@ -133,12 +120,10 @@ export function applyThinkingDelta(
     totalTruncated = true;
   }
 
-  const redactionState = deltaTruncated ? redactedDelta.state : appended.state;
   return {
     text: result,
-    redacted: redactionHappened || appended.redacted,
+    redacted: redactionHappened,
     truncated: deltaTruncated || totalTruncated,
-    ...(redactionState === undefined ? {} : { redactionState }),
   };
 }
 

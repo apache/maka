@@ -8,9 +8,10 @@ import {
   type RefObject,
 } from 'react';
 import { captureChatScrollAnchor, restoreChatScrollAnchor } from './chat-scroll-anchor.js';
-import { createTurnHeightIndex, turnLayoutKey } from './turn-height-index.js';
+import { createTurnHeightIndex, turnLayoutGap, turnLayoutKey } from './turn-height-index.js';
 import {
   buildTurnVirtualLayout,
+  DEFAULT_TURN_GAP,
   DEFAULT_TURN_WINDOW_SIZE,
   initialTurnVirtualWindow,
   reconcileTurnVirtualWindow,
@@ -38,13 +39,14 @@ export function useTurnVirtualizer(input: {
 }) {
   const [geometryRevision, setGeometryRevision] = useState(0);
   const root = input.scrollRef.current;
-  const layoutKey = root ? turnLayoutKey(root) : '';
+  const gap = root ? turnLayoutGap(root, DEFAULT_TURN_GAP) : DEFAULT_TURN_GAP;
+  const layoutKey = root ? turnLayoutKey(root, gap) : '';
   const heights = input.sessionId && layoutKey
     ? turnHeightIndex.lookup(input.sessionId, layoutKey)
     : undefined;
   const layout = useMemo(
-    () => buildTurnVirtualLayout(input.turnIds, heights),
-    [input.turnIds, heights, geometryRevision],
+    () => buildTurnVirtualLayout(input.turnIds, heights, { gap }),
+    [input.turnIds, heights, gap, geometryRevision],
   );
   const targetKey = input.targetTurnId === undefined
     ? undefined
@@ -108,6 +110,7 @@ export function useTurnVirtualizer(input: {
     const root = input.scrollRef.current;
     if (sameWindow(stateRef.current.window, next)) return;
     if (anchor && root) pendingAnchor.current = captureChatScrollAnchor(root);
+    if (root) handOffExcludedInteraction(root, stateRef.current.turnIds, next);
     setState((previous) => sameWindow(previous.window, next)
       ? previous
       : { ...previous, window: next });
@@ -167,7 +170,8 @@ export function useTurnVirtualizer(input: {
       if (frame === 0) frame = window.requestAnimationFrame(updateWindow);
     };
     const resizeObserver = new ResizeObserver((entries) => {
-      const nextLayoutKey = turnLayoutKey(root);
+      const nextGap = turnLayoutGap(root, DEFAULT_TURN_GAP);
+      const nextLayoutKey = turnLayoutKey(root, nextGap);
       let changed = nextLayoutKey !== layoutKey;
       const anchor = captureChatScrollAnchor(root);
       for (const entry of entries) {
@@ -266,4 +270,32 @@ function interactiveTurnRange(
   }
   if (indexes.length === 0) return undefined;
   return { start: Math.min(...indexes), end: Math.max(...indexes) + 1 };
+}
+
+function handOffExcludedInteraction(
+  root: HTMLElement,
+  turnIds: readonly string[],
+  next: TurnVirtualWindow,
+): void {
+  const isExcluded = (node: Node | null): boolean => {
+    if (!node) return false;
+    const element = node instanceof Element ? node : node.parentElement;
+    if (!element || !root.contains(element)) return false;
+    const turnId = element.closest<HTMLElement>('[data-turn-id]')?.dataset.turnId;
+    const index = turnId === undefined ? -1 : turnIds.indexOf(turnId);
+    return index >= 0 && (index < next.start || index >= next.end);
+  };
+
+  const selection = root.ownerDocument.getSelection();
+  if (
+    selection
+    && !selection.isCollapsed
+    && (isExcluded(selection.anchorNode) || isExcluded(selection.focusNode))
+  ) {
+    selection.removeAllRanges();
+  }
+
+  if (isExcluded(root.ownerDocument.activeElement)) {
+    root.querySelector<HTMLElement>('.maka-chat-message-list')?.focus({ preventScroll: true });
+  }
 }

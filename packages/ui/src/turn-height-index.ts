@@ -8,9 +8,17 @@ export interface TurnHeightIndex {
   record(sessionId: string, layoutKey: string, turnId: string, height: number): boolean;
 }
 
-export function turnLayoutKey(root: HTMLElement): string {
+export function turnLayoutGap(root: HTMLElement, fallback: number): number {
   const column = root.querySelector<HTMLElement>('.maka-chat-message-list');
-  return `${Math.round((column ?? root).clientWidth)}:${root.dataset.density ?? ''}`;
+  const rows = column?.firstElementChild;
+  const styles = rows && root.ownerDocument.defaultView?.getComputedStyle(rows);
+  const parsed = Number.parseFloat(styles?.rowGap ?? styles?.gap ?? '');
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+export function turnLayoutKey(root: HTMLElement, gap: number): string {
+  const column = root.querySelector<HTMLElement>('.maka-chat-message-list');
+  return `${Math.round((column ?? root).clientWidth)}:${gap}:${root.dataset.density ?? ''}`;
 }
 
 export function createTurnHeightIndex(sessionCapacity = 12, turnCapacity = 1_024): TurnHeightIndex {

@@ -74,6 +74,15 @@ async function scrollTranscriptTo(page: Page, position: 'top' | 'bottom'): Promi
   }, position);
 }
 
+async function loadPromptRailBeyondVirtualWindow(page: Page): Promise<void> {
+  const transcript = page.locator('.maka-chat-message-list');
+  await scrollTranscriptTo(page, 'top');
+  await transcript.hover();
+  await page.mouse.wheel(0, -100);
+  await expect.poll(async () => Number(await transcript.getAttribute('data-turn-source-count')))
+    .toBeGreaterThan(100);
+}
+
 test('every tick paints a bar with a real box', async ({ promptRailWindow: page }) => {
   // Measured over ALL ticks, not a sample: a helper that skips what it cannot
   // evaluate creates its blind spot exactly where a regression lives.
@@ -215,10 +224,61 @@ test('long transcripts keep a bounded mounted turn window', async ({
 }) => {
   const count = async () => page.locator('[data-virtual-turn-id]').count();
   await page.locator('[data-chat-scroll-container="true"][data-turn-window="ready"]').waitFor();
+  await loadPromptRailBeyondVirtualWindow(page);
+  expect(await page.evaluate(() => {
+    const transcript = document.querySelector<HTMLElement>('.maka-chat-message-list');
+    const rows = transcript?.firstElementChild;
+    const turn = document.querySelector<HTMLElement>('[data-virtual-turn-id]');
+    if (!rows || !turn) throw new Error('the virtual transcript is missing');
+    return {
+      list: Number.parseFloat(getComputedStyle(rows).rowGap),
+      turn: Number.parseFloat(getComputedStyle(turn).rowGap),
+    };
+  })).toEqual({ list: 16, turn: 16 });
+  expect(await count()).toBeGreaterThan(0);
   expect(await count()).toBeLessThanOrEqual(100);
   await page.locator('.maka-prompt-rail-tick').first().click({ force: true });
   await expect(page.locator('[data-turn-id="turn-prompt-rail-1"]')).toHaveCount(1);
+  expect(await count()).toBeGreaterThan(0);
   expect(await count()).toBeLessThanOrEqual(100);
+});
+
+test('evicting an interaction endpoint hands focus back to the transcript', async ({
+  promptRailWindow: page,
+}) => {
+  const scroller = page.locator('[data-chat-scroll-container="true"][data-turn-window="ready"]');
+  await scroller.waitFor();
+  await loadPromptRailBeyondVirtualWindow(page);
+  await scrollTranscriptTo(page, 'bottom');
+  await expect(page.locator('[data-virtual-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
+  const retainedTurnId = await page.evaluate(() => {
+    const turns = document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]');
+    const turn = turns.item(turns.length - 1);
+    const focusable = turn?.querySelector<HTMLElement>('button, a[href], [tabindex]:not([tabindex="-1"])');
+    const text = turn && document.createTreeWalker(turn, NodeFilter.SHOW_TEXT).nextNode();
+    if (!turn?.dataset.virtualTurnId || !focusable || !text?.textContent) {
+      throw new Error('the mounted turn has no interaction endpoint');
+    }
+    focusable.focus();
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    return turn.dataset.virtualTurnId;
+  });
+
+  await page.evaluate(() => {
+    const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    if (!root) throw new Error('the chat scroll container is missing');
+    root.scrollTop = 0;
+    root.dispatchEvent(new Event('scroll'));
+  });
+  await expect(page.locator(`[data-virtual-turn-id="${retainedTurnId}"]`)).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => ({
+    focus: document.activeElement?.classList.contains('maka-chat-message-list') ?? false,
+    selection: document.getSelection()?.isCollapsed ?? true,
+  }))).toEqual({ focus: true, selection: true });
 });
 
 test('a tick is what the pointer lands on, not the scrollbar', async ({

@@ -582,6 +582,7 @@ export function ChatView(props: {
         />
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
+          data-turn-source-count={turns.length}
           density="compact"
           gap={4}
           isStreaming={streamingActive}

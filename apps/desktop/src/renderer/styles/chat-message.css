@@ -27,7 +27,7 @@
   display: flex;
   width: 100%;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--spacing-4);
   contain: layout style;
 }
 

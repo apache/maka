@@ -21,7 +21,7 @@ export interface TurnVirtualWindowOptions {
 }
 
 export const DEFAULT_TURN_ESTIMATED_HEIGHT = 280;
-export const DEFAULT_TURN_GAP = 4;
+export const DEFAULT_TURN_GAP = 16;
 export const DEFAULT_TURN_OVERSCAN_PX = 1_000;
 export const DEFAULT_TURN_WINDOW_SIZE = 60;
 export const MAX_TURN_WINDOW_SIZE = 100;
