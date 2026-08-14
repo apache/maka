@@ -30,6 +30,9 @@ jobs:
       - name: Build process-containment launcher
         working-directory: experiments/windows-sandbox/launcher
         run: cargo build --locked
+      - name: Verify launcher and broker authorization
+        working-directory: experiments/windows-sandbox/launcher
+        run: cargo test --locked
       - name: Probe atomic Job launch candidate
         shell: pwsh
         run: ./experiments/windows-sandbox/atomic-launch-smoke.ps1
