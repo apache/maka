@@ -944,6 +944,9 @@ function registerHostClientIpc(
     client,
     mainWindowController,
     allowLocalPaths: target.kind === "local",
+    automatedImportSourcePath: isIsolatedE2e
+      ? process.env.MAKA_E2E_UI_EXTENSION_PATH
+      : undefined,
   });
   registerUiExtensionFrameProtocol(client);
   registerRuntimeHostSearchIpc({ ipcMain: scopedIpc, client });

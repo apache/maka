@@ -7,6 +7,7 @@ import {
   useState,
   type CSSProperties,
   type Dispatch,
+  type ReactNode,
   type SetStateAction,
 } from 'react';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
@@ -231,9 +232,14 @@ const VIEWS_WITHOUT_WORKSPACE_ACTIONS = new Set(['skills', 'cron', 'daily-review
 type AppShellProps = {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
+  /** Sandboxed body owned by a derived UI Extension Revision. */
+  extensionSurface?: ReactNode;
 };
 
-export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {}) {
+export function AppShell({
+  initialOnboardingSnapshot = null,
+  extensionSurface,
+}: AppShellProps = {}) {
   const [uiLocalePreference, setUiLocalePreference] = useState<UiLocalePreference>('auto');
   const [uiLocaleOverride, setUiLocaleOverride] = useState<UiLocale | null>(null);
   const systemUiLocale = useSystemUiLocale();
@@ -268,6 +274,7 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
           <ErrorBoundary locale={uiLocale}>
             <AppShellContent
               initialOnboardingSnapshot={initialOnboardingSnapshot}
+              extensionSurface={extensionSurface}
               uiLocale={uiLocale}
               uiLocaleOverride={uiLocaleOverride}
               setUiLocaleOverride={setUiLocaleOverride}
@@ -306,12 +313,14 @@ function nextTerminalOrdinal(tabs: readonly SessionWorkbarTab[]): number {
 
 function AppShellContent({
   initialOnboardingSnapshot = null,
+  extensionSurface,
   uiLocale,
   uiLocaleOverride,
   setUiLocaleOverride,
   setUiLocalePreference,
 }: {
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
+  extensionSurface?: ReactNode;
   uiLocale: UiLocale;
   uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
@@ -3211,11 +3220,20 @@ function AppShellContent({
                 ) : null}
               </ChatSurfaceLayout>
             </div>
+            {extensionSurface && navSelection.section === 'sessions' ? (
+              <section
+                className="maka-extension-workspace"
+                aria-label="Extension workspace"
+                data-maka-contract="extension-workspace"
+              >
+                {extensionSurface}
+              </section>
+            ) : null}
             {/* Rendered collapsed too: ChatWorkbar's own box is what the
                 collapse animates, and it has to be in the tree on both sides of
                 the toggle for there to be an animation at all. The column
                 inside it still unmounts. */}
-            {navSelection.section === 'sessions' && activeId && (
+            {!extensionSurface && navSelection.section === 'sessions' && activeId && (
               <ChatWorkbar
                 activeId={activeId}
                 rightCollapsed={workbarCollapsed}

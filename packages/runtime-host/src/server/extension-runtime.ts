@@ -17,6 +17,7 @@ import {
 } from '@maka/runtime/extension-tool-contributions';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
+  contributeExtensionUi,
   defineTrustedUiExtensionRevision,
   ExtensionUiContributionRegistry,
   type ExtensionUiContribution,
@@ -32,6 +33,8 @@ export interface HostPreparedToolExtensionRevisionInput {
   readonly extensionId: string;
   readonly revision: string;
   readonly toolNames: readonly string[];
+  /** Optional client contribution carried by the exact same immutable package Revision. */
+  readonly ui?: readonly ExtensionUiContribution[];
   readonly prepare: (context: ExtensionPreparationContext) => Promise<{
     readonly tools: readonly MakaTool[];
     readonly healthCheck?: () => void | Promise<void>;
@@ -109,11 +112,12 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     const definition: ExtensionRevisionDefinition = Object.freeze({
       extensionId: input.extensionId,
       revision: input.revision,
-      contributions: Object.freeze(
-        input.toolNames.map((_, index) =>
+      contributions: Object.freeze([
+        ...input.toolNames.map((_, index) =>
           Object.freeze({ id: `${input.extensionId}.tool-${index + 1}`, kind: 'tool' }),
         ),
-      ),
+        ...(input.ui ?? []).map(({ id }) => Object.freeze({ id, kind: 'ui' })),
+      ]),
       prepare: async (context: ExtensionPreparationContext) => {
         const prepared = await input.prepare(context);
         return {
@@ -121,6 +125,8 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
           activate: (activation: ExtensionActivationContext) => {
             for (const tool of prepared.tools)
               contributeExtensionTool(activation, this.#tools, tool);
+            for (const contribution of input.ui ?? [])
+              contributeExtensionUi(activation, this.#ui, contribution);
           },
           ...(prepared.dispose ? { dispose: prepared.dispose } : {}),
         };
@@ -137,7 +143,9 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   }
 
   installRevision(input: HostExtensionRevisionInput): Promise<void> {
-    return 'ui' in input ? this.installUiRevision(input) : this.installToolRevision(input);
+    return 'prepare' in input || 'tools' in input
+      ? this.installToolRevision(input)
+      : this.installUiRevision(input);
   }
 
   activate(input: ExtensionBindingInput): Promise<ExtensionBindingInspection> {

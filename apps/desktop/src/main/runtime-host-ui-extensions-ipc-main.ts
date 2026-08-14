@@ -14,32 +14,37 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
   readonly client: DesktopRuntimeHostClient;
   readonly mainWindowController: MainWindowController;
   readonly allowLocalPaths: boolean;
+  readonly automatedImportSourcePath?: string;
 }): void {
   handleReconnectableRead(input.ipcMain, 'ui-extensions:list', async () => listUiExtensions(input.client));
 
   input.ipcMain.handle('ui-extensions:importLocal', async () => {
     if (!input.allowLocalPaths) throw new Error('Local UI Extension import is unavailable for a remote Runtime Host');
-    const selected = await input.mainWindowController.showOpenDialog({
-      title: 'Import UI Extension',
-      properties: ['openDirectory'],
-    });
+    const selected = input.automatedImportSourcePath
+      ? { canceled: false, filePaths: [input.automatedImportSourcePath] }
+      : await input.mainWindowController.showOpenDialog({
+          title: 'Import UI Extension',
+          properties: ['openDirectory'],
+        });
     const sourcePath = selected.filePaths[0];
     if (selected.canceled || !sourcePath) return { ok: false as const, reason: 'cancelled' as const };
     const manifest = await previewManifest(sourcePath);
-    const confirmation = await input.mainWindowController.showMessageBox({
-      type: 'question',
-      title: `Import ${manifest.id}`,
-      message: `Install UI Extension “${manifest.id}” ${manifest.version}?`,
-      detail: [
-        `${manifest.ui.length} UI contribution${manifest.ui.length === 1 ? '' : 's'}`,
-        `Host state: ${manifest.permissions.hostState ? 'allowed' : 'not allowed'}`,
-        `Host methods: ${manifest.hostMethods.length === 0 ? 'none' : manifest.hostMethods.join(', ')}`,
-        `Network: ${manifest.permissions.network ? 'allowed' : 'blocked'}`,
-      ].join('\n'),
-      buttons: ['Import and enable', 'Cancel'],
-      defaultId: 0,
-      cancelId: 1,
-    });
+    const confirmation = input.automatedImportSourcePath
+      ? { response: 0 }
+      : await input.mainWindowController.showMessageBox({
+          type: 'question',
+          title: `Import ${manifest.id}`,
+          message: `Install UI Extension “${manifest.id}” ${manifest.version}?`,
+          detail: [
+            `${manifest.ui.length} UI contribution${manifest.ui.length === 1 ? '' : 's'}`,
+            `Host state: ${manifest.permissions.hostState ? 'allowed' : 'not allowed'}`,
+            `Host methods: ${manifest.hostMethods.length === 0 ? 'none' : manifest.hostMethods.join(', ')}`,
+            `Network: ${manifest.permissions.network ? 'allowed' : 'blocked'}`,
+          ].join('\n'),
+          buttons: ['Import and enable', 'Cancel'],
+          defaultId: 0,
+          cancelId: 1,
+        });
     if (confirmation.response !== 0) return { ok: false as const, reason: 'cancelled' as const };
     const installed = await input.client.request('extension.package.install', { sourcePath });
     if (installed.uiContributionIds.length === 0) throw new Error('Selected directory is not a UI Extension package');

@@ -26,6 +26,21 @@
   min-height: 0;
 }
 
+/* A derived UI Revision owns this body, while Maka continues to own the
+   titlebar, navigation, conversation and responsive composition around it. */
+.maka-extension-workspace {
+  grid-area: right;
+  width: clamp(520px, 52vw, 920px);
+  min-width: 420px;
+  min-height: 0;
+  margin-left: var(--agents-content-area-gap);
+  padding-top: var(--maka-plate-titlebar-clearance);
+  overflow: hidden;
+  border-radius: var(--radius-modal);
+  background: var(--agents-content-area-bg);
+  box-sizing: border-box;
+}
+
 .maka-workbar-layout-vars,
 .maka-workbar-workspace-contents {
   display: contents;

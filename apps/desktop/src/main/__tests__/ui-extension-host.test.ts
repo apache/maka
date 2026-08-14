@@ -11,17 +11,14 @@ import { createUiExtensionFrameRequestHandler } from '../ui-extension-frame-prot
 import { uiExtensionFrameUrl } from '../../renderer/ui-extension-frame-url.js';
 
 describe('Desktop UI extension shell', () => {
-  test('selects one deterministic root and ordered independent panels and overlays', () => {
+  test('selects one deterministic root and ordered independent overlays', () => {
     const selected = selectUiSnapshots(null, [
       item('low', 'app.root', 1),
-      item('panel-b', 'app.panel', 20),
       item('overlay-b', 'app.overlay', 20),
       item('high', 'app.root', 100),
-      item('panel-a', 'app.panel', 20),
       item('overlay-a', 'app.overlay', 20),
     ]);
     assert.equal(selected.root.id, 'high');
-    assert.deepEqual(selected.panels.map(({ id }) => id), ['panel-a', 'panel-b']);
     assert.deepEqual(selected.overlays.map(({ id }) => id), ['overlay-a', 'overlay-b']);
   });
 
@@ -79,7 +76,7 @@ describe('Desktop UI extension shell', () => {
 
 function item(
   id: string,
-  surface: 'app.root' | 'app.panel' | 'app.overlay',
+  surface: 'app.root' | 'app.overlay',
   priority: number,
 ): ExtensionUiContributionProjection {
   return {
@@ -88,6 +85,7 @@ function item(
     revision: '1',
     id,
     surface,
+    rootMode: 'replace',
     priority,
     document: '<p>demo</p>',
     documentSha256: 'sha256',

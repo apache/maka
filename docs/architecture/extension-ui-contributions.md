@@ -12,25 +12,31 @@ The fixed Desktop bootstrap is deliberately thin:
 ```text
 Theme + Runtime Host readiness + UI snapshot loader
   -> official Maka UI snapshot (trusted fallback)
-  -> or one committed app.root contribution
-  -> plus committed app.panel sidecars inside the official window
+  -> or one committed app.root Revision
+       -> replace: a complete client snapshot
+       -> embed: official snapshot + one sandboxed extension workspace
   -> plus committed app.overlay contributions
 ```
 
 The existing Maka `AppShell` is therefore a shipped UI snapshot, not an
-unreplaceable collection of small slots. A UI Extension may replace the whole
-`app.root`, or use `app.panel` to appear as a sidecar window while the trusted
-Maka conversation and Composer remain visible and operable. The official
+unreplaceable collection of small slots. An `app.root` Revision may replace the
+whole client surface, or derive a new UI version with `rootMode: embed`: Maka
+keeps the official navigation, conversation, Composer, responsive layout and
+theme frame, while the Revision supplies the sandboxed workspace body inside
+that layout. This is composition, not a fixed-position sidecar. The official
 snapshot remains available as the fail-open recovery surface.
 `Cmd/Ctrl+Shift+Backspace` enters renderer-local safe mode without mutating the
 installed Binding.
 
 ## Package and isolation
 
-A UI package contains `maka.ui.json`, one or more immutable HTML documents, and
-may include an optional package-private Host service. Installation validates,
-hashes, and copies the entire package into the root-private `ui-packages-v1`
-Store without rendering or executing it.
+A package may contain only `maka.ui.json`, or carry `maka.ui.json` and
+`maka.tool.json` together. In the combined form, both manifests declare the
+same Extension identity and the complete directory produces one content hash,
+one immutable Revision and one lifecycle commit. UI and Tool remain typed,
+independent contributions; separate Bindings may project that exact Revision
+into the Desktop UI scope and a Session scope. Installation does not render or
+execute package code.
 
 Dynamic documents render in Chromium sandboxed iframes with an opaque origin.
 They receive neither Electron APIs nor the Maka preload bridge. A Host-injected
@@ -85,13 +91,20 @@ that Tool's structured snapshot or patch. The Host resolves the currently
 committed Desktop Binding and exact Revision before writing durable state; the
 UI remains a passive projection and cannot use this path to invoke a Tool.
 
+For an intentionally combined package, a Tool declaration may instead name a
+`visualization.stateKey`. `invoke_tool` writes the successful structured result
+to the matching active Desktop UI Revision automatically. The client remains
+passive and the update is admitted only when the Tool owner and UI Binding have
+the same Extension id and exact Revision.
+
 ## Current boundary
 
 The shipped bridge provides typed durable Host state and declared
 request/response Host methods, not arbitrary Electron or Runtime Host access.
-`publish_ui_state` is an explicit Agent orchestration seam, not an implicit
-cross-contribution dependency: a business Tool cannot mutate UI state by
-itself. Push event subscriptions and DOM access to the official snapshot remain
+`publish_ui_state` remains the explicit seam for unrelated Tool and UI
+Revisions. Same-Revision packages may opt into the declared visualization seam;
+no arbitrary Tool can select or mutate an unrelated UI. Push event subscriptions
+and DOM access to the official snapshot remain
 out of scope. The one-second Desktop snapshot refresh is also a temporary
 transport seam; a future catalog-change subscription can replace it without
 changing package or lifecycle semantics.

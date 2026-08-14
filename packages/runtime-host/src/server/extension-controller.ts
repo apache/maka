@@ -114,6 +114,7 @@ export class HostExtensionController {
           revision: item.revision,
           id: item.id,
           surface: item.surface,
+          rootMode: item.rootMode,
           priority: item.priority,
           document: item.document,
           documentSha256: item.documentSha256,

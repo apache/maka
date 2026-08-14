@@ -5,6 +5,7 @@ import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
 import type {
   ExtensionCatalogQueryResult,
+  ExtensionUiStateValue,
   OperationKey,
   OperationOutcome,
 } from '../protocol/index.js';
@@ -57,6 +58,9 @@ const toolDeclaration = z.object({
   displayName: z.string().min(1).max(128).optional(),
   category: z.enum(CATEGORIES).optional(),
   recoveryMode: z.enum(RECOVERY_MODES).optional(),
+  visualization: z
+    .object({ stateKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u) })
+    .optional(),
 });
 const defineInput = z.object({
   id: z.string().min(1).max(128),
@@ -309,12 +313,47 @@ export class HostToolPackageManagementTools {
         if (MANAGEMENT_TOOL_NAMES.has(input.toolName)) {
           throw new Error(`Tool management Tools cannot be invoked recursively: ${input.toolName}`);
         }
+        const ownership = this.runtime
+          .inspectTools(context.sessionId)
+          .find(({ toolName }) => toolName === input.toolName);
         const tool = this.runtime
           .resolveTools(context.sessionId, [])
           .find(({ name }) => name === input.toolName);
         if (!tool) throw new Error(`Active session Tool was not found: ${input.toolName}`);
         await validateArgs(tool, input.args);
-        return tool.impl(input.args, context);
+        const result = await tool.impl(input.args, context);
+        if (ownership) {
+          const installed = await this.store.load(ownership.extensionId, ownership.revision);
+          const stateKey = installed.manifest.tools.find(({ name }) => name === input.toolName)
+            ?.visualization?.stateKey;
+          const contribution = stateKey
+            ? this.runtime
+                .inspectUi('desktop-ui')
+                .find(
+                  (item) =>
+                    item.extensionId === ownership.extensionId &&
+                    item.revision === ownership.revision &&
+                    item.hostState,
+                )
+            : undefined;
+          if (stateKey && contribution) {
+            unwrap(
+              await this.controller.handlers['extension.ui.state.mutate'](
+                {
+                  scopeId: 'desktop-ui',
+                  bindingId: contribution.bindingId,
+                  extensionId: contribution.extensionId,
+                  revision: contribution.revision,
+                  key: stateKey,
+                  kind: 'set',
+                  value: result as ExtensionUiStateValue,
+                },
+                this.#connection,
+              ),
+            );
+          }
+        }
+        return result;
       },
     });
   }

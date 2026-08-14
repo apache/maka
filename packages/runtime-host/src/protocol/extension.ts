@@ -73,7 +73,8 @@ export interface ExtensionUiContributionProjection {
   readonly extensionId: string;
   readonly revision: string;
   readonly id: string;
-  readonly surface: 'app.root' | 'app.panel' | 'app.overlay';
+  readonly surface: 'app.root' | 'app.overlay';
+  readonly rootMode: 'replace' | 'embed';
   readonly priority: number;
   readonly document: string;
   readonly documentSha256: string;
@@ -500,6 +501,7 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     'revision',
     'id',
     'surface',
+    ...(candidate && Object.hasOwn(candidate, 'rootMode') ? ['rootMode'] : []),
     'priority',
     'document',
     'documentSha256',
@@ -508,12 +510,15 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     ...(candidate && Object.hasOwn(candidate, 'hostMethods') ? ['hostMethods'] : []),
   ];
   const item = requireExactRecord(value, 'extension UI contribution', fields);
-  if (
-    item.surface !== 'app.root' &&
-    item.surface !== 'app.panel' &&
-    item.surface !== 'app.overlay'
-  ) {
+  if (item.surface !== 'app.root' && item.surface !== 'app.overlay') {
     throw invalidProtocolFrame('Invalid extension UI surface');
+  }
+  const rootMode = item.rootMode ?? 'replace';
+  if (rootMode !== 'replace' && rootMode !== 'embed') {
+    throw invalidProtocolFrame('Invalid extension UI root mode');
+  }
+  if (item.surface !== 'app.root' && rootMode !== 'replace') {
+    throw invalidProtocolFrame('Only app.root may embed into the official snapshot');
   }
   if (!Number.isSafeInteger(item.priority) || Math.abs(item.priority as number) > 10_000) {
     throw invalidProtocolFrame('Invalid extension UI priority');
@@ -530,6 +535,7 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     revision: decodeRevision(item.revision),
     id: requireUtf8String(item.id, 'extension UI contribution id', 128),
     surface: item.surface,
+    rootMode,
     priority: item.priority as number,
     document: requireUtf8String(item.document, 'extension UI document', 1024 * 1024),
     documentSha256: requireUtf8String(item.documentSha256, 'extension UI document digest', 128),

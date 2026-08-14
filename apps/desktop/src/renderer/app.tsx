@@ -65,9 +65,12 @@ export function App({
       <Theme theme={makaTheme} mode={astryxMode}>
         {runtimeHostReady ? (
           <UiExtensionHost
-            officialSnapshot={
-              <AppShell initialOnboardingSnapshot={initialOnboardingSnapshot} />
-            }
+            officialSnapshot={(extensionSurface) => (
+              <AppShell
+                initialOnboardingSnapshot={initialOnboardingSnapshot}
+                extensionSurface={extensionSurface}
+              />
+            )}
           />
         ) : (
           <LocaleProvider locale={readSystemUiLocale()}>

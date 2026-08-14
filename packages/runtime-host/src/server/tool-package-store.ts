@@ -46,6 +46,7 @@ export interface ToolPackageManifestTool {
   readonly displayName?: string;
   readonly category?: ToolCategory;
   readonly recoveryMode?: ToolRecoveryMode;
+  readonly visualization?: { readonly stateKey: string };
 }
 
 export interface ToolPackageManifest {
@@ -271,6 +272,7 @@ export function decodeToolPackageManifest(value: unknown): ToolPackageManifest {
       'displayName',
       'category',
       'recoveryMode',
+      'visualization',
     ]);
     const name = boundedString(tool.name, `tools[${index}].name`, 128);
     if (!TOOL_NAME_PATTERN.test(name)) throw invalidPackage(`Tool name is invalid: ${name}`);
@@ -288,6 +290,14 @@ export function decodeToolPackageManifest(value: unknown): ToolPackageManifest {
       RECOVERY_MODES,
       `tools[${index}].recoveryMode`,
     );
+    const visualization =
+      tool.visualization === undefined ? undefined : exactRecord(tool.visualization, ['stateKey']);
+    const stateKey = visualization
+      ? boundedString(visualization.stateKey, `tools[${index}].visualization.stateKey`, 128)
+      : undefined;
+    if (stateKey && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(stateKey)) {
+      throw invalidPackage(`Tool visualization state key is invalid: ${stateKey}`);
+    }
     return Object.freeze({
       name,
       description: boundedString(tool.description, `tools[${index}].description`, 4096),
@@ -296,6 +306,7 @@ export function decodeToolPackageManifest(value: unknown): ToolPackageManifest {
       ...(displayName ? { displayName } : {}),
       ...(category ? { category } : {}),
       ...(recoveryMode ? { recoveryMode } : {}),
+      ...(stateKey ? { visualization: Object.freeze({ stateKey }) } : {}),
     });
   });
   const permissions = exactRecord(record.permissions, ['workspace', 'network']);

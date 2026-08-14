@@ -11,10 +11,11 @@ import { UiPackageService } from './ui-package-service.js';
 import { UiPackageStore } from './ui-package-store.js';
 
 export const DESKTOP_UI_EXTENSION_SCOPE = 'desktop-ui';
-const SURFACES = ['app.root', 'app.panel', 'app.overlay'] as const;
+const SURFACES = ['app.root', 'app.overlay'] as const;
 const contribution = z.object({
   id: z.string().min(1).max(128),
   surface: z.enum(SURFACES),
+  rootMode: z.enum(['replace', 'embed']).default('replace'),
   priority: z.number().int().min(-10_000).max(10_000),
   document: z
     .string()
@@ -136,7 +137,7 @@ export class HostUiPackageManagementTools {
     return Object.freeze({
       name: 'define_ui',
       description:
-        'Validate and install an immutable UI revision. Each HTML document may fully replace app.root, add an app.panel sidecar inside the official Maka window, or add an app.overlay. It is inactive until test_ui and manage_ui. Documents run in opaque-origin sandboxed iframes without Electron or Maka preload authority. Set permissions.hostState=true for window.makaUI getState/setState/deleteState. Add host.source plus declared methods for sandboxed package-private backend handlers callable with window.makaUI.invoke(name, args).',
+        'Validate and install an immutable UI revision. app.root with rootMode=replace fully replaces the product surface; rootMode=embed derives a new Maka UI snapshot by embedding the document into the official AppShell layout. app.overlay remains independent. It is inactive until test_ui and manage_ui. Documents run in opaque-origin sandboxed iframes without Electron or Maka preload authority. Set permissions.hostState=true for window.makaUI getState/setState/deleteState. Add host.source plus declared methods for sandboxed package-private backend handlers callable with window.makaUI.invoke(name, args).',
       parameters: defineInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
@@ -168,6 +169,7 @@ export class HostUiPackageManagementTools {
           const manifestUi = input.ui.map((item, index) => ({
             id: item.id,
             surface: item.surface,
+            rootMode: item.rootMode,
             priority: item.priority,
             document: `documents/${index + 1}.html`,
           }));
@@ -236,6 +238,7 @@ export class HostUiPackageManagementTools {
             installed.manifest.ui.map(async (item) => ({
               id: item.id,
               surface: item.surface,
+              rootMode: item.rootMode,
               priority: item.priority,
               document: await this.store.readDocument(installed, item.document),
               network: installed.manifest.permissions.network,

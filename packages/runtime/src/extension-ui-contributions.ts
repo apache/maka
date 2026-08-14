@@ -6,12 +6,16 @@ import type {
 } from './extension-lifecycle-kernel.js';
 
 export const EXTENSION_UI_DOCUMENT_MAX_BYTES = 1024 * 1024;
-export const EXTENSION_UI_SURFACES = ['app.root', 'app.panel', 'app.overlay'] as const;
+export const EXTENSION_UI_SURFACES = ['app.root', 'app.overlay'] as const;
 export type ExtensionUiSurface = (typeof EXTENSION_UI_SURFACES)[number];
+export const EXTENSION_UI_ROOT_MODES = ['replace', 'embed'] as const;
+export type ExtensionUiRootMode = (typeof EXTENSION_UI_ROOT_MODES)[number];
 
 export interface ExtensionUiContribution {
   readonly id: string;
   readonly surface: ExtensionUiSurface;
+  /** app.root may replace the product snapshot or derive a new snapshot by embedding into it. */
+  readonly rootMode?: ExtensionUiRootMode;
   readonly priority: number;
   readonly document: string;
   /** Sandboxed documents are offline unless this explicit capability is true. */
@@ -27,6 +31,7 @@ export interface ExtensionUiContributionInspection {
   readonly revision: string;
   readonly id: string;
   readonly surface: ExtensionUiSurface;
+  readonly rootMode: ExtensionUiRootMode;
   readonly priority: number;
   readonly document: string;
   readonly documentSha256: string;
@@ -82,6 +87,8 @@ export class ExtensionUiContributionRegistry {
     const entry: RegisteredUi = Object.freeze({
       ...context,
       ...contribution,
+      rootMode:
+        contribution.surface === 'app.root' ? (contribution.rootMode ?? 'replace') : 'replace',
       hostState: contribution.hostState === true,
       hostMethods: Object.freeze([...(contribution.hostMethods ?? [])]),
       documentSha256: createHash('sha256').update(contribution.document).digest('hex'),
@@ -184,6 +191,16 @@ export function validateExtensionUiContribution(contribution: ExtensionUiContrib
   validateIdentity('UI contribution id', contribution.id);
   if (!EXTENSION_UI_SURFACES.includes(contribution.surface)) {
     throw new ExtensionUiContributionError('invalid_ui', 'UI surface is invalid');
+  }
+  if (
+    contribution.rootMode !== undefined &&
+    (!EXTENSION_UI_ROOT_MODES.includes(contribution.rootMode) ||
+      contribution.surface !== 'app.root')
+  ) {
+    throw new ExtensionUiContributionError(
+      'invalid_ui',
+      'UI rootMode is only valid for app.root and must be replace or embed',
+    );
   }
   if (!Number.isSafeInteger(contribution.priority) || Math.abs(contribution.priority) > 10_000) {
     throw new ExtensionUiContributionError('invalid_ui', 'UI priority is invalid');

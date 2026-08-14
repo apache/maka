@@ -14,6 +14,7 @@ import { HostExtensionRuntime } from '../server/extension-runtime.js';
 import { HostExtensionStateStore } from '../server/extension-state-store.js';
 import { HostExtensionUiStateStore } from '../server/extension-ui-state-store.js';
 import { ToolPackageStore } from '../server/tool-package-store.js';
+import { HostToolPackageManagementTools } from '../server/tool-package-management-tools.js';
 import {
   DESKTOP_UI_EXTENSION_SCOPE,
   HostUiPackageManagementTools,
@@ -227,6 +228,138 @@ test('UI package Store rejects symlinks and detects installed content corruption
     await symlink(join(source, 'documents', 'root.html'), join(linked, 'root.html'));
     await assert.rejects(store.install(linked), /may not contain symlinks/);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('one immutable package Revision carries a Tool and an embedded Maka UI snapshot', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-combined-extension-'));
+  const source = join(root, 'source');
+  const control = join(root, 'control');
+  const runtime = new HostExtensionRuntime();
+  try {
+    await mkdir(join(source, 'documents'), { recursive: true });
+    await mkdir(join(source, 'dist'), { recursive: true });
+    await writeFile(
+      join(source, 'maka.ui.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        id: 'dev.maka.project-canvas',
+        version: '1',
+        ui: [
+          {
+            id: 'project-canvas',
+            surface: 'app.root',
+            rootMode: 'embed',
+            priority: 200,
+            document: 'documents/project-canvas.html',
+          },
+        ],
+        permissions: { network: false, hostState: true },
+      }),
+    );
+    await writeFile(join(source, 'documents', 'project-canvas.html'), '<main>canvas</main>');
+    await writeFile(
+      join(source, 'maka.tool.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        id: 'dev.maka.project-canvas',
+        version: '1',
+        entry: 'dist/index.mjs',
+        tools: [
+          {
+            name: 'project_plan_commit',
+            description: 'Commit a project plan snapshot',
+            handler: 'projectPlanCommit',
+            inputSchema: { type: 'object', additionalProperties: true },
+            visualization: { stateKey: 'project-plan' },
+          },
+        ],
+        permissions: { workspace: 'none', network: false },
+      }),
+    );
+    await writeFile(
+      join(source, 'dist', 'index.mjs'),
+      'export default { projectPlanCommit: (input) => input };\n',
+    );
+
+    const toolStore = new ToolPackageStore(control);
+    const uiStore = new UiPackageStore(control);
+    const loader = new InstalledToolPackageExtensionLoader(
+      new StaticTrustedToolExtensionLoader(),
+      toolStore,
+      uiStore,
+    );
+    const installed = await loader.installPackage(source);
+    assert.deepEqual(installed.toolNames, ['project_plan_commit']);
+    assert.deepEqual(installed.uiContributionIds, ['project-canvas']);
+    assert.equal((await loader.list()).length, 1);
+
+    await runtime.installRevision(await loader.load(installed.extensionId, installed.revision));
+    const controller = new HostExtensionController(
+      runtime,
+      loader,
+      new HostExtensionStateStore(control),
+      () => undefined,
+      new HostExtensionUiStateStore(control),
+      uiStore,
+    );
+    await controller.recover();
+    for (const binding of [
+      { bindingId: 'project-canvas-ui', scopeId: DESKTOP_UI_EXTENSION_SCOPE },
+      { bindingId: 'project-canvas-session', scopeId: 'session-1' },
+    ]) {
+      assert.equal(
+        (
+          await controller.handlers['extension.catalog.mutate'](
+            {
+              kind: 'enable',
+              ...binding,
+              extensionId: installed.extensionId,
+              revision: installed.revision,
+            },
+            connection,
+          )
+        ).ok,
+        true,
+      );
+    }
+    assert.equal(runtime.inspectUi(DESKTOP_UI_EXTENSION_SCOPE)[0]?.rootMode, 'embed');
+    assert.ok(
+      runtime.resolveTools('session-1', []).some(({ name }) => name === 'project_plan_commit'),
+    );
+
+    const invoke = new HostToolPackageManagementTools(control, controller, runtime, toolStore)
+      .tools()
+      .find(({ name }) => name === 'invoke_tool');
+    assert.ok(invoke);
+    await invoke.impl(
+      { toolName: 'project_plan_commit', args: { title: 'Aurora' } },
+      {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        cwd: root,
+        toolCallId: 'call-1',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => undefined,
+      },
+    );
+    const activeUi = runtime.inspectUi(DESKTOP_UI_EXTENSION_SCOPE)[0]!;
+    assert.deepEqual(
+      await controller.handlers['extension.ui.state.query'](
+        {
+          scopeId: DESKTOP_UI_EXTENSION_SCOPE,
+          bindingId: activeUi.bindingId,
+          extensionId: activeUi.extensionId,
+          revision: activeUi.revision,
+          key: 'project-plan',
+        },
+        connection,
+      ),
+      { ok: true, result: { found: true, value: { title: 'Aurora' } } },
+    );
+  } finally {
+    await runtime.close().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
 });

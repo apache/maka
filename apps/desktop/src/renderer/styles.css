@@ -66,27 +66,10 @@
   height: 100%;
 }
 
-.maka-ui-extension-frame--panel {
-  position: fixed;
-  top: 58px;
-  right: 18px;
-  bottom: 18px;
-  width: clamp(520px, 52vw, 900px);
-  height: calc(100% - 76px);
-  z-index: 2147482000;
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--color-border, #8d948f) 42%, transparent);
-  border-radius: 22px;
-  box-shadow:
-    0 30px 90px rgb(13 20 17 / 28%),
-    0 4px 18px rgb(13 20 17 / 12%);
-}
-
-@media (max-width: 980px) {
-  .maka-ui-extension-frame--panel {
-    left: 18px;
-    width: auto;
-  }
+.maka-ui-extension-frame--embedded {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .maka-ui-extension-frame--overlay {

@@ -5,7 +5,9 @@ import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import { isCanonicalExtensionId } from '@maka/runtime/extension-lifecycle-kernel';
 import {
   EXTENSION_UI_DOCUMENT_MAX_BYTES,
+  EXTENSION_UI_ROOT_MODES,
   EXTENSION_UI_SURFACES,
+  type ExtensionUiRootMode,
   type ExtensionUiSurface,
 } from '@maka/runtime/extension-ui-contributions';
 
@@ -19,6 +21,7 @@ const REVISION_PATTERN = /^sha256-[a-f0-9]{64}$/u;
 export interface UiPackageManifestContribution {
   readonly id: string;
   readonly surface: ExtensionUiSurface;
+  readonly rootMode: ExtensionUiRootMode;
   readonly priority: number;
   readonly document: string;
 }
@@ -160,7 +163,10 @@ export class UiPackageStore {
     const manifestFile = files.find(({ path }) => path === MANIFEST_FILE);
     if (!manifestFile) throw invalidPackage(`Installed UI package is missing ${MANIFEST_FILE}`);
     const manifest = decodeUiPackageManifest(parseJson(manifestFile.content));
-    if (manifest.id !== extensionId || packageRevision(files) !== revision) {
+    if (
+      manifest.id !== extensionId ||
+      (packageRevision(files) !== revision && legacyPackageRevision(files) !== revision)
+    ) {
       throw invalidPackage(
         `Installed UI package integrity check failed: ${extensionId}@${revision}`,
       );
@@ -219,24 +225,34 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
   }
   const ids = new Set<string>();
   const ui = record.ui.map((value, index): UiPackageManifestContribution => {
-    const item = exactRecord(value, ['id', 'surface', 'priority', 'document']);
+    const candidate = value as Record<string, unknown> | null;
+    const item = exactRecord(
+      value,
+      candidate && Object.hasOwn(candidate, 'rootMode')
+        ? ['id', 'surface', 'rootMode', 'priority', 'document']
+        : ['id', 'surface', 'priority', 'document'],
+    );
     const contributionId = boundedString(item.id, `ui[${index}].id`, 128);
     if (ids.has(contributionId))
       throw invalidPackage(`UI contribution id repeats: ${contributionId}`);
     ids.add(contributionId);
-    if (
-      item.surface !== 'app.root' &&
-      item.surface !== 'app.panel' &&
-      item.surface !== 'app.overlay'
-    ) {
+    if (!EXTENSION_UI_SURFACES.includes(item.surface as ExtensionUiSurface)) {
       throw invalidPackage(`UI contribution surface is invalid: ${String(item.surface)}`);
+    }
+    const rootMode = item.rootMode ?? 'replace';
+    if (!EXTENSION_UI_ROOT_MODES.includes(rootMode as ExtensionUiRootMode)) {
+      throw invalidPackage(`UI contribution rootMode is invalid: ${String(rootMode)}`);
+    }
+    if (item.surface !== 'app.root' && rootMode !== 'replace') {
+      throw invalidPackage('Only app.root may use rootMode embed');
     }
     if (!Number.isSafeInteger(item.priority) || Math.abs(item.priority as number) > 10_000) {
       throw invalidPackage('UI contribution priority is invalid');
     }
     return Object.freeze({
       id: contributionId,
-      surface: item.surface,
+      surface: item.surface as ExtensionUiSurface,
+      rootMode: rootMode as ExtensionUiRootMode,
       priority: item.priority as number,
       document: packagePath(item.document, `ui[${index}].document`),
     });
@@ -405,6 +421,20 @@ function validateHtml(content: Buffer, path: string): void {
 }
 
 function packageRevision(files: readonly PackageFile[]): string {
+  const hash = createHash('sha256');
+  for (const file of files) {
+    const path = Buffer.from(file.path, 'utf8');
+    const length = Buffer.allocUnsafe(8);
+    length.writeBigUInt64BE(BigInt(path.byteLength));
+    hash.update(length).update(path);
+    length.writeBigUInt64BE(BigInt(file.content.byteLength));
+    hash.update(length).update(file.content);
+  }
+  return `sha256-${hash.digest('hex')}`;
+}
+
+/** Read compatibility for UI revisions sealed before Tool/UI shared one package hash. */
+function legacyPackageRevision(files: readonly PackageFile[]): string {
   const hash = createHash('sha256');
   for (const file of files) hash.update(file.path).update('\0').update(file.content).update('\0');
   return `sha256-${hash.digest('hex')}`;

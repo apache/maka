@@ -14,7 +14,11 @@ const REFRESH_MS = 1_000;
  * is the trusted fallback snapshot; installed client-only revisions enter the
  * same root/overlay selection path and may replace the entire product surface.
  */
-export function UiExtensionHost({ officialSnapshot }: { officialSnapshot: ReactNode }) {
+export function UiExtensionHost({
+  officialSnapshot,
+}: {
+  officialSnapshot: (extensionSurface?: ReactNode) => ReactNode;
+}) {
   const [snapshot, setSnapshot] = useState<ExtensionUiSnapshotResult | null>(null);
   const [safeMode, setSafeMode] = useState(false);
 
@@ -52,13 +56,13 @@ export function UiExtensionHost({ officialSnapshot }: { officialSnapshot: ReactN
   }, []);
 
   const selected = useMemo(
-    () => selectUiSnapshots(officialSnapshot, snapshot?.contributions ?? []),
-    [officialSnapshot, snapshot],
+    () => selectUiSnapshots(null, snapshot?.contributions ?? []),
+    [snapshot],
   );
   const selectedRoot = safeMode ? selected.official : selected.root;
   return (
     <div className="maka-ui-extension-shell" data-ui-safe-mode={safeMode || undefined}>
-      {selectedRoot.kind === 'sandboxed' ? (
+      {selectedRoot.kind === 'sandboxed' && selectedRoot.contribution.rootMode === 'replace' ? (
         <SandboxedUiFrame contribution={selectedRoot.contribution} layer="root" />
       ) : (
         <div
@@ -66,12 +70,13 @@ export function UiExtensionHost({ officialSnapshot }: { officialSnapshot: ReactN
           data-extension-id={selectedRoot.extensionId}
           data-extension-revision={selectedRoot.revision}
         >
-          {selectedRoot.node}
+          {officialSnapshot(
+            selectedRoot.kind === 'sandboxed' ? (
+              <SandboxedUiFrame contribution={selectedRoot.contribution} layer="embedded" />
+            ) : undefined,
+          )}
         </div>
       )}
-      {!safeMode && selected.panels.map((item) => (
-        <SandboxedUiFrame key={`${item.extensionId}:${item.id}`} contribution={item} layer="panel" />
-      ))}
       {!safeMode && selected.overlays.map((item) => (
         <SandboxedUiFrame key={`${item.extensionId}:${item.id}`} contribution={item} layer="overlay" />
       ))}
@@ -128,7 +133,6 @@ export function selectUiSnapshots(
           contribution: dynamicRoot,
         })
       : official,
-    panels: Object.freeze(ordered.filter(({ surface }) => surface === 'app.panel')),
     overlays: Object.freeze(ordered.filter(({ surface }) => surface === 'app.overlay')),
   });
 }
@@ -138,7 +142,7 @@ function SandboxedUiFrame({
   layer,
 }: {
   contribution: ExtensionUiContributionProjection;
-  layer: 'root' | 'panel' | 'overlay';
+  layer: 'root' | 'embedded' | 'overlay';
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const token = useMemo(
