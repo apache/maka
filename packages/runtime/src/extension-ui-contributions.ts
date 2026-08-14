@@ -6,7 +6,7 @@ import type {
 } from './extension-lifecycle-kernel.js';
 
 export const EXTENSION_UI_DOCUMENT_MAX_BYTES = 1024 * 1024;
-export const EXTENSION_UI_SURFACES = ['app.root', 'app.overlay'] as const;
+export const EXTENSION_UI_SURFACES = ['app.root', 'app.panel', 'app.overlay'] as const;
 export type ExtensionUiSurface = (typeof EXTENSION_UI_SURFACES)[number];
 
 export interface ExtensionUiContribution {

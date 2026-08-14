@@ -224,7 +224,11 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
     if (ids.has(contributionId))
       throw invalidPackage(`UI contribution id repeats: ${contributionId}`);
     ids.add(contributionId);
-    if (item.surface !== 'app.root' && item.surface !== 'app.overlay') {
+    if (
+      item.surface !== 'app.root' &&
+      item.surface !== 'app.panel' &&
+      item.surface !== 'app.overlay'
+    ) {
       throw invalidPackage(`UI contribution surface is invalid: ${String(item.surface)}`);
     }
     if (!Number.isSafeInteger(item.priority) || Math.abs(item.priority as number) > 10_000) {

@@ -69,6 +69,9 @@ export function UiExtensionHost({ officialSnapshot }: { officialSnapshot: ReactN
           {selectedRoot.node}
         </div>
       )}
+      {!safeMode && selected.panels.map((item) => (
+        <SandboxedUiFrame key={`${item.extensionId}:${item.id}`} contribution={item} layer="panel" />
+      ))}
       {!safeMode && selected.overlays.map((item) => (
         <SandboxedUiFrame key={`${item.extensionId}:${item.id}`} contribution={item} layer="overlay" />
       ))}
@@ -125,6 +128,7 @@ export function selectUiSnapshots(
           contribution: dynamicRoot,
         })
       : official,
+    panels: Object.freeze(ordered.filter(({ surface }) => surface === 'app.panel')),
     overlays: Object.freeze(ordered.filter(({ surface }) => surface === 'app.overlay')),
   });
 }
@@ -134,7 +138,7 @@ function SandboxedUiFrame({
   layer,
 }: {
   contribution: ExtensionUiContributionProjection;
-  layer: 'root' | 'overlay';
+  layer: 'root' | 'panel' | 'overlay';
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const token = useMemo(

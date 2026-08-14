@@ -13,14 +13,17 @@ The fixed Desktop bootstrap is deliberately thin:
 Theme + Runtime Host readiness + UI snapshot loader
   -> official Maka UI snapshot (trusted fallback)
   -> or one committed app.root contribution
+  -> plus committed app.panel sidecars inside the official window
   -> plus committed app.overlay contributions
 ```
 
 The existing Maka `AppShell` is therefore a shipped UI snapshot, not an
 unreplaceable collection of small slots. A UI Extension may replace the whole
-`app.root`; the official snapshot remains available as the fail-open recovery
-surface. `Cmd/Ctrl+Shift+Backspace` enters renderer-local safe mode without
-mutating the installed Binding.
+`app.root`, or use `app.panel` to appear as a sidecar window while the trusted
+Maka conversation and Composer remain visible and operable. The official
+snapshot remains available as the fail-open recovery surface.
+`Cmd/Ctrl+Shift+Backspace` enters renderer-local safe mode without mutating the
+installed Binding.
 
 ## Package and isolation
 

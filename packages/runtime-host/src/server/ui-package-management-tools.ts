@@ -11,7 +11,7 @@ import { UiPackageService } from './ui-package-service.js';
 import { UiPackageStore } from './ui-package-store.js';
 
 export const DESKTOP_UI_EXTENSION_SCOPE = 'desktop-ui';
-const SURFACES = ['app.root', 'app.overlay'] as const;
+const SURFACES = ['app.root', 'app.panel', 'app.overlay'] as const;
 const contribution = z.object({
   id: z.string().min(1).max(128),
   surface: z.enum(SURFACES),
@@ -136,7 +136,7 @@ export class HostUiPackageManagementTools {
     return Object.freeze({
       name: 'define_ui',
       description:
-        'Validate and install an immutable UI revision. Each HTML document may fully replace app.root or add an app.overlay. It is inactive until test_ui and manage_ui. Documents run in opaque-origin sandboxed iframes without Electron or Maka preload authority. Set permissions.hostState=true for window.makaUI getState/setState/deleteState. Add host.source plus declared methods for sandboxed package-private backend handlers callable with window.makaUI.invoke(name, args).',
+        'Validate and install an immutable UI revision. Each HTML document may fully replace app.root, add an app.panel sidecar inside the official Maka window, or add an app.overlay. It is inactive until test_ui and manage_ui. Documents run in opaque-origin sandboxed iframes without Electron or Maka preload authority. Set permissions.hostState=true for window.makaUI getState/setState/deleteState. Add host.source plus declared methods for sandboxed package-private backend handlers callable with window.makaUI.invoke(name, args).',
       parameters: defineInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
@@ -346,14 +346,16 @@ export class HostUiPackageManagementTools {
     return Object.freeze({
       name: 'publish_ui_state',
       description:
-        'Publish structured business state to one already-active Desktop UI Extension. Use this after a business Tool returns a snapshot or patch so the UI can render the real Tool result. The active UI must declare permissions.hostState=true. This Tool never invokes the UI and cannot activate or update UI code.',
+        'Publish structured business state to one already-active Desktop UI Extension. The input MUST include the literal `value` JSON object. Never copy `valueAccepted`, `valueSha256`, `valueRedacted`, or `historyProjectionNotice` fields from prior tool history: those are redacted audit summaries and are not valid input. Use this after a business Tool returns a snapshot or patch so the UI can render the real Tool result. The active UI must declare permissions.hostState=true. This Tool never invokes the UI and cannot activate or update UI code.',
       parameters: publishStateInput,
       categoryHint: 'client_capability',
       recoveryMode: 'idempotent',
       permissionArgs: (input: z.infer<typeof publishStateInput>) => ({
         extensionId: input.extensionId,
         key: input.key,
-        valueAccepted: true,
+        historyProjectionNotice:
+          'The literal value was accepted and redacted from history. On a future call, provide the full `value` object again; do not pass this summary as input.',
+        valueRedacted: true,
         valueSha256: createHash('sha256')
           .update(JSON.stringify(input.value) ?? 'null')
           .digest('hex'),

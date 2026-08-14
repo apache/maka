@@ -73,7 +73,7 @@ export interface ExtensionUiContributionProjection {
   readonly extensionId: string;
   readonly revision: string;
   readonly id: string;
-  readonly surface: 'app.root' | 'app.overlay';
+  readonly surface: 'app.root' | 'app.panel' | 'app.overlay';
   readonly priority: number;
   readonly document: string;
   readonly documentSha256: string;
@@ -508,7 +508,11 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     ...(candidate && Object.hasOwn(candidate, 'hostMethods') ? ['hostMethods'] : []),
   ];
   const item = requireExactRecord(value, 'extension UI contribution', fields);
-  if (item.surface !== 'app.root' && item.surface !== 'app.overlay') {
+  if (
+    item.surface !== 'app.root' &&
+    item.surface !== 'app.panel' &&
+    item.surface !== 'app.overlay'
+  ) {
     throw invalidProtocolFrame('Invalid extension UI surface');
   }
   if (!Number.isSafeInteger(item.priority) || Math.abs(item.priority as number) > 10_000) {
