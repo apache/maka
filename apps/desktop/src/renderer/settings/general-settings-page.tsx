@@ -34,6 +34,7 @@ import {
   useUiLocale,
   Banner,
 } from "@maka/ui";
+import { FolderOpen, ICON_SIZE, X } from "@maka/ui/icons";
 import { ProviderBrandMark } from "./provider-brand-marks";
 import { PasswordInput } from "./password-input";
 import { getConversationCopy } from '@maka/ui';
@@ -140,6 +141,7 @@ export function GeneralSettingsPage(props: {
         onRefresh={props.onRefreshConnections}
         permissionMode={props.settings.chatDefaults.permissionMode}
         thinkingLevel={props.settings.chatDefaults.thinkingLevel}
+        defaultWorkingDirectory={props.settings.projects.defaultWorkingDirectory}
         onUpdate={props.onUpdate}
       />
       <SettingsSection
@@ -184,6 +186,7 @@ function GeneralDefaultsCard(props: {
   onRefresh(): Promise<void>;
   permissionMode: ChatDefaultPermissionMode;
   thinkingLevel?: ThinkingLevel;
+  defaultWorkingDirectory?: string;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
@@ -198,11 +201,12 @@ function GeneralDefaultsCard(props: {
   const toast = useToast();
   const mountedRef = useMountedRef();
   const persistGuard = useKeyedActionGuard<
-    "default-model" | "permission-mode" | "thinking-level"
+    "default-model" | "permission-mode" | "thinking-level" | "working-directory"
   >();
   const [saving, setSaving] = useState(false);
   const [savingPermissionMode, setSavingPermissionMode] = useState(false);
   const [savingThinkingLevel, setSavingThinkingLevel] = useState(false);
+  const [savingWorkingDirectory, setSavingWorkingDirectory] = useState(false);
 
   const modelChoices = useMemo(
     () => buildChatModelChoices(props.connections),
@@ -319,11 +323,66 @@ function GeneralDefaultsCard(props: {
     }
   }
 
+  async function updateWorkingDirectory(action: "choose" | "clear") {
+    const releaseSave = persistGuard.begin("working-directory");
+    if (!releaseSave) return;
+    setSavingWorkingDirectory(true);
+    try {
+      const defaultWorkingDirectory =
+        action === "choose"
+          ? await window.maka.settings.chooseDefaultWorkingDirectory()
+          : undefined;
+      if (action === "choose" && defaultWorkingDirectory === undefined) return;
+      await props.onUpdate({ projects: { defaultWorkingDirectory } });
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(
+          copy.saveDefaultWorkingDirectoryFailed,
+          settingsActionErrorMessage(error, locale),
+        );
+      }
+    } finally {
+      releaseSave();
+      if (mountedRef.current) setSavingWorkingDirectory(false);
+    }
+  }
+
   return (
     <SettingsSection
       title={sections.chatDefaults}
       description={sections.chatDefaultsHelp}
     >
+      <SettingsRow
+        label={copy.defaultWorkingDirectory}
+        description={
+          <>
+            {copy.defaultWorkingDirectoryHelp}
+            <code className="settingsWorkingDirectoryPath">
+              {props.defaultWorkingDirectory ?? copy.notSet}
+            </code>
+          </>
+        }
+      />
+      <SettingsActions role="group" aria-label={copy.defaultWorkingDirectory}>
+        <Button
+          variant="secondary"
+          size="sm"
+          icon={<FolderOpen size={ICON_SIZE.chrome} aria-hidden="true" />}
+          label={copy.chooseDefaultWorkingDirectory}
+          isDisabled={savingWorkingDirectory}
+          onClick={() => void updateWorkingDirectory("choose")}
+        />
+        {props.defaultWorkingDirectory ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<X size={ICON_SIZE.chrome} aria-hidden="true" />}
+            label={copy.clearDefaultWorkingDirectory}
+            isDisabled={savingWorkingDirectory}
+            onClick={() => void updateWorkingDirectory("clear")}
+          />
+        ) : null}
+      </SettingsActions>
       <SettingsRow
         label={copy.defaultModel}
         description={copy.defaultModelHelp}

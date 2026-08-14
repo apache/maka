@@ -64,10 +64,54 @@ test('does not reuse a preference from another Runtime Host root', async () => {
   }
 });
 
-function controller(base: string, fallback: string, rootId: string) {
+test('uses the configured working directory dynamically when no Project is selected', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-default-working-directory-'));
+  const fallback = join(base, 'fallback');
+  const firstDefault = join(base, 'agent-a');
+  const secondDefault = join(base, 'agent-b');
+  await Promise.all([mkdir(fallback), mkdir(firstDefault), mkdir(secondDefault)]);
+  let configured = firstDefault;
+  const current = controller(base, fallback, 'root-a', async () => configured);
+  try {
+    assert.equal(await current.current(), firstDefault);
+    configured = secondDefault;
+    assert.equal(await current.current(), secondDefault);
+
+    await current.setSelection('project-a', fallback);
+    configured = firstDefault;
+    assert.equal(await current.current(), fallback);
+
+    await current.setSelection(null, fallback);
+    assert.equal(await current.current(), firstDefault);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('falls back when the configured working directory is unavailable', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-default-working-directory-missing-'));
+  const fallback = join(base, 'fallback');
+  await mkdir(fallback);
+  try {
+    assert.equal(
+      await controller(base, fallback, 'root-a', async () => join(base, 'missing')).current(),
+      fallback,
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+function controller(
+  base: string,
+  fallback: string,
+  rootId: string,
+  defaultWorkingDirectory?: () => Promise<string | undefined>,
+) {
   return createProjectRootController({
     rootId,
     preferenceFile: join(base, 'project-preferences.json'),
     fallbackRoots: () => [fallback],
+    defaultWorkingDirectory,
   });
 }

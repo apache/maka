@@ -752,6 +752,12 @@ function registerHostClientIpc(
     rootId: target.rootId,
     preferenceFile: join(workspaceRoot, "project-preferences.json"),
     fallbackRoots: () => [process.cwd(), app.getAppPath()],
+    ...(target.kind === "local"
+      ? {
+          defaultWorkingDirectory: async () =>
+            (await settingsStore.get()).projects.defaultWorkingDirectory,
+        }
+      : {}),
   });
   const targetProjectCatalog = createRuntimeHostProjectCatalog(() => ({
     client,
@@ -872,6 +878,13 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     client,
     settingsStore,
+    chooseDefaultWorkingDirectory: async () => {
+      const result = await mainWindowController.showOpenDialog({
+        title: "Choose default working directory",
+        properties: ["openDirectory", "createDirectory"],
+      });
+      return result.canceled ? undefined : result.filePaths[0];
+    },
     applyClientSettings: async (settings) => {
       await clientSettingsEffects.apply(settings, true);
     },

@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
-import { normalizeSettings } from '../settings.js';
+import { mergeSettings, normalizeSettings } from '../settings.js';
 
 test('normalizes user-approved subagent presets without widening the catalog', () => {
   const normalized = normalizeSettings({
@@ -72,4 +72,42 @@ test('a chat-default thinking level the app does not recognize drops to no prefe
     chatDefaults: { thinkingLevel: 'ultra' as unknown as undefined },
   });
   expect(normalized.chatDefaults.thinkingLevel).toBe(undefined);
+});
+
+test('normalizes Project defaults independently', () => {
+  const normalized = normalizeSettings({
+    projects: {
+      defaultProjectId: 'project-1',
+      defaultWorkingDirectory: '/Users/example/agent',
+    },
+  });
+
+  expect(normalized.projects).toEqual({
+    defaultProjectId: 'project-1',
+    defaultWorkingDirectory: '/Users/example/agent',
+  });
+});
+
+test('drops blank or malformed default working directories', () => {
+  for (const defaultWorkingDirectory of [undefined, '', '  ', 42]) {
+    const normalized = normalizeSettings({
+      projects: { defaultWorkingDirectory },
+    });
+    expect(normalized.projects.defaultWorkingDirectory).toBe(undefined);
+  }
+});
+
+test('clears the default working directory without clearing the default Project', () => {
+  const current = normalizeSettings({
+    projects: {
+      defaultProjectId: 'project-1',
+      defaultWorkingDirectory: '/Users/example/agent',
+    },
+  });
+
+  const merged = mergeSettings(current, {
+    projects: { defaultWorkingDirectory: undefined },
+  });
+
+  expect(merged.projects).toEqual({ defaultProjectId: 'project-1' });
 });

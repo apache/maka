@@ -556,12 +556,20 @@ const healthSignals: HealthSignal[] = [
 ];
 
 const healthSnapshot: HealthSnapshot = buildHealthSnapshot(NOW - 45_000, healthSignals);
+const defaultStorySettings = mergeSettings(createDefaultSettings(), {
+  projects: {
+    defaultWorkingDirectory:
+      '/Users/storybook-fixture-user/Documents/Agent Workspaces/General Tasks',
+  },
+});
 
 const makaBridge = {
   settings: {
-    get: async () => createDefaultSettings(),
+    get: async () => defaultStorySettings,
+    chooseDefaultWorkingDirectory: async () =>
+      '/Users/storybook-fixture-user/Documents/Agent Workspaces/Selected Tasks',
     update: async (patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult> => {
-      return { settings: mergeSettings(createDefaultSettings(), patch) };
+      return { settings: mergeSettings(defaultStorySettings, patch) };
     },
     usageStats: async (): Promise<UsageStats> => usageStats,
     bots: {
