@@ -18,12 +18,6 @@ $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
 'must-not-be-readable' | Set-Content -LiteralPath $secretPath -Encoding utf8
 New-Item -ItemType Directory -Path $allowedRoot | Out-Null
 [IO.File]::WriteAllText($allowedReadPath, 'allowed-read')
-$appContainerSid = (& $launcher --appcontainer-sid 2>&1) -join ''
-if ($LASTEXITCODE -ne 0 -or $appContainerSid -notmatch '^S-1-15-2-') {
-  throw "Unable to resolve AppContainer SID: $appContainerSid"
-}
-& icacls.exe $allowedRoot /grant "*${appContainerSid}:(OI)(CI)M" /T /C /Q | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Unable to grant the AppContainer test ACL' }
 $request = @{
   version = 1
   requestId = 'appcontainer-smoke'
@@ -36,8 +30,8 @@ $request = @{
     "$port"
   )
   cwd = Split-Path -Parent $launcher
-  readRoots = @()
-  writeRoots = @()
+  readRoots = @($allowedRoot)
+  writeRoots = @($allowedRoot)
   network = 'restricted'
   environment = @{}
 }
@@ -57,12 +51,13 @@ try {
       $rendered -notmatch '"networkDenied":true') {
     throw "AppContainer boundary was not established: exit=$exitCode output=$rendered"
   }
+  $acl = (& icacls.exe $allowedRoot 2>&1) -join "`n"
+  if ($acl -match 'S-1-15-2-') {
+    throw "AppContainer ACL was not restored after launch: $acl"
+  }
   Write-Host "AppContainer token and atomic Job boundary verified: $rendered"
 } finally {
   $listener.Stop()
-  if ($appContainerSid) {
-    & icacls.exe $allowedRoot /remove "*$appContainerSid" /T /C /Q 2>$null | Out-Null
-  }
   Remove-Item -LiteralPath $requestPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $secretPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $allowedRoot -Recurse -Force -ErrorAction SilentlyContinue

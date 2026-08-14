@@ -28,6 +28,7 @@ use windows_sys::Win32::System::Threading::{
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
+use crate::acl_ledger::with_acl_grants;
 use crate::protocol::{LaunchRequest, NetworkMode};
 
 pub fn self_probe() -> Result<u8, String> {
@@ -82,14 +83,13 @@ pub fn launch_atomic(request: &LaunchRequest) -> Result<u8, String> {
 }
 
 pub fn launch_appcontainer(request: &LaunchRequest) -> Result<u8, String> {
-    if !request.read_roots.is_empty() || !request.write_roots.is_empty() {
-        return Err("filesystem roots require the AppContainer ACL ledger".to_owned());
-    }
-
     unsafe {
         let job = create_kill_on_close_job()?;
         let profile = AppContainerProfile::open()?;
-        let result = create_appcontainer_child(request, job, profile.sid);
+        let sid = sid_string(profile.sid)?;
+        let result = with_acl_grants(request, &sid, || {
+            create_appcontainer_child(request, job, profile.sid)
+        });
         CloseHandle(job);
         result
     }
@@ -98,15 +98,21 @@ pub fn launch_appcontainer(request: &LaunchRequest) -> Result<u8, String> {
 pub fn appcontainer_sid_string() -> Result<String, String> {
     unsafe {
         let profile = AppContainerProfile::open()?;
-        let mut value = null_mut();
-        if ConvertSidToStringSidW(profile.sid, &mut value) == 0 {
-            return Err(last_error("ConvertSidToStringSidW(AppContainer)"));
-        }
-        let length = (0..).take_while(|&index| *value.add(index) != 0).count();
-        let result = String::from_utf16_lossy(std::slice::from_raw_parts(value, length));
-        LocalFree(value as *mut c_void);
-        Ok(result)
+        sid_string(profile.sid)
     }
+}
+
+unsafe fn sid_string(sid: *mut c_void) -> Result<String, String> {
+    let mut value = null_mut();
+    if unsafe { ConvertSidToStringSidW(sid, &mut value) } == 0 {
+        return Err(last_error("ConvertSidToStringSidW(AppContainer)"));
+    }
+    let length = (0..)
+        .take_while(|&index| unsafe { *value.add(index) != 0 })
+        .count();
+    let result = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(value, length) });
+    unsafe { LocalFree(value as *mut c_void) };
+    Ok(result)
 }
 
 struct AppContainerProfile {

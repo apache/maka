@@ -61,7 +61,8 @@ non-zero, fail-closed outcome.
 
 `launcher --appcontainer <request.json>` is the isolated-identity candidate. It
 combines an AppContainer token with the same atomic Job attribute and supplies
-no network capabilities. The smoke proves the identity and process boundary,
-denial of a user-readable file outside the container, and denial of a live
-loopback endpoint. Requests containing filesystem roots still fail closed until
-the ACL grant/restore ledger is implemented.
+no network capabilities. Before launch, the broker persists an ACL recovery
+ledger, rejects reparse points, and grants the AppContainer SID only the
+requested roots. The smoke proves allowed read/write access, denial of a
+user-readable sibling file, denial of a live loopback endpoint, and removal of
+the temporary AppContainer ACE after exit.

@@ -1,6 +1,7 @@
 #[cfg(not(windows))]
 compile_error!("maka-windows-sandbox-spike is Windows-only");
 
+mod acl_ledger;
 mod broker_authorization;
 #[cfg(test)]
 mod broker_authorization_tests;
