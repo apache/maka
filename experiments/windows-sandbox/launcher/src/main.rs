@@ -1,6 +1,9 @@
 #[cfg(not(windows))]
 compile_error!("maka-windows-sandbox-spike is Windows-only");
 
+mod broker_authorization;
+#[cfg(test)]
+mod broker_authorization_tests;
 mod protocol;
 #[cfg(test)]
 mod protocol_tests;
@@ -10,6 +13,7 @@ use std::env;
 use std::fs;
 use std::process::ExitCode;
 
+use broker_authorization::BrokerAuthorizer;
 use protocol::{BrokerLaunchOutcome, BrokerLaunchRequest, BrokerLaunchResponse, LaunchRequest};
 
 fn main() -> ExitCode {
@@ -71,7 +75,11 @@ fn run() -> Result<u8, String> {
 fn validate_broker_request(source: &str) -> Result<u8, String> {
     let request: BrokerLaunchRequest = serde_json::from_str(source)
         .map_err(|error| format!("broker request rejected: {error}"))?;
-    let response = match request.validate() {
+    // Contract validation has no pipe peer yet. The service path will replace
+    // these claimed values with the connected process PID and approved policy.
+    let mut authorizer = BrokerAuthorizer::new([request.profile_digest.clone()]);
+    let connected_client_pid = request.client_pid;
+    let response = match authorizer.authorize(&request, connected_client_pid) {
         Ok(()) => BrokerLaunchResponse {
             version: 1,
             request_id: request.request_id,
@@ -84,8 +92,8 @@ fn validate_broker_request(source: &str) -> Result<u8, String> {
             version: 1,
             request_id: request.request_id,
             outcome: BrokerLaunchOutcome::Rejected {
-                code: "invalid_request".to_owned(),
-                message: error,
+                code: error.code().to_owned(),
+                message: error.message(),
             },
         },
     };
