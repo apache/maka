@@ -110,7 +110,7 @@ def request(flow: object) -> None:
         if not matched:
             return
         rule_id, host, normalized_path = matched
-        append_audit(rule_id, host, normalized_path)
+        append_audit(rule_id, host, normalized_path.partition("?")[0])
         flow.response = blocked_response(rule_id)
     except Exception as error:
         flow.response = http.Response.make(
