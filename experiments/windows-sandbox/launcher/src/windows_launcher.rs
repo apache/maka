@@ -15,9 +15,11 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessWithTokenW, GetCurrentProcess,
-    GetExitCodeProcess, GetProcessId, OpenProcessToken, PROCESS_INFORMATION, ResumeThread,
-    STARTUPINFOW, TerminateProcess, WaitForSingleObject,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, CreateProcessWithTokenW,
+    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
+    GetExitCodeProcess, GetProcessId, InitializeProcThreadAttributeList, OpenProcessToken,
+    PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, ResumeThread, STARTUPINFOEXW,
+    STARTUPINFOW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use crate::protocol::{LaunchRequest, NetworkMode};
@@ -43,12 +45,7 @@ pub fn self_probe() -> Result<u8, String> {
 }
 
 pub fn launch(request: &LaunchRequest) -> Result<u8, String> {
-    if matches!(request.network, NetworkMode::Restricted) {
-        return Err("network.restricted is not implemented by the W0 process prototype".to_owned());
-    }
-    if !request.read_roots.is_empty() || !request.write_roots.is_empty() {
-        return Err("filesystem roots require the W0 identity/ACL prototype".to_owned());
-    }
+    validate_unimplemented_policy(request)?;
 
     unsafe {
         let primary = duplicate_primary_token()?;
@@ -60,6 +57,31 @@ pub fn launch(request: &LaunchRequest) -> Result<u8, String> {
         CloseHandle(job);
         result
     }
+}
+
+pub fn launch_atomic(request: &LaunchRequest) -> Result<u8, String> {
+    validate_unimplemented_policy(request)?;
+
+    unsafe {
+        let primary = duplicate_primary_token()?;
+        let restricted = create_restricted_token(primary)?;
+        CloseHandle(primary);
+        let job = create_kill_on_close_job()?;
+        let result = create_child_atomic(request, restricted, job);
+        CloseHandle(restricted);
+        CloseHandle(job);
+        result
+    }
+}
+
+fn validate_unimplemented_policy(request: &LaunchRequest) -> Result<(), String> {
+    if matches!(request.network, NetworkMode::Restricted) {
+        return Err("network.restricted is not implemented by the W0 process prototype".to_owned());
+    }
+    if !request.read_roots.is_empty() || !request.write_roots.is_empty() {
+        return Err("filesystem roots require the W0 identity/ACL prototype".to_owned());
+    }
+    Ok(())
 }
 
 unsafe fn duplicate_primary_token() -> Result<HANDLE, String> {
@@ -208,6 +230,124 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
         CloseHandle(process.hProcess);
     }
     result
+}
+
+unsafe fn create_child_atomic(
+    request: &LaunchRequest,
+    token: HANDLE,
+    job: HANDLE,
+) -> Result<u8, String> {
+    let mut command = quote_command(&request.executable, &request.arguments);
+    let mut executable = wide(&request.executable);
+    let mut cwd = wide(&request.cwd);
+    let environment = environment_block(&request.environment);
+    let environment_ptr = if environment.is_empty() {
+        null()
+    } else {
+        environment.as_ptr() as *const c_void
+    };
+
+    let mut attribute_size = 0usize;
+    unsafe { InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut attribute_size) };
+    if attribute_size == 0 {
+        return Err(last_error("InitializeProcThreadAttributeList(size)"));
+    }
+    let words = attribute_size.div_ceil(size_of::<usize>());
+    let mut attribute_storage = vec![0usize; words];
+    let attribute_list = attribute_storage.as_mut_ptr() as *mut c_void;
+    if unsafe { InitializeProcThreadAttributeList(attribute_list, 1, 0, &mut attribute_size) } == 0
+    {
+        return Err(last_error("InitializeProcThreadAttributeList"));
+    }
+
+    let mut job_value = job;
+    if unsafe {
+        UpdateProcThreadAttribute(
+            attribute_list,
+            0,
+            PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+            &mut job_value as *mut HANDLE as *const c_void,
+            size_of::<HANDLE>(),
+            null_mut(),
+            null(),
+        )
+    } == 0
+    {
+        unsafe { DeleteProcThreadAttributeList(attribute_list) };
+        return Err(last_error("UpdateProcThreadAttribute(JOB_LIST)"));
+    }
+
+    let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    startup.lpAttributeList = attribute_list;
+    let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
+    let creation_flags = CREATE_SUSPENDED
+        | EXTENDED_STARTUPINFO_PRESENT
+        | if environment.is_empty() {
+            0
+        } else {
+            CREATE_UNICODE_ENVIRONMENT
+        };
+    let created = unsafe {
+        CreateProcessAsUserW(
+            token,
+            executable.as_mut_ptr(),
+            command.as_mut_ptr(),
+            null(),
+            null(),
+            0,
+            creation_flags,
+            environment_ptr,
+            cwd.as_mut_ptr(),
+            &startup.StartupInfo,
+            &mut process,
+        )
+    };
+    unsafe { DeleteProcThreadAttributeList(attribute_list) };
+    if created == 0 {
+        return Err(last_error("CreateProcessAsUserW(atomic-job)"));
+    }
+
+    let result = (|| -> Result<u8, String> {
+        if unsafe { ResumeThread(process.hThread) } == u32::MAX {
+            return Err(last_error("ResumeThread"));
+        }
+        let child_restricted = unsafe { child_token_is_restricted(process.hProcess) }?;
+        let child_in_job = unsafe { child_process_is_in_job(process.hProcess) }?;
+        if child_restricted && child_in_job {
+            println!("{{\"restrictedToken\":true,\"inJob\":true,\"atomicJob\":true}}");
+            unsafe { wait_for_child(process.hProcess) }
+        } else {
+            Err("atomic launch did not establish the required token and Job boundary".to_owned())
+        }
+    })();
+    unsafe {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+    result
+}
+
+unsafe fn wait_for_child(process: HANDLE) -> Result<u8, String> {
+    let wait = unsafe { WaitForSingleObject(process, 30_000) };
+    if wait == WAIT_TIMEOUT {
+        unsafe { TerminateProcess(process, 124) };
+        return Err("child exceeded the 30 second W0 timeout".to_owned());
+    }
+    if wait != WAIT_OBJECT_0 {
+        return Err(last_error("WaitForSingleObject"));
+    }
+    let mut exit_code = 1;
+    if unsafe { GetExitCodeProcess(process, &mut exit_code) } == 0 {
+        return Err(last_error("GetExitCodeProcess"));
+    }
+    if exit_code > u8::MAX as u32 {
+        return Err(format!(
+            "child {} returned unsupported exit code {exit_code}",
+            unsafe { GetProcessId(process) }
+        ));
+    }
+    Ok(exit_code as u8)
 }
 
 unsafe fn child_token_is_restricted(process: HANDLE) -> Result<bool, String> {

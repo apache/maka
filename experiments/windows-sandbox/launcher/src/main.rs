@@ -25,14 +25,21 @@ fn run() -> Result<u8, String> {
     let _program = args.next();
     let first = args
         .next()
-        .ok_or_else(|| "usage: maka-windows-sandbox-spike <request.json>".to_owned())?;
+        .ok_or_else(|| "usage: maka-windows-sandbox-spike [--atomic] <request.json>".to_owned())?;
     if first == "--self-probe" {
         if args.next().is_some() {
             return Err("--self-probe does not accept arguments".to_owned());
         }
         return windows_launcher::self_probe();
     }
-    let request_path = first;
+    let (atomic, request_path) = if first == "--atomic" {
+        let path = args
+            .next()
+            .ok_or_else(|| "--atomic requires exactly one request path".to_owned())?;
+        (true, path)
+    } else {
+        (false, first)
+    };
     if args.next().is_some() {
         return Err("expected exactly one request path".to_owned());
     }
@@ -41,5 +48,9 @@ fn run() -> Result<u8, String> {
     let request: LaunchRequest =
         serde_json::from_str(&source).map_err(|error| error.to_string())?;
     request.validate()?;
-    windows_launcher::launch(&request)
+    if atomic {
+        windows_launcher::launch_atomic(&request)
+    } else {
+        windows_launcher::launch(&request)
+    }
 }

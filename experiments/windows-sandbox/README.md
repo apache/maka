@@ -40,3 +40,12 @@ does not satisfy W0 and must not be connected to the product.
 the privileges needed to test the separate privileged-broker prototype. A
 missing privilege is an expected fail-closed capability result; it must not be
 worked around by silently using the non-atomic launcher path.
+
+`launcher --atomic <request.json>` is the privileged-broker launch candidate.
+It passes the Job handle through `PROC_THREAD_ATTRIBUTE_JOB_LIST` to
+`CreateProcessAsUserW`, so successful process creation and Job membership are
+one operation. The launcher verifies the restricted token and Job membership
+before reporting `atomicJob:true`. The atomic candidate never falls back to the
+post-create assignment path. `atomic-launch-smoke.ps1` requires complete proof
+when the runner has both broker privileges and otherwise requires an explicit
+non-zero, fail-closed outcome.

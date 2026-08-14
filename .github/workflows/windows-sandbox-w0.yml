@@ -26,9 +26,13 @@ jobs:
       - name: Record atomic launcher capability
         shell: pwsh
         run: ./experiments/windows-sandbox/atomic-launch-capability.ps1
+
       - name: Build process-containment launcher
         working-directory: experiments/windows-sandbox/launcher
         run: cargo build --locked
+      - name: Probe atomic Job launch candidate
+        shell: pwsh
+        run: ./experiments/windows-sandbox/atomic-launch-smoke.ps1
       - name: Probe unprivileged restricted-token candidate
         shell: pwsh
         run: ./experiments/windows-sandbox/launcher-smoke.ps1
