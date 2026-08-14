@@ -1,5 +1,14 @@
 $ErrorActionPreference = 'Stop'
 
+function Read-Exact([IO.Stream]$Stream, [byte[]]$Buffer) {
+  $offset = 0
+  while ($offset -lt $Buffer.Length) {
+    $count = $Stream.Read($Buffer, $offset, $Buffer.Length - $offset)
+    if ($count -eq 0) { throw 'Broker returned a truncated response' }
+    $offset += $count
+  }
+}
+
 $launcher = Join-Path $PSScriptRoot 'launcher\target\debug\maka-windows-sandbox-spike.exe'
 if (-not (Test-Path -LiteralPath $launcher)) {
   throw "Missing launcher binary: $launcher"
@@ -55,19 +64,13 @@ try {
   $client.Flush()
 
   $responsePrefix = [byte[]]::new(4)
-  $read = $client.Read($responsePrefix, 0, 4)
-  if ($read -ne 4) { throw 'Broker returned a truncated response prefix' }
+  Read-Exact $client $responsePrefix
   $responseLength = [BitConverter]::ToUInt32($responsePrefix, 0)
   if ($responseLength -eq 0 -or $responseLength -gt 65536) {
     throw "Broker returned invalid response length: $responseLength"
   }
   $responsePayload = [byte[]]::new($responseLength)
-  $offset = 0
-  while ($offset -lt $responseLength) {
-    $count = $client.Read($responsePayload, $offset, $responseLength - $offset)
-    if ($count -eq 0) { throw 'Broker returned a truncated response payload' }
-    $offset += $count
-  }
+  Read-Exact $client $responsePayload
   $response = [Text.Encoding]::UTF8.GetString($responsePayload) | ConvertFrom-Json
   if ($response.requestId -ne 'pipe-smoke' -or
       $response.outcome.kind -ne 'rejected' -or
