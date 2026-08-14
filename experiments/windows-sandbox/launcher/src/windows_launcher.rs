@@ -4,7 +4,8 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
@@ -91,6 +92,20 @@ pub fn launch_appcontainer(request: &LaunchRequest) -> Result<u8, String> {
         let result = create_appcontainer_child(request, job, profile.sid);
         CloseHandle(job);
         result
+    }
+}
+
+pub fn appcontainer_sid_string() -> Result<String, String> {
+    unsafe {
+        let profile = AppContainerProfile::open()?;
+        let mut value = null_mut();
+        if ConvertSidToStringSidW(profile.sid, &mut value) == 0 {
+            return Err(last_error("ConvertSidToStringSidW(AppContainer)"));
+        }
+        let length = (0..).take_while(|&index| *value.add(index) != 0).count();
+        let result = String::from_utf16_lossy(std::slice::from_raw_parts(value, length));
+        LocalFree(value as *mut c_void);
+        Ok(result)
     }
 }
 

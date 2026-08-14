@@ -9,15 +9,32 @@ if (-not (Test-Path -LiteralPath $launcher)) {
 $tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
 $requestPath = Join-Path $tempRoot "maka-windows-appcontainer-$PID.json"
 $secretPath = Join-Path $tempRoot "maka-windows-appcontainer-secret-$PID.txt"
+$allowedRoot = Join-Path $tempRoot "maka-windows-appcontainer-allowed-$PID"
+$allowedReadPath = Join-Path $allowedRoot 'read.txt'
+$allowedWritePath = Join-Path $allowedRoot 'write.txt'
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $listener.Start()
 $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
 'must-not-be-readable' | Set-Content -LiteralPath $secretPath -Encoding utf8
+New-Item -ItemType Directory -Path $allowedRoot | Out-Null
+[IO.File]::WriteAllText($allowedReadPath, 'allowed-read')
+$appContainerSid = (& $launcher --appcontainer-sid 2>&1) -join ''
+if ($LASTEXITCODE -ne 0 -or $appContainerSid -notmatch '^S-1-15-2-') {
+  throw "Unable to resolve AppContainer SID: $appContainerSid"
+}
+& icacls.exe $allowedRoot /grant "*${appContainerSid}:(OI)(CI)M" /T /C /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Unable to grant the AppContainer test ACL' }
 $request = @{
   version = 1
   requestId = 'appcontainer-smoke'
   executable = $launcher
-  arguments = @('--boundary-probe', $secretPath, "$port")
+  arguments = @(
+    '--boundary-probe',
+    $secretPath,
+    $allowedReadPath,
+    $allowedWritePath,
+    "$port"
+  )
   cwd = Split-Path -Parent $launcher
   readRoots = @()
   writeRoots = @()
@@ -35,12 +52,18 @@ try {
       $rendered -notmatch '"inJob":true' -or
       $rendered -notmatch '"atomicJob":true' -or
       $rendered -notmatch '"fileDenied":true' -or
+      $rendered -notmatch '"allowedRead":true' -or
+      $rendered -notmatch '"allowedWrite":true' -or
       $rendered -notmatch '"networkDenied":true') {
     throw "AppContainer boundary was not established: exit=$exitCode output=$rendered"
   }
   Write-Host "AppContainer token and atomic Job boundary verified: $rendered"
 } finally {
   $listener.Stop()
+  if ($appContainerSid) {
+    & icacls.exe $allowedRoot /remove "*$appContainerSid" /T /C /Q 2>$null | Out-Null
+  }
   Remove-Item -LiteralPath $requestPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $secretPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $allowedRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -52,20 +52,38 @@ fn run() -> Result<u8, String> {
         }
         return windows_launcher::self_probe();
     }
+    if first == "--appcontainer-sid" {
+        if args.next().is_some() {
+            return Err("--appcontainer-sid does not accept arguments".to_owned());
+        }
+        println!("{}", windows_launcher::appcontainer_sid_string()?);
+        return Ok(0);
+    }
     if first == "--boundary-probe" {
-        let denied_path = args
-            .next()
-            .ok_or_else(|| "--boundary-probe requires denied path and loopback port".to_owned())?;
+        let denied_path = args.next().ok_or_else(|| {
+            "--boundary-probe requires resource paths and loopback port".to_owned()
+        })?;
+        let allowed_read_path = args.next().ok_or_else(|| {
+            "--boundary-probe requires resource paths and loopback port".to_owned()
+        })?;
+        let allowed_write_path = args.next().ok_or_else(|| {
+            "--boundary-probe requires resource paths and loopback port".to_owned()
+        })?;
         let port = args
             .next()
-            .ok_or_else(|| "--boundary-probe requires denied path and loopback port".to_owned())?
+            .ok_or_else(|| "--boundary-probe requires resource paths and loopback port".to_owned())?
             .to_string_lossy()
             .parse::<u16>()
             .map_err(|error| format!("invalid boundary-probe port: {error}"))?;
         if args.next().is_some() {
-            return Err("--boundary-probe accepts exactly two arguments".to_owned());
+            return Err("--boundary-probe accepts exactly four arguments".to_owned());
         }
-        return boundary_probe(&denied_path.to_string_lossy(), port);
+        return boundary_probe(
+            &denied_path.to_string_lossy(),
+            &allowed_read_path.to_string_lossy(),
+            &allowed_write_path.to_string_lossy(),
+            port,
+        );
     }
     if first == "--launch-digest" {
         let request_path = args
@@ -163,13 +181,23 @@ fn run() -> Result<u8, String> {
     }
 }
 
-fn boundary_probe(denied_path: &str, port: u16) -> Result<u8, String> {
+fn boundary_probe(
+    denied_path: &str,
+    allowed_read_path: &str,
+    allowed_write_path: &str,
+    port: u16,
+) -> Result<u8, String> {
     let file_denied = fs::read(denied_path).is_err();
+    let allowed_read =
+        matches!(fs::read_to_string(allowed_read_path), Ok(value) if value == "allowed-read");
+    let allowed_write = fs::write(allowed_write_path, b"allowed-write").is_ok();
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let network_denied = TcpStream::connect_timeout(&address, Duration::from_secs(2)).is_err();
-    println!("{{\"fileDenied\":{file_denied},\"networkDenied\":{network_denied}}}");
-    if !file_denied || !network_denied {
-        return Err("AppContainer boundary allowed a denied resource".to_owned());
+    println!(
+        "{{\"fileDenied\":{file_denied},\"allowedRead\":{allowed_read},\"allowedWrite\":{allowed_write},\"networkDenied\":{network_denied}}}"
+    );
+    if !file_denied || !allowed_read || !allowed_write || !network_denied {
+        return Err("AppContainer boundary did not enforce the requested resources".to_owned());
     }
     Ok(0)
 }
