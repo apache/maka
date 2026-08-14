@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
@@ -74,6 +74,10 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       content: 'export const healthSignal = true;\n',
     });
 
+    // Capture the identity at T0 (the boundary executor does this in
+    // production): a write mutation on an existing target must carry the
+    // inode, or the worker refuses to skip CAS.
+    const editMeta = await stat(sourceFile, { bigint: true });
     const edit = await client.execute({
       operation: {
         kind: 'edit',
@@ -83,6 +87,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: { dev: String(editMeta.dev), ino: String(editMeta.ino) },
     });
     assert.equal(edit.kind, 'edit');
     assert.equal(await readFile(sourceFile, 'utf8'), 'export const healthSignal = "healthy";\n');
