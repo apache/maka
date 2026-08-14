@@ -4,6 +4,7 @@ type ExternalSessionImportCopy = {
   title: string;
   description: string;
   sourceLabel: string;
+  filtersAria: string;
   codex: string;
   includeArchived: string;
   loading: string;
@@ -32,6 +33,7 @@ const COPY = {
     title: '导入外部会话',
     description: '选择一个本机 Agent 会话，将原始对话记录转换为 Maka 会话。',
     sourceLabel: '来源',
+    filtersAria: '来源与筛选',
     codex: 'Codex',
     includeArchived: '包含已归档会话',
     loading: '正在读取外部会话…',
@@ -59,6 +61,7 @@ const COPY = {
     title: 'Import external conversation',
     description: 'Choose a local Agent conversation and convert its raw history into a Maka Session.',
     sourceLabel: 'Source',
+    filtersAria: 'Source and filters',
     codex: 'Codex',
     includeArchived: 'Include archived conversations',
     loading: 'Reading external conversations…',

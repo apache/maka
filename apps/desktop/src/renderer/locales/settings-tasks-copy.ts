@@ -8,6 +8,8 @@ export type SettingsTasksCopy = {
   selectAllAria: string;
   selectRowAria(name: string): string;
   selectedCount(count: number): string;
+  totalCount(count: number): string;
+  batchActionsAria: string;
   openTaskAria(name: string): string;
   restore: string;
   restoring: string;
@@ -17,8 +19,6 @@ export type SettingsTasksCopy = {
   deleting: string;
   retry: string;
   loadingLabel: string;
-  importTitle: string;
-  importDescription: string;
   importAction: string;
   loadFailed: string;
   emptyAllTitle: string;
@@ -49,6 +49,8 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     selectAllAria: '全选当前列表',
     selectRowAria: (name: string) => `选择「${name}」`,
     selectedCount: (count: number) => `已选 ${count} 条`,
+    totalCount: (count: number) => `共 ${count} 条`,
+    batchActionsAria: '批量操作',
     openTaskAria: (name: string) => `打开「${name}」`,
     restore: '恢复',
     restoring: '恢复中…',
@@ -58,8 +60,6 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     deleting: '删除中…',
     retry: '重试',
     loadingLabel: '正在载入任务',
-    importTitle: '从其他工具导入',
-    importDescription: '把其他 agent 工具里的历史任务导入 Maka。',
     importAction: '导入任务',
     loadFailed: '任务列表载入失败，请重试。',
     emptyAllTitle: '还没有任务',
@@ -88,6 +88,8 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     selectAllAria: 'Select every task in this list',
     selectRowAria: (name: string) => `Select ${name}`,
     selectedCount: (count: number) => `${count} selected`,
+    totalCount: (count: number) => (count === 1 ? '1 task' : `${count} tasks`),
+    batchActionsAria: 'Bulk actions',
     openTaskAria: (name: string) => `Open ${name}`,
     restore: 'Restore',
     restoring: 'Restoring…',
@@ -97,8 +99,6 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     deleting: 'Deleting…',
     retry: 'Try again',
     loadingLabel: 'Loading tasks',
-    importTitle: 'Import from another tool',
-    importDescription: 'Bring task history from other agent tools into Maka.',
     importAction: 'Import tasks',
     loadFailed: 'Could not load the task list. Try again.',
     emptyAllTitle: 'No tasks yet',

@@ -3,14 +3,17 @@ import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import { formatCompactTimestamp } from '@maka/core/relative-time';
 import { Badge, Button, EmptyState, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { ChevronRight, ICON_SIZE } from '@maka/ui/icons';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { HStack, List, ListItem, Text } from '@astryxdesign/core';
+import { IconButton } from '@astryxdesign/core/IconButton';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
-import { getSettingsTasksCopy } from '../locales/settings-tasks-copy.js';
+import { Toolbar } from '@astryxdesign/core/Toolbar';
+import { getSettingsTasksCopy, type SettingsTasksCopy } from '../locales/settings-tasks-copy.js';
 import { ExternalSessionImportDialog } from '../external-session-import-dialog.js';
 import { createSessionListRefresher } from '../session-read-state.js';
 import { settingsActionErrorMessage } from './settings-error-copy';
-import { SettingsActions, SettingsPage, SettingsSection } from './settings-section';
+import { SettingsPage, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { projectTaskRows, type TaskScope } from './task-catalog-rows';
 import { useActionGuard } from './use-action-guard';
@@ -22,7 +25,7 @@ export interface TasksSettingsPageProps {
 }
 
 /**
- * Settings · 活动 · 任务 — the management view of the task catalog.
+ * Settings · 活动 · 任务管理 — the management view of the task catalog.
  *
  * The rail is a navigator: single selection, 260px, always on screen. Managing
  * tasks is the opposite shape — you act on several at once, you need to see
@@ -35,6 +38,12 @@ export interface TasksSettingsPageProps {
  * what a row there means. Mutations reach the rail through the shared
  * `sessions.subscribeChanges` broadcast; neither surface pushes state at the
  * other.
+ *
+ * The layout follows Astryx's bulk-selection pattern: scope and import are
+ * section-header actions, and a `muted` Toolbar sits above the list holding
+ * select-all, the count, and the batch actions. The toolbar is always
+ * mounted — a toolbar that appears on first selection would push the list it
+ * belongs to down the page.
  */
 export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
   const locale = useUiLocale();
@@ -170,8 +179,9 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
       setSelected(new Set());
       setPending(null);
     }
-    if (failed === ids.length) toast.error(failureTitle, settingsActionErrorMessage(firstError, locale));
-    else if (failed > 0) toast.error(failureTitle, copy.partialFailure(failed));
+    if (failed === ids.length) {
+      toast.error(failureTitle, settingsActionErrorMessage(firstError, locale));
+    } else if (failed > 0) toast.error(failureTitle, copy.partialFailure(failed));
     else toast.success(success(ids.length));
     await load();
   }
@@ -227,7 +237,14 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
       return (
         <EmptyState
           title={copy.loadFailed}
-          actions={<Button variant="secondary" size="sm" clickAction={() => void load()} label={copy.retry} />}
+          actions={
+            <Button
+              variant="secondary"
+              size="sm"
+              clickAction={() => void load()}
+              label={copy.retry}
+            />
+          }
         />
       );
     }
@@ -241,85 +258,72 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
     }
     return (
       <>
-        <SettingsActions aria-label={copy.filterAria}>
-          <CheckboxInput
-            label={copy.selectAllAria}
-            isLabelHidden
-            value={allSelected ? true : effectiveSelection.length > 0 ? 'indeterminate' : false}
-            onChange={(checked) => toggleAll(checked)}
-          />
-          <Text type="supporting" size="sm" color="secondary">
-            {effectiveSelection.length > 0 ? copy.selectedCount(effectiveSelection.length) : null}
-          </Text>
-          {effectiveSelection.length > 0 && (
+        {/* Always mounted, never conditional: a toolbar that appears on first
+            selection pushes the list it belongs to down the page. Empty end
+            slot, stable height. */}
+        <Toolbar
+          label={copy.batchActionsAria}
+          size="sm"
+          variant="muted"
+          dividers={['bottom']}
+          startContent={
             <>
-              {restorable.length > 0 && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  isDisabled={busy}
-                  clickAction={() => void restoreSelected()}
-                  label={pending === 'restore' ? copy.restoring : copy.restore}
-                />
-              )}
-              {archivable.length > 0 && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  isDisabled={busy}
-                  clickAction={() => void archiveSelected()}
-                  label={pending === 'archive' ? copy.archiving : copy.archive}
-                />
-              )}
-              <Button
-                variant="destructive"
-                size="sm"
-                isDisabled={busy}
-                clickAction={() => void deleteSelected()}
-                label={pending === 'delete' ? copy.deleting : copy.delete}
+              <CheckboxInput
+                label={copy.selectAllAria}
+                isLabelHidden
+                value={allSelected ? true : effectiveSelection.length > 0 ? 'indeterminate' : false}
+                onChange={(checked) => toggleAll(checked)}
               />
+              <Text type="supporting" size="sm" color="secondary">
+                {effectiveSelection.length > 0
+                  ? copy.selectedCount(effectiveSelection.length)
+                  : copy.totalCount(visible.length)}
+              </Text>
             </>
-          )}
-        </SettingsActions>
+          }
+          endContent={
+            effectiveSelection.length > 0 ? (
+              <>
+                {restorable.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    isDisabled={busy}
+                    clickAction={() => void restoreSelected()}
+                    label={pending === 'restore' ? copy.restoring : copy.restore}
+                  />
+                )}
+                {archivable.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    isDisabled={busy}
+                    clickAction={() => void archiveSelected()}
+                    label={pending === 'archive' ? copy.archiving : copy.archive}
+                  />
+                )}
+                <Button
+                  variant="destructive"
+                  isDisabled={busy}
+                  clickAction={() => void deleteSelected()}
+                  label={pending === 'delete' ? copy.deleting : copy.delete}
+                />
+              </>
+            ) : undefined
+          }
+        />
         <List density="balanced" hasDividers>
           {visible.map((session) => (
-            <ListItem
+            <TaskRow
               key={session.id}
-              label={session.name}
-              onClick={onOpenSession ? () => onOpenSession(session.id) : undefined}
-              aria-label={onOpenSession ? copy.openTaskAria(session.name) : undefined}
-              startContent={
-                // The row opens the task; the checkbox selects it. Without this
-                // the checkbox would do both.
-                <span onClick={(event) => event.stopPropagation()}>
-                  <CheckboxInput
-                    label={copy.selectRowAria(session.name)}
-                    isLabelHidden
-                    value={selected.has(session.id)}
-                    onChange={(checked) => toggleRow(session.id, checked)}
-                  />
-                </span>
+              session={session}
+              copy={copy}
+              locale={locale}
+              scope={scope}
+              projectName={
+                session.projectId ? projectNames.get(session.projectId) : undefined
               }
-              endContent={
-                <HStack gap={2} vAlign="center">
-                  {/* The archived badge only earns its place in the `all`
-                      view, where archived and active rows sit together.
-                      In the archived view every row carries it. */}
-                  {scope === 'all' && session.isArchived && (
-                    <Badge variant="neutral" label={copy.archivedBadge} />
-                  )}
-                  <Text type="supporting" size="sm" color="secondary">
-                    {session.projectId
-                      ? (projectNames.get(session.projectId) ?? copy.noProject)
-                      : copy.noProject}
-                  </Text>
-                  <Text type="supporting" size="sm" color="secondary">
-                    {session.lastMessageAt
-                      ? formatCompactTimestamp(session.lastMessageAt, Date.now(), locale)
-                      : '—'}
-                  </Text>
-                </HStack>
-              }
+              isSelected={selected.has(session.id)}
+              onToggle={(checked) => toggleRow(session.id, checked)}
+              onOpen={onOpenSession ? () => onOpenSession(session.id) : undefined}
             />
           ))}
         </List>
@@ -332,26 +336,26 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
       <SettingsSection
         variant="bare"
         action={
-          <SegmentedControl
-            value={scope}
-            onChange={(next) => changeScope(next as TaskScope)}
-            label={copy.filterAria}
-            size="sm"
-          >
-            <SegmentedControlItem value="all" label={copy.filterAll} />
-            <SegmentedControlItem value="archived" label={copy.filterArchived} />
-          </SegmentedControl>
+          <HStack gap={2} vAlign="center">
+            <SegmentedControl
+              value={scope}
+              onChange={(next) => changeScope(next as TaskScope)}
+              label={copy.filterAria}
+              size="sm"
+            >
+              <SegmentedControlItem value="all" label={copy.filterAll} />
+              <SegmentedControlItem value="archived" label={copy.filterArchived} />
+            </SegmentedControl>
+            <Button
+              variant="secondary"
+              size="sm"
+              clickAction={() => setImportOpen(true)}
+              label={copy.importAction}
+            />
+          </HStack>
         }
       >
         {taskList()}
-      </SettingsSection>
-
-      <SettingsSection title={copy.importTitle} description={copy.importDescription}>
-        <Button
-          variant="secondary"
-          clickAction={() => setImportOpen(true)}
-          label={copy.importAction}
-        />
       </SettingsSection>
 
       {/* Self-contained here rather than routed through AppShell's overlay
@@ -367,5 +371,79 @@ export function TasksSettingsPage({ onOpenSession }: TasksSettingsPageProps) {
         }}
       />
     </SettingsPage>
+  );
+}
+
+/**
+ * One task row.
+ *
+ * The row surface selects rather than opens. Astryx's `interactiveRef` makes
+ * the whole row an enlarged tap target for the checkbox it already contains,
+ * which is the accessible way to do this: a row-level `onClick` plus a nested
+ * checkbox would be two tab stops for one option. Opening the task is the
+ * secondary action, so it gets the explicit affordance at the end of the row.
+ */
+function TaskRow({
+  session,
+  copy,
+  locale,
+  scope,
+  projectName,
+  isSelected,
+  onToggle,
+  onOpen,
+}: {
+  session: SessionSummary;
+  copy: SettingsTasksCopy;
+  locale: ReturnType<typeof useUiLocale>;
+  scope: TaskScope;
+  projectName: string | undefined;
+  isSelected: boolean;
+  onToggle: (checked: boolean) => void;
+  onOpen: (() => void) | undefined;
+}) {
+  const checkboxRef = useRef<HTMLInputElement>(null);
+  return (
+    <ListItem
+      label={session.name}
+      isSelected={isSelected}
+      interactiveRef={checkboxRef}
+      startContent={
+        <CheckboxInput
+          ref={checkboxRef}
+          label={copy.selectRowAria(session.name)}
+          isLabelHidden
+          value={isSelected}
+          onChange={onToggle}
+        />
+      }
+      endContent={
+        <HStack gap={2} vAlign="center">
+          {/* The archived badge only earns its place in the `all` view, where
+              archived and active rows sit together. In the archived view every
+              row carries it. */}
+          {scope === 'all' && session.isArchived && (
+            <Badge variant="neutral" label={copy.archivedBadge} />
+          )}
+          <Text type="supporting" size="sm" color="secondary">
+            {projectName ?? copy.noProject}
+          </Text>
+          <Text type="supporting" size="sm" color="secondary">
+            {session.lastMessageAt
+              ? formatCompactTimestamp(session.lastMessageAt, Date.now(), locale)
+              : '—'}
+          </Text>
+          {onOpen && (
+            <IconButton
+              variant="ghost"
+              size="sm"
+              label={copy.openTaskAria(session.name)}
+              icon={<ChevronRight size={ICON_SIZE.control} aria-hidden="true" />}
+              onClick={onOpen}
+            />
+          )}
+        </HStack>
+      }
+    />
   );
 }
