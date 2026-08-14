@@ -30,6 +30,7 @@ import {
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
 import { useTurnVirtualizer } from './use-turn-virtualizer.js';
+import { placeChatConversationItems } from './chat-conversation-items.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { SessionContextLayer } from './session-context-layer.js';
@@ -98,6 +99,7 @@ export function ChatView(props: {
   conversationItems?: ReadonlyArray<{
     id: string;
     afterTurnId: string;
+    renderWhenAnchorMissing?: boolean;
     content: ReactNode;
   }>;
   /**
@@ -386,16 +388,15 @@ export function ChatView(props: {
     (sessionId: string) => onOpenLinkedSessionRef.current?.(sessionId),
     [],
   );
-  const conversationItemsByTurn = useMemo(() => {
-    const items = new Map<string, Array<{ id: string; content: ReactNode }>>();
-    for (const item of props.conversationItems ?? []) {
-      const current = items.get(item.afterTurnId) ?? [];
-      current.push({ id: item.id, content: item.content });
-      items.set(item.afterTurnId, current);
-    }
-    return items;
-  }, [props.conversationItems]);
   const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
+  const conversationItemPlacement = useMemo(() => placeChatConversationItems(
+    (props.conversationItems ?? []).map((item) => ({
+      afterTurnId: item.afterTurnId,
+      renderWhenAnchorMissing: item.renderWhenAnchorMissing,
+      value: { id: item.id, content: item.content },
+    })),
+    turnIds,
+  ), [props.conversationItems, turnIds]);
   const turnIdsRef = useRef(turnIds);
   turnIdsRef.current = turnIds;
   const loadTranscriptTurnRef = useRef(props.onLoadTranscriptTurn);
@@ -498,10 +499,11 @@ export function ChatView(props: {
   }
 
   const deepResearchActive = isDeepResearchSession(props.activeSession.labels);
-  const conversationItems = props.conversationItems ?? [];
+  const hasVisibleConversationItem =
+    conversationItemPlacement.byTurn.size > 0 || conversationItemPlacement.orphan !== undefined;
   const showEmptyState =
-    (chat.length === 0 && !streamingActive && conversationItems.length === 0)
-    || Boolean(props.messageLoading && chat.length === 0 && conversationItems.length === 0);
+    (chat.length === 0 && !streamingActive && !hasVisibleConversationItem)
+    || Boolean(props.messageLoading && chat.length === 0 && !hasVisibleConversationItem);
   const emptyContent = props.messageLoading
     ? (
         <div className="maka-chat-message-loading">
@@ -641,7 +643,7 @@ export function ChatView(props: {
                           : undefined
                       }
                     />
-                    {conversationItemsByTurn.get(turn.turnId)?.map((item) => (
+                    {conversationItemPlacement.byTurn.get(turn.turnId)?.map((item) => (
                       <Fragment key={item.id}>{item.content}</Fragment>
                     ))}
                   </div>
@@ -680,9 +682,11 @@ export function ChatView(props: {
                   </LocalizedChatMessage>
                 </section>
               )}
-              {conversationItems
-                .filter((item) => !turnIds.has(item.afterTurnId))
-                .map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
+              {conversationItemPlacement.orphan && (
+                <Fragment key={conversationItemPlacement.orphan.id}>
+                  {conversationItemPlacement.orphan.content}
+                </Fragment>
+              )}
             </>
           )}
         </ChatMessageList>

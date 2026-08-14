@@ -105,7 +105,7 @@ describe('turn virtualizer', () => {
     assert.deepEqual([shifted.start, shifted.end], [0, 68]);
   });
 
-  it('keeps the same visible identities across prepends and follows tail appends', () => {
+  it('keeps visible identities across prepends and batched appends', () => {
     const beforeIds = ids(100);
     const beforeLayout = buildTurnVirtualLayout(beforeIds, undefined);
     const before = turnVirtualWindowForViewport(beforeLayout, { scrollTop: 8_000, clientHeight: 800 });
@@ -119,13 +119,14 @@ describe('turn virtualizer', () => {
     assert.equal(prepended[afterPrepend.end - 1], beforeIds[before.end - 1]);
 
     const tail = initialTurnVirtualWindow(beforeLayout, 40);
-    const appended = [...beforeIds, 't100'];
+    const appended = [...beforeIds, ...ids(80).map((id) => `a${id}`)];
     const afterAppend = reconcileTurnVirtualWindow(
       beforeIds,
       buildTurnVirtualLayout(appended, undefined),
       tail,
     );
-    assert.equal(afterAppend.end, appended.length);
+    assert.equal(appended[afterAppend.start], beforeIds[tail.start]);
+    assert.equal(appended[afterAppend.end - 1], beforeIds[tail.end - 1]);
     assert.equal(afterAppend.end - afterAppend.start, 40);
   });
 

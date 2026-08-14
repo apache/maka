@@ -221,11 +221,6 @@ export function reconcileTurnVirtualWindow(
     return initialTurnVirtualWindow(nextLayout, MIN_TURN_WINDOW_SIZE, ensureIndex);
   }
   let end = last + 1;
-  if (previous.end === previousIds.length) {
-    const retained = end - start;
-    end = nextIds.length;
-    start = Math.max(0, end - retained);
-  }
   const retained = retainedRange({ ensureIndex, retainRange }, nextIds.length);
   ({ start, end } = includeRange(start, end, retained));
   ({ start, end } = expandRange(

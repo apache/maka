@@ -243,7 +243,7 @@ test('long transcripts keep a bounded mounted turn window', async ({
   expect(await count()).toBeLessThanOrEqual(100);
 });
 
-test('evicting an interaction endpoint hands focus back to the transcript', async ({
+test('evicting a turn-owned sibling interaction hands focus back to the transcript', async ({
   promptRailWindow: page,
 }) => {
   const scroller = page.locator('[data-chat-scroll-container="true"][data-turn-window="ready"]');
@@ -254,14 +254,13 @@ test('evicting an interaction endpoint hands focus back to the transcript', asyn
   const retainedTurnId = await page.evaluate(() => {
     const turns = document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]');
     const turn = turns.item(turns.length - 1);
-    const focusable = turn?.querySelector<HTMLElement>('button, a[href], [tabindex]:not([tabindex="-1"])');
-    const text = turn && document.createTreeWalker(turn, NodeFilter.SHOW_TEXT).nextNode();
-    if (!turn?.dataset.virtualTurnId || !focusable || !text?.textContent) {
-      throw new Error('the mounted turn has no interaction endpoint');
-    }
-    focusable.focus();
+    if (!turn?.dataset.virtualTurnId) throw new Error('the mounted turn is missing');
+    const turnOwnedAction = document.createElement('button');
+    turnOwnedAction.textContent = 'Turn-owned action';
+    turn.append(turnOwnedAction);
+    turnOwnedAction.focus();
     const range = document.createRange();
-    range.selectNodeContents(text);
+    range.selectNodeContents(turnOwnedAction);
     const selection = document.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);

@@ -1248,6 +1248,9 @@ function AppShellContent({
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
     afterTurnId: proposal.turnId,
+    renderWhenAnchorMissing:
+      proposal.status === 'pending_approval'
+      && proposal.proposalId === planMode.state?.latestProposalId,
     content: <PlanProposalCard proposal={proposal} planMode={planMode} />,
   }));
   const activeMessageLoading = Boolean(activeId && messageLoadPending);

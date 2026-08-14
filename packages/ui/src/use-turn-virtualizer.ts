@@ -301,7 +301,7 @@ function interactiveTurnRange(
     if (!node) return;
     const element = node instanceof Element ? node : node.parentElement;
     if (!element || !root.contains(element)) return;
-    const turnId = element.closest<HTMLElement>('[data-turn-id]')?.dataset.turnId;
+    const turnId = interactionTurnId(element);
     const index = turnId === undefined ? -1 : turnIds.indexOf(turnId);
     if (index >= 0) indexes.push(index);
   };
@@ -325,7 +325,7 @@ function handOffExcludedInteraction(
     if (!node) return false;
     const element = node instanceof Element ? node : node.parentElement;
     if (!element || !root.contains(element)) return false;
-    const turnId = element.closest<HTMLElement>('[data-turn-id]')?.dataset.turnId;
+    const turnId = interactionTurnId(element);
     const index = turnId === undefined ? -1 : turnIds.indexOf(turnId);
     return index >= 0 && (index < next.start || index >= next.end);
   };
@@ -342,4 +342,9 @@ function handOffExcludedInteraction(
   if (isExcluded(root.ownerDocument.activeElement)) {
     root.querySelector<HTMLElement>('.maka-chat-message-list')?.focus({ preventScroll: true });
   }
+}
+
+function interactionTurnId(element: Element): string | undefined {
+  const owner = element.closest<HTMLElement>('[data-turn-id], [data-virtual-turn-id]');
+  return owner?.dataset.turnId ?? owner?.dataset.virtualTurnId;
 }
