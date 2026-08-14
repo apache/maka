@@ -82,7 +82,10 @@ export type {
 } from './types.js';
 export { compileWindowsSandboxPolicy } from './windows-profile.js';
 export type { WindowsSandboxPolicy } from './windows-profile.js';
-export { WindowsBrokerSandboxBackend } from './windows-sandbox.js';
+export {
+  createWindowsBrokerManifestWriter,
+  WindowsBrokerSandboxBackend,
+} from './windows-sandbox.js';
 export type {
   WindowsBrokerManifest,
   WindowsSandboxBackendOptions,

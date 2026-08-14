@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
-$launcher = Join-Path $PSScriptRoot 'launcher\target\debug\maka-windows-sandbox-spike.exe'
+$launcher = Join-Path $PSScriptRoot 'launcher\target\debug\maka-windows-sandbox.exe'
 if (-not (Test-Path -LiteralPath $launcher)) { throw "Missing launcher binary: $launcher" }
 
 $manifestPath = Join-Path $env:RUNNER_TEMP "maka-windows-broker-local-$PID.json"

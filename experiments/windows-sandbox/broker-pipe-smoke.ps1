@@ -9,7 +9,7 @@ function Read-Exact([IO.Stream]$Stream, [byte[]]$Buffer) {
   }
 }
 
-$launcher = Join-Path $PSScriptRoot 'launcher\target\debug\maka-windows-sandbox-spike.exe'
+$launcher = Join-Path $PSScriptRoot 'launcher\target\debug\maka-windows-sandbox.exe'
 if (-not (Test-Path -LiteralPath $launcher)) {
   throw "Missing launcher binary: $launcher"
 }

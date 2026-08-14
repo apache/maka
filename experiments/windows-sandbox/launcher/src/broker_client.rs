@@ -21,8 +21,9 @@ use crate::windows_launcher::current_user_sid_string;
 pub fn run_local(manifest_path: &str) -> Result<u8, String> {
     let source = fs::read_to_string(manifest_path)
         .map_err(|error| format!("read local broker manifest failed: {error}"))?;
-    let request: BrokerLaunchRequest = serde_json::from_str(&source)
+    let mut request: BrokerLaunchRequest = serde_json::from_str(&source)
         .map_err(|error| format!("invalid local broker manifest: {error}"))?;
+    request.client_pid = unsafe { GetCurrentProcessId() };
     request.validate()?;
     let pipe_name = format!(
         r"\\.\pipe\maka-sandbox-local-{}-{}",

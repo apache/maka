@@ -320,6 +320,7 @@ export async function assertPackagedResources(
     join('licenses', 'renderer', 'ALLOGO_LICENSE.txt'),
     join('licenses', 'renderer', 'SEMI_ICONS_LICENSE.txt'),
     join('licenses', 'renderer', 'MINGCUTE_APACHE_LICENSE.txt'),
+    ...(process.platform === 'win32' ? [join('windows-sandbox', 'maka-windows-sandbox.exe')] : []),
   ];
   for (const path of required) {
     await requirePath(join(resourcesPath, path));

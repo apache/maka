@@ -1,13 +1,52 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 
 import {
+  createWindowsBrokerManifestWriter,
   WindowsBrokerSandboxBackend,
   type WindowsBrokerManifest,
 } from '../sandbox/windows-sandbox.js';
+
+test('writes broker manifests to exclusive per-process temporary files', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-windows-manifest-test-'));
+  let manifestDirectory: string | undefined;
+  try {
+    const writeManifest = createWindowsBrokerManifestWriter(root);
+    const manifest: WindowsBrokerManifest = {
+      version: 1,
+      requestId: 'request-1',
+      clientPid: 0,
+      clientNonce: 'a'.repeat(32),
+      profileDigest: 'b'.repeat(64),
+      launch: {
+        version: 1,
+        requestId: 'request-1-launch',
+        executable: String.raw`C:\Windows\System32\cmd.exe`,
+        arguments: [],
+        cwd: String.raw`C:\work`,
+        readRoots: [],
+        writeRoots: [],
+        network: 'restricted',
+        environment: {},
+      },
+    };
+    const first = writeManifest(manifest);
+    const second = writeManifest(manifest);
+    manifestDirectory = dirname(first);
+    assert.notEqual(first, second);
+    assert.deepEqual(JSON.parse(await readFile(first, 'utf8')), manifest);
+    assert.deepEqual(JSON.parse(await readFile(second, 'utf8')), manifest);
+  } finally {
+    if (manifestDirectory) await rm(manifestDirectory, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('transforms a Windows managed profile into a broker-client invocation', () => {
   let written: WindowsBrokerManifest | undefined;

@@ -1,5 +1,5 @@
 #[cfg(not(windows))]
-compile_error!("maka-windows-sandbox-spike is Windows-only");
+compile_error!("maka-windows-sandbox is Windows-only");
 
 mod acl_ledger;
 mod broker_authorization;
@@ -35,7 +35,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            eprintln!("maka-windows-sandbox-spike: {error}");
+            eprintln!("maka-windows-sandbox: {error}");
             ExitCode::FAILURE
         }
     }
@@ -45,7 +45,7 @@ fn run() -> Result<u8, String> {
     let mut args = env::args_os();
     let _program = args.next();
     let first = args.next().ok_or_else(|| {
-        "usage: maka-windows-sandbox-spike [--atomic|--broker-validate] <request.json>".to_owned()
+        "usage: maka-windows-sandbox [--atomic|--broker-validate] <request.json>".to_owned()
     })?;
     if first == "--self-probe" {
         if args.next().is_some() {

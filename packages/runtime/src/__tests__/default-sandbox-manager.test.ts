@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
@@ -42,6 +45,23 @@ describe('createBuiltinSandboxManager', () => {
     });
     assert.equal(selection.ok, false);
     if (!selection.ok) assert.equal(selection.reason, 'backend_not_available');
+  });
+
+  it('registers Windows only when the packaged native client exists', async () => {
+    const resourcesPath = await mkdtemp(join(tmpdir(), 'maka-windows-resources-'));
+    try {
+      await mkdir(join(resourcesPath, 'windows-sandbox'));
+      await writeFile(join(resourcesPath, 'windows-sandbox', 'maka-windows-sandbox.exe'), 'test');
+      const manager = createBuiltinSandboxManager('win32', resourcesPath);
+      const selection = manager.selectInitial({
+        profile: createWorkspaceWritePermissionProfile(),
+        platform: 'win32',
+      });
+      assert.equal(selection.ok, true);
+      if (selection.ok) assert.equal(selection.sandboxType, 'windows');
+    } finally {
+      await rm(resourcesPath, { recursive: true, force: true });
+    }
   });
 });
 

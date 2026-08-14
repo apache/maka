@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { win32 } from 'node:path';
+import { closeSync, fsyncSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, win32 } from 'node:path';
 
 import type { SandboxBackend, SandboxTransformRequest, SandboxTransformResult } from './types.js';
 import { compileWindowsSandboxPolicy } from './windows-profile.js';
@@ -29,6 +31,28 @@ export interface WindowsSandboxBackendOptions {
   readonly nonce?: () => string;
   readonly requestId?: () => string;
   readonly isAvailable?: () => boolean;
+}
+
+export function createWindowsBrokerManifestWriter(
+  temporaryRoot: string = tmpdir(),
+): (manifest: WindowsBrokerManifest) => string {
+  const directory = mkdtempSync(join(temporaryRoot, 'maka-windows-sandbox-'));
+  return (manifest) => {
+    const path = join(directory, `${manifest.requestId}-${randomBytes(8).toString('hex')}.json`);
+    const descriptor = openSync(path, 'wx', 0o600);
+    try {
+      try {
+        writeFileSync(descriptor, JSON.stringify(manifest), 'utf8');
+        fsyncSync(descriptor);
+      } finally {
+        closeSync(descriptor);
+      }
+    } catch (error) {
+      rmSync(path, { force: true });
+      throw error;
+    }
+    return path;
+  };
 }
 
 export class WindowsBrokerSandboxBackend implements SandboxBackend {

@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $launcherRoot = Join-Path $PSScriptRoot 'launcher'
-$launcher = Join-Path $launcherRoot 'target\debug\maka-windows-sandbox-spike.exe'
+$launcher = Join-Path $launcherRoot 'target\debug\maka-windows-sandbox.exe'
 if (-not (Test-Path -LiteralPath $launcher)) {
   throw "Missing launcher binary: $launcher"
 }
