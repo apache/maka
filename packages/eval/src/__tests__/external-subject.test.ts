@@ -4,10 +4,51 @@ import { mkdir, mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createExternalSubjectAdapter } from '../external-subject.js';
+import { createExternalSubjectAdapter, recoverExternalMetering } from '../external-subject.js';
 import type { ExperimentCell, ExperimentSpec } from '../experiment.js';
 import type { CellAttempt } from '../result.js';
 import { TOOLCHAIN_IDENTITIES, TOOLCHAIN_IDENTITY_ENV } from '../toolchain-verification.js';
+
+test('recovers complete external metering from a timed-out trial', async () => {
+  const trialPath = await mkdtemp(join(tmpdir(), 'maka-eval-metering-'));
+  try {
+    await mkdir(join(trialPath, 'agent'), { recursive: true });
+    await writeFile(
+      join(trialPath, 'agent/reasonix.metering.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        profile: 'reasonix',
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          cacheReadTokens: 80,
+          cacheWriteTokens: 0,
+          reasoningTokens: 10,
+          totalTokens: 120,
+        },
+        costUsd: 0.001,
+        requests: 2,
+        admittedRequests: 2,
+        usageRequests: 2,
+        usageComplete: true,
+      })}\n`,
+    );
+
+    const recovered = await recoverExternalMetering({ trialPath }, 'reasonix');
+    assert.deepEqual(recovered?.usage, {
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadTokens: 80,
+      cacheWriteTokens: 0,
+      reasoningTokens: 10,
+      totalTokens: 120,
+    });
+    assert.equal(recovered?.costUsd, 0.001);
+    assert.equal(recovered?.artifact.kind, 'provider-metering-snapshot');
+  } finally {
+    await rm(trialPath, { recursive: true, force: true });
+  }
+});
 
 test('passes declared environment and credential bindings to one external command', async () => {
   const cell = externalCell({

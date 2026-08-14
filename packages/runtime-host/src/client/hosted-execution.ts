@@ -5,6 +5,7 @@ import {
   type HostedExecutionProjection,
   type HostedExecutionStartInput,
 } from '../protocol/index.js';
+import { join } from 'node:path';
 import { connectOwnedRuntimeHost } from './connect-or-spawn.js';
 import type { RuntimeHostConnection } from './connection.js';
 import { configureHostedExecutionTarget } from './hosted-execution-target.js';
@@ -22,6 +23,10 @@ interface RunHostedExecutionDependencies {
 }
 
 const defaultDependencies: RunHostedExecutionDependencies = { connectOwnedRuntimeHost };
+const HEADLESS_LIVENESS = {
+  livenessIntervalMs: 0,
+  livenessTimeoutMs: 30_000,
+} as const;
 
 export async function runHostedExecution(
   input: RunHostedExecutionInput,
@@ -36,6 +41,13 @@ export async function runHostedExecutionWithDependencies(
   if (input.signal?.aborted) {
     return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
   }
+  const liveness =
+    input.execution.session.toolProfile === 'headless-coding-v1'
+      ? {
+          ...HEADLESS_LIVENESS,
+          candidateStderrPath: join(input.rootPath, 'runtime-host-candidate.log'),
+        }
+      : {};
   const initial = await dependencies.connectOwnedRuntimeHost({
     rootPath: input.rootPath,
     surface: 'run',
@@ -44,6 +56,7 @@ export async function runHostedExecutionWithDependencies(
       max: RUNTIME_HOST_PROTOCOL_VERSION,
     },
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    ...liveness,
     ...(input.signal ? { signal: input.signal } : {}),
   });
   if (initial.kind !== 'connected') {
@@ -85,6 +98,7 @@ export async function runHostedExecutionWithDependencies(
             max: RUNTIME_HOST_PROTOCOL_VERSION,
           },
           compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+          ...liveness,
           ...(input.signal ? { signal: input.signal } : {}),
         });
         if (reconnected.kind !== 'connected') {
@@ -98,7 +112,8 @@ export async function runHostedExecutionWithDependencies(
       }
     }
     projection = await executeHostedExecution(connected.connection, input.execution, input.signal);
-  } catch {
+  } catch (error) {
+    connected.host.recordDiagnostic?.(runtimeHostClientErrorMarker(error));
     projection = input.signal?.aborted
       ? indeterminate(input.execution.executionId, 'Hosted execution was cancelled')
       : indeterminate(
@@ -114,9 +129,48 @@ export async function runHostedExecutionWithDependencies(
     return projection;
   }
   const clean = await connected.host.settle(input.hostSettlementTimeoutMs ?? 15_000);
-  return clean
-    ? projection
-    : indeterminate(input.execution.executionId, 'Runtime Host did not exit cleanly');
+  if (clean || projection.kind === 'indeterminate') return projection;
+  return indeterminate(input.execution.executionId, 'Runtime Host did not exit cleanly');
+}
+
+function runtimeHostClientErrorMarker(error: unknown): string {
+  const failure = error instanceof Error ? error : new Error(String(error));
+  const details = failure as Error & {
+    readonly operation?: unknown;
+    readonly mode?: unknown;
+    readonly dispatch?: unknown;
+    readonly reason?: unknown;
+    readonly retryable?: unknown;
+  };
+  const cause = failure.cause instanceof Error ? failure.cause : undefined;
+  const code =
+    typeof (failure as NodeJS.ErrnoException).code === 'string'
+      ? (failure as NodeJS.ErrnoException).code
+      : null;
+  return `MAKA_RUNTIME_HOST_CLIENT_ERROR_V1 ${JSON.stringify({
+    name: failure.name,
+    code,
+    message: failure.message,
+    operation: stringField(details.operation),
+    mode: stringField(details.mode),
+    dispatch: stringField(details.dispatch),
+    reason: stringField(details.reason),
+    retryable: typeof details.retryable === 'boolean' ? details.retryable : null,
+    cause: cause
+      ? {
+          name: cause.name,
+          code:
+            typeof (cause as NodeJS.ErrnoException).code === 'string'
+              ? (cause as NodeJS.ErrnoException).code
+              : null,
+          message: cause.message,
+        }
+      : null,
+  })}`;
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
 }
 
 async function executeHostedExecution(

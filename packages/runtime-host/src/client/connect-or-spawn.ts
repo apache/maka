@@ -46,6 +46,9 @@ export interface ConnectOrSpawnRuntimeHostInput {
   electionDeadlineMs?: number;
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
+  livenessIntervalMs?: number;
+  livenessTimeoutMs?: number;
+  candidateStderrPath?: string;
   candidateEntrypoint: string | URL;
   signal?: AbortSignal;
 }
@@ -198,6 +201,8 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       clientInstanceId,
       connectTimeoutMs: input.connectTimeoutMs,
       handshakeTimeoutMs: input.handshakeTimeoutMs,
+      livenessIntervalMs: input.livenessIntervalMs,
+      livenessTimeoutMs: input.livenessTimeoutMs,
       electionDeadline: deadline,
     });
     if (result.kind === 'election_deadline_elapsed') {
@@ -248,6 +253,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           expectedRootId: capability.rootId,
           entrypoint: input.candidateEntrypoint,
           initialConnectionTimeoutMs: Math.ceil(remaining),
+          ...(input.candidateStderrPath === undefined
+            ? {}
+            : { stderrPath: input.candidateStderrPath }),
           ...(input.generation === undefined ? {} : { generation: input.generation }),
         });
         const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);

@@ -28,6 +28,11 @@ export interface ProxiedFetchTransport {
   close(): Promise<void>;
 }
 
+export interface ProxiedFetchTransportOptions {
+  readonly headersTimeoutMs?: number;
+  readonly bodyTimeoutMs?: number;
+}
+
 export function inheritFetchProxySnapshot(
   fetch: typeof globalThis.fetch,
   source: typeof globalThis.fetch,
@@ -46,12 +51,23 @@ export function createConnectionEffectFetchTransport(
 /** Owns one immutable direct/proxy dispatcher snapshot for a provider client. */
 export function createProxiedFetchTransport(
   proxy: ProxiedFetchProxy | null,
+  options: ProxiedFetchTransportOptions = {},
 ): ProxiedFetchTransport {
   const proxySnapshot: ProxySettings | null = proxy?.enabled
     ? { ...proxy, bypassList: [...proxy.bypassList] }
     : null;
+  const requestTimeouts = {
+    ...(options.headersTimeoutMs === undefined
+      ? {}
+      : { headersTimeout: requireTimeout(options.headersTimeoutMs, 'headersTimeoutMs') }),
+    ...(options.bodyTimeoutMs === undefined
+      ? {}
+      : { bodyTimeout: requireTimeout(options.bodyTimeoutMs, 'bodyTimeoutMs') }),
+  };
   const directDispatcher = new Agent();
+  const directRequestDispatcher = withRequestTimeouts(directDispatcher, requestTimeouts);
   let proxyDispatcher: Dispatcher | undefined;
+  let proxyRequestDispatcher: Dispatcher | undefined;
   let closePromise: Promise<void> | undefined;
   let closed = false;
 
@@ -62,13 +78,16 @@ export function createProxiedFetchTransport(
       typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     const useProxy =
       proxySnapshot !== null && !matchesBypassList(new URL(url).hostname, proxySnapshot.bypassList);
-    if (useProxy) proxyDispatcher ??= buildProxyDispatcher(proxySnapshot) as Dispatcher;
+    if (useProxy) {
+      proxyDispatcher ??= buildProxyDispatcher(proxySnapshot) as Dispatcher;
+      proxyRequestDispatcher ??= withRequestTimeouts(proxyDispatcher, requestTimeouts);
+    }
 
     return (await undiciFetch(
       input as Parameters<typeof undiciFetch>[0],
       {
         ...init,
-        dispatcher: useProxy ? proxyDispatcher : directDispatcher,
+        dispatcher: useProxy ? proxyRequestDispatcher : directRequestDispatcher,
       } as Parameters<typeof undiciFetch>[1],
     )) as unknown as Response;
   };
@@ -92,4 +111,21 @@ export function createProxiedFetchTransport(
   };
 
   return { fetch, close };
+}
+
+function requireTimeout(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${label} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function withRequestTimeouts(
+  dispatcher: Dispatcher,
+  timeouts: Readonly<Pick<Dispatcher.DispatchOptions, 'headersTimeout' | 'bodyTimeout'>>,
+): Dispatcher {
+  if (Object.keys(timeouts).length === 0) return dispatcher;
+  return dispatcher.compose(
+    (dispatch) => (options, handler) => dispatch({ ...options, ...timeouts }, handler),
+  );
 }

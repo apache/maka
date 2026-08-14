@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { JsonObject } from './experiment.js';
 import type { NormalizedUsage } from './result.js';
 import type { SubjectAdapter } from './runner.js';
@@ -57,6 +60,7 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
     async execute({ cell, context }) {
       const config = decodeConfig(cell.subject.config, cell.subject.credentials);
       const toolchain = wrapperToolchain(config, cell.executor.config);
+      const profile = bundledProfile(config.args);
       const identity = toolchain ? verifiedToolchains.get(cell.subject.id) : undefined;
       if (toolchain && !identity) {
         throw new Error(`${cell.subject.id} toolchain was not verified before execution`);
@@ -84,14 +88,16 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
         });
         const decoded = execution.stdout.length === 0 ? undefined : decodeResult(execution.stdout);
         if (execution.termination === 'framework_timeout') {
+          const recovered = await recoverExternalMetering(context.metadata, profile);
           return {
-            usage: decoded?.usage ?? null,
-            costUsd: decoded?.costUsd ?? null,
+            usage: decoded?.usage ?? recovered?.usage ?? null,
+            costUsd: decoded?.costUsd ?? recovered?.costUsd ?? null,
             durationMs: Date.now() - startedAt,
             status: 'failed' as const,
             failureReason: 'external subject exceeded the framework timeout',
             artifacts: [
               ...(decoded?.artifacts ?? []),
+              ...(recovered ? [recovered.artifact] : []),
               { kind: 'external_process', exitCode: execution.exitCode },
             ],
           };
@@ -185,6 +191,55 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
       }
     },
   };
+}
+
+export async function recoverExternalMetering(
+  metadata: JsonObject,
+  profile: ExternalProfile | undefined,
+): Promise<
+  | {
+      readonly usage: NormalizedUsage;
+      readonly costUsd: number;
+      readonly artifact: JsonObject;
+    }
+  | undefined
+> {
+  if (!profile || typeof metadata.trialPath !== 'string') return undefined;
+  const path = join(metadata.trialPath, 'agent', `${profile}.metering.json`);
+  const bytes = await readFile(path).catch(() => undefined);
+  if (!bytes) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    return undefined;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    record.schemaVersion !== 1 ||
+    record.profile !== profile ||
+    record.usageComplete !== true ||
+    record.usage === null ||
+    record.costUsd === null
+  ) {
+    return undefined;
+  }
+  try {
+    return {
+      usage: decodeUsage(record.usage),
+      costUsd: nonnegative(record.costUsd, 'external metering cost'),
+      artifact: {
+        kind: 'provider-metering-snapshot',
+        profile,
+        path: `agent/${profile}.metering.json`,
+        bytes: bytes.byteLength,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      },
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 interface ExternalSubjectConfig {

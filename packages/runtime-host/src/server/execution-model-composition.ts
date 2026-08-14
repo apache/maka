@@ -18,6 +18,7 @@ import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
+  type ProxiedFetchTransportOptions,
 } from '@maka/runtime/network/scoped-fetch-transport';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
@@ -40,6 +41,7 @@ import type { HostMemoryExtractionCoordinator } from './memory-extraction-coordi
 import { readDuringBackendCreation, resolveExecutionTarget } from './execution-model-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import type { HostRunComposer, HostRunComposerFactory } from './host-run-composer.js';
+import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
 
 export interface HostAiSdkBackendInput {
   readonly context: BackendFactoryContext;
@@ -54,7 +56,10 @@ export interface HostAiSdkBackendInput {
   readonly requestDrain: () => void;
   readonly runtimeCommitSink?: RuntimeCommitSink;
   readonly childAgents?: HostChildAgentBackendCapabilities;
-  readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
+  readonly createFetchTransport?: (
+    proxy: ProxiedFetchProxy | null,
+    options?: ProxiedFetchTransportOptions,
+  ) => ProxiedFetchTransport;
 }
 
 type HostExecutionRuntimePolicyAuthority = {
@@ -79,6 +84,7 @@ type HostExecutionUsageAuthority = {
 /** Builds one real provider backend from canonical Host state. */
 export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Promise<AiSdkBackend> {
   const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
+  const runProfile = hostedExecutionRunProfile(input.context.header.toolProfile);
   const target = await readDuringBackendCreation(
     () =>
       resolveExecutionTarget(
@@ -100,6 +106,12 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
   );
   const transport = createFetchTransport(
     toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
+    runProfile
+      ? {
+          headersTimeoutMs: runProfile.providerHeadersTimeoutMs,
+          bodyTimeoutMs: runProfile.providerBodyTimeoutMs,
+        }
+      : undefined,
   );
   let apiKey = target.apiKey;
   let modelFetch: typeof fetch = transport.fetch;
@@ -329,6 +341,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           : {}),
         ...(!input.context.tools && input.childAgents ? input.childAgents : {}),
         providerOptions,
+        ...(runProfile ? { streamIdleTimeoutMs: runProfile.streamIdleTimeoutMs } : {}),
         contextBudget: buildDefaultContextBudgetPolicy(target.connection, {
           name: 'runtime-host-default-history-budget',
           modelId: target.model,

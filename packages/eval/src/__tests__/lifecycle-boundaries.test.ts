@@ -79,6 +79,9 @@ while (true) {
 }
 const trialPath = new URL('./' + config.trial_name + '/', new URL('file://' + config.trials_dir + '/'));
 await mkdir(trialPath, { recursive: true });
+const agentArtifacts = new URL('agent/', trialPath);
+await mkdir(agentArtifacts, { recursive: true });
+await writeFile(new URL('opencode.metering.json', agentArtifacts), '{"usageRequests":1}\\n');
 await writeFile(new URL('result.json', trialPath), JSON.stringify({ verifier_result: { rewards: { reward: 1 } } }));
 socket.end();
 `,
@@ -130,7 +133,20 @@ socket.end();
     assert.doesNotThrow(() => process.kill(pid, 0));
     await writeFile(release, '');
     const results = await running;
-    assert.equal(results.get('task::1::external')?.result.status, 'completed');
+    const result = results.get('task::1::external')?.result;
+    assert.equal(result?.status, 'completed');
+    assert.deepEqual(
+      result?.artifacts.find(
+        ({ kind, path }) =>
+          kind === 'collected-artifact' && path === 'agent/opencode.metering.json',
+      ),
+      {
+        kind: 'collected-artifact',
+        path: 'agent/opencode.metering.json',
+        bytes: 20,
+        sha256: 'sha256:8f625fe55aa6336fccf93df0b9431dfac84d7d6fe772a745b56c9a284364310a',
+      },
+    );
   } finally {
     await writeFile(release, '').catch(() => undefined);
     globalThis.setTimeout = nativeSetTimeout;
@@ -649,6 +665,9 @@ test('eight-arm spec and wrappers freeze the working provider contracts', async 
   const maka = spec.subjects.find(({ id }) => id === 'maka')!;
   const codex = spec.subjects.find(({ id }) => id === 'codex')!;
   const claude = spec.subjects.find(({ id }) => id === 'claude-code')!;
+  const reasonix = spec.subjects.find(({ id }) => id === 'reasonix')!;
+  const zcode = spec.subjects.find(({ id }) => id === 'zcode')!;
+  const pi = spec.subjects.find(({ id }) => id === 'pi')!;
   assert.deepEqual(maka.credentials, ['DEEPSEEK_API_KEY']);
   assert.equal(maka.config.connectionSlug, 'env-deepseek');
   assert.equal(maka.config.baseUrl, 'https://api.deepseek.com');
@@ -657,6 +676,12 @@ test('eight-arm spec and wrappers freeze the working provider contracts', async 
   assert.equal(codex.config.args?.includes('--skip-git-repo-check'), true);
   assert.equal(claude.config.args?.includes('--bare'), true);
   assert.equal(claude.config.args?.includes('--effort'), true);
+  for (const subject of [codex, claude, reasonix]) {
+    assert.deepEqual(subject.config.args?.slice(-2), ['--', '{{task.input}}']);
+  }
+  assert.equal(zcode.config.args?.includes('{{task.cwd}}'), true);
+  assert.equal(zcode.config.args?.at(-1), '--prompt={{task.input}}');
+  assert.equal(pi.config.args?.at(-1), 'Task instruction:\n{{task.input}}');
   for (const subject of spec.subjects) {
     assert.deepEqual(subject.credentials, ['DEEPSEEK_API_KEY']);
     if (subject.id === 'maka') continue;

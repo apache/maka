@@ -8,10 +8,12 @@ import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experiment.js';
+import { recoverExternalMetering } from './external-subject.js';
 import {
   MAKA_RUNTIME_ARTIFACT_PATH,
   MAKA_SUBJECT_STDERR_PATH,
   MAKA_SUBJECT_STDOUT_PATH,
+  recoverMakaRuntimeUsage,
 } from './maka-artifacts.js';
 import {
   type ExecutorAttemptOutcome,
@@ -180,6 +182,12 @@ async function runHarnessAttempt(
     }
     await state.closeRelay();
   }
+  if (hasValue && finalizationEvidence && finalizationConfirmed(finalizationEvidence)) {
+    value = {
+      ...value!,
+      artifacts: [...value!.artifacts, ...(await collectedArtifactInventory(state.trialPath))],
+    };
+  }
   if (
     hasValue &&
     (state.transport.failure || cleanupAction || state.diagnostic?.category !== 'none')
@@ -220,14 +228,46 @@ async function runHarnessAttempt(
       : { kind: 'indeterminate', cause: 'cleanup-unconfirmed' };
   }
   if (!hasValue) throw new Error('executor operation did not settle');
+  if (value!.usage === null) {
+    const recovered =
+      cell.subject.kind === 'maka'
+        ? await recoverMakaRuntimeUsage({ trialPath: state.trialPath })
+        : await recoverExternalMetering(
+            { trialPath: state.trialPath },
+            externalProfile(cell.subject.id),
+          );
+    if (recovered) {
+      value = {
+        ...value!,
+        usage: recovered.usage,
+        costUsd: recovered.costUsd,
+        artifacts: [...value!.artifacts, recovered.artifact],
+      };
+    }
+  }
   return { kind: 'settled', value };
+}
+
+function externalProfile(value: string) {
+  if (
+    value === 'codex' ||
+    value === 'claude-code' ||
+    value === 'reasonix' ||
+    value === 'opencode' ||
+    value === 'kimi-code' ||
+    value === 'zcode' ||
+    value === 'pi'
+  ) {
+    return value;
+  }
+  return undefined;
 }
 
 function relayContext(state: RelayState, signal?: AbortSignal): SubjectExecutionContext {
   return {
     cwd: state.cwd,
     taskInput: state.taskInput,
-    metadata: { trialName: state.trialName },
+    metadata: { trialName: state.trialName, trialPath: state.trialPath },
     ...(signal ? { signal } : {}),
     execute: async (input) => {
       signal?.throwIfAborted();
@@ -697,7 +737,6 @@ async function readVerification(
     failureReason: score === null ? 'verifier produced no reward' : null,
     artifacts: [
       { kind: 'trial', framework: cell.executor.kind, trialName: state.trialName },
-      ...(await collectedArtifactInventory(state.trialPath)),
       ...(egressAudit
         ? [
             {
@@ -719,6 +758,7 @@ async function collectedArtifactInventory(trialPath: string): Promise<JsonObject
     join(root, basename(MAKA_RUNTIME_ARTIFACT_PATH)),
     join(root, basename(MAKA_SUBJECT_STDOUT_PATH)),
     join(root, basename(MAKA_SUBJECT_STDERR_PATH)),
+    join(trialPath, 'agent'),
   ];
   for (const target of targets) {
     await walkCollectedArtifacts(trialPath, target, files).catch((error: NodeJS.ErrnoException) => {

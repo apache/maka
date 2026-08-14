@@ -3,6 +3,8 @@ import { createReadStream } from 'node:fs';
 import { chmod, copyFile, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
+import type { JsonObject } from './experiment.js';
+import type { NormalizedUsage } from './result.js';
 
 export const MAKA_RUNTIME_ARTIFACT_PATH = '/logs/artifacts/maka-runtime-host';
 export const MAKA_SUBJECT_STDOUT_PATH = '/logs/artifacts/maka-subject.stdout.txt';
@@ -19,6 +21,79 @@ export interface MakaRuntimeArtifactManifest {
   readonly reason: 'settled' | 'signal';
   readonly capturedAt: number;
   readonly files: readonly CapturedFile[];
+}
+
+export async function recoverMakaRuntimeUsage(input: { readonly trialPath: string }): Promise<
+  | {
+      readonly usage: NormalizedUsage;
+      readonly costUsd: number;
+      readonly artifact: JsonObject;
+    }
+  | undefined
+> {
+  const path = join(
+    resolve(input.trialPath),
+    'artifacts',
+    'logs',
+    'artifacts',
+    'maka-runtime-host',
+    'runtime.sqlite',
+  );
+  let database: DatabaseSync;
+  try {
+    database = new DatabaseSync(path, { readOnly: true });
+  } catch {
+    return undefined;
+  }
+  try {
+    const attempts = readUsageRecords(database, 'usage_model_call_attempts');
+    const legacy = readUsageRecords(database, 'usage_llm_calls');
+    const missingAttempts = attempts.filter((record) => record.usageBasis === 'missing').length;
+    const inputTokens = sumRecords(attempts, 'inputTokens') + sumRecords(legacy, 'inputTokens');
+    const outputTokens = sumRecords(attempts, 'outputTokens') + sumRecords(legacy, 'outputTokens');
+    const cacheReadTokens =
+      sumRecords(attempts, 'cacheReadInputTokens') +
+      legacy.reduce(
+        (total, record) =>
+          total + count(record.cacheHitInputTokens ?? record.cachedInputTokens ?? 0),
+        0,
+      );
+    const cacheWriteTokens =
+      sumRecords(attempts, 'cacheWriteInputTokens') + sumRecords(legacy, 'cacheWriteInputTokens');
+    const reasoningTokens =
+      sumRecords(attempts, 'reasoningTokens') + sumRecords(legacy, 'reasoningTokens');
+    if (inputTokens + outputTokens === 0) return undefined;
+    const confirmedAttempts =
+      attempts.filter((record) => record.usageBasis !== 'missing').length + legacy.length;
+    const usageComplete = missingAttempts === 0;
+    return {
+      usage: {
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        reasoningTokens,
+        totalTokens: inputTokens + outputTokens,
+      },
+      costUsd: [...attempts, ...legacy].reduce(
+        (total, record) => total + nonnegative(record.costUsd ?? 0),
+        0,
+      ),
+      artifact: {
+        kind: 'maka-runtime-usage-recovery',
+        path: 'artifacts/logs/artifacts/maka-runtime-host/runtime.sqlite',
+        usageComplete,
+        confirmedAttempts,
+        missingAttempts,
+        tokenBasis: usageComplete ? 'complete' : 'lower-bound',
+        costBasis: usageComplete ? 'complete' : 'lower-bound',
+      },
+    };
+  } catch {
+    return undefined;
+  } finally {
+    database.close();
+  }
 }
 
 export async function captureMakaRuntimeArtifacts(input: {
@@ -132,4 +207,39 @@ function safeErrorCode(error: unknown): string | null {
 function safeErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return Buffer.from(message).subarray(0, 1024).toString();
+}
+
+function readUsageRecords(
+  database: DatabaseSync,
+  table: 'usage_model_call_attempts' | 'usage_llm_calls',
+): ReadonlyArray<Record<string, unknown>> {
+  return (
+    database.prepare(`SELECT record_json FROM ${table}`).all() as Array<{
+      record_json: string;
+    }>
+  ).map(({ record_json }) => {
+    const value = JSON.parse(record_json) as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Runtime usage record is invalid');
+    }
+    return value as Record<string, unknown>;
+  });
+}
+
+function sumRecords(records: ReadonlyArray<Record<string, unknown>>, field: string): number {
+  return records.reduce((total, record) => total + count(record[field] ?? 0), 0);
+}
+
+function count(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw new Error('Runtime usage token count is invalid');
+  }
+  return Number(value);
+}
+
+function nonnegative(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new Error('Runtime usage cost is invalid');
+  }
+  return value;
 }

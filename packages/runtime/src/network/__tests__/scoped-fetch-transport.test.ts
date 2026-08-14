@@ -11,9 +11,39 @@ import {
 } from '../../connection-effect-fetch.js';
 import { runConnectionModelDiscoveryEffect } from '../../model-fetcher.js';
 import { runConnectionTestEffect, testConnection } from '../../test-connection.js';
-import { createConnectionEffectFetchTransport } from '../scoped-fetch-transport.js';
+import {
+  createConnectionEffectFetchTransport,
+  createProxiedFetchTransport,
+} from '../scoped-fetch-transport.js';
 
 describe('connection effect network transport', () => {
+  test('provider transport can disable Undici header and body inactivity timeouts', async () => {
+    const server = createServer((_request, response) => {
+      setTimeout(() => {
+        response.writeHead(200, { 'content-type': 'text/plain' });
+        response.end('ok');
+      }, 1_500);
+    });
+    const port = await listen(server);
+    const bounded = createProxiedFetchTransport(null, {
+      headersTimeoutMs: 100,
+      bodyTimeoutMs: 100,
+    });
+    const unbounded = createProxiedFetchTransport(null, {
+      headersTimeoutMs: 0,
+      bodyTimeoutMs: 0,
+    });
+
+    try {
+      await assert.rejects(() => bounded.fetch(`http://127.0.0.1:${port}/slow`));
+      const response = await unbounded.fetch(`http://127.0.0.1:${port}/slow`);
+      assert.equal(await response.text(), 'ok');
+    } finally {
+      await Promise.all([bounded.close(), unbounded.close()]);
+      await closeServer(server);
+    }
+  });
+
   test('concurrent discovery uses immutable per-effect proxy snapshots', async () => {
     const firstProxy = await startConnectProxy(() =>
       jsonResponse(200, modelPayload('first-model')),

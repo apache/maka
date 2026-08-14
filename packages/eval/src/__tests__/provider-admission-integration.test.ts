@@ -74,6 +74,7 @@ test('provider failures remain infrastructure failures until inference admission
         usage: { cacheWriteTokens: number } | null;
         artifacts: Array<{
           kind: string;
+          path?: string;
           admittedRequests?: number;
           usageComplete?: boolean;
         }>;
@@ -88,16 +89,22 @@ test('provider failures remain infrastructure failures until inference admission
         JSON.stringify(result),
         /(?:credential|stdout|stderr)-sentinel-must-not-persist/u,
       );
+      assert.match(
+        await readFile(join(root, 'logs/agent/opencode.jsonl'), 'utf8'),
+        /stdout-sentinel-must-not-persist/u,
+      );
+      assert.match(
+        await readFile(join(root, 'logs/agent/opencode.stderr.txt'), 'utf8'),
+        /stderr-sentinel-must-not-persist/u,
+      );
       assert.equal(
-        (await readdir(join(root, 'logs/agent')).catch(() => [])).some((name) =>
-          name.endsWith('.stderr.txt'),
-        ),
-        false,
+        result.artifacts.find(({ kind }) => kind === 'stdout')?.path,
+        '/logs/agent/opencode.jsonl',
       );
       for (const name of await readdir(join(root, 'logs/agent'))) {
         assert.doesNotMatch(
           await readFile(join(root, 'logs/agent', name), 'utf8'),
-          /(?:credential|stdout|stderr)-sentinel-must-not-persist|0123456789abcdef0123456789abcdef/u,
+          /credential-sentinel-must-not-persist|0123456789abcdef0123456789abcdef/u,
         );
       }
     } finally {
@@ -125,7 +132,156 @@ test('oversized external records are attributed to bounded classification', asyn
   assert.match(stdout?.sha256 ?? '', /^[0-9a-f]{64}$/u);
 });
 
-async function executePiWithTerminalRecord(contentBytes: number): Promise<{
+test('external trajectories are truncated at the persisted byte limit', async () => {
+  const result = await executePiWithTerminalRecord(65 * 1024, 64 * 1024);
+  const stdout = result.artifacts.find(({ kind }) => kind === 'stdout');
+  assert.equal(stdout?.persistedBytes, 64 * 1024);
+  assert.ok((stdout?.bytes ?? 0) > (stdout?.persistedBytes ?? 0));
+  assert.equal(stdout?.truncatedBytes, (stdout?.bytes ?? 0) - (stdout?.persistedBytes ?? 0));
+});
+
+test('unbounded tool diagnostics stay in the metering snapshot, not the relay frame', async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.end(
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2}}}\n\ndata: [DONE]\n\n',
+    );
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const root = await mkdtemp(join(tmpdir(), 'maka-bounded-relay-result-'));
+  const child = join(root, 'child.mjs');
+  const toolNames = Array.from({ length: 200 }, (_, index) => `tool_${index}`);
+  await writeFile(
+    child,
+    [
+      `const tools=${JSON.stringify(toolNames)}.map(name=>({type:'function',function:{name}}));`,
+      "await fetch(`${process.env.DEEPSEEK_BASE_URL}/responses`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'deepseek-v4-flash',tools})});",
+      "console.log(JSON.stringify({type:'step_finish'}));",
+      '',
+    ].join('\n'),
+  );
+  try {
+    const wrapper = new URL('../harbor-external-subject.js', import.meta.url);
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [
+        wrapper.pathname,
+        'opencode',
+        `http://127.0.0.1:${address.port}`,
+        root,
+        process.execPath,
+        child,
+      ],
+      {
+        env: {
+          ...process.env,
+          OPENAI_API_KEY: 'upstream-test-key',
+          MAKA_EVAL_RESULT_TOKEN: RESULT_TOKEN,
+        },
+      },
+    );
+    const result = decodeResultFrame(stdout) as {
+      artifacts: Array<Record<string, unknown>>;
+    };
+    const metering = result.artifacts.find(({ kind }) => kind === 'provider-metering');
+    assert.equal(metering?.toolNameCount, toolNames.length);
+    assert.equal('toolNames' in (metering ?? {}), false);
+    const snapshot = JSON.parse(
+      await readFile(join(root, 'logs/agent/opencode.metering.json'), 'utf8'),
+    ) as { toolNames: string[] };
+    assert.deepEqual(snapshot.toolNames, [...toolNames].sort());
+    const providerEvents = (
+      await readFile(join(root, 'logs/agent/opencode.provider-events.jsonl'), 'utf8')
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; bodyBase64?: string });
+    assert.equal(providerEvents[0]?.type, 'provider_request');
+    assert.match(
+      Buffer.from(providerEvents[0]?.bodyBase64 ?? '', 'base64').toString('utf8'),
+      /tool_199/u,
+    );
+    assert.equal(
+      providerEvents.some(({ type }) => type === 'provider_response_chunk'),
+      true,
+    );
+    assert.equal(providerEvents.at(-1)?.type, 'provider_response_end');
+  } finally {
+    server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('late provider usage survives a downstream CLI disconnect', async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.flushHeaders();
+    setTimeout(() => {
+      response.end(
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2}}}\n\ndata: [DONE]\n\n',
+      );
+    }, 100);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const root = await mkdtemp(join(tmpdir(), 'maka-provider-late-usage-'));
+  const child = join(root, 'child.mjs');
+  await writeFile(
+    child,
+    [
+      "await fetch(`${process.env.DEEPSEEK_BASE_URL}/responses`,{method:'POST',body:'{}'});",
+      "console.log(JSON.stringify({type:'error'}));",
+      '',
+    ].join('\n'),
+  );
+  try {
+    const wrapper = new URL('../harbor-external-subject.js', import.meta.url);
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [
+        wrapper.pathname,
+        'opencode',
+        `http://127.0.0.1:${address.port}`,
+        root,
+        process.execPath,
+        child,
+      ],
+      {
+        env: {
+          ...process.env,
+          OPENAI_API_KEY: 'upstream-test-key',
+          MAKA_EVAL_RESULT_TOKEN: RESULT_TOKEN,
+        },
+        timeout: 2_000,
+      },
+    );
+    const result = decodeResultFrame(stdout) as {
+      usage: { totalTokens: number } | null;
+    };
+    assert.equal(result.usage?.totalTokens, 12);
+    assert.match(
+      await readFile(join(root, 'logs/agent/opencode.provider-events.jsonl'), 'utf8'),
+      /provider_response_end/u,
+    );
+  } finally {
+    server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function executePiWithTerminalRecord(
+  contentBytes: number,
+  persistedStreamLimitBytes?: number,
+): Promise<{
   status: string;
   failureReason: string | null;
   artifacts: Array<{
@@ -133,6 +289,8 @@ async function executePiWithTerminalRecord(contentBytes: number): Promise<{
     profile?: string;
     exitCode?: number;
     bytes?: number;
+    persistedBytes?: number;
+    truncatedBytes?: number;
     sha256?: string;
     classification?: string;
     limitBytes?: number;
@@ -175,6 +333,11 @@ async function executePiWithTerminalRecord(contentBytes: number): Promise<{
           ...process.env,
           OPENAI_API_KEY: 'upstream-test-key',
           MAKA_EVAL_RESULT_TOKEN: RESULT_TOKEN,
+          ...(persistedStreamLimitBytes === undefined
+            ? {}
+            : {
+                MAKA_EVAL_TEST_PERSISTED_STREAM_LIMIT_BYTES: String(persistedStreamLimitBytes),
+              }),
         },
       },
     );

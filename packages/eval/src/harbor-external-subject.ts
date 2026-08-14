@@ -1,15 +1,16 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, rmSync, statSync } from 'node:fs';
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { basename, dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
-import { fetch as undiciFetch, ProxyAgent } from 'undici';
+import { fetch as undiciFetch } from 'undici';
 import {
   decodePreverifiedToolchain,
   type ExternalProfile as Profile,
 } from './toolchain-verification.js';
+import { createExternalProviderDispatcher } from './external-provider-dispatcher.js';
 import { isInferenceAdmissionEvent } from './provider-admission.js';
 import { removeEvalWebTools } from './provider-web-tool-surface.js';
 import { takeRelayResultToken, writeRelayResult } from './relay-result-frame.js';
@@ -18,6 +19,7 @@ const resultToken = takeRelayResultToken();
 
 type SubjectStatus = 'completed' | 'failed' | 'infra_failed' | 'indeterminate';
 const CLASSIFIABLE_RECORD_LIMIT_BYTES = 16 * 1024 * 1024;
+const PERSISTED_STREAM_LIMIT_BYTES = takePersistedStreamLimit();
 
 interface Usage {
   inputTokens: number;
@@ -26,6 +28,17 @@ interface Usage {
   cacheWriteTokens: number;
   reasoningTokens: number;
   totalTokens: number;
+}
+
+function takePersistedStreamLimit(): number {
+  const override = process.env.MAKA_EVAL_TEST_PERSISTED_STREAM_LIMIT_BYTES;
+  delete process.env.MAKA_EVAL_TEST_PERSISTED_STREAM_LIMIT_BYTES;
+  if (override === undefined) return 64 * 1024 * 1024;
+  const parsed = Number(override);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > 64 * 1024 * 1024) {
+    throw new Error('invalid external trajectory persistence limit');
+  }
+  return parsed;
 }
 
 const [rawProfile, baseUrl, systemRoot, command, ...args] = process.argv.slice(2);
@@ -50,6 +63,10 @@ process.once('SIGINT', interrupt);
 
 const logsRoot = rooted(systemRoot, '/logs/agent');
 const statePath = join(logsRoot, `${profile}.wrapper-state.json`);
+const meteringPath = join(logsRoot, `${profile}.metering.json`);
+const providerEventsPath = join(logsRoot, `${profile}.provider-events.jsonl`);
+const stdoutPath = join(logsRoot, `${profile}.jsonl`);
+const stderrPath = join(logsRoot, `${profile}.stderr.txt`);
 const artifacts: Record<string, unknown>[] = [];
 let usage: Usage | null = null;
 let costUsd: number | null = null;
@@ -69,14 +86,28 @@ try {
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.DEEPSEEK_API_KEY;
   if (!key) throw new Error('external subject credential is missing');
-  const proxy = await startMeteringProxy(baseUrl, key, profile === 'claude-code');
+  const proxy = await startMeteringProxy(
+    baseUrl,
+    key,
+    profile === 'claude-code',
+    meteringPath,
+    providerEventsPath,
+  );
   try {
     await writeState('proxy_started');
     const prepared = await prepareProfile(profile, proxy.baseUrl, systemRoot, command, args);
     credentialPath = prepared.credentialPath;
     if (profile === 'claude-code') prepareClaudeWorkspace(systemRoot, prepared.home);
-    const result = await runChild(prepared.command, prepared.args, prepared.env, profile);
+    const result = await runChild(
+      prepared.command,
+      prepared.args,
+      prepared.env,
+      profile,
+      stdoutPath,
+      stderrPath,
+    );
     child = undefined;
+    await proxy.settle();
     await writeState('child_exited', { exitCode: result.exitCode });
     usage = proxy.usage();
     costUsd = usage && proxy.usageComplete() ? estimateCost(usage) : null;
@@ -107,10 +138,11 @@ try {
         usageRequests: proxy.usageRequestCount(),
         usageComplete: proxy.usageComplete(),
         removedWebTools: proxy.removedWebToolCount(),
-        models: proxy.requestModels(),
-        toolNames: proxy.observedToolNames(),
+        modelCount: proxy.requestModels().length,
+        toolNameCount: proxy.observedToolNames().length,
       },
       fileArtifact('wrapper-state', statePath, profile),
+      fileArtifact('provider-metering-snapshot', meteringPath, profile),
     );
   } finally {
     await proxy.close();
@@ -400,14 +432,16 @@ async function runChild(
   executableArgs: string[],
   env: NodeJS.ProcessEnv,
   selected: Profile,
+  stdoutDestination: string,
+  stderrDestination: string,
 ): Promise<{ exitCode: number; stdout: ClassifiedStream; stderr: StreamDiagnostic }> {
   const running = spawn(executable, executableArgs, {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child = running;
-  const stdout = classifyStream(running.stdout, selected);
-  const stderr = captureStreamDiagnostic(running.stderr);
+  const stdout = classifyStream(running.stdout, selected, stdoutDestination);
+  const stderr = captureStreamDiagnostic(running.stderr, stderrDestination);
   const exitCode = await new Promise<number>((resolveExit, reject) => {
     running.once('error', reject);
     running.once('exit', (code) => resolveExit(code ?? 1));
@@ -418,7 +452,11 @@ async function runChild(
 
 interface StreamDiagnostic {
   readonly observedBytes: number;
+  readonly persistedBytes: number;
+  readonly truncatedBytes: number;
   readonly sha256: string;
+  readonly observedSha256: string;
+  readonly path: string;
 }
 
 type ClassifiedStream = StreamDiagnostic &
@@ -435,10 +473,17 @@ type ClassifiedStream = StreamDiagnostic &
       }
   );
 
-async function classifyStream(input: Readable, selected: Profile): Promise<ClassifiedStream> {
-  const digest = createHash('sha256');
+async function classifyStream(
+  input: Readable,
+  selected: Profile,
+  destination: string,
+): Promise<ClassifiedStream> {
+  const persistedDigest = createHash('sha256');
+  const observedDigest = createHash('sha256');
+  const output = await open(destination, 'w', 0o600);
   const decoder = new TextDecoder();
   let observedBytes = 0;
+  let persistedBytes = 0;
   let buffered = '';
   let completed = false;
   let reportedError = false;
@@ -450,25 +495,43 @@ async function classifyStream(input: Readable, selected: Profile): Promise<Class
     completed ||= signal.completed;
     reportedError ||= signal.reportedError;
   };
-  for await (const chunk of input) {
-    const bytes = Buffer.from(chunk);
-    observedBytes += bytes.byteLength;
-    digest.update(bytes);
-    buffered += decoder.decode(bytes, { stream: true });
-    let newline = buffered.indexOf('\n');
-    while (newline >= 0) {
-      consume(buffered.slice(0, newline));
-      buffered = buffered.slice(newline + 1);
-      newline = buffered.indexOf('\n');
+  try {
+    for await (const chunk of input) {
+      const bytes = Buffer.from(chunk);
+      observedBytes += bytes.byteLength;
+      observedDigest.update(bytes);
+      const remaining = PERSISTED_STREAM_LIMIT_BYTES - persistedBytes;
+      if (remaining > 0) {
+        const persisted = bytes.subarray(0, remaining);
+        await writeAll(output, persisted);
+        persistedBytes += persisted.byteLength;
+        persistedDigest.update(persisted);
+      }
+      buffered += decoder.decode(bytes, { stream: true });
+      let newline = buffered.indexOf('\n');
+      while (newline >= 0) {
+        consume(buffered.slice(0, newline));
+        buffered = buffered.slice(newline + 1);
+        newline = buffered.indexOf('\n');
+      }
+      if (Buffer.byteLength(buffered) > CLASSIFIABLE_RECORD_LIMIT_BYTES) {
+        recordTooLarge = true;
+        buffered = '';
+      }
     }
-    if (Buffer.byteLength(buffered) > CLASSIFIABLE_RECORD_LIMIT_BYTES) {
-      recordTooLarge = true;
-      buffered = '';
-    }
+  } finally {
+    await output.close();
   }
   buffered += decoder.decode();
   if (buffered) consume(buffered);
-  const streamDiagnostic = { observedBytes, sha256: digest.digest('hex') };
+  const streamDiagnostic = {
+    observedBytes,
+    persistedBytes,
+    truncatedBytes: observedBytes - persistedBytes,
+    sha256: persistedDigest.digest('hex'),
+    observedSha256: observedDigest.digest('hex'),
+    path: `/logs/agent/${basename(destination)}`,
+  };
   if (recordTooLarge) {
     return {
       ...streamDiagnostic,
@@ -485,22 +548,49 @@ async function classifyStream(input: Readable, selected: Profile): Promise<Class
   };
 }
 
-async function captureStreamDiagnostic(input: Readable): Promise<StreamDiagnostic> {
-  const digest = createHash('sha256');
+async function captureStreamDiagnostic(
+  input: Readable,
+  destination: string,
+): Promise<StreamDiagnostic> {
+  const persistedDigest = createHash('sha256');
+  const observedDigest = createHash('sha256');
+  const output = await open(destination, 'w', 0o600);
   let observedBytes = 0;
-  for await (const chunk of input) {
-    const bytes = Buffer.from(chunk);
-    observedBytes += bytes.byteLength;
-    digest.update(bytes);
+  let persistedBytes = 0;
+  try {
+    for await (const chunk of input) {
+      const bytes = Buffer.from(chunk);
+      observedBytes += bytes.byteLength;
+      observedDigest.update(bytes);
+      const remaining = PERSISTED_STREAM_LIMIT_BYTES - persistedBytes;
+      if (remaining > 0) {
+        const persisted = bytes.subarray(0, remaining);
+        await writeAll(output, persisted);
+        persistedBytes += persisted.byteLength;
+        persistedDigest.update(persisted);
+      }
+    }
+  } finally {
+    await output.close();
   }
-  return { observedBytes, sha256: digest.digest('hex') };
+  return {
+    observedBytes,
+    persistedBytes,
+    truncatedBytes: observedBytes - persistedBytes,
+    sha256: persistedDigest.digest('hex'),
+    observedSha256: observedDigest.digest('hex'),
+    path: `/logs/agent/${basename(destination)}`,
+  };
 }
 
 function streamArtifact(kind: string, profile: Profile, capture: StreamDiagnostic) {
   return {
     kind,
     profile,
+    path: capture.path,
     bytes: capture.observedBytes,
+    persistedBytes: capture.persistedBytes,
+    truncatedBytes: capture.truncatedBytes,
     sha256: capture.sha256,
     ...('classification' in capture &&
     capture.classification === 'record-too-large' &&
@@ -508,6 +598,15 @@ function streamArtifact(kind: string, profile: Profile, capture: StreamDiagnosti
       ? { classification: capture.classification, limitBytes: capture.limitBytes }
       : {}),
   };
+}
+
+async function writeAll(output: Awaited<ReturnType<typeof open>>, value: Buffer): Promise<void> {
+  let offset = 0;
+  while (offset < value.byteLength) {
+    const { bytesWritten } = await output.write(value.subarray(offset));
+    if (bytesWritten <= 0) throw new Error('external trajectory write did not advance');
+    offset += bytesWritten;
+  }
 }
 
 function prepareClaudeWorkspace(root: string, home: string): void {
@@ -587,6 +686,8 @@ async function startMeteringProxy(
   upstreamBaseUrl: string,
   upstreamKey: string,
   anthropic: boolean,
+  meteringPath: string,
+  eventsPath: string,
 ): Promise<{
   baseUrl: string;
   usage(): Usage | null;
@@ -597,6 +698,7 @@ async function startMeteringProxy(
   removedWebToolCount(): number;
   requestModels(): readonly string[];
   observedToolNames(): readonly string[];
+  settle(): Promise<void>;
   close(): Promise<void>;
 }> {
   const total = zeroUsage();
@@ -607,15 +709,43 @@ async function startMeteringProxy(
   let removedWebTools = 0;
   const requestModels = new Set<string>();
   const observedToolNames = new Set<string>();
-  const dispatcher = process.env.HTTPS_PROXY ? new ProxyAgent(process.env.HTTPS_PROXY) : undefined;
+  const events = await createBoundedJsonlWriter(eventsPath, PERSISTED_STREAM_LIMIT_BYTES);
+  let snapshotWrite = Promise.resolve();
+  const persistSnapshot = () => {
+    const snapshot = `${JSON.stringify({
+      schemaVersion: 1,
+      profile,
+      usage: measured ? { ...total, totalTokens: total.inputTokens + total.outputTokens } : null,
+      costUsd: measured ? estimateCost(total) : null,
+      requests,
+      admittedRequests,
+      usageRequests,
+      usageComplete: admittedRequests > 0 && usageRequests === admittedRequests,
+      removedWebTools,
+      models: [...requestModels].sort(),
+      toolNames: [...observedToolNames].sort(),
+    })}\n`;
+    snapshotWrite = snapshotWrite.then(() => writeFile(meteringPath, snapshot, { mode: 0o600 }));
+    return snapshotWrite;
+  };
+  await persistSnapshot();
+  const providerTransport = createExternalProviderDispatcher(process.env.HTTPS_PROXY);
   const active = new Set<Promise<void>>();
   const server = createServer((request, response) => {
+    const requestId = requests + 1;
     const operation = (async () => {
       requests += 1;
       const projected = removeEvalWebTools(await readRequest(request));
       removedWebTools += projected.removed;
       if (projected.model) requestModels.add(projected.model);
       for (const name of projected.toolNames) observedToolNames.add(name);
+      await events.write({
+        type: 'provider_request',
+        requestId,
+        method: request.method ?? 'GET',
+        path: request.url ?? '/',
+        bodyBase64: projected.body.toString('base64'),
+      });
       const target = joinUpstream(upstreamBaseUrl, request.url ?? '/');
       const headers: Record<string, string> = {};
       for (const [name, value] of Object.entries(request.headers)) {
@@ -634,7 +764,13 @@ async function startMeteringProxy(
         method: request.method,
         headers,
         body: projected.body.length === 0 ? undefined : new Uint8Array(projected.body),
-        ...(dispatcher ? { dispatcher } : {}),
+        dispatcher: providerTransport.dispatcher,
+      });
+      await events.write({
+        type: 'provider_response_start',
+        requestId,
+        status: upstream.status,
+        contentType: upstream.headers.get('content-type'),
       });
       response.statusCode = upstream.status;
       upstream.headers.forEach((value, name) => {
@@ -650,8 +786,14 @@ async function startMeteringProxy(
           for (;;) {
             const next = await reader.read();
             if (next.done) break;
-            response.write(Buffer.from(next.value));
-            parser.push(Buffer.from(next.value).toString('utf8'));
+            const bytes = Buffer.from(next.value);
+            await events.write({
+              type: 'provider_response_chunk',
+              requestId,
+              bodyBase64: bytes.toString('base64'),
+            });
+            response.write(bytes);
+            parser.push(bytes.toString('utf8'));
           }
         }
         response.end();
@@ -665,10 +807,24 @@ async function startMeteringProxy(
             addUsage(total, parsed.usage);
           }
         }
+        await events.write({
+          type: 'provider_response_end',
+          requestId,
+          admitted: parsed.admitted,
+          usage: parsed.usage,
+        });
+        await persistSnapshot();
       }
     })().catch((error: unknown) => {
-      response.statusCode = 502;
-      response.end(JSON.stringify({ error: safeFailure(error, 'provider proxy failed') }));
+      void events.write({
+        type: 'provider_error',
+        requestId,
+        error: safeFailure(error, 'provider proxy failed'),
+      });
+      if (!response.destroyed) {
+        response.statusCode = 502;
+        response.end(JSON.stringify({ error: safeFailure(error, 'provider proxy failed') }));
+      }
     });
     active.add(operation);
     void operation.finally(() => active.delete(operation));
@@ -687,10 +843,46 @@ async function startMeteringProxy(
     removedWebToolCount: () => removedWebTools,
     requestModels: () => [...requestModels].sort(),
     observedToolNames: () => [...observedToolNames].sort(),
+    settle: async () => {
+      await Promise.allSettled([...active]);
+      await snapshotWrite;
+    },
     close: async () => {
       await Promise.allSettled([...active]);
+      await snapshotWrite;
       await closeServer(server);
-      await dispatcher?.close();
+      await providerTransport.close();
+      await events.close();
+    },
+  };
+}
+
+async function createBoundedJsonlWriter(
+  path: string,
+  limitBytes: number,
+): Promise<{
+  write(value: unknown): Promise<void>;
+  close(): Promise<void>;
+}> {
+  const output = await open(path, 'w', 0o600);
+  let queue = Promise.resolve();
+  let persistedBytes = 0;
+  let closed = false;
+  return {
+    write(value: unknown): Promise<void> {
+      const line = Buffer.from(`${JSON.stringify(value)}\n`);
+      queue = queue.then(async () => {
+        if (closed || persistedBytes + line.byteLength > limitBytes) return;
+        await writeAll(output, line);
+        persistedBytes += line.byteLength;
+      });
+      return queue;
+    },
+    async close(): Promise<void> {
+      await queue;
+      if (closed) return;
+      closed = true;
+      await output.close();
     },
   };
 }

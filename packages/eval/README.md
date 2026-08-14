@@ -34,7 +34,13 @@ and exposes a foreground-only Bash schema without `run_in_background` or `pty`. 
 routing remains authoritative: DeepSeek Responses exposes `apply_patch` instead of `Write` and
 `Edit`, and Runtime-owned `ArchiveRead` remains available for archived tool results. A real
 `hosted.execution.start` regression test pins SHA-256 hashes for the first main provider request's
-developer prompt and complete tool schema.
+developer prompt and complete tool schema. The profile disables Runtime's product stream-idle
+watchdog and Undici's provider headers/body inactivity timers after provider activity;
+benchmark-native subject timeouts remain the execution deadline, while the model stream connect
+timeout still rejects requests that never establish a response. Hosted Eval clients also use a
+disabled active liveness probe for their owned Runtime Host process so a CPU-bound one-core task
+cannot starve the Host briefly enough to be mistaken for a dead connection. Child-process exit,
+transport closure, and the benchmark-native subject timeout remain authoritative.
 
 Every benchmark subject removes `WebSearch`, `WebFetch`, and `FetchURL` from the provider-visible
 tool list. Maka enforces that through its Hosted Execution profile; external harnesses pass through
@@ -89,6 +95,16 @@ benchmark and public-solution contamination surfaces, not a complete defense aga
 invented lookup channel. It classifies HTTP(S) requests and `CONNECT` hosts against the blocklist, and
 kills tunnels that fall back to raw TCP. Collected Maka runtime files
 and egress audit logs are represented in attempt artifacts with byte counts and SHA-256 digests.
+The external wrapper persists up to 64 MiB of each subject's stdout and stderr under `/logs/agent`;
+after Harbor finalization, Eval inventories the complete trial `agent/` directory into the attempt
+so trajectory, metering, wrapper-state, and runtime-event files remain tied to the scored result.
+External CLI specs terminate option parsing or bind the prompt inside one option value so task text
+that begins with `-` cannot become a CLI flag. Relay results contain only bounded metering counts;
+the complete observed model and tool-name lists remain in the hashed metering artifact. The
+provider proxy also writes a bounded credential-free request/response JSONL trace, so a timed-out
+CLI that never flushes stdout still leaves model I/O tied to its usage. In-flight provider requests
+remain eligible to settle inside the benchmark-native task window after the CLI disconnects, so
+late usage is not discarded.
 The local image tag remains a machine deployment identity rather than a registry digest; digest
 pinning is tracked in issue #2953.
 

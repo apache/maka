@@ -52,6 +52,24 @@ test('startup failure preserves its fixed safe cause', async () => {
   assert.equal(result.failureReason, 'Runtime Host did not start: existing_host');
 });
 
+test('headless hosted execution disables liveness probes for CPU-bound task containers', async () => {
+  let observed: unknown;
+  const result = await runHostedExecutionWithDependencies(headlessInput(), {
+    connectOwnedRuntimeHost: async (input) => {
+      observed = input;
+      return { kind: 'failed', reason: 'existing_host' };
+    },
+  });
+
+  assert.equal(result.failureReason, 'Runtime Host did not start: existing_host');
+  assert.equal((observed as { livenessIntervalMs?: number }).livenessIntervalMs, 0);
+  assert.equal((observed as { livenessTimeoutMs?: number }).livenessTimeoutMs, 30_000);
+  assert.equal(
+    (observed as { candidateStderrPath?: string }).candidateStderrPath,
+    '/runtime-host/runtime-host-candidate.log',
+  );
+});
+
 test('startup cancellation closes admission with the cancelled result', async () => {
   const abort = new AbortController();
   const result = await runHostedExecutionWithDependencies(input(abort.signal), {
@@ -65,11 +83,8 @@ test('startup cancellation closes admission with the cancelled result', async ()
   assert.equal(result.failureReason, 'Hosted execution was cancelled');
 });
 
-test('post-connect cancellation reports the owned Host settlement outcome', async () => {
-  for (const [clean, failureReason] of [
-    [true, 'Hosted execution was cancelled'],
-    [false, 'Runtime Host did not exit cleanly'],
-  ] as const) {
+test('post-connect cancellation preserves its primary cause across Host cleanup', async () => {
+  for (const clean of [true, false]) {
     const abort = new AbortController();
     const connected = ownedHost(
       {
@@ -87,7 +102,7 @@ test('post-connect cancellation reports the owned Host settlement outcome', asyn
       },
     });
 
-    assert.equal(result.failureReason, failureReason);
+    assert.equal(result.failureReason, 'Hosted execution was cancelled');
   }
 });
 
@@ -217,6 +232,20 @@ function input(signal?: AbortSignal) {
       content: { text: 'solve' },
     },
     ...(signal ? { signal } : {}),
+  };
+}
+
+function headlessInput() {
+  const base = input();
+  return {
+    ...base,
+    execution: {
+      ...base.execution,
+      session: {
+        ...base.execution.session,
+        toolProfile: 'headless-coding-v1' as const,
+      },
+    },
   };
 }
 

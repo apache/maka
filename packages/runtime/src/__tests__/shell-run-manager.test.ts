@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { after, describe, test, type TestContext } from 'node:test';
 import {
   SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+  nextShellRunRecord,
   type ShellRunRecord,
   type ShellRunStore,
 } from '@maka/core/shell-run';
@@ -2198,7 +2199,7 @@ describe('ShellRunProcessManager', () => {
 
   test('redacts a secret across a soft wrap and the scrollback/screen boundary', async () => {
     const secret = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    const manager = await createTestManager();
+    const manager = createManager(createMemoryShellRunStore());
     const initial = await manager.runBackgroundBash(
       shellInput({
         cwd: await workspace(),
@@ -2620,6 +2621,38 @@ async function createTestManager(
   },
 ): Promise<ShellRunProcessManager> {
   return createManager(createSqliteShellRunStore(await workspace()), onShellRunUpdate, options);
+}
+
+function createMemoryShellRunStore(): ShellRunStore {
+  const records = new Map<string, ShellRunRecord>();
+  const key = (sessionId: string, shellRunId: string) => `${sessionId}\0${shellRunId}`;
+  const copy = (record: ShellRunRecord) => structuredClone(record);
+  const missing = (sessionId: string, shellRunId: string) =>
+    Object.assign(new Error(`ShellRun not found: ${sessionId}/${shellRunId}`), { code: 'ENOENT' });
+  return {
+    async createShellRun(record) {
+      const recordKey = key(record.sessionId, record.shellRunId);
+      if (records.has(recordKey)) throw new Error(`ShellRun already exists: ${record.shellRunId}`);
+      records.set(recordKey, copy(record));
+      return copy(record);
+    },
+    async updateShellRun(sessionId, shellRunId, patch) {
+      const recordKey = key(sessionId, shellRunId);
+      const current = records.get(recordKey);
+      if (!current) throw missing(sessionId, shellRunId);
+      const next = nextShellRunRecord(current, patch);
+      records.set(recordKey, copy(next));
+      return copy(next);
+    },
+    async readShellRun(sessionId, shellRunId) {
+      const current = records.get(key(sessionId, shellRunId));
+      if (!current) throw missing(sessionId, shellRunId);
+      return copy(current);
+    },
+    async listSessionShellRuns(sessionId) {
+      return [...records.values()].filter((record) => record.sessionId === sessionId).map(copy);
+    },
+  };
 }
 
 function shellInput(input: {
