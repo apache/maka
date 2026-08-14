@@ -80,3 +80,5 @@ export type {
   SandboxType,
   SandboxablePreference,
 } from './types.js';
+export { compileWindowsSandboxPolicy } from './windows-profile.js';
+export type { WindowsSandboxPolicy } from './windows-profile.js';
