@@ -1,14 +1,13 @@
 {
   "name": "maka-agent",
-  "version": "0.1.0",
+  "version": "0.1.10",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "maka": "./dist/cli.js",
-    "maka-agent": "./dist/cli.js"
+    "maka": "./dist/cli.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",

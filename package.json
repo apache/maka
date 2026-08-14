@@ -7,6 +7,11 @@
     "node": ">=22.19.0"
   },
   "packageManager": "npm@11.12.1",
+  "releaseToolchain": {
+    "node": "24.18.1",
+    "nodeDarwinArm64Archive": "node-v24.18.1-darwin-arm64.tar.xz",
+    "nodeDarwinArm64Sha256": "1d60b703fe5d7e7072489be8187f430f1a095a658c31e5e1e281331a5873fac3"
+  },
   "type": "module",
   "workspaces": [
     "packages/code-mode",
@@ -41,8 +46,12 @@
     "generate:third-party-notices": "node scripts/generate-third-party-notices.mjs",
     "check:third-party-notices": "node scripts/generate-third-party-notices.mjs --check",
     "check:release": "npm run check:stale && npm run check:third-party-notices",
+    "check:release-identity": "node scripts/release-identity.mjs",
+    "test:release": "node --test scripts/release.test.mjs",
     "package:macos-arm64": "node scripts/package-macos-arm64.mjs",
     "verify:macos-arm64": "node scripts/verify-macos-arm64-dmg.mjs",
+    "package:cli:macos-arm64": "node scripts/package-macos-arm64-cli.mjs",
+    "verify:cli:macos-arm64": "node scripts/verify-macos-arm64-cli.mjs",
     "package:windows-x64": "node scripts/package-windows-x64.mjs",
     "verify:windows-x64": "node scripts/verify-windows-x64.mjs",
     "verify:windows-installer": "node scripts/verify-windows-installer-lifecycle.mjs",

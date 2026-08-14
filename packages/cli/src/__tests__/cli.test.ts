@@ -46,6 +46,15 @@ describe('Maka CLI args', () => {
     );
   });
 
+  test('documents maka as the only public launcher', () => {
+    const help = parseMakaCliArgs(['--help'], '0.1.0', 'maka');
+    assert.equal(help.kind, 'help');
+    if (help.kind === 'help') {
+      assert.match(help.text, /^Usage: maka$/m);
+      assert.doesNotMatch(help.text, /maka-agent/);
+    }
+  });
+
   test('establishes the fatal exit before reporting can throw', async () => {
     const cliUrl = new URL('../cli.js', import.meta.url).href;
     const childSource = `
