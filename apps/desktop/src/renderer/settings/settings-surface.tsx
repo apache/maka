@@ -47,6 +47,7 @@ import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.j
 import { SettingRow } from './settings-rows';
 import { SettingsPage } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
+import { TasksSettingsPage } from './tasks-settings-page';
 import { UsageSettingsPage } from './usage-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
@@ -475,6 +476,8 @@ function SettingsPageBody(props: {
           onThemePaletteChange={props.onThemePaletteChange}
         />
       );
+    case 'tasks':
+      return <TasksSettingsPage />;
     case 'data':
       return <DataSettingsPage />;
     case 'permissions':

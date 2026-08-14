@@ -55,6 +55,7 @@ export const SETTINGS_SECTIONS = [
   'models',
   'subagents',
   'usage',
+  'tasks',
   'bot-chat',
   'search',
   'data',
