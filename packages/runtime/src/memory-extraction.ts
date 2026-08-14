@@ -11,6 +11,7 @@ import type {
 } from '@maka/core/long-term-memory';
 import { redactSecrets } from '@maka/core/redaction';
 import type { SessionHeader } from '@maka/core/session';
+import type { WorkspaceIdentity } from '@maka/core/workspace-identity';
 import { z } from 'zod';
 import {
   fitMemoryExtractionEvidence,
@@ -74,7 +75,7 @@ export interface MemoryExtractionSourceSnapshot {
   readonly sessionId: string;
   readonly runId: string;
   readonly turnId: string;
-  readonly workspaceKey: string;
+  readonly workspaceIdentity: WorkspaceIdentity;
   /** Present only for memory_remember; identifies the call excluded from evidence. */
   readonly toolCallId?: string;
   /** Present only for post-terminal memory_extract. */
@@ -1580,7 +1581,7 @@ function rebuildCompactionSnapshot(
     sessionId: current.sessionId,
     runId: current.runId,
     turnId: current.turnId,
-    workspaceKey: current.workspaceKey,
+    workspaceIdentity: current.workspaceIdentity,
     compactionCheckpointId: checkpoint.checkpointId,
     compactionBoundaryEventId: boundary.runtimeEventId,
   };
@@ -1616,7 +1617,7 @@ function rebuildExplicitPendingSnapshot(
     sessionId: current.sessionId,
     runId: boundary.event.runId,
     turnId: boundary.event.turnId,
-    workspaceKey: current.workspaceKey,
+    workspaceIdentity: current.workspaceIdentity,
   };
   if (pending.firstTrigger === 'remember') {
     const call = entries.find(
@@ -1853,7 +1854,7 @@ function memoryItemWrite(
     statementType: fields.statementType,
     temporalType: fields.temporalType,
     scopeType: fields.scopeType,
-    scopeKey: fields.scopeType === 'workspace' ? snapshot.workspaceKey : null,
+    scopeKey: fields.scopeType === 'workspace' ? snapshot.workspaceIdentity : null,
     eventStartedAt: fields.eventStartedAt,
     eventEndedAt: fields.eventEndedAt,
     observedAt: minuteTimestamp(Math.max(...fields.citedEvents.map((event) => event.ts))),

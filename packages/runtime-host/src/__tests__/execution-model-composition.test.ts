@@ -2035,7 +2035,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       sessionId: session.id,
       runId: 'memory-source-run',
       turnId: 'memory-source-turn',
-      workspaceKey: capability.canonicalPath,
+      workspaceIdentity: 'workspace:v1:123e4567-e89b-42d3-a456-426614174000' as const,
       toolCallId: 'memory-source-call',
     };
     const memoryRequestsBefore = provider.requests.length;

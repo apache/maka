@@ -485,6 +485,29 @@ describe('AiSdkBackend ApplyPatch routing', () => {
 });
 
 describe('AiSdkBackend Memory Extraction triggers', () => {
+  test('rejects path-based Workspace identity before exposing Memory extraction', () => {
+    assert.throws(
+      () =>
+        createTestAiSdkBackend({
+          sessionId: 'session-1',
+          header: header(),
+          workspaceIdentity: '/workspace/maka' as unknown as `workspace:v1:${string}`,
+          appendMessage: async () => {},
+          connection: connection(),
+          apiKey: 'sk-test',
+          modelId: 'mock-model-id',
+          modelFactory: () => completionModel(),
+          tools: [],
+          memoryExtraction: {
+            gate: async () => ({ allowed: true }),
+            remember: async () => ({ status: 'unavailable', requestedItems: [] }),
+            extract: () => {},
+          },
+        }),
+      /stable Workspace identity/,
+    );
+  });
+
   test('dispatches a pre-turn Compaction recipe without projecting history or awaiting it', async () => {
     const model = completionModel();
     const recorded: HistoryCompactCheckpoint[] = [];
@@ -567,6 +590,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
     assert.equal(recorded.length, 1);
     assert.equal(recorded[0]?.memoryExtractionBoundary?.runtimeEventId, 'memory-compact-boundary');
     assert.equal(snapshot?.trigger, 'compaction');
+    assert.equal(snapshot?.workspaceIdentity, 'workspace:v1:123e4567-e89b-42d3-a456-426614174000');
     assert.equal(snapshot?.compactionCheckpointId, recorded[0]?.checkpointId);
     assert.equal(snapshot?.compactionBoundaryEventId, 'memory-compact-boundary');
     assert.equal(snapshot?.sourceSystemPrompt, undefined);

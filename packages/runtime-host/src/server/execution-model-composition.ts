@@ -4,6 +4,7 @@ import { resolveModelVisionSupport } from '@maka/core/model-metadata';
 import { relayModelProfile } from '@maka/core/model-thinking';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
+import { isWorkspaceIdentity, type WorkspaceIdentity } from '@maka/core/workspace-identity';
 import type { PermissionMode } from '@maka/core/permission';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
 import {
@@ -43,6 +44,7 @@ import type { HostRunComposer, HostRunComposerFactory } from './host-run-compose
 
 export interface HostAiSdkBackendInput {
   readonly context: BackendFactoryContext;
+  readonly workspaceIdentity?: WorkspaceIdentity;
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
   readonly claudeDeviceId: string;
@@ -78,6 +80,14 @@ type HostExecutionUsageAuthority = {
 
 /** Builds one real provider backend from canonical Host state. */
 export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Promise<AiSdkBackend> {
+  const memoryExtractionEligible =
+    !input.context.tools &&
+    !input.context.header.subagentParent &&
+    input.context.header.collaborationMode !== 'plan' &&
+    input.memoryExtraction !== undefined;
+  if (memoryExtractionEligible && !isWorkspaceIdentity(input.workspaceIdentity)) {
+    throw new Error('Host memory extraction requires a stable Workspace identity');
+  }
   const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
   const target = await readDuringBackendCreation(
     () =>
@@ -288,11 +298,21 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         );
       }
     : undefined;
-
+  const memoryExtractionCapabilities =
+    memoryExtractionEligible && input.memoryExtraction
+      ? input.memoryExtraction.sourceCapabilities(
+          runtimePolicySnapshot.policy.privacy.incognitoActive
+            ? { allowed: false, reason: 'incognito' }
+            : runtimePolicySnapshot.policy.memory.enabled
+              ? { allowed: true }
+              : { allowed: false, reason: 'disabled' },
+        )
+      : undefined;
   try {
     return new HostAiSdkBackend(
       {
         sessionId: input.context.sessionId,
+        ...(input.workspaceIdentity ? { workspaceIdentity: input.workspaceIdentity } : {}),
         header: {
           ...input.context.header,
           model: target.model,
@@ -345,20 +365,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         }),
         recordToolArtifacts: input.executionArtifacts.recordToolArtifacts,
         toolResultArchive: input.executionArtifacts.toolResultArchive,
-        ...(!input.context.tools &&
-        !input.context.header.subagentParent &&
-        input.context.header.collaborationMode !== 'plan' &&
-        input.memoryExtraction
-          ? {
-              memoryExtraction: input.memoryExtraction.sourceCapabilities(
-                runtimePolicySnapshot.policy.privacy.incognitoActive
-                  ? { allowed: false, reason: 'incognito' }
-                  : runtimePolicySnapshot.policy.memory.enabled
-                    ? { allowed: true }
-                    : { allowed: false, reason: 'disabled' },
-              ),
-            }
-          : {}),
+        ...(memoryExtractionCapabilities ? { memoryExtraction: memoryExtractionCapabilities } : {}),
         loadHistoryCompactCheckpoint: input.context.loadHistoryCompactCheckpoint,
         summarizeHistoryCompact: buildLlmHistorySummarizer({
           resolveModel: () =>
