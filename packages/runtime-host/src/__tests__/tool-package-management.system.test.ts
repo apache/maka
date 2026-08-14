@@ -36,6 +36,39 @@ test('Agent can inspect, define, test, activate, immediately invoke, update safe
     assert.deepEqual(await inspect.impl({}, context), { revisions: [], bindings: [] });
 
     const define = requireTool(runtime, 'define_tool');
+    assert.match(define.description, /export default \{ HandlerName:/u);
+    assert.match(define.description, /intentionally replaces the full source/u);
+    const projected = define.permissionArgs?.(definition('1.0.0', 'export default {};') as never, {
+      sessionId: context.sessionId,
+      turnId: context.turnId,
+      toolCallId: context.toolCallId,
+    }) as Record<string, unknown>;
+    assert.equal(projected.sourceAccepted, true);
+    assert.equal(projected.toolDeclarationsAccepted, true);
+    assert.equal(projected.toolCount, 1);
+    assert.equal(typeof projected.sourceSha256, 'string');
+    assert.equal(Object.hasOwn(projected, 'source'), false);
+    assert.equal(Object.hasOwn(projected, 'tools'), false);
+    assert.match(String(projected.historyProjectionNotice), /intentionally redacted/u);
+
+    await assert.rejects(
+      async () =>
+        await define.impl(
+          definition('0.9.0', `module.exports = { Add: ({ left, right }) => left + right };`),
+          context,
+        ),
+      /CommonJS module\.exports\/exports is unsupported/u,
+    );
+    await assert.rejects(
+      async () =>
+        await define.impl(
+          definition('0.9.1', `const handlers = { Add: ({ left, right }) => left + right };`),
+          context,
+        ),
+      /must export one default handler object/u,
+    );
+    assert.deepEqual(await inspect.impl({}, context), { revisions: [], bindings: [] });
+
     const v1 = (await define.impl(
       definition(
         '1.0.0',

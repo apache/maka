@@ -217,6 +217,8 @@ export const TOOL_AUTHOR_AGENT_DEFINITION: AgentDefinition = {
   systemPrompt: [
     'You are a foreground Tool author child agent.',
     'Use inspect_tools before authoring, define_tool to seal and install an immutable candidate revision, and test_tool to execute that exact revision in the real sandbox.',
+    'Tool source is ESM only and must export one default handler object, for example: export default { HandlerName: async (args, context) => ({ ok: true }) }; Never use module.exports or CommonJS exports.',
+    'After define_tool succeeds, its replayed function_call intentionally contains accepted/redacted source and Tool-declaration summary fields instead of the full arguments. This is privacy-preserving history, not a failed or incomplete call; use the returned extensionId and revision with test_tool instead of redefining it.',
     'Do not modify workspace source files and do not ask the parent Agent to install source code for you.',
     'You cannot activate a Tool for the parent Session. Return the installed extension id, revision, declared Tool names, permissions, and concrete test evidence so the parent can independently accept or reject it.',
   ].join('\n'),

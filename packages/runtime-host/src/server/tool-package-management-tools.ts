@@ -22,6 +22,10 @@ const MANAGEMENT_TOOL_NAMES = new Set([
   'invoke_tool',
 ]);
 const AUTHOR_TOOL_NAMES = new Set(['inspect_tools', 'define_tool', 'test_tool']);
+const TOOL_SOURCE_HISTORY_NOTICE =
+  'The full source and Tool declarations were accepted and intentionally redacted from model history. Reuse your original complete arguments for a new define_tool call; these summary fields are not define_tool input.';
+const ESM_HANDLER_EXAMPLE =
+  'export default { HandlerName: async (args, context) => ({ ok: true }) };';
 const CATEGORIES = [
   'read',
   'web_read',
@@ -146,18 +150,24 @@ export class HostToolPackageManagementTools {
   #defineTool(): MakaTool {
     return Object.freeze({
       name: 'define_tool',
-      description:
-        'Validate, seal, and install a prebuilt JavaScript Tool package draft. This does not activate it; call test_tool and then manage_tool.',
+      description: `Validate, seal, and install a prebuilt JavaScript Tool package draft. Source must be an ES module with one default handler object, for example: ${ESM_HANDLER_EXAMPLE} CommonJS module.exports/exports is unsupported. A successful call installs an immutable revision but does not activate it; call test_tool and then manage_tool. Model history intentionally replaces the full source and Tool declarations with an accepted/redacted summary; that summary does not mean arguments were missing.`,
       parameters: defineInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
       permissionArgs: (args: z.infer<typeof defineInput>) => ({
         id: args.id,
         version: args.version,
+        sourceAccepted: true,
+        sourceBytes: Buffer.byteLength(args.source, 'utf8'),
+        sourceSha256: createHash('sha256').update(args.source).digest('hex'),
+        toolDeclarationsAccepted: true,
+        toolCount: args.tools.length,
         toolNames: args.tools.map(({ name }: { name: string }) => name),
         permissions: args.permissions,
+        historyProjectionNotice: TOOL_SOURCE_HISTORY_NOTICE,
       }),
       impl: async (input: z.infer<typeof defineInput>) => {
+        assertSupportedToolSource(input.source);
         const draft = join(this.#draftRoot, randomUUID());
         try {
           await mkdir(join(draft, 'dist'), { recursive: true, mode: 0o700 });
@@ -307,6 +317,19 @@ export class HostToolPackageManagementTools {
         return tool.impl(input.args, context);
       },
     });
+  }
+}
+
+function assertSupportedToolSource(source: string): void {
+  if (/\bmodule\s*\.\s*exports\b|\bexports\s*(?:\.|\[)/u.test(source)) {
+    throw new Error(
+      `Tool package source must use ESM; CommonJS module.exports/exports is unsupported. Use: ${ESM_HANDLER_EXAMPLE}`,
+    );
+  }
+  if (!/\bexport\s+default\b/u.test(source)) {
+    throw new Error(
+      `Tool package source must export one default handler object. Use: ${ESM_HANDLER_EXAMPLE}`,
+    );
   }
 }
 
