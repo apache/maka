@@ -1096,10 +1096,13 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'Write',
       'WriteStdin',
       'define_tool',
+      'define_ui',
       'inspect_tools',
+      'inspect_ui',
       'invoke_tool',
       'load_tools',
       'manage_tool',
+      'manage_ui',
       'memory_extract',
       'memory_remember',
       'request_sandbox_boundary',
@@ -1108,6 +1111,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'task_list',
       'task_update',
       'test_tool',
+      'test_ui',
     ]);
     const requestTools = request?.body.tools as Array<Record<string, unknown>> | undefined;
     const manageTool = requestTools?.find((tool) => {

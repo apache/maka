@@ -47,3 +47,29 @@
 @import "./styles/quote-side-panel.css" layer(components);
 @import "./styles/custom-pet-companion.css" layer(components);
 @import "./styles/astryx-mount.css" layer(components);
+/* The bootstrap shell owns only snapshot selection and isolation. Product UI
+   layout remains inside the selected official or dynamic contribution. */
+.maka-ui-extension-shell,
+.maka-ui-official-snapshot {
+  width: 100%;
+  height: 100%;
+}
+
+.maka-ui-extension-frame {
+  border: 0;
+  background: transparent;
+}
+
+.maka-ui-extension-frame--root {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.maka-ui-extension-frame--overlay {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2147483000;
+}

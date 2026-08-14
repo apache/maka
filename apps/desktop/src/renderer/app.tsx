@@ -7,6 +7,7 @@ import { useAstryxThemeMode } from './astryx-theme-mode';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
 import { readSystemUiLocale } from './use-system-ui-locale';
+import { UiExtensionHost } from './ui-extension-host';
 
 export function App({
   initialOnboardingSnapshot = null,
@@ -63,7 +64,11 @@ export function App({
     <StrictMode>
       <Theme theme={makaTheme} mode={astryxMode}>
         {runtimeHostReady ? (
-          <AppShell initialOnboardingSnapshot={initialOnboardingSnapshot} />
+          <UiExtensionHost
+            officialSnapshot={
+              <AppShell initialOnboardingSnapshot={initialOnboardingSnapshot} />
+            }
+          />
         ) : (
           <LocaleProvider locale={readSystemUiLocale()}>
             <AstryxLocaleProvider>

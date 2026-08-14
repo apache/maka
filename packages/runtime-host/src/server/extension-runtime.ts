@@ -16,6 +16,12 @@ import {
   type TrustedToolExtensionRevisionInput,
 } from '@maka/runtime/extension-tool-contributions';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
+import {
+  defineTrustedUiExtensionRevision,
+  ExtensionUiContributionRegistry,
+  type ExtensionUiContribution,
+  type ExtensionUiContributionInspection,
+} from '@maka/runtime/extension-ui-contributions';
 
 export type HostTrustedToolExtensionRevisionInput = Omit<
   TrustedToolExtensionRevisionInput,
@@ -36,6 +42,16 @@ export interface HostPreparedToolExtensionRevisionInput {
 export type HostToolExtensionRevisionInput =
   | HostTrustedToolExtensionRevisionInput
   | HostPreparedToolExtensionRevisionInput;
+
+export interface HostUiExtensionRevisionInput {
+  readonly extensionId: string;
+  readonly revision: string;
+  readonly ui: readonly ExtensionUiContribution[];
+}
+
+export type HostExtensionRevisionInput =
+  | HostToolExtensionRevisionInput
+  | HostUiExtensionRevisionInput;
 
 export interface HostExtensionToolResolver {
   resolveTools(
@@ -60,6 +76,7 @@ export interface HostExtensionToolResolutionOptions {
 export class HostExtensionRuntime implements HostExtensionToolResolver {
   readonly #lifecycle = new ExtensionLifecycleKernel();
   readonly #tools: ExtensionToolContributionRegistry;
+  readonly #ui = new ExtensionUiContributionRegistry();
   readonly #scopeIds = new Set<string>();
   #hostTools: readonly MakaTool[] = Object.freeze([]);
   #draining = false;
@@ -109,6 +126,17 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       },
     });
     return this.#lifecycle.install(definition);
+  }
+
+  installUiRevision(input: HostUiExtensionRevisionInput): Promise<void> {
+    this.#assertMutable();
+    return this.#lifecycle.install(
+      defineTrustedUiExtensionRevision({ ...input, registry: this.#ui }),
+    );
+  }
+
+  installRevision(input: HostExtensionRevisionInput): Promise<void> {
+    return 'ui' in input ? this.installUiRevision(input) : this.installToolRevision(input);
   }
 
   activate(input: ExtensionBindingInput): Promise<ExtensionBindingInspection> {
@@ -162,6 +190,17 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
 
   inspectTools(scopeId: string): readonly ExtensionToolContributionInspection[] {
     return this.#tools.inspect(scopeId);
+  }
+
+  inspectUi(scopeId: string): readonly ExtensionUiContributionInspection[] {
+    const committed = this.#lifecycle
+      .inspectScope(scopeId)
+      .flatMap((binding) =>
+        binding.current
+          ? [{ bindingId: binding.bindingId, revision: binding.current.revision }]
+          : [],
+      );
+    return this.#ui.inspect(scopeId, committed);
   }
 
   installedRevisions(): readonly {

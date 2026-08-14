@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   decodeExtensionCatalogMutateInput,
   decodeExtensionCatalogQueryResult,
+  decodeExtensionUiSnapshotResult,
   decodeToolPackageInstallInput,
   decodeToolPackageUninstallInput,
 } from '../protocol/extension.js';
@@ -26,8 +27,46 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
     },
   );
   assert.deepEqual(
+    decodeExtensionUiSnapshotResult({
+      scopeId: 'desktop-ui',
+      digest: 'sha256-demo',
+      contributions: [
+        {
+          bindingId: 'ui-binding',
+          extensionId: 'appearance',
+          revision: '2',
+          id: 'root',
+          surface: 'app.root',
+          priority: 100,
+          document: '<main>Maka</main>',
+          documentSha256: 'demo',
+          network: false,
+        },
+      ],
+    }),
+    {
+      scopeId: 'desktop-ui',
+      digest: 'sha256-demo',
+      contributions: [
+        {
+          bindingId: 'ui-binding',
+          extensionId: 'appearance',
+          revision: '2',
+          id: 'root',
+          surface: 'app.root',
+          priority: 100,
+          document: '<main>Maka</main>',
+          documentSha256: 'demo',
+          network: false,
+        },
+      ],
+    },
+  );
+  assert.deepEqual(
     decodeExtensionCatalogQueryResult({
-      revisions: [{ extensionId: 'weather', revision: '2', toolNames: ['Weather'] }],
+      revisions: [
+        { extensionId: 'weather', revision: '2', toolNames: ['Weather'], uiContributionIds: [] },
+      ],
       bindings: [
         {
           bindingId: 'weather-binding',
@@ -42,7 +81,9 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       ],
     }),
     {
-      revisions: [{ extensionId: 'weather', revision: '2', toolNames: ['Weather'] }],
+      revisions: [
+        { extensionId: 'weather', revision: '2', toolNames: ['Weather'], uiContributionIds: [] },
+      ],
       bindings: [
         {
           bindingId: 'weather-binding',
@@ -95,6 +136,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
   );
   assert.equal(operationAllowsRemoteOwner('extension.catalog.query'), false);
   assert.equal(operationAllowsRemoteOwner('extension.catalog.mutate'), false);
+  assert.equal(operationAllowsRemoteOwner('extension.ui.snapshot'), false);
   assert.equal(operationAllowsRemoteOwner('extension.package.install'), false);
   assert.equal(operationAllowsRemoteOwner('extension.package.uninstall'), false);
 });

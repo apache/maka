@@ -7,6 +7,7 @@ export const RENDERER_RUNTIME_HOST_QUERY_OPERATIONS = [
   'context.diagnostics.query',
   'daily-review.query',
   'execution.inspect.query',
+  'extension.ui.snapshot',
   'scheduled-task.query',
 ] as const satisfies readonly (keyof OperationSpecMap)[];
 

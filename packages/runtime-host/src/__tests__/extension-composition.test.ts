@@ -60,7 +60,18 @@ test('production composition exposes trusted Extension control and restores it a
     assert.equal(enabled.ok, true);
     assert.deepEqual(
       composition.extensions.resolveTools('session-1', []).map(({ name }) => name),
-      ['Weather', 'define_tool', 'inspect_tools', 'invoke_tool', 'manage_tool', 'test_tool'],
+      [
+        'Weather',
+        'define_tool',
+        'define_ui',
+        'inspect_tools',
+        'inspect_ui',
+        'invoke_tool',
+        'manage_tool',
+        'manage_ui',
+        'test_tool',
+        'test_ui',
+      ],
     );
 
     await composition.close();
@@ -81,7 +92,18 @@ test('production composition exposes trusted Extension control and restores it a
     assert.equal(restored.ok && restored.result.bindings[0]?.status, 'active');
     assert.deepEqual(
       composition.extensions.resolveTools('session-1', []).map(({ name }) => name),
-      ['Weather', 'define_tool', 'inspect_tools', 'invoke_tool', 'manage_tool', 'test_tool'],
+      [
+        'Weather',
+        'define_tool',
+        'define_ui',
+        'inspect_tools',
+        'inspect_ui',
+        'invoke_tool',
+        'manage_tool',
+        'manage_ui',
+        'test_tool',
+        'test_ui',
+      ],
     );
   } finally {
     await composition?.close().catch(() => undefined);

@@ -121,6 +121,8 @@ import { HostExtensionRuntime } from './extension-runtime.js';
 import { HostExtensionStateStore } from './extension-state-store.js';
 import { ToolPackageStore } from './tool-package-store.js';
 import { HostToolPackageManagementTools } from './tool-package-management-tools.js';
+import { UiPackageStore } from './ui-package-store.js';
+import { HostUiPackageManagementTools } from './ui-package-management-tools.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
@@ -217,9 +219,11 @@ export async function createExecutionRuntimeHostComposition(
   await stores.sessionStore.ready();
   const extensions = new HostExtensionRuntime();
   const toolPackageStore = new ToolPackageStore(context.owner.controlDirectory);
+  const uiPackageStore = new UiPackageStore(context.owner.controlDirectory);
   const extensionLoader = new InstalledToolPackageExtensionLoader(
     new StaticTrustedToolExtensionLoader(options.trustedToolExtensions),
     toolPackageStore,
+    uiPackageStore,
   );
   const extensionController = new HostExtensionController(
     extensions,
@@ -233,7 +237,13 @@ export async function createExecutionRuntimeHostComposition(
     extensions,
     toolPackageStore,
   );
-  extensions.registerHostTools(toolPackageManagement.tools());
+  const uiPackageManagement = new HostUiPackageManagementTools(
+    context.owner.controlDirectory,
+    extensionController,
+    extensions,
+    uiPackageStore,
+  );
+  extensions.registerHostTools([...toolPackageManagement.tools(), ...uiPackageManagement.tools()]);
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let taskLedgerStore:
     | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>

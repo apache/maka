@@ -1,9 +1,12 @@
 import type { ExtensionBindingInspection } from '@maka/runtime/extension-lifecycle-kernel';
+import { createHash } from 'node:crypto';
 import {
   type ExtensionBindingProjection,
   type ExtensionCatalogMutateInput,
   type ExtensionCatalogMutateResult,
   type ExtensionCatalogQueryResult,
+  type ExtensionUiSnapshotInput,
+  type ExtensionUiSnapshotResult,
   type OperationOutcome,
   type ToolPackageInstallInput,
   type ToolPackageInstallResult,
@@ -33,6 +36,7 @@ export class HostExtensionController {
   readonly handlers: ExtensionOperationHandlerMap = {
     'extension.catalog.query': () => this.#query(),
     'extension.catalog.mutate': (input) => this.#mutate(input),
+    'extension.ui.snapshot': (input) => this.#uiSnapshot(input),
     'extension.package.install': (input) => this.#installPackage(input),
     'extension.package.uninstall': (input) => this.#uninstallPackage(input),
   };
@@ -77,6 +81,22 @@ export class HostExtensionController {
     const result: ExtensionCatalogQueryResult = {
       revisions: await this.loader.list(),
       bindings: this.#bindingProjections(),
+    };
+    return { ok: true, result };
+  }
+
+  async #uiSnapshot(
+    input: ExtensionUiSnapshotInput,
+  ): Promise<OperationOutcome<'extension.ui.snapshot'>> {
+    if (this.#persistenceFailure) {
+      return uiSnapshotFailure('persistence_failed', 'Extension state is unavailable');
+    }
+    const contributions = this.runtime.inspectUi(input.scopeId);
+    const digest = createHash('sha256').update(JSON.stringify(contributions)).digest('hex');
+    const result: ExtensionUiSnapshotResult = {
+      scopeId: input.scopeId,
+      digest: `sha256-${digest}`,
+      contributions,
     };
     return { ok: true, result };
   }
@@ -372,7 +392,7 @@ export class HostExtensionController {
     ) {
       return;
     }
-    await this.runtime.installToolRevision(await this.loader.load(extensionId, revision));
+    await this.runtime.installRevision(await this.loader.load(extensionId, revision));
   }
 
   async #garbageCollectRevisions(): Promise<void> {
@@ -532,6 +552,13 @@ function queryFailure(
   code: 'persistence_failed',
   message: string,
 ): OperationOutcome<'extension.catalog.query'> {
+  return { ok: false, error: { code, message } };
+}
+
+function uiSnapshotFailure(
+  code: 'persistence_failed',
+  message: string,
+): OperationOutcome<'extension.ui.snapshot'> {
   return { ok: false, error: { code, message } };
 }
 

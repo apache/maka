@@ -37,6 +37,7 @@ export interface TrustedExtensionRevisionProjection {
   readonly extensionId: string;
   readonly revision: string;
   readonly toolNames: readonly string[];
+  readonly uiContributionIds: readonly string[];
 }
 
 export type ExtensionBindingStatus = 'disabled' | 'active' | 'waiting' | 'failed';
@@ -57,6 +58,28 @@ export interface ExtensionCatalogQueryInput {}
 export interface ExtensionCatalogQueryResult {
   readonly revisions: readonly TrustedExtensionRevisionProjection[];
   readonly bindings: readonly ExtensionBindingProjection[];
+}
+
+export interface ExtensionUiSnapshotInput {
+  readonly scopeId: string;
+}
+
+export interface ExtensionUiContributionProjection {
+  readonly bindingId: string;
+  readonly extensionId: string;
+  readonly revision: string;
+  readonly id: string;
+  readonly surface: 'app.root' | 'app.overlay';
+  readonly priority: number;
+  readonly document: string;
+  readonly documentSha256: string;
+  readonly network: boolean;
+}
+
+export interface ExtensionUiSnapshotResult {
+  readonly scopeId: string;
+  readonly digest: string;
+  readonly contributions: readonly ExtensionUiContributionProjection[];
 }
 
 export type ExtensionCatalogMutateInput =
@@ -111,6 +134,17 @@ export const EXTENSION_OPERATION_SPECS = {
     decodeInput: decodeExtensionCatalogMutateInput,
     decodeOutput: decodeExtensionCatalogMutateResult,
   }),
+  'extension.ui.snapshot': defineOperation<
+    ExtensionUiSnapshotInput,
+    ExtensionUiSnapshotResult,
+    (typeof QUERY_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: QUERY_ERRORS,
+    decodeInput: decodeExtensionUiSnapshotInput,
+    decodeOutput: decodeExtensionUiSnapshotResult,
+  }),
   'extension.package.install': defineHostPathOperation<
     ToolPackageInstallInput,
     ToolPackageInstallResult,
@@ -138,6 +172,29 @@ export const EXTENSION_OPERATION_SPECS = {
 export function decodeExtensionCatalogQueryInput(value: unknown): ExtensionCatalogQueryInput {
   requireExactRecord(value, 'extension catalog query input', []);
   return {};
+}
+
+export function decodeExtensionUiSnapshotInput(value: unknown): ExtensionUiSnapshotInput {
+  const input = requireExactRecord(value, 'extension UI snapshot input', ['scopeId']);
+  return { scopeId: requireEntityId(input.scopeId, 'extension UI scopeId') };
+}
+
+export function decodeExtensionUiSnapshotResult(value: unknown): ExtensionUiSnapshotResult {
+  const result = requireExactRecord(value, 'extension UI snapshot result', [
+    'scopeId',
+    'digest',
+    'contributions',
+  ]);
+  if (!Array.isArray(result.contributions) || result.contributions.length > 64) {
+    throw invalidProtocolFrame('Invalid extension UI contributions');
+  }
+  const decoded = {
+    scopeId: requireEntityId(result.scopeId, 'extension UI scopeId'),
+    digest: requireUtf8String(result.digest, 'extension UI digest', 128),
+    contributions: result.contributions.map(decodeUiContributionProjection),
+  };
+  requireEncodedByteLimit(decoded, 'extension UI snapshot result', 2 * 1024 * 1024);
+  return decoded;
 }
 
 export function decodeExtensionCatalogQueryResult(value: unknown): ExtensionCatalogQueryResult {
@@ -245,9 +302,15 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     'extensionId',
     'revision',
     'toolNames',
+    'uiContributionIds',
   ]);
-  if (!Array.isArray(revision.toolNames) || revision.toolNames.length > 128) {
-    throw invalidProtocolFrame('Invalid trusted extension tool names');
+  if (
+    !Array.isArray(revision.toolNames) ||
+    revision.toolNames.length > 128 ||
+    !Array.isArray(revision.uiContributionIds) ||
+    revision.uiContributionIds.length > 64
+  ) {
+    throw invalidProtocolFrame('Invalid trusted extension contribution names');
   }
   return {
     extensionId: requireEntityId(revision.extensionId, 'extension extensionId'),
@@ -255,6 +318,40 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     toolNames: revision.toolNames.map((name) =>
       requireUtf8String(name, 'extension tool name', 128),
     ),
+    uiContributionIds: revision.uiContributionIds.map((id) =>
+      requireUtf8String(id, 'extension UI contribution id', 128),
+    ),
+  };
+}
+
+function decodeUiContributionProjection(value: unknown): ExtensionUiContributionProjection {
+  const item = requireExactRecord(value, 'extension UI contribution', [
+    'bindingId',
+    'extensionId',
+    'revision',
+    'id',
+    'surface',
+    'priority',
+    'document',
+    'documentSha256',
+    'network',
+  ]);
+  if (item.surface !== 'app.root' && item.surface !== 'app.overlay') {
+    throw invalidProtocolFrame('Invalid extension UI surface');
+  }
+  if (!Number.isSafeInteger(item.priority) || Math.abs(item.priority as number) > 10_000) {
+    throw invalidProtocolFrame('Invalid extension UI priority');
+  }
+  return {
+    bindingId: requireEntityId(item.bindingId, 'extension bindingId'),
+    extensionId: requireEntityId(item.extensionId, 'extension extensionId'),
+    revision: decodeRevision(item.revision),
+    id: requireUtf8String(item.id, 'extension UI contribution id', 128),
+    surface: item.surface,
+    priority: item.priority as number,
+    document: requireUtf8String(item.document, 'extension UI document', 1024 * 1024),
+    documentSha256: requireUtf8String(item.documentSha256, 'extension UI document digest', 128),
+    network: decodeBoolean(item.network, 'extension UI network capability'),
   };
 }
 

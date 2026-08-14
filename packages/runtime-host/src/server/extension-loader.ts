@@ -1,6 +1,7 @@
 import { isCanonicalExtensionId } from '@maka/runtime/extension-lifecycle-kernel';
 import type { TrustedExtensionRevisionProjection } from '../protocol/index.js';
 import type {
+  HostExtensionRevisionInput,
   HostPreparedToolExtensionRevisionInput,
   HostToolExtensionRevisionInput,
   HostTrustedToolExtensionRevisionInput,
@@ -11,6 +12,13 @@ import {
   ToolPackageStore,
   ToolPackageStoreError,
 } from './tool-package-store.js';
+import {
+  type InstalledUiPackage,
+  UiPackageStore,
+  UiPackageStoreError,
+} from './ui-package-store.js';
+import { access } from 'node:fs/promises';
+import { join } from 'node:path';
 
 export type StaticTrustedToolExtensionRevision = HostTrustedToolExtensionRevisionInput;
 
@@ -28,7 +36,7 @@ export class HostExtensionLoaderError extends Error {
 
 export interface HostTrustedToolExtensionLoader {
   list(): Promise<readonly TrustedExtensionRevisionProjection[]>;
-  load(extensionId: string, revision: string): Promise<HostToolExtensionRevisionInput>;
+  load(extensionId: string, revision: string): Promise<HostExtensionRevisionInput>;
   installPackage?(sourcePath: string): Promise<TrustedExtensionRevisionProjection>;
   uninstallPackage?(extensionId: string, revision: string): Promise<void>;
 }
@@ -62,6 +70,7 @@ export class StaticTrustedToolExtensionLoader implements HostTrustedToolExtensio
             extensionId: definition.extensionId,
             revision: definition.revision,
             toolNames: Object.freeze(definition.tools.map(({ name }) => name).sort(compareString)),
+            uiContributionIds: Object.freeze([]),
           }),
         )
         .sort(compareRevision),
@@ -92,11 +101,16 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
   constructor(
     private readonly statics: StaticTrustedToolExtensionLoader,
     private readonly packages: ToolPackageStore,
+    private readonly uiPackages?: UiPackageStore,
   ) {}
 
   async list(): Promise<readonly TrustedExtensionRevisionProjection[]> {
     const combined = [...(await this.statics.list())];
     for (const installed of await this.packages.list()) combined.push(projectPackage(installed));
+    if (this.uiPackages) {
+      for (const installed of await this.uiPackages.list())
+        combined.push(projectUiPackage(installed));
+    }
     const keys = new Set<string>();
     for (const item of combined) {
       const key = revisionKey(item.extensionId, item.revision);
@@ -111,7 +125,7 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     return Object.freeze(combined.sort(compareRevision));
   }
 
-  async load(extensionId: string, revision: string): Promise<HostToolExtensionRevisionInput> {
+  async load(extensionId: string, revision: string): Promise<HostExtensionRevisionInput> {
     try {
       return await this.statics.load(extensionId, revision);
     } catch (error) {
@@ -120,27 +134,49 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     try {
       return packageRevisionInput(await this.packages.load(extensionId, revision));
     } catch (error) {
-      throw translatePackageError(error);
+      if (!(error instanceof ToolPackageStoreError) || error.code !== 'not_found') {
+        throw translatePackageError(error);
+      }
     }
+    if (this.uiPackages) {
+      try {
+        return await uiPackageRevisionInput(
+          this.uiPackages,
+          await this.uiPackages.load(extensionId, revision),
+        );
+      } catch (error) {
+        throw translatePackageError(error);
+      }
+    }
+    throw new HostExtensionLoaderError(
+      'not_found',
+      `Extension revision is not available: ${extensionId}@${revision}`,
+    );
   }
 
   async installPackage(sourcePath: string): Promise<TrustedExtensionRevisionProjection> {
     try {
-      const installed = await this.packages.install(sourcePath);
+      const isUi = this.uiPackages && (await exists(join(sourcePath, 'maka.ui.json')));
+      const installed = isUi
+        ? await this.uiPackages!.install(sourcePath)
+        : await this.packages.install(sourcePath);
       const staticConflict = (await this.statics.list()).some(
         (item) =>
           item.extensionId === installed.extensionId && item.revision === installed.revision,
       );
       if (staticConflict) {
-        await this.packages
-          .uninstall(installed.extensionId, installed.revision)
-          .catch(() => undefined);
+        await (isUi
+          ? this.uiPackages!.uninstall(installed.extensionId, installed.revision)
+          : this.packages.uninstall(installed.extensionId, installed.revision)
+        ).catch(() => undefined);
         throw new HostExtensionLoaderError(
           'invalid_definition',
-          `Tool package conflicts with a static revision: ${installed.extensionId}@${installed.revision}`,
+          `Installed package conflicts with a static revision: ${installed.extensionId}@${installed.revision}`,
         );
       }
-      return projectPackage(installed);
+      return isUi
+        ? projectUiPackage(installed as InstalledUiPackage)
+        : projectPackage(installed as InstalledToolPackage);
     } catch (error) {
       throw translatePackageError(error);
     }
@@ -157,7 +193,18 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
       );
     }
     try {
-      await this.packages.uninstall(extensionId, revision);
+      try {
+        await this.packages.uninstall(extensionId, revision);
+      } catch (error) {
+        if (
+          !(error instanceof ToolPackageStoreError) ||
+          error.code !== 'not_found' ||
+          !this.uiPackages
+        ) {
+          throw error;
+        }
+        await this.uiPackages.uninstall(extensionId, revision);
+      }
     } catch (error) {
       throw translatePackageError(error);
     }
@@ -187,6 +234,39 @@ function projectPackage(installed: InstalledToolPackage): TrustedExtensionRevisi
     extensionId: installed.extensionId,
     revision: installed.revision,
     toolNames: Object.freeze(installed.manifest.tools.map(({ name }) => name).sort(compareString)),
+    uiContributionIds: Object.freeze([]),
+  });
+}
+
+async function uiPackageRevisionInput(
+  store: UiPackageStore,
+  installed: InstalledUiPackage,
+): Promise<HostExtensionRevisionInput> {
+  return Object.freeze({
+    extensionId: installed.extensionId,
+    revision: installed.revision,
+    ui: Object.freeze(
+      await Promise.all(
+        installed.manifest.ui.map(async (item) =>
+          Object.freeze({
+            id: item.id,
+            surface: item.surface,
+            priority: item.priority,
+            document: await store.readDocument(installed, item.document),
+            network: installed.manifest.permissions.network,
+          }),
+        ),
+      ),
+    ),
+  });
+}
+
+function projectUiPackage(installed: InstalledUiPackage): TrustedExtensionRevisionProjection {
+  return Object.freeze({
+    extensionId: installed.extensionId,
+    revision: installed.revision,
+    toolNames: Object.freeze([]),
+    uiContributionIds: Object.freeze(installed.manifest.ui.map(({ id }) => id).sort(compareString)),
   });
 }
 
@@ -203,9 +283,29 @@ function translatePackageError(error: unknown): HostExtensionLoaderError {
       { cause: error },
     );
   }
-  return new HostExtensionLoaderError('load_failed', 'Tool package operation failed', {
+  if (error instanceof UiPackageStoreError) {
+    return new HostExtensionLoaderError(
+      error.code === 'not_found'
+        ? 'not_found'
+        : error.code === 'invalid_package' || error.code === 'already_installed'
+          ? 'invalid_definition'
+          : 'load_failed',
+      error.message,
+      { cause: error },
+    );
+  }
+  return new HostExtensionLoaderError('load_failed', 'Extension package operation failed', {
     cause: error,
   });
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function assertDefinition(definition: HostTrustedToolExtensionRevisionInput): void {
