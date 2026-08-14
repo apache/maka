@@ -4,6 +4,9 @@ compile_error!("maka-windows-sandbox-spike is Windows-only");
 mod broker_authorization;
 #[cfg(test)]
 mod broker_authorization_tests;
+mod broker_framing;
+#[cfg(test)]
+mod broker_framing_tests;
 mod protocol;
 #[cfg(test)]
 mod protocol_tests;
@@ -14,6 +17,7 @@ use std::fs;
 use std::process::ExitCode;
 
 use broker_authorization::BrokerAuthorizer;
+use broker_framing::{decode_frame, encode_frame};
 use protocol::{BrokerLaunchOutcome, BrokerLaunchRequest, BrokerLaunchResponse, LaunchRequest};
 
 fn main() -> ExitCode {
@@ -97,9 +101,11 @@ fn validate_broker_request(source: &str) -> Result<u8, String> {
             },
         },
     };
-    println!(
-        "{}",
-        serde_json::to_string(&response).map_err(|error| error.to_string())?
-    );
+    let payload = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
+    let frame =
+        encode_frame(&payload).map_err(|error| format!("broker frame rejected: {error:?}"))?;
+    let decoded =
+        decode_frame(&frame).map_err(|error| format!("broker frame rejected: {error:?}"))?;
+    println!("{}", String::from_utf8_lossy(decoded));
     Ok(0)
 }
