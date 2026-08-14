@@ -80,12 +80,11 @@ try {
   Read-Exact $client $responsePayload
   $response = [Text.Encoding]::UTF8.GetString($responsePayload) | ConvertFrom-Json
   if ($response.requestId -ne 'pipe-smoke' -or
-      $response.outcome.kind -ne 'rejected' -or
-      $response.outcome.code -ne 'atomic_launch_failed' -or
-      $response.outcome.message -notmatch 'required privilege') {
+      $response.outcome.kind -ne 'completed' -or
+      $response.outcome.exitCode -ne 0) {
     throw "Unexpected broker response: $($response | ConvertTo-Json -Compress)"
   }
-  Write-Host "Secure broker pipe authorization verified: $($response | ConvertTo-Json -Compress)"
+  Write-Host "Secure broker pipe AppContainer launch verified: $($response | ConvertTo-Json -Compress)"
 } finally {
   if ($client) { $client.Dispose() }
   if (-not $server.WaitForExit(10000)) {

@@ -100,10 +100,10 @@ unsafe fn serve_once_with_security(
         let request_id = request.request_id.clone();
         let mut authorizer = BrokerAuthorizer::new([profile_digest.to_owned()]);
         let outcome = match authorizer.authorize(&request, client_pid) {
-            Ok(()) => match windows_launcher::launch_atomic(&request.launch) {
+            Ok(()) => match windows_launcher::launch_appcontainer(&request.launch) {
                 Ok(exit_code) => BrokerLaunchOutcome::Completed { exit_code },
                 Err(message) => BrokerLaunchOutcome::Rejected {
-                    code: "atomic_launch_failed".to_owned(),
+                    code: "appcontainer_launch_failed".to_owned(),
                     message,
                 },
             },

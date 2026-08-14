@@ -45,8 +45,9 @@ worked around by silently using the non-atomic launcher path.
 bounded local request over a protected named pipe. The pipe rejects remote
 clients, grants access only to SYSTEM and the supplied user SID, obtains the
 client PID from the kernel, enforces nonce replay and profile-digest checks,
-and calls only the atomic launch path. A runner without broker privileges
-receives `atomic_launch_failed`; the broker never falls back to post-create Job
+and calls only the AppContainer atomic launch path. Empty filesystem policies
+complete without broker privileges; filesystem roots continue to fail closed
+until the ACL ledger exists. The broker never falls back to post-create Job
 assignment.
 
 `launcher --atomic <request.json>` is the privileged-broker launch candidate.

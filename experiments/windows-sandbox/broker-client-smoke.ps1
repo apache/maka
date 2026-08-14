@@ -53,10 +53,8 @@ try {
   $output = & $launcher --broker-client $pipeName $manifestPath 2>&1
   $exitCode = $LASTEXITCODE
   $rendered = $output -join "`n"
-  if ($exitCode -eq 0 -or
-      $rendered -notmatch 'atomic_launch_failed' -or
-      $rendered -notmatch 'required privilege') {
-    throw "Broker client did not fail closed as expected: exit=$exitCode output=$rendered"
+  if ($exitCode -ne 0) {
+    throw "Broker client AppContainer launch failed: exit=$exitCode output=$rendered"
   }
   if (Test-Path -LiteralPath $manifestPath) {
     throw 'Broker client left its launch manifest on disk'
@@ -68,7 +66,7 @@ try {
   if ($server.ExitCode -ne 0) {
     throw "Broker server failed: $($server.StandardError.ReadToEnd())"
   }
-  Write-Host "Broker client PID binding, manifest cleanup, and atomic failure verified: $rendered"
+  Write-Host "Broker client PID binding, manifest cleanup, and AppContainer launch verified: $rendered"
 } finally {
   Remove-Item -LiteralPath $manifestPath -Force -ErrorAction SilentlyContinue
   if (-not $server.HasExited) { $server.Kill($true) }
