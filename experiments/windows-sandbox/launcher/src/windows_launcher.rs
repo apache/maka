@@ -5,9 +5,13 @@ use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::Security::Isolation::{
+    CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
+};
 use windows_sys::Win32::Security::{
-    CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, IsTokenRestricted, LUA_TOKEN,
-    SecurityImpersonation, TOKEN_ALL_ACCESS, TOKEN_DUPLICATE, TOKEN_QUERY, TokenPrimary,
+    CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, FreeSid, GetTokenInformation,
+    IsTokenRestricted, LUA_TOKEN, SECURITY_CAPABILITIES, SecurityImpersonation, TOKEN_ALL_ACCESS,
+    TOKEN_DUPLICATE, TOKEN_QUERY, TokenIsAppContainer, TokenPrimary,
 };
 use windows_sys::Win32::System::JobObjects::{
     CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -15,11 +19,12 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, CreateProcessWithTokenW,
-    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
-    GetExitCodeProcess, GetProcessId, InitializeProcThreadAttributeList, OpenProcessToken,
-    PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, ResumeThread, STARTUPINFOEXW,
-    STARTUPINFOW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, CreateProcessW,
+    CreateProcessWithTokenW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    GetCurrentProcess, GetExitCodeProcess, GetProcessId, InitializeProcThreadAttributeList,
+    OpenProcessToken, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+    PROCESS_INFORMATION, ResumeThread, STARTUPINFOEXW, STARTUPINFOW, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use crate::protocol::{LaunchRequest, NetworkMode};
@@ -31,14 +36,15 @@ pub fn self_probe() -> Result<u8, String> {
             return Err(last_error("OpenProcessToken(self-probe)"));
         }
         let restricted = IsTokenRestricted(token) != 0;
+        let app_container = token_is_appcontainer(token)?;
         CloseHandle(token);
         let mut in_job = 0;
         if IsProcessInJob(GetCurrentProcess(), null_mut(), &mut in_job) == 0 {
             return Err(last_error("IsProcessInJob"));
         }
         println!(
-            "{{\"restrictedToken\":{restricted},\"inJob\":{}}}",
-            in_job != 0
+            "{{\"restrictedToken\":{restricted},\"appContainer\":{app_container},\"inJob\":{}}}",
+            in_job != 0,
         );
         Ok(0)
     }
@@ -71,6 +77,75 @@ pub fn launch_atomic(request: &LaunchRequest) -> Result<u8, String> {
         CloseHandle(restricted);
         CloseHandle(job);
         result
+    }
+}
+
+pub fn launch_appcontainer(request: &LaunchRequest) -> Result<u8, String> {
+    if !request.read_roots.is_empty() || !request.write_roots.is_empty() {
+        return Err("filesystem roots require the AppContainer ACL ledger".to_owned());
+    }
+
+    unsafe {
+        let job = create_kill_on_close_job()?;
+        let profile = AppContainerProfile::open()?;
+        let result = create_appcontainer_child(request, job, profile.sid);
+        CloseHandle(job);
+        result
+    }
+}
+
+struct AppContainerProfile {
+    name: Vec<u16>,
+    sid: *mut c_void,
+    created: bool,
+}
+
+impl AppContainerProfile {
+    unsafe fn open() -> Result<Self, String> {
+        let name = wide("maka.sandbox.w0");
+        let display_name = wide("Maka Windows Sandbox W0");
+        let description = wide("Temporary AppContainer profile for Maka sandbox validation");
+        let mut sid = null_mut();
+        let result = unsafe {
+            CreateAppContainerProfile(
+                name.as_ptr(),
+                display_name.as_ptr(),
+                description.as_ptr(),
+                null(),
+                0,
+                &mut sid,
+            )
+        };
+        let created = result >= 0;
+        if !created {
+            const HRESULT_ALREADY_EXISTS: i32 = 0x8007_00B7u32 as i32;
+            if result != HRESULT_ALREADY_EXISTS {
+                return Err(format!(
+                    "CreateAppContainerProfile failed: HRESULT 0x{:08x}",
+                    result as u32
+                ));
+            }
+            let derived =
+                unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
+            if derived < 0 {
+                return Err(format!(
+                    "DeriveAppContainerSidFromAppContainerName failed: HRESULT 0x{:08x}",
+                    derived as u32
+                ));
+            }
+        }
+        Ok(Self { name, sid, created })
+    }
+}
+
+impl Drop for AppContainerProfile {
+    fn drop(&mut self) {
+        unsafe {
+            FreeSid(self.sid);
+            if self.created {
+                DeleteAppContainerProfile(self.name.as_ptr());
+            }
+        }
     }
 }
 
@@ -328,6 +403,138 @@ unsafe fn create_child_atomic(
     result
 }
 
+unsafe fn create_appcontainer_child(
+    request: &LaunchRequest,
+    job: HANDLE,
+    app_container_sid: *mut c_void,
+) -> Result<u8, String> {
+    let mut command = quote_command(&request.executable, &request.arguments);
+    let executable = wide(&request.executable);
+    let cwd = wide(&request.cwd);
+    let environment = environment_block(&request.environment);
+    let environment_ptr = if environment.is_empty() {
+        null()
+    } else {
+        environment.as_ptr() as *const c_void
+    };
+
+    let mut attribute_size = 0usize;
+    unsafe { InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut attribute_size) };
+    if attribute_size == 0 {
+        return Err(last_error(
+            "InitializeProcThreadAttributeList(appcontainer size)",
+        ));
+    }
+    let words = attribute_size.div_ceil(size_of::<usize>());
+    let mut attribute_storage = vec![0usize; words];
+    let attribute_list = attribute_storage.as_mut_ptr() as *mut c_void;
+    if unsafe { InitializeProcThreadAttributeList(attribute_list, 2, 0, &mut attribute_size) } == 0
+    {
+        return Err(last_error(
+            "InitializeProcThreadAttributeList(appcontainer)",
+        ));
+    }
+
+    let mut job_value = job;
+    let mut capabilities = SECURITY_CAPABILITIES {
+        AppContainerSid: app_container_sid,
+        Capabilities: null_mut(),
+        CapabilityCount: 0,
+        Reserved: 0,
+    };
+    let attributes = (|| -> Result<(), String> {
+        if unsafe {
+            UpdateProcThreadAttribute(
+                attribute_list,
+                0,
+                PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+                &mut job_value as *mut HANDLE as *const c_void,
+                size_of::<HANDLE>(),
+                null_mut(),
+                null(),
+            )
+        } == 0
+        {
+            return Err(last_error(
+                "UpdateProcThreadAttribute(APP_CONTAINER_JOB_LIST)",
+            ));
+        }
+        if unsafe {
+            UpdateProcThreadAttribute(
+                attribute_list,
+                0,
+                PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
+                &mut capabilities as *mut SECURITY_CAPABILITIES as *const c_void,
+                size_of::<SECURITY_CAPABILITIES>(),
+                null_mut(),
+                null(),
+            )
+        } == 0
+        {
+            return Err(last_error(
+                "UpdateProcThreadAttribute(SECURITY_CAPABILITIES)",
+            ));
+        }
+        Ok(())
+    })();
+    if let Err(error) = attributes {
+        unsafe { DeleteProcThreadAttributeList(attribute_list) };
+        return Err(error);
+    }
+
+    let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    startup.lpAttributeList = attribute_list;
+    let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
+    let creation_flags = CREATE_SUSPENDED
+        | EXTENDED_STARTUPINFO_PRESENT
+        | if environment.is_empty() {
+            0
+        } else {
+            CREATE_UNICODE_ENVIRONMENT
+        };
+    let created = unsafe {
+        CreateProcessW(
+            executable.as_ptr(),
+            command.as_mut_ptr(),
+            null(),
+            null(),
+            0,
+            creation_flags,
+            environment_ptr,
+            cwd.as_ptr(),
+            &startup.StartupInfo,
+            &mut process,
+        )
+    };
+    unsafe { DeleteProcThreadAttributeList(attribute_list) };
+    if created == 0 {
+        return Err(last_error("CreateProcessW(appcontainer atomic-job)"));
+    }
+
+    let result = (|| -> Result<u8, String> {
+        if unsafe { ResumeThread(process.hThread) } == u32::MAX {
+            return Err(last_error("ResumeThread(appcontainer)"));
+        }
+        let child_app_container = unsafe { child_token_is_appcontainer(process.hProcess) }?;
+        let child_in_job = unsafe { child_process_is_in_job(process.hProcess) }?;
+        if child_app_container && child_in_job {
+            println!("{{\"appContainer\":true,\"inJob\":true,\"atomicJob\":true}}");
+            unsafe { wait_for_child(process.hProcess) }
+        } else {
+            Err(
+                "AppContainer launch did not establish the required token and Job boundary"
+                    .to_owned(),
+            )
+        }
+    })();
+    unsafe {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+    result
+}
+
 unsafe fn wait_for_child(process: HANDLE) -> Result<u8, String> {
     let wait = unsafe { WaitForSingleObject(process, 30_000) };
     if wait == WAIT_TIMEOUT {
@@ -358,6 +565,34 @@ unsafe fn child_token_is_restricted(process: HANDLE) -> Result<bool, String> {
     let result = unsafe { IsTokenRestricted(token) != 0 };
     unsafe { CloseHandle(token) };
     Ok(result)
+}
+
+unsafe fn child_token_is_appcontainer(process: HANDLE) -> Result<bool, String> {
+    let mut token = null_mut();
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return Err(last_error("OpenProcessToken(appcontainer child)"));
+    }
+    let result = unsafe { token_is_appcontainer(token) };
+    unsafe { CloseHandle(token) };
+    result
+}
+
+unsafe fn token_is_appcontainer(token: HANDLE) -> Result<bool, String> {
+    let mut value = 0u32;
+    let mut returned = 0u32;
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenIsAppContainer,
+            &mut value as *mut u32 as *mut c_void,
+            size_of::<u32>() as u32,
+            &mut returned,
+        )
+    } == 0
+    {
+        return Err(last_error("GetTokenInformation(TokenIsAppContainer)"));
+    }
+    Ok(value != 0)
 }
 
 unsafe fn child_process_is_in_job(process: HANDLE) -> Result<bool, String> {

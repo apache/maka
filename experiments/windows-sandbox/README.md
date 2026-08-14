@@ -57,3 +57,9 @@ before reporting `atomicJob:true`. The atomic candidate never falls back to the
 post-create assignment path. `atomic-launch-smoke.ps1` requires complete proof
 when the runner has both broker privileges and otherwise requires an explicit
 non-zero, fail-closed outcome.
+
+`launcher --appcontainer <request.json>` is the isolated-identity candidate. It
+combines an AppContainer token with the same atomic Job attribute and supplies
+no network capabilities. The current smoke only proves the identity and process
+boundary with an empty filesystem policy. Requests containing filesystem roots
+still fail closed until the ACL grant/restore ledger is implemented.

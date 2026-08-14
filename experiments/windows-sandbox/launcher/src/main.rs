@@ -83,6 +83,19 @@ fn run() -> Result<u8, String> {
             &manifest_path.to_string_lossy(),
         );
     }
+    if first == "--appcontainer" {
+        let request_path = args
+            .next()
+            .ok_or_else(|| "--appcontainer requires a request path".to_owned())?;
+        if args.next().is_some() {
+            return Err("--appcontainer accepts exactly one request path".to_owned());
+        }
+        let source = fs::read_to_string(request_path).map_err(|error| error.to_string())?;
+        let request: LaunchRequest =
+            serde_json::from_str(&source).map_err(|error| error.to_string())?;
+        request.validate()?;
+        return windows_launcher::launch_appcontainer(&request);
+    }
     let (mode, request_path) = if first == "--atomic" {
         let path = args
             .next()

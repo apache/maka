@@ -39,6 +39,9 @@ jobs:
       - name: Verify broker client handoff
         shell: pwsh
         run: ./experiments/windows-sandbox/broker-client-smoke.ps1
+      - name: Verify AppContainer identity candidate
+        shell: pwsh
+        run: ./experiments/windows-sandbox/appcontainer-smoke.ps1
       - name: Probe atomic Job launch candidate
         shell: pwsh
         run: ./experiments/windows-sandbox/atomic-launch-smoke.ps1
