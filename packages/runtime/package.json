@@ -32,6 +32,7 @@
     "./runtime-resume": "./dist/runtime-resume.js",
     "./runtime-kernel": "./dist/runtime-kernel.js",
     "./extension-lifecycle-kernel": "./dist/extension-lifecycle-kernel.js",
+    "./extension-tool-contributions": "./dist/extension-tool-contributions.js",
     "./invocation-context": "./dist/invocation-context.js",
     "./ai-sdk-flow": "./dist/ai-sdk-flow.js",
     "./stream-graph-readiness": "./dist/stream-graph-readiness.js",
