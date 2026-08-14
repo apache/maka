@@ -1094,7 +1094,11 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'WebSearch',
       'Write',
       'WriteStdin',
+      'define_tool',
+      'inspect_tools',
+      'invoke_tool',
       'load_tools',
+      'manage_tool',
       'memory_extract',
       'memory_remember',
       'request_sandbox_boundary',
@@ -1102,7 +1106,16 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'task_get',
       'task_list',
       'task_update',
+      'test_tool',
     ]);
+    const requestTools = request?.body.tools as Array<Record<string, unknown>> | undefined;
+    const manageTool = requestTools?.find((tool) => {
+      const fn = tool.function;
+      return (
+        fn !== null && typeof fn === 'object' && (fn as { name?: unknown }).name === 'manage_tool'
+      );
+    }) as { function?: { parameters?: { type?: unknown } } } | undefined;
+    assert.equal(manageTool?.function?.parameters?.type, 'object');
     assert.match(JSON.stringify(compactRequests[0]?.body), /context summarization assistant/);
 
     const messages = await execution.sessionStore.readMessagesSnapshot(session.id);

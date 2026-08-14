@@ -74,12 +74,21 @@ const testInput = revisionInput.extend({
   toolName: z.string().min(1).max(128),
   args: z.unknown(),
 });
-const manageInput = z.discriminatedUnion('action', [
-  revisionInput.extend({ action: z.literal('activate') }),
-  revisionInput.extend({ action: z.literal('update') }),
-  z.object({ action: z.literal('stop'), extensionId: z.string().min(1).max(128) }),
-  revisionInput.extend({ action: z.literal('delete') }),
-]);
+const manageInput = z
+  .object({
+    action: z.enum(['activate', 'update', 'stop', 'delete']),
+    extensionId: z.string().min(1).max(128),
+    revision: z.string().min(1).max(128).optional(),
+  })
+  .superRefine((input, context) => {
+    if (input.action !== 'stop' && input.revision === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['revision'],
+        message: `revision is required for ${input.action}`,
+      });
+    }
+  });
 const invokeInput = z.object({
   toolName: z.string().min(1).max(128),
   args: z.unknown(),
@@ -217,7 +226,8 @@ export class HostToolPackageManagementTools {
       impl: async (input: z.infer<typeof manageInput>, context: MakaToolContext) => {
         const bindingId = bindingIdFor(context.sessionId, input.extensionId);
         switch (input.action) {
-          case 'activate':
+          case 'activate': {
+            const revision = requireRevision(input);
             return unwrap(
               await this.controller.handlers['extension.catalog.mutate'](
                 {
@@ -225,15 +235,16 @@ export class HostToolPackageManagementTools {
                   bindingId,
                   scopeId: context.sessionId,
                   extensionId: input.extensionId,
-                  revision: input.revision,
+                  revision,
                 },
                 this.#connection,
               ),
             );
+          }
           case 'update':
             return unwrap(
               await this.controller.handlers['extension.catalog.mutate'](
-                { kind: 'update', bindingId, revision: input.revision },
+                { kind: 'update', bindingId, revision: requireRevision(input) },
                 this.#connection,
               ),
             );
@@ -258,7 +269,7 @@ export class HostToolPackageManagementTools {
             }
             return unwrap(
               await this.controller.handlers['extension.package.uninstall'](
-                { extensionId: input.extensionId, revision: input.revision },
+                { extensionId: input.extensionId, revision: requireRevision(input) },
                 this.#connection,
               ),
             );
@@ -291,6 +302,13 @@ export class HostToolPackageManagementTools {
       },
     });
   }
+}
+
+function requireRevision(input: z.infer<typeof manageInput>): string {
+  if (input.revision === undefined) {
+    throw new Error(`revision is required for ${input.action}`);
+  }
+  return input.revision;
 }
 
 function unwrap<K extends OperationKey>(

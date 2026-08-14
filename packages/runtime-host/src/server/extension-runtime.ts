@@ -38,7 +38,16 @@ export type HostToolExtensionRevisionInput =
   | HostPreparedToolExtensionRevisionInput;
 
 export interface HostExtensionToolResolver {
-  resolveTools(scopeId: string, coreTools: readonly MakaTool[]): readonly MakaTool[];
+  resolveTools(
+    scopeId: string,
+    coreTools: readonly MakaTool[],
+    options?: HostExtensionToolResolutionOptions,
+  ): readonly MakaTool[];
+}
+
+export interface HostExtensionToolResolutionOptions {
+  /** Preserve an exact caller-owned Tool ceiling without Host or Extension additions. */
+  readonly exact?: boolean;
 }
 
 /**
@@ -166,8 +175,13 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     return this.#lifecycle.composition(scopeId);
   }
 
-  resolveTools(scopeId: string, coreTools: readonly MakaTool[]): readonly MakaTool[] {
+  resolveTools(
+    scopeId: string,
+    coreTools: readonly MakaTool[],
+    options: HostExtensionToolResolutionOptions = {},
+  ): readonly MakaTool[] {
     if (this.#closed) throw new Error('Runtime Host Extension authority is closed');
+    if (options.exact) return Object.freeze([...coreTools]);
     return this.#tools.compose(scopeId, [...coreTools, ...this.#hostTools]);
   }
 

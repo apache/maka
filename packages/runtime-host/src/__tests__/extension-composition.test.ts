@@ -60,7 +60,7 @@ test('production composition exposes trusted Extension control and restores it a
     assert.equal(enabled.ok, true);
     assert.deepEqual(
       composition.extensions.resolveTools('session-1', []).map(({ name }) => name),
-      ['Weather'],
+      ['Weather', 'define_tool', 'inspect_tools', 'invoke_tool', 'manage_tool', 'test_tool'],
     );
 
     await composition.close();
@@ -81,7 +81,7 @@ test('production composition exposes trusted Extension control and restores it a
     assert.equal(restored.ok && restored.result.bindings[0]?.status, 'active');
     assert.deepEqual(
       composition.extensions.resolveTools('session-1', []).map(({ name }) => name),
-      ['Weather'],
+      ['Weather', 'define_tool', 'inspect_tools', 'invoke_tool', 'manage_tool', 'test_tool'],
     );
   } finally {
     await composition?.close().catch(() => undefined);

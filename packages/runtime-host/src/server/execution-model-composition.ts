@@ -152,8 +152,11 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     throw error;
   }
   const resolveModelTools = (): readonly MakaTool[] =>
-    input.extensions?.resolveTools(input.context.sessionId, modelComposition.tools) ??
-    modelComposition.tools;
+    input.extensions?.resolveTools(input.context.sessionId, modelComposition.tools, {
+      exact:
+        input.context.header.subagentRuntime !== undefined ||
+        input.context.header.toolProfile !== undefined,
+    }) ?? modelComposition.tools;
   const modelFactory = (
     modelInput: Parameters<typeof getAIModel>[0],
   ): ReturnType<typeof getAIModel> =>

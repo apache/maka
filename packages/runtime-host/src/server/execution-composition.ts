@@ -716,7 +716,7 @@ export async function createExecutionRuntimeHostComposition(
         if (tools.length !== header.subagentRuntime.toolNames.length) {
           throw new Error('Subagent runtime tool snapshot is unavailable');
         }
-        return extensions.resolveTools(sessionId, tools).map((tool) => tool.name);
+        return extensions.resolveTools(sessionId, tools, { exact: true }).map((tool) => tool.name);
       }
       if (header.subagentParent) {
         throw new Error('Linked child session is missing its durable runtime snapshot');
@@ -761,7 +761,9 @@ export async function createExecutionRuntimeHostComposition(
               }
             : {}),
         });
-        return extensions.resolveTools(sessionId, composition.tools).map((tool) => tool.name);
+        return extensions
+          .resolveTools(sessionId, composition.tools, { exact: runProfile !== undefined })
+          .map((tool) => tool.name);
       } finally {
         capabilitySnapshot?.release();
       }
