@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import { formatCompactTimestamp } from '@maka/core/relative-time';
@@ -7,7 +7,10 @@ import { Archive, ICON_SIZE, Search } from '@maka/ui/icons';
 import { HStack, StackItem } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { TextInput } from '@astryxdesign/core/TextInput';
+import type { SessionPurgeOutcome } from '../app-shell-session-row-actions.js';
+import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { getSettingsTasksCopy } from '../locales/settings-tasks-copy.js';
+import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
 import { archivedTaskRows, matchesArchivedTaskQuery } from './task-catalog-rows';
 
@@ -18,22 +21,14 @@ import { archivedTaskRows, matchesArchivedTaskQuery } from './task-catalog-rows'
  */
 export interface ArchivedTasksBridge {
   sessions: readonly SessionSummary[];
-  activeId: string | undefined;
   projects: readonly ProjectRecord[];
   onRestore(sessionId: string): void;
   onDelete(sessionId: string): void;
   /**
-   * Deletes every id and answers with the ones the catalog still reports.
-   * Judging the sweep by what survived rather than by what rejected is what
-   * keeps the report true: the delete IPC commits the removal before it
-   * releases renderer resources, so a rejection does not mean a task is still
-   * there.
+   * Deletes the tasks that are still archived when the sweep reaches them, and
+   * reports what it could confirm. It never touches an id outside this set.
    */
-  onPurge(sessionIds: readonly string[]): Promise<readonly string[]>;
-}
-
-export interface TasksSettingsPageProps extends ArchivedTasksBridge {
-  onOpenSession?(sessionId: string): void;
+  onPurge(sessionIds: readonly string[]): Promise<SessionPurgeOutcome>;
 }
 
 /**
@@ -54,7 +49,9 @@ export interface TasksSettingsPageProps extends ArchivedTasksBridge {
  * changed. What is genuinely new here is finding a task by name or project, and
  * clearing a set of them in one pass.
  */
-export function TasksSettingsPage(props: TasksSettingsPageProps) {
+export function TasksSettingsPage(
+  props: ArchivedTasksBridge & { onOpenSession?(sessionId: string): void },
+) {
   const locale = useUiLocale();
   const copy = getSettingsTasksCopy(locale);
   const toast = useToast();
@@ -81,42 +78,47 @@ export function TasksSettingsPage(props: TasksSettingsPageProps) {
 
   // Store order is already recency-first with a stable id tie-break, and the
   // projection preserves it, so there is nothing left to sort here.
-  const archived = useMemo(
-    () => archivedTaskRows(props.sessions, props.activeId),
-    [props.activeId, props.sessions],
-  );
+  const archived = useMemo(() => archivedTaskRows(props.sessions), [props.sessions]);
   const isSearching = query.trim().length > 0;
   const visible = useMemo(
     () => archived.filter((session) => matchesArchivedTaskQuery(session, query, projectLabelOf)),
     [archived, projectLabelOf, query],
   );
-
-  // What the button would delete, kept current through the confirm dialog: the
-  // set can move while it is up, and the one thing this must never do is
-  // delete a task someone restored in the meantime.
-  const purgeTargetsRef = useRef<string[]>([]);
-  purgeTargetsRef.current = (isSearching ? visible : archived).map((session) => session.id);
+  const purgeTargets = isSearching ? visible : archived;
 
   async function purge() {
-    const announced = purgeTargetsRef.current.length;
+    // Frozen at the click. A confirm names a number to a person, and a set
+    // re-read afterwards can be larger than the one they agreed to — another
+    // client archiving a task while the dialog is up would add it. Shrinking is
+    // safe and happens at the other end: `onPurge` skips anything no longer
+    // archived, so a task restored meanwhile is left alone.
+    const ids = purgeTargets.map((session) => session.id);
     const confirmed = await toast.confirm({
       title: isSearching
-        ? copy.purgeMatchesConfirmTitle(announced)
-        : copy.purgeAllConfirmTitle(announced),
+        ? copy.purgeMatchesConfirmTitle(ids.length)
+        : copy.purgeAllConfirmTitle(ids.length),
       description: copy.purgeConfirmBody,
       confirmLabel: copy.purgeConfirmAction,
-      cancelLabel: copy.cancel,
+      cancelLabel: getSettingsSharedCopy(locale).cancel,
       destructive: true,
     });
     if (!confirmed) return;
-    const ids = purgeTargetsRef.current;
     setPurging(true);
     try {
-      const remaining = await props.onPurge(ids);
-      if (remaining.length === 0) {
-        toast.success(copy.purgedToast(ids.length));
+      const outcome = await props.onPurge(ids);
+      if (!outcome.verified) {
+        toast.error(copy.purgeFailedTitle, copy.purgeUnverified);
+      } else if (outcome.remaining.length > 0) {
+        // A reason beats a count: a task refuses to retire while its turn is
+        // still running, and "N still there" gives the reader nothing to do.
+        toast.error(
+          copy.purgeFailedTitle,
+          outcome.firstError
+            ? settingsActionErrorMessage(outcome.firstError, locale)
+            : copy.purgeFailedBody(outcome.remaining.length),
+        );
       } else {
-        toast.error(copy.purgeFailedTitle, copy.purgeFailedBody(remaining.length));
+        toast.success(copy.purgedToast(outcome.removed));
       }
     } finally {
       if (mountedRef.current) setPurging(false);
@@ -156,7 +158,7 @@ export function TasksSettingsPage(props: TasksSettingsPageProps) {
             be answering a question nobody asked. */}
         <Button
           variant="destructive"
-          isDisabled={purging || purgeTargetsRef.current.length === 0}
+          isDisabled={purging || purgeTargets.length === 0}
           clickAction={() => void purge()}
           label={isSearching ? copy.purgeMatches(visible.length) : copy.purgeAll}
         />

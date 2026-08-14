@@ -13,14 +13,15 @@ import { deriveSessionRail } from '../session-rail.js';
  * is what makes a row here mean what a row there means; a second projection
  * would only mean it approximately.
  *
- * The rail additionally hides in-flight companion forks, which is a transient
- * property of the shell's own view and not of the archived catalog.
+ * No active session is passed. The rail passes one so it can highlight the row
+ * you are on, but that also pins a family's representative to whichever
+ * revision happens to be open — which would move a row's name, date and
+ * position here for a reason this page never shows. The rail additionally hides
+ * in-flight companion forks, another property of its own view rather than of
+ * the archived catalog.
  */
-export function archivedTaskRows(
-  sessions: readonly SessionSummary[],
-  activeId: string | undefined,
-): SessionSummary[] {
-  return deriveSessionRail(sessions, activeId, (session) => session.isArchived).sessions;
+export function archivedTaskRows(sessions: readonly SessionSummary[]): SessionSummary[] {
+  return deriveSessionRail(sessions, undefined, (session) => session.isArchived).sessions;
 }
 
 /**
@@ -30,14 +31,14 @@ export function archivedTaskRows(
  * over "project · date", so both halves answer to the same box. They are
  * joined by a newline rather than a space so a query can never match across
  * the seam and produce a row whose highlight the reader cannot find. A task
- * whose project could not be resolved answers to its name alone, never to a
- * placeholder it did not display.
+ * whose project could not be resolved answers to its name alone — `join`
+ * renders the missing half as nothing, never as the word "undefined".
  */
 export function matchesArchivedTaskQuery(
   session: SessionSummary,
   query: string,
   projectLabelOf: (session: SessionSummary) => string | undefined,
 ): boolean {
-  const haystack = [session.name, projectLabelOf(session)].filter(Boolean).join('\n');
+  const haystack = [session.name, projectLabelOf(session)].join('\n');
   return haystack.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
 }

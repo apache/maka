@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { userEvent } from 'storybook/test';
-import { ToastProvider } from '@maka/ui';
+import { ToastProvider, useToast } from '@maka/ui';
 import type {
   AppSettings,
   SettingsSection,
@@ -710,7 +710,7 @@ const archivedTaskSessions: SessionSummary[] = [
   archivedTask('task-spawn', 'Single agent_spawn with local_read for runtime/src inspection', 6, {
     projectId: 'proj-maka',
   }),
-  // Folds with `task-spawn-v2` into one row.
+  // Folds together with `task-spawn` into one row.
   archivedTask('task-spawn-v2', 'Single agent_spawn, second attempt', 5, {
     projectId: 'proj-maka',
     revisionRootSessionId: 'task-spawn',
@@ -741,8 +741,17 @@ const archivedTaskProjects: ProjectRecord[] = [
  * clearing really remove rows, because a story whose buttons resolve to
  * nothing shows a list that cannot answer the question it is there to answer.
  */
-function useArchivedTasksStoryBridge(): ArchivedTasksBridge {
-  const [sessions, setSessions] = useState<SessionSummary[]>(archivedTaskSessions);
+function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedTasksBridge {
+  const toast = useToast();
+  const [sessions, setSessions] = useState<SessionSummary[]>([...seed]);
+  const confirmDelete = (sessionId: string) =>
+    toast.confirm({
+      title: `彻底删除「${sessions.find((session) => session.id === sessionId)?.name ?? ''}」？`,
+      description: '任务及其全部消息会被永久删除，无法撤销。',
+      confirmLabel: '永久删除',
+      cancelLabel: '取消',
+      destructive: true,
+    });
   // Both writes go out with `revisionFamily: true`, so a row takes its whole
   // edit-and-resend family with it. Dropping only the id on screen would leave
   // an older revision behind and show a list the real app never produces.
@@ -754,7 +763,6 @@ function useArchivedTasksStoryBridge(): ArchivedTasksBridge {
   };
   return {
     sessions,
-    activeId: undefined,
     projects: archivedTaskProjects,
     onRestore: (sessionId) =>
       setSessions((current) => {
@@ -763,10 +771,17 @@ function useArchivedTasksStoryBridge(): ArchivedTasksBridge {
           family.has(session.id) ? { ...session, isArchived: false } : session,
         );
       }),
-    onDelete: (sessionId) => drop([sessionId]),
+    // Mirrors the shell's own row action, which always confirms first — a
+    // story where a row vanishes on one click would be showing an interaction
+    // the app does not have.
+    onDelete: (sessionId) => {
+      void confirmDelete(sessionId).then((ok) => {
+        if (ok) drop([sessionId]);
+      });
+    },
     onPurge: async (sessionIds) => {
       drop(sessionIds);
-      return [];
+      return { removed: sessionIds.length, remaining: [], verified: true, firstError: undefined };
     },
   };
 }
@@ -956,21 +971,29 @@ function makeBotAttentionBridge(settings: AppSettings) {
 
 const withBotAttentionBridge = withScopedMakaBridge(makeBotAttentionBridge(botAttentionSettings));
 
-const NO_ARCHIVED_TASKS: ArchivedTasksBridge = {
-  sessions: [],
-  activeId: undefined,
-  projects: [],
-  onRestore: noop,
-  onDelete: noop,
-  onPurge: async () => [],
-};
-
-function SettingsStory(props: {
+type SettingsStoryProps = {
   section: SettingsSection;
   connections?: LlmConnection[];
   defaultSlug?: string | null;
-  archivedTasks?: ArchivedTasksBridge;
-}) {
+  /** Seeds 已归档任务. Empty for every story that is not about that page. */
+  archivedTaskSessions?: readonly SessionSummary[];
+};
+
+/**
+ * The provider has to sit above the body: 已归档任务's story bridge confirms
+ * through the same toast surface the shell's row action uses, and a hook cannot
+ * reach a provider its own component renders.
+ */
+function SettingsStory(props: SettingsStoryProps) {
+  return (
+    <ToastProvider>
+      <SettingsStoryFrame {...props} />
+    </ToastProvider>
+  );
+}
+
+function SettingsStoryFrame(props: SettingsStoryProps) {
+  const archivedTasks = useArchivedTasksStoryBridge(props.archivedTaskSessions ?? []);
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
   // Fidelity: the theme and palette pickers are the 外观 page's whole content,
@@ -981,7 +1004,7 @@ function SettingsStory(props: {
   const [themePalette, setThemePalette] = useState<ThemePalette>('default');
 
   return (
-    <ToastProvider>
+    <>
       {/* `100dvh`, not `100%`: `SettingsSurface` is a `Layout height="fill"`,
           which needs a bounded ancestor to hand its content pane a scroll
           box. Under Storybook's fullscreen body a percentage height resolves
@@ -1012,10 +1035,10 @@ function SettingsStory(props: {
           initialFocusRef={initialFocusRef}
           onOpenDailyReview={noop}
           onOpenSession={noop}
-          archivedTasks={props.archivedTasks ?? NO_ARCHIVED_TASKS}
+          archivedTasks={archivedTasks}
         />
       </div>
-    </ToastProvider>
+    </>
   );
 }
 
@@ -1214,7 +1237,7 @@ export const About: Story = {
 // Real path: 设置 → 已归档任务, after archiving tasks from the rail's row menu.
 export const ArchivedTasks: Story = {
   decorators: [withSettingsBridge],
-  render: function ArchivedTasksStory() {
-    return <SettingsStory section="archived-tasks" archivedTasks={useArchivedTasksStoryBridge()} />;
-  },
+  render: () => (
+    <SettingsStory section="archived-tasks" archivedTaskSessions={archivedTaskSessions} />
+  ),
 };

@@ -1089,13 +1089,14 @@ function AppShellContent({
   }
 
   function openSessionInChat(sessionId: string, turnId?: string, sequence?: number): void {
-    // Land on the filter that actually lists this session. Search, the command
-    // palette and Settings can all target an archived one, and `chats` excludes
-    // those — the session would open with no rail row to select.
-    const archived = sessionsRef.current.some(
-      (session) => session.id === sessionId && session.isArchived,
-    );
-    setNavSelection({ section: 'sessions', filter: archived ? 'archived' : 'chats' });
+    // Land on a filter that lists this session's rail row. Search, the command
+    // palette and Settings can all target an archived session, and `chats`
+    // excludes those — it would open with no row to select. The row is not
+    // always the session itself: a linked child has none of its own and appears
+    // under its root, so the root's archived state is what decides the filter.
+    const rail = deriveSessionRail(sessionsRef.current, sessionId, () => true);
+    const row = rail.sessions.find((session) => session.id === rail.activeRowId);
+    setNavSelection({ section: 'sessions', filter: row?.isArchived ? 'archived' : 'chats' });
     setActiveId(sessionId);
     if (turnId) {
       setSearchScrollTarget({ sessionId, turnId, sequence, nonce: Date.now() });
@@ -1844,13 +1845,12 @@ function AppShellContent({
   const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
     () => ({
       sessions,
-      activeId,
       projects,
       onRestore: (sessionId) => void sessionRowActionHandlers.unarchiveSession(sessionId),
       onDelete: (sessionId) => void sessionRowActionHandlers.deleteSession(sessionId),
       onPurge: (sessionIds) => sessionRowActionHandlers.purgeSessions(sessionIds),
     }),
-    [sessions, activeId, projects],
+    [sessions, projects],
   );
   const { startModeSession } = useStableActions(createAppShellSessionStartActions, {
     uiLocale,

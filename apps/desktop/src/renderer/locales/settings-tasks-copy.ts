@@ -15,10 +15,10 @@ export type SettingsTasksCopy = {
   purgeMatchesConfirmTitle(count: number): string;
   purgeConfirmBody: string;
   purgeConfirmAction: string;
-  cancel: string;
   purgedToast(count: number): string;
   purgeFailedTitle: string;
   purgeFailedBody(count: number): string;
+  purgeUnverified: string;
   noMatchTitle: string;
   noMatchBody: string;
   moreActions(name: string): string;
@@ -41,10 +41,10 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeMatchesConfirmTitle: (count: number) => `删除搜索到的 ${count} 条任务？`,
     purgeConfirmBody: '这些任务及其全部消息会被永久删除，无法撤销。',
     purgeConfirmAction: '永久删除',
-    cancel: '取消',
     purgedToast: (count: number) => `已删除 ${count} 条任务`,
     purgeFailedTitle: '删除任务失败',
     purgeFailedBody: (count: number) => `${count} 条仍在，请重试。`,
+    purgeUnverified: '任务已删除，但无法读取列表确认结果。请重新打开本页查看。',
     noMatchTitle: '没有匹配的任务',
     noMatchBody: '换个关键词试试。',
     moreActions: (name: string) => `「${name}」的更多操作`,
@@ -68,11 +68,11 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeConfirmBody:
       'The tasks and all of their messages are removed permanently. This cannot be undone.',
     purgeConfirmAction: 'Delete permanently',
-    cancel: 'Cancel',
     purgedToast: (count: number) => (count === 1 ? 'Deleted 1 task' : `Deleted ${count} tasks`),
     purgeFailedTitle: 'Could not delete the tasks',
     purgeFailedBody: (count: number) =>
       count === 1 ? '1 task is still there. Try again.' : `${count} tasks are still there. Try again.`,
+    purgeUnverified: 'The tasks were deleted, but the list could not be read back to confirm. Reopen this page to check.',
     noMatchTitle: 'No matching tasks',
     noMatchBody: 'Try a different search.',
     moreActions: (name: string) => `More actions for ${name}`,

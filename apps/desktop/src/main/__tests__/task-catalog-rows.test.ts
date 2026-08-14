@@ -36,64 +36,53 @@ function linkedTo(parentSessionId: string): Partial<SessionSummary> {
 }
 
 describe('archivedTaskRows', () => {
-  it('folds an edit-and-resend family into the one task a person archived', () => {
-    const family = [
-      summary('v3', {
-        isArchived: true,
-        lastMessageAt: 300,
-        revisionRootSessionId: 'v1',
-        revisionParentSessionId: 'v2',
-      }),
+  /**
+   * One fixture, one assertion, every rule of the projection at once: a
+   * revision family that must fold to its newest member, a linked child that
+   * must stay hidden under a parent that is listed, a linked child whose parent
+   * is gone and so must be listed on its own, and an active task that must be
+   * dropped. Store order is deliberately not recency order — `v2` (200) is
+   * followed by `parent` (400) — so a projection that sorted rather than
+   * preserved would be caught here rather than pass by coincidence.
+   */
+  it('lists archived tasks the way the rail counts them, in store order', () => {
+    const sessions = [
+      summary('v1', { isArchived: true, lastMessageAt: 100 }),
       summary('v2', {
         isArchived: true,
         lastMessageAt: 200,
         revisionRootSessionId: 'v1',
         revisionParentSessionId: 'v1',
       }),
+      summary('parent', { isArchived: true, lastMessageAt: 400 }),
+      summary('child', { isArchived: true, lastMessageAt: 500, ...linkedTo('parent') }),
+      summary('orphan', { isArchived: true, lastMessageAt: 50, ...linkedTo('deleted-parent') }),
+      summary('active', { lastMessageAt: 900 }),
+    ];
+
+    assert.deepEqual(
+      archivedTaskRows(sessions).map((session) => session.id),
+      ['v2', 'parent', 'orphan'],
+    );
+  });
+
+  it('does not let the open session decide which revision represents a task', () => {
+    // The rail passes an active id so it can highlight a row; this page has no
+    // selection, and pinning the representative to whichever revision happens
+    // to be open would move a row's name and date for a reason it never shows.
+    const family = [
       summary('v1', { isArchived: true, lastMessageAt: 100 }),
+      summary('v2', {
+        isArchived: true,
+        lastMessageAt: 200,
+        revisionRootSessionId: 'v1',
+        revisionParentSessionId: 'v1',
+      }),
     ];
 
     assert.deepEqual(
-      archivedTaskRows(family, undefined).map((session) => session.id),
-      ['v3'],
-    );
-  });
-
-  it('keeps a linked subagent session out of the list while its parent is there', () => {
-    const sessions = [
-      summary('parent', { isArchived: true, lastMessageAt: 200 }),
-      summary('child', { isArchived: true, lastMessageAt: 300, ...linkedTo('parent') }),
-    ];
-
-    assert.deepEqual(
-      archivedTaskRows(sessions, undefined).map((session) => session.id),
-      ['parent'],
-    );
-  });
-
-  it('lists a linked subagent session whose parent is gone, exactly as the rail does', () => {
-    // Deleting an archived parent does not cascade to an ordinary subagent
-    // child, so the child outlives it. Hiding the orphan here would leave a
-    // task this page claims to clear with no surface that can reach it.
-    const sessions = [summary('orphan', { isArchived: true, lastMessageAt: 300, ...linkedTo('deleted-parent') })];
-
-    assert.deepEqual(
-      archivedTaskRows(sessions, undefined).map((session) => session.id),
-      ['orphan'],
-    );
-  });
-
-  it('drops active tasks without reordering the store', () => {
-    const sessions = [
-      summary('active', { lastMessageAt: 300 }),
-      summary('old', { isArchived: true, lastMessageAt: 200 }),
-      summary('newer-active', { lastMessageAt: 150 }),
-      summary('older', { isArchived: true, lastMessageAt: 100 }),
-    ];
-
-    assert.deepEqual(
-      archivedTaskRows(sessions, undefined).map((session) => session.id),
-      ['old', 'older'],
+      archivedTaskRows(family).map((session) => session.id),
+      ['v2'],
     );
   });
 });

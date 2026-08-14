@@ -17,13 +17,27 @@ type ToastApi = {
   }): Promise<boolean>;
 };
 
+/**
+ * What a sweep can honestly say afterwards. `verified: false` means the catalog
+ * could not be read back, so neither `remaining` nor a success claim is safe.
+ */
+export interface SessionPurgeOutcome {
+  /** Tasks confirmed gone. */
+  removed: number;
+  /** Tasks the catalog still reports. Empty when `verified` is false. */
+  remaining: string[];
+  verified: boolean;
+  /** First rejection, so the caller can show a reason rather than a count. */
+  firstError: unknown;
+}
+
 export interface AppShellSessionRowActions {
   flagSession(sessionId: string, flagged: boolean): Promise<void>;
   archiveSession(sessionId: string): Promise<void>;
   unarchiveSession(sessionId: string): Promise<void>;
   renameSession(sessionId: string, name: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
-  purgeSessions(sessionIds: readonly string[]): Promise<string[]>;
+  purgeSessions(sessionIds: readonly string[]): Promise<SessionPurgeOutcome>;
 }
 
 export function createAppShellSessionRowActions(deps: {
@@ -115,54 +129,92 @@ export function createAppShellSessionRowActions(deps: {
         destructive: true,
       });
       if (!ok) return;
-      const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
-      await window.maka.sessions.remove(sessionId, { revisionFamily: true });
-      if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
-        setActiveId(undefined);
-        setMessages([]);
-      }
-      for (const id of familyIds) clearSessionRendererState(id);
+      await removeSessionFamily(sessionId);
       await refreshSessions();
       toastApi.success(copy.deletedTitle(name));
     });
   }
 
   /**
-   * Deletes a set of tasks in one sweep and answers with the ids the catalog
-   * still reports.
-   *
-   * The delete IPC commits the removal before it releases renderer resources,
-   * so a rejection there does not mean the task survived. Settling the outcome
-   * against the refreshed catalog instead of against the rejections is the only
-   * way the caller can say something true about what is left — and it is what
-   * decides which families are safe to clear from the renderer.
-   *
-   * No confirm and no toast: the caller announced the set and owns the wording
-   * for a sweep, which is the one thing single-row delete cannot phrase.
+   * Removes one task's whole revision family and drops what the renderer was
+   * holding for it. A resolved `remove` means the IPC both committed the
+   * deletion and released those resources, so the cleanup below is only ever
+   * reached for a task that is really gone.
    */
-  async function purgeSessions(sessionIds: readonly string[]): Promise<string[]> {
-    const familiesBySessionId = new Map<string, string[]>();
+  async function removeSessionFamily(sessionId: string): Promise<void> {
+    // Read before the write: the family comes off the live catalog, which no
+    // longer lists it afterwards.
+    const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
+    await window.maka.sessions.remove(sessionId, { revisionFamily: true });
+    if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
+      setActiveId(undefined);
+      setMessages([]);
+    }
+    for (const id of familyIds) clearSessionRendererState(id);
+  }
+
+  /**
+   * Deletes a set of archived tasks in one sweep.
+   *
+   * Only tasks still archived when the sweep reaches them are touched: the
+   * caller named a set to a person, and one restored while that dialog was up
+   * has left it. Ids with a row action already in flight are skipped for the
+   * same reason single-row actions skip each other.
+   *
+   * A rejection is not evidence the task survived — the delete IPC commits the
+   * removal before it releases renderer resources — so the rejected ids, and
+   * only those, are checked back against the catalog. `refreshSessions` cannot
+   * answer that: it swallows a listing failure and returns the pre-delete list,
+   * which would read as "none of them went". When the catalog cannot be read at
+   * all, `verified` is false and the caller claims nothing.
+   *
+   * No confirm and no toast: the caller owns the wording for a sweep, which is
+   * the one thing single-row delete cannot phrase.
+   */
+  async function purgeSessions(sessionIds: readonly string[]): Promise<SessionPurgeOutcome> {
+    const archivedIds = new Set(
+      sessionsRef.current.filter((session) => session.isArchived).map((session) => session.id),
+    );
+    const unsettled: string[] = [];
+    let firstError: unknown;
+    let removed = 0;
     for (const sessionId of sessionIds) {
-      // Captured before the write: the family is read off the live catalog,
-      // which no longer lists it afterwards.
-      familiesBySessionId.set(sessionId, revisionFamilySessionIds(sessionsRef.current, sessionId));
+      if (!archivedIds.has(sessionId)) continue;
+      const key = `${sessionId}:delete`;
+      if (
+        Array.from(pendingSessionRowActionsRef.current).some((pending) =>
+          pending.startsWith(`${sessionId}:`),
+        )
+      ) {
+        unsettled.push(sessionId);
+        continue;
+      }
+      pendingSessionRowActionsRef.current.add(key);
       try {
-        await window.maka.sessions.remove(sessionId, { revisionFamily: true });
-      } catch {
-        // One task failing is no reason to abandon the rest.
+        await removeSessionFamily(sessionId);
+        removed += 1;
+      } catch (error) {
+        unsettled.push(sessionId);
+        firstError ??= error;
+      } finally {
+        pendingSessionRowActionsRef.current.delete(key);
       }
     }
-    const remaining = await refreshSessions();
-    const remainingIds = new Set(remaining.map((session) => session.id));
-    for (const [sessionId, familyIds] of familiesBySessionId) {
-      if (remainingIds.has(sessionId)) continue;
-      if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
-        setActiveId(undefined);
-        setMessages([]);
-      }
-      for (const id of familyIds) clearSessionRendererState(id);
+    if (unsettled.length === 0) {
+      await refreshSessions();
+      return { removed, remaining: [], verified: true, firstError };
     }
-    return sessionIds.filter((sessionId) => remainingIds.has(sessionId));
+    let listed: SessionSummary[] | undefined;
+    try {
+      listed = await window.maka.sessions.list();
+    } catch {
+      listed = undefined;
+    }
+    await refreshSessions();
+    if (!listed) return { removed, remaining: [], verified: false, firstError };
+    const present = new Set(listed.map((session) => session.id));
+    const remaining = unsettled.filter((sessionId) => present.has(sessionId));
+    return { removed: removed + (unsettled.length - remaining.length), remaining, verified: true, firstError };
   }
 
   return {
