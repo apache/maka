@@ -14,7 +14,7 @@ use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows_sys::Win32::Storage::FileSystem::{PIPE_ACCESS_DUPLEX, ReadFile, WriteFile};
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
-    PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_WAIT,
 };
 
 use crate::broker_authorization::BrokerAuthorizer;
@@ -58,7 +58,7 @@ unsafe fn serve_once_with_security(
         CreateNamedPipeW(
             pipe_name_wide.as_ptr(),
             PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
             (MAX_BROKER_MESSAGE_BYTES + 4) as u32,
             (MAX_BROKER_MESSAGE_BYTES + 4) as u32,
@@ -81,21 +81,16 @@ unsafe fn serve_once_with_security(
         if unsafe { GetNamedPipeClientProcessId(pipe, &mut client_pid) } == 0 {
             return Err(last_error("GetNamedPipeClientProcessId"));
         }
-        let mut buffer = vec![0u8; MAX_BROKER_MESSAGE_BYTES + 4];
-        let mut bytes_read = 0;
-        if unsafe {
-            ReadFile(
-                pipe,
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-                &mut bytes_read,
-                null_mut(),
-            )
-        } == 0
-        {
-            return Err(last_error("ReadFile(broker request)"));
+        let mut prefix = [0u8; 4];
+        unsafe { read_exact(pipe, &mut prefix)? };
+        let payload_length = u32::from_le_bytes(prefix) as usize;
+        if payload_length == 0 || payload_length > MAX_BROKER_MESSAGE_BYTES {
+            return Err("invalid broker payload length".to_owned());
         }
-        buffer.truncate(bytes_read as usize);
+        let mut buffer = Vec::with_capacity(4 + payload_length);
+        buffer.extend_from_slice(&prefix);
+        buffer.resize(4 + payload_length, 0);
+        unsafe { read_exact(pipe, &mut buffer[4..])? };
         let payload = decode_frame(&buffer).map_err(|error| format!("invalid frame: {error:?}"))?;
         let request: BrokerLaunchRequest = serde_json::from_slice(payload)
             .map_err(|error| format!("invalid broker request: {error}"))?;
@@ -120,20 +115,7 @@ unsafe fn serve_once_with_security(
         let response_payload = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
         let response_frame = encode_frame(&response_payload)
             .map_err(|error| format!("response frame rejected: {error:?}"))?;
-        let mut bytes_written = 0;
-        if unsafe {
-            WriteFile(
-                pipe,
-                response_frame.as_ptr(),
-                response_frame.len() as u32,
-                &mut bytes_written,
-                null_mut(),
-            )
-        } == 0
-            || bytes_written as usize != response_frame.len()
-        {
-            return Err(last_error("WriteFile(broker response)"));
-        }
+        unsafe { write_all(pipe, &response_frame)? };
         Ok(())
     })();
     unsafe {
@@ -141,6 +123,52 @@ unsafe fn serve_once_with_security(
         CloseHandle(pipe);
     }
     result
+}
+
+unsafe fn read_exact(pipe: *mut c_void, mut buffer: &mut [u8]) -> Result<(), String> {
+    while !buffer.is_empty() {
+        let mut bytes_read = 0;
+        if unsafe {
+            ReadFile(
+                pipe,
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                &mut bytes_read,
+                null_mut(),
+            )
+        } == 0
+        {
+            return Err(last_error("ReadFile(broker request)"));
+        }
+        if bytes_read == 0 {
+            return Err("broker client closed before completing the frame".to_owned());
+        }
+        buffer = &mut buffer[bytes_read as usize..];
+    }
+    Ok(())
+}
+
+unsafe fn write_all(pipe: *mut c_void, mut buffer: &[u8]) -> Result<(), String> {
+    while !buffer.is_empty() {
+        let mut bytes_written = 0;
+        if unsafe {
+            WriteFile(
+                pipe,
+                buffer.as_ptr(),
+                buffer.len() as u32,
+                &mut bytes_written,
+                null_mut(),
+            )
+        } == 0
+        {
+            return Err(last_error("WriteFile(broker response)"));
+        }
+        if bytes_written == 0 {
+            return Err("broker response write made no progress".to_owned());
+        }
+        buffer = &buffer[bytes_written as usize..];
+    }
+    Ok(())
 }
 
 fn wide(value: &str) -> Vec<u16> {
