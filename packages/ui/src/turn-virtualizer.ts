@@ -17,6 +17,7 @@ export interface TurnVirtualWindowOptions {
   readonly preferredTurns?: number;
   readonly maxTurns?: number;
   readonly ensureIndex?: number;
+  readonly retainRange?: { readonly start: number; readonly end: number };
 }
 
 export const DEFAULT_TURN_ESTIMATED_HEIGHT = 280;
@@ -82,13 +83,14 @@ export function turnVirtualWindowForViewport(
   let end = indexAfterOffset(layout, Math.min(layout.totalHeight, scrollTop + clientHeight + overscan));
 
   const preferred = Math.max(1, Math.floor(options.preferredTurns ?? DEFAULT_TURN_WINDOW_SIZE));
-  const hardMax = Math.max(preferred, Math.floor(options.maxTurns ?? MAX_TURN_WINDOW_SIZE));
-  ({ start, end } = includeIndex(start, end, options.ensureIndex, length));
+  const hardMax = hardMaxTurns(options, preferred);
+  const retained = retainedRange(options, length);
+  ({ start, end } = includeRange(start, end, retained));
   ({ start, end } = expandRange(start, end, preferred, length));
 
   if (end - start > hardMax) {
-    const requiredStart = Math.min(visibleStart, options.ensureIndex ?? visibleStart);
-    const requiredEnd = Math.max(visibleEnd, (options.ensureIndex ?? visibleEnd - 1) + 1);
+    const requiredStart = Math.min(visibleStart, retained?.start ?? visibleStart);
+    const requiredEnd = Math.max(visibleEnd, retained?.end ?? visibleEnd);
     const requiredSize = requiredEnd - requiredStart;
     const size = Math.min(length, hardMax);
     const center = requiredSize <= hardMax
@@ -114,9 +116,9 @@ export function stableTurnVirtualWindowForViewport(
     layout.totalHeight,
     scrollTop + Math.max(0, viewport.clientHeight) + overscan,
   );
-  const ensureIndex = options.ensureIndex;
-  const retainsTarget = ensureIndex === undefined
-    || (ensureIndex >= current.start && ensureIndex < current.end);
+  const retained = retainedRange(options, layout.turnIds.length);
+  const retainsTarget = retained === undefined
+    || (retained.start >= current.start && retained.end <= current.end);
   if (
     current.end > current.start
     && retainsTarget
@@ -135,7 +137,11 @@ export function stableTurnVirtualWindowForViewport(
       while (end < layout.turnIds.length && layout.offsets[end]! < requiredEnd) {
         end = Math.min(layout.turnIds.length, end + TURN_WINDOW_SHIFT_SIZE);
       }
-      return windowFor(layout, Math.max(0, end - size), end);
+      const shifted = { start: Math.max(0, end - size), end };
+      const inclusive = includeRange(shifted.start, shifted.end, retained);
+      if (inclusive.end - inclusive.start <= hardMaxTurns(options)) {
+        return windowFor(layout, inclusive.start, inclusive.end);
+      }
     }
     if (
       requiredStart < layout.offsets[current.start]!
@@ -145,7 +151,11 @@ export function stableTurnVirtualWindowForViewport(
       while (start > 0 && layout.offsets[start]! > requiredStart) {
         start = Math.max(0, start - TURN_WINDOW_SHIFT_SIZE);
       }
-      return windowFor(layout, start, Math.min(layout.turnIds.length, start + size));
+      const shifted = { start, end: Math.min(layout.turnIds.length, start + size) };
+      const inclusive = includeRange(shifted.start, shifted.end, retained);
+      if (inclusive.end - inclusive.start <= hardMaxTurns(options)) {
+        return windowFor(layout, inclusive.start, inclusive.end);
+      }
     }
   }
   return turnVirtualWindowForViewport(layout, viewport, options);
@@ -156,6 +166,7 @@ export function reconcileTurnVirtualWindow(
   nextLayout: TurnVirtualLayout,
   previous: TurnVirtualWindow,
   ensureIndex?: number,
+  retainRange?: { readonly start: number; readonly end: number },
 ): TurnVirtualWindow {
   const nextIds = nextLayout.turnIds;
   if (nextIds.length === 0) return windowFor(nextLayout, 0, 0);
@@ -175,9 +186,12 @@ export function reconcileTurnVirtualWindow(
     end = nextIds.length;
     start = Math.max(0, end - retained);
   }
-  ({ start, end } = includeIndex(start, end, ensureIndex, nextIds.length));
+  const retained = retainedRange({ ensureIndex, retainRange }, nextIds.length);
+  ({ start, end } = includeRange(start, end, retained));
   if (end - start > MAX_TURN_WINDOW_SIZE) {
-    const focus = ensureIndex ?? Math.floor((start + end) / 2);
+    const focus = ensureIndex ?? (retained === undefined
+      ? Math.floor((start + end) / 2)
+      : Math.floor((retained.start + retained.end) / 2));
     start = clamp(focus - Math.floor(MAX_TURN_WINDOW_SIZE / 2), 0, nextIds.length - MAX_TURN_WINDOW_SIZE);
     end = Math.min(nextIds.length, start + MAX_TURN_WINDOW_SIZE);
   }
@@ -219,9 +233,41 @@ function indexAfterOffset(layout: TurnVirtualLayout, offset: number): number {
   return clamp(low, 1, layout.turnIds.length);
 }
 
-function includeIndex(start: number, end: number, index: number | undefined, length: number) {
-  if (index === undefined || index < 0 || index >= length) return { start, end };
-  return { start: Math.min(start, index), end: Math.max(end, index + 1) };
+function retainedRange(
+  options: TurnVirtualWindowOptions,
+  length: number,
+): { start: number; end: number } | undefined {
+  let start = length;
+  let end = 0;
+  if (options.ensureIndex !== undefined && options.ensureIndex >= 0 && options.ensureIndex < length) {
+    start = options.ensureIndex;
+    end = options.ensureIndex + 1;
+  }
+  if (options.retainRange !== undefined) {
+    const rangeStart = clamp(Math.floor(options.retainRange.start), 0, length);
+    const rangeEnd = clamp(Math.ceil(options.retainRange.end), rangeStart, length);
+    if (rangeEnd > rangeStart) {
+      start = Math.min(start, rangeStart);
+      end = Math.max(end, rangeEnd);
+    }
+  }
+  return end > start ? { start, end } : undefined;
+}
+
+function hardMaxTurns(
+  options: TurnVirtualWindowOptions,
+  preferred = Math.max(1, Math.floor(options.preferredTurns ?? DEFAULT_TURN_WINDOW_SIZE)),
+): number {
+  return Math.max(preferred, Math.floor(options.maxTurns ?? MAX_TURN_WINDOW_SIZE));
+}
+
+function includeRange(
+  start: number,
+  end: number,
+  retained: { readonly start: number; readonly end: number } | undefined,
+) {
+  if (retained === undefined) return { start, end };
+  return { start: Math.min(start, retained.start), end: Math.max(end, retained.end) };
 }
 
 function expandRange(start: number, end: number, size: number, length: number) {

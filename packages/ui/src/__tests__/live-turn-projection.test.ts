@@ -99,6 +99,75 @@ describe('applyLiveTurnEvent', () => {
     );
   });
 
+  it('redacts sensitive openers split by whitespace beyond the display overlap', () => {
+    const opener = `Authorization:${' '.repeat(520)}`;
+    const assistantStarted = applyLiveTurnEvent(undefined, {
+      type: 'text_delta', id: 'text-1', turnId: 'turn-1', messageId: 'step-1', ts: 1,
+      text: opener,
+    });
+    const assistantFinished = applyLiveTurnEvent(assistantStarted, {
+      type: 'text_delta', id: 'text-2', turnId: 'turn-1', messageId: 'step-1', ts: 2,
+      text: 'Bearer arbitrary-secret-value',
+    });
+    const thinkingStarted = applyLiveTurnEvent(undefined, {
+      type: 'thinking_delta', id: 'thinking-1', turnId: 'turn-2', messageId: 'step-2', ts: 1,
+      text: opener,
+    });
+    const thinkingFinished = applyLiveTurnEvent(thinkingStarted, {
+      type: 'thinking_delta', id: 'thinking-2', turnId: 'turn-2', messageId: 'step-2', ts: 2,
+      text: 'Bearer arbitrary-secret-value',
+    });
+
+    assert.ok(!assistantFinished.steps[0]?.text?.text.includes('arbitrary-secret-value'));
+    assert.ok(!thinkingFinished.steps[0]?.thinking?.text.includes('arbitrary-secret-value'));
+    assert.match(assistantFinished.steps[0]?.text?.text ?? '', /Bearer <redacted>$/);
+    assert.match(thinkingFinished.steps[0]?.thinking?.text ?? '', /Bearer <redacted>$/);
+  });
+
+  it('redacts a cross-delta secret before applying the per-delta cap', () => {
+    const opener = `Authorization:${' '.repeat(520)}`;
+    const secret = 's'.repeat(5_000);
+    const assistantStarted = applyLiveTurnEvent(undefined, {
+      type: 'text_delta', id: 'text-1', turnId: 'turn-1', messageId: 'step-1', ts: 1,
+      text: opener,
+    });
+    const assistantFinished = applyLiveTurnEvent(assistantStarted, {
+      type: 'text_delta', id: 'text-2', turnId: 'turn-1', messageId: 'step-1', ts: 2,
+      text: `Bearer ${secret}`,
+    });
+    const thinkingStarted = applyLiveTurnEvent(undefined, {
+      type: 'thinking_delta', id: 'thinking-1', turnId: 'turn-2', messageId: 'step-2', ts: 1,
+      text: opener,
+    });
+    const thinkingFinished = applyLiveTurnEvent(thinkingStarted, {
+      type: 'thinking_delta', id: 'thinking-2', turnId: 'turn-2', messageId: 'step-2', ts: 2,
+      text: `Bearer ${secret}`,
+    });
+
+    assert.ok(!assistantFinished.steps[0]?.text?.text.includes(secret.slice(0, 100)));
+    assert.ok(!thinkingFinished.steps[0]?.thinking?.text.includes(secret.slice(0, 100)));
+    assert.match(assistantFinished.steps[0]?.text?.text ?? '', /Bearer <redacted>$/);
+    assert.match(thinkingFinished.steps[0]?.thinking?.text ?? '', /Bearer <redacted>$/);
+  });
+
+  it('retains sensitive parser state when an intervening whitespace delta is capped', () => {
+    const started = applyLiveTurnEvent(undefined, {
+      type: 'text_delta', id: 'text-1', turnId: 'turn-1', messageId: 'step-1', ts: 1,
+      text: 'Authorization:',
+    });
+    const spaced = applyLiveTurnEvent(started, {
+      type: 'text_delta', id: 'text-2', turnId: 'turn-1', messageId: 'step-1', ts: 2,
+      text: ' '.repeat(5_000),
+    });
+    const finished = applyLiveTurnEvent(spaced, {
+      type: 'text_delta', id: 'text-3', turnId: 'turn-1', messageId: 'step-1', ts: 3,
+      text: 'Bearer arbitrary-secret-value',
+    });
+
+    assert.ok(!finished.steps[0]?.text?.text.includes('arbitrary-secret-value'));
+    assert.match(finished.steps[0]?.text?.text ?? '', /Bearer <redacted>$/);
+  });
+
 
   it('projects transient provider retry progress until the next model output', () => {
     const scheduled = applyLiveTurnEvent(armLiveTurn('turn-1'), {

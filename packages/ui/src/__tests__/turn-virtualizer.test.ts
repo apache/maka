@@ -76,6 +76,19 @@ describe('turn virtualizer', () => {
     assert.equal(crossed.start, current.start + 8);
   });
 
+  it('retains focused and selected turns when a directional shift fits the hard cap', () => {
+    const layout = buildTurnVirtualLayout(ids(120), undefined, { estimatedHeight: 200 });
+    const current = turnVirtualWindowForRange(layout, 0, 60);
+    const shifted = stableTurnVirtualWindowForViewport(
+      layout,
+      current,
+      { scrollTop: 11_000, clientHeight: 800 },
+      { retainRange: { start: 0, end: 8 } },
+    );
+
+    assert.deepEqual([shifted.start, shifted.end], [0, 68]);
+  });
+
   it('keeps the same visible identities across prepends and follows tail appends', () => {
     const beforeIds = ids(100);
     const beforeLayout = buildTurnVirtualLayout(beforeIds, undefined);

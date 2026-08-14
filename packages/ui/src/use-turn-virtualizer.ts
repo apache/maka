@@ -55,6 +55,7 @@ export function useTurnVirtualizer(input: {
     ? input.turnIds.indexOf(input.targetTurnId)
     : -1;
   const ensureIndex = candidateEnsureIndex < 0 ? undefined : candidateEnsureIndex;
+  const retainRange = root ? interactiveTurnRange(root, input.turnIds) : undefined;
   const [state, setState] = useState<VirtualState>(() => ({
     sessionId: input.sessionId,
     turnIds: input.turnIds,
@@ -63,7 +64,7 @@ export function useTurnVirtualizer(input: {
   let current = state;
   if (state.sessionId !== input.sessionId || !sameTurnIds(state.turnIds, input.turnIds)) {
     const reconciled = state.sessionId === input.sessionId
-      ? reconcileTurnVirtualWindow(state.turnIds, layout, state.window, ensureIndex)
+      ? reconcileTurnVirtualWindow(state.turnIds, layout, state.window, ensureIndex, retainRange)
       : initialTurnVirtualWindow(layout, undefined, ensureIndex);
     current = {
       sessionId: input.sessionId,
@@ -155,13 +156,11 @@ export function useTurnVirtualizer(input: {
     const updateWindow = (): void => {
       frame = 0;
       if (pendingReveal.current) return;
-      const focusedIndex = focusedTurnIndex(root, stateRef.current.turnIds);
-      const selectedIndex = selectedTurnIndex(root, stateRef.current.turnIds);
       installWindow(stableTurnVirtualWindowForViewport(
         layoutRef.current,
         stateRef.current.window,
         { scrollTop: root.scrollTop, clientHeight: root.clientHeight },
-        { ensureIndex: focusedIndex ?? selectedIndex },
+        { retainRange: interactiveTurnRange(root, stateRef.current.turnIds) },
       ));
     };
     const scheduleWindow = (): void => {
@@ -197,8 +196,16 @@ export function useTurnVirtualizer(input: {
         resizeObserver.observe(turn);
       }
     };
+    const unobserveTree = (node: Node): void => {
+      if (!(node instanceof HTMLElement)) return;
+      if (node.dataset.virtualTurnId) resizeObserver.unobserve(node);
+      for (const turn of node.querySelectorAll<HTMLElement>('[data-virtual-turn-id]')) {
+        resizeObserver.unobserve(turn);
+      }
+    };
     const mutationObserver = new MutationObserver((records) => {
       for (const record of records) {
+        for (const node of record.removedNodes) unobserveTree(node);
         for (const node of record.addedNodes) observeTree(node);
       }
     });
@@ -237,22 +244,26 @@ function sameWindow(left: TurnVirtualWindow, right: TurnVirtualWindow): boolean 
     && left.afterHeight === right.afterHeight;
 }
 
-function selectedTurnIndex(root: HTMLElement, turnIds: readonly string[]): number | undefined {
-  const selection = root.ownerDocument.getSelection();
-  if (!selection || selection.isCollapsed || !selection.anchorNode) return undefined;
-  const element = selection.anchorNode instanceof Element
-    ? selection.anchorNode
-    : selection.anchorNode.parentElement;
-  if (!element || !root.contains(element)) return undefined;
-  const turnId = element.closest<HTMLElement>('[data-turn-id]')?.dataset.turnId;
-  const index = turnId === undefined ? -1 : turnIds.indexOf(turnId);
-  return index < 0 ? undefined : index;
-}
-
-function focusedTurnIndex(root: HTMLElement, turnIds: readonly string[]): number | undefined {
+function interactiveTurnRange(
+  root: HTMLElement,
+  turnIds: readonly string[],
+): { start: number; end: number } | undefined {
+  const indexes: number[] = [];
+  const appendNode = (node: Node | null): void => {
+    if (!node) return;
+    const element = node instanceof Element ? node : node.parentElement;
+    if (!element || !root.contains(element)) return;
+    const turnId = element.closest<HTMLElement>('[data-turn-id]')?.dataset.turnId;
+    const index = turnId === undefined ? -1 : turnIds.indexOf(turnId);
+    if (index >= 0) indexes.push(index);
+  };
   const active = root.ownerDocument.activeElement;
-  if (!(active instanceof Element) || !root.contains(active)) return undefined;
-  const turnId = active.closest<HTMLElement>('[data-turn-id]')?.dataset.turnId;
-  const index = turnId === undefined ? -1 : turnIds.indexOf(turnId);
-  return index < 0 ? undefined : index;
+  if (active instanceof Element) appendNode(active);
+  const selection = root.ownerDocument.getSelection();
+  if (selection && !selection.isCollapsed) {
+    appendNode(selection.anchorNode);
+    appendNode(selection.focusNode);
+  }
+  if (indexes.length === 0) return undefined;
+  return { start: Math.min(...indexes), end: Math.max(...indexes) + 1 };
 }

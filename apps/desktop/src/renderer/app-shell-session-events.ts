@@ -39,6 +39,15 @@ export interface AppShellSessionEventHandlers {
   settleAssistantStreaming(sessionId: string, messageId?: string): Promise<void>;
 }
 
+export interface AppShellSessionDisplayBatch {
+  readonly pendingEvents: Map<string, SessionEvent[]>;
+  framePending: boolean;
+}
+
+export function createAppShellSessionDisplayBatch(): AppShellSessionDisplayBatch {
+  return { pendingEvents: new Map(), framePending: false };
+}
+
 export function createAppShellSessionEventHandlers(options: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
@@ -54,6 +63,7 @@ export function createAppShellSessionEventHandlers(options: {
   toastApi: ToastApi;
   notifyRunEnded?: (payload: { kind: 'completed' | 'errored'; sessionId: string; body?: string }) => void;
   scheduleFrame?: (callback: () => void) => void;
+  displayBatch?: AppShellSessionDisplayBatch;
 }): AppShellSessionEventHandlers {
   const {
     uiLocale,
@@ -83,8 +93,7 @@ export function createAppShellSessionEventHandlers(options: {
         }
       : undefined
   );
-  const pendingDisplayEvents = new Map<string, SessionEvent[]>();
-  let displayFramePending = false;
+  const displayBatch = options.displayBatch ?? createAppShellSessionDisplayBatch();
 
   function applyProjectionEvents(
     projection: LiveTurnProjection | undefined,
@@ -111,22 +120,22 @@ export function createAppShellSessionEventHandlers(options: {
   }
 
   function takePendingDisplayEvents(sessionId: string): SessionEvent[] {
-    const events = pendingDisplayEvents.get(sessionId) ?? [];
-    pendingDisplayEvents.delete(sessionId);
+    const events = displayBatch.pendingEvents.get(sessionId) ?? [];
+    displayBatch.pendingEvents.delete(sessionId);
     return events;
   }
 
   function scheduleDisplayEvent(sessionId: string, event: SessionEvent): void {
-    const events = pendingDisplayEvents.get(sessionId);
+    const events = displayBatch.pendingEvents.get(sessionId);
     if (events) events.push(event);
-    else pendingDisplayEvents.set(sessionId, [event]);
-    if (displayFramePending || !scheduleFrame) return;
-    displayFramePending = true;
+    else displayBatch.pendingEvents.set(sessionId, [event]);
+    if (displayBatch.framePending || !scheduleFrame) return;
+    displayBatch.framePending = true;
     scheduleFrame(() => {
-      displayFramePending = false;
-      if (pendingDisplayEvents.size === 0) return;
-      const batches = new Map(pendingDisplayEvents);
-      pendingDisplayEvents.clear();
+      displayBatch.framePending = false;
+      if (displayBatch.pendingEvents.size === 0) return;
+      const batches = new Map(displayBatch.pendingEvents);
+      displayBatch.pendingEvents.clear();
       setLiveTurnBySession((current) => replaceLiveTurns(current, batches));
     });
   }

@@ -8,6 +8,7 @@ import { toolResultActivityStatus } from '@maka/core/tool-result-status';
 import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import type { ToolActivityItem } from './materialize.js';
 import { applyThinkingComplete, applyThinkingDelta } from './thinking-stream.js';
+import type { IncrementalDisplayRedactionState } from './incremental-display-redaction.js';
 import { applyToolOutputChunk } from './tool-output-stream.js';
 
 type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_result_preview' | 'tool_result' }>;
@@ -18,6 +19,7 @@ export interface LiveThinkingProjection {
   complete: boolean;
   /** Raw source length, independent of redaction and display truncation. */
   sourceEndOffset?: number;
+  redactionState?: IncrementalDisplayRedactionState;
 }
 
 export interface LiveTurnStepProjection {
@@ -38,6 +40,7 @@ export interface LiveTextProjection {
   complete: boolean;
   /** Raw source length, independent of redaction and display truncation. */
   sourceEndOffset?: number;
+  redactionState?: IncrementalDisplayRedactionState;
 }
 
 export interface LiveSteeringProjection {
@@ -243,7 +246,10 @@ export function applyLiveTurnEvent(
   let nextStep: LiveTurnStepProjection;
   if (event.type === 'thinking_delta') {
     const delta = replaySafeDelta(step.thinking?.sourceEndOffset, event);
-    const applied = applyThinkingDelta(step.thinking?.text ?? '', delta.text, { locale });
+    const applied = applyThinkingDelta(step.thinking?.text ?? '', delta.text, {
+      locale,
+      redactionState: step.thinking?.redactionState,
+    });
     nextStep = {
       ...step,
       thinking: {
@@ -253,6 +259,9 @@ export function applyLiveTurnEvent(
         ...(delta.sourceEndOffset === undefined
           ? {}
           : { sourceEndOffset: delta.sourceEndOffset }),
+        ...(applied.redactionState === undefined
+          ? {}
+          : { redactionState: applied.redactionState }),
       },
     };
   } else if (event.type === 'thinking_complete') {
@@ -270,7 +279,10 @@ export function applyLiveTurnEvent(
     };
   } else if (event.type === 'text_delta') {
     const delta = replaySafeDelta(step.text?.sourceEndOffset, event);
-    const applied = applyAssistantDelta(step.text?.text ?? '', delta.text, { locale });
+    const applied = applyAssistantDelta(step.text?.text ?? '', delta.text, {
+      locale,
+      redactionState: step.text?.redactionState,
+    });
     nextStep = {
       ...step,
       text: {
@@ -280,6 +292,9 @@ export function applyLiveTurnEvent(
         ...(delta.sourceEndOffset === undefined
           ? {}
           : { sourceEndOffset: delta.sourceEndOffset }),
+        ...(applied.redactionState === undefined
+          ? {}
+          : { redactionState: applied.redactionState }),
       },
     };
   } else if (event.type === 'text_complete') {

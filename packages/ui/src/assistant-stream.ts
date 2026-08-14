@@ -37,7 +37,12 @@
  * chunk yet; the chunk is about to be appended atomically.
  */
 
-import { appendRedactedDisplay } from './incremental-display-redaction.js';
+import {
+  appendRedactedDisplay,
+  incrementalDisplayRedactionStateForText,
+  redactIncrementalDisplayDelta,
+  type IncrementalDisplayRedactionState,
+} from './incremental-display-redaction.js';
 import { redactSecrets } from './redact.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getSharedUiCopy } from './shared-ui-copy.js';
@@ -66,6 +71,8 @@ export interface ApplyAssistantOptions {
   maxTotalChars?: number;
   /** Resolved UI locale for user-visible truncation markers. */
   locale?: UiLocale;
+  /** Bounded parser state carried between streaming deltas. */
+  redactionState?: IncrementalDisplayRedactionState;
 }
 
 export interface ApplyAssistantResult {
@@ -75,6 +82,8 @@ export interface ApplyAssistantResult {
   redacted: boolean;
   /** True if any per-delta or total truncation happened during this call. */
   truncated: boolean;
+  /** Bounded parser state required to redact a later delta safely. */
+  redactionState?: IncrementalDisplayRedactionState;
 }
 
 /**
@@ -126,7 +135,12 @@ export function applyAssistantDelta(
   // violation. Drop it silently rather than coerce to '' and claim
   // redaction happened.
   if (typeof rawDelta !== 'string') {
-    return { text: prev ?? '', redacted: false, truncated: false };
+    return {
+      text: prev ?? '',
+      redacted: false,
+      truncated: false,
+      ...(options.redactionState === undefined ? {} : { redactionState: options.redactionState }),
+    };
   }
 
   const previousText = prev ?? '';
@@ -142,15 +156,15 @@ export function applyAssistantDelta(
     return { text: previousText, redacted: false, truncated: true };
   }
 
-  // L1: per-delta redaction. Catches secrets that arrive whole
-  // within this single delta.
-  const redactedDelta = redactSecrets(rawDelta);
-  const perDeltaRedactionHappened = redactedDelta !== rawDelta;
+  // L1: redact the delta with any unfinished sensitive opener from
+  // the preceding stream before size caps can discard that context.
+  const redactedDelta = redactIncrementalDisplayDelta(rawDelta, options.redactionState);
+  const perDeltaRedactionHappened = redactedDelta.redacted;
 
   // L2: per-delta cap. A single oversize delta gets tail-kept with
   // a head marker. (Aligns with C0 thinking-stream; the user hasn't
   // been reading inside the delta atomically.)
-  let delta = redactedDelta;
+  let delta = redactedDelta.text;
   let deltaTruncated = false;
   if (delta.length > maxDelta) {
     const keep = maxDelta - truncatedChunkMarker.length;
@@ -158,7 +172,7 @@ export function applyAssistantDelta(
     deltaTruncated = true;
   }
 
-  const appended = appendRedactedDisplay(previousText, delta);
+  const appended = appendRedactedDisplay(previousText, delta, options.redactionState);
 
   // L5: total cap. Head-keep the prefix the user has been reading;
   // mark the tail.
@@ -170,10 +184,16 @@ export function applyAssistantDelta(
     totalTruncated = true;
   }
 
+  const redactionState = totalTruncated
+    ? incrementalDisplayRedactionStateForText(result).state
+    : deltaTruncated
+      ? redactedDelta.state
+      : appended.state;
   return {
     text: result,
     redacted: perDeltaRedactionHappened || appended.redacted,
     truncated: deltaTruncated || totalTruncated,
+    ...(redactionState === undefined ? {} : { redactionState }),
   };
 }
 
