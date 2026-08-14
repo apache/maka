@@ -30,6 +30,11 @@ export {
 } from './candidate.js';
 export { createUnavailableDomainOperationHandlers } from './operation-dispatcher.js';
 export {
+  HostExtensionRuntime,
+  type HostExtensionToolResolver,
+  type HostTrustedToolExtensionRevisionInput,
+} from './extension-runtime.js';
+export {
   RuntimeHostRootAlreadyOwnedError,
   startExecutionRuntimeHostService,
   type ExecutionRuntimeHostServiceDependencies,

@@ -45,3 +45,18 @@ repair path, and `ToolRuntime` dispatch used by Core Tools.
 This phase intentionally chooses the existing `send()`/Turn boundary. Refreshing at every physical
 model request, pinning a larger Run composition, draining in-flight calls, persistence, an install
 control plane, and isolated agent-authored code remain later decisions.
+
+## Runtime Host ownership
+
+`HostExtensionRuntime` is the in-process authority owned by the execution Runtime Host. It owns the
+lifecycle kernel and Tool registry together, exposes the trusted-definition lifecycle seam for a
+future control plane, and composes Session-scoped Extension Tools into both the model Backend and
+the Host's available-Tool catalog.
+
+The exact Tool snapshot selected at the beginning of `send()` is also written into the durable Run
+Composition record. During Host drain, new Extension mutations are rejected while read-only Tool
+resolution remains available to admitted work. The Extension authority closes after execution
+domains, disposes every tracked Scope, and only then uninstalls its in-memory revisions.
+
+This wiring does not define package discovery, persistence, restart restoration, or a remote
+install/enable API. Those are control-plane concerns layered on this Host-owned authority.

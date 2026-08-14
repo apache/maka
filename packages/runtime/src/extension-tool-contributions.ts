@@ -131,7 +131,7 @@ export class ExtensionToolContributionRegistry {
     validateIdentity('scopeId', scopeId);
     const byName = new Map<string, MakaTool>();
     for (const tool of coreTools) {
-      validateTool(tool);
+      validateTool(tool, { allowProviderTool: true });
       const key = toolNameKey(tool.name);
       const existing = byName.get(key);
       if (existing) {
@@ -269,7 +269,7 @@ function validateIdentity(label: string, value: string): void {
   }
 }
 
-function validateTool(tool: MakaTool): void {
+function validateTool(tool: MakaTool, options: { allowProviderTool?: boolean } = {}): void {
   if (!tool || typeof tool !== 'object') {
     throw new ExtensionToolContributionError('invalid_tool', 'Tool definition is required');
   }
@@ -293,7 +293,7 @@ function validateTool(tool: MakaTool): void {
       `Tool "${tool.name}" requires an input schema`,
     );
   }
-  if (tool.providerTool) {
+  if (tool.providerTool && !options.allowProviderTool) {
     throw new ExtensionToolContributionError(
       'invalid_tool',
       `Extension Tool "${tool.name}" cannot claim a provider-native Runtime protocol`,

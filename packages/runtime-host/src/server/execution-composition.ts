@@ -111,6 +111,7 @@ import {
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
+import { HostExtensionRuntime } from './extension-runtime.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
@@ -174,6 +175,7 @@ import {
 
 export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition {
   readonly workspaceExecution: RuntimeHostWorkspaceExecutionComposition;
+  readonly extensions: HostExtensionRuntime;
 }
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
@@ -203,6 +205,7 @@ export async function createExecutionRuntimeHostComposition(
 ): Promise<ExecutionRuntimeHostComposition> {
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
   await stores.sessionStore.ready();
+  const extensions = new HostExtensionRuntime();
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let taskLedgerStore:
     | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
@@ -657,6 +660,7 @@ export async function createExecutionRuntimeHostComposition(
               backendContext.sessionId,
             ),
             runtimeCommitSink: stores.runtimeEventStore,
+            extensions,
             requestDrain: context.requestDrain,
           })),
     );
@@ -683,7 +687,7 @@ export async function createExecutionRuntimeHostComposition(
         if (tools.length !== header.subagentRuntime.toolNames.length) {
           throw new Error('Subagent runtime tool snapshot is unavailable');
         }
-        return tools.map((tool) => tool.name);
+        return extensions.resolveTools(sessionId, tools).map((tool) => tool.name);
       }
       if (header.subagentParent) {
         throw new Error('Linked child session is missing its durable runtime snapshot');
@@ -697,7 +701,7 @@ export async function createExecutionRuntimeHostComposition(
           runtimePolicyStores.runtimePolicy.getSnapshot(),
         ]);
         const runProfile = hostedExecutionRunProfile(header.toolProfile);
-        return createInteractiveRunComposer({
+        const composition = createInteractiveRunComposer({
           runtimePolicy: runtimePolicySnapshot,
           skills,
           memory: requireMemory(memory),
@@ -727,7 +731,8 @@ export async function createExecutionRuntimeHostComposition(
                 },
               }
             : {}),
-        }).tools.map((tool) => tool.name);
+        });
+        return extensions.resolveTools(sessionId, composition.tools).map((tool) => tool.name);
       } finally {
         capabilitySnapshot?.release();
       }
@@ -745,7 +750,7 @@ export async function createExecutionRuntimeHostComposition(
           requireClientCapabilities(clientCapabilities).snapshotForSession(previewSessionId);
         try {
           const runtimePolicySnapshot = await runtimePolicyStores.runtimePolicy.getSnapshot();
-          return createInteractiveRunComposer({
+          const composition = createInteractiveRunComposer({
             runtimePolicy: runtimePolicySnapshot,
             skills,
             memory: requireMemory(memory),
@@ -762,7 +767,10 @@ export async function createExecutionRuntimeHostComposition(
               mode: collaborationMode,
               permissionMode,
             },
-          }).tools.map((tool) => tool.name);
+          });
+          return extensions
+            .resolveTools(previewSessionId, composition.tools)
+            .map((tool) => tool.name);
         } finally {
           capabilitySnapshot?.release();
         }
@@ -1256,6 +1264,11 @@ export async function createExecutionRuntimeHostComposition(
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
     domainModules = [
       createRuntimeHostDomainModule({
+        id: 'extension',
+        drain: [() => extensions.beginDrain()],
+        close: [() => extensions.close()],
+      }),
+      createRuntimeHostDomainModule({
         id: 'memory',
         handlers: [requireMemory(memory).handlers],
         recovery: {
@@ -1508,6 +1521,7 @@ export async function createExecutionRuntimeHostComposition(
       handlers,
       moduleIds: Object.freeze(domainModules.map(({ id }) => id)),
       workspaceExecution: requireWorkspaceExecution(workspaceExecution),
+      extensions,
       continuity: continuityCoordinator,
       clientCapabilities,
       configurationChanges,
@@ -1609,6 +1623,11 @@ export async function createExecutionRuntimeHostComposition(
     }
     try {
       await stores.sessionStore.close?.();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      await extensions.close();
     } catch (closeError) {
       errors.push(closeError);
     }

@@ -123,6 +123,17 @@ describe('Extension Tool contributions', () => {
       (error: unknown) =>
         error instanceof ExtensionToolContributionError && error.code === 'tool_name_conflict',
     );
+    assert.deepEqual(
+      registry
+        .compose('session-b', [
+          {
+            ...tool('NativeCore'),
+            providerTool: { kind: 'openai-web-search' },
+          },
+        ])
+        .map(({ name }) => name),
+      ['NativeCore'],
+    );
     await kernel.install(
       defineTrustedToolExtensionRevision({
         registry,

@@ -58,6 +58,7 @@ import {
 import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
 import type { ClientCapabilityHostFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
+import { HostExtensionRuntime } from '../server/extension-runtime.js';
 import {
   createHostDailyReviewModel,
   createHostGoalEvaluator,
@@ -254,6 +255,66 @@ test('provider dispatch fails closed when the Run Composition commit fails', asy
     assert.ok(events.some((event) => event.type === 'error'));
   } finally {
     await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('production backend snapshots Host Extension Tools per send and records the same catalog', async () => {
+  const provider = await startProvider();
+  const extensions = new HostExtensionRuntime();
+  const snapshots: ReturnType<typeof decodeRunCompositionSnapshot>[] = [];
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    await extensions.installTrustedToolRevision({
+      extensionId: 'weather',
+      revision: '1',
+      tools: [
+        {
+          name: 'Weather',
+          description: 'Read the current weather.',
+          parameters: z.object({ city: z.string() }),
+          impl: async ({ city }: { city: string }) => ({ city, temperature: 21 }),
+        },
+      ],
+    });
+    await extensions.activate({
+      bindingId: 'weather-binding',
+      scopeId: 'backend-creation-session',
+      extensionId: 'weather',
+      revision: '1',
+    });
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        tools: [
+          {
+            name: 'Read',
+            description: 'Read a fixture resource.',
+            parameters: z.object({}),
+            impl: async () => 'read',
+          },
+        ],
+        extensions,
+        recordRunComposition: async (_runId, snapshot) => {
+          snapshots.push(decodeRunCompositionSnapshot(snapshot));
+        },
+      }),
+    );
+
+    await drainBackendSend(backend, 'extension-run-1', 'extension-turn-1');
+    assert.deepEqual(toolNames(provider.requests[0]?.body), ['ArchiveRead', 'Read', 'Weather']);
+    assert.deepEqual(snapshots[0]?.toolNames, ['Read', 'Weather']);
+
+    await extensions.stop('weather-binding');
+    await drainBackendSend(backend, 'extension-run-2', 'extension-turn-2');
+    assert.deepEqual(toolNames(provider.requests[1]?.body), ['ArchiveRead', 'Read']);
+    assert.deepEqual(snapshots[1]?.toolNames, ['Read']);
+  } finally {
+    await backend?.dispose();
+    await extensions.close();
     await provider.close();
   }
 });
@@ -2729,6 +2790,7 @@ function backendCreationFixture(input: {
   recordRunComposition?: BackendFactoryContext['recordRunComposition'];
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
   createRunComposer?: HostAiSdkBackendInput['createRunComposer'];
+  extensions?: HostAiSdkBackendInput['extensions'];
 }): HostAiSdkBackendInput {
   const runtimePolicy =
     input.runtimePolicy ??
@@ -2794,6 +2856,7 @@ function backendCreationFixture(input: {
     ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
     ...(input.claudeDeviceId ? { claudeDeviceId: input.claudeDeviceId } : {}),
     createRunComposer,
+    ...(input.extensions ? { extensions: input.extensions } : {}),
     artifacts: {},
     executionArtifacts: {
       recordToolArtifacts: async () => undefined,
@@ -2816,6 +2879,22 @@ function backendCreationFixture(input: {
     ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
     ...(input.createFetchTransport ? { createFetchTransport: input.createFetchTransport } : {}),
   } as unknown as HostAiSdkBackendInput;
+}
+
+async function drainBackendSend(
+  backend: Awaited<ReturnType<typeof createHostAiSdkBackend>>,
+  runId: string,
+  turnId: string,
+): Promise<void> {
+  for await (const _event of backend.send({
+    invocationId: `${runId}-invocation`,
+    runId,
+    turnId,
+    text: 'Return a short answer without calling tools.',
+    context: [],
+  })) {
+    // Drain the real provider-backed send to settlement.
+  }
 }
 
 function readyExecutionConnection(

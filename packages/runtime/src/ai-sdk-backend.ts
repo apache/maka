@@ -828,6 +828,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
     sessionId: string;
     turnId: string;
     runId: string;
+    /** Exact Host Tool snapshot selected for this send, when this is the main call. */
+    tools?: readonly MakaTool[];
   }) => void | Promise<void>;
   /**
    * Optional artifact recorder. Runtime derives only deterministic candidates
@@ -1526,14 +1528,6 @@ export class AiSdkBackend implements AgentBackend {
         toSandboxRunTraceProjection(this.input.sandboxDiagnosticsSnapshot),
       );
     }
-    const providerRequestTracker = this.createProviderRequestTracker({
-      turnId,
-      callKind: 'main',
-      modelId: this.input.modelId,
-      runId: scope.runId,
-    });
-    const providerRequestTraceId = providerRequestTracker?.traceId;
-
     // --- Resolve model (API key already attached at construct time) ---
     let model: unknown;
     try {
@@ -1586,6 +1580,14 @@ export class AiSdkBackend implements AgentBackend {
     }
     const toolMode = requestedToolMode;
     const toolSnapshot = this.snapshotToolAvailability();
+    const providerRequestTracker = this.createProviderRequestTracker({
+      turnId,
+      callKind: 'main',
+      modelId: this.input.modelId,
+      runId: scope.runId,
+      tools: toolSnapshot.hostTools,
+    });
+    const providerRequestTraceId = providerRequestTracker?.traceId;
     if (toolMode === 'code_mode' && toolSnapshot.hostTools.some((tool) => tool.name === 'exec')) {
       throw new Error('Tool name "exec" is reserved for Code Mode.');
     }
@@ -3196,6 +3198,7 @@ export class AiSdkBackend implements AgentBackend {
     turnId: string;
     callKind: ModelCallKind;
     modelId: string;
+    tools?: readonly MakaTool[];
     /**
      * Stated by every caller, never defaulted: an unattributed provider request
      * is silently dropped by usage accounting, so the compiler has to be the
@@ -3217,6 +3220,7 @@ export class AiSdkBackend implements AgentBackend {
               sessionId: this.sessionId,
               turnId: input.turnId,
               runId,
+              ...(input.tools ? { tools: input.tools } : {}),
             })
         : undefined;
     if (!persistCapture && !accounting && !beforeDispatch) return undefined;

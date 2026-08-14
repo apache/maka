@@ -23,6 +23,7 @@ import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type RuntimeCommitSink } from '@maka/runtime/runtime-commit-sink';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   createAttachmentByteReader,
   persistProviderRequestCaptureArtifact,
@@ -37,6 +38,7 @@ import {
 import type { HostChildAgentBackendCapabilities } from './child-agent-composition.js';
 import type { HostExecutionArtifactServices } from './execution-artifacts.js';
 import type { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
+import type { HostExtensionToolResolver } from './extension-runtime.js';
 import { readDuringBackendCreation, resolveExecutionTarget } from './execution-model-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import type { HostRunComposer, HostRunComposerFactory } from './host-run-composer.js';
@@ -54,6 +56,7 @@ export interface HostAiSdkBackendInput {
   readonly requestDrain: () => void;
   readonly runtimeCommitSink?: RuntimeCommitSink;
   readonly childAgents?: HostChildAgentBackendCapabilities;
+  readonly extensions?: HostExtensionToolResolver;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
 
@@ -148,6 +151,9 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     await transport.close();
     throw error;
   }
+  const resolveModelTools = (): readonly MakaTool[] =>
+    input.extensions?.resolveTools(input.context.sessionId, modelComposition.tools) ??
+    modelComposition.tools;
   const modelFactory = (
     modelInput: Parameters<typeof getAIModel>[0],
   ): ReturnType<typeof getAIModel> =>
@@ -270,8 +276,13 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
   };
   const recordRunComposition = input.context.recordRunComposition;
   const commitRunComposition = recordRunComposition
-    ? async (context: { readonly turnId: string; readonly runId: string }): Promise<void> => {
+    ? async (context: {
+        readonly turnId: string;
+        readonly runId: string;
+        readonly tools?: readonly MakaTool[];
+      }): Promise<void> => {
         const resolved = await resolveRunPrompt(context);
+        const tools = context.tools ?? resolveModelTools();
         await recordRunComposition(
           context.runId,
           createRunCompositionSnapshot({
@@ -279,10 +290,10 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
             composerRevision: modelComposition.composerRevision,
             sourceRevisions: resolved.sourceRevisions,
             baseSystemPromptHash: stableHash(resolved.text ?? ''),
-            toolCatalogHash: toolCatalogHash(modelComposition.tools),
+            toolCatalogHash: toolCatalogHash(tools),
             toolAvailabilityHash: toolAvailabilityHash(modelComposition.toolAvailability),
             baseProviderOptionsHash: stableHash(providerOptions),
-            toolNames: modelComposition.tools.map(({ name }) => name),
+            toolNames: tools.map(({ name }) => name),
             contextWindow: contextWindow ?? null,
           }),
         );
@@ -323,6 +334,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         modelId: target.model,
         modelFactory,
         tools: [...modelComposition.tools],
+        ...(input.extensions ? { resolveTools: resolveModelTools } : {}),
         toolAvailability: modelComposition.toolAvailability,
         ...(modelComposition.planTraceContext
           ? { planTraceContext: modelComposition.planTraceContext }
