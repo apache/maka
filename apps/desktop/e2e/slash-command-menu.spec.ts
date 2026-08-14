@@ -117,9 +117,11 @@ test('dispatches a staged slash command instead of steering it into a running tu
   await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
 
   await composer.fill('/compact explain');
-  await expect(page.getByRole('button', { name: '插入消息' })).toBeVisible();
+  const steerSubmit = page.getByRole('button', { name: '插入消息' });
+  await expect(steerSubmit).toBeVisible();
   await composer.press('Enter');
   await expect(page.getByText(/Acknowledged steering: \/compact explain/)).toBeVisible();
+  await expect(steerSubmit).not.toHaveAttribute('aria-busy', 'true');
 
   await composer.fill('/');
   const menu = page.getByRole('listbox', { name: '命令和技能' });
