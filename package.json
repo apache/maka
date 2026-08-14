@@ -59,8 +59,8 @@
     "prepare:bundled-git-source": "node scripts/prepare-bundled-git-source.mjs"
   },
   "devDependencies": {
-    "@astryxdesign/cli": "0.3.0",
-    "@astryxdesign/core": "0.3.0",
+    "@astryxdesign/cli": "0.4.0",
+    "@astryxdesign/core": "0.4.0",
     "@biomejs/biome": "2.5.6",
     "@types/node": "^26.1.2",
     "dugite": "3.2.2",
