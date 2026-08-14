@@ -38,7 +38,7 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
 
   constructor(private readonly options: WindowsSandboxBackendOptions) {}
 
-  isAvailable(platform = process.platform): boolean {
+  isAvailable(platform: string = process.platform): boolean {
     return platform === 'win32' && (this.options.isAvailable?.() ?? true);
   }
 

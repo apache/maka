@@ -87,7 +87,7 @@ export class FilesystemWorkerClientError extends Error {
   readonly stage: 'validation' | 'transform' | 'launch' | 'protocol' | 'operation';
   readonly recoverable: boolean;
   readonly requestId?: string;
-  readonly backend?: 'none' | 'macos-seatbelt' | 'linux';
+  readonly backend?: 'none' | 'macos-seatbelt' | 'linux' | 'windows';
   readonly profileName?: string;
   readonly requiredExpansion?: SandboxBoundaryExpansion;
 
@@ -97,7 +97,7 @@ export class FilesystemWorkerClientError extends Error {
     message?: string;
     recoverable?: boolean;
     requestId?: string;
-    backend?: 'none' | 'macos-seatbelt' | 'linux';
+    backend?: 'none' | 'macos-seatbelt' | 'linux' | 'windows';
     profileName?: string;
     requiredExpansion?: SandboxBoundaryExpansion;
   }) {
@@ -534,7 +534,7 @@ function clientError(
   message?: string,
   recoverable = false,
   metadata: {
-    backend?: 'none' | 'macos-seatbelt' | 'linux';
+    backend?: 'none' | 'macos-seatbelt' | 'linux' | 'windows';
     profileName?: string;
     requiredExpansion?: SandboxBoundaryExpansion;
   } = {},

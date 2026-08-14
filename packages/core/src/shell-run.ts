@@ -119,7 +119,7 @@ export interface ShellRunRecord {
   observedAt?: number;
   output: ShellOutput;
   sandboxExecution?: {
-    type: 'none' | 'macos-seatbelt' | 'linux';
+    type: 'none' | 'macos-seatbelt' | 'linux' | 'windows';
     enforced: boolean;
   };
   sandboxEscalation?: {
@@ -459,7 +459,8 @@ function isShellRunSandboxExecution(value: unknown): boolean {
   return (
     (execution.type === 'none' ||
       execution.type === 'macos-seatbelt' ||
-      execution.type === 'linux') &&
+      execution.type === 'linux' ||
+      execution.type === 'windows') &&
     typeof execution.enforced === 'boolean' &&
     execution.enforced === (execution.type !== 'none')
   );

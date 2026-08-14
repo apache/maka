@@ -263,7 +263,10 @@ export function isSandboxDenialSignal(value: unknown): value is SandboxDenialSig
     isRecord(value) &&
     hasExactShape(value, SANDBOX_DENIAL_SIGNAL_SHAPE) &&
     value.likely === true &&
-    (value.backend === undefined || value.backend === 'macos-seatbelt' || value.backend === 'linux')
+    (value.backend === undefined ||
+      value.backend === 'macos-seatbelt' ||
+      value.backend === 'linux' ||
+      value.backend === 'windows')
   );
 }
 
@@ -276,7 +279,8 @@ function isOptionalSandboxDenial(value: unknown): boolean {
       value.likely === true &&
       (value.backend === undefined ||
         value.backend === 'macos-seatbelt' ||
-        value.backend === 'linux') &&
+        value.backend === 'linux' ||
+        value.backend === 'windows') &&
       value.recovery === 'require_escalated')
   );
 }

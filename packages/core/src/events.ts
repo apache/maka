@@ -617,7 +617,7 @@ type ShellRunResultMetadata = {
 
 export interface SandboxDenialSignal {
   likely: true;
-  backend?: 'macos-seatbelt' | 'linux';
+  backend?: 'macos-seatbelt' | 'linux' | 'windows';
 }
 
 export interface SandboxDenialRecovery extends SandboxDenialSignal {
