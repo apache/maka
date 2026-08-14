@@ -17,7 +17,24 @@ if (-not (Test-Path -LiteralPath $launcher)) {
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $pipeSuffix = "maka-sandbox-ci-$PID"
 $pipeName = "\\.\pipe\$pipeSuffix"
-$digest = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+$launch = @{
+  version = 1
+  requestId = 'pipe-smoke-launch'
+  executable = $env:ComSpec
+  arguments = @('/d', '/c', 'exit 0')
+  cwd = $PSScriptRoot
+  readRoots = @()
+  writeRoots = @()
+  network = 'enabled'
+  environment = @{}
+}
+$digestInput = Join-Path $env:RUNNER_TEMP "maka-windows-digest-$PID.json"
+$launch | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $digestInput -Encoding utf8
+$digest = (& $launcher --launch-digest $digestInput 2>&1) -join ''
+Remove-Item -LiteralPath $digestInput -Force
+if ($LASTEXITCODE -ne 0 -or $digest -notmatch '^[a-f0-9]{64}$') {
+  throw "Unable to compute launch digest: $digest"
+}
 $start = [Diagnostics.ProcessStartInfo]::new()
 $start.FileName = $launcher
 $start.UseShellExecute = $false
@@ -45,17 +62,7 @@ try {
     clientPid = $PID
     clientNonce = '0123456789abcdef0123456789abcdef'
     profileDigest = $digest
-    launch = @{
-      version = 1
-      requestId = 'pipe-smoke-launch'
-      executable = $env:ComSpec
-      arguments = @('/d', '/c', 'exit 0')
-      cwd = $PSScriptRoot
-      readRoots = @()
-      writeRoots = @()
-      network = 'enabled'
-      environment = @{}
-    }
+    launch = $launch
   }
   $payload = [Text.Encoding]::UTF8.GetBytes(($request | ConvertTo-Json -Depth 5 -Compress))
   $prefix = [BitConverter]::GetBytes([uint32]$payload.Length)

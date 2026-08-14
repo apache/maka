@@ -26,7 +26,9 @@ use std::time::Duration;
 use broker_authorization::BrokerAuthorizer;
 use broker_framing::{decode_frame, encode_frame};
 use broker_pipe::serve_once;
-use protocol::{BrokerLaunchOutcome, BrokerLaunchRequest, BrokerLaunchResponse, LaunchRequest};
+use protocol::{
+    BrokerLaunchOutcome, BrokerLaunchRequest, BrokerLaunchResponse, LaunchRequest, launch_digest,
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -64,6 +66,20 @@ fn run() -> Result<u8, String> {
             return Err("--boundary-probe accepts exactly two arguments".to_owned());
         }
         return boundary_probe(&denied_path.to_string_lossy(), port);
+    }
+    if first == "--launch-digest" {
+        let request_path = args
+            .next()
+            .ok_or_else(|| "--launch-digest requires a request path".to_owned())?;
+        if args.next().is_some() {
+            return Err("--launch-digest accepts exactly one request path".to_owned());
+        }
+        let source = fs::read_to_string(request_path).map_err(|error| error.to_string())?;
+        let request: LaunchRequest =
+            serde_json::from_str(&source).map_err(|error| error.to_string())?;
+        request.validate()?;
+        println!("{}", launch_digest(&request)?);
+        return Ok(0);
     }
     if first == "--broker-serve-once" {
         let pipe_name = args.next().ok_or_else(|| {

@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { win32 } from 'node:path';
 
 import type { SandboxBackend, SandboxTransformRequest, SandboxTransformResult } from './types.js';
@@ -26,7 +26,6 @@ export interface WindowsBrokerManifest {
 export interface WindowsSandboxBackendOptions {
   readonly clientPath: string;
   readonly pipeName: string;
-  readonly profileDigest: string;
   readonly writeManifest: (manifest: WindowsBrokerManifest) => string;
   readonly nonce?: () => string;
   readonly requestId?: () => string;
@@ -97,23 +96,24 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
     }
     let manifestPath: string;
     try {
+      const launch: WindowsBrokerManifest['launch'] = {
+        version: 1,
+        requestId: `${requestId}-launch`,
+        executable: request.command.program,
+        arguments: request.command.args,
+        cwd: request.command.cwd,
+        readRoots: policy.readRoots,
+        writeRoots: policy.writeRoots,
+        network: policy.network,
+        environment: sortEnvironment(policy.environment),
+      };
       manifestPath = this.options.writeManifest({
         version: 1,
         requestId,
         clientPid: 0,
         clientNonce,
-        profileDigest: this.options.profileDigest,
-        launch: {
-          version: 1,
-          requestId: `${requestId}-launch`,
-          executable: request.command.program,
-          arguments: request.command.args,
-          cwd: request.command.cwd,
-          readRoots: policy.readRoots,
-          writeRoots: policy.writeRoots,
-          network: policy.network,
-          environment: policy.environment,
-        },
+        profileDigest: digestLaunch(launch),
+        launch,
       });
       if (!isCanonicalWindowsPath(manifestPath)) {
         throw new Error('manifest path must be canonical and absolute');
@@ -150,10 +150,21 @@ function validateConfiguration(options: WindowsSandboxBackendOptions): string | 
   if (!/^\\\\\.\\pipe\\maka-sandbox-[A-Za-z0-9_-]{1,64}$/u.test(options.pipeName)) {
     return 'Windows broker pipe name is invalid.';
   }
-  if (!/^[a-f0-9]{64}$/iu.test(options.profileDigest)) {
-    return 'Windows broker profile digest must be 64 hexadecimal characters.';
-  }
   return undefined;
+}
+
+function digestLaunch(launch: WindowsBrokerManifest['launch']): string {
+  return createHash('sha256').update(JSON.stringify(launch), 'utf8').digest('hex');
+}
+
+function sortEnvironment(
+  environment: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+  return Object.fromEntries(
+    Object.entries(environment).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0,
+    ),
+  );
 }
 
 function isCanonicalWindowsPath(path: string): boolean {

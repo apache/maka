@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
@@ -13,7 +14,6 @@ test('transforms a Windows managed profile into a broker-client invocation', () 
   const backend = new WindowsBrokerSandboxBackend({
     clientPath: String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
     pipeName: String.raw`\\.\pipe\maka-sandbox-session`,
-    profileDigest: 'a'.repeat(64),
     nonce: () => 'b'.repeat(32),
     requestId: () => 'request-1',
     writeManifest: (manifest) => {
@@ -42,23 +42,24 @@ test('transforms a Windows managed profile into a broker-client invocation', () 
     String.raw`\\.\pipe\maka-sandbox-session`,
     String.raw`C:\Users\user\AppData\Local\Temp\request.json`,
   ]);
+  const launch = {
+    version: 1 as const,
+    requestId: 'request-1-launch',
+    executable: String.raw`C:\Windows\System32\cmd.exe`,
+    arguments: ['/d', '/c', 'exit 0'],
+    cwd: String.raw`C:\work\repo`,
+    readRoots: [String.raw`C:\work\repo`],
+    writeRoots: [String.raw`C:\work\repo`],
+    network: 'restricted' as const,
+    environment: { SystemRoot: String.raw`C:\Windows` },
+  };
   assert.deepEqual(written, {
     version: 1,
     requestId: 'request-1',
     clientPid: 0,
     clientNonce: 'b'.repeat(32),
-    profileDigest: 'a'.repeat(64),
-    launch: {
-      version: 1,
-      requestId: 'request-1-launch',
-      executable: String.raw`C:\Windows\System32\cmd.exe`,
-      arguments: ['/d', '/c', 'exit 0'],
-      cwd: String.raw`C:\work\repo`,
-      readRoots: [String.raw`C:\work\repo`],
-      writeRoots: [String.raw`C:\work\repo`],
-      network: 'restricted',
-      environment: { SystemRoot: String.raw`C:\Windows` },
-    },
+    profileDigest: createHash('sha256').update(JSON.stringify(launch)).digest('hex'),
+    launch,
   });
   assert.equal(result.exec.sandboxType, 'windows');
 });
@@ -67,7 +68,6 @@ test('fails closed when broker client is unavailable or policy cannot be compile
   const unavailable = new WindowsBrokerSandboxBackend({
     clientPath: 'client.exe',
     pipeName: String.raw`\\.\pipe\maka-sandbox-session`,
-    profileDigest: 'a'.repeat(64),
     isAvailable: () => false,
     writeManifest: () => 'request.json',
   });
@@ -88,7 +88,6 @@ test('fails closed when broker client is unavailable or policy cannot be compile
   const invalid = new WindowsBrokerSandboxBackend({
     clientPath: 'client.exe',
     pipeName: String.raw`\\.\pipe\maka-sandbox-session`,
-    profileDigest: 'a'.repeat(64),
     writeManifest: () => 'request.json',
   }).transform({
     ...input,

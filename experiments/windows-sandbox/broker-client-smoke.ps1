@@ -9,25 +9,32 @@ if (-not (Test-Path -LiteralPath $launcher)) {
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $pipeSuffix = "maka-sandbox-client-ci-$PID"
 $pipeName = "\\.\pipe\$pipeSuffix"
-$digest = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 $manifestPath = Join-Path $env:RUNNER_TEMP "maka-windows-broker-client-$PID.json"
+$launch = @{
+  version = 1
+  requestId = 'broker-client-smoke-launch'
+  executable = $env:ComSpec
+  arguments = @('/d', '/c', 'exit 0')
+  cwd = $PSScriptRoot
+  readRoots = @()
+  writeRoots = @()
+  network = 'enabled'
+  environment = @{}
+}
+$digestInput = Join-Path $env:RUNNER_TEMP "maka-windows-client-digest-$PID.json"
+$launch | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $digestInput -Encoding utf8
+$digest = (& $launcher --launch-digest $digestInput 2>&1) -join ''
+Remove-Item -LiteralPath $digestInput -Force
+if ($LASTEXITCODE -ne 0 -or $digest -notmatch '^[a-f0-9]{64}$') {
+  throw "Unable to compute launch digest: $digest"
+}
 $manifest = @{
   version = 1
   requestId = 'broker-client-smoke'
   clientPid = 0
   clientNonce = '0123456789abcdef0123456789abcdef'
   profileDigest = $digest
-  launch = @{
-    version = 1
-    requestId = 'broker-client-smoke-launch'
-    executable = $env:ComSpec
-    arguments = @('/d', '/c', 'exit 0')
-    cwd = $PSScriptRoot
-    readRoots = @()
-    writeRoots = @()
-    network = 'enabled'
-    environment = @{}
-  }
+  launch = $launch
 }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 

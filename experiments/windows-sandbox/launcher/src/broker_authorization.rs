@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::protocol::BrokerLaunchRequest;
+use crate::protocol::{BrokerLaunchRequest, launch_digest};
 
 const MAX_REMEMBERED_NONCES: usize = 4096;
 
@@ -31,6 +31,14 @@ impl BrokerAuthorizer {
         if request.client_pid != connected_client_pid {
             return Err(BrokerAuthorizationError::ClientPidMismatch);
         }
+        let computed_digest =
+            launch_digest(&request.launch).map_err(BrokerAuthorizationError::InvalidRequest)?;
+        if !request
+            .profile_digest
+            .eq_ignore_ascii_case(&computed_digest)
+        {
+            return Err(BrokerAuthorizationError::ProfileDigestMismatch);
+        }
         if !self
             .allowed_profile_digests
             .contains(&request.profile_digest.to_ascii_lowercase())
@@ -53,6 +61,7 @@ pub enum BrokerAuthorizationError {
     InvalidRequest(String),
     ClientPidMismatch,
     ProfileNotApproved,
+    ProfileDigestMismatch,
     NonceReplayed,
     NonceCapacityExceeded,
 }
@@ -63,6 +72,7 @@ impl BrokerAuthorizationError {
             Self::InvalidRequest(_) => "invalid_request",
             Self::ClientPidMismatch => "client_pid_mismatch",
             Self::ProfileNotApproved => "profile_not_approved",
+            Self::ProfileDigestMismatch => "profile_digest_mismatch",
             Self::NonceReplayed => "nonce_replayed",
             Self::NonceCapacityExceeded => "nonce_capacity_exceeded",
         }
@@ -75,6 +85,9 @@ impl BrokerAuthorizationError {
                 "request clientPid does not match the connected pipe client".to_owned()
             }
             Self::ProfileNotApproved => "profileDigest is not approved by the broker".to_owned(),
+            Self::ProfileDigestMismatch => {
+                "profileDigest does not match the canonical launch policy".to_owned()
+            }
             Self::NonceReplayed => "clientNonce has already been used".to_owned(),
             Self::NonceCapacityExceeded => {
                 "broker nonce capacity is exhausted; restart is required".to_owned()

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path};
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -101,6 +102,12 @@ impl BrokerLaunchRequest {
         }
         self.launch.validate()
     }
+}
+
+pub fn launch_digest(request: &LaunchRequest) -> Result<String, String> {
+    let canonical = serde_json::to_vec(request)
+        .map_err(|error| format!("serialize canonical launch policy failed: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(canonical)))
 }
 
 #[allow(dead_code)]

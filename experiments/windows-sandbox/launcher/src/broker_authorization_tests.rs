@@ -1,17 +1,15 @@
 #[cfg(test)]
 mod tests {
     use crate::broker_authorization::{BrokerAuthorizationError, BrokerAuthorizer};
-    use crate::protocol::BrokerLaunchRequest;
-
-    const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    use crate::protocol::{BrokerLaunchRequest, launch_digest};
 
     fn request(nonce: &str) -> BrokerLaunchRequest {
-        serde_json::from_value(serde_json::json!({
+        let mut request: BrokerLaunchRequest = serde_json::from_value(serde_json::json!({
             "version": 1,
             "requestId": "broker-1",
             "clientPid": 42,
             "clientNonce": nonce,
-            "profileDigest": DIGEST,
+            "profileDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             "launch": {
                 "version": 1,
                 "requestId": "launch-1",
@@ -24,14 +22,17 @@ mod tests {
                 "environment": {}
             }
         }))
-        .expect("valid request")
+        .expect("valid request");
+        request.profile_digest = launch_digest(&request.launch).expect("launch digest");
+        request
     }
 
     #[test]
     fn binds_authorization_to_connected_client_pid() {
-        let mut authorizer = BrokerAuthorizer::new([DIGEST.to_owned()]);
+        let value = request("0123456789abcdef0123456789abcdef");
+        let mut authorizer = BrokerAuthorizer::new([value.profile_digest.clone()]);
         assert_eq!(
-            authorizer.authorize(&request("0123456789abcdef0123456789abcdef"), 43),
+            authorizer.authorize(&value, 43),
             Err(BrokerAuthorizationError::ClientPidMismatch)
         );
     }
@@ -39,23 +40,37 @@ mod tests {
     #[test]
     fn rejects_unapproved_profile_without_consuming_nonce() {
         let nonce = "0123456789abcdef0123456789abcdef";
+        let value = request(nonce);
         let mut authorizer = BrokerAuthorizer::new([]);
         assert_eq!(
-            authorizer.authorize(&request(nonce), 42),
+            authorizer.authorize(&value, 42),
             Err(BrokerAuthorizationError::ProfileNotApproved)
         );
-        authorizer = BrokerAuthorizer::new([DIGEST.to_owned()]);
-        assert_eq!(authorizer.authorize(&request(nonce), 42), Ok(()));
+        authorizer = BrokerAuthorizer::new([value.profile_digest.clone()]);
+        assert_eq!(authorizer.authorize(&value, 42), Ok(()));
     }
 
     #[test]
     fn rejects_replayed_nonce_after_successful_authorization() {
         let nonce = "0123456789abcdef0123456789abcdef";
-        let mut authorizer = BrokerAuthorizer::new([DIGEST.to_owned()]);
-        assert_eq!(authorizer.authorize(&request(nonce), 42), Ok(()));
+        let value = request(nonce);
+        let mut authorizer = BrokerAuthorizer::new([value.profile_digest.clone()]);
+        assert_eq!(authorizer.authorize(&value, 42), Ok(()));
         assert_eq!(
-            authorizer.authorize(&request(nonce), 42),
+            authorizer.authorize(&value, 42),
             Err(BrokerAuthorizationError::NonceReplayed)
+        );
+    }
+
+    #[test]
+    fn rejects_a_digest_that_is_not_bound_to_the_launch_policy() {
+        let mut value = request("0123456789abcdef0123456789abcdef");
+        let approved = value.profile_digest.clone();
+        value.launch.arguments.push("tampered".to_owned());
+        let mut authorizer = BrokerAuthorizer::new([approved]);
+        assert_eq!(
+            authorizer.authorize(&value, 42),
+            Err(BrokerAuthorizationError::ProfileDigestMismatch)
         );
     }
 }
