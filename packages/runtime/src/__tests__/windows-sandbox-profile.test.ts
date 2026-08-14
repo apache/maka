@@ -37,7 +37,11 @@ test('compiles workspace-write roots, runtime roots, network, and environment', 
       String.raw`C:\Program Files\nodejs`,
       String.raw`C:\runtime\state`,
     ],
-    writeRoots: [String.raw`C:\work\repo`, String.raw`C:\runtime\state`],
+    writeRoots: [
+      String.raw`C:\work\repo`,
+      String.raw`C:\Users\user\AppData\Local\Temp`,
+      String.raw`C:\runtime\state`,
+    ],
     network: 'restricted',
     environment: { PATH: String.raw`C:\Windows\System32` },
   });
