@@ -32,6 +32,7 @@ test('compiles workspace-write roots, runtime roots, network, and environment', 
   assert.deepEqual(policy, {
     readRoots: [
       String.raw`C:\work\repo`,
+      String.raw`C:\Users\user\AppData\Local\Temp`,
       String.raw`C:\runtime`,
       String.raw`C:\Program Files\nodejs`,
       String.raw`C:\runtime\state`,

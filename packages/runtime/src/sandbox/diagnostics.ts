@@ -185,7 +185,7 @@ async function probeCommandCapability(
     return unavailable(
       expectedSandboxType(input.platform),
       'selection',
-      input.platform === 'darwin' || input.platform === 'linux'
+      input.platform === 'darwin' || input.platform === 'linux' || input.platform === 'win32'
         ? 'backend_not_available'
         : 'unsupported_platform',
     );
@@ -381,6 +381,7 @@ function unavailable(
 function expectedSandboxType(platform: SandboxPlatform): SandboxType {
   if (platform === 'darwin') return 'macos-seatbelt';
   if (platform === 'linux') return 'linux';
+  if (platform === 'win32') return 'windows';
   return 'none';
 }
 

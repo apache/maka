@@ -25,6 +25,7 @@ describe('sandbox diagnostics', () => {
       stage: 'selection',
       reason: 'backend_not_available',
     });
+    assert.equal(unsupportedSnapshot.capabilities.command.backend, 'windows');
 
     const noWorker = createSandboxDiagnosticsProvider({
       platform: 'darwin',
