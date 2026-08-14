@@ -290,26 +290,48 @@ describe('McpClientManager remote transport E2E', () => {
     assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 2);
   });
 
-  test('bounds rediscovery when every tools list triggers a list-changed notification', async () => {
+  test('bounds response-followed-by-notification rediscovery during initial sync', async () => {
     const fixture = await createRemoteFixture('sse');
     const manager = createManager();
-    await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
-    const binding = bindingFor(manager, 'remote', 'echo');
-    const listsBefore = countProtocolMethod(fixture, 'tools/list');
-
     fixture.setNotifyOnEveryToolList(true);
-    await fixture.notifyToolListChanged();
+
+    const sync = manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+    assert.equal(await settlesWithin(sync, 1_000), true);
+    await sync;
     await waitFor(() => /changed too frequently/u.test(manager.status('remote')?.error ?? ''));
 
-    assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 3);
+    const binding = bindingFor(manager, 'remote', 'echo');
+    assert.equal(countProtocolMethod(fixture, 'tools/list'), 3);
     assert.match(manager.status('remote')?.error ?? '', /changed too frequently/u);
     assert.deepEqual(await manager.callTool(binding, { value: 'still-callable' }), {
       content: [{ type: 'text', text: 'still-callable' }],
       structuredContent: undefined,
     });
 
+    fixture.setNotifyOnEveryToolList(false);
+    await manager.refreshTools('remote');
+    assert.equal(manager.status('remote')?.error, undefined);
+  });
+
+  test('lets configuration removal preempt active notification rediscovery', async () => {
+    const fixture = await createRemoteFixture('sse');
+    const manager = createManager();
+    await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+    const gate = fixture.holdNextToolList();
+    fixture.setNotifyOnEveryToolList(true);
+    await fixture.notifyToolListChanged();
+    await gate.started;
+
     const removal = manager.sync({ version: 1, mcpServers: {} });
-    assert.equal(await settlesWithin(removal, 1_000), true);
+    let removedBeforeRelease: boolean;
+    try {
+      removedBeforeRelease = await settlesWithin(removal, 1_000);
+    } finally {
+      gate.release();
+    }
+    await removal;
+
+    assert.equal(removedBeforeRelease, true);
     assert.equal(manager.status('remote'), undefined);
   });
 
@@ -855,7 +877,13 @@ async function createRemoteFixture(
         const server = createProtocolServer({
           advertiseTools: options.advertiseTools !== false,
           toolListMode: () => toolListMode,
-          beforeToolList: async () => {},
+          beforeToolList: async () => {
+            const gate = nextToolListGate;
+            if (!gate) return;
+            nextToolListGate = undefined;
+            gate.markStarted();
+            await gate.waitForRelease;
+          },
           notifyOnEveryToolList: () => notifyOnEveryToolList,
         });
         sseTransports.set(transport.sessionId, { transport, server });
@@ -947,8 +975,7 @@ function createProtocolServer(options: {
   server.setRequestHandler('tools/list', async () => {
     const mode = options.toolListMode();
     await options.beforeToolList();
-    if (options.notifyOnEveryToolList()) await server.sendToolListChanged();
-    return {
+    const result = {
       tools:
         mode === 'duplicate'
           ? [remoteToolDefinition('echo'), remoteToolDefinition('echo')]
@@ -982,6 +1009,12 @@ function createProtocolServer(options: {
                       ]
                     : [remoteToolDefinition('echo'), remoteToolDefinition('invalid-output')],
     };
+    if (options.notifyOnEveryToolList()) {
+      setTimeout(() => {
+        void server.sendToolListChanged().catch(() => {});
+      }, 5);
+    }
+    return result;
   });
   server.setRequestHandler('tools/call', async ({ params }) => {
     const args = params.arguments ?? {};
