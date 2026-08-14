@@ -12,7 +12,7 @@ use windows_sys::Win32::Security::Isolation::{
 use windows_sys::Win32::Security::{
     CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, FreeSid, GetTokenInformation,
     IsTokenRestricted, LUA_TOKEN, SECURITY_CAPABILITIES, SecurityImpersonation, TOKEN_ALL_ACCESS,
-    TOKEN_DUPLICATE, TOKEN_QUERY, TokenIsAppContainer, TokenPrimary,
+    TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER, TokenIsAppContainer, TokenPrimary, TokenUser,
 };
 use windows_sys::Win32::System::JobObjects::{
     CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -99,6 +99,37 @@ pub fn appcontainer_sid_string() -> Result<String, String> {
     unsafe {
         let profile = AppContainerProfile::open()?;
         sid_string(profile.sid)
+    }
+}
+
+pub fn current_user_sid_string() -> Result<String, String> {
+    unsafe {
+        let mut token = null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(last_error("OpenProcessToken(current user SID)"));
+        }
+        let mut required = 0;
+        GetTokenInformation(token, TokenUser, null_mut(), 0, &mut required);
+        if required == 0 {
+            CloseHandle(token);
+            return Err(last_error("GetTokenInformation(TokenUser size)"));
+        }
+        let words = (required as usize).div_ceil(size_of::<usize>());
+        let mut storage = vec![0usize; words];
+        if GetTokenInformation(
+            token,
+            TokenUser,
+            storage.as_mut_ptr() as *mut c_void,
+            required,
+            &mut required,
+        ) == 0
+        {
+            CloseHandle(token);
+            return Err(last_error("GetTokenInformation(TokenUser)"));
+        }
+        CloseHandle(token);
+        let user = &*(storage.as_ptr() as *const TOKEN_USER);
+        sid_string(user.User.Sid)
     }
 }
 

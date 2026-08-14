@@ -13,7 +13,6 @@ test('transforms a Windows managed profile into a broker-client invocation', () 
   let written: WindowsBrokerManifest | undefined;
   const backend = new WindowsBrokerSandboxBackend({
     clientPath: String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
-    pipeName: String.raw`\\.\pipe\maka-sandbox-session`,
     nonce: () => 'b'.repeat(32),
     requestId: () => 'request-1',
     writeManifest: (manifest) => {
@@ -38,8 +37,7 @@ test('transforms a Windows managed profile into a broker-client invocation', () 
   if (!result.ok) return;
   assert.deepEqual(result.exec.argv, [
     String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
-    '--broker-client',
-    String.raw`\\.\pipe\maka-sandbox-session`,
+    '--broker-local',
     String.raw`C:\Users\user\AppData\Local\Temp\request.json`,
   ]);
   const launch = {
@@ -67,7 +65,6 @@ test('transforms a Windows managed profile into a broker-client invocation', () 
 test('fails closed when broker client is unavailable or policy cannot be compiled', () => {
   const unavailable = new WindowsBrokerSandboxBackend({
     clientPath: 'client.exe',
-    pipeName: String.raw`\\.\pipe\maka-sandbox-session`,
     isAvailable: () => false,
     writeManifest: () => 'request.json',
   });
@@ -87,7 +84,6 @@ test('fails closed when broker client is unavailable or policy cannot be compile
 
   const invalid = new WindowsBrokerSandboxBackend({
     clientPath: 'client.exe',
-    pipeName: String.raw`\\.\pipe\maka-sandbox-session`,
     writeManifest: () => 'request.json',
   }).transform({
     ...input,

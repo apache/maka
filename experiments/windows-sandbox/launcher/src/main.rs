@@ -135,6 +135,15 @@ fn run() -> Result<u8, String> {
             &manifest_path.to_string_lossy(),
         );
     }
+    if first == "--broker-local" {
+        let manifest_path = args
+            .next()
+            .ok_or_else(|| "--broker-local requires a manifest path".to_owned())?;
+        if args.next().is_some() {
+            return Err("--broker-local accepts exactly one argument".to_owned());
+        }
+        return broker_client::run_local(&manifest_path.to_string_lossy());
+    }
     if first == "--appcontainer" {
         let request_path = args
             .next()

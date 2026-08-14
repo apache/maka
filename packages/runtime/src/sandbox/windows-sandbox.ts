@@ -25,7 +25,6 @@ export interface WindowsBrokerManifest {
 
 export interface WindowsSandboxBackendOptions {
   readonly clientPath: string;
-  readonly pipeName: string;
   readonly writeManifest: (manifest: WindowsBrokerManifest) => string;
   readonly nonce?: () => string;
   readonly requestId?: () => string;
@@ -130,7 +129,7 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
     return {
       ok: true,
       exec: {
-        argv: [this.options.clientPath, '--broker-client', this.options.pipeName, manifestPath],
+        argv: [this.options.clientPath, '--broker-local', manifestPath],
         cwd: request.command.cwd,
         env: request.command.env,
         sandboxType: 'windows',
@@ -146,9 +145,6 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
 function validateConfiguration(options: WindowsSandboxBackendOptions): string | undefined {
   if (!isCanonicalWindowsPath(options.clientPath)) {
     return 'Windows broker client path must be canonical and absolute.';
-  }
-  if (!/^\\\\\.\\pipe\\maka-sandbox-[A-Za-z0-9_-]{1,64}$/u.test(options.pipeName)) {
-    return 'Windows broker pipe name is invalid.';
   }
   return undefined;
 }

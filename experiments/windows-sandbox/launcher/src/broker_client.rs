@@ -13,8 +13,37 @@ use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING, ReadFi
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::broker_framing::{MAX_BROKER_MESSAGE_BYTES, decode_frame, encode_frame};
+use crate::broker_pipe::serve_once;
 use crate::broker_pipe_security::validate_pipe_name;
 use crate::protocol::{BrokerLaunchOutcome, BrokerLaunchRequest, BrokerLaunchResponse};
+use crate::windows_launcher::current_user_sid_string;
+
+pub fn run_local(manifest_path: &str) -> Result<u8, String> {
+    let source = fs::read_to_string(manifest_path)
+        .map_err(|error| format!("read local broker manifest failed: {error}"))?;
+    let request: BrokerLaunchRequest = serde_json::from_str(&source)
+        .map_err(|error| format!("invalid local broker manifest: {error}"))?;
+    request.validate()?;
+    let pipe_name = format!(
+        r"\\.\pipe\maka-sandbox-local-{}-{}",
+        unsafe { GetCurrentProcessId() },
+        &request.client_nonce[..16]
+    );
+    let sid = current_user_sid_string()?;
+    let server_pipe = pipe_name.clone();
+    let digest = request.profile_digest.clone();
+    let server = thread::spawn(move || serve_once(&server_pipe, &sid, &digest));
+    let client_result = run(&pipe_name, manifest_path);
+    let server_result = server
+        .join()
+        .map_err(|_| "local broker thread panicked".to_owned())?;
+    match (client_result, server_result) {
+        (Ok(code), Ok(())) => Ok(code),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(client), Err(server)) => Err(format!("{client}; local broker failed: {server}")),
+    }
+}
 
 pub fn run(pipe_name: &str, manifest_path: &str) -> Result<u8, String> {
     validate_pipe_name(pipe_name).map_err(|error| format!("invalid broker pipe: {error:?}"))?;
