@@ -27,6 +27,18 @@ describe('Desktop UI extension shell', () => {
     assert.match(online, /connect-src https: wss:/);
     assert.match(online, /form-action 'none'/);
   });
+
+  test('injects the narrow Host SDK only for an admitted frame token', () => {
+    const plain = withUiSandboxPolicy('<main>Hello</main>', false);
+    assert.doesNotMatch(plain, /makaUI/);
+    const bridged = withUiSandboxPolicy('<main>Hello</main>', false, 'test-token');
+    assert.match(bridged, /maka-ui-bridge\/v1/);
+    assert.match(bridged, /getState/);
+    assert.match(bridged, /setState/);
+    assert.match(bridged, /deleteState/);
+    assert.match(bridged, /invoke/);
+    assert.match(bridged, /test-token/);
+  });
 });
 
 function item(id: string, surface: 'app.root' | 'app.overlay', priority: number): ExtensionUiContributionProjection {

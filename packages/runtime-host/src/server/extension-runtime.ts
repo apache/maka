@@ -47,6 +47,7 @@ export interface HostUiExtensionRevisionInput {
   readonly extensionId: string;
   readonly revision: string;
   readonly ui: readonly ExtensionUiContribution[];
+  readonly healthCheck?: () => void | Promise<void>;
 }
 
 export type HostExtensionRevisionInput =

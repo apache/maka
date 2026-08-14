@@ -7,6 +7,12 @@ import {
   type ExtensionCatalogQueryResult,
   type ExtensionUiSnapshotInput,
   type ExtensionUiSnapshotResult,
+  type ExtensionUiRpcInvokeInput,
+  type ExtensionUiRpcInvokeResult,
+  type ExtensionUiStateMutateInput,
+  type ExtensionUiStateMutateResult,
+  type ExtensionUiStateQueryInput,
+  type ExtensionUiStateQueryResult,
   type OperationOutcome,
   type ToolPackageInstallInput,
   type ToolPackageInstallResult,
@@ -23,6 +29,9 @@ import {
   HostExtensionStateStoreError,
   type PersistedExtensionBinding,
 } from './extension-state-store.js';
+import { HostExtensionUiStateStore } from './extension-ui-state-store.js';
+import { UiPackageService } from './ui-package-service.js';
+import type { UiPackageStore } from './ui-package-store.js';
 
 type MutationFailureCode =
   | 'host_draining'
@@ -37,6 +46,9 @@ export class HostExtensionController {
     'extension.catalog.query': () => this.#query(),
     'extension.catalog.mutate': (input) => this.#mutate(input),
     'extension.ui.snapshot': (input) => this.#uiSnapshot(input),
+    'extension.ui.state.query': (input) => this.#uiStateQuery(input),
+    'extension.ui.state.mutate': (input) => this.#uiStateMutate(input),
+    'extension.ui.rpc.invoke': (input) => this.#uiRpcInvoke(input),
     'extension.package.install': (input) => this.#installPackage(input),
     'extension.package.uninstall': (input) => this.#uninstallPackage(input),
   };
@@ -52,6 +64,8 @@ export class HostExtensionController {
     private readonly loader: HostTrustedToolExtensionLoader,
     private readonly store: HostExtensionStateStore,
     private readonly requestDrain: () => void,
+    private readonly uiState = new HostExtensionUiStateStore(),
+    private readonly uiPackages?: UiPackageStore,
   ) {}
 
   /** Recovery is fail-open for the Host and fail-closed for Extension mutations. */
@@ -99,6 +113,135 @@ export class HostExtensionController {
       contributions,
     };
     return { ok: true, result };
+  }
+
+  async #uiStateQuery(
+    input: ExtensionUiStateQueryInput,
+  ): Promise<OperationOutcome<'extension.ui.state.query'>> {
+    const denied = this.#authorizeUiState(input);
+    if (denied) return uiStateFailure(denied.code, denied.message);
+    try {
+      const result: ExtensionUiStateQueryResult = await this.uiState.get(
+        input.scopeId,
+        input.extensionId,
+        input.key,
+      );
+      return { ok: true, result };
+    } catch (error) {
+      return uiStateFailure('persistence_failed', boundedErrorMessage(error));
+    }
+  }
+
+  #uiStateMutate(
+    input: ExtensionUiStateMutateInput,
+  ): Promise<OperationOutcome<'extension.ui.state.mutate'>> {
+    if (this.#draining)
+      return Promise.resolve(uiStateMutationFailure('host_draining', 'Runtime Host is draining'));
+    return this.#serializeMutation(async () => {
+      const denied = this.#authorizeUiState(input);
+      if (denied) return uiStateMutationFailure(denied.code, denied.message);
+      try {
+        const changed =
+          input.kind === 'set'
+            ? await this.uiState
+                .set(input.scopeId, input.extensionId, input.key, input.value)
+                .then(() => true)
+            : await this.uiState.delete(input.scopeId, input.extensionId, input.key);
+        const result: ExtensionUiStateMutateResult = { changed };
+        return { ok: true, result };
+      } catch (error) {
+        return uiStateMutationFailure('persistence_failed', boundedErrorMessage(error));
+      }
+    });
+  }
+
+  async #uiRpcInvoke(
+    input: ExtensionUiRpcInvokeInput,
+  ): Promise<OperationOutcome<'extension.ui.rpc.invoke'>> {
+    if (this.#draining) return uiRpcFailure('host_draining', 'Runtime Host is draining');
+    if (!this.uiPackages)
+      return uiRpcFailure('operation_unavailable', 'UI Host services are unavailable');
+    const denied = this.#authorizeUiRpc(input);
+    if (denied) return uiRpcFailure(denied.code, denied.message);
+    try {
+      const installed = await this.uiPackages.load(input.extensionId, input.revision);
+      const result: ExtensionUiRpcInvokeResult = {
+        value: (await new UiPackageService().invoke(
+          installed,
+          input.method,
+          input.args,
+          new AbortController().signal,
+        )) as ExtensionUiRpcInvokeResult['value'],
+      };
+      return { ok: true, result };
+    } catch (error) {
+      return uiRpcFailure('internal_failure', boundedErrorMessage(error));
+    }
+  }
+
+  #authorizeUiState(
+    input: ExtensionUiStateQueryInput,
+  ): { code: 'not_found' | 'invalid_request'; message: string } | undefined {
+    const binding = this.#bindings.get(input.bindingId);
+    if (!binding) return { code: 'not_found', message: 'UI Extension binding is not installed' };
+    const current = this.runtime.inspect(input.bindingId).current;
+    if (
+      !binding.enabled ||
+      binding.scopeId !== input.scopeId ||
+      binding.extensionId !== input.extensionId ||
+      current?.revision !== input.revision
+    ) {
+      return {
+        code: 'invalid_request',
+        message: 'UI Extension bridge identity is stale or inactive',
+      };
+    }
+    const admitted = this.runtime
+      .inspectUi(input.scopeId)
+      .some(
+        (item) =>
+          item.bindingId === input.bindingId &&
+          item.extensionId === input.extensionId &&
+          item.revision === input.revision &&
+          item.hostState,
+      );
+    return admitted
+      ? undefined
+      : { code: 'invalid_request', message: 'UI Extension did not declare Host state permission' };
+  }
+
+  #authorizeUiRpc(
+    input: ExtensionUiRpcInvokeInput,
+  ): { code: 'not_found' | 'invalid_request'; message: string } | undefined {
+    const binding = this.#bindings.get(input.bindingId);
+    if (!binding) return { code: 'not_found', message: 'UI Extension binding is not installed' };
+    const current = this.runtime.inspect(input.bindingId).current;
+    if (
+      !binding.enabled ||
+      binding.scopeId !== input.scopeId ||
+      binding.extensionId !== input.extensionId ||
+      current?.revision !== input.revision
+    ) {
+      return {
+        code: 'invalid_request',
+        message: 'UI Extension bridge identity is stale or inactive',
+      };
+    }
+    const admitted = this.runtime
+      .inspectUi(input.scopeId)
+      .some(
+        (item) =>
+          item.bindingId === input.bindingId &&
+          item.extensionId === input.extensionId &&
+          item.revision === input.revision &&
+          item.hostMethods.includes(input.method),
+      );
+    return admitted
+      ? undefined
+      : {
+          code: 'invalid_request',
+          message: 'UI Host method is not declared by the active revision',
+        };
   }
 
   #installPackage(
@@ -273,6 +416,7 @@ export class HostExtensionController {
     if (!binding) return mutationFailure('not_found', `Extension binding not found: ${bindingId}`);
     try {
       if (this.#tryInspect(bindingId)) await this.runtime.removeBinding(bindingId);
+      await this.uiState.clear(binding.scopeId, binding.extensionId);
       this.#bindings.delete(bindingId);
       await this.#garbageCollectRevisions();
       const persisted = await this.#commitDesiredState();
@@ -559,6 +703,32 @@ function uiSnapshotFailure(
   code: 'persistence_failed',
   message: string,
 ): OperationOutcome<'extension.ui.snapshot'> {
+  return { ok: false, error: { code, message } };
+}
+
+function uiStateFailure(
+  code: 'not_found' | 'invalid_request' | 'persistence_failed',
+  message: string,
+): OperationOutcome<'extension.ui.state.query'> {
+  return { ok: false, error: { code, message } };
+}
+
+function uiStateMutationFailure(
+  code: 'host_draining' | 'not_found' | 'invalid_request' | 'persistence_failed',
+  message: string,
+): OperationOutcome<'extension.ui.state.mutate'> {
+  return { ok: false, error: { code, message } };
+}
+
+function uiRpcFailure(
+  code:
+    | 'host_draining'
+    | 'operation_unavailable'
+    | 'not_found'
+    | 'invalid_request'
+    | 'internal_failure',
+  message: string,
+): OperationOutcome<'extension.ui.rpc.invoke'> {
   return { ok: false, error: { code, message } };
 }
 

@@ -79,11 +79,17 @@ function request(
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'extension.ui.snapshot':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
+    case 'extension.ui.state.query':
+      return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'scheduled-task.mutate':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'scheduled-task.query':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'web-search.execute':
+      return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
+    case 'extension.ui.state.mutate':
+      return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
+    case 'extension.ui.rpc.invoke':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
   }
 }

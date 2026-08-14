@@ -32,6 +32,7 @@ export interface MainWindowController {
   setTitleBarOverlayTheme(sender: Electron.WebContents, theme: unknown): void;
   showOpenDialog(options: Electron.OpenDialogOptions): Promise<Electron.OpenDialogReturnValue>;
   showSaveDialog(options: Electron.SaveDialogOptions): Promise<Electron.SaveDialogReturnValue>;
+  showMessageBox(options: Electron.MessageBoxOptions): Promise<Electron.MessageBoxReturnValue>;
   getBrowserViews(): BrowserViewManager<BrowserViewController>;
   disposeBrowserViews(): Promise<void>;
   hasOpenWindows(): boolean;
@@ -500,6 +501,11 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       return mainWindow
         ? dialog.showSaveDialog(mainWindow, options)
         : dialog.showSaveDialog(options);
+    },
+    showMessageBox(options) {
+      return mainWindow
+        ? dialog.showMessageBox(mainWindow, options)
+        : dialog.showMessageBox(options);
     },
     getBrowserViews,
     disposeBrowserViews,

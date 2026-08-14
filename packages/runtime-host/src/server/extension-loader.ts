@@ -17,6 +17,7 @@ import {
   UiPackageStore,
   UiPackageStoreError,
 } from './ui-package-store.js';
+import { UiPackageService } from './ui-package-service.js';
 import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -242,6 +243,7 @@ async function uiPackageRevisionInput(
   store: UiPackageStore,
   installed: InstalledUiPackage,
 ): Promise<HostExtensionRevisionInput> {
+  const service = new UiPackageService();
   return Object.freeze({
     extensionId: installed.extensionId,
     revision: installed.revision,
@@ -254,10 +256,15 @@ async function uiPackageRevisionInput(
             priority: item.priority,
             document: await store.readDocument(installed, item.document),
             network: installed.manifest.permissions.network,
+            hostState: installed.manifest.permissions.hostState,
+            hostMethods: Object.freeze(
+              installed.manifest.host?.methods.map(({ name }) => name) ?? [],
+            ),
           }),
         ),
       ),
     ),
+    healthCheck: () => service.healthCheck(installed),
   });
 }
 

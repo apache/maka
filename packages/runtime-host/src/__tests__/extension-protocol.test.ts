@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   decodeExtensionCatalogMutateInput,
   decodeExtensionCatalogQueryResult,
+  decodeExtensionUiRpcInvokeInput,
   decodeExtensionUiSnapshotResult,
   decodeToolPackageInstallInput,
   decodeToolPackageUninstallInput,
@@ -24,6 +25,24 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       scopeId: 'session-1',
       extensionId: 'weather',
       revision: '2',
+    },
+  );
+  assert.deepEqual(
+    decodeExtensionUiRpcInvokeInput({
+      scopeId: 'desktop-ui',
+      bindingId: 'ui-binding',
+      extensionId: 'appearance',
+      revision: '2',
+      method: 'lookup',
+      args: { query: 'Maka' },
+    }),
+    {
+      scopeId: 'desktop-ui',
+      bindingId: 'ui-binding',
+      extensionId: 'appearance',
+      revision: '2',
+      method: 'lookup',
+      args: { query: 'Maka' },
     },
   );
   assert.deepEqual(
@@ -137,6 +156,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
   assert.equal(operationAllowsRemoteOwner('extension.catalog.query'), false);
   assert.equal(operationAllowsRemoteOwner('extension.catalog.mutate'), false);
   assert.equal(operationAllowsRemoteOwner('extension.ui.snapshot'), false);
+  assert.equal(operationAllowsRemoteOwner('extension.ui.rpc.invoke'), false);
   assert.equal(operationAllowsRemoteOwner('extension.package.install'), false);
   assert.equal(operationAllowsRemoteOwner('extension.package.uninstall'), false);
 });

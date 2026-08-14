@@ -119,6 +119,7 @@ import {
 } from './extension-loader.js';
 import { HostExtensionRuntime } from './extension-runtime.js';
 import { HostExtensionStateStore } from './extension-state-store.js';
+import { HostExtensionUiStateStore } from './extension-ui-state-store.js';
 import { ToolPackageStore } from './tool-package-store.js';
 import { HostToolPackageManagementTools } from './tool-package-management-tools.js';
 import { UiPackageStore } from './ui-package-store.js';
@@ -230,6 +231,8 @@ export async function createExecutionRuntimeHostComposition(
     extensionLoader,
     new HostExtensionStateStore(context.owner.controlDirectory),
     context.requestDrain,
+    new HostExtensionUiStateStore(context.owner.controlDirectory),
+    uiPackageStore,
   );
   const toolPackageManagement = new HostToolPackageManagementTools(
     context.owner.controlDirectory,

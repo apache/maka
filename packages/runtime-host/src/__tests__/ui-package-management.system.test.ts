@@ -11,6 +11,7 @@ import {
 } from '../server/extension-loader.js';
 import { HostExtensionRuntime } from '../server/extension-runtime.js';
 import { HostExtensionStateStore } from '../server/extension-state-store.js';
+import { HostExtensionUiStateStore } from '../server/extension-ui-state-store.js';
 import { ToolPackageStore } from '../server/tool-package-store.js';
 import {
   DESKTOP_UI_EXTENSION_SCOPE,
@@ -26,16 +27,22 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
       id: 'dev.maka.ui.demo',
       version: '1',
       ui: [{ id: 'demo-root', surface: 'app.root', priority: 200, document: '<h1>one</h1>' }],
-      permissions: { network: false },
+      permissions: { network: false, hostState: true },
+      host: {
+        source:
+          'export default { add: (args) => ({ total: Number(args.left) + Number(args.right) }) };',
+        methods: [{ name: 'add', handler: 'add' }],
+      },
     })) as { revision: string; uiContributionIds: string[]; toolNames: string[] };
     assert.deepEqual(v1.uiContributionIds, ['demo-root']);
     assert.deepEqual(v1.toolNames, []);
     const tested = (await call(fixture.tools, 'test_ui', {
       extensionId: 'dev.maka.ui.demo',
       revision: v1.revision,
-    })) as { ok: boolean; contributions: Array<{ document: string }> };
+    })) as { ok: boolean; contributions: Array<{ document: string; hostMethods: string[] }> };
     assert.equal(tested.ok, true);
     assert.equal(tested.contributions[0]?.document, '<h1>one</h1>');
+    assert.deepEqual(tested.contributions[0]?.hostMethods, ['add']);
     await call(fixture.tools, 'manage_ui', {
       action: 'activate',
       extensionId: 'dev.maka.ui.demo',
@@ -45,12 +52,49 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
       fixture.runtime.inspectUi(DESKTOP_UI_EXTENSION_SCOPE)[0]?.document,
       '<h1>one</h1>',
     );
+    const active = fixture.runtime.inspectUi(DESKTOP_UI_EXTENSION_SCOPE)[0]!;
+    const stateIdentity = {
+      scopeId: DESKTOP_UI_EXTENSION_SCOPE,
+      bindingId: active.bindingId,
+      extensionId: active.extensionId,
+      revision: active.revision,
+      key: 'counter',
+    };
+    const initialState = await fixture.controller.handlers['extension.ui.state.query'](
+      stateIdentity,
+      connection,
+    );
+    assert.deepEqual(initialState, { ok: true, result: { found: false, value: null } });
+    assert.deepEqual(
+      await fixture.controller.handlers['extension.ui.state.mutate'](
+        { ...stateIdentity, kind: 'set', value: { count: 1 } },
+        connection,
+      ),
+      { ok: true, result: { changed: true } },
+    );
+    const rpcIdentity = {
+      scopeId: DESKTOP_UI_EXTENSION_SCOPE,
+      bindingId: active.bindingId,
+      extensionId: active.extensionId,
+      revision: active.revision,
+      method: 'add',
+      args: { left: 2, right: 3 },
+    };
+    assert.deepEqual(
+      await fixture.controller.handlers['extension.ui.rpc.invoke'](rpcIdentity, connection),
+      { ok: true, result: { value: { total: 5 } } },
+    );
 
     const v2 = (await call(fixture.tools, 'define_ui', {
       id: 'dev.maka.ui.demo',
       version: '2',
       ui: [{ id: 'demo-root', surface: 'app.root', priority: 200, document: '<h1>two</h1>' }],
-      permissions: { network: false },
+      permissions: { network: false, hostState: true },
+      host: {
+        source:
+          'export default { add: (args) => ({ total: Number(args.left) + Number(args.right) + 100 }) };',
+        methods: [{ name: 'add', handler: 'add' }],
+      },
     })) as { revision: string };
     await call(fixture.tools, 'manage_ui', {
       action: 'update',
@@ -63,6 +107,19 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
     );
     assert.equal(snapshot.ok && snapshot.result.contributions[0]?.document, '<h1>two</h1>');
     const digest = snapshot.ok && snapshot.result.digest;
+    assert.deepEqual(
+      await fixture.controller.handlers['extension.ui.rpc.invoke'](
+        { ...rpcIdentity, revision: v2.revision },
+        connection,
+      ),
+      { ok: true, result: { value: { total: 105 } } },
+    );
+    const stale = await fixture.controller.handlers['extension.ui.rpc.invoke'](
+      rpcIdentity,
+      connection,
+    );
+    assert.equal(stale.ok, false);
+    assert.equal(!stale.ok && stale.error.code, 'invalid_request');
 
     await fixture.runtime.close();
     fixture = await createFixture(root);
@@ -73,6 +130,35 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
     );
     assert.equal(recovered.ok && recovered.result.contributions[0]?.document, '<h1>two</h1>');
     assert.equal(recovered.ok && recovered.result.digest, digest);
+    const recoveredContribution = recovered.ok ? recovered.result.contributions[0]! : undefined;
+    assert.ok(recoveredContribution);
+    assert.deepEqual(
+      await fixture.controller.handlers['extension.ui.state.query'](
+        {
+          scopeId: DESKTOP_UI_EXTENSION_SCOPE,
+          bindingId: recoveredContribution.bindingId,
+          extensionId: recoveredContribution.extensionId,
+          revision: recoveredContribution.revision,
+          key: 'counter',
+        },
+        connection,
+      ),
+      { ok: true, result: { found: true, value: { count: 1 } } },
+    );
+    assert.deepEqual(
+      await fixture.controller.handlers['extension.ui.rpc.invoke'](
+        {
+          scopeId: DESKTOP_UI_EXTENSION_SCOPE,
+          bindingId: recoveredContribution.bindingId,
+          extensionId: recoveredContribution.extensionId,
+          revision: recoveredContribution.revision,
+          method: 'add',
+          args: { left: 1, right: 1 },
+        },
+        connection,
+      ),
+      { ok: true, result: { value: { total: 102 } } },
+    );
     await call(fixture.tools, 'manage_ui', { action: 'stop', extensionId: 'dev.maka.ui.demo' });
     assert.deepEqual(fixture.runtime.inspectUi(DESKTOP_UI_EXTENSION_SCOPE), []);
     await fixture.runtime.close();
@@ -135,6 +221,8 @@ async function createFixture(root: string) {
     ),
     new HostExtensionStateStore(root),
     () => undefined,
+    new HostExtensionUiStateStore(root),
+    uiStore,
   );
   await controller.recover();
   const tools = new HostUiPackageManagementTools(root, controller, runtime, uiStore).tools();

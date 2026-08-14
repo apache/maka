@@ -29,7 +29,7 @@ function isSessionFilter(value: unknown): value is SessionFilter {
 }
 
 function isExtensionModule(value: unknown): value is ExtensionModule {
-  return value === 'skills' || value === 'mcp';
+  return value === 'skills' || value === 'mcp' || value === 'ui';
 }
 
 function isAutomationModule(value: unknown): value is AutomationModule {

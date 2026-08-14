@@ -93,6 +93,7 @@ import {
   usePlanModeState,
 } from './plan-mode-panel';
 import { McpPage } from './mcp-page';
+import { UiExtensionsPage } from './ui-extensions-page';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../preload/transcript-contract.js';
@@ -2825,6 +2826,8 @@ function AppShellContent({
                 />
               ) : navSelection.section === 'extensions' && navSelection.module === 'mcp' ? (
                 <McpPage hubHeader={extensionsHubHeader} />
+              ) : navSelection.section === 'extensions' && navSelection.module === 'ui' ? (
+                <UiExtensionsPage hubHeader={extensionsHubHeader} />
               ) : navSelection.section === 'automations' && navSelection.module === 'scheduled-tasks' ? (
                 <ScheduledTasksPage
                   hubHeader={automationsHubHeader}

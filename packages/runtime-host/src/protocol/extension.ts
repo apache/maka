@@ -74,12 +74,55 @@ export interface ExtensionUiContributionProjection {
   readonly document: string;
   readonly documentSha256: string;
   readonly network: boolean;
+  readonly hostState?: boolean;
+  readonly hostMethods?: readonly string[];
 }
 
 export interface ExtensionUiSnapshotResult {
   readonly scopeId: string;
   readonly digest: string;
   readonly contributions: readonly ExtensionUiContributionProjection[];
+}
+
+export type ExtensionUiStateValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly ExtensionUiStateValue[]
+  | { readonly [key: string]: ExtensionUiStateValue };
+
+export interface ExtensionUiStateQueryInput {
+  readonly scopeId: string;
+  readonly bindingId: string;
+  readonly extensionId: string;
+  readonly revision: string;
+  readonly key: string;
+}
+
+export interface ExtensionUiStateQueryResult {
+  readonly found: boolean;
+  readonly value: ExtensionUiStateValue | null;
+}
+
+export type ExtensionUiStateMutateInput = ExtensionUiStateQueryInput &
+  ({ readonly kind: 'set'; readonly value: ExtensionUiStateValue } | { readonly kind: 'delete' });
+
+export interface ExtensionUiStateMutateResult {
+  readonly changed: boolean;
+}
+
+export interface ExtensionUiRpcInvokeInput {
+  readonly scopeId: string;
+  readonly bindingId: string;
+  readonly extensionId: string;
+  readonly revision: string;
+  readonly method: string;
+  readonly args: ExtensionUiStateValue;
+}
+
+export interface ExtensionUiRpcInvokeResult {
+  readonly value: ExtensionUiStateValue;
 }
 
 export type ExtensionCatalogMutateInput =
@@ -145,6 +188,39 @@ export const EXTENSION_OPERATION_SPECS = {
     decodeInput: decodeExtensionUiSnapshotInput,
     decodeOutput: decodeExtensionUiSnapshotResult,
   }),
+  'extension.ui.state.query': defineOperation<
+    ExtensionUiStateQueryInput,
+    ExtensionUiStateQueryResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeExtensionUiStateQueryInput,
+    decodeOutput: decodeExtensionUiStateQueryResult,
+  }),
+  'extension.ui.state.mutate': defineOperation<
+    ExtensionUiStateMutateInput,
+    ExtensionUiStateMutateResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeExtensionUiStateMutateInput,
+    decodeOutput: decodeExtensionUiStateMutateResult,
+  }),
+  'extension.ui.rpc.invoke': defineOperation<
+    ExtensionUiRpcInvokeInput,
+    ExtensionUiRpcInvokeResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeExtensionUiRpcInvokeInput,
+    decodeOutput: decodeExtensionUiRpcInvokeResult,
+  }),
   'extension.package.install': defineHostPathOperation<
     ToolPackageInstallInput,
     ToolPackageInstallResult,
@@ -194,6 +270,94 @@ export function decodeExtensionUiSnapshotResult(value: unknown): ExtensionUiSnap
     contributions: result.contributions.map(decodeUiContributionProjection),
   };
   requireEncodedByteLimit(decoded, 'extension UI snapshot result', 2 * 1024 * 1024);
+  return decoded;
+}
+
+export function decodeExtensionUiStateQueryInput(value: unknown): ExtensionUiStateQueryInput {
+  const input = requireExactRecord(value, 'extension UI state query input', [
+    'scopeId',
+    'bindingId',
+    'extensionId',
+    'revision',
+    'key',
+  ]);
+  return decodeUiStateIdentity(input);
+}
+
+export function decodeExtensionUiStateQueryResult(value: unknown): ExtensionUiStateQueryResult {
+  const result = requireExactRecord(value, 'extension UI state query result', ['found', 'value']);
+  const decoded = {
+    found: decodeBoolean(result.found, 'extension UI state found'),
+    value: decodeUiStateValue(result.value),
+  };
+  requireEncodedByteLimit(decoded, 'extension UI state query result', 72 * 1024);
+  return decoded;
+}
+
+export function decodeExtensionUiStateMutateInput(value: unknown): ExtensionUiStateMutateInput {
+  const record = requireRecord(value, 'extension UI state mutation input');
+  if (record.kind === 'set') {
+    const input = requireExactRecord(record, 'extension UI state set input', [
+      'scopeId',
+      'bindingId',
+      'extensionId',
+      'revision',
+      'key',
+      'kind',
+      'value',
+    ]);
+    const decoded = {
+      ...decodeUiStateIdentity(input),
+      kind: 'set' as const,
+      value: decodeUiStateValue(input.value),
+    };
+    requireEncodedByteLimit(decoded, 'extension UI state mutation input', 72 * 1024);
+    return decoded;
+  }
+  if (record.kind === 'delete') {
+    const input = requireExactRecord(record, 'extension UI state delete input', [
+      'scopeId',
+      'bindingId',
+      'extensionId',
+      'revision',
+      'key',
+      'kind',
+    ]);
+    return { ...decodeUiStateIdentity(input), kind: 'delete' };
+  }
+  throw invalidProtocolFrame('Invalid extension UI state mutation kind');
+}
+
+export function decodeExtensionUiStateMutateResult(value: unknown): ExtensionUiStateMutateResult {
+  const result = requireExactRecord(value, 'extension UI state mutation result', ['changed']);
+  return { changed: decodeBoolean(result.changed, 'extension UI state changed') };
+}
+
+export function decodeExtensionUiRpcInvokeInput(value: unknown): ExtensionUiRpcInvokeInput {
+  const input = requireExactRecord(value, 'extension UI RPC invoke input', [
+    'scopeId',
+    'bindingId',
+    'extensionId',
+    'revision',
+    'method',
+    'args',
+  ]);
+  const decoded = {
+    scopeId: requireEntityId(input.scopeId, 'extension UI scopeId'),
+    bindingId: requireEntityId(input.bindingId, 'extension bindingId'),
+    extensionId: requireEntityId(input.extensionId, 'extension extensionId'),
+    revision: decodeRevision(input.revision),
+    method: requireUtf8String(input.method, 'extension UI RPC method', 128),
+    args: decodeUiStateValue(input.args),
+  };
+  requireEncodedByteLimit(decoded, 'extension UI RPC invoke input', 512 * 1024);
+  return decoded;
+}
+
+export function decodeExtensionUiRpcInvokeResult(value: unknown): ExtensionUiRpcInvokeResult {
+  const result = requireExactRecord(value, 'extension UI RPC invoke result', ['value']);
+  const decoded = { value: decodeUiStateValue(result.value) };
+  requireEncodedByteLimit(decoded, 'extension UI RPC invoke result', 1024 * 1024);
   return decoded;
 }
 
@@ -325,7 +489,8 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
 }
 
 function decodeUiContributionProjection(value: unknown): ExtensionUiContributionProjection {
-  const item = requireExactRecord(value, 'extension UI contribution', [
+  const candidate = value as Record<string, unknown> | null;
+  const fields = [
     'bindingId',
     'extensionId',
     'revision',
@@ -335,12 +500,21 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     'document',
     'documentSha256',
     'network',
-  ]);
+    ...(candidate && Object.hasOwn(candidate, 'hostState') ? ['hostState'] : []),
+    ...(candidate && Object.hasOwn(candidate, 'hostMethods') ? ['hostMethods'] : []),
+  ];
+  const item = requireExactRecord(value, 'extension UI contribution', fields);
   if (item.surface !== 'app.root' && item.surface !== 'app.overlay') {
     throw invalidProtocolFrame('Invalid extension UI surface');
   }
   if (!Number.isSafeInteger(item.priority) || Math.abs(item.priority as number) > 10_000) {
     throw invalidProtocolFrame('Invalid extension UI priority');
+  }
+  if (
+    item.hostMethods !== undefined &&
+    (!Array.isArray(item.hostMethods) || item.hostMethods.length > 64)
+  ) {
+    throw invalidProtocolFrame('Invalid extension UI Host methods');
   }
   return {
     bindingId: requireEntityId(item.bindingId, 'extension bindingId'),
@@ -352,7 +526,46 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     document: requireUtf8String(item.document, 'extension UI document', 1024 * 1024),
     documentSha256: requireUtf8String(item.documentSha256, 'extension UI document digest', 128),
     network: decodeBoolean(item.network, 'extension UI network capability'),
+    ...(item.hostState === undefined
+      ? {}
+      : { hostState: decodeBoolean(item.hostState, 'extension UI Host state capability') }),
+    ...(item.hostMethods === undefined
+      ? {}
+      : {
+          hostMethods: (item.hostMethods as unknown[]).map((method) =>
+            requireUtf8String(method, 'extension UI Host method', 128),
+          ),
+        }),
   };
+}
+
+function decodeUiStateIdentity(input: Record<string, unknown>): ExtensionUiStateQueryInput {
+  return {
+    scopeId: requireEntityId(input.scopeId, 'extension UI scopeId'),
+    bindingId: requireEntityId(input.bindingId, 'extension bindingId'),
+    extensionId: requireEntityId(input.extensionId, 'extension extensionId'),
+    revision: decodeRevision(input.revision),
+    key: requireUtf8String(input.key, 'extension UI state key', 128),
+  };
+}
+
+function decodeUiStateValue(value: unknown, depth = 0): ExtensionUiStateValue {
+  if (depth > 16) throw invalidProtocolFrame('Extension UI state value is too deeply nested');
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.map((item) => decodeUiStateValue(item, depth + 1));
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (Object.keys(record).length > 256)
+      throw invalidProtocolFrame('Extension UI state object is too large');
+    return Object.fromEntries(
+      Object.entries(record).map(([key, item]) => [
+        requireUtf8String(key, 'extension UI state object key', 128),
+        decodeUiStateValue(item, depth + 1),
+      ]),
+    );
+  }
+  throw invalidProtocolFrame('Invalid extension UI state value');
 }
 
 function decodeBindingProjection(value: unknown): ExtensionBindingProjection {

@@ -16,6 +16,8 @@ export interface ExtensionUiContribution {
   readonly document: string;
   /** Sandboxed documents are offline unless this explicit capability is true. */
   readonly network: boolean;
+  readonly hostState?: boolean;
+  readonly hostMethods?: readonly string[];
 }
 
 export interface ExtensionUiContributionInspection {
@@ -29,6 +31,8 @@ export interface ExtensionUiContributionInspection {
   readonly document: string;
   readonly documentSha256: string;
   readonly network: boolean;
+  readonly hostState: boolean;
+  readonly hostMethods: readonly string[];
 }
 
 export class ExtensionUiContributionError extends Error {
@@ -78,6 +82,8 @@ export class ExtensionUiContributionRegistry {
     const entry: RegisteredUi = Object.freeze({
       ...context,
       ...contribution,
+      hostState: contribution.hostState === true,
+      hostMethods: Object.freeze([...(contribution.hostMethods ?? [])]),
       documentSha256: createHash('sha256').update(contribution.document).digest('hex'),
       token: Symbol(contribution.id),
     });
@@ -191,6 +197,19 @@ export function validateExtensionUiContribution(contribution: ExtensionUiContrib
   }
   if (typeof contribution.network !== 'boolean') {
     throw new ExtensionUiContributionError('invalid_ui', 'UI network capability is invalid');
+  }
+  if (contribution.hostState !== undefined && typeof contribution.hostState !== 'boolean') {
+    throw new ExtensionUiContributionError('invalid_ui', 'UI Host state capability is invalid');
+  }
+  if (
+    contribution.hostMethods !== undefined &&
+    (!Array.isArray(contribution.hostMethods) ||
+      contribution.hostMethods.length > 64 ||
+      contribution.hostMethods.some(
+        (method) => typeof method !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/u.test(method),
+      ))
+  ) {
+    throw new ExtensionUiContributionError('invalid_ui', 'UI Host methods are invalid');
   }
 }
 

@@ -23,12 +23,23 @@ export interface UiPackageManifestContribution {
   readonly document: string;
 }
 
+export interface UiPackageHostMethod {
+  readonly name: string;
+  readonly handler: string;
+}
+
+export interface UiPackageManifestHost {
+  readonly entry: string;
+  readonly methods: readonly UiPackageHostMethod[];
+}
+
 export interface UiPackageManifest {
   readonly schemaVersion: 1;
   readonly id: string;
   readonly version: string;
   readonly ui: readonly UiPackageManifestContribution[];
-  readonly permissions: { readonly network: boolean };
+  readonly host?: UiPackageManifestHost;
+  readonly permissions: { readonly network: boolean; readonly hostState: boolean };
 }
 
 export interface InstalledUiPackage {
@@ -72,6 +83,7 @@ export class UiPackageStore {
       if (!file) throw invalidPackage(`UI document does not exist: ${contribution.document}`);
       validateHtml(file.content, contribution.document);
     }
+    validateHostFiles(manifest, files);
     const revision = packageRevision(files);
     const extensionRoot = join(this.root, manifest.id);
     const target = join(extensionRoot, revision);
@@ -158,6 +170,7 @@ export class UiPackageStore {
       if (!file) throw invalidPackage(`UI document does not exist: ${item.document}`);
       validateHtml(file.content, item.document);
     }
+    validateHostFiles(manifest, files);
     return Object.freeze({ extensionId, revision, root, manifest });
   }
 
@@ -191,7 +204,13 @@ export class UiPackageStore {
 }
 
 export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
-  const record = exactRecord(value, ['schemaVersion', 'id', 'version', 'ui', 'permissions']);
+  const candidate = value as Record<string, unknown> | null;
+  const record = exactRecord(
+    value,
+    candidate && Object.hasOwn(candidate, 'host')
+      ? ['schemaVersion', 'id', 'version', 'ui', 'host', 'permissions']
+      : ['schemaVersion', 'id', 'version', 'ui', 'permissions'],
+  );
   if (record.schemaVersion !== 1) throw invalidPackage('UI package schemaVersion must be 1');
   const id = requireId(record.id);
   const version = boundedString(record.version, 'version', 128);
@@ -218,16 +237,60 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
       document: packagePath(item.document, `ui[${index}].document`),
     });
   });
-  const permissions = exactRecord(record.permissions, ['network']);
+  const permissionRecord = record.permissions as Record<string, unknown> | null;
+  const permissionKeys =
+    permissionRecord && Object.hasOwn(permissionRecord, 'hostState')
+      ? ['network', 'hostState']
+      : ['network'];
+  const permissions = exactRecord(record.permissions, permissionKeys);
   if (typeof permissions.network !== 'boolean')
     throw invalidPackage('UI network permission is invalid');
+  if (permissions.hostState !== undefined && typeof permissions.hostState !== 'boolean')
+    throw invalidPackage('UI Host state permission is invalid');
+  const host = record.host === undefined ? undefined : decodeHost(record.host);
   return Object.freeze({
     schemaVersion: 1,
     id,
     version,
     ui: Object.freeze(ui),
-    permissions: Object.freeze({ network: permissions.network }),
+    ...(host ? { host } : {}),
+    permissions: Object.freeze({
+      network: permissions.network,
+      hostState: permissions.hostState === true,
+    }),
   });
+}
+
+function decodeHost(value: unknown): UiPackageManifestHost {
+  const record = exactRecord(value, ['entry', 'methods']);
+  const entry = packagePath(record.entry, 'host.entry');
+  if (!entry.endsWith('.mjs')) throw invalidPackage('UI Host entry must be an .mjs file');
+  if (!Array.isArray(record.methods) || record.methods.length === 0 || record.methods.length > 64) {
+    throw invalidPackage('UI Host must declare between 1 and 64 methods');
+  }
+  const names = new Set<string>();
+  const methods = record.methods.map((value, index) => {
+    const method = exactRecord(value, ['name', 'handler']);
+    const name = boundedString(method.name, `host.methods[${index}].name`, 128);
+    const handler = boundedString(method.handler, `host.methods[${index}].handler`, 128);
+    if (
+      !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/u.test(name) ||
+      !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/u.test(handler)
+    ) {
+      throw invalidPackage('UI Host method name or handler is invalid');
+    }
+    if (names.has(name)) throw invalidPackage(`UI Host method repeats: ${name}`);
+    names.add(name);
+    return Object.freeze({ name, handler });
+  });
+  return Object.freeze({ entry, methods: Object.freeze(methods) });
+}
+
+function validateHostFiles(manifest: UiPackageManifest, files: readonly PackageFile[]): void {
+  if (!manifest.host) return;
+  if (!files.some(({ path }) => path === manifest.host!.entry)) {
+    throw invalidPackage(`UI Host entry does not exist: ${manifest.host.entry}`);
+  }
 }
 
 async function readSourcePackage(sourcePath: string): Promise<readonly PackageFile[]> {

@@ -126,6 +126,7 @@ import {
   updateRuntimeHostSettings,
 } from "./runtime-host-settings-ipc-main.js";
 import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js";
+import { registerRuntimeHostUiExtensionsIpc } from "./runtime-host-ui-extensions-ipc-main.js";
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
 import { registerRuntimeHostWorkspaceIpc } from "./runtime-host-workspace-ipc-main.js";
 import { resolveShellEnv } from "./shell-env.js";
@@ -935,6 +936,12 @@ function registerHostClientIpc(
     getDefaultPermissionMode: () =>
       resolveDefaultPermissionMode(() => loadRuntimeHostSettings(settingsIpcDeps)),
     openPath: (path) => shell.openPath(path),
+    allowLocalPaths: target.kind === "local",
+  });
+  registerRuntimeHostUiExtensionsIpc({
+    ipcMain: scopedIpc,
+    client,
+    mainWindowController,
     allowLocalPaths: target.kind === "local",
   });
   registerRuntimeHostSearchIpc({ ipcMain: scopedIpc, client });

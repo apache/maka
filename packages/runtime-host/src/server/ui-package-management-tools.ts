@@ -7,6 +7,7 @@ import type { OperationKey, OperationOutcome } from '../protocol/index.js';
 import type { ConnectionContext } from './operation-dispatcher.js';
 import type { HostExtensionController } from './extension-controller.js';
 import type { HostExtensionRuntime } from './extension-runtime.js';
+import { UiPackageService } from './ui-package-service.js';
 import { UiPackageStore } from './ui-package-store.js';
 
 export const DESKTOP_UI_EXTENSION_SCOPE = 'desktop-ui';
@@ -24,7 +25,24 @@ const defineInput = z.object({
   id: z.string().min(1).max(128),
   version: z.string().min(1).max(128),
   ui: z.array(contribution).min(1).max(16),
-  permissions: z.object({ network: z.boolean() }),
+  permissions: z.object({ network: z.boolean(), hostState: z.boolean().default(false) }),
+  host: z
+    .object({
+      source: z
+        .string()
+        .min(1)
+        .max(1024 * 1024),
+      methods: z
+        .array(
+          z.object({
+            name: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,127}$/u),
+            handler: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,127}$/u),
+          }),
+        )
+        .min(1)
+        .max(64),
+    })
+    .optional(),
 });
 const revisionInput = z.object({
   extensionId: z.string().min(1).max(128),
@@ -97,7 +115,7 @@ export class HostUiPackageManagementTools {
     return Object.freeze({
       name: 'define_ui',
       description:
-        'Validate and install an immutable client-only UI revision. Each HTML document may fully replace app.root or add an app.overlay. It is inactive until test_ui and manage_ui. Documents run in opaque-origin sandboxed iframes without Electron or Maka preload authority.',
+        'Validate and install an immutable UI revision. Each HTML document may fully replace app.root or add an app.overlay. It is inactive until test_ui and manage_ui. Documents run in opaque-origin sandboxed iframes without Electron or Maka preload authority. Set permissions.hostState=true for window.makaUI getState/setState/deleteState. Add host.source plus declared methods for sandboxed package-private backend handlers callable with window.makaUI.invoke(name, args).',
       parameters: defineInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
@@ -110,14 +128,22 @@ export class HostUiPackageManagementTools {
         documentSha256: input.ui.map(({ document }) =>
           createHash('sha256').update(document).digest('hex'),
         ),
+        ...(input.host
+          ? {
+              hostMethods: input.host.methods.map(({ name }) => name),
+              hostSourceBytes: Buffer.byteLength(input.host.source),
+              hostSourceSha256: createHash('sha256').update(input.host.source).digest('hex'),
+            }
+          : {}),
         permissions: input.permissions,
         historyProjectionNotice:
-          'Full UI documents were accepted and intentionally redacted from model history.',
+          'Full UI documents and Host source were accepted and intentionally redacted from model history.',
       }),
       impl: async (input: z.infer<typeof defineInput>) => {
         const draft = join(this.#draftRoot, randomUUID());
         try {
           await mkdir(join(draft, 'documents'), { recursive: true, mode: 0o700 });
+          if (input.host) await mkdir(join(draft, 'host'), { mode: 0o700 });
           const manifestUi = input.ui.map((item, index) => ({
             id: item.id,
             surface: item.surface,
@@ -126,7 +152,22 @@ export class HostUiPackageManagementTools {
           }));
           await writeFile(
             join(draft, 'maka.ui.json'),
-            `${JSON.stringify({ schemaVersion: 1, id: input.id, version: input.version, ui: manifestUi, permissions: input.permissions }, null, 2)}\n`,
+            `${JSON.stringify(
+              {
+                schemaVersion: 1,
+                id: input.id,
+                version: input.version,
+                ui: manifestUi,
+                ...(input.host
+                  ? {
+                      host: { entry: 'host/service.mjs', methods: input.host.methods },
+                    }
+                  : {}),
+                permissions: input.permissions,
+              },
+              null,
+              2,
+            )}\n`,
             { encoding: 'utf8', mode: 0o600 },
           );
           await Promise.all(
@@ -137,6 +178,12 @@ export class HostUiPackageManagementTools {
               }),
             ),
           );
+          if (input.host) {
+            await writeFile(join(draft, 'host', 'service.mjs'), input.host.source, {
+              encoding: 'utf8',
+              mode: 0o600,
+            });
+          }
           return unwrap(
             await this.controller.handlers['extension.package.install'](
               { sourcePath: draft },
@@ -160,6 +207,7 @@ export class HostUiPackageManagementTools {
       recoveryMode: 'never_auto_retry',
       impl: async (input: z.infer<typeof revisionInput>) => {
         const installed = await this.store.load(input.extensionId, input.revision);
+        const service = new UiPackageService();
         const loaded = {
           extensionId: installed.extensionId,
           revision: installed.revision,
@@ -170,8 +218,13 @@ export class HostUiPackageManagementTools {
               priority: item.priority,
               document: await this.store.readDocument(installed, item.document),
               network: installed.manifest.permissions.network,
+              hostState: installed.manifest.permissions.hostState,
+              hostMethods: Object.freeze(
+                installed.manifest.host?.methods.map(({ name }) => name) ?? [],
+              ),
             })),
           ),
+          healthCheck: () => service.healthCheck(installed),
         };
         if (
           !this.runtime
