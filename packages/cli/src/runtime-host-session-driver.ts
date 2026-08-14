@@ -26,7 +26,11 @@ import {
   type RuntimeHostTerminalTurn as TerminalTurnSnapshot,
 } from '@maka/runtime-host/adapter';
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
-import { readRuntimeHostResources, readRuntimeHostSessions } from '@maka/runtime-host/client';
+import {
+  readRuntimeHostResources,
+  readRuntimeHostSessions,
+  RuntimeHostOperationError,
+} from '@maka/runtime-host/client';
 import {
   InteractionPendingSnapshot,
   OperationInput,
@@ -36,6 +40,7 @@ import {
   SessionUpdateResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   WorkspaceTarget,
+  type GoalControlAction,
   type GoalProjection,
 } from '@maka/runtime-host/protocol';
 import {
@@ -64,6 +69,9 @@ import {
   resolveMoveCwd,
 } from './session-driver-policy.js';
 const MAX_CATALOG_ATTEMPTS = 3;
+
+/** Optimistic-control retries for goal pause/resume/clear (mirrors the desktop client). */
+const GOAL_CONTROL_MAX_ATTEMPTS = 3;
 
 export interface RuntimeHostMakaSessionDriverInput {
   connection: RuntimeHostSessionDriverConnection;
@@ -632,6 +640,50 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   subscribeGoalChanges(listener: (goal: GoalProjection | null) => void): () => void {
     this.#goalListeners.add(listener);
     return () => this.#goalListeners.delete(listener);
+  }
+
+  async controlGoal(action: GoalControlAction): Promise<GoalProjection | null> {
+    const sessionId = this.#sessionId;
+    if (!sessionId) return null;
+    let goal = this.getGoal();
+    if (!goal) return null;
+    // Optimistic concurrency with the same shape as the desktop client's
+    // clearGoal: expectedRevision guards against a concurrent controller, and
+    // an operation_conflict retries against a freshly queried projection —
+    // the pushed snapshot may lag the conflicting mutation by a frame.
+    const goalId = goal.goalId;
+    let conflict: RuntimeHostOperationError | null = null;
+    for (let attempt = 0; attempt < GOAL_CONTROL_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const result = await this.#request('goal.control', {
+          sessionId,
+          goalId,
+          expectedRevision: goal.revision,
+          action,
+        });
+        return result.goal;
+      } catch (error) {
+        if (!(error instanceof RuntimeHostOperationError) || error.code !== 'operation_conflict') {
+          throw error;
+        }
+        conflict = error;
+        if (attempt === GOAL_CONTROL_MAX_ATTEMPTS - 1) break; // a re-query would have no retry to serve
+      }
+      const current = (await this.#request('goal.query', { sessionId })).goal;
+      if (!current || current.goalId !== goalId) return null;
+      if (current.revision === goal.revision) {
+        // The host folds invalid transitions into operation_conflict too
+        // ("Goal cannot pause from status paused"). Every accepted transition
+        // bumps the revision, so a conflict at an unchanged revision is a
+        // status refusal, not a race — retrying is futile. Surface the host's
+        // reason instead of a misleading "revision conflict" exhaustion error.
+        throw conflict;
+      }
+      goal = current;
+    }
+    throw new Error(
+      `Goal ${action} failed: revision conflict after ${GOAL_CONTROL_MAX_ATTEMPTS} attempts`,
+    );
   }
 
   async getContextDiagnostics(): Promise<ContextDiagnostics> {

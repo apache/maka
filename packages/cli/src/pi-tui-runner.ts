@@ -117,8 +117,15 @@ import {
   type MakaSlashCommand,
 } from './pi-tui-pickers.js';
 import { formatMakaResumeCommand } from './cli-invocation.js';
-import { goalSummaryLines } from './pi-goal.js';
+import {
+  goalAttachedNoticeText,
+  goalPausedNoticeText,
+  goalStatusLabel,
+  goalSummaryLines,
+  isLiveGoalStatus,
+} from './pi-goal.js';
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
+import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
 
 export interface MakaPiTuiInput {
   /** Launcher command used in resume and recovery instructions. */
@@ -343,13 +350,48 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     rejectClosed = reject;
   });
 
-  // The driver is the single read authority for goal state: metadata() reads
-  // the live projection on every render, and the subscription exists only to
-  // re-render when a host-pushed transition lands. No cached copy, so the
-  // status line and `/goal` can never drift from the driver's snapshot.
-  const unsubscribeGoalChanges = input.driver.subscribeGoalChanges?.(() => {
+  // Rendering reads the driver's live projection directly (metadata()); this
+  // cache exists only to detect transitions on the push stream — notably the
+  // abort auto-pause — and to suppress the notice for a pause we initiated.
+  let currentGoal: GoalProjection | null = input.driver.getGoal?.() ?? null;
+  // goalId of a `/goal pause` we initiated: its paused projection must not
+  // re-announce itself — the command prints its own confirmation.
+  let selfInitiatedPauseGoalId: string | null = null;
+  const unsubscribeGoalChanges = input.driver.subscribeGoalChanges?.((goal) => {
+    const previous = currentGoal;
+    currentGoal = goal;
+    if (
+      goal !== null &&
+      goal.status === 'paused' &&
+      previous?.goalId === goal.goalId &&
+      previous.status !== 'paused'
+    ) {
+      if (selfInitiatedPauseGoalId === goal.goalId) {
+        selfInitiatedPauseGoalId = null;
+      } else {
+        // Typically the runtime's abort auto-pause (Ctrl+C on a goal
+        // continuation turn): the loop still exists and can be resumed.
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: goalPausedNoticeText(goal),
+        });
+      }
+    }
     requestRender();
   });
+  // Attaching to a session whose durable goal auto-continues after recovery
+  // must never resume a token-burning loop silently.
+  if (
+    currentGoal !== null &&
+    (currentGoal.status === 'active' || currentGoal.status === 'waiting')
+  ) {
+    state.entries.push({
+      kind: 'notice',
+      level: 'info',
+      text: goalAttachedNoticeText(currentGoal),
+    });
+  }
 
   const metadata = (): MakaPiTranscriptMetadata => ({
     title: input.title,
@@ -2494,6 +2536,59 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
   };
 
+  const controlGoalCommand = async (action: GoalControlAction): Promise<void> => {
+    const notice = (text: string): void => {
+      state.entries.push({ kind: 'notice', level: 'info', text });
+      requestRender();
+    };
+    const goal = input.driver.getGoal?.() ?? null;
+    if (!goal) {
+      notice('No goal set.');
+      return;
+    }
+    if (!input.driver.controlGoal) {
+      notice('Goal control is unavailable on this runtime.');
+      return;
+    }
+    // Pre-validate against the live projection so an invalid transition gets
+    // a plain message instead of the host's operation error. These mirror the
+    // host's rules exactly: pause requires active|waiting, resume requires
+    // paused, clear rejects a terminal record.
+    if (action === 'pause' && goal.status !== 'active' && goal.status !== 'waiting') {
+      notice(`Cannot pause: the goal is ${goalStatusLabel(goal.status)}.`);
+      return;
+    }
+    if (action === 'resume' && goal.status !== 'paused') {
+      notice(`Cannot resume: the goal is ${goalStatusLabel(goal.status)}.`);
+      return;
+    }
+    if (action === 'clear' && !isLiveGoalStatus(goal.status)) {
+      notice(`Cannot clear: the goal is ${goalStatusLabel(goal.status)}.`);
+      return;
+    }
+    if (action === 'pause') selfInitiatedPauseGoalId = goal.goalId;
+    let result: GoalProjection | null;
+    try {
+      result = await input.driver.controlGoal(action);
+    } catch (error) {
+      selfInitiatedPauseGoalId = null;
+      throw error; // runControl's reportError surfaces it
+    }
+    if (result === null) {
+      // The goal disappeared to a concurrent controller mid-flight.
+      selfInitiatedPauseGoalId = null;
+      notice(action === 'clear' ? 'Goal cleared.' : 'The goal no longer exists.');
+      return;
+    }
+    if (action === 'pause') {
+      notice('Goal paused. /goal resume continues it, /goal clear stops it.');
+    } else if (action === 'resume') {
+      notice('Goal resumed.');
+    } else {
+      notice('Goal cleared.');
+    }
+  };
+
   const slashCommandHandlers = {
     context: {
       description: primaryGuidance.commands.context,
@@ -2544,19 +2639,39 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     goal: {
       description: primaryGuidance.commands.goal,
       run: (parts: string[]) => {
-        if (parts.length !== 1) {
+        if (parts.length === 1) {
+          // Read-only, so no runControl busy gate: an autonomous loop keeps
+          // the session busy almost by definition, and that is exactly when
+          // the user wants to inspect it.
+          showGoalSummary();
+          return;
+        }
+        const action = parts[1];
+        if (
+          parts.length !== 2 ||
+          (action !== 'pause' && action !== 'resume' && action !== 'clear')
+        ) {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: 'Usage: /goal',
+            text: 'Usage: /goal [pause|resume|clear]',
           });
           requestRender();
           return;
         }
-        // Read-only, so no runControl busy gate: an autonomous loop keeps the
-        // session busy almost by definition, and that is exactly when the user
-        // wants to inspect it.
-        showGoalSummary();
+        // Goal control mutates the durable loop, so it takes the runControl
+        // write gate — but say so instead of silently swallowing the command
+        // when a turn or another control action owns the session.
+        if (busy) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Cannot control the goal while a turn or another action is running — interrupt it (Esc) or wait for it to finish.',
+          });
+          requestRender();
+          return;
+        }
+        void runControl(() => controlGoalCommand(action));
       },
     },
     help: {

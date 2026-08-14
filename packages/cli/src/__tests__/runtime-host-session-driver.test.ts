@@ -9,7 +9,7 @@ import type {
   DirectRequestOperationKey,
   RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
-import { RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
+import { RuntimeHostOperationError, RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type GoalProjection,
@@ -148,6 +148,110 @@ describe('Runtime Host Maka Session driver', () => {
     assert.deepEqual(observations, ['active@1', 'paused@2', 'cleared@3', null]);
 
     unsubscribe();
+  });
+
+  test('controlGoal applies actions with the snapshot revision and retries conflicts', async () => {
+    const armedGoal = goalProjection({ status: 'active' });
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ goal: armedGoal }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'session-id',
+    });
+
+    // No session attached: no-op, no RPC.
+    assert.equal(await driver.controlGoal!('pause'), null);
+    assert.equal(
+      connection.requests.some(({ operation }) => operation === 'goal.control'),
+      false,
+    );
+
+    await driver.createSession({
+      cwd: '/repo',
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    // Clean path: one control request carrying the snapshot revision, no query.
+    connection.goalControlOutcomes.push(
+      goalProjection({ status: 'paused', revision: 2, pausedAt: 90 }),
+    );
+    assert.equal((await driver.controlGoal!('pause'))?.status, 'paused');
+    let controlRevisions = connection.requests
+      .filter(({ operation }) => operation === 'goal.control')
+      .map(({ input }) => (input as OperationInput<'goal.control'>).expectedRevision);
+    assert.deepEqual(controlRevisions, [1]);
+    assert.equal(
+      connection.requests.some(({ operation }) => operation === 'goal.query'),
+      false,
+    );
+
+    // The host broadcasts the pause; the snapshot folds it before the next action.
+    subscription.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      snapshot: continuitySnapshot({
+        goal: goalProjection({ status: 'paused', revision: 2, pausedAt: 90 }),
+        projectionRevision: 2,
+      }),
+    });
+    await waitFor(() => driver.getGoal!()?.revision === 2);
+
+    // Conflict path: re-query for the fresh revision and retry against it.
+    connection.goalControlOutcomes.push(
+      new RuntimeHostOperationError('goal.control', 'operation_conflict', 'revision conflict'),
+      goalProjection({ status: 'active', revision: 4 }),
+    );
+    connection.goalQueryResults.push(
+      goalProjection({ status: 'paused', revision: 3, pausedAt: 95 }),
+    );
+    assert.equal((await driver.controlGoal!('resume'))?.revision, 4);
+    controlRevisions = connection.requests
+      .filter(({ operation }) => operation === 'goal.control')
+      .map(({ input }) => (input as OperationInput<'goal.control'>).expectedRevision);
+    assert.deepEqual(controlRevisions, [1, 2, 3]);
+    assert.equal(
+      connection.requests.filter(({ operation }) => operation === 'goal.query').length,
+      1,
+    );
+
+    // Conflict where a concurrent controller removed the goal mid-flight: null
+    // (for clear, that is the desired end state).
+    connection.goalControlOutcomes.push(
+      new RuntimeHostOperationError('goal.control', 'operation_conflict', 'revision conflict'),
+    );
+    connection.goalQueryResults.push(null);
+    assert.equal(await driver.controlGoal!('clear'), null);
+
+    // Status conflict (invalid transition): the re-query returns the SAME
+    // revision — every accepted transition bumps it — proving a refusal, not
+    // a race. The host's reason is rethrown, not a misleading retry-exhaustion
+    // error, and the loop stops instead of burning the remaining attempts.
+    connection.goalControlOutcomes.push(
+      new RuntimeHostOperationError(
+        'goal.control',
+        'operation_conflict',
+        'Goal cannot pause from status paused',
+      ),
+    );
+    connection.goalQueryResults.push(
+      goalProjection({ status: 'paused', revision: 2, pausedAt: 90 }),
+    );
+    await assert.rejects(driver.controlGoal!('pause'), /Goal cannot pause from status paused/);
+    const attempts = connection.requests.filter(
+      ({ operation }) => operation === 'goal.control',
+    ).length;
+    assert.equal(attempts, 5); // 1 clean + 2 raced + 1 raced-then-gone + 1 refused — no futile retries
   });
 
   test('honors explicit Project intent before inheriting the current workspace', async () => {
@@ -1310,6 +1414,10 @@ class FakeConnection {
   interactionQuery: unknown;
   executionBoundary: unknown = { kind: 'managed', access: 'read_write', revision: 1 };
   skillStartBlocked = false;
+  /** Scripted outcomes for goal.control: return the result goal, or throw (e.g. operation_conflict). */
+  readonly goalControlOutcomes: Array<GoalProjection | Error> = [];
+  /** Scripted goal.query results, shifted per call; defaults to null (no goal). */
+  readonly goalQueryResults: Array<GoalProjection | null> = [];
   readonly value: RuntimeHostMakaSessionDriverInput['connection'];
 
   constructor(
@@ -1356,6 +1464,21 @@ class FakeConnection {
           hostCwd: create.workspace.kind === 'host_path' ? create.workspace.path : '/project',
         },
       }) as OperationOutput<K>;
+    }
+    if (operation === 'goal.control') {
+      const outcome = this.goalControlOutcomes.shift();
+      if (outcome === undefined) throw new Error('Unexpected goal.control request');
+      if (outcome instanceof Error) throw outcome;
+      return {
+        sessionId: (input as OperationInput<'goal.control'>).sessionId,
+        goal: outcome,
+      } as OperationOutput<K>;
+    }
+    if (operation === 'goal.query') {
+      return {
+        sessionId: (input as OperationInput<'goal.query'>).sessionId,
+        goal: this.goalQueryResults.shift() ?? null,
+      } as OperationOutput<K>;
     }
     if (operation === 'session.configuration.update') {
       const update = input as OperationInput<'session.configuration.update'>;

@@ -5,7 +5,9 @@ import type { GoalProjection } from '@maka/runtime-host/protocol';
 import { formatTokenCount } from '../pi-transcript-format.js';
 import {
   formatGoalElapsed,
+  goalAttachedNoticeText,
   goalElapsedMs,
+  goalPausedNoticeText,
   goalStatusLabel,
   goalStatusLineText,
   goalSummaryLines,
@@ -125,5 +127,24 @@ describe('pi-goal display helpers', () => {
 
   test('token formatting is the shared status-line formatter', () => {
     assert.equal(formatTokenCount(45_200), '45k');
+  });
+
+  test('pause and attach notices name the loop and its controls', () => {
+    assert.equal(
+      goalPausedNoticeText(goal({ lastReason: 'Goal-associated turn was aborted.' })),
+      'Goal paused (3/50). Goal-associated turn was aborted. /goal resume continues it, /goal clear stops it.',
+    );
+    assert.equal(
+      goalPausedNoticeText(goal({ lastReason: null })),
+      'Goal paused (3/50). /goal resume continues it, /goal clear stops it.',
+    );
+    // Embedded newlines collapse so the notice stays one line.
+    assert.equal(
+      goalAttachedNoticeText(goal({ condition: 'Ship the\n  feature' })),
+      'Autonomous goal is running (3/50): Ship the feature — /goal shows details, /goal pause pauses it.',
+    );
+    // Long conditions are capped with an ellipsis.
+    const long = goalAttachedNoticeText(goal({ condition: 'x'.repeat(200) }));
+    assert.ok(long.includes('…') && long.length <= 210);
   });
 });

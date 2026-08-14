@@ -94,11 +94,37 @@ export function goalStatusLineText(
   return `goal ${goalStatusLabel(goal.status)} ${counter}`;
 }
 
+/** Conditions and evaluator notes may legally embed newlines; collapse whitespace so notices stay one line per field. */
+function inlineGoalText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * One-line notice when a goal transitions into paused while attached —
+ * typically the runtime's abort auto-pause after Ctrl+C on a goal
+ * continuation turn. Says the loop still exists and how to continue/stop it.
+ */
+export function goalPausedNoticeText(
+  goal: Pick<GoalProjection, 'iterations' | 'maxIterations' | 'lastReason'>,
+): string {
+  const reason = goal.lastReason ? ` ${inlineGoalText(goal.lastReason)}` : '';
+  return `Goal paused (${goal.iterations}/${goal.maxIterations}).${reason} /goal resume continues it, /goal clear stops it.`;
+}
+
+/**
+ * One-line notice when attaching to a session whose durable goal is
+ * auto-continuing after recovery — a token-burning loop never resumes silently.
+ */
+export function goalAttachedNoticeText(
+  goal: Pick<GoalProjection, 'condition' | 'iterations' | 'maxIterations'>,
+): string {
+  const condition = inlineGoalText(goal.condition);
+  const short = condition.length > 120 ? `${condition.slice(0, 119)}…` : condition;
+  return `Autonomous goal is running (${goal.iterations}/${goal.maxIterations}): ${short} — /goal shows details, /goal pause pauses it.`;
+}
+
 /** Full `/goal` summary. Terminal goals are as welcome here as live ones. */
 export function goalSummaryLines(goal: GoalProjection, now: number): string[] {
-  // Conditions and evaluator notes may legally embed newlines; collapse
-  // whitespace so each field stays on one notice line.
-  const inline = (value: string): string => value.replace(/\s+/g, ' ').trim();
   const status = `Status: ${goalStatusLabel(goal.status)} · ${goal.iterations}/${goal.maxIterations} iterations`;
   // Terminal verdicts other than `achieved` carry no freeze timestamp, so a
   // wall-clock elapsed would keep growing for a loop that already ended.
@@ -108,8 +134,8 @@ export function goalSummaryLines(goal: GoalProjection, now: number): string[] {
     // A cleared goal keeps its terminal record, so say "cleared" up front
     // instead of presenting the condition as if it were still armed.
     goal.status === 'cleared'
-      ? `Cleared goal: ${inline(goal.condition)}`
-      : `Goal: ${inline(goal.condition)}`,
+      ? `Cleared goal: ${inlineGoalText(goal.condition)}`
+      : `Goal: ${inlineGoalText(goal.condition)}`,
     elapsedMeaningful ? `${status} · ${formatGoalElapsed(goalElapsedMs(goal, now))}` : status,
   ];
   if (goal.tokenBudget !== null) {
@@ -119,6 +145,6 @@ export function goalSummaryLines(goal: GoalProjection, now: number): string[] {
   } else if (goal.tokensSpent > 0) {
     lines.push(`Tokens: ${formatTokenCount(goal.tokensSpent)}`);
   }
-  if (goal.lastReason) lines.push(`Last evaluator note: ${inline(goal.lastReason)}`);
+  if (goal.lastReason) lines.push(`Last evaluator note: ${inlineGoalText(goal.lastReason)}`);
   return lines;
 }
