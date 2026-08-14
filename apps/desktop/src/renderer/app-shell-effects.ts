@@ -14,6 +14,7 @@ import { messageReadErrorMessage } from './app-shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { applyTheme, applyThemePalette } from './theme';
+import { startTitlebarModalSync } from './titlebar-modal-sync';
 import { safeLocalStorageSet } from './browser-storage';
 import type { NavigationState } from './nav-selection.js';
 import {
@@ -70,7 +71,6 @@ export function useAppShellNavRefSync(options: { navSelection: NavSelection; nav
 
 export function useAppShellHostEffects(options: {
   activeId: string | undefined;
-  hasModalOpen: boolean;
   setLiveBrowserSessionIds: (sessionIds: string[]) => void;
 }) {
   // Tag the document with the host OS so glass-material CSS rules
@@ -106,12 +106,11 @@ export function useAppShellHostEffects(options: {
     window.maka.browser.setActiveSession(options.activeId ?? null);
   }, [options.activeId]);
 
-  useEffect(() => {
-    void window.maka.appWindow.setTitlebarControlsVisible(!options.hasModalOpen).catch(() => {});
-    return () => {
-      void window.maka.appWindow.setTitlebarControlsVisible(true).catch(() => {});
-    };
-  }, [options.hasModalOpen]);
+  // Modal-open titlebar dimming/hiding is driven by observing the top layer
+  // (`dialog:modal`) rather than the shell's own modal state, so dialogs
+  // mounted deep in module pages — the scheduled-task form above all — are
+  // covered too. See titlebar-modal-sync.ts.
+  useEffect(() => startTitlebarModalSync(), []);
 }
 
 export function useAppShellPersistenceEffects(options: {

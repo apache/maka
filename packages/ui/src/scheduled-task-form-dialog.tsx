@@ -215,7 +215,6 @@ export function ScheduledTaskFormDialog(props: {
       width={480}
     >
       <Layout
-        height="auto"
         header={(
           <DialogHeader
             title={isEditing ? copy.editTitle : copy.createTitle}

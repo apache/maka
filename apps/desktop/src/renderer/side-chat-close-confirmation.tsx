@@ -30,7 +30,6 @@ export function SideChatCloseConfirmation(props: {
       width={420}
     >
       <Layout
-        height="auto"
         header={<DialogHeader title={copy.title(props.sideChatCount)} />}
         content={
           <LayoutContent>

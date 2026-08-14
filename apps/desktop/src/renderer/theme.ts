@@ -7,6 +7,7 @@
 //
 import type { ThemePalette, ThemePreference } from '@maka/core/settings';
 import { safeLocalStorageSet } from './browser-storage';
+import { compositeScrimOverBackground, parseCssRgbColor } from './titlebar-dim-color.js';
 
 const DARK_CLASS = 'dark';
 
@@ -60,6 +61,26 @@ function setDarkClass(isDark: boolean): void {
 }
 
 /**
+ * A modal dialog's ::backdrop dims every pixel of the page — except the
+ * OS-drawn window-controls strip (the Windows titleBarOverlay box, the macOS
+ * traffic lights), which is composited above web content and stays bright.
+ * While any native `<dialog>` is modal-open, `titlebar-modal-sync.ts` sets
+ * this flag so the overlay color below folds the backdrop scrim in and the
+ * strip reads as part of the dimmed window; macOS additionally hides its
+ * traffic lights outright via the same signal.
+ */
+let titlebarModalDimmed = false;
+
+export function setTitlebarModalDimmed(dimmed: boolean): void {
+  if (titlebarModalDimmed === dimmed) return;
+  titlebarModalDimmed = dimmed;
+  // No-ops outside darwin (main-process gate); Windows has no hide API, so
+  // the dimmed overlay color below is the whole fix there.
+  void window.maka?.appWindow?.setTitlebarControlsVisible?.(!dimmed).catch(() => {});
+  syncTitleBarOverlay(document.documentElement);
+}
+
+/**
  * PR-UI-2 (@yuejing 2026-05-22): apply a base46 palette by writing
  * `data-maka-theme="<palette>"` on `<html>`. CSS variable overrides
  * live in `maka-tokens.css`. `default` removes the attribute so the
@@ -86,16 +107,45 @@ function syncTitleBarOverlay(root: HTMLElement): void {
   // The native Windows overlay sits on top of the renderer's content surface.
   // Sample the actual resolved --background color instead of approximating it
   // with one hard-coded light and dark pair; this also follows every palette.
+  const isDark = root.classList.contains(DARK_CLASS);
   const backgroundColor = cssColorToHex(
     getComputedStyle(root).getPropertyValue('--background'),
-    root.classList.contains(DARK_CLASS) ? '#1c1d21' : '#ffffff',
+    isDark ? '#1c1d21' : '#ffffff',
   );
   void window.maka?.appWindow
     ?.setTitleBarOverlayTheme?.({
-      isDark: root.classList.contains(DARK_CLASS),
-      backgroundColor,
+      isDark,
+      backgroundColor: titlebarModalDimmed
+        ? dimmedTitlebarColor(backgroundColor, isDark)
+        : backgroundColor,
     })
     .catch(() => {});
+}
+
+/**
+ * The color the titlebar strip appears under an open modal: the dialog
+ * backdrop scrim composited over `--background`. The scrim is sampled from
+ * the open modal's own ::backdrop — the engine has already resolved its
+ * `var()` indirection and `light-dark()` branch, which neither a token read
+ * nor a canvas fillStyle can do — so the dim tracks theme and palette
+ * automatically.
+ */
+function dimmedTitlebarColor(backgroundHex: string, isDark: boolean): string {
+  // The app's theme pins the scrim to black@50%/80% (astryx-theme/maka.css);
+  // mirror that as the fallback if no modal backdrop can be sampled.
+  const scrim = readModalBackdropColor() ?? { r: 0, g: 0, b: 0, a: isDark ? 0.8 : 0.5 };
+  return compositeScrimOverBackground(scrim, backgroundHex);
+}
+
+/**
+ * The computed color of the open modal's ::backdrop. Callers only dim while a
+ * `dialog:modal` exists, so a null here means something unusual happened —
+ * fall back rather than dimming wrong.
+ */
+function readModalBackdropColor(): { r: number; g: number; b: number; a: number } | null {
+  const dialog = document.querySelector('dialog:modal');
+  if (!dialog) return null;
+  return parseCssRgbColor(getComputedStyle(dialog, '::backdrop').backgroundColor);
 }
 
 function cssColorToHex(value: string, fallback: string): string {
