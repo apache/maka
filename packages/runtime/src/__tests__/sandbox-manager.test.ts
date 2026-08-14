@@ -180,7 +180,7 @@ describe('SandboxManager.selectInitial', () => {
     assert.equal(available.canEnforce({ profile: denied, platform: 'linux' }), false);
   });
 
-  it('returns unsupported_platform for win32 restricted profiles', () => {
+  it('returns backend_not_available for win32 restricted profiles without a broker', () => {
     const manager = new SandboxManager();
 
     const result = manager.selectInitial({
@@ -189,7 +189,7 @@ describe('SandboxManager.selectInitial', () => {
     });
 
     assert.equal(result.ok, false);
-    if (!result.ok) assert.equal(result.reason, 'unsupported_platform');
+    if (!result.ok) assert.equal(result.reason, 'backend_not_available');
   });
 
   it('selects none for danger-full-access, external, disabled, and forbid', () => {

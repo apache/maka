@@ -92,6 +92,29 @@ export class SandboxManager {
       };
     }
 
+    if (platform === 'win32') {
+      if (this.backends.has('windows')) {
+        return {
+          ok: true,
+          sandboxType: 'windows',
+          requiresSandbox: true,
+          reason: 'platform_sandbox_selected',
+          platform,
+          preference,
+        };
+      }
+
+      return {
+        ok: false,
+        reason: 'backend_not_available',
+        sandboxType: 'windows',
+        requiresSandbox: true,
+        platform,
+        preference,
+        message: 'Windows sandbox broker backend is not registered.',
+      };
+    }
+
     return {
       ok: false,
       reason: 'unsupported_platform',

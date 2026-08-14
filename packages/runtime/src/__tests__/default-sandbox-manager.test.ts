@@ -41,7 +41,7 @@ describe('createBuiltinSandboxManager', () => {
       platform: 'win32',
     });
     assert.equal(selection.ok, false);
-    if (!selection.ok) assert.equal(selection.reason, 'unsupported_platform');
+    if (!selection.ok) assert.equal(selection.reason, 'backend_not_available');
   });
 });
 
