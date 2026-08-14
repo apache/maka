@@ -655,6 +655,12 @@ const healthSignals: HealthSignal[] = [
 ];
 
 const healthSnapshot: HealthSnapshot = buildHealthSnapshot(NOW - 45_000, healthSignals);
+const defaultStorySettings = mergeSettings(createDefaultSettings(), {
+  projects: {
+    defaultWorkingDirectory:
+      '/Users/storybook-fixture-user/Documents/Agent Workspaces/General Tasks',
+  },
+});
 
 const runtimeHostProfiles: DesktopRuntimeHostProfileSnapshot = {
   defaultProfileId: 'local',
@@ -711,7 +717,7 @@ const STORY_RUNTIME_HOST_KEY = 'local:storybook-local-host';
 
 function seedGeneralSnapshotCache(cache: SettingsSnapshotCache): void {
   const settings = createDefaultSettings();
-  cache.commitClientRead(settings);
+  cache.commitClientRead(defaultStorySettings);
   cache.commitRuntimeHostCatalogRead(runtimeHostProfiles);
   cache.commitRuntimeHostSettingsRead(STORY_RUNTIME_HOST_KEY, settings);
   cache.commitRuntimeHostConnectionsRead(STORY_RUNTIME_HOST_KEY, {
@@ -733,7 +739,7 @@ function seedGeneralTwoHostSnapshotCache(cache: SettingsSnapshotCache): void {
   cache.commitRuntimeHostCatalogRead(runtimeHostProfilesWithRemote);
 }
 
-let storyClientSettings = createDefaultSettings();
+let storyClientSettings = defaultStorySettings;
 let storyRuntimeHostSettings = createDefaultSettings();
 
 const makaBridge = {
@@ -773,6 +779,8 @@ const makaBridge = {
   settings: {
     getClient: async () => storyClientSettings,
     get: async () => storyRuntimeHostSettings,
+    chooseDefaultWorkingDirectory: async () =>
+      '/Users/storybook-fixture-user/Documents/Agent Workspaces/Selected Tasks',
     updateClient: async (
       patch: Parameters<typeof window.maka.settings.updateClient>[0],
     ): Promise<UpdateAppSettingsResult> => {
@@ -790,6 +798,22 @@ const makaBridge = {
       listStatuses: async () => ({}),
       subscribeStatusChanges: () => () => undefined,
     },
+  },
+  // 常规 gates the default-working-directory row on `setLocalDefault`, so the
+  // shared fixture has to answer that capability read; a local Host reports
+  // true and the row renders.
+  projects: {
+    getSnapshot: async () => ({
+      projects: [],
+      capabilities: {
+        chooseClientDirectory: true,
+        chooseHostDirectory: false,
+        selectNoProject: true,
+        setLocalDefault: true,
+        viewClientPath: true,
+      },
+    }),
+    subscribeChanges: () => () => undefined,
   },
   connections: connectionsBridge,
   // The OAuth cards on 模型 read their live state off window.maka rather than

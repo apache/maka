@@ -57,6 +57,10 @@ import {
   useUiLocale,
   Banner,
 } from "@maka/ui";
+import {
+  DefaultWorkingDirectoryRow,
+  useLocalDefaultCapability,
+} from "./default-working-directory-row";
 import { ProviderBrandMark } from "./provider-brand-marks";
 import { PasswordInput } from "./password-input";
 import { getConversationCopy } from '@maka/ui';
@@ -148,6 +152,14 @@ export function GeneralSettingsPage(props: {
     runtimeHostConnectionsAvailable ||
     showRuntimeHostSettingsPlaceholder ||
     showRuntimeHostConnectionsPlaceholder;
+  // The default-working-directory row is gated on the same capability the
+  // Projects page uses for its own local-only default: remote targets
+  // advertise `setLocalDefault: false`. Reading the project snapshot here
+  // avoids inventing a second capability channel for one row.
+  const canSetLocalDefault = useLocalDefaultCapability(
+    host,
+    runtimeHostTargetVerified,
+  );
   return (
     <SettingsPage>
       {runtimeHostError ? (
@@ -300,6 +312,8 @@ export function GeneralSettingsPage(props: {
           onRefresh={props.onRefreshConnections}
           permissionMode={props.settings.chatDefaults.permissionMode}
           thinkingLevel={props.settings.chatDefaults.thinkingLevel}
+          defaultWorkingDirectory={props.settings.projects.defaultWorkingDirectory}
+          canSetLocalDefault={canSetLocalDefault}
           onUpdate={props.onUpdate}
         />
       ) : null}
@@ -496,6 +510,8 @@ function GeneralDefaultsCard(props: {
   onRefresh(): Promise<void>;
   permissionMode: ChatDefaultPermissionMode;
   thinkingLevel?: ThinkingLevel;
+  defaultWorkingDirectory?: string;
+  canSetLocalDefault: boolean;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
@@ -649,6 +665,14 @@ function GeneralDefaultsCard(props: {
       title={sections.chatDefaults}
       description={sections.chatDefaultsHelp}
     >
+      {/* Local-only and client-owned: gated on the same capability the
+          Projects page uses for its own default. */}
+      {props.canSetLocalDefault ? (
+        <DefaultWorkingDirectoryRow
+          defaultWorkingDirectory={props.defaultWorkingDirectory}
+          onUpdate={props.onUpdate}
+        />
+      ) : null}
       {props.connectionsAvailable ? (
         <SettingsRow
           label={copy.defaultModel}

@@ -344,3 +344,41 @@ describe('app icon on upgrade', () => {
     assert.strictEqual(migrated.appearance.appIconDark, undefined);
   });
 });
+
+test('normalizes Project defaults independently', () => {
+  const normalized = normalizeSettings({
+    projects: {
+      defaultProjectId: 'project-1',
+      defaultWorkingDirectory: '/Users/example/agent',
+    },
+  });
+
+  expect(normalized.projects).toEqual({
+    defaultProjectId: 'project-1',
+    defaultWorkingDirectory: '/Users/example/agent',
+  });
+});
+
+test('drops blank or malformed default working directories', () => {
+  for (const defaultWorkingDirectory of [undefined, '', '  ', 42]) {
+    const normalized = normalizeSettings({
+      projects: { defaultWorkingDirectory },
+    });
+    expect(normalized.projects.defaultWorkingDirectory).toBe(undefined);
+  }
+});
+
+test('clears the default working directory without clearing the default Project', () => {
+  const current = normalizeSettings({
+    projects: {
+      defaultProjectId: 'project-1',
+      defaultWorkingDirectory: '/Users/example/agent',
+    },
+  });
+
+  const merged = mergeSettings(current, {
+    projects: { defaultWorkingDirectory: undefined },
+  });
+
+  expect(merged.projects).toEqual({ defaultProjectId: 'project-1' });
+});

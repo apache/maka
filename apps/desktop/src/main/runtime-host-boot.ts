@@ -141,7 +141,10 @@ import {
 import { resolveProjectContextRoot } from "./project-context-root.js";
 import { resolveDefaultPermissionMode } from "./permission-mode-default.js";
 import { createProjectManagementService } from "./project-management-service.js";
-import { projectPickerTitle } from "./project-picker-copy.js";
+import {
+  defaultWorkingDirectoryPickerTitle,
+  projectPickerTitle,
+} from "./project-picker-copy.js";
 import type { ProjectManagementService } from "./project-management-service.js";
 import {
   createProjectRootController,
@@ -1252,6 +1255,12 @@ function registerHostClientIpc(
     rootId: target.rootId,
     preferenceFile: join(workspaceRoot, "project-preferences.json"),
     fallbackRoots: () => [process.cwd(), app.getAppPath()],
+    ...(target.kind === "local"
+      ? {
+          defaultWorkingDirectory: async () =>
+            (await settingsStore.get()).projects.defaultWorkingDirectory,
+        }
+      : {}),
   });
   const targetProjectCatalog = createRuntimeHostProjectCatalog(() => ({
     client,
@@ -1598,6 +1607,13 @@ function registerPersistentClientIpc(): void {
   registerClientSettingsIpc({
     ipcMain,
     settingsStore,
+    chooseDefaultWorkingDirectory: async () => {
+      const result = await mainWindowController.showOpenDialog({
+        title: defaultWorkingDirectoryPickerTitle(await desktopLocale.resolve()),
+        properties: ["openDirectory", "createDirectory"],
+      });
+      return result.canceled ? undefined : result.filePaths[0];
+    },
     apply: async (settings) => {
       await clientSettingsEffects.apply(settings, true);
     },

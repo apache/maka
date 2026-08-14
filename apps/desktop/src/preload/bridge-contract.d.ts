@@ -1410,6 +1410,10 @@ export interface MakaBridge {
   settings: {
     getClient(): Promise<AppSettings>;
     get(host?: DesktopRuntimeHostRef): Promise<AppSettings>;
+    /** Opens the local folder picker for the client-owned default working
+     * directory. Client-tier because `projects` is client-owned, so the
+     * directory is per-machine rather than shared by every client of a Host. */
+    chooseDefaultWorkingDirectory(): Promise<string | undefined>;
     updateClient(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsResult>;
     update(patch: UpdateAppSettingsInput, host?: DesktopRuntimeHostRef): Promise<UpdateAppSettingsResult>;
     subscribeClientChanged(handler: () => void): () => void;
