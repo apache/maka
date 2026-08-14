@@ -12,12 +12,29 @@ $secretPath = Join-Path $tempRoot "maka-windows-appcontainer-secret-$PID.txt"
 $allowedRoot = Join-Path $tempRoot "maka-windows-appcontainer-allowed-$PID"
 $allowedReadPath = Join-Path $allowedRoot 'read.txt'
 $allowedWritePath = Join-Path $allowedRoot 'write.txt'
+$staleRoot = Join-Path $tempRoot "maka-windows-appcontainer-stale-$PID"
+$ledgerRoot = Join-Path $tempRoot 'maka-sandbox-acl-ledgers'
+$ledgerPath = Join-Path $ledgerRoot "stale-$PID.json"
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $listener.Start()
 $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
 'must-not-be-readable' | Set-Content -LiteralPath $secretPath -Encoding utf8
 New-Item -ItemType Directory -Path $allowedRoot | Out-Null
 [IO.File]::WriteAllText($allowedReadPath, 'allowed-read')
+New-Item -ItemType Directory -Path $staleRoot | Out-Null
+New-Item -ItemType Directory -Path $ledgerRoot -Force | Out-Null
+$appContainerSid = (& $launcher --appcontainer-sid 2>&1) -join ''
+if ($LASTEXITCODE -ne 0 -or $appContainerSid -notmatch '^S-1-15-2-') {
+  throw "Unable to resolve AppContainer SID: $appContainerSid"
+}
+& icacls.exe $staleRoot /grant "*$appContainerSid`:(OI)(CI)RX" /T /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Unable to prepare stale AppContainer ACL' }
+@{
+  version = 1
+  requestId = 'stale-smoke'
+  appContainerSid = $appContainerSid
+  roots = @(@{ path = $staleRoot; recursive = $true })
+} | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ledgerPath -Encoding utf8
 $request = @{
   version = 1
   requestId = 'appcontainer-smoke'
@@ -55,10 +72,23 @@ try {
   if ($acl -match 'S-1-15-2-') {
     throw "AppContainer ACL was not restored after launch: $acl"
   }
+  $staleAcl = (& icacls.exe $staleRoot 2>&1) -join "`n"
+  if ($staleAcl -match [regex]::Escape($appContainerSid) -or (Test-Path -LiteralPath $ledgerPath)) {
+    throw "Stale AppContainer ACL ledger was not recovered: $staleAcl"
+  }
+
+  $junction = Join-Path $allowedRoot 'junction'
+  New-Item -ItemType Junction -Path $junction -Target $staleRoot | Out-Null
+  $reparseOutput = & $launcher --appcontainer $requestPath 2>&1
+  if ($LASTEXITCODE -eq 0 -or ($reparseOutput -join "`n") -notmatch 'reparse point') {
+    throw "AppContainer accepted a reparse-point root: $($reparseOutput -join "`n")"
+  }
   Write-Host "AppContainer token and atomic Job boundary verified: $rendered"
 } finally {
   $listener.Stop()
   Remove-Item -LiteralPath $requestPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $secretPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $allowedRoot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $staleRoot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $ledgerPath -Force -ErrorAction SilentlyContinue
 }
