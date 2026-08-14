@@ -35,3 +35,8 @@ initialization before the 30-second safety deadline. The launcher terminates the
 child and returns failure. The CI lane treats this exact bounded, fail-closed
 result as evidence; any other launch error still fails the job. This candidate
 does not satisfy W0 and must not be connected to the product.
+
+`atomic-launch-capability.ps1` records whether the current Windows identity has
+the privileges needed to test the separate privileged-broker prototype. A
+missing privilege is an expected fail-closed capability result; it must not be
+worked around by silently using the non-atomic launcher path.
