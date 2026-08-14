@@ -123,13 +123,13 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "4.0.36",
-    "@ai-sdk/cohere": "4.0.25",
-    "@ai-sdk/google": "4.0.39",
-    "@ai-sdk/openai": "4.0.36",
-    "@ai-sdk/openai-compatible": "3.0.27",
-    "@openai/agents-core": "0.14.3",
-    "@larksuiteoapi/node-sdk": "1.72.0",
+    "@ai-sdk/anthropic": "4.0.37",
+    "@ai-sdk/cohere": "4.0.26",
+    "@ai-sdk/google": "4.0.41",
+    "@ai-sdk/openai": "4.0.37",
+    "@ai-sdk/openai-compatible": "3.0.29",
+    "@openai/agents-core": "0.15.0",
+    "@larksuiteoapi/node-sdk": "1.73.0",
     "@maka/code-mode": "0.1.0",
     "@maka/core": "0.1.0",
     "@modelcontextprotocol/sdk": "1.30.0",
@@ -139,7 +139,7 @@
     "@wecom/aibot-node-sdk": "1.0.7",
     "@xterm/addon-unicode11": "^0.9.0",
     "@xterm/headless": "^6.0.0",
-    "ai": "7.0.58",
+    "ai": "7.0.59",
     "ajv": "^8.20.0",
     "https-proxy-agent": "^9.1.0",
     "image-dimensions": "^2.5.1",
@@ -150,7 +150,7 @@
     "socks-proxy-agent": "^10.1.0",
     "turndown": "^7.2.4",
     "undici": "^8.7.0",
-    "ws": "^8.21.1",
+    "ws": "^8.21.3",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
@@ -158,6 +158,6 @@
     "@maka/storage": "0.1.0",
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.18.1",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.2"
   }
 }
