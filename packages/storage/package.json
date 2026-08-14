@@ -35,6 +35,7 @@
     "./settings-store": "./dist/settings-store.js",
     "./shell-run-authority": "./dist/shell-run-authority.js",
     "./task-ledger-authority": "./dist/task-ledger-authority.js",
+    "./work-board-store": "./dist/work-board-store.js",
     "./model-call-ledger": "./dist/model-call-ledger.js",
     "./usage-stores": "./dist/usage-stores.js",
     "./workspace-identity": "./dist/workspace-identity.js",
