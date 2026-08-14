@@ -3,7 +3,7 @@ import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { thinkingVariantsForModel, type ThinkingLevel } from '@maka/core/model-thinking';
 
-import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import { buildModelCallSettings, buildProviderOptions, getAIModel } from '../model-factory.js';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
   return {
@@ -203,11 +203,24 @@ describe('buildProviderOptions: thinking level', () => {
       [...thinkingVariantsForModel('deepseek', 'deepseek-v4-flash')],
       ['high', 'max'],
     );
-    // DeepSeek V4 speaks the plaintext Open Responses dialect. Its effort is
-    // a top-level AI SDK option, not providerOptions owned by Maka.
+    // DeepSeek V4 uses the generic Open Responses adapter. Its effort is a
+    // top-level AI SDK option, not providerOptions owned by Maka.
     assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'high'), {});
     assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'max'), {});
     assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'off'), {});
+    assert.deepEqual(buildModelCallSettings(conn('deepseek'), 'deepseek-v4-flash', 'high'), {
+      providerOptions: {},
+      reasoning: 'high',
+    });
+    assert.deepEqual(buildModelCallSettings(conn('deepseek'), 'deepseek-v4-flash', 'max'), {
+      providerOptions: {},
+      reasoning: 'xhigh',
+    });
+    for (const unsupported of ['off', 'low', 'medium', 'minimal'] as const) {
+      assert.deepEqual(buildModelCallSettings(conn('deepseek'), 'deepseek-v4-flash', unsupported), {
+        providerOptions: {},
+      });
+    }
     assert.deepEqual([...thinkingVariantsForModel('zai-coding-plan', 'glm-5.1')], []);
     assert.deepEqual([...thinkingVariantsForModel('zai-coding-plan', 'glm-4.5-air')], []);
     // miss model (deepseek-chat non-reasoning) drops level

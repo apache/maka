@@ -8,6 +8,7 @@ import {
   isJSONArray,
   type JSONArray,
   type LanguageModelV4,
+  type LanguageModelV4CallOptions,
   type LanguageModelV4StreamPart,
   type SharedV4ProviderMetadata,
   type SharedV4ProviderOptions,
@@ -500,6 +501,40 @@ export function buildProviderOptions(
     default:
       return buildFamilyWire(connection, modelId, level, thinkingOptions);
   }
+}
+
+export interface ModelCallSettings {
+  readonly providerOptions: SharedV4ProviderOptions;
+  readonly reasoning?: LanguageModelV4CallOptions['reasoning'];
+}
+
+/** Resolve every reasoning-related AI SDK call option through one provider/model seam. */
+export function buildModelCallSettings(
+  connection: RuntimeExecutionConnection,
+  modelId: string,
+  thinkingLevel?: ThinkingLevel,
+): ModelCallSettings {
+  const providerOptions = buildProviderOptions(connection, modelId, thinkingLevel);
+  const runtime = resolveModelRuntime(connection, modelId);
+  const level = resolveThinkingLevel(connection, modelId, thinkingLevel);
+  const reasoning =
+    runtime.responsesAdapter === 'open-responses' ? openResponsesReasoning(level) : undefined;
+  return {
+    providerOptions,
+    ...(reasoning !== undefined ? { reasoning } : {}),
+  };
+}
+
+function openResponsesReasoning(
+  level: ThinkingLevel | undefined,
+): LanguageModelV4CallOptions['reasoning'] {
+  if (!level) return undefined;
+  if (level === 'off') return 'none';
+  // The cross-provider AI SDK enum has no vendor-specific `max`. `xhigh`
+  // keeps reasoning enabled but DeepSeek maps it to high, not max; the PR
+  // description records that temporary upstream limitation.
+  if (level === 'max') return 'xhigh';
+  return level;
 }
 
 function buildFamilyWire(

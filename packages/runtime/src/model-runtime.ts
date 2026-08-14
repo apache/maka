@@ -22,6 +22,8 @@ export type ReasoningReplayContract =
   | { kind: 'openai-responses-encrypted' }
   | { kind: 'open-responses-plaintext' };
 
+export type ResponsesAdapter = 'openai' | 'open-responses';
+
 export interface ResolvedModelRuntime {
   adapter: ProviderRuntimeAdapter;
   baseUrl: string;
@@ -29,6 +31,8 @@ export interface ResolvedModelRuntime {
   apiProtocol?: ModelInfo['apiProtocol'];
   /** Effective wire after account, adapter, and model defaults are resolved. */
   wire: ModelRuntimeWire;
+  /** SDK provider selected for a Responses wire. */
+  responsesAdapter?: ResponsesAdapter;
   /** Durable reasoning replay semantics carried by that wire. */
   reasoningReplay: ReasoningReplayContract;
   /** Effective ApplyPatch contract after provider, model, and request wire are resolved. */
@@ -89,9 +93,16 @@ export function resolveModelRuntime(
         : resolvedBaseUrl,
     ...(apiProtocol ? { apiProtocol } : {}),
     wire,
+    ...(wire === 'openai-responses' ? { responsesAdapter: responsesAdapterContract(adapter) } : {}),
     reasoningReplay: reasoningReplayContract(adapter, wire),
     applyPatchProfile: resolveApplyPatchProfile(
-      { wire, applyPatchProtocol: adapter.applyPatchProtocol },
+      {
+        wire,
+        ...(wire === 'openai-responses'
+          ? { responsesAdapter: responsesAdapterContract(adapter) }
+          : {}),
+        applyPatchProtocol: adapter.applyPatchProtocol,
+      },
       modelId,
     ),
   };
@@ -159,7 +170,8 @@ function reasoningReplayContract(
     case 'anthropic-messages':
       return { kind: 'anthropic-signed' };
     case 'openai-responses':
-      return adapter.kind === 'openai-compatible' && adapter.responsesDialect === 'open-responses'
+      return adapter.kind === 'openai-compatible' &&
+        adapter.responsesReasoningReplay === 'plaintext-content'
         ? { kind: 'open-responses-plaintext' }
         : { kind: 'openai-responses-encrypted' };
     case 'openai-chat':
@@ -174,6 +186,12 @@ function reasoningReplayContract(
     case 'cohere-v2':
       return { kind: 'none' };
   }
+}
+
+function responsesAdapterContract(adapter: ProviderRuntimeAdapter): ResponsesAdapter {
+  return adapter.kind === 'openai-compatible' && adapter.responsesAdapter === 'open-responses'
+    ? 'open-responses'
+    : 'openai';
 }
 
 function kimiOpenAiBaseUrl(baseUrl: string): string {

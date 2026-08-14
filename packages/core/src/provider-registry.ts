@@ -31,8 +31,10 @@ type ProviderRuntimeAdapterDefinition =
       includeUsage?: boolean;
       requireBaseUrl?: boolean;
       supportsOpenAiResponses?: true;
-      /** Select the standard plaintext Open Responses dialect instead of OpenAI's extension. */
-      responsesDialect?: 'open-responses';
+      /** SDK provider used for a Responses wire. */
+      responsesAdapter?: 'openai' | 'open-responses';
+      /** Stateless reasoning continuation representation used by the Responses wire. */
+      responsesReasoningReplay?: 'encrypted-content' | 'plaintext-content';
       replayAssistantReasoningAs?: 'reasoning';
       replayAssistantReasoningDetails?: true;
     };
@@ -839,7 +841,9 @@ const providerRegistry = {
       kind: 'openai-compatible',
       name: 'provider',
       supportsOpenAiResponses: true,
-      responsesDialect: 'open-responses',
+      applyPatchProtocol: 'codex-v4a-freeform',
+      responsesAdapter: 'open-responses',
+      responsesReasoningReplay: 'plaintext-content',
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',

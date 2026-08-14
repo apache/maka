@@ -50,9 +50,24 @@ describe('ApplyPatch profile routing', () => {
   });
 
   test('selects Codex V4A freeform for declared DeepSeek V4 Responses models', () => {
+    assert.equal(
+      resolveApplyPatchProfile(
+        {
+          wire: 'openai-responses',
+          responsesAdapter: 'open-responses',
+          applyPatchProtocol: 'codex-v4a-freeform',
+        },
+        'deepseek-v4-flash',
+      ),
+      null,
+    );
     assert.deepEqual(
       resolveApplyPatchProfile(
-        { wire: 'openai-responses', applyPatchProtocol: 'codex-v4a-freeform' },
+        {
+          wire: 'openai-responses',
+          responsesAdapter: 'openai',
+          applyPatchProtocol: 'codex-v4a-freeform',
+        },
         'deepseek-v4-flash',
       ),
       { kind: 'codex-v4a-freeform' },
@@ -66,7 +81,11 @@ describe('ApplyPatch profile routing', () => {
     );
     assert.deepEqual(
       resolveApplyPatchProfile(
-        { wire: 'openai-responses', applyPatchProtocol: 'codex-v4a-freeform' },
+        {
+          wire: 'openai-responses',
+          responsesAdapter: 'openai',
+          applyPatchProtocol: 'codex-v4a-freeform',
+        },
         'deepseek-v4-pro',
       ),
       { kind: 'codex-v4a-freeform' },
@@ -100,6 +119,14 @@ describe('ApplyPatch profile routing', () => {
   });
 
   test('normalizes portable single-operation history', () => {
+    assert.equal(
+      normalizeApplyPatchReplayInput(
+        null,
+        'call-1',
+        '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch',
+      ),
+      null,
+    );
     assert.deepEqual(
       normalizeApplyPatchReplayInput(
         { kind: 'openai-structured' },

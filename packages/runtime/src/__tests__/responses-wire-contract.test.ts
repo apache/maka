@@ -5,7 +5,7 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { modelMetadataIdsForProvider } from '@maka/core/model-metadata';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
-import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import { buildModelCallSettings, buildProviderOptions, getAIModel } from '../model-factory.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 import { lowerModelTools } from '../model-adapter.js';
 import { openAiCodexCompactionMessages } from '../openai-codex-history-compactor.js';
@@ -314,10 +314,10 @@ describe('responses wire request body', () => {
   });
 
   test('DeepSeek uses plaintext Responses options without asking for encrypted content', async () => {
-    let body: Record<string, unknown> | undefined;
+    const bodies: Record<string, unknown>[] = [];
     let headers: Headers | undefined;
     const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-      body = JSON.parse(String(init?.body));
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       headers = new Headers(init?.headers);
       return new Response(
         JSON.stringify({
@@ -338,16 +338,18 @@ describe('responses wire request body', () => {
       modelId: 'deepseek-v4-flash',
       fetch,
     });
-    await model.doGenerate({
-      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-      reasoning: 'xhigh',
-      providerOptions: buildProviderOptions(connection, 'deepseek-v4-flash', 'max'),
-    });
+    for (const level of ['high', 'max'] as const) {
+      await model.doGenerate({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        ...buildModelCallSettings(connection, 'deepseek-v4-flash', level),
+      });
+    }
 
-    assert.equal(body?.store, undefined);
-    assert.equal(body?.include, undefined);
-    assert.equal((body?.reasoning as { effort?: string } | undefined)?.effort, 'xhigh');
-    assert.equal(headers?.has('x-maka-open-responses-reasoning-effort'), false);
+    assert.equal(bodies[0]?.store, undefined);
+    assert.equal(bodies[0]?.include, undefined);
+    assert.equal((bodies[0]?.reasoning as { effort?: string } | undefined)?.effort, 'high');
+    assert.equal((bodies[1]?.reasoning as { effort?: string } | undefined)?.effort, 'xhigh');
+    assert.equal(headers?.get('authorization'), 'Bearer test-key');
   });
 
   test('replays plaintext reasoning before its function call and result', async () => {

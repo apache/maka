@@ -10,7 +10,7 @@ import {
   llmCallUsageFields,
   recordLlmCallStrict,
 } from '@maka/runtime/telemetry';
-import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import { buildModelCallSettings, getAIModel } from '@maka/runtime/model-factory';
 import { buildSessionRecapMessages } from '@maka/runtime/session-recap';
 import {
   buildSessionTitlePrompt,
@@ -484,6 +484,11 @@ async function runHostAuxiliaryModelCall(
       | Awaited<ReturnType<typeof generateProviderPrefixModelCall>>;
     try {
       result = await readDuringBackendCreation(() => {
+        const modelCallSettings = buildModelCallSettings(
+          target.connection,
+          target.model,
+          input.header.thinkingLevel,
+        );
         const model = getAIModel({
           connection: target.connection,
           apiKey,
@@ -499,16 +504,13 @@ async function runHostAuxiliaryModelCall(
                 ? 'omit'
                 : 'none',
               abortSignal: input.abortSignal,
+              ...modelCallSettings,
             })
           : generateToolFreeModelCall({
               model,
               ...request,
               abortSignal: input.abortSignal,
-              providerOptions: buildProviderOptions(
-                target.connection,
-                target.model,
-                input.header.thinkingLevel,
-              ),
+              ...modelCallSettings,
             });
       }, input.abortSignal);
       const oauthFailure = readDeferredOAuthFailure?.();

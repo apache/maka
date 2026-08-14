@@ -6,7 +6,7 @@ import {
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
-import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { LanguageModelV4CallOptions } from '@ai-sdk/provider';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 import { rawFinishReasonString } from './model-protocol.js';
@@ -96,8 +96,8 @@ export interface ModelAdapterInput {
   modelId: string;
   modelFactory: ModelFactory;
   providerOptions?: Record<string, unknown>;
-  /** Session-selected effort; Open Responses consumes it at the top-level seam. */
-  reasoningLevel?: ThinkingLevel;
+  /** Resolved top-level reasoning option for adapters that consume it outside providerOptions. */
+  reasoning?: LanguageModelV4CallOptions['reasoning'];
   newId: () => string;
   now: () => number;
   /** Test seam; production adapters own one state instance for their lifetime. */
@@ -182,6 +182,10 @@ export class ModelAdapter {
     return {
       toolCalls: true,
       toolResults: true,
+      // @ai-sdk/open-responses@2.0.27 drops provider-executed results while
+      // retaining their calls during replay. Fail closed until the released
+      // codec can preserve the complete hosted-tool item sequence.
+      providerExecutedTools: this.runtime.responsesAdapter !== 'open-responses',
       signedThinking: this.runtime.reasoningReplay.kind === 'anthropic-signed',
       // openai-compatible transports replay stored reasoning unconditionally:
       // DeepSeek-style endpoints 400 tool calls whose history lacks it, and
@@ -278,10 +282,6 @@ export class ModelAdapter {
           continuation.previousResponseId,
         )
       : this.input.providerOptions;
-    const reasoning =
-      this.runtime.reasoningReplay.kind === 'open-responses-plaintext'
-        ? openResponsesReasoning(this.input.reasoningLevel)
-        : undefined;
     const sdkResult = streamText({
       model: trackedModel,
       messages: continuation.messages,
@@ -298,7 +298,7 @@ export class ModelAdapter {
       ...(input.system ? { instructions: input.system } : {}),
       ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
       providerOptions,
-      ...(reasoning ? { reasoning } : {}),
+      ...(this.input.reasoning !== undefined ? { reasoning: this.input.reasoning } : {}),
       ...(responsesLane ? { headers: { [OPENAI_RESPONSES_LANE_HEADER]: responsesLane } } : {}),
       maxRetries: 0,
       // Preserve the final request's Maka-owned message projection without
@@ -526,17 +526,6 @@ export class ModelAdapter {
   }
 }
 
-function openResponsesReasoning(
-  level: ThinkingLevel | undefined,
-): 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | undefined {
-  if (!level) return undefined;
-  if (level === 'off') return 'none';
-  // @ai-sdk/open-responses has no `max` level. Keep this an explicit
-  // compatibility mapping instead of rewriting the provider request body.
-  if (level === 'max') return 'xhigh';
-  return level;
-}
-
 interface ModelStepSettlementEvidence {
   aborted: boolean;
   failure?: ModelFailure;
@@ -656,6 +645,7 @@ function fixedAnthropicThinkingBudget(
 export interface ModelAdapterRuntimeEventReplaySupport {
   toolCalls: boolean;
   toolResults: boolean;
+  providerExecutedTools: boolean;
   signedThinking: boolean;
   unsignedThinking: boolean;
   responsesThinking: 'none' | 'openai-encrypted' | 'open-responses-plaintext';

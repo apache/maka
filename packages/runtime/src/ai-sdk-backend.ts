@@ -138,6 +138,7 @@ import {
   type ModelStreamResult,
   type RepairableAiSdkToolCall,
 } from './model-adapter.js';
+import { buildModelCallSettings } from './model-factory.js';
 import { persistedOpenAiResponsesStepMessages } from './openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import {
@@ -1083,14 +1084,19 @@ export class AiSdkBackend implements AgentBackend {
     this.now = input.now ?? (() => Date.now());
     this.maxSteps = input.maxSteps;
     this.providerRetrySleep = input.providerRetrySleep ?? sleepForProviderRetry;
+    const modelCallSettings = buildModelCallSettings(
+      input.connection,
+      input.modelId,
+      input.header.thinkingLevel,
+    );
     this.modelAdapter = new ModelAdapter({
       sessionId: input.sessionId,
       connection: input.connection,
       apiKey: input.apiKey,
       modelId: input.modelId,
       modelFactory: input.modelFactory,
-      providerOptions: input.providerOptions,
-      reasoningLevel: input.header.thinkingLevel,
+      providerOptions: input.providerOptions ?? modelCallSettings.providerOptions,
+      reasoning: modelCallSettings.reasoning,
       newId: this.newId,
       now: this.now,
       ...(input.openAiResponsesTransportState
@@ -3866,6 +3872,13 @@ export class AiSdkBackend implements AgentBackend {
     for (const item of plan.items) {
       if (item.kind === 'tool_call' && !support.toolCalls) return false;
       if (item.kind === 'tool_result' && !support.toolResults) return false;
+      if (
+        (item.kind === 'tool_call' || item.kind === 'tool_result') &&
+        item.providerExecuted === true &&
+        !support.providerExecutedTools
+      ) {
+        return false;
+      }
       if (item.kind === 'thinking' && item.signature && !support.signedThinking) return false;
     }
     return true;
@@ -3932,6 +3945,7 @@ export class AiSdkBackend implements AgentBackend {
           : undefined;
       }
       if (replaySupport.responsesThinking === 'open-responses-plaintext') {
+        if (item.text.length === 0) return undefined;
         return {
           part: {
             type: 'reasoning' as const,

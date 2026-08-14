@@ -65,6 +65,7 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.deepEqual(adapter.runtimeEventReplaySupport(), {
       toolCalls: true,
       toolResults: true,
+      providerExecutedTools: true,
       signedThinking: false,
       unsignedThinking: true,
       responsesThinking: 'none',
@@ -119,6 +120,7 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.deepEqual(adapter.runtimeEventReplaySupport(), {
       toolCalls: true,
       toolResults: true,
+      providerExecutedTools: true,
       signedThinking: false,
       unsignedThinking: false,
       responsesThinking: 'openai-encrypted',
@@ -142,6 +144,7 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.deepEqual(adapter.runtimeEventReplaySupport(), {
       toolCalls: true,
       toolResults: true,
+      providerExecutedTools: false,
       signedThinking: false,
       unsignedThinking: false,
       responsesThinking: 'open-responses-plaintext',

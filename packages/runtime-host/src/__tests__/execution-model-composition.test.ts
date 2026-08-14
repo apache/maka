@@ -1957,6 +1957,83 @@ test('production Host publishes and retires an implementation child patch', asyn
   }
 });
 
+test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-deepseek-auxiliary-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'deepseek-auxiliary',
+        name: 'DeepSeek auxiliary',
+        providerType: 'deepseek',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: ['deepseek-v4-flash'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, 'deepseek-v4-flash');
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'deepseek-auxiliary',
+      model: 'deepseek-v4-flash',
+      thinkingLevel: 'high',
+      permissionMode: 'ask',
+    });
+    const effects = createHostSessionEffectModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage,
+      requestDrain: () => assert.fail('Auxiliary telemetry must not drain the Host'),
+      newId: () => 'deepseek-title-call',
+    });
+
+    await effects.generateTitle({
+      sessionId: session.id,
+      header: session,
+      sourceText: 'Explain the DeepSeek auxiliary reasoning seam',
+      abortSignal: new AbortController().signal,
+    });
+    const request = provider.requests.at(-1);
+    assert.ok(request);
+    assert.equal(request.url, '/v1/responses');
+    assert.equal(request.authorization, `Bearer ${API_KEY}`);
+    assert.deepEqual(request.body.reasoning, { effort: 'high' });
+  } finally {
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('Host auxiliary models meter provider usage and abort physical requests', {
   timeout: 20_000,
 }, async () => {

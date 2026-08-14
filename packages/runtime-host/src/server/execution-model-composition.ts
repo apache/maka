@@ -13,7 +13,7 @@ import {
 import { buildLlmHistorySummarizer } from '@maka/runtime/history-compact-summarizer';
 import { buildOpenAiCodexHistoryCompactor } from '@maka/runtime/openai-codex-history-compactor';
 import { buildPricingLookup, recordToolInvocation } from '@maka/runtime/telemetry';
-import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import { buildModelCallSettings, getAIModel } from '@maka/runtime/model-factory';
 import { createProviderRequestCaptureRecorder } from '@maka/runtime/provider-request-telemetry';
 import {
   createProxiedFetchTransport,
@@ -126,11 +126,11 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       throw error;
     }
   }
-  const providerOptions = buildProviderOptions(
+  const providerOptions = buildModelCallSettings(
     target.connection,
     target.model,
     input.context.header.thinkingLevel,
-  );
+  ).providerOptions;
   const contextWindow = resolveSelectedModelContextWindow(target.connection, target.model);
   let modelComposition: HostRunComposer;
   try {

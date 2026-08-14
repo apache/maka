@@ -217,7 +217,7 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     });
   });
 
-  test('preserves a durable DeepSeek apply_patch fact without inventing a custom wire', async () => {
+  test('downgrades durable DeepSeek freeform apply_patch history to a fact', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -259,14 +259,14 @@ describe('AiSdkBackend ApplyPatch routing', () => {
               kind: 'function_call',
               id: 'call-1',
               name: 'apply_patch',
-              args: {
-                callId: 'call-1',
-                operation: {
-                  type: 'update_file',
-                  path: 'file.txt',
-                  diff: '@@\n-before\n+after',
-                },
-              },
+              args: [
+                '*** Begin Patch',
+                '*** Update File: file.txt',
+                '@@',
+                '-before',
+                '+after',
+                '*** End Patch',
+              ].join('\n'),
             },
           }),
           runtimeEvent({
@@ -285,24 +285,25 @@ describe('AiSdkBackend ApplyPatch routing', () => {
       }),
     );
 
-    const toolResult = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
-      .find((message) => message.role === 'tool')
-      ?.content.find((part) => part.type === 'tool-result');
-    const toolCall = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
-      .find((message) => message.role === 'assistant')
-      ?.content.find((part) => part.type === 'tool-call');
-    assert.deepEqual(toolCall?.input, {
-      callId: 'call-1',
-      operation: {
-        type: 'update_file',
-        path: 'file.txt',
-        diff: '@@\n-before\n+after',
-      },
-    });
-    assert.deepEqual(toolResult?.output, {
-      type: 'json',
-      value: { status: 'completed', output: 'Applied 1 file operation.' },
-    });
+    const replay = compactPrompt(model) as Array<{ role: string; content: any[] }>;
+    assert.equal(
+      replay.some((message) =>
+        message.content.some(
+          (part) => part.type === 'tool-call' && part.toolName === 'apply_patch',
+        ),
+      ),
+      false,
+    );
+    assert.equal(
+      replay.some((message) => message.role === 'tool'),
+      false,
+    );
+    assert.match(
+      replay
+        .flatMap((message) => message.content)
+        .find((part) => part.type === 'text' && /ApplyPatch completed/.test(part.text))?.text ?? '',
+      /ApplyPatch completed 1 file operation: update_file file\.txt/,
+    );
   });
 
   test('preserves a multi-file ApplyPatch fact when structured replay cannot represent it', async () => {
@@ -3008,6 +3009,90 @@ describe('AiSdkBackend model history', () => {
     );
     assert.match(JSON.stringify(assistant), /ws_123/);
     assert.match(JSON.stringify(assistant), /Maka shipped the feature/);
+  });
+
+  test('falls back to grounded text when Open Responses cannot replay a hosted tool pair', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: '',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-u-search',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'search',
+          }),
+          runtimeEvent({
+            id: 'rt-search-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            refs: { stepId: 'provider-step' },
+            content: {
+              kind: 'function_call',
+              id: 'search-1',
+              name: 'WebSearch',
+              args: { query: 'latest Maka' },
+              providerExecuted: true,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-search-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'search-1',
+              name: 'WebSearch',
+              result: { type: 'web_search_result', query: 'latest Maka' },
+              providerExecuted: true,
+              isError: false,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-search-text',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            refs: { providerEventId: 'provider-step' },
+            content: { kind: 'text', text: 'Maka shipped the feature.' },
+          }),
+        ],
+        continuation: {
+          sourceInvocationId: 'invocation-source',
+          sourceRunId: 'run-source',
+          sourceTurnId: 'turn-prev',
+          sourceRuntimeEventHighWater: 4,
+        },
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
+    assert.match(JSON.stringify(prompt), /Maka shipped the feature/);
+    assert.equal(JSON.stringify(prompt).includes('tool-call'), false);
+    assert.equal(JSON.stringify(prompt).includes('tool-result'), false);
   });
 
   test('replays an image tool result as provider image data', async () => {
@@ -12563,6 +12648,14 @@ describe('AiSdkBackend thinking persistence', () => {
         text: 'reasoning about the tool',
       },
       {
+        type: 'thinking_complete',
+        id: 'e3-empty',
+        turnId: 'turn-prev',
+        ts: 3,
+        messageId: 'm1',
+        text: '',
+      },
+      {
         type: 'text_complete',
         id: 'e4',
         turnId: 'turn-prev',
@@ -12607,8 +12700,8 @@ describe('AiSdkBackend thinking persistence', () => {
     );
     assert.ok(assistant && Array.isArray(assistant.content));
     assert.deepEqual(
-      assistant.content.find((part) => part.type === 'reasoning'),
-      { type: 'reasoning', text: 'reasoning about the tool', providerOptions: undefined },
+      assistant.content.filter((part) => part.type === 'reasoning'),
+      [{ type: 'reasoning', text: 'reasoning about the tool', providerOptions: undefined }],
     );
     assert.ok(
       assistant.content.some((part) => part.type === 'tool-call' && part.toolCallId === 'tool-1'),

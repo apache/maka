@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
-import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import { buildProviderOptions, getAIModel } from '../model-factory.js';
 
 function conn(providerType: LlmConnection['providerType']): LlmConnection {
   return {
