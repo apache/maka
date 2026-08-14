@@ -35,6 +35,12 @@ export {
   type HostTrustedToolExtensionRevisionInput,
 } from './extension-runtime.js';
 export {
+  HostExtensionLoaderError,
+  StaticTrustedToolExtensionLoader,
+  type HostTrustedToolExtensionLoader,
+  type StaticTrustedToolExtensionRevision,
+} from './extension-loader.js';
+export {
   RuntimeHostRootAlreadyOwnedError,
   startExecutionRuntimeHostService,
   type ExecutionRuntimeHostServiceDependencies,

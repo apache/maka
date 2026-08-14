@@ -8,11 +8,13 @@ import { RuntimeHostKernel } from './host-kernel.js';
 import { openRuntimeHostAccessAuthority } from './access-authority.js';
 import { startRuntimeHostServiceListenerSet } from './listener-set.js';
 import type { StartRuntimeHostWebSocketListenerOptions } from './websocket-listener.js';
+import type { StaticTrustedToolExtensionRevision } from './extension-loader.js';
 
 export interface ExecutionRuntimeHostServiceOptions {
   readonly rootPath: string;
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly bundledGitResourcesRoot?: string;
+  readonly trustedToolExtensions?: readonly StaticTrustedToolExtensionRevision[];
   readonly handshakeTimeoutMs?: number;
   readonly shutdownGraceMs?: number;
   readonly websocket?: Omit<

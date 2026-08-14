@@ -111,7 +111,13 @@ import {
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
+import { HostExtensionController } from './extension-controller.js';
+import {
+  StaticTrustedToolExtensionLoader,
+  type StaticTrustedToolExtensionRevision,
+} from './extension-loader.js';
 import { HostExtensionRuntime } from './extension-runtime.js';
+import { HostExtensionStateStore } from './extension-state-store.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
@@ -182,6 +188,7 @@ export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
+  readonly trustedToolExtensions?: readonly StaticTrustedToolExtensionRevision[];
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
@@ -206,6 +213,12 @@ export async function createExecutionRuntimeHostComposition(
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
   await stores.sessionStore.ready();
   const extensions = new HostExtensionRuntime();
+  const extensionController = new HostExtensionController(
+    extensions,
+    new StaticTrustedToolExtensionLoader(options.trustedToolExtensions),
+    new HostExtensionStateStore(context.owner.controlDirectory),
+    context.requestDrain,
+  );
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let taskLedgerStore:
     | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
@@ -1265,7 +1278,9 @@ export async function createExecutionRuntimeHostComposition(
     domainModules = [
       createRuntimeHostDomainModule({
         id: 'extension',
-        drain: [() => extensions.beginDrain()],
+        handlers: [extensionController.handlers],
+        recovery: { state: () => extensionController.recover() },
+        drain: [() => extensionController.beginDrain(), () => extensions.beginDrain()],
         close: [() => extensions.close()],
       }),
       createRuntimeHostDomainModule({

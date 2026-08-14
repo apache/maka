@@ -56,6 +56,7 @@ export * from './project-catalog.js';
 export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
 export * from './external-session.js';
+export * from './extension.js';
 export * from './message.js';
 export * from './operations.js';
 export * from './runtime-resource.js';

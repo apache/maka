@@ -1,5 +1,6 @@
 import type { VerifiedGitRuntimeInput } from '@maka/storage/managed-workspace-owner';
 import { resolveBundledGitRuntime } from './bundled-git-runtime.js';
+import type { StaticTrustedToolExtensionRevision } from './extension-loader.js';
 import {
   createExecutionRuntimeHostComposition,
   type ExecutionRuntimeHostComposition,
@@ -13,6 +14,7 @@ import {
 export interface ExecutionRuntimeHostCompositionSourceOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly bundledGitResourcesRoot?: string;
+  readonly trustedToolExtensions?: readonly StaticTrustedToolExtensionRevision[];
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
@@ -34,6 +36,9 @@ export async function createExecutionRuntimeHostCompositionSource(
     : options.managedWorkspaceGitRuntime;
   const compositionOptions = {
     ...(managedWorkspaceGitRuntime ? { managedWorkspaceGitRuntime } : {}),
+    ...(options.trustedToolExtensions
+      ? { trustedToolExtensions: options.trustedToolExtensions }
+      : {}),
   };
   const createComposition = dependencies.createComposition ?? createExecutionRuntimeHostComposition;
   return defineInteractiveRuntimeHostComposition((context) =>
