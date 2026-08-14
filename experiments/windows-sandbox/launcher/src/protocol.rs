@@ -3,7 +3,7 @@ use std::path::{Component, Path};
 
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchRequest {
@@ -19,6 +19,36 @@ pub struct LaunchRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct BrokerLaunchRequest {
+    pub version: u32,
+    pub request_id: String,
+    pub client_pid: u32,
+    pub client_nonce: String,
+    pub profile_digest: String,
+    pub launch: LaunchRequest,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct BrokerLaunchResponse {
+    pub version: u32,
+    pub request_id: String,
+    pub outcome: BrokerLaunchOutcome,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+#[allow(dead_code)]
+pub enum BrokerLaunchOutcome {
+    Started { process_id: u32 },
+    Rejected { code: String, message: String },
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NetworkMode {
     Restricted,
@@ -48,6 +78,33 @@ impl LaunchRequest {
         }
         Ok(())
     }
+}
+
+impl BrokerLaunchRequest {
+    #[allow(dead_code)]
+    pub fn validate(&self) -> Result<(), String> {
+        if self.version != 1 {
+            return Err("unsupported broker protocol version".to_owned());
+        }
+        if self.request_id.is_empty() {
+            return Err("requestId must be non-empty".to_owned());
+        }
+        if self.client_pid == 0 {
+            return Err("clientPid must be non-zero".to_owned());
+        }
+        if !is_fixed_hex(&self.client_nonce, 32) {
+            return Err("clientNonce must be 32 hexadecimal characters".to_owned());
+        }
+        if !is_fixed_hex(&self.profile_digest, 64) {
+            return Err("profileDigest must be 64 hexadecimal characters".to_owned());
+        }
+        self.launch.validate()
+    }
+}
+
+#[allow(dead_code)]
+fn is_fixed_hex(value: &str, length: usize) -> bool {
+    value.len() == length && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn validate_roots(roots: &[String], field: &str) -> Result<(), String> {

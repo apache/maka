@@ -2,6 +2,8 @@
 compile_error!("maka-windows-sandbox-spike is Windows-only");
 
 mod protocol;
+#[cfg(test)]
+mod protocol_tests;
 mod windows_launcher;
 
 use std::env;
