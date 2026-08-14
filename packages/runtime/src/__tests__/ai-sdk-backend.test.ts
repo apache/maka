@@ -5081,7 +5081,10 @@ describe('AiSdkBackend model history', () => {
     });
 
     assert.equal(recorded.length, 1);
-    assert.equal(recorded[0]?.summary, 'MANUAL_V2_HISTORY_COMPACT_SENTINEL');
+    assert.equal(
+      recorded[0]?.version === 2 ? recorded[0].summary : undefined,
+      'MANUAL_V2_HISTORY_COMPACT_SENTINEL',
+    );
     assert.deepEqual(recorded[0]?.coverage.eventCount, 2);
     assert.equal(recorded[0]?.memoryExtractionBoundary, undefined);
     assert.equal(memoryDispatches, 0);
@@ -5134,7 +5137,8 @@ describe('AiSdkBackend model history', () => {
       loadHistoryCompactCheckpoint: () => previous,
       summarizeHistoryCompact: async (input) => {
         summaryInputs.push({
-          previous: input.previousCheckpoint?.summary,
+          previous:
+            input.previousCheckpoint?.version === 2 ? input.previousCheckpoint.summary : undefined,
           newlyFoldedIds: (input.newlyFoldedRuntimeEvents ?? []).map((event) => event.id),
         });
         return 'MANUAL_V2_ROLLED_SUMMARY';
@@ -6404,6 +6408,327 @@ describe('AiSdkBackend model history', () => {
       ).length,
       1,
     );
+  });
+
+  test('replays a matching Codex V3 checkpoint as native provider state', async () => {
+    const model = completionModel();
+    const codexConnection = {
+      ...connection(),
+      slug: 'codex-subscription',
+      providerType: 'openai-codex' as const,
+    };
+    const covered = [
+      runtimeTextEvent({
+        id: 'codex-covered-1',
+        turnId: 'codex-old-1',
+        role: 'user',
+        author: 'user',
+        text: 'CODEX_RAW_OLD_ONE '.repeat(100),
+      }),
+      runtimeTextEvent({
+        id: 'codex-covered-2',
+        turnId: 'codex-old-2',
+        role: 'model',
+        author: 'agent',
+        text: 'CODEX_RAW_OLD_TWO '.repeat(100),
+      }),
+    ];
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: covered,
+      providerState: {
+        kind: 'openai_codex_remote_v2',
+        connectionSlug: codexConnection.slug,
+        modelId: 'mock-model-id',
+        itemId: 'cmp_replay',
+        encryptedContent: 'CODEX_ENCRYPTED_REPLAY_STATE',
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: codexConnection,
+      apiKey: 'codex-token',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      contextBudget: {
+        maxHistoryEstimatedTokens: 100_000,
+        historyCompact: { enabled: true, mode: 'lookup' },
+      },
+      loadHistoryCompactCheckpoint: () => checkpoint,
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'codex-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          ...covered,
+          runtimeTextEvent({
+            id: 'codex-tail',
+            turnId: 'codex-tail-turn',
+            role: 'user',
+            author: 'user',
+            text: 'CODEX_RAW_TAIL',
+          }),
+        ],
+      }),
+    );
+
+    const prompt = JSON.stringify(compactPrompt(model));
+    assert.match(prompt, /CODEX_ENCRYPTED_REPLAY_STATE/);
+    assert.match(prompt, /cmp_replay/);
+    assert.match(prompt, /CODEX_RAW_TAIL/);
+    assert.doesNotMatch(prompt, /Provider-native OpenAI Codex compaction checkpoint/);
+    assert.doesNotMatch(prompt, /CODEX_RAW_OLD_(ONE|TWO)/);
+  });
+
+  test('replays a matching Codex V3 checkpoint when it covers the entire prior history', async () => {
+    const model = completionModel();
+    const codexConnection = {
+      ...connection(),
+      slug: 'codex-subscription',
+      providerType: 'openai-codex' as const,
+    };
+    const covered = [
+      runtimeTextEvent({
+        id: 'codex-full-covered',
+        turnId: 'codex-full-old',
+        role: 'user',
+        author: 'user',
+        text: 'CODEX_FULL_RAW_OLD '.repeat(100),
+      }),
+    ];
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: covered,
+      providerState: {
+        kind: 'openai_codex_remote_v2',
+        connectionSlug: codexConnection.slug,
+        modelId: 'mock-model-id',
+        itemId: 'cmp_full_replay',
+        encryptedContent: 'CODEX_FULL_ENCRYPTED_STATE',
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: codexConnection,
+      apiKey: 'codex-token',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      contextBudget: {
+        maxHistoryEstimatedTokens: 100_000,
+        minRecentTurns: 0,
+        historyCompact: { enabled: true, mode: 'lookup', minRecentTurns: 0 },
+      },
+      loadHistoryCompactCheckpoint: () => checkpoint,
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'codex-full-current',
+        text: 'continue after full coverage',
+        context: [],
+        runtimeContext: covered,
+      }),
+    );
+
+    const prompt = JSON.stringify(compactPrompt(model));
+    assert.match(prompt, /CODEX_FULL_ENCRYPTED_STATE/);
+    assert.match(prompt, /cmp_full_replay/);
+    assert.match(prompt, /continue after full coverage/);
+    assert.doesNotMatch(prompt, /CODEX_FULL_RAW_OLD/);
+  });
+
+  test('keeps a Codex V3 checkpoint when a signed-thinking tail requires text-only replay', async () => {
+    const model = completionModel();
+    const codexConnection = {
+      ...connection(),
+      slug: 'codex-subscription',
+      providerType: 'openai-codex' as const,
+    };
+    const covered = [
+      runtimeTextEvent({
+        id: 'codex-switch-covered-user',
+        turnId: 'codex-switch-old-user',
+        role: 'user',
+        author: 'user',
+        text: 'CODEX_SWITCH_RAW_COVERED_USER '.repeat(100),
+      }),
+      runtimeTextEvent({
+        id: 'codex-switch-covered-model',
+        turnId: 'codex-switch-old-model',
+        role: 'model',
+        author: 'agent',
+        text: 'CODEX_SWITCH_RAW_COVERED_MODEL '.repeat(100),
+      }),
+    ];
+    const tail = [
+      runtimeTextEvent({
+        id: 'anthropic-tail-user',
+        turnId: 'anthropic-tail',
+        role: 'user',
+        author: 'user',
+        text: 'ANTHROPIC_VISIBLE_TAIL_USER',
+      }),
+      runtimeEvent({
+        id: 'anthropic-tail-thinking',
+        turnId: 'anthropic-tail',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'ANTHROPIC_PRIVATE_SIGNED_THINKING',
+          signature: 'anthropic-signature',
+        },
+      }),
+      runtimeTextEvent({
+        id: 'anthropic-tail-model',
+        turnId: 'anthropic-tail',
+        role: 'model',
+        author: 'agent',
+        text: 'ANTHROPIC_VISIBLE_TAIL_MODEL',
+      }),
+    ];
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: covered,
+      providerState: {
+        kind: 'openai_codex_remote_v2',
+        connectionSlug: codexConnection.slug,
+        modelId: 'mock-model-id',
+        itemId: 'cmp_model_switch',
+        encryptedContent: 'CODEX_MODEL_SWITCH_ENCRYPTED_STATE',
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: codexConnection,
+      apiKey: 'codex-token',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      contextBudget: {
+        maxHistoryEstimatedTokens: 100_000,
+        historyCompact: { enabled: true, mode: 'lookup' },
+      },
+      loadHistoryCompactCheckpoint: () => checkpoint,
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'codex-switch-current',
+        text: 'continue after switching back to Codex',
+        context: [
+          {
+            type: 'user',
+            id: 'codex-switch-covered-user',
+            turnId: 'codex-switch-old-user',
+            ts: 1,
+            text: 'CODEX_SWITCH_RAW_COVERED_USER '.repeat(100),
+          },
+          {
+            type: 'assistant',
+            id: 'codex-switch-covered-model',
+            turnId: 'codex-switch-old-model',
+            ts: 2,
+            text: 'CODEX_SWITCH_RAW_COVERED_MODEL '.repeat(100),
+            modelId: 'mock-model-id',
+          },
+          {
+            type: 'user',
+            id: 'anthropic-tail-user',
+            turnId: 'anthropic-tail',
+            ts: 3,
+            text: 'ANTHROPIC_VISIBLE_TAIL_USER',
+          },
+          {
+            type: 'assistant',
+            id: 'anthropic-tail-model',
+            turnId: 'anthropic-tail',
+            ts: 4,
+            text: 'ANTHROPIC_VISIBLE_TAIL_MODEL',
+            modelId: 'claude-sonnet',
+            thinking: {
+              text: 'ANTHROPIC_PRIVATE_SIGNED_THINKING',
+              signature: 'anthropic-signature',
+            },
+          },
+        ],
+        runtimeContext: [...covered, ...tail],
+      }),
+    );
+
+    const prompt = JSON.stringify(compactPrompt(model));
+    assert.match(prompt, /CODEX_MODEL_SWITCH_ENCRYPTED_STATE|cmp_model_switch/);
+    assert.match(prompt, /ANTHROPIC_VISIBLE_TAIL_(USER|MODEL)/);
+    assert.doesNotMatch(prompt, /CODEX_SWITCH_RAW_COVERED_(USER|MODEL)/);
+    assert.doesNotMatch(prompt, /ANTHROPIC_PRIVATE_SIGNED_THINKING/);
+  });
+
+  test('ignores a Codex V3 checkpoint bound to a different model and replays raw history', async () => {
+    const model = completionModel();
+    const codexConnection = {
+      ...connection(),
+      slug: 'codex-subscription',
+      providerType: 'openai-codex' as const,
+    };
+    const covered = [
+      runtimeTextEvent({
+        id: 'codex-mismatch-covered',
+        turnId: 'codex-mismatch-old',
+        role: 'user',
+        author: 'user',
+        text: 'CODEX_MISMATCH_RAW_HISTORY',
+      }),
+    ];
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: covered,
+      providerState: {
+        kind: 'openai_codex_remote_v2',
+        connectionSlug: codexConnection.slug,
+        modelId: 'different-model',
+        itemId: 'cmp_wrong_model',
+        encryptedContent: 'CODEX_WRONG_MODEL_STATE',
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: codexConnection,
+      apiKey: 'codex-token',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      contextBudget: {
+        maxHistoryEstimatedTokens: 100_000,
+        historyCompact: { enabled: true, mode: 'lookup' },
+      },
+      loadHistoryCompactCheckpoint: () => checkpoint,
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'codex-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: covered,
+      }),
+    );
+
+    const prompt = JSON.stringify(compactPrompt(model));
+    assert.match(prompt, /CODEX_MISMATCH_RAW_HISTORY/);
+    assert.doesNotMatch(prompt, /CODEX_WRONG_MODEL_STATE|cmp_wrong_model/);
   });
 
   test('keeps RuntimeEvent replay when a tool result is unmatched (orphan dropped, rest replayed)', async () => {

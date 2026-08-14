@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { modelMetadataIdsForProvider } from '@maka/core/model-metadata';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
@@ -9,6 +10,9 @@ import { z } from 'zod';
 import { routeApplyPatchTools } from '../apply-patch-profile.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 import { lowerModelTools } from '../model-adapter.js';
+import { OPENAI_CODEX_COMPACTION_V2_HEADER } from '../openai-codex-compaction-transport.js';
+import { createOpenAiCodexCompactionTransport } from '../openai-codex-compaction-transport.js';
+import { openAiCodexCompactionMessages } from '../openai-codex-history-compactor.js';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
   return {
@@ -84,6 +88,168 @@ describe('responses wire contract', () => {
 });
 
 describe('responses wire request body', () => {
+  test('only a dedicated compactor transport can add the V2 trigger', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        id: 'r',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const ordinaryModel = getAIModel({
+      connection: conn('openai-codex', 'codex-subscription'),
+      apiKey: 'codex-token',
+      modelId: 'gpt-5.3-codex',
+      fetch,
+    });
+    await ordinaryModel.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ordinary model' }] }],
+      headers: { [OPENAI_CODEX_COMPACTION_V2_HEADER]: '1' },
+    });
+
+    const model = getAIModel({
+      connection: conn('openai-codex', 'codex-subscription'),
+      apiKey: 'codex-token',
+      modelId: 'gpt-5.3-codex',
+      fetch: createOpenAiCodexCompactionTransport(fetch),
+    });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'compact me' }] }],
+      headers: { [OPENAI_CODEX_COMPACTION_V2_HEADER]: '1' },
+    });
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ordinary request' }] }],
+    });
+
+    const ordinaryInput = bodies[0]?.input;
+    const compactInput = bodies[1]?.input;
+    const unmarkedInput = bodies[2]?.input;
+    assert.ok(Array.isArray(ordinaryInput));
+    assert.ok(Array.isArray(compactInput));
+    assert.ok(Array.isArray(unmarkedInput));
+    assert.equal(
+      ordinaryInput.some((item) => item.type === 'compaction_trigger'),
+      false,
+    );
+    assert.deepEqual(compactInput.at(-1), { type: 'compaction_trigger' });
+    assert.equal(
+      unmarkedInput.some((item) => item.type === 'compaction_trigger'),
+      false,
+    );
+  });
+
+  test('keeps provider-executed tool history free of dangling outputs', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({
+        id: 'r',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const event = (
+      id: string,
+      role: RuntimeEvent['role'],
+      author: RuntimeEvent['author'],
+      content: RuntimeEvent['content'],
+      refs?: RuntimeEvent['refs'],
+    ): RuntimeEvent => ({
+      id,
+      invocationId: 'inv-1',
+      runId: 'run-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      ts: 1,
+      partial: false,
+      role,
+      author,
+      content,
+      ...(refs ? { refs } : {}),
+    });
+    const messages = openAiCodexCompactionMessages([
+      event('user', 'user', 'user', { kind: 'text', text: 'search' }),
+      event(
+        'call',
+        'model',
+        'agent',
+        {
+          kind: 'function_call',
+          id: 'search-1',
+          name: 'WebSearch',
+          args: { query: 'latest Maka' },
+          providerExecuted: true,
+        },
+        { stepId: 'provider-step' },
+      ),
+      event('result', 'tool', 'tool', {
+        kind: 'function_response',
+        id: 'search-1',
+        name: 'WebSearch',
+        result: { type: 'web_search_result', query: 'latest Maka' },
+        providerOutput: { type: 'web_search_result', id: 'ws_123' },
+        providerExecuted: true,
+        isError: false,
+      }),
+      event(
+        'text',
+        'model',
+        'agent',
+        { kind: 'text', text: 'Maka shipped.' },
+        { providerEventId: 'provider-step' },
+      ),
+    ]);
+    assert.deepEqual(
+      messages.map((message) => ({
+        role: message.role,
+        parts:
+          typeof message.content === 'string' ? ['text'] : message.content.map((part) => part.type),
+      })),
+      [
+        { role: 'user', parts: ['text'] },
+        { role: 'assistant', parts: ['tool-call'] },
+        { role: 'tool', parts: ['tool-result'] },
+        { role: 'assistant', parts: ['text'] },
+      ],
+    );
+
+    const model = getAIModel({
+      connection: conn('openai-codex', 'codex-subscription'),
+      apiKey: 'codex-token',
+      modelId: 'gpt-5.3-codex',
+      fetch: createOpenAiCodexCompactionTransport(fetch),
+    });
+    await model.doGenerate({
+      prompt: messages as never,
+      headers: { [OPENAI_CODEX_COMPACTION_V2_HEADER]: '1' },
+      providerOptions: { openai: { store: false } },
+    });
+
+    const input = body?.input as Array<Record<string, unknown>>;
+    const callIds = new Set(
+      input.filter((item) => item.type === 'function_call').map((item) => String(item.call_id)),
+    );
+    const danglingOutputIds = input
+      .filter((item) => item.type === 'function_call_output')
+      .map((item) => String(item.call_id))
+      .filter((callId) => !callIds.has(callId));
+    assert.deepEqual([...callIds], ['search-1']);
+    assert.deepEqual(
+      input
+        .filter((item) => item.type === 'function_call_output')
+        .map((item) => String(item.call_id)),
+      ['search-1'],
+    );
+    assert.deepEqual(danglingOutputIds, [], JSON.stringify(input));
+  });
+
   test('returns native apply_patch results with the provider output item', async () => {
     let body: Record<string, unknown> | undefined;
     const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {

@@ -529,6 +529,101 @@ describe('provider request tracker', () => {
     );
   });
 
+  test('redacts native compaction state from provider request captures', async () => {
+    const captures: Array<{ serializedRequest: string }> = [];
+    const tracker = new telemetry.ProviderRequestTracker({
+      traceId: 'compaction-trace',
+      turnId: 'turn-compaction',
+      now: () => 1_000,
+      newId: () => 'compaction-id',
+      persistCapture: async (capture) => {
+        captures.push(capture);
+        return { artifactId: 'compaction-artifact' };
+      },
+      recordAttempt: () => undefined,
+    });
+    const params = {
+      image: new URL('https://example.com/provider-image.png'),
+      prompt: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'custom',
+              kind: 'openai.compaction',
+              providerOptions: {
+                openai: {
+                  itemId: 'cmp_secret',
+                  encryptedContent: 'OPAQUE_ENCRYPTED_STATE',
+                  safeMetadata: 'preserved',
+                },
+                otherProvider: { cacheKey: 'preserved' },
+              },
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'business-call',
+              toolName: 'echo',
+              input: {
+                type: 'custom',
+                kind: 'openai.compaction',
+                providerOptions: {
+                  openai: {
+                    itemId: 'BUSINESS_ITEM_ID',
+                    encryptedContent: 'BUSINESS_OPAQUE_TEXT',
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    await tracker.trackGenerate({
+      providerId: 'openai-codex',
+      modelId: 'gpt-5.3-codex',
+      params,
+      doGenerate: async () => ({ text: 'ok' }),
+    });
+
+    assert.equal(captures.length, 1);
+    assert.doesNotMatch(captures[0]!.serializedRequest, /cmp_secret|OPAQUE_ENCRYPTED_STATE/);
+    assert.deepEqual(JSON.parse(captures[0]!.serializedRequest), {
+      image: 'https://example.com/provider-image.png',
+      prompt: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'custom',
+              kind: 'openai.compaction',
+              providerOptions: {
+                openai: { safeMetadata: 'preserved', redacted: true },
+                otherProvider: { cacheKey: 'preserved' },
+              },
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'business-call',
+              toolName: 'echo',
+              input: {
+                type: 'custom',
+                kind: 'openai.compaction',
+                providerOptions: {
+                  openai: {
+                    itemId: 'BUSINESS_ITEM_ID',
+                    encryptedContent: 'BUSINESS_OPAQUE_TEXT',
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   test('awaits the durable dispatch gate before a non-streaming provider call', async () => {
     let captured = false;
     let dispatched = false;

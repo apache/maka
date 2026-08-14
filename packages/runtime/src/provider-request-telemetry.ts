@@ -210,6 +210,12 @@ interface ProviderMiddlewareGenerateInput {
   model: { provider: string; modelId: string };
 }
 
+interface ProviderMiddlewareStreamInput {
+  doStream: () => PromiseLike<ProviderStreamResult>;
+  params: Record<string, unknown> & { abortSignal?: AbortSignal };
+  model: { provider: string; modelId: string };
+}
+
 /**
  * Wraps a language model so its single `generate` call is tracked.
  *
@@ -235,6 +241,28 @@ export function withProviderGenerateTracking(input: {
           params,
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
           doGenerate,
+        }),
+    },
+  });
+}
+
+/** Wraps a language model so its single streaming call is tracked. */
+export function withProviderStreamTracking(input: {
+  model: unknown;
+  wrapLanguageModel: (input: Record<string, unknown>) => unknown;
+  tracker: ProviderRequestTracker;
+  abortSignal?: AbortSignal;
+}): unknown {
+  return input.wrapLanguageModel({
+    model: input.model,
+    middleware: {
+      wrapStream: async ({ doStream, params, model }: ProviderMiddlewareStreamInput) =>
+        await input.tracker.trackStream({
+          providerId: model.provider,
+          modelId: model.modelId,
+          params,
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+          doStream,
         }),
     },
   });
@@ -688,7 +716,35 @@ function preparedCapture(
 
 function secretFreeParams(params: Record<string, unknown>): Record<string, unknown> {
   const { abortSignal: _abortSignal, headers: _headers, ...safe } = params;
-  return safe;
+  if (!Array.isArray(safe.prompt)) return safe;
+  return { ...safe, prompt: safe.prompt.map(redactPromptCompactionState) };
+}
+
+function redactPromptCompactionState(value: unknown): unknown {
+  if (!isPlainRecord(value) || !Array.isArray(value.content)) return value;
+  return { ...value, content: value.content.map(redactCompactionContentPart) };
+}
+
+function redactCompactionContentPart(value: unknown): unknown {
+  if (!isPlainRecord(value) || value.type !== 'custom' || value.kind !== 'openai.compaction') {
+    return value;
+  }
+  const providerOptions = isPlainRecord(value.providerOptions) ? value.providerOptions : undefined;
+  const openai = isPlainRecord(providerOptions?.openai) ? providerOptions.openai : undefined;
+  const { itemId: _itemId, encryptedContent: _encryptedContent, ...safeOpenai } = openai ?? {};
+  return {
+    ...value,
+    providerOptions: {
+      ...(providerOptions ?? {}),
+      openai: { ...safeOpenai, redacted: true },
+    },
+  };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object') return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function abortStatus(signal: AbortSignal | undefined, error: unknown): 'failed' | 'aborted' {

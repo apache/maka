@@ -11,6 +11,7 @@ import {
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
   type HistoryCompactMemoryExtractionBoundary,
+  type HistoryCompactProviderState,
 } from './history-compact-checkpoint.js';
 
 /**
@@ -200,7 +201,11 @@ export type MidTurnSummarizer = (input: {
   coveredRuntimeEvents: readonly RuntimeEvent[];
   newlyFoldedRuntimeEvents: readonly RuntimeEvent[];
   previousCheckpoint?: HistoryCompactCheckpoint;
-}) => Promise<string | undefined> | string | undefined;
+}) =>
+  | Promise<string | HistoryCompactProviderState | undefined>
+  | string
+  | HistoryCompactProviderState
+  | undefined;
 
 export interface PlanMidTurnCapacityCompactionInput {
   sessionId: string;
@@ -312,17 +317,16 @@ export async function planMidTurnCapacityCompaction(
     ? checkpointMatch!.successorRuntimeEvents
     : coveredRuntimeEvents;
 
-  let summary: string | undefined;
+  let compacted: string | HistoryCompactProviderState | undefined;
   try {
-    summary = (
-      await Promise.resolve(
-        input.summarize({
-          coveredRuntimeEvents,
-          newlyFoldedRuntimeEvents,
-          ...(previousCheckpoint ? { previousCheckpoint } : {}),
-        }),
-      )
-    )?.trim();
+    compacted = await Promise.resolve(
+      input.summarize({
+        coveredRuntimeEvents,
+        newlyFoldedRuntimeEvents,
+        ...(previousCheckpoint ? { previousCheckpoint } : {}),
+      }),
+    );
+    if (typeof compacted === 'string') compacted = compacted.trim();
   } catch (error) {
     if (error instanceof HistoryCompactSummarizerError) {
       return {
@@ -331,16 +335,16 @@ export async function planMidTurnCapacityCompaction(
         diagnosticReason: error.reason,
       };
     }
-    summary = undefined;
+    compacted = undefined;
   }
-  if (!summary) {
+  if (!compacted) {
     return { decision: 'fail_open', reason: 'summarizer_failed' };
   }
 
   const checkpoint = buildHistoryCompactCheckpoint({
     sessionId: input.sessionId,
     coveredRuntimeEvents,
-    summary,
+    ...(typeof compacted === 'string' ? { summary: compacted } : { providerState: compacted }),
     ...(phase === 'mid_turn' ? { phase: 'mid_turn' as const, headAnchor: input.headAnchor } : {}),
     ...(input.memoryExtractionBoundary
       ? { memoryExtractionBoundary: input.memoryExtractionBoundary }
@@ -358,10 +362,13 @@ export async function planMidTurnCapacityCompaction(
     tailRuntimeEvents,
   );
   const estimatedTokensBefore = estimateRuntimeEventsTokens(coveredRuntimeEvents, charsPerToken);
-  const estimatedTokensAfter = estimateRuntimeEventsTokens(
-    [historyCompactCheckpointToRuntimeEvent(checkpoint)],
-    charsPerToken,
-  );
+  const estimatedTokensAfter =
+    checkpoint.version === 3
+      ? checkpoint.estimatedTokens
+      : estimateRuntimeEventsTokens(
+          [historyCompactCheckpointToRuntimeEvent(checkpoint)],
+          charsPerToken,
+        );
 
   // No post-fold verdict here: any re-estimate over the raw ledger span is
   // wrong once the previous request was itself a compacted projection (the

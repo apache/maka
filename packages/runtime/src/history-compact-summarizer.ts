@@ -3,6 +3,7 @@ import { buildRuntimeEventModelReplayPlan } from './model-history.js';
 import { toolResultOutput } from './tool-result-output.js';
 import type { HistoryCompactSummaryInput } from './ai-sdk-compaction-contract.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
+import { isTextHistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import type { AiSdkUsageLike } from './model-adapter.js';
 import { withProviderGenerateTracking } from './provider-request-telemetry.js';
 
@@ -17,9 +18,11 @@ export interface AiSdkGenerateTextOptions {
   abortSignal?: AbortSignal;
 }
 
-export type AiSdkGenerateTextLike = (
-  options: AiSdkGenerateTextOptions,
-) => Promise<{ text: string; finishReason?: unknown; usage?: AiSdkUsageLike }>;
+export type AiSdkGenerateTextLike = (options: AiSdkGenerateTextOptions) => Promise<{
+  text: string;
+  finishReason?: unknown;
+  usage?: AiSdkUsageLike;
+}>;
 
 export interface BuildLlmHistorySummarizerOptions {
   /** Resolve the AI SDK model used for summarization. Reuses the session model. */
@@ -64,19 +67,25 @@ const SUMMARIZATION_SYSTEM_PROMPT = [
 
 export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOptions) {
   return async (input: HistoryCompactSummaryInput): Promise<string | undefined> => {
+    const previousCheckpoint =
+      input.previousCheckpoint && isTextHistoryCompactCheckpoint(input.previousCheckpoint)
+        ? input.previousCheckpoint
+        : undefined;
     const newlyFoldedRuntimeEvents =
-      input.newlyFoldedRuntimeEvents ?? input.source.foldedRuntimeEvents;
-    if (newlyFoldedRuntimeEvents.length === 0) return input.previousCheckpoint?.summary;
+      input.previousCheckpoint && !previousCheckpoint
+        ? input.source.foldedRuntimeEvents
+        : (input.newlyFoldedRuntimeEvents ?? input.source.foldedRuntimeEvents);
+    if (newlyFoldedRuntimeEvents.length === 0) return previousCheckpoint?.summary;
     try {
       const plan = buildRuntimeEventModelReplayPlan(newlyFoldedRuntimeEvents);
       const messages = replayPlanItemsToModelMessages(plan.items);
-      if (input.previousCheckpoint) {
+      if (previousCheckpoint) {
         messages.unshift({
           role: 'user',
           content: [
             {
               type: 'text',
-              text: `Previous continuation summary:\n${input.previousCheckpoint.summary}\n\nUpdate it using the newer conversation events that follow.`,
+              text: `Previous continuation summary:\n${previousCheckpoint.summary}\n\nUpdate it using the newer conversation events that follow.`,
             },
           ],
         });
