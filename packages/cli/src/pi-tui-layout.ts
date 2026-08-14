@@ -8,6 +8,7 @@ import {
   renderMakaPiPendingQueue,
   renderMakaPiStatusLine,
   renderMakaPiTranscript,
+  type MakaPiTranscriptEntry,
   type MakaPiTranscriptMetadata,
   type MakaPiTranscriptState,
 } from './pi-transcript.js';
@@ -27,6 +28,12 @@ export function fitPendingQueueLines(lines: readonly string[], maxRows: number):
 }
 
 export class MakaTranscriptComponent implements Component {
+  /** Separate WeakMap keys keep viewer renders out of the live scrollback cache. */
+  private readonly documentEntryClones = new WeakMap<
+    MakaPiTranscriptEntry,
+    MakaPiTranscriptEntry
+  >();
+
   constructor(
     private readonly state: MakaPiTranscriptState,
     private readonly metadata: () => MakaPiTranscriptMetadata,
@@ -46,11 +53,23 @@ export class MakaTranscriptComponent implements Component {
     return renderMakaPiTranscript(
       {
         ...this.state,
+        entries: this.state.entries.map((entry) => this.documentEntry(entry)),
         renderGeometry: { entryFirstLine: undefined, viewportTop: 0 },
       },
       this.metadata(),
       width,
     );
+  }
+
+  private documentEntry(entry: MakaPiTranscriptEntry): MakaPiTranscriptEntry {
+    const cached = this.documentEntryClones.get(entry);
+    if (cached) {
+      Object.assign(cached, entry);
+      return cached;
+    }
+    const clone = { ...entry } as MakaPiTranscriptEntry;
+    this.documentEntryClones.set(entry, clone);
+    return clone;
   }
 }
 

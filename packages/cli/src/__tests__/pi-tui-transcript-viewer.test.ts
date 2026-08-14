@@ -135,6 +135,30 @@ describe('TranscriptViewerOverlay', () => {
     assert.equal(state.renderGeometry.viewportTop, 16);
     assert.strictEqual(state.renderGeometry.entryFirstLine, entryFirstLine);
   });
+
+  test('does not replace the frozen live-scrollback render cache', () => {
+    const state = createMakaPiTranscriptState();
+    const entry = { kind: 'assistant' as const, messageId: 'message-1', text: 'settled text' };
+    state.entries.push(entry);
+    const transcript = new MakaTranscriptComponent(state, () => ({
+      title: 'Maka',
+      cwd: '/repo',
+      model: 'model',
+      connectionSlug: 'connection',
+      permissionMode: 'ask',
+    }));
+
+    assert.ok(plain(transcript.render(40)).some((line) => line.includes('settled text')));
+    state.renderGeometry.viewportTop = 100;
+    entry.text = 'background update';
+    assert.ok(
+      plain(transcript.renderDocument(40)).some((line) => line.includes('background update')),
+    );
+
+    const liveLines = plain(transcript.render(40));
+    assert.ok(liveLines.some((line) => line.includes('settled text')));
+    assert.equal(liveLines.some((line) => line.includes('background update')), false);
+  });
 });
 
 function plain(lines: readonly string[]): string[] {
