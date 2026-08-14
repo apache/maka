@@ -13,7 +13,7 @@ $allowedRoot = Join-Path $tempRoot "maka-windows-appcontainer-allowed-$PID"
 $allowedReadPath = Join-Path $allowedRoot 'read.txt'
 $allowedWritePath = Join-Path $allowedRoot 'write.txt'
 $staleRoot = Join-Path $tempRoot "maka-windows-appcontainer-stale-$PID"
-$ledgerRoot = Join-Path $tempRoot 'maka-sandbox-acl-ledgers'
+$ledgerRoot = Join-Path ([IO.Path]::GetTempPath()) 'maka-sandbox-acl-ledgers'
 $ledgerPath = Join-Path $ledgerRoot "stale-$PID.json"
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $listener.Start()

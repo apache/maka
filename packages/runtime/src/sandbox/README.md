@@ -22,6 +22,8 @@ Code and focused tests are the final authority. Windows enforcement work is trac
 - `macos-seatbelt.ts` builds the Seatbelt policy and wraps inner argv with `/usr/bin/sandbox-exec`.
 - `linux-sandbox.ts` builds the bubblewrap mounts, namespace arguments, and network seccomp filter.
 - `linux-capability.ts` proves bubblewrap and namespace availability before selection is usable.
+- `windows-profile.ts` compiles managed profiles into canonical ACL, network, and environment policy.
+- `windows-sandbox.ts` writes one-shot manifests and invokes the packaged AppContainer broker.
 - `default-sandbox-manager.ts` registers the supported default backends.
 - `index.ts` is the public subpath surface; the runtime package barrel re-exports the supported API.
 
@@ -33,7 +35,8 @@ Code and focused tests are the final authority. Windows enforcement work is trac
 - macOS selects the Seatbelt backend and fails closed when the backend is unavailable.
 - Linux selects the bubblewrap backend and fails closed when its executable, namespace probe, or
   requested profile cannot be enforced.
-- Windows and other unsupported platforms return `unsupported_platform` when a sandbox is required.
+- Windows selects the AppContainer broker only when its packaged native resource exists; otherwise it
+  fails closed as unavailable. Other unsupported platforms return `unsupported_platform`.
 - A backend that receives an invalid or unsupported profile returns a typed failure; it does not silently downgrade to host execution.
 
 ## Boundaries
@@ -51,7 +54,7 @@ Code and focused tests are the final authority. Windows enforcement work is trac
 - Diff/write-back or apply-patch UI
 - Automatic unsandboxed retry
 - Managed network proxy or domain allowlists
-- Windows sandbox implementation; its proposed boundary is documented separately in the Phase 4 RFC
+- Windows release signing and the full Phase 4 adversarial support declaration
 - A second permission language, shell runner, or file-policy system
 
 ## Verification
@@ -62,4 +65,5 @@ Code and focused tests are the final authority. Windows enforcement work is trac
 - macOS platform behavior: `packages/runtime/src/__tests__/macos-seatbelt-smoke.test.ts`
 - Linux policy and wrapper: `packages/runtime/src/__tests__/linux-sandbox.test.ts`
 - Linux platform behavior: `packages/runtime/src/__tests__/linux-sandbox-smoke.test.ts`
+- Windows profile and broker transform: `windows-profile.test.ts` and `windows-sandbox.test.ts`
 - Public exports and default registration: `sandbox-export.test.ts` and `default-sandbox-manager.test.ts`

@@ -1,24 +1,23 @@
 # Windows 沙箱后端 RFC v1
 
-- 状态：拟议安全架构；W0 可行性门仍未关闭
+- 状态：实现基线已选定；产品接入正在做发布验证
 - 跟踪：[Issue #2142](https://github.com/maka-agent/maka-agent/issues/2142) Windows Phase 4
-- 更新日期：2026-08-13
+- 更新日期：2026-08-14
 - Owner：`@maka/runtime` sandbox boundary 与 Runtime Host execution composition
 - 英文版：[windows-sandbox-rfc-v1.md](./windows-sandbox-rfc-v1.md)
 
 ## 1. 范围与设计状态
 
-本文定义 Windows 沙箱的威胁模型、强制保证、拟议原生架构、替代方案、交付切片与发布证据。它是
-Phase 4 完整的安全设计基线，但还不是已经冻结的实现规格。
+本文定义 Windows 沙箱的威胁模型、选定的原生架构、替代方案、交付切片与发布证据，是 Phase 4 的完整
+安全基线。首个产品实现位于 #2961；是否宣布更广泛的 Windows 支持，仍由 #2142 和下文发布 gate 决定。
 
-以下三项实现决策仍是显式 W0 gate：
+W0 选择 Maka 自有 Rust 实现，不直接引入其他产品的 setup 和协议模型。Windows 2025 证据否决了当前用户
+restricted-token 候选：真实 `cmd.exe` 和 launcher child 无法稳定初始化；同一 runner 上的 AppContainer 则在
+无需提权的情况下证明了默认拒绝、允许目录访问、网络拒绝和原子 Job membership。
 
-1. 能否抽取或适配 Apache-2.0 的 Codex Windows sandbox crate，而不引入其产品专用协议和 setup 模型；
-2. sandbox identity、ACL grant、升级和卸载的精确 schema 与 crash protocol；
-3. 网络拒绝最终采用直接 WFP filter、已验证的 Windows Firewall rule，还是二者组合。
-
-W0 必须用真实 Windows 可执行证据关闭这些 gate，并在 W1 合并前更新本文。在此之前，Windows restricted
-profile 继续 fail closed。本文不宣称 Windows 沙箱已经实现或受支持。
+首个切片使用稳定 AppContainer SID、带持久 one-shot ledger 的每次启动 ACL grant，以及不授予网络 capability
+的 AppContainer token。下一次启动前会 reconcile 遗留 grant。它不宣称抵抗管理员、已攻陷的同用户 host
+process、任意断电，或第 10 节列出的全部路径攻击。
 
 ## 2. 调研依据
 
@@ -38,29 +37,31 @@ Gemini CLI）、拥有成熟 Windows 进程沙箱（Chromium），或明确公�
 | Claude Code 官方文档与 `992381936817` 示例 | filesystem/network 双边界、proxy、升级请求；Windows 使用 WSL2 | 文件与网络分别证明，不能从通用配置推导原生支持 | 闭源实现细节 |
 | OpenCode `cc4b45612974` | 官方 Windows 文档推荐 WSL | WSL 可作为显式外部环境 | WSL 就是 Maka 原生 Windows backend |
 
-初稿没有纳入 Codex 和 Gemini 的当前实现。审查后推荐发生变化：不再默认选择 AppContainer，而以专用
-sandbox identity + restricted token + Job Object + private desktop + 显式 handle + ACL reconcile +
-identity-scoped network policy 为拟议基线；AppContainer 保留为 W0 对比候选。
+Codex、Gemini 和 Chromium 直接影响了分层 broker、Job、ACL recovery 与 fail-closed 合同，但 Maka 没有复制
+它们的产品协议。最终由可执行证据推翻初始专用账户建议：首个 native backend 选择 AppContainer，专用
+restricted-token 候选则保留为负面证据。
 
 ## 3. 决策
 
-Maka 应实现一个小型签名 native launcher 与 setup helper。Runtime Host 继续作为 broker，每个 restricted
-command 在专用 sandbox identity 下启动，并叠加：
+Maka 打包一个小型原生 Rust broker/client。Runtime Host 把 `PermissionProfile` 编译为封闭 launch manifest，
+然后启动 one-shot broker。可信原生进程把请求绑定到内核返回的 pipe client PID、一次性 nonce 和完整 launch
+policy 的 SHA-256，再叠加以下 Windows 控制：
 
-- 从 sandbox identity 派生的 restricted primary token；
-- 在创建时原子附加、owner close 时终止整棵进程树的 Job Object；
-- 显式继承 handle allowlist；
-- 非交互执行使用 private desktop；
-- 由 Maka 持有并 reconcile 的 identity-scoped filesystem ACL；
-- `network.restricted` 使用具备 fail-closed 出站策略的 offline identity；
-- filesystem restricted 但 network enabled 时才使用独立 online identity；
-- allowlist 环境和精确 runtime executable roots。
+- 不授予网络 capability 的 AppContainer primary token；
+- 通过 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时原子附加、close 时杀整棵树的 Job Object；
+- 禁止 handle inheritance；
+- 只给编译后的 read/write root 添加 AppContainer ACE，并使用持久 recovery ledger；
+- ACL 修改前递归拒绝 reparse point；
+- 从规范化 command 构造封闭、排序后的环境；
+- 只允许 SYSTEM 和当前用户的本地命名管道，以及有长度上限的 frame。
 
-首个生产切片只支持 managed Read/Glob/Grep 只读 filesystem worker。通用 Shell、PowerShell、cmd、Write、
-Edit、Format 必须等到 W2 证明更强的文件、可执行文件发现和进程合同后才能启用。
+x64 backend 只在打包 native resource 存在时注册。binary 缺失、路径无效、profile 不支持、manifest 错误、
+ACL recovery 失败或 launch 失败都保持 typed fail closed，绝不 unsandboxed retry。filesystem worker 与 Agent
+command 通过既有 `SandboxManager` 链路共用此 backend。
 
 Windows Sandbox 与 WSL2 后续可以成为显式 external profile，但不能替代 native per-command backend。
-restricted token、low integrity、Job Object 或 AppContainer 单独使用，也不能表达完整 `PermissionProfile`。
+AppContainer 单独使用也不够；Job、ACL policy、recovery ledger、broker authorization 和 Runtime fail-closed
+接入共同构成边界。
 
 ## 4. Maka 现有合同
 
@@ -138,55 +139,58 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - restricted managed profile 在 `auto`/`require` 下绝不 fallback host execution；
 - diagnostics 只暴露 backend、setup version 与 failure stage，不暴露 path、SID、credential、env 或 firewall detail。
 
-## 7. 拟议架构
+## 7. 选定架构
 
 ```mermaid
 sequenceDiagram
-  participant H as Runtime Host broker
+  participant H as Runtime Host
   participant M as SandboxManager
-  participant L as signed native launcher
+  participant B as one-shot native broker
   participant J as Job Object
-  participant C as restricted worker
+  participant C as AppContainer worker
 
   H->>M: transform(profile, canonical path context)
-  M->>M: compile identity, ACL, network, launch policy
-  M-->>H: typed Windows launch request
-  H->>L: launch(request, exact handle allowlist)
-  L->>L: verify setup marker and select offline/online identity
-  L->>L: create restricted token, private desktop, Job
-  L->>C: create with Job + handle attributes
-  C->>H: bounded protocol request/result
-  H->>J: close/terminate and wait for zero descendants
+  M->>M: compile roots, environment, network policy
+  M-->>H: native path + one-shot manifest
+  H->>B: --broker-local manifest
+  B->>B: delete manifest; bind PID, nonce, launch digest
+  B->>B: recover ledger; reject reparse tree; grant SID ACE
+  B->>J: create kill-on-close Job
+  B->>C: create AppContainer process with atomic Job attribute
+  C-->>B: bounded exit result
+  B->>B: remove owned ACE and completed ledger
+  B-->>H: exit code or fail-closed error
 ```
 
 ### 7.1 Setup 与持久状态
 
-显式 elevated setup 创建版本化 sandbox identity、安装签名 launcher、配置 identity-scoped network rule、授予
-最小 runtime read/execute 权限，并在验证后发布 signed/versioned readiness marker。setup 必须幂等。
+首个实现不需要 elevated setup。Windows 派生或创建稳定的 Maka AppContainer profile，打包 native binary 只给
+当前 launch 允许的 root 授予该 SID。修改前递归拒绝 `FILE_ATTRIBUTE_REPARSE_POINT`，用 `create_new` 和
+`sync_all` 持久化版本化 ledger，并在接收新请求前 reconcile 全部遗留 ledger。正常结束先移除 SID ACE，再
+删除 ledger。
 
-动态 workspace grant 归属于稳定 sandbox SID 和 Maka storage root 下的版本化 ledger。reconcile 先 apply desired
-grant，再 revoke stale owned grant。卸载只删除 Maka-owned ACE、identity、firewall/WFP object、private resource
-与 state，不改无关 ACL。升级测试覆盖 forward migration，以及新 readiness marker 发布前 setup 失败的 rollback。
-
-W0 必须决定是否必须使用独立 local user，或 capability-SID 方案能否提供等价 logon/filesystem/network/cleanup
-保证。Codex 是参考基线；AppContainer prototype 必须在兼容性和状态恢复上同时更优，而不只是网络默认拒绝。
+ledger 文件名使用 request identity 的 SHA-256，请求控制的路径字符无法逃出目录。`icacls.exe` 从绝对
+`%SystemRoot%\System32` 解析，不经过 shell，并使用 `/L` 操作 link object 而非跟随目标。Windows CI smoke
+证明正常清理、遗留 ledger recovery 和允许目录内 junction 拒绝。crash/power-loss 与并发替换加固仍是发布
+证据，不能当作已满足的假设。
 
 ### 7.2 Broker 与协议
 
-native launcher 不是通用 privileged service。它只接受父 Runtime Host 的 closed/versioned request，验证 canonical
-path 与 exact executable identity，绝不接受 child 发起的任意 ACL mutation。child 只得到一个 authenticated
-protocol channel。未知 field/method/identity/profile revision 一律 fail closed。
+native component 不是常驻 privileged service。每次调用创建随机本地 pipe，只允许 SYSTEM 和当前用户，服务
+一个有界请求，并在 AppContainer process 结束和 ACL 恢复后退出。server 从内核取得 peer PID、拒绝远程
+client、只允许一个 profile digest，并拒绝 nonce replay。
 
-首个只读 worker 可以采用 broker-mediated file open 以减少 workspace ACL grant。如果 direct Node filesystem
-不可避免，W1 必须使用与通用 backend 相同的 ledger/recovery，禁止临时 best-effort ACL。
+client 在连接前消费并删除 manifest。authorization 从完整 canonical launch object 重算 digest，所以修改
+executable、arguments、cwd、roots、network 或 environment 都会使批准失效。未知 field/version/outcome 或超长
+frame 一律 fail closed；授权路径只能调用 AppContainer atomic launcher。
 
 ## 8. 替代方案与项目对比
 
 | 方案 | 证据 | 决策 |
 | --- | --- | --- |
-| 专用 identity + restricted token + Job + private desktop + ACL ledger + WFP/firewall | Codex 已展示 Agent 场景的 setup 与对抗测试形态 | 拟议基线；W0 完成抽取/兼容性 spike 后冻结 |
-| AppContainer/LPAC + Job + broker | Microsoft/Chromium 证明其 default-deny/network 能力 | W0 对比候选；任意开发工具兼容性与持久文件 grant 未解决 |
-| 当前用户 restricted token + Job | 有效进程加固 | 单独使用拒绝：当前用户既有 ACL 仍可读 |
+| 专用 identity + restricted token + Job + private desktop + ACL ledger + WFP/firewall | Codex 已展示 Agent 场景的 setup 与对抗测试形态 | 未来更强 tier 的参考；Maka runner 证据显示该候选无法可靠初始化真实 child |
+| AppContainer + atomic Job + one-shot broker + ACL ledger | Microsoft/Chromium 说明基础机制；Maka Windows 2025 CI 证明组合边界 | 选定 native backend |
+| 当前用户 restricted token + Job | 有效进程加固 | 拒绝：当前用户既有 ACL 仍可读，且 prototype 初始化不可靠 |
 | Low integrity ACL + Job | Gemini 实现了轻量路径 | 不用于 Maka strong tier：持久 label、best-effort ACL、network throttle 不满足 fail closed |
 | Chromium sandbox library | 成熟 broker/target、hook、mitigation、AppContainer | 仅参考：大型 C++ 集成和 renderer 假设不适合 one-shot 任意工具 |
 | Windows Sandbox | 强 VM 边界 | 未来 external profile；可选组件且 per-command 生命周期粗重 |
@@ -197,25 +201,23 @@ protocol channel。未知 field/method/identity/profile revision 一律 fail clo
 
 ### W0：可行性与冻结实现规格
 
-- 建立可复现 MSVC CI 的最小签名 Rust/C++ launcher；
-- 用 dedicated identity 与 AppContainer 两个 prototype 验证 Node worker、PowerShell、cmd、Git、ConPTY、cancel、
-  packaging；
-- 证明原子 Job assignment、exact handle inheritance、private desktop 与 offline network denial；
-- 定义 setup/ledger/protocol schema 与 upgrade/uninstall recovery；
-- 决定抽取/适配还是 Maka 自有实现；
-- 用选定 API、struct、error taxonomy 和时序图更新本文。
-
-W0 不启用 Windows restricted execution。
+- [x] 建立可复现 MSVC CI 的 Maka 自有 Rust launcher；
+- [x] 用真实 child 证据比较 restricted-token 与 AppContainer identity；
+- [x] 证明原子 Job、无 handle inheritance 和真实 loopback 拒绝；
+- [x] 定义封闭 broker、launch 和 ACL-ledger schema；
+- [x] 选择 AppContainer 并记录被否决候选；
+- [x] 用最终时序和失败边界更新 RFC。
 
 ### W1：managed 只读 filesystem worker
 
-- 在冻结 backend 下启动 Read/Glob/Grep；
-- 仅提供允许 read root，不提供 writable workspace root；
-- 拒绝网络、protected metadata mutation、ambient handle 与 descendant escape；
-- 接入 Runtime Host managed execution；
-- 增加真实 cancel、parent-death、并发 identity 与残留状态测试。
+- [x] 从 `PermissionProfile` 编译允许 root 与 runtime/executable root；
+- [x] 用 AppContainer 拒绝 ambient filesystem 与 network；
+- [x] 把 capability detection 接入 Runtime Host managed execution；
+- [x] 打包并验证 x64 native resource；
+- [x] resource/capability 不可用时 fail closed；
+- [ ] 完成 cancel、parent-death、并发和残留状态发布测试。
 
-这是第一个用户可见里程碑；Shell 和 mutation tool 继续 fail closed。
+这是第一个用户可见沙箱里程碑。未勾选证据限制支持声明，但绝不允许 unsandboxed fallback。
 
 ### W2：workspace-write 与通用命令
 

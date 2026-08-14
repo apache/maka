@@ -1,8 +1,9 @@
-# Windows sandbox W0 spike
+# Windows sandbox native evidence
 
-This directory contains evidence tooling for the W0 feasibility phase described
-by the Windows sandbox RFC. It is deliberately not connected to
-`SandboxManager`, packaging, or any user-visible restricted profile.
+This directory contains the native Rust broker/launcher and Windows evidence
+tooling selected by the Windows sandbox RFC. The release build is packaged by
+the Windows x64 pipeline and registered through `SandboxManager` only when the
+native resource is present.
 
 The first slice freezes the launcher request/result shapes and provides an
 untrusted Node probe that both candidate launchers must execute. The dedicated
@@ -20,13 +21,11 @@ The probe exits non-zero when an observation differs from its expectation. Its
 JSON report is evidence input, not a claim that the current process is
 sandboxed.
 
-`launcher/` is the first process-containment prototype. It currently probes a
+`launcher/` also retains the rejected process-containment prototype. It probes a
 restricted primary token, suspended process creation, post-create Job
 assignment, kill-on-close descendants, and no inherited handles. The post-create
-assignment is explicitly not the atomic Job guarantee; the W0 privileged-broker
-prototype must still prove `PROC_THREAD_ATTRIBUTE_JOB_LIST`. It intentionally
-rejects restricted-network and filesystem-root requests until the identity, ACL,
-and network prototypes exist.
+assignment is explicitly not the atomic Job guarantee and is not the production
+path. It remains only as bounded negative evidence.
 
 The current Windows 2025 evidence records an incompatibility in the
 unprivileged candidate: `CreateProcessWithTokenW` creates the restricted child,
@@ -41,14 +40,15 @@ the privileges needed to test the separate privileged-broker prototype. A
 missing privilege is an expected fail-closed capability result; it must not be
 worked around by silently using the non-atomic launcher path.
 
-`launcher --broker-serve-once <pipe> <account-sid> <profile-digest>` exposes one
-bounded local request over a protected named pipe. The pipe rejects remote
+`maka-windows-sandbox --broker-local <manifest>` creates one protected pipe,
+serves exactly one request, launches it, restores ACLs, and exits. The lower-level
+`--broker-serve-once <pipe> <account-sid> <profile-digest>` mode exposes one
+bounded local request over that pipe. The pipe rejects remote
 clients, grants access only to SYSTEM and the supplied user SID, obtains the
 client PID from the kernel, enforces nonce replay and profile-digest checks,
-and calls only the AppContainer atomic launch path. Empty filesystem policies
-complete without broker privileges; filesystem roots continue to fail closed
-until the ACL ledger exists. The broker never falls back to post-create Job
-assignment.
+and calls only the AppContainer atomic launch path. Authorization validates the
+digest of the complete launch policy. The broker never falls back to post-create
+Job assignment.
 
 `launcher --atomic <request.json>` is the privileged-broker launch candidate.
 It passes the Job handle through `PROC_THREAD_ATTRIBUTE_JOB_LIST` to
@@ -64,5 +64,5 @@ combines an AppContainer token with the same atomic Job attribute and supplies
 no network capabilities. Before launch, the broker persists an ACL recovery
 ledger, rejects reparse points, and grants the AppContainer SID only the
 requested roots. The smoke proves allowed read/write access, denial of a
-user-readable sibling file, denial of a live loopback endpoint, and removal of
-the temporary AppContainer ACE after exit.
+user-readable sibling file and live loopback endpoint, stale-ledger recovery,
+junction rejection, and removal of the temporary AppContainer ACE after exit.

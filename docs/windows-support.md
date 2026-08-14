@@ -1,6 +1,6 @@
 # Windows support baseline
 
-Windows is an active enablement target, not a fully supported Maka platform yet. The CLI and Electron desktop application can run from source, and release workflows produce a verified unsigned Windows x64 preview. Signing, automatic updates, sandbox enforcement, and computer-use guarantees remain incomplete. Progress is tracked in [GitHub issue #2142](https://github.com/maka-agent/maka-agent/issues/2142).
+Windows is an active enablement target, not a fully supported Maka platform yet. The CLI and Electron desktop application can run from source, and release workflows produce a verified unsigned Windows x64 preview. The x64 package includes an AppContainer sandbox for restricted managed execution; signing, the complete adversarial sandbox matrix, automatic updates, and computer-use guarantees remain incomplete. Progress is tracked in [GitHub issue #2142](https://github.com/maka-agent/maka-agent/issues/2142).
 
 ## Install the Windows x64 preview
 
@@ -69,7 +69,7 @@ The initial target is a native Windows 11 x64 development environment with:
 - WebView/runtime components installed by a current Windows 11 installation;
 - Windows Developer Mode or elevation only for tests that create file symlinks. Normal CLI and desktop startup must not require either.
 
-Windows 10, Windows on Arm, automatic updates, sandbox enforcement, and computer-use are not covered by the current support target. Packaged installation is available only as the unsigned Windows 11 x64 preview described above.
+Windows 10, Windows on Arm, automatic updates, the final sandbox support declaration, and computer-use are not covered by the current support target. Packaged installation is available only as the unsigned Windows 11 x64 preview described above.
 
 ## Reproducible checks
 
@@ -145,7 +145,8 @@ The root test timeout is tracked separately from individual test failures. Phase
 - Runtime Host endpoints use Windows named pipes rather than Unix domain sockets.
 - Shell selection prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`.
 - PTY execution uses ConPTY through `node-pty`; process-tree termination uses `taskkill /T` where required.
-- Restricted sandbox profiles fail closed because there is no Windows sandbox backend.
+- Restricted managed profiles use the packaged AppContainer broker when available and fail closed
+  when the native capability or requested policy is unavailable.
 - Computer-use has no Windows backend.
 - The Windows x64 NSIS installer is unsigned and there is no supported automatic-update channel.
 

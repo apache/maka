@@ -1,27 +1,28 @@
 # Windows sandbox backend RFC v1
 
-- Status: proposed security architecture; W0 feasibility gates remain open
+- Status: implementation baseline selected; product integration under release validation
 - Tracking: Windows Phase 4 in [issue #2142](https://github.com/maka-agent/maka-agent/issues/2142)
-- Updated: 2026-08-13
+- Updated: 2026-08-14
 - Owners: `@maka/runtime` sandbox boundary and Runtime Host execution composition
 - Chinese version: [windows-sandbox-rfc-v1.zh-CN.md](./windows-sandbox-rfc-v1.zh-CN.md)
 
 ## 1. Scope and design status
 
-This RFC defines the threat model, required guarantees, proposed native architecture, alternatives,
-delivery slices, and release evidence for a Windows sandbox. It is the complete Phase 4 security
-design baseline, but not yet a frozen implementation specification.
+This RFC defines the threat model, selected native architecture, alternatives, delivery slices, and
+release evidence for the Windows sandbox. It is the complete Phase 4 security baseline. The first
+product implementation is in #2961; the broader Windows support declaration remains governed by
+#2142 and the release gates below.
 
-Three implementation decisions remain explicit W0 gates:
+W0 selected a Maka-owned Rust implementation rather than importing another product's setup and
+protocol model. Windows 2025 evidence rejected the current-user restricted-token candidate because
+real `cmd.exe` and launcher children could not initialize reliably. It selected AppContainer because
+the same runner proved default denial, admitted-root access, network denial, and atomic Job
+membership without elevation.
 
-1. whether the Apache-2.0 Codex Windows sandbox crate can be extracted or adapted without importing
-   its product-specific protocol and setup model;
-2. the exact schema and crash protocol for sandbox identities, ACL grants, upgrades, and uninstall;
-3. whether network denial uses direct WFP filters, verified Windows Firewall rules, or a combination.
-
-W0 must resolve these gates with executable Windows evidence and update this RFC before W1 merges.
-Until then, restricted Windows profiles continue to fail closed. This document does not claim that
-Windows sandboxing is implemented or supported.
+The selected first slice uses a stable AppContainer SID, per-launch ACL grants recorded in a durable
+one-shot ledger, and an AppContainer token with no network capabilities. Stale grants are reconciled
+before the next launch. It does not claim resistance to an administrator, a compromised same-user
+host process, arbitrary power loss, or every adversarial path form listed in section 10.
 
 ## 2. Research basis
 
@@ -44,33 +45,35 @@ identified before the architecture freezes.
 | Claude Code public docs and `992381936817` examples | filesystem/network sandbox contract, proxy controls, escalation flow; Windows uses WSL2 | Separate filesystem and network guarantees; never infer native support from a generic sandbox setting | Closed-source implementation details |
 | OpenCode `cc4b45612974` | official Windows documentation recommends WSL | WSL is a viable explicit external environment | WSL provides Maka's native Windows backend |
 
-Codex and Gemini were not available as references in the first draft. Their reviewed implementations
-change the recommendation: AppContainer is no longer the selected default. The proposed baseline is
-a dedicated sandbox identity plus a restricted token, Job Object, private desktop, explicit handles,
-ACL reconciliation, and identity-scoped network policy. AppContainer remains a W0 comparison target.
+Codex, Gemini, and Chromium materially informed the layered broker, Job, ACL recovery, and
+fail-closed contracts. Maka did not copy their product protocols. Executable evidence overruled the
+initial dedicated-account recommendation: AppContainer is the selected identity for the first
+native backend, while the dedicated restricted-token candidate remains documented negative evidence.
 
 ## 3. Decision
 
-Maka should implement a small signed native launcher and setup helper. Runtime Host remains the
-broker and launches each restricted command under a dedicated sandbox identity with layered Windows
-controls:
+Maka packages a small native Rust broker/client. Runtime Host compiles `PermissionProfile` into a
+closed launch manifest and invokes a one-shot broker lifecycle. The trusted native process binds the
+request to its kernel-reported pipe client PID, a single-use nonce, and a SHA-256 digest of the exact
+launch policy, then launches the target with layered Windows controls:
 
-- a restricted primary token derived from the selected sandbox identity;
-- a Job Object attached atomically at process creation and configured to kill the tree on close;
-- an explicit inherited-handle allowlist;
-- a private desktop for non-interactive execution;
-- identity-scoped filesystem ACLs owned and reconciled by Maka;
-- an offline identity with fail-closed outbound network policy for `network.restricted`;
-- a separate online identity only when a restricted filesystem profile explicitly enables network;
-- a scrubbed, allowlisted environment and exact runtime executable roots.
+- an AppContainer primary token with no network capabilities;
+- a Job Object attached atomically through `PROC_THREAD_ATTRIBUTE_JOB_LIST` and configured to kill
+  the tree on close;
+- handle inheritance disabled;
+- AppContainer ACEs for only the compiled read/write roots, with a persisted recovery ledger;
+- recursive reparse-point rejection before ACL mutation;
+- a closed, sorted environment from the normalized command;
+- bounded local named-pipe framing protected to SYSTEM and the current user.
 
-The first production slice is the managed read-only filesystem worker used by Read, Glob, and Grep.
-General Shell, PowerShell, cmd, Write, Edit, and Format execution remains unavailable on restricted
-Windows profiles until W2 proves the stronger filesystem, executable-discovery, and process contracts.
+The packaged x64 backend is registered only when the native resource exists. Missing binaries,
+invalid paths, unsupported profiles, malformed manifests, failed ACL recovery, or launch failures
+remain typed fail-closed outcomes; there is no unsandboxed retry. The same backend is available to
+the filesystem worker and Agent command execution through the existing `SandboxManager` path.
 
 Windows Sandbox and WSL2 may later be exposed as explicit external profiles. They are not substitutes
-for a native per-command backend. Restricted tokens, low integrity, Job Objects, or AppContainer used
-alone are also insufficient to represent the complete `PermissionProfile` contract.
+for the native per-command backend. AppContainer alone is insufficient; the Job, ACL policy,
+recovery ledger, broker authorization, and fail-closed Runtime integration are part of the boundary.
 
 ## 4. Existing Maka contract
 
@@ -164,62 +167,62 @@ Lexical prefix checks are never authorization evidence.
 - Diagnostics expose the backend, setup version, and failure stage without paths, SIDs, credentials,
   environment values, or firewall details.
 
-## 7. Proposed architecture
+## 7. Selected architecture
 
 ```mermaid
 sequenceDiagram
-  participant H as Runtime Host broker
+  participant H as Runtime Host
   participant M as SandboxManager
-  participant L as signed native launcher
+  participant B as one-shot native broker
   participant J as Job Object
-  participant C as restricted worker
+  participant C as AppContainer worker
 
   H->>M: transform(profile, canonical path context)
-  M->>M: compile identity, ACL, network, and launch policy
-  M-->>H: typed Windows launch request
-  H->>L: launch(request, exact handle allowlist)
-  L->>L: verify setup marker and select offline/online identity
-  L->>L: create restricted token, private desktop, and Job
-  L->>C: create with Job + handle attributes
-  C->>H: bounded protocol request/result
-  H->>J: close/terminate and wait for zero descendants
+  M->>M: compile roots, environment, and network policy
+  M-->>H: native path + one-shot manifest
+  H->>B: --broker-local manifest
+  B->>B: delete manifest; bind PID, nonce, and launch digest
+  B->>B: recover ledger; reject reparse trees; grant SID ACEs
+  B->>J: create kill-on-close Job
+  B->>C: create AppContainer process with atomic Job attribute
+  C-->>B: bounded exit result
+  B->>B: remove owned ACEs and completed ledger
+  B-->>H: exit code or fail-closed error
 ```
 
 ### 7.1 Setup and durable state
 
-An explicit elevated setup creates versioned sandbox identities, installs the signed launcher,
-configures identity-scoped network rules, grants minimum runtime read/execute access, and publishes a
-signed/versioned readiness marker only after verification. Setup is idempotent.
+The first implementation needs no elevated setup. Windows derives or creates the stable Maka
+AppContainer profile, and the packaged native binary grants that SID only the roots admitted for the
+current launch. Before mutation it recursively rejects `FILE_ATTRIBUTE_REPARSE_POINT`, persists a
+versioned ledger with `create_new` and `sync_all`, and reconciles every stale ledger before accepting
+a new request. Normal settlement removes the SID ACE and then deletes the ledger.
 
-Dynamic workspace grants are owned by a stable sandbox SID and a versioned ledger under Maka's
-storage root. Reconciliation applies desired grants before revoking stale owned grants. Uninstall
-must remove only Maka-owned ACEs, identities, firewall/WFP objects, private resources, and state. It
-must not rewrite unrelated ACL entries. Upgrade tests cover both forward migration and rollback from
-a failed setup before the new readiness marker is published.
-
-W0 must decide whether separate local user accounts are mandatory or whether a capability-SID design
-can provide equivalent logon, filesystem, network, and cleanup guarantees. The Codex design is the
-reference baseline; an AppContainer prototype must beat it on both compatibility and state recovery,
-not only on network denial.
+The ledger filename is a SHA-256 of the request identity, so request-controlled path characters
+cannot escape its directory. `icacls.exe` is resolved from absolute `%SystemRoot%\System32`, invoked
+without a shell, and uses `/L` so link objects are operated on rather than followed. The Windows CI
+smoke proves normal cleanup, stale-ledger recovery, and rejection of a junction in an admitted tree.
+Crash/power-loss and concurrent replacement hardening remain release evidence, not assumptions.
 
 ### 7.2 Broker and protocol
 
-The native launcher is not a general privileged service. It accepts a closed, versioned request from
-its parent Runtime Host, validates canonical paths and exact executable identity, and never accepts
-arbitrary ACL mutations from the child. The child receives one authenticated protocol channel.
-Unknown fields, methods, identities, or profile revisions fail closed.
+The native component is not a resident privileged service. Each invocation creates a random local
+pipe protected to SYSTEM and the current user, serves exactly one bounded request, and exits after
+the AppContainer process settles and ACLs are restored. The server obtains the peer PID from the
+kernel, rejects remote clients, admits one profile digest, and rejects nonce replay.
 
-The first read-only worker may use broker-mediated file opens to minimize workspace ACL grants. If
-direct Node filesystem access is required, W1 must use the same ledger and recovery protocol as the
-general backend; temporary best-effort ACL edits are prohibited.
+The client consumes and deletes the manifest before connecting. Authorization recomputes the digest
+from the complete canonical launch object, so changing executable, arguments, cwd, roots, network,
+or environment invalidates approval. Unknown fields, versions, outcomes, or oversized frames fail
+closed. The authorized path can call only the AppContainer atomic launcher.
 
 ## 8. Alternatives and project comparison
 
 | Option | Evidence | Decision |
 | --- | --- | --- |
-| Dedicated sandbox identities + restricted token + Job + private desktop + ACL ledger + WFP/firewall | Codex demonstrates this agent-oriented shape, including setup and adversarial tests | Proposed baseline; freeze after W0 extraction/compatibility spike |
-| AppContainer/LPAC + Job + broker | Microsoft and Chromium show strong default-deny/network properties | W0 comparison target; arbitrary developer-tool compatibility and persistent file grants remain unresolved |
-| Current-user restricted token + Job | Useful process hardening | Rejected alone: existing user ACLs remain readable |
+| Dedicated sandbox identities + restricted token + Job + private desktop + ACL ledger + WFP/firewall | Codex demonstrates this agent-oriented shape, including setup and adversarial tests | Reference for future stronger tiers; runner evidence showed the Maka candidate could not reliably initialize real children |
+| AppContainer + atomic Job + one-shot broker + ACL ledger | Microsoft and Chromium document the primitives; Maka Windows 2025 CI proves the composed boundary | Selected for the native backend |
+| Current-user restricted token + Job | Useful process hardening | Rejected: existing user ACLs remain readable and the prototype did not initialize reliably |
 | Low integrity ACL + Job | Gemini implements this lightweight path | Rejected for Maka's strong tier: persistent labels, best-effort ACL failures, and network throttling do not meet fail-closed policy |
 | Chromium sandbox library | Mature broker/target, hooks, mitigations, AppContainer support | Reference only: large C++ integration and renderer assumptions do not match one-shot arbitrary tools |
 | Windows Sandbox | Strong VM boundary | Future external profile: optional feature and coarse per-command lifecycle |
@@ -230,25 +233,24 @@ general backend; temporary best-effort ACL edits are prohibited.
 
 ### W0: feasibility and frozen implementation spec
 
-- build a minimal signed Rust or C++ launcher with reproducible MSVC CI;
-- prototype dedicated identity and AppContainer variants against Node filesystem worker, PowerShell,
-  cmd, Git, ConPTY, cancellation, and packaging;
-- prove atomic Job assignment, exact handle inheritance, private desktop, and offline network denial;
-- define setup/ledger/protocol schemas and upgrade/uninstall recovery;
-- decide extraction/adaptation versus a Maka-owned implementation;
-- update this RFC with the selected APIs, structs, error taxonomy, and sequence diagrams.
-
-W0 does not enable restricted Windows execution.
+- [x] build a Maka-owned Rust launcher with reproducible MSVC CI;
+- [x] compare restricted-token and AppContainer identities with real child evidence;
+- [x] prove atomic Job assignment, no inherited handles, and live loopback denial;
+- [x] define closed broker, launch, and ACL-ledger schemas;
+- [x] select the AppContainer implementation and document the rejected candidate;
+- [x] update this RFC with the selected sequence and failure boundary.
 
 ### W1: managed read-only filesystem worker
 
-- launch Read/Glob/Grep under the frozen backend;
-- provide admitted read roots and no writable workspace roots;
-- deny network, protected metadata mutation, ambient handles, and descendant escape;
-- compose it into Runtime Host managed execution;
-- add real cancellation, parent-death, concurrent-identity, and residual-state tests.
+- [x] compile admitted roots and runtime/executable roots from `PermissionProfile`;
+- [x] deny ambient filesystem and network access under AppContainer;
+- [x] compose capability detection into Runtime Host managed execution;
+- [x] package and verify the x64 native resource;
+- [x] fail closed when the resource or capability is unavailable;
+- [ ] finish cancellation, parent-death, concurrency, and residual-state release tests.
 
-This is the first user-visible milestone. Shell and mutation tools remain fail closed.
+This is the first user-visible sandbox milestone. Remaining unchecked evidence limits the support
+claim; it does not permit an unsandboxed fallback.
 
 ### W2: workspace-write and general commands
 
