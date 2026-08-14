@@ -154,8 +154,8 @@ test('child author installs and sandbox-tests a candidate before the parent acce
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-child-tool-author-'));
   const store = new ToolPackageStore(root);
-  const runtime = new HostExtensionRuntime();
-  const controller = new HostExtensionController(
+  let runtime = new HostExtensionRuntime();
+  let controller = new HostExtensionController(
     runtime,
     new InstalledToolPackageExtensionLoader(new StaticTrustedToolExtensionLoader(), store),
     new HostExtensionStateStore(root),
@@ -179,6 +179,7 @@ test('child author installs and sandbox-tests a candidate before the parent acce
       definition(
         '1.0.0',
         `export default { Add: ({ left, right }) => ({ sum: left + right, author: 'child' }) };`,
+        'dev.maka.calculator',
       ),
       child,
     )) as { revision: string };
@@ -189,7 +190,7 @@ test('child author installs and sandbox-tests a candidate before the parent acce
     assert.deepEqual(
       await testCandidate.impl(
         {
-          extensionId: 'calculator',
+          extensionId: 'dev.maka.calculator',
           revision: candidate.revision,
           toolName: 'Add',
           args: { left: 4, right: 6 },
@@ -211,7 +212,7 @@ test('child author installs and sandbox-tests a candidate before the parent acce
     const manage = management.tools().find(({ name }) => name === 'manage_tool');
     assert.ok(manage);
     await manage.impl(
-      { action: 'activate', extensionId: 'calculator', revision: candidate.revision },
+      { action: 'activate', extensionId: 'dev.maka.calculator', revision: candidate.revision },
       parent,
     );
     assert.equal(
@@ -229,15 +230,33 @@ test('child author installs and sandbox-tests a candidate before the parent acce
       sum: 17,
       author: 'child',
     });
+
+    await runtime.close();
+    runtime = new HostExtensionRuntime();
+    controller = new HostExtensionController(
+      runtime,
+      new InstalledToolPackageExtensionLoader(new StaticTrustedToolExtensionLoader(), store),
+      new HostExtensionStateStore(root),
+      () => assert.fail('dotted Tool candidate recovery must not drain the Host'),
+    );
+    await controller.recover();
+    const recoveredInvoke = new HostToolPackageManagementTools(root, controller, runtime, store)
+      .tools()
+      .find(({ name }) => name === 'invoke_tool');
+    assert.ok(recoveredInvoke);
+    assert.deepEqual(
+      await recoveredInvoke.impl({ toolName: 'Add', args: { left: 10, right: 11 } }, parent),
+      { sum: 21, author: 'child' },
+    );
   } finally {
     await runtime.close().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
 });
 
-function definition(version: string, source: string): Record<string, unknown> {
+function definition(version: string, source: string, id = 'calculator'): Record<string, unknown> {
   return {
-    id: 'calculator',
+    id,
     version,
     source,
     tools: [

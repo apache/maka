@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import {
+  isCanonicalExtensionId,
+  isCanonicalExtensionScopeId,
+} from '@maka/runtime/extension-lifecycle-kernel';
 
 const SCHEMA_VERSION = 1 as const;
 const MAX_STATE_BYTES = 1024 * 1024;
@@ -123,8 +127,8 @@ function decodeState(value: unknown): PersistedExtensionState {
     ]);
     const decoded = Object.freeze({
       bindingId: entityId(binding.bindingId, 'bindingId'),
-      scopeId: entityId(binding.scopeId, 'scopeId'),
-      extensionId: entityId(binding.extensionId, 'extensionId'),
+      scopeId: extensionScopeId(binding.scopeId),
+      extensionId: extensionId(binding.extensionId),
       desiredRevision: revision(binding.desiredRevision, 'desiredRevision'),
       lastGoodRevision:
         binding.lastGoodRevision === null
@@ -163,6 +167,20 @@ function exactRecord(value: unknown, keys: readonly string[]): Record<string, un
 function entityId(value: unknown, label: string): string {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
     throw persistenceError(`Extension ${label} is invalid`);
+  }
+  return value;
+}
+
+function extensionScopeId(value: unknown): string {
+  if (!isCanonicalExtensionScopeId(value)) {
+    throw persistenceError('Extension scopeId is invalid');
+  }
+  return value;
+}
+
+function extensionId(value: unknown): string {
+  if (!isCanonicalExtensionId(value)) {
+    throw persistenceError('Extension extensionId is invalid');
   }
   return value;
 }

@@ -1,3 +1,4 @@
+import { isCanonicalExtensionId } from '@maka/runtime/extension-lifecycle-kernel';
 import type { TrustedExtensionRevisionProjection } from '../protocol/index.js';
 import type {
   HostPreparedToolExtensionRevisionInput,
@@ -211,7 +212,7 @@ function assertDefinition(definition: HostTrustedToolExtensionRevisionInput): vo
   if (!definition || typeof definition !== 'object') {
     throw new HostExtensionLoaderError('invalid_definition', 'Trusted Extension is required');
   }
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(definition.extensionId)) {
+  if (!isCanonicalExtensionId(definition.extensionId)) {
     throw new HostExtensionLoaderError(
       'invalid_definition',
       'Trusted Extension extensionId is invalid',

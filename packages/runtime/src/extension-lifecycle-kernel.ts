@@ -4,6 +4,16 @@ const ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 const SCOPE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const MAX_ID_LENGTH = 128;
 
+/** Canonical identity shared by Extension manifests, loaders, bindings, and persistence. */
+export function isCanonicalExtensionId(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= MAX_ID_LENGTH && ID_PATTERN.test(value);
+}
+
+/** Canonical identity for the Session/workspace scope that owns an Extension binding. */
+export function isCanonicalExtensionScopeId(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= MAX_ID_LENGTH && SCOPE_ID_PATTERN.test(value);
+}
+
 export type ExtensionEffectDisposer = () => void | Promise<void>;
 
 export interface ExtensionDependencyDefinition {
@@ -982,13 +992,13 @@ function validateBindingInput(input: ExtensionBindingInput): void {
 }
 
 function validateScopeId(value: string): void {
-  if (typeof value !== 'string' || value.length > MAX_ID_LENGTH || !SCOPE_ID_PATTERN.test(value)) {
+  if (!isCanonicalExtensionScopeId(value)) {
     invalidDefinition(`Invalid scopeId: ${String(value)}`);
   }
 }
 
 function validateId(label: string, value: string): void {
-  if (typeof value !== 'string' || value.length > MAX_ID_LENGTH || !ID_PATTERN.test(value)) {
+  if (!isCanonicalExtensionId(value)) {
     invalidDefinition(`Invalid ${label}: ${String(value)}`);
   }
 }

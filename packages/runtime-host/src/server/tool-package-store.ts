@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import type { ToolCategory } from '@maka/core/permission';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
+import { isCanonicalExtensionId } from '@maka/runtime/extension-lifecycle-kernel';
 
 const MANIFEST_FILE = 'maka.tool.json';
 const STORE_DIRECTORY = 'tool-packages-v1';
@@ -11,7 +12,6 @@ const MAX_FILES = 128;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_PACKAGE_BYTES = 8 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 256 * 1024;
-const ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u;
 const REVISION_PATTERN = /^sha256-[a-f0-9]{64}$/u;
 const TOOL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u;
 const CATEGORIES = new Set<ToolCategory>([
@@ -445,7 +445,7 @@ function requireId(value: unknown): string {
 }
 
 function validId(value: string): boolean {
-  return value.length <= 128 && ID_PATTERN.test(value);
+  return isCanonicalExtensionId(value);
 }
 
 function requireRevision(value: string): void {
