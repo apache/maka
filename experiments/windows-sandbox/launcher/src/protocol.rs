@@ -3,7 +3,7 @@ use std::path::{Component, Path};
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchRequest {
@@ -18,7 +18,7 @@ pub struct LaunchRequest {
     pub environment: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
@@ -31,7 +31,7 @@ pub struct BrokerLaunchRequest {
     pub launch: LaunchRequest,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct BrokerLaunchResponse {
@@ -40,7 +40,7 @@ pub struct BrokerLaunchResponse {
     pub outcome: BrokerLaunchOutcome,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 #[allow(dead_code)]
 pub enum BrokerLaunchOutcome {
@@ -49,7 +49,7 @@ pub enum BrokerLaunchOutcome {
     Rejected { code: String, message: String },
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NetworkMode {
     Restricted,

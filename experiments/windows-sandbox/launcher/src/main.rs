@@ -4,6 +4,7 @@ compile_error!("maka-windows-sandbox-spike is Windows-only");
 mod broker_authorization;
 #[cfg(test)]
 mod broker_authorization_tests;
+mod broker_client;
 mod broker_framing;
 #[cfg(test)]
 mod broker_framing_tests;
@@ -66,6 +67,21 @@ fn run() -> Result<u8, String> {
             &profile_digest.to_string_lossy(),
         )?;
         return Ok(0);
+    }
+    if first == "--broker-client" {
+        let pipe_name = args
+            .next()
+            .ok_or_else(|| "--broker-client requires pipe name and manifest path".to_owned())?;
+        let manifest_path = args
+            .next()
+            .ok_or_else(|| "--broker-client requires pipe name and manifest path".to_owned())?;
+        if args.next().is_some() {
+            return Err("--broker-client accepts exactly two arguments".to_owned());
+        }
+        return broker_client::run(
+            &pipe_name.to_string_lossy(),
+            &manifest_path.to_string_lossy(),
+        );
     }
     let (mode, request_path) = if first == "--atomic" {
         let path = args
