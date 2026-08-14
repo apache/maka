@@ -25,8 +25,26 @@ export const DEFAULT_TURN_GAP = 16;
 export const DEFAULT_TURN_OVERSCAN_PX = 1_000;
 export const DEFAULT_TURN_WINDOW_SIZE = 60;
 export const MAX_TURN_WINDOW_SIZE = 100;
-export const INITIAL_TURN_WINDOW_SIZE = 40;
+export const INITIAL_TURN_WINDOW_SIZE = 2;
 const TURN_WINDOW_SHIFT_SIZE = 8;
+
+export function estimatedTurnHeight(heights: ReadonlyMap<string, number> | undefined): number {
+  if (!heights || heights.size === 0) return DEFAULT_TURN_ESTIMATED_HEIGHT;
+  let total = 0;
+  for (const height of heights.values()) total += height;
+  return Math.max(DEFAULT_TURN_ESTIMATED_HEIGHT, total / heights.size);
+}
+
+export function turnVirtualizationRequired(
+  layout: TurnVirtualLayout,
+  viewportHeight: number | undefined,
+  renderedHeight = 0,
+): boolean {
+  if (layout.turnIds.length > MAX_TURN_WINDOW_SIZE) return true;
+  if (viewportHeight === undefined || viewportHeight <= 0) return false;
+  return Math.max(layout.totalHeight, renderedHeight)
+    > viewportHeight + (2 * DEFAULT_TURN_OVERSCAN_PX);
+}
 
 export function buildTurnVirtualLayout(
   turnIds: readonly string[],
@@ -133,17 +151,22 @@ export function stableTurnVirtualWindowForViewport(
   }
   if (current.end > current.start && retainsTarget) {
     const size = current.end - current.start;
+    const shiftSize = Math.min(TURN_WINDOW_SHIFT_SIZE, size);
     if (
       requiredStart >= layout.offsets[current.start]!
       && requiredEnd > layout.offsets[current.end]!
     ) {
       let end = current.end;
       while (end < layout.turnIds.length && layout.offsets[end]! < requiredEnd) {
-        end = Math.min(layout.turnIds.length, end + TURN_WINDOW_SHIFT_SIZE);
+        end = Math.min(layout.turnIds.length, end + shiftSize);
       }
       const shifted = { start: Math.max(0, end - size), end };
       const inclusive = includeRange(shifted.start, shifted.end, retained);
-      if (inclusive.end - inclusive.start <= hardMaxTurns(options)) {
+      if (
+        inclusive.end - inclusive.start <= hardMaxTurns(options)
+        && requiredStart >= layout.offsets[inclusive.start]!
+        && requiredEnd <= layout.offsets[inclusive.end]!
+      ) {
         return windowFor(layout, inclusive.start, inclusive.end);
       }
     }
@@ -153,11 +176,15 @@ export function stableTurnVirtualWindowForViewport(
     ) {
       let start = current.start;
       while (start > 0 && layout.offsets[start]! > requiredStart) {
-        start = Math.max(0, start - TURN_WINDOW_SHIFT_SIZE);
+        start = Math.max(0, start - shiftSize);
       }
       const shifted = { start, end: Math.min(layout.turnIds.length, start + size) };
       const inclusive = includeRange(shifted.start, shifted.end, retained);
-      if (inclusive.end - inclusive.start <= hardMaxTurns(options)) {
+      if (
+        inclusive.end - inclusive.start <= hardMaxTurns(options)
+        && requiredStart >= layout.offsets[inclusive.start]!
+        && requiredEnd <= layout.offsets[inclusive.end]!
+      ) {
         return windowFor(layout, inclusive.start, inclusive.end);
       }
     }

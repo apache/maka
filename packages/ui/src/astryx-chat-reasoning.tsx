@@ -129,17 +129,19 @@ export function ChatReasoning(props: ChatReasoningProps) {
           <Icon icon="chevronDown" size="xsm" color="inherit" />
         </span>
       </div>
-      <div className={isExpanded ? 'xrvj5dj xb0j27v x1tu4anv' : 'xrvj5dj xihq33y xb0j27v'}>
-        <div className="xb3r6kr x2lwn1j">
-          {/* Product class on the reasoning body: the official component's
-              atoms deliberately own no white-space (children are assumed
-              pre-rendered), so without it the inherited `white-space: normal`
-              collapses every newline in the thinking text. Maka restores the
-              pre-wrap reading contract on this class — see
-              `.maka-chat-reasoning-content` in styles.css. */}
-          <div className="maka-chat-reasoning-content x1xye8es x1f43n9v x141an7d x1ltkj2j x9ynric xv1l7n4">{children}</div>
+      {isExpanded ? (
+        <div className="xrvj5dj xb0j27v x1tu4anv">
+          <div className="xb3r6kr x2lwn1j">
+            {/* Product class on the reasoning body: the official component's
+                atoms deliberately own no white-space (children are assumed
+                pre-rendered), so without it the inherited `white-space: normal`
+                collapses every newline in the thinking text. Maka restores the
+                pre-wrap reading contract on this class — see
+                `.maka-chat-reasoning-content` in styles.css. */}
+            <div className="maka-chat-reasoning-content x1xye8es x1f43n9v x141an7d x1ltkj2j x9ynric xv1l7n4">{children}</div>
+          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }

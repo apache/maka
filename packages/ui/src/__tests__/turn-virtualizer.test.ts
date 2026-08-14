@@ -2,16 +2,24 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   buildTurnVirtualLayout,
+  estimatedTurnHeight,
   initialTurnVirtualWindow,
   reconcileTurnVirtualWindow,
   stableTurnVirtualWindowForViewport,
   turnVirtualWindowForRange,
   turnVirtualWindowForViewport,
+  turnVirtualizationRequired,
 } from '../turn-virtualizer.js';
 
 const ids = (count: number) => Array.from({ length: count }, (_, index) => `t${index}`);
 
 describe('turn virtualizer', () => {
+  it('uses observed turns to estimate unmeasured history', () => {
+    assert.equal(estimatedTurnHeight(undefined), 280);
+    assert.equal(estimatedTurnHeight(new Map([['short', 100]])), 280);
+    assert.equal(estimatedTurnHeight(new Map([['a', 600], ['b', 1_000]])), 800);
+  });
+
   it('starts with a bounded tail and exact spacer geometry', () => {
     const layout = buildTurnVirtualLayout(ids(200), undefined, { estimatedHeight: 100, gap: 4 });
     const window = initialTurnVirtualWindow(layout, 40);
@@ -132,7 +140,7 @@ describe('turn virtualizer', () => {
       buildTurnVirtualLayout(shortIds, undefined),
       first,
     );
-    assert.deepEqual([short.start, short.end], [0, 10]);
+    assert.deepEqual([short.start, short.end], [8, 10]);
 
     const longIds = ids(200);
     const long = reconcileTurnVirtualWindow(
@@ -140,7 +148,17 @@ describe('turn virtualizer', () => {
       buildTurnVirtualLayout(longIds, undefined),
       first,
     );
-    assert.deepEqual([long.start, long.end], [160, 200]);
+    assert.deepEqual([long.start, long.end], [198, 200]);
+  });
+
+  it('virtualizes by rendered distance before the turn-count cap', () => {
+    const compact = buildTurnVirtualLayout(ids(8), undefined, { estimatedHeight: 90 });
+    const tall = buildTurnVirtualLayout(ids(8), undefined, { estimatedHeight: 500 });
+
+    assert.equal(turnVirtualizationRequired(compact, 800), false);
+    assert.equal(turnVirtualizationRequired(compact, 800, 4_000), true);
+    assert.equal(turnVirtualizationRequired(tall, 800), true);
+    assert.equal(turnVirtualizationRequired(buildTurnVirtualLayout(ids(101), undefined), undefined), true);
   });
 
   it('recovers an undersized viewport window instead of oscillating between turns', () => {

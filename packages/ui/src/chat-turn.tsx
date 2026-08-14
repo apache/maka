@@ -1128,17 +1128,28 @@ function ProcessingBlock(props: {
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
   const { entries } = props;
+  const copy = getConversationCopy(useUiLocale()).messages;
+  const live = entries.some((entry) => entry.kind === 'thinking'
+    ? entry.live
+    : entry.items.some((item) => item.status === 'running'));
   return (
-    <div className="maka-processing-sequence">
-      {entries.map((entry, index) => (
-        <TurnTimelineEntry
-          key={timelineEntryKey(entry, index)}
-          item={entry}
-          onOpenLinkedSession={props.onOpenLinkedSession}
-          initialLiveContent={props.initialLiveContent}
-        />
-      ))}
-    </div>
+    <ChatReasoning
+      className="maka-processing-block"
+      label={copy.processing}
+      isStreaming={live}
+      defaultIsExpanded={live}
+    >
+      <div className="maka-processing-sequence">
+        {entries.map((entry, index) => (
+          <TurnTimelineEntry
+            key={timelineEntryKey(entry, index)}
+            item={entry}
+            onOpenLinkedSession={props.onOpenLinkedSession}
+            initialLiveContent={props.initialLiveContent}
+          />
+        ))}
+      </div>
+    </ChatReasoning>
   );
 }
 

@@ -13,12 +13,14 @@ import {
   buildTurnVirtualLayout,
   DEFAULT_TURN_GAP,
   DEFAULT_TURN_WINDOW_SIZE,
+  estimatedTurnHeight,
+  INITIAL_TURN_WINDOW_SIZE,
   initialTurnVirtualWindow,
-  MAX_TURN_WINDOW_SIZE,
   reconcileTurnVirtualWindow,
   stableTurnVirtualWindowForViewport,
   turnVirtualWindowForRange,
   turnVirtualWindowForViewport,
+  turnVirtualizationRequired,
   type TurnVirtualLayout,
   type TurnVirtualWindow,
 } from './turn-virtualizer.js';
@@ -46,7 +48,10 @@ export function useTurnVirtualizer(input: {
     ? turnHeightIndex.lookup(input.sessionId, layoutKey)
     : undefined;
   const layout = useMemo(
-    () => buildTurnVirtualLayout(input.turnIds, heights, { gap }),
+    () => buildTurnVirtualLayout(input.turnIds, heights, {
+      estimatedHeight: estimatedTurnHeight(heights),
+      gap,
+    }),
     [input.turnIds, heights, gap, geometryRevision],
   );
   const targetKey = input.targetTurnId === undefined
@@ -59,7 +64,11 @@ export function useTurnVirtualizer(input: {
     : -1;
   const ensureIndex = candidateEnsureIndex < 0 ? undefined : candidateEnsureIndex;
   const retainRange = root ? interactiveTurnRange(root, input.turnIds) : undefined;
-  const virtualizationRequired = input.turnIds.length > MAX_TURN_WINDOW_SIZE;
+  const virtualizationRequired = turnVirtualizationRequired(
+    layout,
+    root?.clientHeight,
+    root?.scrollHeight,
+  );
   const [state, setState] = useState<VirtualState>(() => ({
     sessionId: input.sessionId,
     turnIds: input.turnIds,
@@ -157,7 +166,10 @@ export function useTurnVirtualizer(input: {
         installWindow(turnVirtualWindowForViewport(
           layoutRef.current,
           { scrollTop: root.scrollTop, clientHeight: root.clientHeight },
-          { ensureIndex: targetIndex < 0 ? undefined : targetIndex },
+          {
+            ensureIndex: targetIndex < 0 ? undefined : targetIndex,
+            preferredTurns: INITIAL_TURN_WINDOW_SIZE,
+          },
         ), false);
       }
     }
@@ -179,7 +191,10 @@ export function useTurnVirtualizer(input: {
         layoutRef.current,
         stateRef.current.window,
         { scrollTop: root.scrollTop, clientHeight: root.clientHeight },
-        { retainRange: interactiveTurnRange(root, stateRef.current.turnIds) },
+        {
+          preferredTurns: INITIAL_TURN_WINDOW_SIZE,
+          retainRange: interactiveTurnRange(root, stateRef.current.turnIds),
+        },
       ));
     };
     const scheduleWindow = (): void => {
