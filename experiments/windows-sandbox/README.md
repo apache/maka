@@ -41,6 +41,14 @@ the privileges needed to test the separate privileged-broker prototype. A
 missing privilege is an expected fail-closed capability result; it must not be
 worked around by silently using the non-atomic launcher path.
 
+`launcher --broker-serve-once <pipe> <account-sid> <profile-digest>` exposes one
+bounded local request over a protected named pipe. The pipe rejects remote
+clients, grants access only to SYSTEM and the supplied user SID, obtains the
+client PID from the kernel, enforces nonce replay and profile-digest checks,
+and calls only the atomic launch path. A runner without broker privileges
+receives `atomic_launch_failed`; the broker never falls back to post-create Job
+assignment.
+
 `launcher --atomic <request.json>` is the privileged-broker launch candidate.
 It passes the Job handle through `PROC_THREAD_ATTRIBUTE_JOB_LIST` to
 `CreateProcessAsUserW`, so successful process creation and Job membership are

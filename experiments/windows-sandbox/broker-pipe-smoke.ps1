@@ -74,7 +74,8 @@ try {
   $response = [Text.Encoding]::UTF8.GetString($responsePayload) | ConvertFrom-Json
   if ($response.requestId -ne 'pipe-smoke' -or
       $response.outcome.kind -ne 'rejected' -or
-      $response.outcome.code -ne 'launch_handoff_not_implemented') {
+      $response.outcome.code -ne 'atomic_launch_failed' -or
+      $response.outcome.message -notmatch 'required privilege') {
     throw "Unexpected broker response: $($response | ConvertTo-Json -Compress)"
   }
   Write-Host "Secure broker pipe authorization verified: $($response | ConvertTo-Json -Compress)"

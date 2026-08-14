@@ -45,6 +45,7 @@ pub struct BrokerLaunchResponse {
 #[allow(dead_code)]
 pub enum BrokerLaunchOutcome {
     Started { process_id: u32 },
+    Completed { exit_code: u8 },
     Rejected { code: String, message: String },
 }
 

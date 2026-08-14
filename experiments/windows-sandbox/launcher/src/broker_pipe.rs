@@ -23,6 +23,7 @@ use crate::broker_authorization::BrokerAuthorizer;
 use crate::broker_framing::{MAX_BROKER_MESSAGE_BYTES, decode_frame, encode_frame};
 use crate::broker_pipe_security::{pipe_security_sddl, validate_pipe_name};
 use crate::protocol::{BrokerLaunchOutcome, BrokerLaunchRequest, BrokerLaunchResponse};
+use crate::windows_launcher;
 
 pub fn serve_once(pipe_name: &str, account_sid: &str, profile_digest: &str) -> Result<(), String> {
     validate_pipe_name(pipe_name).map_err(|error| format!("invalid broker pipe: {error:?}"))?;
@@ -99,10 +100,12 @@ unsafe fn serve_once_with_security(
         let request_id = request.request_id.clone();
         let mut authorizer = BrokerAuthorizer::new([profile_digest.to_owned()]);
         let outcome = match authorizer.authorize(&request, client_pid) {
-            Ok(()) => BrokerLaunchOutcome::Rejected {
-                code: "launch_handoff_not_implemented".to_owned(),
-                message: "request authorized but atomic launch handoff is not implemented"
-                    .to_owned(),
+            Ok(()) => match windows_launcher::launch_atomic(&request.launch) {
+                Ok(exit_code) => BrokerLaunchOutcome::Completed { exit_code },
+                Err(message) => BrokerLaunchOutcome::Rejected {
+                    code: "atomic_launch_failed".to_owned(),
+                    message,
+                },
             },
             Err(error) => BrokerLaunchOutcome::Rejected {
                 code: error.code().to_owned(),
