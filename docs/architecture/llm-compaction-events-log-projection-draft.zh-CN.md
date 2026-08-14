@@ -214,6 +214,10 @@ Summarizer 会看到被新折叠的用户/模型文本与 tool call/result。Thi
 
 Compaction input 会保留 assistant step 的时序。由于 Responses converter 在 `store:false` 下无法重新发送 provider-executed tool result，已经完整结算的 hosted call/result 只在这次 compaction request 中降级为成对的普通 function call 与 output，之后再放 grounded assistant text。这样既保留了现有 tool evidence，也不会生成悬空 output。
 
+Compaction call 会收到当前 history input budget。若 RuntimeEvent projection 超出该估算值，Maka 会把较旧的 Tool Result payload 替换为固定 omission marker，同时保留每一组 call/result 配对和之后的 grounded text。若剩余的非工具历史仍无法容纳，Runtime 不会发送一条已经超出容量的 compaction request，而是进入正常 fail-open 路径。
+
+这是有意设计成 history-only 的契约。与 Codex CLI 的 whole-request assembly 不同，Maka 不会把当前 system prompt 或 tool catalog 发给 remote compactor；它们既不属于 checkpoint source coverage，也不会被冻结进 checkpoint，后续模型请求始终使用当时最新的 system prompt 和 tools。这样 provider-native 与 text-summary compactor 可以共享同一份小契约，代价是 compactor 无法利用这部分额外的 request-shape context。
+
 Maka 只接受唯一一个同时带有 `itemId` 与 `encryptedContent` 的 `openai.compaction` output，并把它持久化为 schema-V3 checkpoint。state 绑定 connection slug 与 model ID；provider、connection 或 model 不匹配时，checkpoint 会被拒绝，并从 raw RuntimeEvents 重新投影。匹配的 checkpoint 在 pre-Turn compaction、mid-Turn capacity compaction 和 reactive overflow retry 中都以 provider custom part 回放。
 
 V3 schema 也是兼容边界：只理解 schema V2 的旧 binary 会拒绝它并回退 raw history。provider state 会从 request-capture telemetry 中脱敏，也不会进入 conversation copy；复制后的 Session 仍保留 raw RuntimeEvents，需要时可以重新 compact。这里的显式 trigger 是 Codex client 已使用的 Codex 订阅协议，不代表对公开 Responses API contract 的宣称。
@@ -368,6 +372,7 @@ Compaction 跨越 token estimation、LLM call、schema construction、durable ap
 | 未超过 high water | 保持原投影或普通预算裁剪 | 为了“提前优化”制造无来源摘要 |
 | LLM 返回空 summary | 不记录新 checkpoint；初次 compact 只保留安全 raw tail | 把空 projection 当作 covered history |
 | Codex 没有返回唯一且合法的 compact item | 不记录新 checkpoint，走同一 fail-open 路径 | 持久化残缺或有歧义的 provider state |
+| Compaction input 在有界省略 Tool Result 后仍无法容纳 | 不发送 compaction request，走同一 fail-open 路径 | 要求 provider 压缩一条已经超出容量的请求 |
 | Rolling summarizer 失败 | 若旧 checkpoint 仍匹配且符合当前限制，则复用它并拼接能容纳的最新完整 raw Turns | 假装旧 checkpoint 已覆盖 newly evicted events |
 | Durable checkpoint append 失败 | 不使用 candidate；回退旧 checkpoint 或安全 tail | 让未提交 projection 进入模型后再声称可恢复 |
 | Prefix 或 digest 不匹配 | 拒绝 checkpoint | 用近似匹配替代 canonical events |

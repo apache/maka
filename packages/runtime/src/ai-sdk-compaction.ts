@@ -550,6 +550,14 @@ export class AiSdkCompaction {
           source: { foldedRuntimeEvents },
           ...(previousCheckpoint ? { previousCheckpoint } : {}),
           newlyFoldedRuntimeEvents,
+          ...(input.contextBudget.maxHistoryEstimatedTokens !== undefined
+            ? {
+                inputBudget: {
+                  maxEstimatedTokens: input.contextBudget.maxHistoryEstimatedTokens,
+                  charsPerToken: input.contextBudget.charsPerToken ?? 4,
+                },
+              }
+            : {}),
           requestShapeHashBefore: input.requestShapeHashBefore,
           abortSignal: input.abortSignal,
           ...(historyCompactTracker ? { providerRequestTracker: historyCompactTracker } : {}),
@@ -1679,6 +1687,10 @@ export class AiSdkCompaction {
             source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
             ...(previousCheckpoint ? { previousCheckpoint } : {}),
             newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+            inputBudget: {
+              maxEstimatedTokens: Math.max(1, state.capacity.tokens - reserveTokens),
+              charsPerToken,
+            },
             ...(abortSignal ? { abortSignal } : {}),
             ...(midTurnTracker ? { providerRequestTracker: midTurnTracker } : {}),
           }),

@@ -214,6 +214,10 @@ When the selected connection has `providerType: openai-codex`, Maka uses Codex's
 
 Compaction input preserves assistant-step chronology. Because the Responses converter cannot resend provider-executed tool results under `store:false`, a settled hosted call/result is lowered only for this compaction request into a paired ordinary function call and output, followed by the grounded assistant text. This keeps the available tool evidence in the request without producing an orphan output.
 
+The compaction call receives the active history-input budget. If its RuntimeEvent projection exceeds that estimate, Maka replaces older Tool Result payloads with a fixed omission marker while retaining every call/result pair and all later grounded text. If the remaining non-tool history still cannot fit, Runtime does not dispatch an already over-capacity compaction request and follows the normal fail-open path.
+
+This is deliberately a history-only contract. Maka does not send the current system prompt or tool catalog to the remote compactor, unlike the Codex CLI's whole-request assembly. Those values are neither part of checkpoint source coverage nor frozen into the checkpoint; the subsequent model request always applies its current system prompt and tools. This keeps provider-native and text-summary compactors behind the same small contract, at the cost of not giving the compactor that extra request-shape context.
+
 Maka accepts exactly one `openai.compaction` output with both `itemId` and `encryptedContent`, then persists it in a schema-V3 checkpoint. The state is bound to the connection slug and model ID. A different provider, connection, or model rejects that checkpoint and reprojects from raw RuntimeEvents. Matching checkpoints replay as provider custom parts across pre-Turn compaction, mid-Turn capacity compaction, and reactive overflow retry.
 
 The V3 schema is a compatibility boundary: older binaries that only understand schema V2 reject it and fall back to raw history. Provider state is redacted from request-capture telemetry and omitted from conversation copies; copied Sessions retain raw RuntimeEvents and may compact them again. The explicit trigger is an observed Codex subscription protocol used by the Codex client, not a claim about the public Responses API contract.
@@ -368,6 +372,7 @@ Compaction crosses token estimation, an LLM call, schema construction, durable a
 | Below high water | Keep the existing projection or apply ordinary budget selection | Create an unsourced summary as a speculative optimization |
 | LLM returns an empty summary | Record no new checkpoint; on the first compact, retain only a safe raw tail | Treat an empty projection as covered history |
 | Codex returns no unique valid compact item | Record no new checkpoint and use the same fail-open path | Persist partial or ambiguous provider state |
+| Compaction input cannot fit after bounded Tool Result omission | Do not dispatch the compaction request; use the same fail-open path | Ask the provider to compact an already over-capacity request |
 | Rolling summarizer fails | Reuse the old checkpoint if it still matches and fits, then add the newest complete raw Turns that fit | Pretend the old checkpoint covers newly evicted events |
 | Durable checkpoint append fails | Do not use the candidate; fall back to the old checkpoint or safe tail | Put an uncommitted projection into the model and later claim it is recoverable |
 | Prefix or digest mismatch | Reject the checkpoint | Replace canonical events through approximate matching |

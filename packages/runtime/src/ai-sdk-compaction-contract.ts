@@ -109,6 +109,14 @@ export interface HistoryCompactSummaryInput {
   source: { foldedRuntimeEvents: RuntimeEvent[] };
   previousCheckpoint?: HistoryCompactCheckpoint;
   newlyFoldedRuntimeEvents?: RuntimeEvent[];
+  /**
+   * Estimated provider-input ceiling for this compaction call. A compactor
+   * should fail before dispatch when its projection cannot fit this budget.
+   */
+  inputBudget?: {
+    maxEstimatedTokens: number;
+    charsPerToken: number;
+  };
   requestShapeHashBefore?: string;
   abortSignal?: AbortSignal;
   /**
