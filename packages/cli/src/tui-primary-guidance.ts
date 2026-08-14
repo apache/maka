@@ -47,6 +47,7 @@ const TUI_PRIMARY_GUIDANCE = {
       skill: '调用 Skill（也可直接输入 /skill:<name>）',
       swarm: '查看、启用、停用 Swarm 模式，或执行一次 Swarm 任务',
       thinking: '设置思考级别',
+      transcript: '在 Maka 内浏览完整对话记录',
     },
     help: {
       commandsHeading: '命令',
@@ -92,6 +93,7 @@ const TUI_PRIMARY_GUIDANCE = {
       skill: 'Invoke a skill (or type /skill:<name> inline)',
       swarm: 'Show, enable, disable, or run one Swarm turn',
       thinking: 'Set thinking level',
+      transcript: 'Browse the full transcript inside Maka',
     },
     help: {
       commandsHeading: 'Commands',

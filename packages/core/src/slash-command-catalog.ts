@@ -28,6 +28,7 @@ export const SLASH_COMMAND_CATALOG = [
   { id: 'skill', session: 'required', surfaces: ['tui'] },
   { id: 'swarm', session: 'none', surfaces: ['desktop', 'tui'] },
   { id: 'thinking', session: 'required', surfaces: ['tui'] },
+  { id: 'transcript', session: 'required', surfaces: ['tui'] },
 ] as const satisfies readonly SlashCommandSpec[];
 
 export type SlashCommandId = (typeof SLASH_COMMAND_CATALOG)[number]['id'];

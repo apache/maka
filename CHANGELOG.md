@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Added `/transcript` to browse long TUI sessions without depending on terminal
+  scrollback, with line, page, and first/last navigation.
+
 ## 0.1.11 - 2026-08-18
 
 ### Highlights

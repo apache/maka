@@ -84,6 +84,7 @@ import {
 import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
+import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
 import { createShellRunHydrationController } from './shell-run-hydration.js';
 import {
@@ -2065,6 +2066,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
   };
 
+  const showTranscriptViewer = (): void => {
+    let overlay: OverlayHandle | undefined;
+    const viewer = new TranscriptViewerOverlay({
+      renderTranscript: (width) => transcript.renderDocument(width),
+      viewportRows: () => terminal.rows,
+      onClose: () => overlay?.hide(),
+      onChange: () => tui.requestRender(),
+    });
+    overlay = tui.showOverlay(viewer, {
+      anchor: 'top-left',
+      width: '100%',
+      maxHeight: '100%',
+    });
+  };
+
   const showModelList = () => {
     const choices = modelChoices;
     const hasConversationHistory = state.entries.some(
@@ -2543,6 +2559,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           return;
         }
         void runControl(() => setThinkingLevel(level));
+      },
+    },
+    transcript: {
+      description: primaryGuidance.commands.transcript,
+      run: (parts: string[]) => {
+        if (parts.length !== 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Usage: /transcript',
+          });
+          requestRender();
+          return;
+        }
+        showTranscriptViewer();
       },
     },
     permissions: {

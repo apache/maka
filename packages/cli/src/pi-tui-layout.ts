@@ -37,6 +37,21 @@ export class MakaTranscriptComponent implements Component {
   render(width: number): string[] {
     return renderMakaPiTranscript(this.state, this.metadata(), width);
   }
+
+  /**
+   * Render the complete current projection without changing the geometry used
+   * by the live terminal-scrollback reconciliation path.
+   */
+  renderDocument(width: number): string[] {
+    return renderMakaPiTranscript(
+      {
+        ...this.state,
+        renderGeometry: { entryFirstLine: undefined, viewportTop: 0 },
+      },
+      this.metadata(),
+      width,
+    );
+  }
 }
 
 export class MakaStatusLineComponent implements Component {
