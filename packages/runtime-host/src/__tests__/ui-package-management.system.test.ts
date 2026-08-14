@@ -73,6 +73,32 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
       ),
       { ok: true, result: { changed: true } },
     );
+    assert.deepEqual(
+      await call(fixture.tools, 'publish_ui_state', {
+        extensionId: 'dev.maka.ui.demo',
+        key: 'project-plan',
+        value: { sequence: 1, tasks: [{ id: 'design', status: 'done' }] },
+      }),
+      {
+        changed: true,
+        extensionId: 'dev.maka.ui.demo',
+        revision: v1.revision,
+        key: 'project-plan',
+      },
+    );
+    assert.deepEqual(
+      await fixture.controller.handlers['extension.ui.state.query'](
+        { ...stateIdentity, key: 'project-plan' },
+        connection,
+      ),
+      {
+        ok: true,
+        result: {
+          found: true,
+          value: { sequence: 1, tasks: [{ id: 'design', status: 'done' }] },
+        },
+      },
+    );
     const rpcIdentity = {
       scopeId: DESKTOP_UI_EXTENSION_SCOPE,
       bindingId: active.bindingId,

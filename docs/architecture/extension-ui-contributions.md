@@ -77,15 +77,21 @@ inspect_ui -> define_ui -> test_ui -> manage_ui activate/update/stop/delete
 Scope without changing the Desktop Binding. `manage_ui update` uses the same
 current/candidate and last-good recovery path as other Extension revisions.
 
+An Agent that uses a separate business Tool may call `publish_ui_state` with
+that Tool's structured snapshot or patch. The Host resolves the currently
+committed Desktop Binding and exact Revision before writing durable state; the
+UI remains a passive projection and cannot use this path to invoke a Tool.
+
 ## Current boundary
 
 The shipped bridge provides typed durable Host state and declared
 request/response Host methods, not arbitrary Electron or Runtime Host access.
-Push event subscriptions, DOM access to the official snapshot, and
-cross-contribution dependency on Tools remain out of scope. The one-second
-Desktop snapshot refresh is also a temporary transport seam; a future
-catalog-change subscription can replace it without changing package or
-lifecycle semantics.
+`publish_ui_state` is an explicit Agent orchestration seam, not an implicit
+cross-contribution dependency: a business Tool cannot mutate UI state by
+itself. Push event subscriptions and DOM access to the official snapshot remain
+out of scope. The one-second Desktop snapshot refresh is also a temporary
+transport seam; a future catalog-change subscription can replace it without
+changing package or lifecycle semantics.
 
 ## Product entry points
 

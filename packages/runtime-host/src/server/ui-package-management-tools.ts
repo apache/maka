@@ -3,7 +3,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
-import type { OperationKey, OperationOutcome } from '../protocol/index.js';
+import type { ExtensionUiStateValue, OperationKey, OperationOutcome } from '../protocol/index.js';
 import type { ConnectionContext } from './operation-dispatcher.js';
 import type { HostExtensionController } from './extension-controller.js';
 import type { HostExtensionRuntime } from './extension-runtime.js';
@@ -48,6 +48,21 @@ const revisionInput = z.object({
   extensionId: z.string().min(1).max(128),
   revision: z.string().min(1).max(128),
 });
+const uiStateValueSchema: z.ZodType<ExtensionUiStateValue> = z.lazy(() =>
+  z.union([
+    z.null(),
+    z.boolean(),
+    z.number().finite(),
+    z.string(),
+    z.array(uiStateValueSchema),
+    z.record(z.string(), uiStateValueSchema),
+  ]),
+);
+const publishStateInput = z.object({
+  extensionId: z.string().min(1).max(128),
+  key: z.string().min(1).max(128),
+  value: uiStateValueSchema,
+});
 const manageInput = z
   .object({
     action: z.enum(['activate', 'update', 'stop', 'delete']),
@@ -85,7 +100,13 @@ export class HostUiPackageManagementTools {
   }
 
   tools(): readonly MakaTool[] {
-    return Object.freeze([this.#inspect(), this.#define(), this.#test(), this.#manage()]);
+    return Object.freeze([
+      this.#inspect(),
+      this.#define(),
+      this.#test(),
+      this.#manage(),
+      this.#publishState(),
+    ]);
   }
 
   #inspect(): MakaTool {
@@ -317,6 +338,58 @@ export class HostUiPackageManagementTools {
           );
         }
         return { binding: null };
+      },
+    });
+  }
+
+  #publishState(): MakaTool {
+    return Object.freeze({
+      name: 'publish_ui_state',
+      description:
+        'Publish structured business state to one already-active Desktop UI Extension. Use this after a business Tool returns a snapshot or patch so the UI can render the real Tool result. The active UI must declare permissions.hostState=true. This Tool never invokes the UI and cannot activate or update UI code.',
+      parameters: publishStateInput,
+      categoryHint: 'client_capability',
+      recoveryMode: 'idempotent',
+      permissionArgs: (input: z.infer<typeof publishStateInput>) => ({
+        extensionId: input.extensionId,
+        key: input.key,
+        valueAccepted: true,
+        valueSha256: createHash('sha256')
+          .update(JSON.stringify(input.value) ?? 'null')
+          .digest('hex'),
+      }),
+      impl: async (input: z.infer<typeof publishStateInput>) => {
+        const contribution = this.runtime
+          .inspectUi(DESKTOP_UI_EXTENSION_SCOPE)
+          .find((item) => item.extensionId === input.extensionId);
+        if (!contribution) {
+          throw new Error(`Active Desktop UI Extension was not found: ${input.extensionId}`);
+        }
+        if (!contribution.hostState) {
+          throw new Error(
+            `Active Desktop UI Extension does not allow Host state: ${input.extensionId}`,
+          );
+        }
+        const result = unwrap(
+          await this.controller.handlers['extension.ui.state.mutate'](
+            {
+              scopeId: DESKTOP_UI_EXTENSION_SCOPE,
+              bindingId: contribution.bindingId,
+              extensionId: contribution.extensionId,
+              revision: contribution.revision,
+              key: input.key,
+              kind: 'set',
+              value: input.value,
+            },
+            this.#connection,
+          ),
+        );
+        return {
+          ...result,
+          extensionId: contribution.extensionId,
+          revision: contribution.revision,
+          key: input.key,
+        };
       },
     });
   }
