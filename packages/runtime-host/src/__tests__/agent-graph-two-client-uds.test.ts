@@ -157,13 +157,17 @@ test('two Clients query and control one Agent graph through Session invalidation
 
 type GraphAuthority = Pick<
   AgentGraphCoordinator,
-  'getSnapshot' | 'inspectOperator' | 'subscribeAll'
+  'currentGraphId' | 'getSnapshot' | 'inspectOperator' | 'subscribeAll'
 >;
 
 class FakeAgentGraphAuthority implements GraphAuthority {
   readonly #listeners = new Set<AgentGraphClientChangedListener>();
   #snapshot = snapshot();
   stopCount = 0;
+
+  async currentGraphId(): Promise<string> {
+    return this.#snapshot.graphId;
+  }
 
   async getSnapshot(): Promise<AgentGraphClientSnapshot> {
     return structuredClone(this.#snapshot);

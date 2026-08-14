@@ -1,6 +1,5 @@
 import {
   AgentGraphClientOperationError,
-  agentGraphIdForRootSession,
   type AgentGraphClientChangedEvent,
   type AgentGraphCoordinator,
 } from '@maka/runtime/stream-graph-coordinator';
@@ -44,7 +43,7 @@ import type { SessionContinuityCoordinator } from './session-continuity-coordina
 
 type AgentGraphAuthority = Pick<
   AgentGraphCoordinator,
-  'getSnapshot' | 'inspectOperator' | 'subscribeAll'
+  'currentGraphId' | 'getSnapshot' | 'inspectOperator' | 'subscribeAll'
 >;
 
 type GraphContinuity = Pick<SessionContinuityCoordinator, 'enqueueAgentGraphChanged'>;
@@ -120,11 +119,12 @@ export class HostAgentGraphCoordinator {
   async #stop(input: AgentGraphStopInput): Promise<OperationOutcome<'agent.graph.stop'>> {
     try {
       await this.#stopExecution(input.rootSessionId);
+      const graphId = await this.#authority.currentGraphId(input.rootSessionId);
       return {
         ok: true,
         result: {
           rootSessionId: input.rootSessionId,
-          graphId: agentGraphIdForRootSession(input.rootSessionId),
+          graphId,
         },
       };
     } catch (error) {

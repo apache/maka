@@ -31,6 +31,16 @@ import {
   type SettleSandboxBoundaryRequest,
 } from '@maka/core/sandbox-boundary';
 import {
+  AGENT_GRAPH_EPOCH_SCHEMA_VERSION,
+  AgentGraphEpochConflictError,
+  assertAdvanceAgentGraphEpochRequest,
+  assertResolveAgentGraphEpochRequest,
+  decodeAgentGraphEpochBinding,
+  type AdvanceAgentGraphEpochRequest,
+  type AgentGraphEpochBinding,
+  type ResolveAgentGraphEpochRequest,
+} from '@maka/core/agent-graph-epoch';
+import {
   assertAgentGraphScheduleUpdateRequest,
   AgentGraphScheduleClosedError,
   AgentGraphScheduleRevisionConflictError,
@@ -115,7 +125,9 @@ const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 const SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES = 32;
 
 const require = createRequire(import.meta.url);
-const AGENT_GRAPH_CONTROL_DELETE_TABLES = [...SQLITE_AGENT_GRAPH_CONTROL_TABLES].reverse();
+const AGENT_GRAPH_CONTROL_DELETE_TABLES = SQLITE_AGENT_GRAPH_CONTROL_TABLES.filter(
+  (table) => table !== 'agent_graph_epochs',
+).reverse();
 
 function loadSqliteModule(): typeof import('node:sqlite') {
   const emitWarning = process.emitWarning;
@@ -2461,16 +2473,24 @@ export class SqliteSessionMetadataStore {
   ): Promise<number> {
     this.assertOpen();
     const sessionIds = [...new Set(request.rootSessionIds)];
+    const graphIds = request.graphIds ? [...new Set(request.graphIds)] : undefined;
     sessionIds.forEach(assertSafeSessionId);
+    graphIds?.forEach((graphId) => assertGraphLookupIdentity(graphId, 'graph id'));
     if (!request.reason.trim() || request.reason.length > 4_000) {
       throw new Error(
         'Agent graph supervisor wake supersession reason must be non-empty and bounded',
       );
     }
-    if (sessionIds.length === 0) return 0;
+    if (sessionIds.length === 0 || graphIds?.length === 0) return 0;
     return this.transaction(() => {
       const now = this.now();
       const placeholders = sessionIds.map(() => '?').join(', ');
+      const graphFilter = graphIds
+        ? `AND wakes.graph_id IN (${graphIds.map(() => '?').join(', ')})`
+        : '';
+      const wakeGraphFilter = graphIds
+        ? `AND graph_id IN (${graphIds.map(() => '?').join(', ')})`
+        : '';
       this.db
         .prepare(
           `
@@ -2483,20 +2503,22 @@ export class SqliteSessionMetadataStore {
               WHERE wakes.graph_id = agent_graph_supervisor_wake_attempts.graph_id
                 AND wakes.wake_id = agent_graph_supervisor_wake_attempts.wake_id
                 AND wakes.root_session_id IN (${placeholders})
+                ${graphFilter}
             )
         `,
         )
-        .run(request.reason, now, ...sessionIds);
+        .run(request.reason, now, ...sessionIds, ...(graphIds ?? []));
       const updated = this.db
         .prepare(
           `
           UPDATE agent_graph_supervisor_wakes
           SET status = 'superseded', failure_reason = ?, updated_at = ?
           WHERE root_session_id IN (${placeholders})
+            ${wakeGraphFilter}
             AND status IN ('pending', 'running', 'waiting_permission', 'retryable_failed')
         `,
         )
-        .run(request.reason, now, ...sessionIds);
+        .run(request.reason, now, ...sessionIds, ...(graphIds ?? []));
       return Number(updated.changes);
     });
   }
@@ -2610,6 +2632,135 @@ export class SqliteSessionMetadataStore {
         .run(now).changes;
       return Number(recovered);
     });
+  }
+
+  async resolveCurrentAgentGraphEpoch(
+    request: ResolveAgentGraphEpochRequest,
+  ): Promise<AgentGraphEpochBinding> {
+    this.assertOpen();
+    assertResolveAgentGraphEpochRequest(request);
+    return this.readTransaction(() => {
+      const current = this.readCurrentAgentGraphEpochSync(request.rootSessionId);
+      if (current) {
+        const first = this.readAgentGraphEpochSync(request.rootSessionId, 1);
+        if (first?.graphId !== request.legacyGraphId) {
+          throw new AgentGraphEpochConflictError(
+            `Agent Graph epoch 1 identity does not match for root Session ${request.rootSessionId}`,
+          );
+        }
+        return current;
+      }
+
+      if (this.readAgentGraphEpochByGraphIdSync(request.legacyGraphId)) {
+        throw new AgentGraphEpochConflictError(
+          `Agent Graph epoch 1 could not be resolved for root Session ${request.rootSessionId}`,
+        );
+      }
+
+      return {
+        schemaVersion: AGENT_GRAPH_EPOCH_SCHEMA_VERSION,
+        rootSessionId: request.rootSessionId,
+        epoch: 1,
+        graphId: request.legacyGraphId,
+        createdAt: 0,
+      };
+    });
+  }
+
+  async advanceAgentGraphEpoch(
+    request: AdvanceAgentGraphEpochRequest,
+  ): Promise<AgentGraphEpochBinding> {
+    this.assertOpen();
+    assertAdvanceAgentGraphEpochRequest(request);
+    return this.transaction(() => {
+      const current = this.readCurrentAgentGraphEpochSync(request.rootSessionId);
+      if (current?.epoch === request.expectedEpoch + 1 && current.graphId === request.nextGraphId) {
+        return current;
+      }
+      if (!current && request.expectedEpoch === 1) {
+        if (
+          this.readAgentGraphEpochByGraphIdSync(request.expectedGraphId) ||
+          this.readAgentGraphEpochByGraphIdSync(request.nextGraphId)
+        ) {
+          throw new AgentGraphEpochConflictError(
+            `Agent Graph epoch could not advance for root Session ${request.rootSessionId}`,
+          );
+        }
+        this.insertAgentGraphEpochSync({
+          schemaVersion: AGENT_GRAPH_EPOCH_SCHEMA_VERSION,
+          rootSessionId: request.rootSessionId,
+          epoch: 1,
+          graphId: request.expectedGraphId,
+          createdAt: 0,
+        });
+        const binding: AgentGraphEpochBinding = {
+          schemaVersion: AGENT_GRAPH_EPOCH_SCHEMA_VERSION,
+          rootSessionId: request.rootSessionId,
+          epoch: 2,
+          graphId: request.nextGraphId,
+          createdAt: this.now(),
+        };
+        this.insertAgentGraphEpochSync(binding);
+        return binding;
+      }
+      if (
+        !current ||
+        current.epoch !== request.expectedEpoch ||
+        current.graphId !== request.expectedGraphId
+      ) {
+        throw new AgentGraphEpochConflictError(
+          `Agent Graph epoch changed for root Session ${request.rootSessionId}`,
+        );
+      }
+
+      const binding: AgentGraphEpochBinding = {
+        schemaVersion: AGENT_GRAPH_EPOCH_SCHEMA_VERSION,
+        rootSessionId: request.rootSessionId,
+        epoch: request.expectedEpoch + 1,
+        graphId: request.nextGraphId,
+        createdAt: this.now(),
+      };
+      if (this.readAgentGraphEpochByGraphIdSync(binding.graphId)) {
+        throw new AgentGraphEpochConflictError(
+          `Agent Graph epoch could not advance for root Session ${request.rootSessionId}`,
+        );
+      }
+      this.insertAgentGraphEpochSync(binding);
+      return binding;
+    });
+  }
+
+  async listAgentGraphEpochs(rootSessionId: string): Promise<AgentGraphEpochBinding[]> {
+    this.assertOpen();
+    assertSafeSessionId(rootSessionId);
+    const rows = this.db
+      .prepare(
+        `
+        SELECT
+          schema_version AS schemaVersion,
+          root_session_id AS rootSessionId,
+          epoch,
+          graph_id AS graphId,
+          created_at AS createdAt
+        FROM agent_graph_epochs
+        WHERE root_session_id = ?
+        ORDER BY epoch ASC
+      `,
+      )
+      .all(rootSessionId) as unknown as AgentGraphEpochRow[];
+    return rows.map(decodeAgentGraphEpochBinding);
+  }
+
+  async purgeAgentGraphEpochs(rootSessionId: string): Promise<number> {
+    this.assertOpen();
+    assertSafeSessionId(rootSessionId);
+    return this.transaction(() =>
+      Number(
+        this.db
+          .prepare('DELETE FROM agent_graph_epochs WHERE root_session_id = ?')
+          .run(rootSessionId).changes,
+      ),
+    );
   }
 
   async listAgentGraphOperatorProvisions(graphId: string): Promise<AgentGraphOperatorProvision[]> {
@@ -4527,6 +4678,89 @@ export class SqliteSessionMetadataStore {
     }
   }
 
+  private readCurrentAgentGraphEpochSync(
+    rootSessionId: string,
+  ): AgentGraphEpochBinding | undefined {
+    const row = this.db
+      .prepare(
+        `
+        SELECT
+          schema_version AS schemaVersion,
+          root_session_id AS rootSessionId,
+          epoch,
+          graph_id AS graphId,
+          created_at AS createdAt
+        FROM agent_graph_epochs
+        WHERE root_session_id = ?
+        ORDER BY epoch DESC
+        LIMIT 1
+      `,
+      )
+      .get(rootSessionId) as AgentGraphEpochRow | undefined;
+    return row ? decodeAgentGraphEpochBinding(row) : undefined;
+  }
+
+  private readAgentGraphEpochSync(
+    rootSessionId: string,
+    epoch: number,
+  ): AgentGraphEpochBinding | undefined {
+    const row = this.db
+      .prepare(
+        `
+        SELECT
+          schema_version AS schemaVersion,
+          root_session_id AS rootSessionId,
+          epoch,
+          graph_id AS graphId,
+          created_at AS createdAt
+        FROM agent_graph_epochs
+        WHERE root_session_id = ? AND epoch = ?
+      `,
+      )
+      .get(rootSessionId, epoch) as AgentGraphEpochRow | undefined;
+    return row ? decodeAgentGraphEpochBinding(row) : undefined;
+  }
+
+  private insertAgentGraphEpochSync(binding: AgentGraphEpochBinding): void {
+    this.db
+      .prepare(
+        `
+        INSERT INTO agent_graph_epochs(
+          root_session_id,
+          epoch,
+          graph_id,
+          schema_version,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?)
+      `,
+      )
+      .run(
+        binding.rootSessionId,
+        binding.epoch,
+        binding.graphId,
+        binding.schemaVersion,
+        binding.createdAt,
+      );
+  }
+
+  private readAgentGraphEpochByGraphIdSync(graphId: string): AgentGraphEpochBinding | undefined {
+    const row = this.db
+      .prepare(
+        `
+        SELECT
+          schema_version AS schemaVersion,
+          root_session_id AS rootSessionId,
+          epoch,
+          graph_id AS graphId,
+          created_at AS createdAt
+        FROM agent_graph_epochs
+        WHERE graph_id = ?
+      `,
+      )
+      .get(graphId) as AgentGraphEpochRow | undefined;
+    return row ? decodeAgentGraphEpochBinding(row) : undefined;
+  }
+
   private assertOpen(): void {
     if (this.closed) throw new Error('SQLite session metadata store is closed');
   }
@@ -4659,6 +4893,14 @@ interface SubagentSpawnClaim {
 
 interface AgentGraphScheduleUpdateRow {
   payloadJson: string;
+}
+
+interface AgentGraphEpochRow {
+  schemaVersion: number;
+  rootSessionId: string;
+  epoch: number;
+  graphId: string;
+  createdAt: number;
 }
 
 interface AgentGraphOperatorProvisionRow {

@@ -23,6 +23,8 @@ export type {
   BotBridge,
   BotIncomingMessage,
   BotPlatform,
+  BotReplyStream,
+  BotReplyStreamOptions,
   BotStatus,
   BotTestResult,
   SendCapable,

@@ -59,6 +59,7 @@
     "./cron-expression": "./dist/cron-expression.js",
     "./scheduled-task": "./dist/scheduled-task.js",
     "./agent-graph-control": "./dist/agent-graph-control.js",
+    "./agent-graph-epoch": "./dist/agent-graph-epoch.js",
     "./agent-graph-schedule": "./dist/agent-graph-schedule.js",
     "./agent-graph-topology": "./dist/agent-graph-topology.js",
     "./agent-graph-client-projection": "./dist/agent-graph-client-projection.js",

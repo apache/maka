@@ -33,6 +33,7 @@ export interface HostAgentGraphExecutionCoordinatorOptions {
   readonly executions: AgentGraphExecutionAuthority;
   readonly runtime: AgentGraphRuntime;
   readonly newId?: () => string;
+  readonly currentGraphId?: (rootSessionId: string) => Promise<string>;
 }
 
 /** Maps Agent Graph wake attempts onto the domain-neutral Hosted Execution port. */
@@ -40,11 +41,15 @@ export class HostAgentGraphExecutionCoordinator {
   readonly #executions: AgentGraphExecutionAuthority;
   readonly #runtime: AgentGraphRuntime;
   readonly #newId: () => string;
+  readonly #currentGraphId: (rootSessionId: string) => Promise<string>;
 
   constructor(options: HostAgentGraphExecutionCoordinatorOptions) {
     this.#executions = options.executions;
     this.#runtime = options.runtime;
     this.#newId = options.newId ?? randomUUID;
+    this.#currentGraphId =
+      options.currentGraphId ??
+      (async (rootSessionId) => agentGraphIdForRootSession(rootSessionId));
   }
 
   async run(
@@ -53,7 +58,7 @@ export class HostAgentGraphExecutionCoordinator {
     abortSignal: AbortSignal,
     isCurrent: () => Promise<boolean>,
   ): Promise<AgentGraphSupervisorTurnOutcome> {
-    assertAgentGraphInput(sessionId, input);
+    await assertAgentGraphInput(sessionId, input, this.#currentGraphId);
     const origin = input.origin;
     if (origin?.kind !== 'agent_graph') {
       throw new RuntimeMessageAuthorityInvariantError('Agent Graph execution lost its origin');
@@ -172,10 +177,14 @@ export class HostAgentGraphExecutionCoordinator {
   }
 }
 
-function assertAgentGraphInput(sessionId: string, input: UserMessageInput): void {
+async function assertAgentGraphInput(
+  sessionId: string,
+  input: UserMessageInput,
+  currentGraphId: (rootSessionId: string) => Promise<string>,
+): Promise<void> {
   if (
     input.origin?.kind !== 'agent_graph' ||
-    input.origin.graphId !== agentGraphIdForRootSession(sessionId) ||
+    input.origin.graphId !== (await currentGraphId(sessionId)) ||
     input.turnOrchestration?.mode !== 'graph' ||
     input.turnOrchestration.source !== 'host_api'
   ) {
