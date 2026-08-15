@@ -123,13 +123,30 @@ def http_connect(flow: object) -> None:
     apply_http_policy(flow, raw_url)
 
 
+def tcp_start(flow: object) -> None:
+    # Script next_layer runs before the built-in classifier assigns
+    # nextlayer.layer, so CONNECT raw tunnels and HTTP 101 upgrades are
+    # closed here — not by replacing a TCPLayer that does not exist yet.
+    record_raw_tunnel(flow)
+    kill_flow(flow)
+
+
+def tcp_message(flow: object) -> None:
+    messages = getattr(flow, "messages", None)
+    if messages:
+        messages[-1].content = b""
+    kill_flow(flow)
+
+
 def next_layer(nextlayer: object) -> None:
     current = getattr(nextlayer, "layer", None)
     if TCPLayer is None or not isinstance(current, TCPLayer):
         return
     context = getattr(nextlayer, "context", None)
     record_raw_tunnel(context)
-    nextlayer.layer = CloseRawLayer(context)
+    closer = CloseRawLayer(context)
+    replace_layer(context, current, closer)
+    nextlayer.layer = closer
 
 
 def apply_http_policy(flow: object, raw_url: str) -> None:
@@ -188,6 +205,30 @@ def record_raw_tunnel(flow: object) -> None:
         append_audit("raw_tunnel", host, path)
     except Exception:
         pass
+
+
+def kill_flow(flow: object) -> None:
+    kill = getattr(flow, "kill", None)
+    if callable(kill) and getattr(flow, "killable", True):
+        try:
+            kill()
+        except Exception:
+            pass
+
+
+def replace_layer(context: object, current: object, closer: object) -> None:
+    layers = getattr(context, "layers", None)
+    if not isinstance(layers, list):
+        return
+    try:
+        index = layers.index(current)
+    except ValueError:
+        index = len(layers)
+    if closer in layers:
+        layers.remove(closer)
+    if current in layers:
+        layers.remove(current)
+    layers.insert(min(index, len(layers)), closer)
 
 
 class CloseRawLayer(Layer):
