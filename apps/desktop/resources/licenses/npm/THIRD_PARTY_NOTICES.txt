@@ -11741,7 +11741,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: node-pty@1.2.0-beta.14
+Package: node-pty@1.2.0-beta.15
 Declared license: MIT
 Selected license: MIT
 Repository: git://github.com/microsoft/node-pty.git

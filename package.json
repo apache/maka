@@ -73,7 +73,7 @@
     "esbuild@0.27.7": true,
     "@jackwener/opencli@1.8.4": true,
     "dugite@3.2.2": true,
-    "node-pty@1.2.0-beta.14": true
+    "node-pty@1.2.0-beta.15": true
   },
   "overrides": {
     "@astryxdesign/core": {

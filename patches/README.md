@@ -8,7 +8,7 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
-## `node-pty@1.2.0-beta.14`
+## `node-pty@1.2.0-beta.15`
 
 On Unix, `CustomWriteStream` submits raw file-descriptor writes through libuv.
 Those writes can survive PTY exit and target an unrelated file after descriptor
