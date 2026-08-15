@@ -11,7 +11,7 @@ reviews:
   request_changes_workflow: false
 
   path_instructions:
-    - path: "**/*"
+    - path: "{**/*,**/.*,**/.*/**}"
       instructions: |
         Review the diff adversarially against the problem it claims to solve.
         Determine whether it is the smallest coherent solution at the existing source of truth.
