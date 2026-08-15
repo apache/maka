@@ -1,8 +1,3 @@
-import { cleanSessionRecapText, SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
-
-export const RECAP_INSTRUCTION = SESSION_RECAP_INSTRUCTION;
-export const cleanRecapText = cleanSessionRecapText;
-
 /** Idle gap (ms) after which the first normal prompt on return triggers an automatic recap. */
 export const AUTO_RECAP_IDLE_MS = 180_000;
 /** Minimum main-turn count (user-prompted turns) before an automatic recap may fire. */

@@ -9,7 +9,7 @@ import { ansi } from './tui-ansi.js';
  * the transcript at all. Hunk headers stay: they are the only line-number
  * anchor in the terminal rendering.
  */
-export function colorDiffRow(row: UnifiedDiffRow): string {
+function colorDiffRow(row: UnifiedDiffRow): string {
   switch (row.kind) {
     case 'add':
       return ansi.green(row.text);
