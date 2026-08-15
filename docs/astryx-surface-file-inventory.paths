@@ -59,6 +59,8 @@ apps/desktop/src/renderer/settings/provider-enabled-model-manager.tsx
 apps/desktop/src/renderer/settings/provider-oauth-section.tsx
 apps/desktop/src/renderer/settings/providers-panel.tsx
 apps/desktop/src/renderer/settings/request-customization-editor.tsx
+apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx
+apps/desktop/src/renderer/settings/runtime-host-ssh-terminal-dialog.tsx
 apps/desktop/src/renderer/settings/settings-expandable-row.tsx
 apps/desktop/src/renderer/settings/settings-metric-card.tsx
 apps/desktop/src/renderer/settings/settings-modal.tsx
@@ -116,6 +118,7 @@ apps/desktop/src/renderer/styles/settings/permission.css
 apps/desktop/src/renderer/styles/settings/provider-editor.css
 apps/desktop/src/renderer/styles/settings/route.css
 apps/desktop/src/renderer/styles/settings/rows.css
+apps/desktop/src/renderer/styles/settings/runtime-host.css
 apps/desktop/src/renderer/styles/settings/select.css
 apps/desktop/src/renderer/styles/settings/theme-preview.css
 apps/desktop/src/renderer/styles/settings/usage.css
