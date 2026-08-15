@@ -42,14 +42,15 @@ jobs:
         with:
           node-version: '24.18.1'
 
+      - name: Prepare the pinned npm release toolchain
+        run: node scripts/prepare-release-npm.mjs
+
+      - name: Verify the pinned npm release toolchain
+        run: npm run check:release-npm
+
       - name: Resolve product release identity
         id: identity
         run: node scripts/release-identity.mjs
-
-      - name: Verify the pinned npm release toolchain
-        run: |
-          actual="$(npx --yes "npm@${{ steps.identity.outputs.npm_version }}" --version)"
-          test "$actual" = "${{ steps.identity.outputs.npm_version }}"
 
       - name: Reserve tag and release identity
         env:
@@ -101,11 +102,17 @@ jobs:
           node-version: ${{ needs.release-identity.outputs.node_version }}
           cache: npm
 
+      - name: Prepare the pinned npm release toolchain
+        run: node scripts/prepare-release-npm.mjs
+
+      - name: Verify the pinned npm release toolchain
+        run: npm run check:release-npm
+
       - name: Install dependencies with the pinned npm
-        run: npx --yes "npm@${{ needs.release-identity.outputs.npm_version }}" ci
+        run: npm ci
 
       - name: Audit production dependencies
-        run: npx --yes "npm@${{ needs.release-identity.outputs.npm_version }}" audit --omit=dev --audit-level=moderate
+        run: npm audit --omit=dev --audit-level=moderate
 
       - name: Write App Store Connect API key
         if: matrix.platform == 'macos'
@@ -219,14 +226,20 @@ jobs:
           node-version: ${{ needs.release-identity.outputs.node_version }}
           cache: npm
 
+      - name: Prepare the pinned npm release toolchain
+        run: node scripts/prepare-release-npm.mjs
+
+      - name: Verify the pinned npm release toolchain
+        run: npm run check:release-npm
+
       - name: Install dependencies with the pinned npm
-        run: npx --yes "npm@${{ needs.release-identity.outputs.npm_version }}" ci
+        run: npm ci
 
       - name: Audit production dependencies
-        run: npx --yes "npm@${{ needs.release-identity.outputs.npm_version }}" audit --omit=dev --audit-level=moderate
+        run: npm audit --omit=dev --audit-level=moderate
 
       - name: Build the CLI production workspace closure
-        run: npx --yes "npm@${{ needs.release-identity.outputs.npm_version }}" run build
+        run: npm run build
 
       - name: Download and verify the official Node runtime
         env:
@@ -256,14 +269,13 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           MAKA_CLI_NODE_ARCHIVE: ${{ runner.temp }}/${{ needs.release-identity.outputs.node_archive }}
           MAKA_CLI_RELEASE_SIGNING: '1'
-        run: npx --yes "npm@${{ needs.release-identity.outputs.npm_version }}" run package:cli:macos-arm64
+        run: npm run package:cli:macos-arm64
 
       - name: Verify the final CLI and TUI artifact
         env:
           MAKA_CLI_REQUIRE_RELEASE_SIGNING: '1'
         run: >-
-          npx --yes "npm@${{ needs.release-identity.outputs.npm_version }}"
-          run verify:cli:macos-arm64 --
+          npm run verify:cli:macos-arm64 --
           "${{ needs.release-identity.outputs.cli_archive }}"
 
       - name: Upload the verified CLI release assets
@@ -302,8 +314,14 @@ jobs:
           node-version: ${{ needs.release-identity.outputs.node_version }}
           cache: npm
 
+      - name: Prepare the pinned npm release toolchain
+        run: node scripts/prepare-release-npm.mjs
+
+      - name: Verify the pinned npm release toolchain
+        run: npm run check:release-npm
+
       - name: Install pinned dependency metadata
-        run: npx --yes "npm@${{ needs.release-identity.outputs.npm_version }}" ci --ignore-scripts
+        run: npm ci --ignore-scripts
 
       - name: Materialize bundled Git source materials
         run: npm run prepare:bundled-git-source

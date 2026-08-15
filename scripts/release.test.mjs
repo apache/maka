@@ -13,9 +13,10 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
+import { assertReleaseNpm } from './assert-release-npm.mjs';
 import {
   assertNoDanglingSymlinks,
   assertOfficialNodeArchive,
@@ -31,6 +32,7 @@ import {
   workspaceReleaseFiles,
 } from './package-macos-arm64-cli.mjs';
 import { releaseToolchainFromManifest, resolveReleaseIdentity } from './release-identity.mjs';
+import { prepareReleaseNpm, releaseNpmPaths } from './prepare-release-npm.mjs';
 import {
   assertCliThirdPartyNotices,
   assertExpectedTuiExit,
@@ -115,6 +117,182 @@ test('release toolchain pins the official archive and npm independently', () => 
       }),
     /exact SHA-256/,
   );
+});
+
+test('release npm bootstrap overrides a different bundled npm for nested scripts', async (t) => {
+  if (process.platform === 'win32') {
+    t.skip('The behavioral PATH fixture uses a POSIX executable shim.');
+    return;
+  }
+  const root = await mkdtemp(join(tmpdir(), 'maka-release-npm-'));
+  try {
+    const fixtureRoot = join(root, 'fixture-npm');
+    const fixtureBin = join(fixtureRoot, 'bin');
+    const installPrefix = join(root, 'prepared');
+    const bundledBin = join(root, 'bundled-bin');
+    const probeRoot = join(root, 'probe');
+    const githubPath = join(root, 'github-path');
+    await Promise.all([
+      mkdir(fixtureBin, { recursive: true }),
+      mkdir(bundledBin, { recursive: true }),
+      mkdir(probeRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        join(fixtureRoot, 'package.json'),
+        `${JSON.stringify({
+          name: 'npm',
+          version: rootManifest.packageManager.slice('npm@'.length),
+          type: 'module',
+          bin: { npm: 'bin/npm-cli.js' },
+        })}\n`,
+      ),
+      writeFile(
+        join(fixtureBin, 'npm-cli.js'),
+        `#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const args = process.argv.slice(2);
+if (args.length === 1 && args[0] === '--version') {
+  console.log(${JSON.stringify(rootManifest.packageManager.slice('npm@'.length))});
+  process.exit(0);
+}
+const prefixIndex = args.indexOf('--prefix');
+const runIndex = args.indexOf('run');
+if (prefixIndex < 0 || runIndex < 0 || !args[runIndex + 1]) process.exit(2);
+const cwd = args[prefixIndex + 1];
+const manifest = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'));
+const result = spawnSync(manifest.scripts[args[runIndex + 1]], {
+  cwd,
+  env: process.env,
+  shell: true,
+  encoding: 'utf8',
+});
+process.stdout.write(result.stdout ?? '');
+process.stderr.write(result.stderr ?? '');
+process.exit(result.status ?? 1);
+`,
+      ),
+      writeFile(join(bundledBin, 'npm'), '#!/bin/sh\nprintf "11.16.0\\n"\n'),
+      writeFile(
+        join(probeRoot, 'package.json'),
+        `${JSON.stringify({
+          name: 'nested-release-npm-probe',
+          private: true,
+          scripts: { probe: 'npm --version' },
+        })}\n`,
+      ),
+    ]);
+    await Promise.all([
+      chmod(join(fixtureBin, 'npm-cli.js'), 0o755),
+      chmod(join(bundledBin, 'npm'), 0o755),
+    ]);
+
+    assert.ok(process.env.npm_execpath, 'release tests must be launched through npm');
+    const preparationEnvironment = { ...process.env, GITHUB_PATH: githubPath };
+    const prepared = await prepareReleaseNpm({
+      rootManifest,
+      env: preparationEnvironment,
+      prefix: installPrefix,
+      packageSpec: fixtureRoot,
+      install: (_command, args, options) =>
+        execFileAsync(process.execPath, [process.env.npm_execpath, ...args], options),
+    });
+    assert.deepEqual(prepared, {
+      ...releaseNpmPaths(installPrefix),
+      npmVersion: '11.12.1',
+    });
+    assert.equal((await readFile(githubPath, 'utf8')).trim(), prepared.binDirectory);
+
+    const mismatchedEnvironment = {
+      ...process.env,
+      PATH: `${bundledBin}${delimiter}${process.env.PATH}`,
+      npm_config_user_agent: 'npm/11.12.1 node/v24.18.1 darwin arm64',
+    };
+    await assert.rejects(
+      assertReleaseNpm({ rootManifest, env: mismatchedEnvironment }),
+      /nested npm 11\.12\.1, found 11\.16\.0/,
+    );
+
+    const pinnedEnvironment = {
+      ...mismatchedEnvironment,
+      PATH: `${prepared.binDirectory}${delimiter}${mismatchedEnvironment.PATH}`,
+    };
+    await assert.doesNotReject(assertReleaseNpm({ rootManifest, env: pinnedEnvironment }));
+    const nested = await execFileAsync(
+      process.execPath,
+      [prepared.npmCliPath, '--prefix', probeRoot, 'run', 'probe'],
+      { env: pinnedEnvironment },
+    );
+    assert.equal(nested.stdout.trim(), '11.12.1');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('every npm-using release job prepares and verifies the pin before release work', async () => {
+  const workflow = await readFile(
+    new URL('../.github/workflows/release.yml', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(workflow, /npx --yes/u);
+  const jobs = ['release-identity', 'desktop', 'cli-macos-arm64', 'source'];
+  for (const [index, job] of jobs.entries()) {
+    const start = workflow.indexOf(`  ${job}:`);
+    assert.ok(start >= 0, `${job} must remain in the product release workflow`);
+    const nextStarts = jobs
+      .slice(index + 1)
+      .map((name) => workflow.indexOf(`  ${name}:`, start + 1))
+      .filter((position) => position >= 0);
+    const publish = workflow.indexOf('  publish:', start + 1);
+    const end = Math.min(
+      ...[...nextStarts, publish, workflow.length].filter((value) => value >= 0),
+    );
+    const section = workflow.slice(start, end);
+    const prepare = section.indexOf('run: node scripts/prepare-release-npm.mjs');
+    const verify = section.indexOf('run: npm run check:release-npm');
+    assert.ok(prepare >= 0, `${job} must prepare the pinned npm`);
+    assert.ok(verify > prepare, `${job} must verify the pinned npm after preparation`);
+    const directNpmRuns = [...section.matchAll(/^\s+run: (npm .+)$/gmu)].map((match) => match[1]);
+    assert.equal(directNpmRuns[0], 'npm run check:release-npm', `${job} npm entry order`);
+  }
+});
+
+test('release npm bootstrap reaches npm.cmd through the Windows shell contract', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-release-npm-windows-'));
+  try {
+    const githubPath = join(root, 'github-path');
+    let installOptions;
+    let inspectOptions;
+    await prepareReleaseNpm({
+      rootManifest,
+      env: { ...process.env, GITHUB_PATH: githubPath },
+      prefix: join(root, 'prepared'),
+      platform: 'win32',
+      install: async (_command, _args, options) => {
+        installOptions = options;
+      },
+      inspect: async () => ({ stdout: '11.12.1\n' }),
+    });
+    assert.equal(installOptions.shell, true);
+    await assertReleaseNpm({
+      rootManifest,
+      env: {
+        ...process.env,
+        npm_config_user_agent: 'npm/11.12.1 node/v24.18.1 win32 x64',
+      },
+      platform: 'win32',
+      inspect: async (_command, _args, options) => {
+        inspectOptions = options;
+        return { stdout: '11.12.1\n' };
+      },
+    });
+    assert.equal(inspectOptions.shell, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('workspace closure follows manifests and rejects missing local packages', () => {

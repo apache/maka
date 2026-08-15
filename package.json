@@ -46,6 +46,7 @@
     "generate:third-party-notices": "node scripts/generate-third-party-notices.mjs",
     "check:third-party-notices": "node scripts/generate-third-party-notices.mjs --check",
     "check:release": "npm run check:stale && npm run check:third-party-notices",
+    "check:release-npm": "node scripts/assert-release-npm.mjs",
     "check:release-identity": "node scripts/release-identity.mjs",
     "test:release": "node --test scripts/release.test.mjs",
     "package:macos-arm64": "node scripts/package-macos-arm64.mjs",
