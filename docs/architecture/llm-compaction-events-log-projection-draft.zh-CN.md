@@ -210,7 +210,7 @@ Summarizer 会看到被新折叠的用户/模型文本与 tool call/result。Thi
 
 ## Codex 订阅 remote compaction V2
 
-当所选 connection 的 `providerType` 为 `openai-codex` 时，Maka 默认使用 Codex 服务端 compactor，不再让模型生成文本摘要。provider request 仍由已校验的 RuntimeEvent prefix 构建。一个很窄的 transport adapter 只在专用 compactor 标记请求时追加一个 `{ "type": "compaction_trigger" }` item，并在网络发送前移除内部控制 header。这个 adapter 只在专用 compactor 解析模型时安装，因此普通模型工厂创建的模型无法解释该内部 header。compactor 使用流式 Responses 路径并消费完整 stream，因为只有 compaction output 的响应不存在普通 generated-text result；普通 Codex 请求完全不变。
+当所选 connection 的 `providerType` 为 `openai-codex` 时，Maka 默认使用 Codex 服务端 compactor，不再让模型生成文本摘要。provider request 仍由已校验的 RuntimeEvent prefix 构建。专用 compactor 会设置 `providerOptions.openai.compactionTrigger: true`，从而追加唯一一个位于 input 末尾的 `{ "type": "compaction_trigger" }` item。compactor 使用流式 Responses 路径并消费完整 stream，因为只有 compaction output 的响应不存在普通 generated-text result；普通 Codex 请求不会设置这个选项，因此行为不变。
 
 Compaction input 会保留 assistant step 的时序。由于 Responses converter 在 `store:false` 下无法重新发送 provider-executed tool result，已经完整结算的 hosted call/result 只在这次 compaction request 中降级为成对的普通 function call 与 output，之后再放 grounded assistant text。这样既保留了现有 tool evidence，也不会生成悬空 output。
 
@@ -513,8 +513,7 @@ LLM 在 summary 中写“测试已通过”仍然只是对 source events 的概�
 10. `packages/runtime/src/history-compact-cleanup.ts`：V2 覆盖验证后的 legacy reclaim；
 11. `packages/runtime/src/context-budget-policy.ts`：默认预算、环境开关与 manual lookup overlay；
 12. `packages/runtime/src/openai-codex-history-compactor.ts`：Codex compact output 校验与 rolling provider-state input；
-13. `packages/runtime/src/openai-codex-compaction-transport.ts`：request-scoped V2 trigger 注入；
-14. `packages/runtime-host/src/server/execution-model-composition.ts`：默认 provider-specific compactor 选择。
+13. `packages/runtime-host/src/server/execution-model-composition.ts`：默认 provider-specific compactor 选择。
 
 重点测试包括：
 

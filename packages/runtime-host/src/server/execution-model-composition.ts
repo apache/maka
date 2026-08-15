@@ -157,19 +157,18 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       fetch: modelFetch,
       requestHeaders: target.requestHeaders,
     });
-  const resolveHistoryCompactModel = (fetch = modelFetch) =>
+  const resolveHistoryCompactModel = () =>
     getAIModel({
       connection: target.connection,
       apiKey,
       modelId: target.model,
-      fetch,
+      fetch: modelFetch,
       requestHeaders: target.requestHeaders,
     });
   const summarizeHistoryCompact =
     target.connection.providerType === 'openai-codex'
       ? buildOpenAiCodexHistoryCompactor({
           resolveModel: resolveHistoryCompactModel,
-          fetch: modelFetch,
           connectionSlug: target.connection.slug,
           modelId: target.model,
           providerOptions,

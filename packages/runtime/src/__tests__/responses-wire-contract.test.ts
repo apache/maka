@@ -10,8 +10,6 @@ import { z } from 'zod';
 import { routeApplyPatchTools } from '../apply-patch-profile.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 import { lowerModelTools } from '../model-adapter.js';
-import { OPENAI_CODEX_COMPACTION_V2_HEADER } from '../openai-codex-compaction-transport.js';
-import { createOpenAiCodexCompactionTransport } from '../openai-codex-compaction-transport.js';
 import { openAiCodexCompactionMessages } from '../openai-codex-history-compactor.js';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
@@ -88,7 +86,7 @@ describe('responses wire contract', () => {
 });
 
 describe('responses wire request body', () => {
-  test('only a dedicated compactor transport can add the V2 trigger', async () => {
+  test('adds the V2 trigger only through the explicit OpenAI provider option', async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
       bodies.push(JSON.parse(String(init?.body)));
@@ -108,22 +106,15 @@ describe('responses wire request body', () => {
     });
     await ordinaryModel.doGenerate({
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'ordinary model' }] }],
-      headers: { [OPENAI_CODEX_COMPACTION_V2_HEADER]: '1' },
     });
 
-    const model = getAIModel({
-      connection: conn('openai-codex', 'codex-subscription'),
-      apiKey: 'codex-token',
-      modelId: 'gpt-5.3-codex',
-      fetch: createOpenAiCodexCompactionTransport(fetch),
-    });
-
-    await model.doGenerate({
+    await ordinaryModel.doGenerate({
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'compact me' }] }],
-      headers: { [OPENAI_CODEX_COMPACTION_V2_HEADER]: '1' },
+      providerOptions: { openai: { compactionTrigger: true } },
     });
-    await model.doGenerate({
+    await ordinaryModel.doGenerate({
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'ordinary request' }] }],
+      providerOptions: { openai: { compactionTrigger: false } },
     });
 
     const ordinaryInput = bodies[0]?.input;
@@ -224,12 +215,11 @@ describe('responses wire request body', () => {
       connection: conn('openai-codex', 'codex-subscription'),
       apiKey: 'codex-token',
       modelId: 'gpt-5.3-codex',
-      fetch: createOpenAiCodexCompactionTransport(fetch),
+      fetch,
     });
     await model.doGenerate({
       prompt: messages as never,
-      headers: { [OPENAI_CODEX_COMPACTION_V2_HEADER]: '1' },
-      providerOptions: { openai: { store: false } },
+      providerOptions: { openai: { store: false, compactionTrigger: true } },
     });
 
     const input = body?.input as Array<Record<string, unknown>>;

@@ -210,7 +210,7 @@ The LLM is therefore the generator of the projection value, not the projection a
 
 ## Codex subscription remote compaction V2
 
-When the selected connection has `providerType: openai-codex`, Maka uses Codex's server-side compactor by default instead of asking the model for a text summary. The provider request is still built from the validated RuntimeEvent prefix. A narrow transport adapter appends one `{ "type": "compaction_trigger" }` item only when the dedicated compactor marks the request; its private control header is removed before network dispatch. That adapter is installed only while the dedicated compactor resolves its model, so models from the ordinary factory cannot interpret the private header. The compactor uses the streaming Responses path and consumes the full stream because a compaction-only response has no ordinary generated-text result. Ordinary Codex requests are unchanged.
+When the selected connection has `providerType: openai-codex`, Maka uses Codex's server-side compactor by default instead of asking the model for a text summary. The provider request is still built from the validated RuntimeEvent prefix. The dedicated compactor sets `providerOptions.openai.compactionTrigger: true`, which appends one terminal `{ "type": "compaction_trigger" }` input item. The compactor uses the streaming Responses path and consumes the full stream because a compaction-only response has no ordinary generated-text result. Ordinary Codex requests do not set this option and are unchanged.
 
 Compaction input preserves assistant-step chronology. Because the Responses converter cannot resend provider-executed tool results under `store:false`, a settled hosted call/result is lowered only for this compaction request into a paired ordinary function call and output, followed by the grounded assistant text. This keeps the available tool evidence in the request without producing an orphan output.
 
@@ -513,8 +513,7 @@ Read the current implementation from these locations:
 10. `packages/runtime/src/history-compact-cleanup.ts`: legacy reclaim after V2 coverage validation;
 11. `packages/runtime/src/context-budget-policy.ts`: default budgets, environment controls, and the manual lookup overlay;
 12. `packages/runtime/src/openai-codex-history-compactor.ts`: Codex compact-output validation and rolling provider-state input;
-13. `packages/runtime/src/openai-codex-compaction-transport.ts`: request-scoped V2 trigger insertion;
-14. `packages/runtime-host/src/server/execution-model-composition.ts`: default provider-specific compactor selection.
+13. `packages/runtime-host/src/server/execution-model-composition.ts`: default provider-specific compactor selection.
 
 Important tests include:
 

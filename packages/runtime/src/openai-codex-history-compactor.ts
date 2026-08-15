@@ -12,24 +12,29 @@ import {
   buildRuntimeEventModelReplayPlan,
   type RuntimeEventModelReplayItem,
 } from './model-history.js';
-import {
-  createOpenAiCodexCompactionTransport,
-  OPENAI_CODEX_COMPACTION_V2_HEADER,
-} from './openai-codex-compaction-transport.js';
 import { withProviderStreamTracking } from './provider-request-telemetry.js';
 import { toolResultOutput } from './tool-result-output.js';
 
 export interface BuildOpenAiCodexHistoryCompactorOptions {
-  resolveModel: (fetch: typeof globalThis.fetch) => unknown;
-  fetch: typeof globalThis.fetch;
+  resolveModel: () => unknown;
   connectionSlug: string;
   modelId: string;
   providerOptions?: Record<string, unknown>;
 }
 
 export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistoryCompactorOptions) {
-  const resolveModel = () =>
-    options.resolveModel(createOpenAiCodexCompactionTransport(options.fetch));
+  const openAiOptions = options.providerOptions?.openai;
+  const providerOptions = {
+    ...options.providerOptions,
+    openai: {
+      ...(openAiOptions !== null &&
+      typeof openAiOptions === 'object' &&
+      !Array.isArray(openAiOptions)
+        ? openAiOptions
+        : {}),
+      compactionTrigger: true,
+    },
+  };
   return async (input: HistoryCompactSummaryInput): Promise<HistoryCompactProviderState> => {
     try {
       const previous = input.previousCheckpoint;
@@ -55,20 +60,17 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       const ai = await loadAiSdkModule();
       const model = providerRequestTracker
         ? withProviderStreamTracking({
-            model: resolveModel(),
+            model: options.resolveModel(),
             wrapLanguageModel: ai.wrapLanguageModel,
             tracker: providerRequestTracker,
             ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
           })
-        : resolveModel();
+        : options.resolveModel();
       let streamError: unknown;
       const result = ai.streamText({
         model,
         messages,
-        headers: { [OPENAI_CODEX_COMPACTION_V2_HEADER]: '1' },
-        ...(options.providerOptions !== undefined
-          ? { providerOptions: options.providerOptions }
-          : {}),
+        providerOptions,
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         maxRetries: 0,
         onError: ({ error }: { error: unknown }) => {
