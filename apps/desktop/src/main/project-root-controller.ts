@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { resolveProjectRoot } from '@maka/runtime/system-prompt/project-context';
 
 export interface CurrentProjectSelection {
@@ -23,6 +24,7 @@ export interface ProjectRootControllerDeps {
   readonly rootId: string;
   readonly preferenceFile: string;
   readonly fallbackRoots: () => string[];
+  readonly defaultWorkingDirectory?: () => Promise<string | undefined>;
 }
 
 interface ProjectPreferenceFile {
@@ -39,8 +41,10 @@ export function createProjectRootController(
   const initialSelection = loadInitialSelection(deps);
 
   async function currentSelection(): Promise<CurrentProjectSelection> {
-    if (selectedProject) return selectedProject;
-    return (selectedProject = await initialSelection);
+    const selection = selectedProject ?? (selectedProject = await initialSelection);
+    if (typeof selection.projectId === 'string') return selection;
+    const path = await resolveUnassociatedRoot(deps);
+    return (selectedProject = { ...selection, path });
   }
 
   async function current(): Promise<string> {
@@ -73,9 +77,19 @@ export function createProjectRootController(
 async function loadInitialSelection(
   deps: ProjectRootControllerDeps,
 ): Promise<CurrentProjectSelection> {
-  const fallbackPath = await resolveProjectRoot(deps.fallbackRoots());
+  const fallbackPath = await resolveUnassociatedRoot(deps);
   const preference = await readPreference(deps.preferenceFile, deps.rootId);
   return { projectId: preference, path: fallbackPath };
+}
+
+async function resolveUnassociatedRoot(deps: ProjectRootControllerDeps): Promise<string> {
+  const configured = await deps.defaultWorkingDirectory?.();
+  if (configured) {
+    const path = resolve(configured);
+    const info = await stat(path).catch(() => undefined);
+    if (info?.isDirectory()) return path;
+  }
+  return resolveProjectRoot(deps.fallbackRoots());
 }
 
 async function persistSelection(

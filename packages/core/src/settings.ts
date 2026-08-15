@@ -154,6 +154,8 @@ export interface WorkspaceInstructionsSettings {
 /** Default project identity for new conversations. */
 export interface ProjectPreferencesSettings {
   defaultProjectId?: string;
+  /** Host path used when a new local conversation has no Project. */
+  defaultWorkingDirectory?: string;
 }
 
 export interface PrivacySettings {
@@ -665,5 +667,11 @@ function normalizeProjectPreferencesSettings(
   settings: ProjectPreferencesSettings | undefined,
 ): ProjectPreferencesSettings {
   const id = settings?.defaultProjectId;
-  return typeof id === 'string' && id.trim() !== '' ? { defaultProjectId: id } : {};
+  const defaultWorkingDirectory = settings?.defaultWorkingDirectory;
+  return {
+    ...(typeof id === 'string' && id.trim() !== '' ? { defaultProjectId: id } : {}),
+    ...(typeof defaultWorkingDirectory === 'string' && defaultWorkingDirectory.trim() !== ''
+      ? { defaultWorkingDirectory }
+      : {}),
+  };
 }

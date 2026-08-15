@@ -52,6 +52,7 @@ export interface RuntimeHostSettingsIpcDeps {
   readonly client: RuntimeHostSettingsClient;
   readonly settingsStore: SettingsStore;
   readonly applyClientSettings: (settings: AppSettings) => Promise<void>;
+  readonly chooseDefaultWorkingDirectory: () => Promise<string | undefined>;
 }
 
 export function registerRuntimeHostSettingsIpc(
@@ -59,6 +60,9 @@ export function registerRuntimeHostSettingsIpc(
 ): void {
   deps.ipcMain.handle("settings:usageStats", (_event, range?: UsageRange) =>
     deps.settingsStore.usageStats(range),
+  );
+  deps.ipcMain.handle("settings:chooseDefaultWorkingDirectory", () =>
+    deps.chooseDefaultWorkingDirectory(),
   );
   handleReconnectableRead(deps.ipcMain, "settings:get", async () =>
     maskAppSettings(await loadRuntimeHostSettings(deps)),

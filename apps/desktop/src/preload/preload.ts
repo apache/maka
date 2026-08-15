@@ -1495,6 +1495,9 @@ const makaBridge = {
     get(): Promise<AppSettings> {
       return invokeActiveRuntimeHost('settings:get');
     },
+    chooseDefaultWorkingDirectory(): Promise<string | undefined> {
+      return invokeActiveRuntimeHost('settings:chooseDefaultWorkingDirectory');
+    },
     update(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsResult> {
       return invokeActiveRuntimeHost('settings:update', patch);
     },

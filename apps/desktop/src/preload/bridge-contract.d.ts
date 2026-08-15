@@ -606,6 +606,7 @@ export interface MakaBridge {
   };
   settings: {
     get(): Promise<AppSettings>;
+    chooseDefaultWorkingDirectory(): Promise<string | undefined>;
     update(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsResult>;
     subscribeExternalChanged(handler: () => void): () => void;
     testNetworkProxy(input?: TestProxyInput): Promise<SettingsTestResult>;
