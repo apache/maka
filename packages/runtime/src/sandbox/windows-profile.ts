@@ -30,16 +30,17 @@ export function compileWindowsSandboxPolicy(command: SandboxCommand): WindowsSan
     if (entry.access === 'deny') {
       throw new Error('Windows sandbox deny entries are not implemented.');
     }
+    const match = entry.kind === 'path' ? entry.match : undefined;
     for (const path of rootsForEntry(entry, command.cwd, pathContext)) {
       const canonical = canonicalWindowsPath(path);
       if (unavailable.has(canonical)) {
         throw new Error(`Windows sandbox profile root is unavailable: ${canonical}`);
       }
       addUnique(readRoots, canonical);
-      if (entry.match === 'exact') addUnique(exactReadRoots, canonical);
+      if (match === 'exact') addUnique(exactReadRoots, canonical);
       if (entry.access === 'write') {
         addUnique(writeRoots, canonical);
-        if (entry.match === 'exact') addUnique(exactWriteRoots, canonical);
+        if (match === 'exact') addUnique(exactWriteRoots, canonical);
       }
     }
   }
