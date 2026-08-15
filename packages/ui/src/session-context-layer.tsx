@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react';
+import { useEffect, useReducer, type ReactElement } from 'react';
 import {
   BreadcrumbItem,
   Breadcrumbs,
@@ -14,6 +14,7 @@ import {
   type DropdownMenuOption,
 } from '@astryxdesign/core';
 import { getConversationCopy } from './conversation-copy.js';
+import { ICON_SIZE, Pause, Play } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 
 export interface SessionContextBranch {
@@ -34,6 +35,17 @@ export interface SessionContextGoal {
   status: string;
   iterations: number;
   maxIterations: number;
+  /** Epoch ms when the goal was armed; the chip derives wall-clock elapsed. */
+  setAt: number;
+  /** Epoch ms when the goal was paused; freezes the chip clock while paused. */
+  pausedAt?: number;
+  tokensSpent?: number;
+  /** When present (a budget exists), the chip shows spent / budget. */
+  tokenBudget?: number;
+  /** Present when the goal can be paused (active/waiting). */
+  onPause?(): void;
+  /** Present when the goal is paused and can be resumed. */
+  onResume?(): void;
   onClear(): void;
 }
 
@@ -56,17 +68,94 @@ export function SessionContextLayer(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).chat;
   const contextItems: ContextItem[] = [];
+  // A live elapsed label must keep moving: tick the chip every 30s so the
+  // wall clock does not freeze between session events. Paused goals freeze
+  // by design (pausedAt), so they skip the ticker.
+  const [, tick] = useReducer((value: number) => value + 1, 0);
+  const liveClock = props.goal !== undefined && props.goal.status !== 'paused';
+  useEffect(() => {
+    if (!liveClock) return;
+    const interval = window.setInterval(tick, 30_000);
+    return () => window.clearInterval(interval);
+  }, [liveClock]);
 
   if (props.goal) {
     const goal = props.goal;
+    // A paused goal burns nothing: it must look distinct (no pulse, warning
+    // tone) from a running loop at a glance.
+    const paused = goal.status === 'paused';
+    const elapsedMs =
+      paused && goal.pausedAt !== undefined
+        ? Math.max(0, goal.pausedAt - goal.setAt)
+        : Math.max(0, Date.now() - goal.setAt);
+    const goalText = [
+      copy.goalProgress(goal.iterations, goal.maxIterations),
+      copy.goalElapsed(elapsedMs),
+      goal.tokenBudget !== undefined && goal.tokensSpent !== undefined
+        ? copy.goalTokens(goal.tokensSpent, goal.tokenBudget)
+        : null,
+    ]
+      .filter((part) => part !== null)
+      .join(' \u00b7 ');
+    const overflowItems: DropdownMenuOption[] = [];
+    if (goal.onPause) {
+      overflowItems.push({
+        label: copy.pauseGoalAriaLabel(goal.iterations, goal.maxIterations),
+        icon: <Pause size={ICON_SIZE.control} aria-hidden />,
+        onClick: goal.onPause,
+      });
+    }
+    if (goal.onResume) {
+      overflowItems.push({
+        label: copy.resumeGoalAriaLabel(goal.iterations, goal.maxIterations),
+        icon: <Play size={ICON_SIZE.control} aria-hidden />,
+        onClick: goal.onResume,
+      });
+    }
+    overflowItems.push({
+      label: copy.clearGoalAriaLabel(goal.iterations, goal.maxIterations),
+      icon: <Icon icon="stop" size="xsm" />,
+      onClick: goal.onClear,
+    });
     contextItems.push({
       key: 'goal',
       element: (
         <div className="maka-session-context__goal">
-          <StatusDot variant="accent" label={copy.goalRunningAriaLabel} isPulsing />
+          <StatusDot
+            variant={paused ? 'warning' : 'accent'}
+            label={paused ? copy.goalPausedAriaLabel : copy.goalRunningAriaLabel}
+            isPulsing={!paused}
+          />
           <Text type="supporting" hasTabularNumbers>
-            {copy.goalProgress(goal.iterations, goal.maxIterations)}
+            {goalText}
           </Text>
+          {goal.onPause ? (
+            <IconButton
+              type="button"
+              label={copy.pauseGoalAriaLabel(goal.iterations, goal.maxIterations)}
+              icon={<Pause size={ICON_SIZE.control} aria-hidden />}
+              variant="ghost"
+              size="sm"
+              onClick={goal.onPause}
+              tooltip={copy.pauseGoal(
+                goal.condition,
+                goal.iterations,
+                goal.maxIterations,
+                goal.status,
+              )}
+            />
+          ) : null}
+          {goal.onResume ? (
+            <IconButton
+              type="button"
+              label={copy.resumeGoalAriaLabel(goal.iterations, goal.maxIterations)}
+              icon={<Play size={ICON_SIZE.control} aria-hidden />}
+              variant="ghost"
+              size="sm"
+              onClick={goal.onResume}
+              tooltip={copy.resumeGoal(goal.condition, goal.iterations, goal.maxIterations)}
+            />
+          ) : null}
           <IconButton
             type="button"
             label={copy.clearGoalAriaLabel(goal.iterations, goal.maxIterations)}
@@ -83,11 +172,7 @@ export function SessionContextLayer(props: {
           />
         </div>
       ),
-      overflowItems: [{
-        label: copy.clearGoalAriaLabel(goal.iterations, goal.maxIterations),
-        icon: <Icon icon="stop" size="xsm" />,
-        onClick: goal.onClear,
-      }],
+      overflowItems,
     });
   }
 

@@ -18,6 +18,37 @@ type ResearchItem = Readonly<{ title: string; body: string }>;
 type ResearchOption = Readonly<{ label: string; body: string }>;
 type ResearchStarter = Readonly<{ label: string; prompt: string }>;
 
+/** Compact token count for chip labels: 45,200 → "45k". */
+function formatCompactTokenCount(count: number): string {
+  if (count < 1_000) return `${count}`;
+  const thousands = count / 1_000;
+  return `${thousands >= 100 ? Math.round(thousands) : Math.round(thousands * 10) / 10}k`;
+}
+
+/** Wall-clock units for the goal chip's elapsed label, per locale (zh uses spaced words, en letters). */
+interface GoalElapsedUnits {
+  second: string;
+  minute: string;
+  hour: string;
+  day: string;
+}
+
+/** One shared elapsed ladder so the zh/en goalElapsed entries cannot drift. */
+function formatGoalElapsedUnits(elapsedMs: number, units: GoalElapsedUnits): string {
+  const seconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  if (seconds < 60) return `${seconds}${units.second}`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}${units.minute}`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  if (hours < 24) {
+    return restMinutes === 0
+      ? `${hours}${units.hour}`
+      : `${hours}${units.hour} ${restMinutes}${units.minute}`;
+  }
+  return `${Math.floor(hours / 24)}${units.day} ${hours % 24}${units.hour}`;
+}
+
 export interface ConversationCopy {
   empty: {
     ariaLabel: string;
@@ -250,6 +281,15 @@ export interface ConversationCopy {
     clearGoalAriaLabel: (iteration: number, max: number) => string;
     goalProgress: (iteration: number, max: number) => string;
     goalRunningAriaLabel: string;
+    goalPausedAriaLabel: string;
+    pauseGoalAriaLabel: (iteration: number, max: number) => string;
+    resumeGoalAriaLabel: (iteration: number, max: number) => string;
+    pauseGoal: (condition: string, iteration: number, max: number, status: string) => string;
+    resumeGoal: (condition: string, iteration: number, max: number) => string;
+    /** Wall-clock elapsed label for the goal chip, e.g. "12m". */
+    goalElapsed: (elapsedMs: number) => string;
+    /** Token usage label for the goal chip when a budget exists, e.g. "12k / 100k". */
+    goalTokens: (spent: number, budget: number) => string;
     loadFailed: string;
     loading: string;
     retryLoad: string;
@@ -423,6 +463,7 @@ const CONVERSATION_COPY = {
         },
       },
       clearGoal: (condition, iteration, max, status) => `自主执行目标进行中：「${condition}」（第 ${iteration}/${max} 轮，${status}）。系统每轮后自动续行；点击可清除目标、停止续行。`, clearGoalAriaLabel: (iteration, max) => `清除自主执行目标（已进行 ${iteration}/${max} 轮）`, goalProgress: (iteration, max) => `目标 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目标正在运行',
+      goalPausedAriaLabel: '自主目标已暂停', pauseGoalAriaLabel: (iteration, max) => `暂停自主执行目标（已进行 ${iteration}/${max} 轮）`, resumeGoalAriaLabel: (iteration, max) => `恢复自主执行目标（已进行 ${iteration}/${max} 轮）`, pauseGoal: (condition, iteration, max, status) => `暂停自主执行目标：「${condition}」（第 ${iteration}/${max} 轮，${status}）。暂停后立即停止自动续行，不再消耗令牌；可随时恢复。`, resumeGoal: (condition, iteration, max) => `恢复自主执行目标：「${condition}」（第 ${iteration}/${max} 轮）。恢复后立即继续自动续行。`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: ' 秒', minute: ' 分钟', hour: ' 小时', day: ' 天' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
       loadFailed: '任务载入失败', loading: '载入中…', retryLoad: '重试载入', quoteSelection: '引用', askInSidePanel: '在侧栏追问', noMessages: '暂无消息',
       branchBeforeInterrupt: '从中断前分支', sessionContextAriaLabel: '任务上下文', sessionLineageAriaLabel: '任务来源', sessionContextMore: (count) => `更多任务上下文（${count}）`,
       titlebarIdentityAriaLabel: '当前任务', openProjectFolder: (name) => `在文件管理器中打开「${name}」`, openProjectFolderAction: '打开项目文件夹',
@@ -561,6 +602,7 @@ const CONVERSATION_COPY = {
         },
       },
       clearGoal: (condition, iteration, max, status) => `Autonomous goal in progress: “${condition}” (iteration ${iteration}/${max}, ${status}). Maka continues after each iteration; click to clear the goal and stop continuing.`, clearGoalAriaLabel: (iteration, max) => `Clear autonomous goal after ${iteration}/${max} iterations`, goalProgress: (iteration, max) => `Goal ${iteration} of ${max}`, goalRunningAriaLabel: 'Autonomous goal running',
+      goalPausedAriaLabel: 'Autonomous goal paused', pauseGoalAriaLabel: (iteration, max) => `Pause autonomous goal after ${iteration}/${max} iterations`, resumeGoalAriaLabel: (iteration, max) => `Resume autonomous goal after ${iteration}/${max} iterations`, pauseGoal: (condition, iteration, max, status) => `Pause autonomous goal: “${condition}” (iteration ${iteration}/${max}, ${status}). Pausing stops autonomous continuation immediately — no more tokens burn; resume any time.`, resumeGoal: (condition, iteration, max) => `Resume autonomous goal: “${condition}” (iteration ${iteration}/${max}). Resuming continues autonomous iteration immediately.`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: 's', minute: 'm', hour: 'h', day: 'd' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
       loadFailed: 'Task failed to load', loading: 'Loading…', retryLoad: 'Retry', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',
       branchBeforeInterrupt: 'Branched before interruption', sessionContextAriaLabel: 'Task context', sessionLineageAriaLabel: 'Task origin', sessionContextMore: (count) => `More task context (${count})`,
       titlebarIdentityAriaLabel: 'Current task', openProjectFolder: (name) => `Open “${name}” in the file manager`, openProjectFolderAction: 'Open project folder',

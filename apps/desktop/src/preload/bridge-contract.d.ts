@@ -691,6 +691,10 @@ export interface MakaBridge {
     get(sessionId: string): Promise<import('@maka/runtime/goal-state').GoalState | null>;
     /** Clear the active goal, stopping autonomous continuation. */
     clear(sessionId: string): Promise<void>;
+    /** Pause the active goal without spending a model turn. */
+    pause(sessionId: string): Promise<void>;
+    /** Resume a paused goal without spending a model turn. */
+    resume(sessionId: string): Promise<void>;
   };
   connections: {
     getSnapshot(sessionId?: string, host?: DesktopRuntimeHostRef): Promise<DesktopConnectionSnapshot>;

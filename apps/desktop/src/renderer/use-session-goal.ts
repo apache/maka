@@ -3,8 +3,9 @@
  *
  * Reads the session's goal via the preload bridge and re-fetches whenever the
  * main process emits a `goal-change` session event (goal set / continue /
- * terminal / clear). Only surfaces goals that are still running (active or
- * waiting, or paused); a settled goal returns null so the session context disappears.
+ * pause / resume / terminal / clear). Only surfaces goals that are still
+ * running (active or waiting, or paused); a settled goal returns null so the
+ * session context disappears.
  *
  * Kept as a tiny standalone hook (no app-shell coupling) so an autonomous,
  * token-burning loop always has a visible indicator and a one-click stop,

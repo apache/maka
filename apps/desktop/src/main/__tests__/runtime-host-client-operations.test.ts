@@ -707,6 +707,55 @@ test('retries Goal clear only while the same Goal generation remains active', as
   );
 });
 
+test('controlGoalWithRetry applies pause/resume with the queried revision', async () => {
+  const active = goalProjection(1);
+  const paused = { ...goalProjection(2), status: 'paused' as const, pausedAt: 5 };
+  const { client, requests } = clientWithResponses([
+    { sessionId: 'session-1', goal: active }, // queryGoal
+    { sessionId: 'session-1', goal: paused }, // goal.control pause result
+    { sessionId: 'session-1', goal: paused }, // queryGoal for resume
+    { sessionId: 'session-1', goal: { ...goalProjection(3) } }, // goal.control resume result
+  ]);
+
+  await client.controlGoalWithRetry('session-1', 'pause');
+  await client.controlGoalWithRetry('session-1', 'resume');
+
+  assert.deepEqual(
+    requests.filter(({ operation }) => operation === 'goal.control').map(({ input }) => input),
+    [
+      { sessionId: 'session-1', goalId: 'goal-1', expectedRevision: 1, action: 'pause' },
+      { sessionId: 'session-1', goalId: 'goal-1', expectedRevision: 2, action: 'resume' },
+    ],
+  );
+});
+
+test('controlGoalWithRetry rethrows a status refusal instead of retrying it away', async () => {
+  // The host folds invalid transitions into operation_conflict. Every accepted
+  // transition bumps the revision, so a conflict at an unchanged revision is a
+  // status refusal — the reason must surface, not a retry-exhaustion error.
+  const paused = { ...goalProjection(2), status: 'paused' as const, pausedAt: 5 };
+  const refusal = new RuntimeHostOperationError(
+    'goal.control',
+    'operation_conflict',
+    'Goal cannot pause from status paused',
+  );
+  const { client, requests } = clientWithResponses([
+    { sessionId: 'session-1', goal: paused }, // queryGoal
+    refusal, // goal.control conflict
+    { sessionId: 'session-1', goal: paused }, // re-query: SAME revision
+  ]);
+
+  await assert.rejects(
+    () => client.controlGoalWithRetry('session-1', 'pause'),
+    /Goal cannot pause from status paused/,
+  );
+  // No futile retries: exactly one control attempt.
+  assert.equal(
+    requests.filter(({ operation }) => operation === 'goal.control').length,
+    1,
+  );
+});
+
 test('rejects an invalid sidecar continuation without misclassifying it as revision churn', async () => {
   const revision = catalogRevision('7');
   const { client, requests } = clientWithResponses([

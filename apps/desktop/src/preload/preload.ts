@@ -1863,6 +1863,12 @@ const makaBridge = {
     clear(sessionId: string): Promise<void> {
       return invokeSessionRuntimeHost('goal:clear', sessionId);
     },
+    pause(sessionId: string): Promise<void> {
+      return invokeSessionRuntimeHost('goal:pause', sessionId);
+    },
+    resume(sessionId: string): Promise<void> {
+      return invokeSessionRuntimeHost('goal:resume', sessionId);
+    },
   },
   connections: {
     getSnapshot(sessionId?: string, host?: DesktopRuntimeHostRef) {

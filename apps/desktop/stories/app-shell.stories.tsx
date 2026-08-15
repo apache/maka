@@ -901,6 +901,7 @@ export const SessionContextLayer: Story = {
           status: 'active',
           iterations: 4,
           maxIterations: 12,
+          setAt: Date.now() - 12 * 60_000,
           onClear: noop,
         },
         onBranchBannerClick: noop,

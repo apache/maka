@@ -392,6 +392,10 @@ type ShellCopy = {
     resumeFailedFallback: string;
     goalClearFailedTitle: string;
     goalClearFailedFallback: string;
+    goalPauseFailedTitle: string;
+    goalPauseFailedFallback: string;
+    goalResumeFailedTitle: string;
+    goalResumeFailedFallback: string;
     appearanceLoadErrorTitle: string;
     appearanceLoadErrorFallback: string;
     memoryRefreshErrorTitle: string;
@@ -1084,6 +1088,10 @@ const SHELL_COPY_BY_LOCALE = {
       resumeFailedFallback: '无法启动安全恢复，请检查任务状态后重试。',
       goalClearFailedTitle: '停止目标失败',
       goalClearFailedFallback: '目标仍可能继续运行，请立即重试。',
+      goalPauseFailedTitle: '暂停目标失败',
+      goalPauseFailedFallback: '目标可能仍在自动续行，请立即重试。',
+      goalResumeFailedTitle: '恢复目标失败',
+      goalResumeFailedFallback: '目标仍处于暂停状态，请重试。',
       appearanceLoadErrorTitle: '载入外观设置失败',
       appearanceLoadErrorFallback: '外观设置暂时无法载入，请稍后重试。',
       memoryRefreshErrorTitle: '刷新本地记忆状态失败',
@@ -1602,6 +1610,10 @@ const SHELL_COPY_BY_LOCALE = {
       resumeFailedFallback: 'Safe recovery could not start. Check the task state and try again.',
       goalClearFailedTitle: 'Could not stop the goal',
       goalClearFailedFallback: 'The goal may still be running. Try again now.',
+      goalPauseFailedTitle: 'Could not pause the goal',
+      goalPauseFailedFallback: 'The goal may still be continuing. Try again now.',
+      goalResumeFailedTitle: 'Could not resume the goal',
+      goalResumeFailedFallback: 'The goal is still paused. Try again.',
       appearanceLoadErrorTitle: 'Could not load appearance settings',
       appearanceLoadErrorFallback: 'Appearance settings are temporarily unavailable. Try again later.',
       memoryRefreshErrorTitle: 'Could not refresh local memory status',

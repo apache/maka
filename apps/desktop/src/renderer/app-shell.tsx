@@ -3290,27 +3290,71 @@ function AppShellContent({
                 memoryActive={memoryActive}
                 onOpenMemorySettings={() => openSettingsSection('memory')}
                     goalIndicator={
-                      activeGoal
-                        ? {
-                  condition: activeGoal.condition,
-                  status: activeGoal.status,
-                  iterations: activeGoal.iterations,
-                  maxIterations: activeGoal.maxIterations,
-                            onClear: () => {
-                              void window.maka.goal.clear(activeGoal.sessionId).catch((error) => {
-                                toastApi.error(
-                                  shellCopy.goalClearFailedTitle,
-                                  localizedShellErrorMessage(
-                                    error,
-                                    shellCopy.goalClearFailedFallback,
-                                    uiLocale,
-                                  ),
-                                );
-                              });
-                            },
-                          }
-                        : undefined
-                    }
+                  activeGoal
+                    ? {
+                        condition: activeGoal.condition,
+                        status: activeGoal.status,
+                        iterations: activeGoal.iterations,
+                        maxIterations: activeGoal.maxIterations,
+                        setAt: activeGoal.setAt,
+                        ...(activeGoal.pausedAt !== undefined
+                          ? { pausedAt: activeGoal.pausedAt }
+                          : {}),
+                        tokensSpent: activeGoal.tokensNow,
+                        ...(activeGoal.tokenBudget !== undefined
+                          ? { tokenBudget: activeGoal.tokenBudget }
+                          : {}),
+                        ...(activeGoal.status === 'active' || activeGoal.status === 'waiting'
+                          ? {
+                              onPause: () => {
+                                void window.maka.goal
+                                  .pause(activeGoal.sessionId)
+                                  .catch((error) => {
+                                    toastApi.error(
+                                      shellCopy.goalPauseFailedTitle,
+                                      localizedShellErrorMessage(
+                                        error,
+                                        shellCopy.goalPauseFailedFallback,
+                                        uiLocale,
+                                      ),
+                                    );
+                                  });
+                              },
+                            }
+                          : {}),
+                        ...(activeGoal.status === 'paused'
+                          ? {
+                              onResume: () => {
+                                void window.maka.goal
+                                  .resume(activeGoal.sessionId)
+                                  .catch((error) => {
+                                    toastApi.error(
+                                      shellCopy.goalResumeFailedTitle,
+                                      localizedShellErrorMessage(
+                                        error,
+                                        shellCopy.goalResumeFailedFallback,
+                                        uiLocale,
+                                      ),
+                                    );
+                                  });
+                              },
+                            }
+                          : {}),
+                        onClear: () => {
+                          void window.maka.goal.clear(activeGoal.sessionId).catch((error) => {
+                            toastApi.error(
+                              shellCopy.goalClearFailedTitle,
+                              localizedShellErrorMessage(
+                                error,
+                                shellCopy.goalClearFailedFallback,
+                                uiLocale,
+                              ),
+                            );
+                          });
+                        },
+                      }
+                    : undefined
+                }
                 messageLoadError={activeId ? messageLoadErrorBySession[activeId] : undefined}
                 messageLoadRetryPending={activeId ? messageRetryPendingBySession[activeId] === true : false}
                 onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}

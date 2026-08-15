@@ -33,7 +33,7 @@ import { useTurnVirtualizer } from './use-turn-virtualizer.js';
 import { placeChatConversationItems } from './chat-conversation-items.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { SessionContextLayer } from './session-context-layer.js';
+import { SessionContextLayer, type SessionContextGoal } from './session-context-layer.js';
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
@@ -104,17 +104,13 @@ export function ChatView(props: {
   }>;
   /**
    * Active autonomous-goal indicator for the session, or undefined when no
-   * goal is running. Surfaces the loop (turn counter) with a one-click clear
-   * affordance so a token-burning goal is never invisible or unstoppable —
-   * this IS the desktop kill switch. `onClear` stops autonomous continuation.
+   * goal is running. Surfaces the loop (turn counter, elapsed, tokens) with
+   * pause/resume/clear affordances so a token-burning goal is never invisible
+   * or uncontrollable — this IS the desktop kill switch. `onClear` stops
+   * autonomous continuation; `onPause`/`onResume` control it without a model
+   * turn.
    */
-  goalIndicator?: {
-    condition: string;
-    status: string;
-    iterations: number;
-    maxIterations: number;
-    onClear: () => void;
-  };
+  goalIndicator?: SessionContextGoal;
   /** Error from loading the active session's persisted message log. */
   messageLoadError?: string;
   messageLoadRetryPending?: boolean;

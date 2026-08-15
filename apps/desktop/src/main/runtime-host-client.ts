@@ -1148,14 +1148,15 @@ export class DesktopRuntimeHostClient {
     });
   }
 
-  async clearGoal(sessionId: string): Promise<void> {
+  async controlGoalWithRetry(sessionId: string, action: GoalControlAction): Promise<void> {
     const initial = await this.queryGoal(sessionId);
     if (initial.goal === null) return;
     const goalId = initial.goal.goalId;
     let goal = initial.goal;
+    let conflict: RuntimeHostOperationError | null = null;
     for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
       try {
-        await this.controlGoal(goal, "clear");
+        await this.controlGoal(goal, action);
         return;
       } catch (error) {
         if (
@@ -1164,12 +1165,25 @@ export class DesktopRuntimeHostClient {
         ) {
           throw error;
         }
+        conflict = error;
+        if (attempt === MAX_OPTIMISTIC_ATTEMPTS - 1) break; // a re-query would have no retry to serve
       }
       const current = await this.queryGoal(sessionId);
       if (current.goal === null || current.goal.goalId !== goalId) return;
+      if (current.goal.revision === goal.revision) {
+        // The host folds invalid transitions into operation_conflict too
+        // ("Goal cannot pause from status paused"). Every accepted transition
+        // bumps the revision, so a conflict at an unchanged revision is a
+        // status refusal, not a race — retrying is futile; surface the reason.
+        throw conflict;
+      }
       goal = current.goal;
     }
-    throw revisionConflict("Goal clear", sessionId);
+    throw revisionConflict(`Goal ${action}`, sessionId);
+  }
+
+  async clearGoal(sessionId: string): Promise<void> {
+    await this.controlGoalWithRetry(sessionId, "clear");
   }
 
   async getPlanState(sessionId: string): Promise<PlanSessionState> {

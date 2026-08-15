@@ -24,6 +24,7 @@ type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
   Pick<
     DesktopRuntimeHostClient,
     | 'clearGoal'
+  | 'controlGoalWithRetry'
   | 'controlPlan'
   | 'getRuntimeResource'
   | 'getPlanState'
@@ -86,6 +87,12 @@ export function registerRuntimeHostSessionDomainsIpc(
   });
   ipcMain.handle('goal:clear', async (_event, sessionId: unknown) => {
     await deps.client.clearGoal(requiredId(sessionId, 'Session'));
+  });
+  ipcMain.handle('goal:pause', async (_event, sessionId: unknown) => {
+    await deps.client.controlGoalWithRetry(requiredId(sessionId, 'Session'), 'pause');
+  });
+  ipcMain.handle('goal:resume', async (_event, sessionId: unknown) => {
+    await deps.client.controlGoalWithRetry(requiredId(sessionId, 'Session'), 'resume');
   });
 
   handleReconnectableRead(ipcMain, 'plan-mode:getState', (_event, sessionId: unknown) =>
