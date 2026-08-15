@@ -18,6 +18,7 @@ import type {
   PermissionSnapshot,
 } from '@maka/core/capabilities';
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
+import type { ExternalSessionSummary } from '@maka/core/external-session';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
@@ -650,6 +651,14 @@ const makaBridge = {
   e2eFixture: {
     getState: async () => null,
   },
+  // 导入任务 reads another agent's session directory through Desktop Main. The
+  // fixture answers with one source and a short first page so the story shows
+  // the source switch, the archived filter, and 加载更多 together.
+  externalSessions: {
+    listSources: async () => ({ adapterIds: ['codex'] }),
+    list: async () => ({ sessions: externalConversations, nextCursor: 'page-2' }),
+    import: async () => ({ ok: false as const }),
+  },
   // Appearance mounts CustomPetSettingsSection, which reads and subscribes on
   // window.maka.pets. Without this fixture the catalog story throws on mount
   // (subscribeChanges of undefined) and the render smoke fails the page.
@@ -729,6 +738,30 @@ const archivedTaskSessions: SessionSummary[] = [
   archivedTask('task-sort', '修复归档任务在导轨里的排序', 14, { projectId: 'proj-astryx' }),
   archivedTask('task-unfiled', 'Analyze entire project', 32),
   archivedTask('task-active', 'An active task the page must not list', 0, { isArchived: false }),
+];
+
+// 导入任务's rows come from another agent's directory, not from Maka's store:
+// a source-native id, the cwd it ran in, and whether that agent archived it.
+const externalConversations: ExternalSessionSummary[] = [
+  {
+    id: 'codex-01930f',
+    name: 'Trace the flaky worktree teardown in CI',
+    cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
+    updatedAt: Date.now() - 42 * 60 * 1000,
+  },
+  {
+    id: 'codex-01930e',
+    name: '把 provider catalog 的分页改成游标',
+    cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
+    updatedAt: Date.now() - 3 * 60 * 60 * 1000,
+  },
+  {
+    id: 'codex-01929c',
+    name: 'Draft the release notes for 0.9.0',
+    cwd: '/Users/storybook-fixture-user/workspace/docs',
+    updatedAt: Date.now() - 6 * 24 * 60 * 60 * 1000,
+    archived: true,
+  },
 ];
 
 const archivedTaskProjects: ProjectRecord[] = [
@@ -1036,6 +1069,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           onOpenDailyReview={noop}
           onOpenSession={noop}
           archivedTasks={archivedTasks}
+          onTaskImported={noop}
         />
       </div>
     </>
@@ -1240,4 +1274,24 @@ export const ArchivedTasks: Story = {
   render: () => (
     <SettingsStory section="archived-tasks" archivedTaskSessions={archivedTaskSessions} />
   ),
+};
+
+// Real path: 设置 → 导入任务 on a machine that has Codex installed.
+export const ImportTasks: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="import-tasks" />,
+};
+
+// Real path: the same page on a machine with no supported agent — the common
+// case, and the one where the source switch and the filter would be chrome
+// around nothing.
+export const ImportTasksNoSource: Story = {
+  decorators: [withScopedMakaBridge({
+    ...makaBridge,
+    externalSessions: {
+      ...makaBridge.externalSessions,
+      listSources: async () => ({ adapterIds: [] }),
+    },
+  })],
+  render: () => <SettingsStory section="import-tasks" />,
 };

@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { SessionSummary } from '@maka/core/session';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { useUiLocale } from '@maka/ui';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy';
@@ -56,6 +57,8 @@ export function SettingsModal(props: {
   onOpenSession?(sessionId: string): void;
   /** The shell's session catalog, for 已归档任务. See ArchivedTasksBridge. */
   archivedTasks: ArchivedTasksBridge;
+  /** Receives the task 导入任务 just created, and opens it. */
+  onTaskImported(session: SessionSummary): void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -111,6 +114,7 @@ export function SettingsModal(props: {
         onOpenKeyboardHelp={props.onOpenKeyboardHelp}
         onOpenSession={props.onOpenSession}
         archivedTasks={props.archivedTasks}
+        onTaskImported={props.onTaskImported}
       />
     </div>
   );

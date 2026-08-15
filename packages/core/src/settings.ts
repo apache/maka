@@ -58,6 +58,7 @@ export const SETTINGS_SECTIONS = [
   // `maka://settings/<section>` is a public deep link, so the id names what
   // the page is rather than the noun it lives under.
   'archived-tasks',
+  'import-tasks',
   'bot-chat',
   'search',
   'data',

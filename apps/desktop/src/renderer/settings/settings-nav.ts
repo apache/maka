@@ -14,6 +14,7 @@ import {
   Search,
   Settings as SettingsIcon,
   ShieldCheck,
+  Upload,
   Workflow,
   type LucideProps,
 } from '@maka/ui/icons';
@@ -70,6 +71,7 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'search', Icon: Search, enabled: true, group: 'capabilities', badge: 'Beta' },
   { id: 'usage', Icon: BarChart3, enabled: true, group: 'activity' },
   { id: 'archived-tasks', Icon: ListTodo, enabled: true, group: 'activity' },
+  { id: 'import-tasks', Icon: Upload, enabled: true, group: 'activity' },
   { id: 'daily-review', Icon: CalendarDays, enabled: true, group: 'activity' },
   { id: 'data', Icon: Database, enabled: true, group: 'system' },
   { id: 'permissions', Icon: ShieldCheck, enabled: true, group: 'system' },

@@ -595,7 +595,6 @@ function AppShellContent({
   const persistedComposerDefaults = loadComposerDefaults();
   const [helpOpen, closeHelp, openHelp] = useKeyboardHelp();
   const [paletteOpen, openPalette, closePalette] = useCommandPalette();
-  const [externalImportOpen, setExternalImportOpen] = useState(false);
   const [viewMode, setViewMode] = useState<SessionViewMode>('conversation');
   const composerRef = useRef<ComposerHandle>(null);
   // The rail's toggle has to reach Astryx's resizable state, not just this
@@ -2238,7 +2237,7 @@ function AppShellContent({
     return () => window.clearTimeout(timer);
   }, [activeId, activeStreamingMessageId, messages, settleAssistantStreaming]);
 
-  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || externalImportOpen;
+  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen;
   const shellObscured = hasModalOpen || settingsOpen;
 
   useEffect(() => {
@@ -2804,7 +2803,6 @@ function AppShellContent({
             updateReminder={updateReminder}
             onOpenUpdate={openUpdateDownload}
             onNew={createSession}
-            onImport={() => setExternalImportOpen(true)}
             rowActions={sessionRowActions}
             projectActions={projectRowActions}
           />
@@ -3378,10 +3376,12 @@ function AppShellContent({
         paletteOpen={paletteOpen}
         closePalette={closePalette}
         commandOptions={commandOptions}
-        externalImportOpen={externalImportOpen}
-        onExternalImportOpenChange={setExternalImportOpen}
+        /* 导入任务 hands back a task that is not in the catalog yet — nothing
+           behind `externalSessions.import` notifies the shell — so the shell
+           seeds it, then leaves Settings and opens it. */
         onExternalSessionImported={(session) => {
           upsertSessionSummary(session);
+          closeSettings();
           openSessionInChat(session.id);
         }}
       />
