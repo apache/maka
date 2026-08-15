@@ -63,7 +63,7 @@ test('remounting a live surface leaves accumulated output settled', async ({
     .toBe(true);
 });
 
-test('keeps a completed reply after an interrupted turn and conversation remount', async ({
+test('keeps a completed reply after an interrupted turn and surface remount', async ({
   window: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
@@ -72,19 +72,19 @@ test('keeps a completed reply after an interrupted turn and conversation remount
   await expect(page.locator('.maka-bubble-streaming')).toContainText(
     'Fake backend waiting for the test to stop the Turn.',
   );
-  const sidebar = page.getByRole('navigation', { name: '对话列表' });
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
-  await expect(page.locator('[data-agents-page]')).toHaveAttribute(
-    'data-sidebar-state',
-    'expanded',
-  );
-  const originalSessionId = await sidebar.locator('[data-session-id]').first()
-    .getAttribute('data-session-id');
+  const originalSessionId = await page.evaluate(async () => (await window.maka.sessions.list())[0]?.id);
   expect(originalSessionId).toBeTruthy();
   await page.getByRole('button', { name: '停止' }).click();
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
     timeout: 20_000,
   });
+  await expect.poll(
+    () => page.evaluate(async (sessionId) => (
+      (await window.maka.sessions.list()).find((session) => session.id === sessionId)
+        ?.runningTurnIds?.length ?? 0
+    ), originalSessionId!),
+    { timeout: 20_000 },
+  ).toBe(0);
   await composer.fill(FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT);
   await expect(page.getByRole('button', { name: '发送' })).toBeEnabled({
     timeout: 20_000,
@@ -105,14 +105,10 @@ test('keeps a completed reply after an interrupted turn and conversation remount
     timeout: 20_000,
   });
 
-  await composer.fill('draft before remounting the completed conversation');
-  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
-  await expect(composer).toHaveText('');
-  await composer.fill('temporary conversation');
-  await composer.press('Enter');
-  await expect(page.getByRole('log')).toContainText('Fake backend received: temporary conversation');
-
-  await sidebar.locator(`[data-session-id="${originalSessionId}"]`).click();
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
+  await sidebar.getByRole('button', { name: '扩展' }).click();
+  await expect(page.locator('[data-module="skills"]')).toBeVisible();
+  await sidebar.getByRole('button', { name: '会话', exact: true }).click();
   await expect(page.getByRole('log')).toContainText(completedReply);
 });
 
