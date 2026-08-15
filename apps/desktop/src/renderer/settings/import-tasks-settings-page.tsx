@@ -23,6 +23,21 @@ type CatalogState = {
 const EMPTY_CATALOG: CatalogState = { sessions: [], nextCursor: null };
 
 /**
+ * An import Desktop Main could neither confirm nor fail.
+ *
+ * The name is carried, not just the id, because the only thing that can tell
+ * the user which conversation to go look for is this record: by the time the
+ * banner renders, the row it came from may have been filtered or paged away.
+ * The adapter is carried because a source-native id is unique only within its
+ * own source.
+ */
+type UncertainImport = {
+  adapterId: string;
+  sourceSessionId: string;
+  name: string;
+};
+
+/**
  * Settings · 活动 · 导入任务 — bring another local agent's conversations in as
  * Maka tasks.
  *
@@ -64,12 +79,11 @@ export function ImportTasksSettingsPage(props: {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   /**
-   * Conversations whose import neither succeeded nor failed — Desktop Main
-   * could not confirm the outcome. Re-importing one is how you end up with two
-   * copies of the same conversation, so those rows stay disabled for the rest
-   * of this page's lifetime and the banner says where to look instead.
+   * Re-importing a conversation whose outcome is unknown is how you end up with
+   * two copies of it, so its row stays disabled for the rest of this page's
+   * lifetime and the banner names it as the one to go look for.
    */
-  const [uncertainIds, setUncertainIds] = useState<ReadonlySet<string>>(new Set());
+  const [uncertainImports, setUncertainImports] = useState<readonly UncertainImport[]>([]);
   // Only the newest list request may write. Switching source or toggling the
   // archived filter while a page is in flight would otherwise land the old
   // source's rows under the new source's label.
@@ -155,14 +169,14 @@ export function ImportTasksSettingsPage(props: {
   );
 
   const importConversation = useCallback(
-    async (sourceSessionId: string) => {
+    async (session: ExternalSessionSummary) => {
       if (adapterId === null || importingId !== null) return;
-      setImportingId(sourceSessionId);
+      setImportingId(session.id);
       setImportError(null);
       try {
         const outcome = await window.maka.externalSessions.import({
           adapterId,
-          sourceSessionId,
+          sourceSessionId: session.id,
         });
         // Navigating away from Settings unmounts this page while the import is
         // still in Desktop Main's hands. The conversion itself completes and is
@@ -170,7 +184,10 @@ export function ImportTasksSettingsPage(props: {
         // the user has left steering the shell somewhere they did not ask for.
         if (!mountedRef.current) return;
         if (!outcome.ok) {
-          setUncertainIds((current) => new Set(current).add(sourceSessionId));
+          setUncertainImports((current) => [
+            ...current,
+            { adapterId, sourceSessionId: session.id, name: session.name },
+          ]);
           return;
         }
         props.onImported(outcome.session);
@@ -288,11 +305,13 @@ export function ImportTasksSettingsPage(props: {
             <Banner status="error" title={copy.importFailedTitle} description={importError} />
           )}
 
-          {uncertainIds.size > 0 && (
+          {uncertainImports.length > 0 && (
             <Banner
               status="warning"
               title={copy.importOutcomeUnknownTitle}
-              description={copy.importOutcomeUnknownDescription}
+              description={copy.importOutcomeUnknownDescription(
+                uncertainImports.map((entry) => entry.name),
+              )}
             />
           )}
 
@@ -336,13 +355,20 @@ export function ImportTasksSettingsPage(props: {
                         variant="secondary"
                         size="sm"
                         isLoading={importingId === session.id}
-                        isDisabled={importingId !== null || uncertainIds.has(session.id)}
+                        isDisabled={
+                          importingId !== null ||
+                          uncertainImports.some(
+                            (entry) =>
+                              entry.adapterId === adapterId &&
+                              entry.sourceSessionId === session.id,
+                          )
+                        }
                         // Returned, not discarded: Astryx's Button awaits a
                         // promise-returning `clickAction` and drops repeat
                         // clicks until it settles. `void`-ing it gave that
                         // guarantee nothing to await, leaving double-submit to
                         // the `importingId` state alone -- one render behind.
-                        clickAction={() => importConversation(session.id)}
+                        clickAction={() => importConversation(session)}
                         label={importingId === session.id ? copy.importing : copy.import}
                         // Every row's button reads 导入; only the accessible
                         // name can say which conversation it imports.
@@ -356,15 +382,16 @@ export function ImportTasksSettingsPage(props: {
           )}
 
           {catalog.nextCursor !== null && adapterId !== null && (
-            <HStack hAlign="center">
-              <Button
-                variant="ghost"
-                size="sm"
-                label={loadingMore ? copy.loadingMore : copy.loadMore}
-                isDisabled={loadingMore}
-                onClick={() => void loadCatalog(adapterId, catalog.nextCursor ?? undefined)}
-              />
-            </HStack>
+            /* Full width and `secondary`: as a centred ghost label this read as
+               a caption under the list rather than the control that extends it. */
+            <Button
+              variant="secondary"
+              size="sm"
+              width="100%"
+              label={loadingMore ? copy.loadingMore : copy.loadMore}
+              isDisabled={loadingMore}
+              clickAction={() => loadCatalog(adapterId, catalog.nextCursor ?? undefined)}
+            />
           )}
         </VStack>
       </SettingsSection>
