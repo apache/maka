@@ -229,6 +229,8 @@ type ShellCopy = {
     deleteLabel: string;
     cancelLabel: string;
     deletedTitle(name: string): string;
+    /** The task was restored elsewhere, so the delete was called off. */
+    deleteRestoredTitle(name: string): string;
   };
   skillActions: {
     refreshSkillsFailedTitle: string;
@@ -795,6 +797,7 @@ const SHELL_COPY_BY_LOCALE = {
       deleteLabel: '删除',
       cancelLabel: '取消',
       deletedTitle: (name: string) => `已删除 ${name}`,
+      deleteRestoredTitle: (name: string) => `${name} 已被恢复，未删除`,
     },
     skillActions: {
       refreshSkillsFailedTitle: '刷新技能失败',
@@ -1262,6 +1265,7 @@ const SHELL_COPY_BY_LOCALE = {
       deleteLabel: 'Delete',
       cancelLabel: 'Cancel',
       deletedTitle: (name: string) => `Deleted ${name}`,
+      deleteRestoredTitle: (name: string) => `${name} was restored, so it was kept`,
     },
     skillActions: {
       refreshSkillsFailedTitle: 'Could not refresh Skills',

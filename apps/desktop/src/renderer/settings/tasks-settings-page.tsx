@@ -117,6 +117,10 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
             ? settingsActionErrorMessage(outcome.firstError, locale)
             : copy.purgeFailedBody(outcome.remaining.length),
         );
+      } else if (outcome.restored.length > 0) {
+        // Naming them beats a count that quietly does not add up: the person
+        // agreed to a number, and a smaller one went.
+        toast.success(copy.purgedWithRestoredToast(outcome.removed, outcome.restored.length));
       } else {
         toast.success(copy.purgedToast(outcome.removed));
       }

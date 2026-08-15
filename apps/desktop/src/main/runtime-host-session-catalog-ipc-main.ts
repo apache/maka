@@ -191,9 +191,26 @@ export function registerRuntimeHostSessionCatalogIpc(
   ipcMain.handle('sessions:remove', async (_event, sessionId: string, options?: unknown) => {
     requestsRevisionFamily(options);
     const ids = await actionIds(sessionId, { revisionFamily: true });
-    await deps.client.removeSession(sessionId);
-    await finishSessionRetirement(deps, ids, 'deleted');
+    // A task restored under the caller's decision is left alone, and nothing
+    // downstream of the deletion runs for it.
+    const disposition = await deps.client.removeSession(sessionId, {
+      requireArchived: requiresArchivedSession(options),
+    });
+    if (disposition === 'removed') await finishSessionRetirement(deps, ids, 'deleted');
+    return disposition;
   });
+}
+
+/**
+ * Reads the archived premise off options `requestsRevisionFamily` has already
+ * checked the shape of.
+ */
+function requiresArchivedSession(options: unknown): boolean {
+  if (options === undefined || options === null) return false;
+  const value = (options as { requireArchived?: unknown }).requireArchived;
+  if (value === undefined) return false;
+  if (typeof value !== 'boolean') throw new Error('Invalid requireArchived option');
+  return value;
 }
 
 async function finishSessionRetirement(

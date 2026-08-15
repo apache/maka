@@ -113,6 +113,12 @@ const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
 
 export type DesktopSessionConfigurationPatch = Partial<SessionConfiguration>;
 
+/**
+ * How a remove settled. `restored` is not a failure: the task left the state
+ * the caller decided against, so nothing was destroyed and nothing is wrong.
+ */
+export type SessionRemoveDisposition = "removed" | "restored";
+
 export type DesktopRuntimeHostClientErrorCode =
   | "catalog_unstable"
   | "client_closed"
@@ -838,14 +844,33 @@ export class DesktopRuntimeHostClient {
     );
   }
 
-  async removeSession(sessionId: string): Promise<void> {
+  /**
+   * Removes a Session, optionally only while it is still archived.
+   *
+   * Replaying a rejected write at the fresh revision is right for a rename or a
+   * configuration patch — the write means the same thing either way. It is
+   * wrong for a remove: a lifecycle write bumps the revision, so a conflict can
+   * be the task being restored, and replaying then destroys a task whose
+   * deletion nobody asked for any more.
+   *
+   * `requireArchived` states the premise the caller decided on. Re-asserting it
+   * against each fresh read is enough to hold it through the commit: unarchiving
+   * bumps `metadataVersion`, and the Host checks that version in the same
+   * transaction as the `DELETE`, so a remove that commits at the revision just
+   * read is a remove of the record that was read as archived.
+   */
+  async removeSession(
+    sessionId: string,
+    options: { requireArchived?: boolean } = {},
+  ): Promise<SessionRemoveDisposition> {
     for (let attempt = 0; attempt < MAX_SESSION_REVISION_ATTEMPTS; attempt += 1) {
       const current = await this.#requireSession(sessionId);
+      if (options.requireArchived && !current.isArchived) return "restored";
       const result = await this.request("session.remove", {
         sessionId,
         expectedRevision: current.revision,
       });
-      if (result.kind === "removed") return;
+      if (result.kind === "removed") return "removed";
     }
     throw revisionConflict("remove", sessionId);
   }

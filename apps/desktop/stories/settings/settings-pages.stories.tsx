@@ -863,7 +863,13 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
     },
     onPurge: async (sessionIds) => {
       drop(sessionIds);
-      return { removed: sessionIds.length, remaining: [], verified: true, firstError: undefined };
+      return {
+        removed: sessionIds.length,
+        remaining: [],
+        restored: [],
+        verified: true,
+        firstError: undefined,
+      };
     },
   };
 }

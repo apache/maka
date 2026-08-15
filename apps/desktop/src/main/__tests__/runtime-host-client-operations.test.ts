@@ -240,6 +240,57 @@ test('retries a Session update through transient revision churn', async () => {
   assert.equal(updated.collaborationMode, 'plan');
 });
 
+test('abandons a remove whose task was restored under it', async () => {
+  // A lifecycle write bumps the revision, so the conflict IS the restore: the
+  // premise the caller decided on ("this task is archived") no longer holds,
+  // and replaying the delete at the fresh revision destroys a task somebody
+  // just pulled back out of the archive.
+  const { client, requests } = clientWithResponses([
+    { kind: 'session', session: session('session-1', 4, { isArchived: true }) },
+    { kind: 'revision_conflict', expectedRevision: 4, actualRevision: 5 },
+    { kind: 'session', session: session('session-1', 5, { isArchived: false }) },
+    // Only a replayed delete reaches this, and reaching it is the defect.
+    { kind: 'removed' },
+  ]);
+
+  assert.equal(await client.removeSession('session-1', { requireArchived: true }), 'restored');
+  assert.deepEqual(
+    requests.map(({ operation }) => operation),
+    ['session.catalog.query', 'session.remove', 'session.catalog.query'],
+  );
+});
+
+test('retries a remove through revision churn that left the task archived', async () => {
+  // Not every conflict is a restore. A task still archived at the fresh
+  // revision was only written around, and the delete still means what it did.
+  const { client, requests } = clientWithResponses([
+    { kind: 'session', session: session('session-1', 4, { isArchived: true }) },
+    { kind: 'revision_conflict', expectedRevision: 4, actualRevision: 5 },
+    { kind: 'session', session: session('session-1', 5, { isArchived: true }) },
+    { kind: 'removed' },
+  ]);
+
+  assert.equal(await client.removeSession('session-1', { requireArchived: true }), 'removed');
+  assert.deepEqual(
+    requests.filter(({ operation }) => operation === 'session.remove').map(({ input }) => input),
+    [
+      { sessionId: 'session-1', expectedRevision: 4 },
+      { sessionId: 'session-1', expectedRevision: 5 },
+    ],
+  );
+});
+
+test('removes a task that was never archived when no premise was stated', async () => {
+  // Deleting an active task from the rail has no archived premise to lose, so
+  // the precondition is the caller's to ask for, not the client's to assume.
+  const { client } = clientWithResponses([
+    { kind: 'session', session: session('session-1', 4) },
+    { kind: 'removed' },
+  ]);
+
+  assert.equal(await client.removeSession('session-1'), 'removed');
+});
+
 test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async () => {
   const initial = createDefaultRuntimePolicy();
   const concurrent = {

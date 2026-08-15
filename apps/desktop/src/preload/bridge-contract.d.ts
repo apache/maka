@@ -522,7 +522,14 @@ export interface MakaBridge {
     abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanSessionState>;
     setModel(sessionId: string, input: { llmConnectionSlug: string; model: string }): Promise<DesktopSessionSummary>;
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionSummary>;
-    remove(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
+    /**
+     * `requireArchived` holds the caller's premise through the deletion: a task
+     * restored meanwhile answers `restored` and is kept.
+     */
+    remove(
+      sessionId: string,
+      options?: { revisionFamily?: boolean; requireArchived?: boolean },
+    ): Promise<'removed' | 'restored'>;
     cleanupSessionCopy(sessionId: string): Promise<void>;
     abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   };
