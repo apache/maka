@@ -13,8 +13,7 @@ export type ModelRuntimeWire =
   | 'openai-chat'
   | 'openai-responses'
   | 'google-generate'
-  | 'cohere-v2'
-  | 'unavailable';
+  | 'cohere-v2';
 
 export type ReasoningReplayContract =
   | { kind: 'none' }
@@ -148,8 +147,6 @@ function resolveModelRuntimeWire(
       return 'google-generate';
     case 'cohere':
       return 'cohere-v2';
-    case 'unavailable':
-      return 'unavailable';
   }
 }
 
@@ -176,7 +173,6 @@ function reasoningReplayContract(
         : { kind: 'none' };
     case 'google-generate':
     case 'cohere-v2':
-    case 'unavailable':
       return { kind: 'none' };
   }
 }

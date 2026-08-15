@@ -51,7 +51,6 @@ describe('responses wire contract', () => {
     // encrypted content is the only dialect a provider may carry reasoning in.
     const gaps: string[] = [];
     for (const providerType of Object.keys(PROVIDER_REGISTRY) as LlmConnection['providerType'][]) {
-      if (PROVIDER_REGISTRY[providerType].runtimeAdapter?.kind === 'unavailable') continue;
       const modelIds = new Set([
         ...PROVIDER_REGISTRY[providerType].fallbackModels,
         ...modelMetadataIdsForProvider(providerType),

@@ -116,9 +116,6 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       }).chatModel(modelId);
     }
 
-    case 'unavailable':
-      throw new Error(`${connection.providerType} is experimental and not wired yet`);
-
     case 'openai': {
       const openai = createOpenAI({
         apiKey,

@@ -11,8 +11,6 @@
  * The single helper here is the only place these criteria live:
  *   - real backend (not `fake`)
  *   - `enabled === true`
- *   - provider auth path is send-wired (Claude subscription is wired;
- *     other OAuth providers stay blocked until their runtime path lands)
  *   - has usable secret OR provider's `authKind === 'none'`
  *   - effective model exists (caller's `requestedModel` if provided,
  *     otherwise `connection.defaultModel`)
@@ -28,7 +26,6 @@ import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
-  isWiredOAuthProvider,
   providerAuthRequiresSecret,
   type LlmConnection,
 } from './llm-connections.js';
@@ -51,7 +48,6 @@ export type ChatConfigurationReason =
   | 'empty_model_list'
   | 'model_not_enabled'
   | 'model_not_chat_capable'
-  | 'oauth_subscription_not_wired'
   | 'fake_backend';
 
 export type IsConnectionReadyResult =
@@ -90,14 +86,13 @@ export interface IsConnectionReadyInput {
  * Order:
  *   1. backend is `fake` → `fake_backend`
  *   2. `enabled === false` → `connection_disabled`
- *   3. unsupported OAuth provider → `oauth_subscription_not_wired`
- *   4. `authKind !== 'none' && !hasSecret` → `missing_api_key`
- *   5. effective model is empty/missing → `missing_model`
- *   6. no models are enabled → `empty_model_list`
- *   7. effective model is not enabled → `model_not_enabled`
- *   8. `connection.models` is enumerated but empty → `empty_model_list`
- *   9. effective model is not in `connection.models` → `model_not_enabled`
- *  10. effective model is explicitly not chat-capable → `model_not_chat_capable`
+ *   3. `authKind !== 'none' && !hasSecret` → `missing_api_key`
+ *   4. effective model is empty/missing → `missing_model`
+ *   5. no models are enabled → `empty_model_list`
+ *   6. effective model is not enabled → `model_not_enabled`
+ *   7. `connection.models` is enumerated but empty → `empty_model_list`
+ *   8. effective model is not in `connection.models` → `model_not_enabled`
+ *   9. effective model is explicitly not chat-capable → `model_not_chat_capable`
  *
  * "Effective model" = `requestedModel ?? connection.defaultModel`.
  */
@@ -109,10 +104,6 @@ export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionRe
   }
   if (!connection.enabled) {
     return { ready: false, reason: 'connection_disabled' };
-  }
-  const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
-  if (authKind === 'oauth_token' && !isWiredOAuthProvider(connection.providerType)) {
-    return { ready: false, reason: 'oauth_subscription_not_wired' };
   }
   if (providerAuthRequiresSecret(connection.providerType) && !hasSecret) {
     return { ready: false, reason: 'missing_api_key' };

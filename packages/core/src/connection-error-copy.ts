@@ -36,8 +36,6 @@ const REASON_FIX_COPY: Record<ChatConfigurationReason, string> = {
   model_not_enabled: '当前会话选择的模型未启用。请到 设置 · 模型 重新选择可用模型后再发送。',
   model_not_chat_capable:
     '当前会话选择的模型不能用于聊天。请到 设置 · 模型 重新选择支持聊天的模型后再发送。',
-  oauth_subscription_not_wired:
-    '这个订阅账号暂时不能作为聊天模型。请先选择可用的 API key 或已接入 OAuth 模型连接。',
   fake_backend: '当前会话来自旧的本地模拟连接。请到 设置 · 模型 添加真实模型后新建会话。',
 };
 

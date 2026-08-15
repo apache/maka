@@ -37,7 +37,6 @@ export interface SubscriptionSnapshot {
     | 'provider_rejected';
   email?: string;
   plan?: string;
-  status?: 'preview';
   errorMessage?: string;
 }
 

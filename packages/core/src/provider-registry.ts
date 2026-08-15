@@ -33,8 +33,7 @@ type ProviderRuntimeAdapterDefinition =
       supportsOpenAiResponses?: true;
       replayAssistantReasoningAs?: 'reasoning';
       replayAssistantReasoningDetails?: true;
-    }
-  | { kind: 'unavailable' };
+    };
 
 export type ProviderRuntimeAdapter = ProviderRuntimeAdapterDefinition & {
   /** Provider wire contract for ApplyPatch. Model support is resolved separately. */
@@ -1833,13 +1832,3 @@ function providerTypesByOrder(
 export const READY_PROVIDER_TYPES = providerTypesByOrder('readyOrder');
 export const CATALOG_PROVIDER_TYPES = providerTypesByOrder('catalogOrder');
 export const RECOMMENDED_PROVIDER_TYPES = providerTypesByOrder('recommendedOrder');
-
-/**
- * An OAuth provider is product-wired when its registry entry has both the
- * OAuth credential contract and a runnable model adapter. OAuth entries whose
- * adapter is unavailable remain preview-only.
- */
-export function isWiredOAuthProvider(providerType: ProviderType): boolean {
-  const provider = PROVIDER_REGISTRY[providerType];
-  return provider.authKind === 'oauth_token' && provider.runtimeAdapter.kind !== 'unavailable';
-}

@@ -89,7 +89,6 @@ export function deriveOnboardingState(input: DeriveOnboardingStateInput): Onboar
       case 'fake_backend':
       case 'connection_missing':
       case 'missing_default_connection':
-      case 'oauth_subscription_not_wired':
         break;
     }
   }

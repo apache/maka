@@ -5,7 +5,6 @@ import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
-  isWiredOAuthProvider,
   type LlmConnection,
   type ProviderType,
 } from './llm-connections.js';
@@ -41,12 +40,7 @@ export function buildChatModelChoices(connections: readonly LlmConnection[]): Ch
   for (const rawConnection of connections) {
     const connection = normalizeOpenAiCodexConnection(rawConnection);
     const provider = PROVIDER_DEFAULTS[connection.providerType];
-    if (
-      !connection.enabled ||
-      !provider ||
-      provider.backendKind !== 'ai-sdk' ||
-      (provider.authKind === 'oauth_token' && !isWiredOAuthProvider(connection.providerType))
-    ) {
+    if (!connection.enabled || !provider || provider.backendKind !== 'ai-sdk') {
       continue;
     }
     const enabledModelIds = new Set(connectionEnabledModelIds(connection));

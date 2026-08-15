@@ -252,7 +252,6 @@ function modelRepairTarget(
       return { kind: 'connection', connectionSlug };
     case 'connection_disabled':
     case 'missing_api_key':
-    case 'oauth_subscription_not_wired':
       return { kind: 'connection', connectionSlug };
   }
 }

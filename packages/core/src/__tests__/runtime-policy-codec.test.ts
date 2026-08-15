@@ -180,21 +180,6 @@ test('rejects new connections for the retired Gemini CLI account provider', () =
   );
 });
 
-test('keeps ordinary Google API-key connections supported', () => {
-  const input = normalizeCreateCatalogConnectionInput({
-    expectedCatalogRevision: 0,
-    connection: {
-      slug: 'google-api',
-      name: 'Google API',
-      providerType: 'google',
-      enabled: true,
-      enabledModelIds: ['gemini-2.5-pro'],
-    },
-  });
-
-  assert.equal(input.connection.providerType, 'google');
-});
-
 test('relay model profiles round-trip canonical entries and drafts, strictly', () => {
   const table = {
     'relay-reasoner': {

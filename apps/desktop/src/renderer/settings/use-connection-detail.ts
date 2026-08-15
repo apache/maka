@@ -13,7 +13,6 @@ import {
   type RelayModelProfile,
   type ThinkingLevel,
 } from '@maka/core/model-thinking';
-import { isWiredOAuthProvider } from '@maka/core/provider-registry';
 import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
@@ -550,15 +549,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     if (!releaseDelete) return;
     const lifecycle = connectionDetailLifecycleRef.current;
     setDeleting(true);
+    const usesOAuth = PROVIDER_DEFAULTS[connection.providerType].authKind === 'oauth_token';
     const ok = await toast.confirm({
       title: copy.deleteConnectionTitle(connection.name),
-      description: copy.deleteDescription(
-        props.isDefault,
-        isWiredOAuthProvider(connection.providerType),
-      ),
-      confirmLabel: isWiredOAuthProvider(connection.providerType)
-        ? copy.disconnectAndDelete
-        : copy.delete,
+      description: copy.deleteDescription(props.isDefault, usesOAuth),
+      confirmLabel: usesOAuth ? copy.disconnectAndDelete : copy.delete,
       cancelLabel: copy.cancel,
       destructive: true,
     });

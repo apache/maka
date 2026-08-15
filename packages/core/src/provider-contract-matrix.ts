@@ -413,7 +413,7 @@ function reasoningReplayCell(
 }
 
 function isRow(def: ProviderDefaults): boolean {
-  return def.status === 'ready' && def.runtimeAdapter.kind !== 'unavailable';
+  return def.status === 'ready';
 }
 
 export function buildProviderContractRow(

@@ -211,8 +211,6 @@ async function testConnectionModel(
       );
     case 'cohere':
       return await probeCohere(baseUrl, secret, testModel, t0, fetchFn);
-    case 'unavailable':
-      throw new Error(`${connection.providerType} is experimental and not wired yet`);
   }
 }
 

@@ -57,7 +57,7 @@ describe('ProviderAuth contract', () => {
     expect(error.state).toBe('error');
   });
 
-  test('wired OAuth subscription providers expose real validation actions after login', () => {
+  test('OAuth subscription providers expose validation actions after login', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'claude-subscription',
       hasSecret: true,
@@ -77,7 +77,7 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.revoke_auth).toBe('available');
   });
 
-  test('a discovery-capable wired OAuth provider keeps fetch_models available after login', () => {
+  test('a discovery-capable OAuth provider keeps fetch_models available after login', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'openai-codex',
       hasSecret: true,
@@ -88,7 +88,7 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
-  test('wired OAuth subscription providers route missing login to the OAuth setup path', () => {
+  test('OAuth subscription providers route missing login to the OAuth setup path', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'openai-codex',
       hasSecret: false,
