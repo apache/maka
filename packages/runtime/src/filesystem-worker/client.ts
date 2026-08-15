@@ -191,7 +191,7 @@ export class FilesystemWorkerClient {
     const pathContext = {
       workspaceRoots: compiled.workspaceRoots,
       tmpdir: await canonicalPath(tmpdir()),
-      slashTmp: await canonicalPath('/tmp'),
+      ...(platform === 'win32' ? {} : { slashTmp: await canonicalPath('/tmp') }),
       ...(runtimeWritableRoots ? { runtimeWritableRoots } : {}),
     };
     const allowed =

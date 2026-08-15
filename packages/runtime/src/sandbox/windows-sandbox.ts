@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, fsyncSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
 
@@ -38,6 +38,9 @@ export function createWindowsBrokerManifestWriter(
 ): (manifest: WindowsBrokerManifest) => string {
   const directory = mkdtempSync(join(temporaryRoot, 'maka-windows-sandbox-'));
   return (manifest) => {
+    // Windows cleanup tools may remove idle temp directories between turns.
+    // Recreate it before each one-shot broker request.
+    mkdirSync(directory, { recursive: true });
     const path = join(directory, `${manifest.requestId}-${randomBytes(8).toString('hex')}.json`);
     const descriptor = openSync(path, 'wx', 0o600);
     try {
