@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -327,10 +328,37 @@ describe('Work Board store', () => {
     });
   });
 
-  test('migrates the workflow schema to version 9 with the board table', async () => {
-    await withTempRoot(async (root) => {
-      createWorkBoardStore(root).close();
-      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+  test('migrates a real workflow schema 8 database to version 9 with the board table', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-work-board-schema8-'));
+    const stateRoot = join(base, 'state');
+    const databasePath = join(stateRoot, 'runtime.sqlite');
+    await mkdir(stateRoot, { recursive: true });
+    try {
+      await copyFile(
+        new URL('../../test-fixtures/v0.1.6-operational-state/runtime.sqlite', import.meta.url),
+        databasePath,
+      );
+      const v8 = new DatabaseSync(databasePath);
+      try {
+        v8.exec(
+          readFileSync(
+            new URL('../../test-fixtures/workflow-schema-v8.sql', import.meta.url),
+            'utf8',
+          ),
+        );
+        // The released v0.1.6 fixture ships an Automation definition; clearing
+        // it keeps the fixture focused on the workflow 8 -> 9 upgrade while
+        // leaving every released table and row otherwise intact.
+        v8.exec('DELETE FROM automation_definitions; DELETE FROM automation_pending_fires;');
+        v8.prepare(
+          "UPDATE operational_schema_migrations SET version = 8 WHERE scope = 'workflow'",
+        ).run();
+      } finally {
+        v8.close();
+      }
+
+      createWorkBoardStore(stateRoot).close();
+      const database = new DatabaseSync(databasePath);
       try {
         const version = database
           .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'workflow'")
@@ -341,10 +369,17 @@ describe('Work Board store', () => {
             .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_work_board_items'")
             .get(),
         );
+        assert.ok(
+          database
+            .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_goal_authority'")
+            .get(),
+        );
       } finally {
         database.close();
       }
-    });
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 
   test('backs up and restores board items with the operational state', async () => {

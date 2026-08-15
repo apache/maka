@@ -102,23 +102,12 @@ max 100) with an opaque keyset cursor.
 
 ## Linked-session projection
 
-Phase 0 only projects facts the current Session continuity contract directly
-exposes:
-
-```ts
-interface WorkBoardLinkedSessionProjection {
-  sessionId: string;
-  sessionStatus: SessionStatus | 'missing';
-  currentTurn?: {
-    turnId: string;
-    runId: string;
-    status: TurnStatus;
-  };
-}
-```
-
-The projection is a pure read function. Recovery and Agent Graph states are
-deferred until a canonical read interface and a real UI requirement exist.
+Deferred. Phase 0 does not ship a projection function: there is no production
+consumer yet, and the minimal DTO would have been a parallel contract instead
+of the canonical `SessionContinuitySnapshot` / `TurnSnapshot` used by the
+Runtime Host. It will be implemented beside the real continuity adapter when
+"start as task" lands in Phase 3, using only facts those authorities directly
+expose.
 
 ## Tests
 

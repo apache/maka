@@ -164,15 +164,20 @@ class SqliteWorkBoardStore implements WorkBoardStore {
     assertValidNow(now);
     let result: WorkBoardItem | undefined;
     await chainWrite(this.writeQueues, WORK_BOARD_WRITE_KEY, async () => {
-      const current = this.#requireItem(id);
-      assertExpectedRevision(expectedRevision, current);
-      const applied = applyWorkBoardItemPatch(current, normalizedPatch.value, now);
-      if (applied.changed) {
-        this.#writeItem(applied.item);
-        result = applied.item;
-      } else {
-        result = current;
-      }
+      // chainWrite only serializes writers inside this process. The write
+      // transaction keeps the read/check/write sequence atomic against other
+      // processes, so a stale revision can never be overwritten silently.
+      this.#lease.transaction('write', () => {
+        const current = this.#requireItem(id);
+        assertExpectedRevision(expectedRevision, current);
+        const applied = applyWorkBoardItemPatch(current, normalizedPatch.value, now);
+        if (applied.changed) {
+          this.#writeItem(applied.item);
+          result = applied.item;
+        } else {
+          result = current;
+        }
+      });
     });
     return result!;
   }
@@ -186,15 +191,19 @@ class SqliteWorkBoardStore implements WorkBoardStore {
     assertValidNow(now);
     let result: WorkBoardItem | undefined;
     await chainWrite(this.writeQueues, WORK_BOARD_WRITE_KEY, async () => {
-      const current = this.#requireItem(id);
-      assertExpectedRevision(expectedRevision, current);
-      const applied = archiveWorkBoardItem(current, now);
-      if (applied.changed) {
-        this.#writeItem(applied.item);
-        result = applied.item;
-      } else {
-        result = current;
-      }
+      // See update(): the revision check must share the write transaction so
+      // concurrent processes cannot both pass the CAS check on revision 1.
+      this.#lease.transaction('write', () => {
+        const current = this.#requireItem(id);
+        assertExpectedRevision(expectedRevision, current);
+        const applied = archiveWorkBoardItem(current, now);
+        if (applied.changed) {
+          this.#writeItem(applied.item);
+          result = applied.item;
+        } else {
+          result = current;
+        }
+      });
     });
     return result!;
   }
@@ -208,15 +217,17 @@ class SqliteWorkBoardStore implements WorkBoardStore {
     assertValidNow(now);
     let result: WorkBoardItem | undefined;
     await chainWrite(this.writeQueues, WORK_BOARD_WRITE_KEY, async () => {
-      const current = this.#requireItem(id);
-      assertExpectedRevision(expectedRevision, current);
-      const applied = unarchiveWorkBoardItem(current, now);
-      if (applied.changed) {
-        this.#writeItem(applied.item);
-        result = applied.item;
-      } else {
-        result = current;
-      }
+      this.#lease.transaction('write', () => {
+        const current = this.#requireItem(id);
+        assertExpectedRevision(expectedRevision, current);
+        const applied = unarchiveWorkBoardItem(current, now);
+        if (applied.changed) {
+          this.#writeItem(applied.item);
+          result = applied.item;
+        } else {
+          result = current;
+        }
+      });
     });
     return result!;
   }
@@ -224,12 +235,12 @@ class SqliteWorkBoardStore implements WorkBoardStore {
   async remove(id: string, options: WorkBoardMutationOptions = {}): Promise<void> {
     const expectedRevision = normalizeExpectedRevision(options);
     await chainWrite(this.writeQueues, WORK_BOARD_WRITE_KEY, async () => {
-      const current = this.#requireItem(id);
-      assertExpectedRevision(expectedRevision, current);
-      if (!current.archived) {
-        throw storeError('must_archive_first', 'Only archived Work Board items can be deleted');
-      }
       this.#lease.transaction('write', () => {
+        const current = this.#requireItem(id);
+        assertExpectedRevision(expectedRevision, current);
+        if (!current.archived) {
+          throw storeError('must_archive_first', 'Only archived Work Board items can be deleted');
+        }
         this.#lease.database
           .prepare('DELETE FROM workflow_work_board_items WHERE item_id = ?')
           .run(id);
