@@ -111,6 +111,12 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
       ON workflow_work_board_items(scope_kind, project_id, updated_at DESC, item_id DESC);
     CREATE INDEX IF NOT EXISTS workflow_work_board_items_order
       ON workflow_work_board_items(updated_at DESC, item_id DESC);
+    CREATE INDEX IF NOT EXISTS workflow_work_board_items_active_scope_order
+      ON workflow_work_board_items(scope_kind, project_id, updated_at DESC, item_id DESC)
+      WHERE archived = 0;
+    CREATE INDEX IF NOT EXISTS workflow_work_board_items_active_order
+      ON workflow_work_board_items(updated_at DESC, item_id DESC)
+      WHERE archived = 0;
 
     CREATE TABLE IF NOT EXISTS workflow_goal_authority (
       session_id TEXT PRIMARY KEY,

@@ -21,7 +21,6 @@ const baseItem: WorkBoardItem = {
   archived: false,
   creator: { kind: 'user' },
   provenance: { kind: 'manual' },
-  linkedSessions: [],
   createdAt: 100,
   updatedAt: 100,
 };
@@ -139,6 +138,24 @@ describe('Work Board contract', () => {
       provenance: { kind: 'manual' },
     });
     assert.equal(unconfirmed.ok, false);
+  });
+
+  test('rejects linkedSessions as a Phase 3 field in create input and stored records', () => {
+    const createResult = normalizeCreateWorkBoardItemInput({
+      scope: { kind: 'inbox' },
+      title: 'x',
+      creator: { kind: 'user' },
+      provenance: { kind: 'manual' },
+      linkedSessions: [{ sessionId: 'session-1', linkedAt: 10 }],
+    });
+    assert.equal(createResult.ok, false);
+    assert.equal(
+      decodeWorkBoardItem({
+        ...baseItem,
+        linkedSessions: [{ sessionId: 'session-1', linkedAt: 10 }],
+      }),
+      null,
+    );
   });
 
   test('normalizes notes patch semantics for absent, undefined, null, empty, whitespace, and values', () => {

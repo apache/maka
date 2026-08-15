@@ -159,6 +159,73 @@ describe('Work Board store', () => {
     });
   });
 
+  test('bounds default and scoped list work under archive-heavy data with active-row indexes', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      try {
+        const activeIds: string[] = [];
+        for (let index = 0; index < 5; index += 1) {
+          const item = await store.create(itemInput({ title: `active-${index}` }), 1_000 + index);
+          activeIds.push(item.id);
+        }
+        for (let index = 0; index < 120; index += 1) {
+          const item = await store.create(itemInput({ title: `archived-${index}` }), 2_000 + index);
+          await store.archive(item.id, {}, 3_000 + index);
+        }
+        const projectActive = await store.create(
+          itemInput({ title: 'project-active', scope: { kind: 'project', projectId: 'p1' } }),
+          1_000 + 5,
+        );
+
+        const page = await store.list();
+        assert.deepEqual(
+          page.items.map((item) => item.id),
+          [projectActive.id, ...activeIds.slice().reverse()],
+        );
+        assert.equal(
+          page.items.some((item) => item.archived),
+          false,
+        );
+
+        const projectPage = await store.list({ scope: { kind: 'project', projectId: 'p1' } });
+        assert.deepEqual(
+          projectPage.items.map((item) => item.id),
+          [projectActive.id],
+        );
+      } finally {
+        store.close();
+      }
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        const unscopedPlan = database
+          .prepare(
+            `EXPLAIN QUERY PLAN
+             SELECT item_id FROM workflow_work_board_items
+             WHERE 1 = 1 AND archived = 0
+             ORDER BY updated_at DESC, item_id DESC LIMIT 51`,
+          )
+          .all() as Array<{ detail: string }>;
+        const scopedPlan = database
+          .prepare(
+            `EXPLAIN QUERY PLAN
+             SELECT item_id FROM workflow_work_board_items
+             WHERE 1 = 1 AND archived = 0 AND scope_kind = 'project' AND project_id = 'p1'
+             ORDER BY updated_at DESC, item_id DESC LIMIT 51`,
+          )
+          .all() as Array<{ detail: string }>;
+        const unscopedDetail = unscopedPlan.map((row) => row.detail).join(' ');
+        const scopedDetail = scopedPlan.map((row) => row.detail).join(' ');
+        assert.match(unscopedDetail, /workflow_work_board_items_active_order/);
+        assert.match(scopedDetail, /workflow_work_board_items_active_scope_order/);
+        assert.doesNotMatch(unscopedDetail, /USE TEMP B-TREE/);
+        assert.doesNotMatch(scopedDetail, /USE TEMP B-TREE/);
+      } finally {
+        database.close();
+      }
+    });
+  });
+
   test('serializes concurrent mutations without losing updates', async () => {
     await withTempRoot(async (root) => {
       const store = createWorkBoardStore(root);
@@ -372,6 +439,20 @@ describe('Work Board store', () => {
         assert.ok(
           database
             .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_goal_authority'")
+            .get(),
+        );
+        assert.ok(
+          database
+            .prepare(
+              "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'workflow_work_board_items_active_order'",
+            )
+            .get(),
+        );
+        assert.ok(
+          database
+            .prepare(
+              "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'workflow_work_board_items_active_scope_order'",
+            )
             .get(),
         );
       } finally {

@@ -142,7 +142,6 @@ class SqliteWorkBoardStore implements WorkBoardStore {
       archived: false,
       creator: value.creator,
       provenance: value.provenance,
-      linkedSessions: value.linkedSessions ?? [],
       createdAt: now,
       updatedAt: now,
     };

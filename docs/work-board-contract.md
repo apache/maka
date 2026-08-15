@@ -25,13 +25,17 @@ interface WorkBoardItem {
   state: 'todo' | 'in_progress' | 'done';
   creator: { kind: 'user' } | { kind: 'agent_suggestion'; confirmedAt: number };
   provenance: WorkBoardProvenance;
-  linkedSessions: Array<{ sessionId: string; linkedAt: number }>;
   createdAt: number;
   updatedAt: number;
   archived: false | true;  // active items never carry archivedAt; archived items must
   archivedAt?: number;
 }
 ```
+
+`linkedSessions` is deferred to Phase 3: Phase 0 has no consumer and no mutation
+path that writes it, so the Phase 0 contract rejects the field in create input
+and in stored records. It will be added together with the canonical continuity
+adapter when "start as task" lands.
 
 `Inbox` is a scope, not a status. State transitions are user-confirmed only:
 
@@ -100,6 +104,21 @@ Writes:
 There is no total item cap. List/query size is bounded by pagination (default 50,
 max 100) with an opaque keyset cursor.
 
+The default `archived = 0` list queries are covered by partial indexes on active
+rows only:
+
+```sql
+CREATE INDEX workflow_work_board_items_active_scope_order
+  ON workflow_work_board_items(scope_kind, project_id, updated_at DESC, item_id DESC)
+  WHERE archived = 0;
+CREATE INDEX workflow_work_board_items_active_order
+  ON workflow_work_board_items(updated_at DESC, item_id DESC)
+  WHERE archived = 0;
+```
+
+This keeps an archive-heavy database from walking most of the ordering index to
+produce one page of active items.
+
 ## Linked-session projection
 
 Deferred. Phase 0 does not ship a projection function: there is no production
@@ -114,5 +133,6 @@ expose.
 - contract: decode, provenance invariants, state transitions, archive invariant,
   bounds, patch/CAS semantics;
 - storage: migration, reopen persistence, pagination/filtering, archive/delete,
-  concurrent mutations, corrupt-record rejection, backup/restore;
-- projection: pure-function fixtures only.
+  archive-heavy index coverage, concurrent mutations, corrupt-record rejection,
+  backup/restore;
+- projection: deferred to Phase 3 (no Phase 0 module or tests).

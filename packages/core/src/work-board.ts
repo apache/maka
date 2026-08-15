@@ -14,7 +14,6 @@ export const WORK_BOARD_ID_MAX_CHARS = 64;
 export const WORK_BOARD_SESSION_ID_MAX_CHARS = 160;
 export const WORK_BOARD_MESSAGE_ID_MAX_CHARS = 256;
 export const WORK_BOARD_PROJECT_ID_MAX_CHARS = 160;
-export const WORK_BOARD_MAX_LINKED_SESSIONS = 16;
 export const WORK_BOARD_DEFAULT_PAGE_SIZE = 50;
 export const WORK_BOARD_PAGE_SIZE_MAX = 100;
 export const WORK_BOARD_CURSOR_MAX_CHARS = 256;
@@ -48,11 +47,6 @@ export type WorkBoardProvenance =
       excerpt: string;
     };
 
-export interface WorkBoardLinkedSessionRef {
-  sessionId: string;
-  linkedAt: number;
-}
-
 export interface WorkBoardItemBase {
   schemaVersion: typeof WORK_BOARD_ITEM_SCHEMA_VERSION;
   id: string;
@@ -64,7 +58,6 @@ export interface WorkBoardItemBase {
   state: WorkBoardItemState;
   creator: WorkBoardCreator;
   provenance: WorkBoardProvenance;
-  linkedSessions: WorkBoardLinkedSessionRef[];
   createdAt: number;
   updatedAt: number;
 }
@@ -87,7 +80,6 @@ export interface CreateWorkBoardItemInput {
   notes?: string;
   creator: WorkBoardCreator;
   provenance: WorkBoardProvenance;
-  linkedSessions?: WorkBoardLinkedSessionRef[];
 }
 
 /**
@@ -243,40 +235,13 @@ export function normalizeWorkBoardProvenance(
   };
 }
 
-export function normalizeWorkBoardLinkedSessions(
-  input: unknown,
-): WorkBoardNormalizeResult<WorkBoardLinkedSessionRef[]> {
-  if (input === undefined) return { ok: true, value: [] };
-  if (!Array.isArray(input)) return fail('linkedSessions must be an array');
-  if (input.length > WORK_BOARD_MAX_LINKED_SESSIONS) {
-    return fail(`linkedSessions exceeds ${WORK_BOARD_MAX_LINKED_SESSIONS} entries`);
-  }
-  const linked: WorkBoardLinkedSessionRef[] = [];
-  const seen = new Set<string>();
-  for (const entry of input) {
-    if (!isRecord(entry)) return fail('linkedSessions entries must be objects');
-    const sessionId = normalizeIdString(entry.sessionId, {
-      field: 'linkedSessions.sessionId',
-      max: WORK_BOARD_SESSION_ID_MAX_CHARS,
-    });
-    if (!sessionId.ok) return sessionId;
-    if (seen.has(sessionId.value)) {
-      return fail(`linkedSessions references ${sessionId.value} more than once`);
-    }
-    const linkedAt = asSafeInteger(entry.linkedAt);
-    if (linkedAt === null) {
-      return fail('linkedSessions.linkedAt must be a non-negative integer');
-    }
-    seen.add(sessionId.value);
-    linked.push({ sessionId: sessionId.value, linkedAt });
-  }
-  return { ok: true, value: linked };
-}
-
 export function normalizeCreateWorkBoardItemInput(
   input: unknown,
 ): WorkBoardNormalizeResult<CreateWorkBoardItemInput> {
   if (!isRecord(input)) return fail('Work Board item input must be an object');
+  if (Object.prototype.hasOwnProperty.call(input, 'linkedSessions')) {
+    return fail('linkedSessions is deferred to Phase 3 and is not part of the Phase 0 contract');
+  }
   const scope = normalizeWorkBoardScope(input.scope);
   if (!scope.ok) return scope;
   const title = normalizeOptionalText(input.title, {
@@ -297,8 +262,6 @@ export function normalizeCreateWorkBoardItemInput(
   if (!creator.ok) return creator;
   const provenance = normalizeWorkBoardProvenance(input.provenance);
   if (!provenance.ok) return provenance;
-  const linkedSessions = normalizeWorkBoardLinkedSessions(input.linkedSessions);
-  if (!linkedSessions.ok) return linkedSessions;
   return {
     ok: true,
     value: {
@@ -307,7 +270,6 @@ export function normalizeCreateWorkBoardItemInput(
       ...(notes.value === undefined ? {} : { notes: notes.value }),
       creator: creator.value,
       provenance: provenance.value,
-      linkedSessions: linkedSessions.value,
     },
   };
 }
@@ -397,6 +359,7 @@ export function normalizeWorkBoardListQuery(
 export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
   if (!isRecord(value)) return null;
   if (value.schemaVersion !== WORK_BOARD_ITEM_SCHEMA_VERSION) return null;
+  if (Object.prototype.hasOwnProperty.call(value, 'linkedSessions')) return null;
   const id = value.id;
   if (!isSafeWorkBoardId(id)) return null;
   const revision = asSafeInteger(value.revision);
@@ -423,8 +386,6 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
   if (!creator.ok) return null;
   const provenance = normalizeWorkBoardProvenance(value.provenance);
   if (!provenance.ok) return null;
-  const linkedSessions = normalizeWorkBoardLinkedSessions(value.linkedSessions);
-  if (!linkedSessions.ok) return null;
   const createdAt = asSafeInteger(value.createdAt);
   const updatedAt = asSafeInteger(value.updatedAt);
   if (createdAt === null || updatedAt === null) return null;
@@ -445,7 +406,6 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
       archivedAt,
       creator: creator.value,
       provenance: provenance.value,
-      linkedSessions: linkedSessions.value,
       createdAt,
       updatedAt,
     };
@@ -462,7 +422,6 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
     archived: false,
     creator: creator.value,
     provenance: provenance.value,
-    linkedSessions: linkedSessions.value,
     createdAt,
     updatedAt,
   };
