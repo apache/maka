@@ -146,13 +146,33 @@ fn recover_stale(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn grant_roots(request: &LaunchRequest, sid: &str, ledger_roots: &[LedgerRoot]) -> Result<(), String> {
+fn grant_roots(
+    request: &LaunchRequest,
+    sid: &str,
+    ledger_roots: &[LedgerRoot],
+) -> Result<(), String> {
     for root in &request.read_roots {
-        let recursive = ledger_roots.iter().find(|entry| entry.path.eq_ignore_ascii_case(root)).map(|entry| entry.recursive).unwrap_or(false);
+        let recursive = ledger_roots
+            .iter()
+            .find(|entry| entry.path.eq_ignore_ascii_case(root))
+            .map(|entry| entry.recursive)
+            .unwrap_or(false)
+            && !request
+                .exact_read_roots
+                .iter()
+                .any(|path| path.eq_ignore_ascii_case(root));
         grant(root, sid, "RX", recursive)?;
     }
     for root in &request.write_roots {
-        let recursive = ledger_roots.iter().find(|entry| entry.path.eq_ignore_ascii_case(root)).map(|entry| entry.recursive).unwrap_or(false);
+        let recursive = ledger_roots
+            .iter()
+            .find(|entry| entry.path.eq_ignore_ascii_case(root))
+            .map(|entry| entry.recursive)
+            .unwrap_or(false)
+            && !request
+                .exact_write_roots
+                .iter()
+                .any(|path| path.eq_ignore_ascii_case(root));
         grant(root, sid, "M", recursive)?;
     }
     Ok(())

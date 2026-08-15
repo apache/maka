@@ -42,6 +42,8 @@ test('compiles workspace-write roots, runtime roots, network, and environment', 
       String.raw`C:\Users\user\AppData\Local\Temp`,
       String.raw`C:\runtime\state`,
     ],
+    exactReadRoots: [],
+    exactWriteRoots: [],
     network: 'restricted',
     environment: { PATH: String.raw`C:\Windows\System32` },
   });
@@ -74,6 +76,8 @@ test('compiles an exact file grant as a non-recursive broker root', () => {
     String.raw`C:\runtime\state`,
   ]);
   assert.deepEqual(policy.writeRoots, [String.raw`C:\runtime\state`]);
+  assert.deepEqual(policy.exactReadRoots, [String.raw`C:\file.txt`]);
+  assert.deepEqual(policy.exactWriteRoots, []);
 });
 
 test('rejects noncanonical paths and case-insensitive duplicate environment names', () => {

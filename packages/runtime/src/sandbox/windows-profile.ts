@@ -7,6 +7,8 @@ import type { SandboxCommand, SandboxPathContext } from './types.js';
 export interface WindowsSandboxPolicy {
   readonly readRoots: readonly string[];
   readonly writeRoots: readonly string[];
+  readonly exactReadRoots: readonly string[];
+  readonly exactWriteRoots: readonly string[];
   readonly network: 'restricted' | 'enabled';
   readonly environment: Readonly<Record<string, string>>;
 }
@@ -22,6 +24,8 @@ export function compileWindowsSandboxPolicy(command: SandboxCommand): WindowsSan
   );
   const readRoots: string[] = [];
   const writeRoots: string[] = [];
+  const exactReadRoots: string[] = [];
+  const exactWriteRoots: string[] = [];
   for (const entry of profile.fileSystem.entries) {
     if (entry.access === 'deny') {
       throw new Error('Windows sandbox deny entries are not implemented.');
@@ -32,7 +36,11 @@ export function compileWindowsSandboxPolicy(command: SandboxCommand): WindowsSan
         throw new Error(`Windows sandbox profile root is unavailable: ${canonical}`);
       }
       addUnique(readRoots, canonical);
-      if (entry.access === 'write') addUnique(writeRoots, canonical);
+      if (entry.match === 'exact') addUnique(exactReadRoots, canonical);
+      if (entry.access === 'write') {
+        addUnique(writeRoots, canonical);
+        if (entry.match === 'exact') addUnique(exactWriteRoots, canonical);
+      }
     }
   }
 
@@ -51,6 +59,8 @@ export function compileWindowsSandboxPolicy(command: SandboxCommand): WindowsSan
   return {
     readRoots,
     writeRoots,
+    exactReadRoots,
+    exactWriteRoots,
     network: profile.network.kind,
     environment: windowsEnvironment(command.env),
   };

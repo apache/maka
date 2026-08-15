@@ -28,6 +28,8 @@ export interface WindowsBrokerManifest {
     readonly cwd: string;
     readonly readRoots: readonly string[];
     readonly writeRoots: readonly string[];
+    readonly exactReadRoots: readonly string[];
+    readonly exactWriteRoots: readonly string[];
     readonly network: 'restricted' | 'enabled';
     readonly environment: Readonly<Record<string, string>>;
   };
@@ -138,6 +140,8 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
         cwd: request.command.cwd,
         readRoots: policy.readRoots,
         writeRoots: policy.writeRoots,
+        exactReadRoots: policy.exactReadRoots,
+        exactWriteRoots: policy.exactWriteRoots,
         network: policy.network,
         environment: sortEnvironment(policy.environment),
       };

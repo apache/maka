@@ -32,6 +32,8 @@ test('writes broker manifests to exclusive per-process temporary files', async (
         cwd: String.raw`C:\work`,
         readRoots: [],
         writeRoots: [],
+        exactReadRoots: [],
+        exactWriteRoots: [],
         network: 'restricted',
         environment: {},
       },
@@ -87,6 +89,8 @@ test('transforms a Windows managed profile into a broker-client invocation', () 
     cwd: String.raw`C:\work\repo`,
     readRoots: [String.raw`C:\work\repo`],
     writeRoots: [String.raw`C:\work\repo`],
+    exactReadRoots: [],
+    exactWriteRoots: [],
     network: 'restricted' as const,
     environment: { SystemRoot: String.raw`C:\Windows` },
   };

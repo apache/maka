@@ -15,6 +15,10 @@ pub struct LaunchRequest {
     pub cwd: String,
     pub read_roots: Vec<String>,
     pub write_roots: Vec<String>,
+    #[serde(default)]
+    pub exact_read_roots: Vec<String>,
+    #[serde(default)]
+    pub exact_write_roots: Vec<String>,
     pub network: NetworkMode,
     pub environment: BTreeMap<String, String>,
 }
@@ -77,6 +81,8 @@ impl LaunchRequest {
         validate_path(&self.cwd, "cwd")?;
         validate_roots(&self.read_roots, "readRoots")?;
         validate_roots(&self.write_roots, "writeRoots")?;
+        validate_roots(&self.exact_read_roots, "exactReadRoots")?;
+        validate_roots(&self.exact_write_roots, "exactWriteRoots")?;
         for name in self.environment.keys() {
             let mut chars = name.chars();
             let valid_first = chars
