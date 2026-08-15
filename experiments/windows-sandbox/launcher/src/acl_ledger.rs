@@ -3,10 +3,18 @@ use std::io::Write;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, STILL_ACTIVE,
+};
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 use crate::protocol::LaunchRequest;
 
@@ -26,6 +34,7 @@ struct Ledger {
 struct LedgerRoot {
     path: String,
     recursive: bool,
+    backup_path: String,
 }
 
 pub fn with_acl_grants<T>(
@@ -40,15 +49,45 @@ pub fn with_acl_grants<T>(
     fs::create_dir_all(&ledger_root)
         .map_err(|error| format!("create ACL ledger directory failed: {error}"))?;
     let lock_path = ledger_root.join(".active.lock");
-    let _lock_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock_path)
-        .map_err(|error| format!("acquire ACL ledger lock failed: {error}"))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut lock_file = loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(file) => break file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if lock_owner_is_stale(&lock_path)? {
+                    match fs::remove_file(&lock_path) {
+                        Ok(()) => continue,
+                        Err(remove_error)
+                            if remove_error.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            continue;
+                        }
+                        Err(remove_error) => {
+                            return Err(format!(
+                                "remove stale ACL ledger lock failed: {remove_error}"
+                            ));
+                        }
+                    }
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!("acquire ACL ledger lock timed out: {error}"));
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(format!("acquire ACL ledger lock failed: {error}")),
+        }
+    };
+    writeln!(lock_file, "{}", std::process::id())
+        .and_then(|()| lock_file.sync_all())
+        .map_err(|error| format!("persist ACL ledger lock owner failed: {error}"))?;
     let _lock = LedgerLock { path: lock_path };
     recover_stale(&ledger_root)?;
 
-    let roots = collect_roots(request)?;
+    let roots = collect_roots(request, &ledger_root, &request.request_id)?;
     let ledger = Ledger {
         version: LEDGER_VERSION,
         request_id: request.request_id.clone(),
@@ -87,7 +126,33 @@ struct LedgerLock {
     path: PathBuf,
 }
 
-fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {
+fn lock_owner_is_stale(path: &Path) -> Result<bool, String> {
+    let owner = match fs::read_to_string(path) {
+        Ok(value) => value.trim().parse::<u32>().ok(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(format!("read ACL ledger lock failed: {error}")),
+    };
+    let Some(owner) = owner else {
+        return Ok(false);
+    };
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, owner) };
+    if process.is_null() {
+        return Ok(unsafe { GetLastError() } == ERROR_INVALID_PARAMETER);
+    }
+    let mut exit_code = 0;
+    let queried = unsafe { GetExitCodeProcess(process, &mut exit_code) };
+    unsafe { CloseHandle(process) };
+    if queried == 0 {
+        return Ok(false);
+    }
+    Ok(exit_code != STILL_ACTIVE as u32)
+}
+
+fn collect_roots(
+    request: &LaunchRequest,
+    ledger_root: &Path,
+    request_id: &str,
+) -> Result<Vec<LedgerRoot>, String> {
     let mut roots = Vec::new();
     for path in request.read_roots.iter().chain(&request.write_roots) {
         if roots
@@ -97,9 +162,15 @@ fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {
             continue;
         }
         let metadata = reject_reparse_tree(Path::new(path))?;
+        let backup_path = ledger_root.join(format!(
+            "{:x}.acl",
+            Sha256::digest(format!("{request_id}:{}", path).as_bytes())
+        ));
+        save_acl(path, &backup_path, metadata.is_dir())?;
         roots.push(LedgerRoot {
             path: path.clone(),
             recursive: metadata.is_dir(),
+            backup_path: backup_path.to_string_lossy().into_owned(),
         });
     }
     Ok(roots)
@@ -209,18 +280,37 @@ fn grant(path: &str, sid: &str, access: &str, recursive: bool) -> Result<(), Str
 }
 
 fn remove_grants(ledger: &Ledger) -> Result<(), String> {
-    let trustee = format!("*{}", ledger.app_container_sid);
     for root in &ledger.roots {
         if !Path::new(&root.path).exists() {
             continue;
         }
-        let mut args = vec![root.path.as_str(), "/remove", trustee.as_str(), "/L", "/Q"];
-        if root.recursive {
-            args.push("/T");
-        }
-        run_icacls(&args, "remove")?;
+        restore_acl(&root.path, Path::new(&root.backup_path))?;
+        let _ = fs::remove_file(&root.backup_path);
     }
     Ok(())
+}
+
+fn save_acl(path: &str, backup: &Path, recursive: bool) -> Result<(), String> {
+    let mut args = vec![
+        path,
+        "/save",
+        backup
+            .to_str()
+            .ok_or_else(|| "invalid ACL backup path".to_owned())?,
+        "/L",
+        "/Q",
+    ];
+    if recursive {
+        args.push("/T");
+    }
+    run_icacls(&args, "save")
+}
+
+fn restore_acl(path: &str, backup: &Path) -> Result<(), String> {
+    let backup = backup
+        .to_str()
+        .ok_or_else(|| "invalid ACL backup path".to_owned())?;
+    run_icacls(&[path, "/restore", backup, "/L", "/Q"], "restore")
 }
 
 fn run_icacls(args: &[&str], operation: &str) -> Result<(), String> {

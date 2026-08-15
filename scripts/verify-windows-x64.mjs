@@ -125,6 +125,8 @@ export async function verifyPackagedWindowsApp(
       cwd: dirname(sandboxExecutable),
       readRoots: [],
       writeRoots: [],
+      exactReadRoots: [],
+      exactWriteRoots: [],
       network: 'restricted',
       environment: {},
     };
